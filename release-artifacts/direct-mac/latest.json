@@ -1,0 +1,29 @@
+{
+  "app": "Cortex",
+  "artifacts": [
+    {
+      "filename": "Cortex-0.1.0-1.dmg",
+      "kind": "dmg",
+      "sha256": "bdd4d38813143ca3af0fada361576ea973bf65e80ecbe7c2e47cffb5cb1d9f80",
+      "size_bytes": 1518633,
+      "url": "file:///Users/sarptandoven/Documents/Codex/2026-06-23/can-you-take-a-look-my-2/outputs/Cortex-0.1.0-1/Cortex-0.1.0-1.dmg"
+    },
+    {
+      "filename": "Cortex-0.1.0-1.app.zip",
+      "kind": "zip",
+      "sha256": "5748d6714f467dbd6dd39ea705474f1b9f6e299de0a9f03b525f3c5a9f405c9d",
+      "size_bytes": 1075926,
+      "url": "file:///Users/sarptandoven/Documents/Codex/2026-06-23/can-you-take-a-look-my-2/outputs/Cortex-0.1.0-1/Cortex-0.1.0-1.app.zip"
+    }
+  ],
+  "build": "1",
+  "bundle_id": "com.cortex.doppl",
+  "channel": "local-beta",
+  "mandatory": false,
+  "minimum_macos": "13.0",
+  "release_notes": [
+    "Local-first Cortex beta with bundled backend, capture, MCP, and trust controls."
+  ],
+  "released_at": "2026-06-25T18:20:42Z",
+  "version": "0.1.0"
+}

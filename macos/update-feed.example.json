@@ -1,0 +1,15 @@
+{
+  "app": "Cortex",
+  "bundle_id": "com.cortex.doppl",
+  "channel": "local-beta",
+  "version": "0.1.0",
+  "build": "1",
+  "minimum_macos": "13.0",
+  "released_at": "2026-06-25T00:00:00Z",
+  "mandatory": false,
+  "release_notes": [
+    "Local-first macOS beta.",
+    "Bundled backend, local vault, MCP tools, capture surfaces, and trust controls."
+  ],
+  "artifacts": []
+}

@@ -1,0 +1,13 @@
+anthropic>=0.40.0
+mcp>=1.0.0
+redis[hiredis]>=5.0.0
+voyageai>=0.2.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+rumps>=0.4.0
+pynput>=1.7.0
+pyperclip>=1.8.0
+uvicorn>=0.20.0
+fastapi>=0.100.0
+arize-otel>=0.13.0
+openinference-instrumentation-anthropic>=1.0.0

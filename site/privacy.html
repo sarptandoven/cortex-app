@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cortex Privacy</title>
+    <meta name="description" content="Privacy and data handling for the Cortex local macOS beta." />
+    <meta name="theme-color" content="#f8f7f1" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="privacy-page">
+    <header class="site-header">
+      <a class="brand" href="index.html" aria-label="Cortex home">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>Cortex</span>
+      </a>
+      <nav aria-label="Primary">
+        <a href="index.html#loop">Loop</a>
+        <a href="index.html#integrations">Integrations</a>
+        <a href="index.html#trust">Trust</a>
+        <a href="index.html#download">Download</a>
+      </nav>
+      <a class="header-download" href="index.html#download">macOS beta</a>
+    </header>
+
+    <main class="privacy-main">
+      <p class="eyebrow">Privacy</p>
+      <h1>Cortex local beta privacy</h1>
+      <p>
+        Cortex is built as a local-first macOS beta. The first release is designed to store memory on the user's Mac and avoid a hosted account or cloud database.
+      </p>
+
+      <section>
+        <h2>What Cortex stores</h2>
+        <ul>
+          <li>Captures the user explicitly saves through clipboard, quick note, file import, browser capture, or AI-tool workflows.</li>
+          <li>Extracted memories, tasks, entities, topics, graph edges, settings, audit events, and backups.</li>
+          <li>A readable local vault plus a rebuildable SQLite index for search and graph views.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Where data lives</h2>
+        <ul>
+          <li>By default: <code>~/Library/Application Support/Cortex/Cortex.vault/</code>.</li>
+          <li>The user can choose a different vault folder during setup.</li>
+          <li>The app does not require a hosted backend for the local beta.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>What Cortex reads</h2>
+        <ul>
+          <li>Cortex reads clipboard content only when the user clicks a capture action or uses the capture hotkey.</li>
+          <li>Cortex reads selected files only when the user chooses or drops those files.</li>
+          <li>Cortex does not record the screen, listen through the microphone, or capture ambient activity in this beta.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>AI tool sharing</h2>
+        <ul>
+          <li>Context is shared when the user copies a context pack or enables a local MCP integration.</li>
+          <li>Trust controls can block agent reads, writes, exports, and maintenance actions.</li>
+          <li>Redaction can mask common tokens, secrets, emails, and long account-like numbers before context is shared.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Current beta boundaries</h2>
+        <ul>
+          <li>No account system, billing, hosted sync, or team workspace is included in the local beta.</li>
+          <li>No analytics service is required by the static landing page.</li>
+          <li>Public distribution still needs Developer ID signing, notarization, hosted HTTPS downloads, and a formal privacy policy review.</li>
+        </ul>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>Cortex</span>
+      <a href="index.html">Home</a>
+      <a href="downloads/latest.json">Update feed</a>
+      <a href="downloads/Cortex-0.1.0-1.checksums.txt">Checksums</a>
+    </footer>
+  </body>
+</html>
