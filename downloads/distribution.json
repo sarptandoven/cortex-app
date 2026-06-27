@@ -1,0 +1,26 @@
+{
+  "artifacts": [
+    {
+      "filename": "Cortex-0.1.0-1.dmg",
+      "kind": "dmg",
+      "path": "/Users/sarptandoven/Documents/Codex/2026-06-23/can-you-take-a-look-my-2/work/second-brain/site/downloads/Cortex-0.1.0-1.dmg",
+      "sha256": "bdd4d38813143ca3af0fada361576ea973bf65e80ecbe7c2e47cffb5cb1d9f80",
+      "size_bytes": 1518633,
+      "url": "downloads/Cortex-0.1.0-1.dmg"
+    },
+    {
+      "filename": "Cortex-0.1.0-1.app.zip",
+      "kind": "zip",
+      "path": "/Users/sarptandoven/Documents/Codex/2026-06-23/can-you-take-a-look-my-2/work/second-brain/site/downloads/Cortex-0.1.0-1.app.zip",
+      "sha256": "5748d6714f467dbd6dd39ea705474f1b9f6e299de0a9f03b525f3c5a9f405c9d",
+      "size_bytes": 1075926,
+      "url": "downloads/Cortex-0.1.0-1.app.zip"
+    }
+  ],
+  "build": "1",
+  "channel": "local-beta",
+  "prepared_at": "2026-06-25T22:07:37+00:00",
+  "release_dir": "/Users/sarptandoven/Documents/Codex/2026-06-23/can-you-take-a-look-my-2/outputs/Cortex-0.1.0-1",
+  "site_dir": "/Users/sarptandoven/Documents/Codex/2026-06-23/can-you-take-a-look-my-2/work/second-brain/site",
+  "version": "0.1.0"
+}

@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cortex - You, but AI</title>
+    <meta
+      name="description"
+      content="Cortex is the local memory and action layer for AI agents, helping ChatGPT, Claude, Cursor, and MCP tools work from your context."
+    />
+    <meta property="og:title" content="Cortex - You, but AI" />
+    <meta property="og:description" content="The local memory layer that helps AI agents work the way you do." />
+    <meta property="og:type" content="website" />
+    <meta name="theme-color" content="#f8f7f1" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="Cortex home">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>Cortex</span>
+      </a>
+      <nav aria-label="Primary">
+        <a href="#loop">Loop</a>
+        <a href="#integrations">Integrations</a>
+        <a href="#trust">Trust</a>
+        <a href="#download">Download</a>
+      </nav>
+      <a class="header-download" href="#download">macOS beta</a>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <canvas id="memoryCanvas" aria-hidden="true"></canvas>
+        <div class="hero-copy">
+          <p class="eyebrow">Local-first memory for AI agents</p>
+          <h1 id="hero-title">Cortex</h1>
+          <p class="hero-line">You, but AI.</p>
+          <p class="hero-text">
+            Cortex gives ChatGPT, Claude, Cursor, and MCP agents your memory, preferences, decisions, and open loops so they can work with context instead of starting from zero.
+          </p>
+          <div class="hero-actions" aria-label="Download actions">
+            <a class="button primary download-link" href="downloads/Cortex-0.1.0-1.dmg">Download macOS beta</a>
+            <a class="button secondary" href="#install">See install steps</a>
+          </div>
+          <dl class="hero-facts" aria-label="Release facts">
+            <div>
+              <dt>Data</dt>
+              <dd>Local vault</dd>
+            </div>
+            <div>
+              <dt>Assistants</dt>
+              <dd>ChatGPT, Claude, Cursor, MCP</dd>
+            </div>
+            <div>
+              <dt>Price</dt>
+              <dd>Free beta</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="section band-intro" aria-labelledby="problem-title">
+        <div class="section-grid">
+          <div>
+            <p class="eyebrow">Why it exists</p>
+            <h2 id="problem-title">Every assistant forgets the work you already did.</h2>
+          </div>
+          <p>
+            Cortex turns scattered decisions, notes, project context, people, and open loops into a reusable memory layer. Save once, review what matters, then paste or expose the right context to the AI tool you already use.
+          </p>
+        </div>
+      </section>
+
+      <section id="loop" class="section" aria-labelledby="loop-title">
+        <div class="section-heading">
+          <p class="eyebrow">The product loop</p>
+          <h2 id="loop-title">Capture, review, reuse, return.</h2>
+          <p>
+            The first release is intentionally simple. It focuses on the one habit that makes AI memory valuable every day.
+          </p>
+        </div>
+        <div class="loop-grid">
+          <article class="loop-step">
+            <span>01</span>
+            <h3>Capture</h3>
+            <p>Save a clipboard snippet, quick note, browser page, file, or AI conversation.</p>
+          </article>
+          <article class="loop-step">
+            <span>02</span>
+            <h3>Review</h3>
+            <p>Approve useful context, archive noise, and keep the memory layer trustworthy.</p>
+          </article>
+          <article class="loop-step">
+            <span>03</span>
+            <h3>Reuse</h3>
+            <p>Copy a context pack or connect an MCP tool before starting work in an assistant.</p>
+          </article>
+          <article class="loop-step">
+            <span>04</span>
+            <h3>Return</h3>
+            <p>Open Today to see the next useful action and keep the loop moving.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="integrations" class="section split-section" aria-labelledby="integrations-title">
+        <div>
+          <p class="eyebrow">Works where users already are</p>
+          <h2 id="integrations-title">A memory layer for everyday AI tools.</h2>
+          <p>
+            Cortex starts with copy-ready context packs and local MCP setup for tools that can connect directly. That keeps the first version useful before a hosted backend exists.
+          </p>
+        </div>
+        <div class="integration-grid" aria-label="Supported surfaces">
+          <div>ChatGPT</div>
+          <div>Claude</div>
+          <div>Cursor</div>
+          <div>Windsurf</div>
+          <div>Cline</div>
+          <div>Roo Code</div>
+          <div>Gemini</div>
+          <div>Perplexity</div>
+          <div>Open WebUI</div>
+        </div>
+      </section>
+
+      <section id="trust" class="section trust-section" aria-labelledby="trust-title">
+        <div class="section-heading">
+          <p class="eyebrow">Trust controls</p>
+          <h2 id="trust-title">Private by default, useful on purpose.</h2>
+          <p>
+            Cortex stores memory on the user's Mac, exposes local diagnostics, and lets users choose what agents can read, write, export, or repair.
+          </p>
+        </div>
+        <div class="trust-grid">
+          <article>
+            <h3>Local vault</h3>
+            <p>Readable JSON records and a rebuildable SQLite index live on disk.</p>
+          </article>
+          <article>
+            <h3>Review first</h3>
+            <p>New captures can wait in the inbox until the user approves them.</p>
+          </article>
+          <article>
+            <h3>Agent permissions</h3>
+            <p>Reads, writes, exports, and maintenance actions are controlled separately.</p>
+          </article>
+          <article>
+            <h3>Reliability report</h3>
+            <p>Health checks, backup recency, and repair actions are visible in the app.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="download" class="section download-section" aria-labelledby="download-title">
+        <div class="download-copy">
+          <p class="eyebrow">Distribution</p>
+          <h2 id="download-title">Download the local macOS beta.</h2>
+          <p>
+            This build is for early testers who want local AI memory today. It is ad-hoc signed for local beta testing and not yet notarized for broad public distribution.
+          </p>
+          <div class="release-meta" aria-live="polite">
+            <span id="releaseVersion">Cortex 0.1.0</span>
+            <span id="releaseChannel">local-beta</span>
+            <span id="releaseSize">DMG ready</span>
+          </div>
+          <div class="download-actions">
+            <a class="button primary download-link" href="downloads/Cortex-0.1.0-1.dmg">Download DMG</a>
+            <a class="button secondary zip-link" href="downloads/Cortex-0.1.0-1.app.zip">Download ZIP</a>
+            <a class="button secondary" href="downloads/latest.json">Update feed</a>
+          </div>
+          <p class="checksum" id="checksumText">SHA-256 checksums are included with the release.</p>
+        </div>
+        <ol id="install" class="install-list" aria-label="Install steps">
+          <li>
+            <strong>Download</strong>
+            <span>Open the DMG and drag Cortex into Applications.</span>
+          </li>
+          <li>
+            <strong>Open</strong>
+            <span>If macOS warns, Control-click Cortex and choose Open for this local beta.</span>
+          </li>
+          <li>
+            <strong>Choose vault</strong>
+            <span>Keep the default local vault or choose a folder you already back up.</span>
+          </li>
+          <li>
+            <strong>Connect</strong>
+            <span>Copy a context pack or install the local MCP config for an assistant.</span>
+          </li>
+        </ol>
+      </section>
+
+      <section class="section final-band" aria-labelledby="final-title">
+        <p class="eyebrow">Positioning</p>
+        <h2 id="final-title">Cortex is not just AI memory. It is your personal operating model for agents.</h2>
+        <p>
+          The beta starts local and simple. The long-term product is the memory and action layer that lets agents make progress the way you would.
+        </p>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>Cortex</span>
+      <a href="privacy.html">Privacy</a>
+      <a href="downloads/latest.json">Update feed</a>
+      <a href="downloads/Cortex-0.1.0-1.checksums.txt">Checksums</a>
+    </footer>
+
+    <script src="app.js"></script>
+  </body>
+</html>
