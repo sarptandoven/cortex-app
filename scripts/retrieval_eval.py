@@ -324,12 +324,27 @@ def seed_noisy_import_memories(store: CortexStore, user_id: str = USER_ID) -> li
         _write_eval_slack_export(root / "slack")
         _write_eval_external_email(root / "mail")
         _write_eval_docs_export(root / "docs")
+        _write_eval_notion_export(root / "Notion Export")
+        _write_eval_cloud_docs_export(root / "Google Drive" / "Docs")
+        _write_eval_calendar_export(root / "calendar")
+        _write_eval_github_export(root / "GitHub" / "Project Quarry")
         store.update_settings(user_id, {"identity_aliases": ["sarpt", "retrieval@example.com"]})
+        import_paths = [
+            root / "chatgpt",
+            root / "claude",
+            root / "slack",
+            root / "mail",
+            root / "docs",
+            root / "Notion Export",
+            root / "Google Drive",
+            root / "calendar",
+            root / "GitHub",
+        ]
         result = store.import_sources(
             user_id=user_id,
-            paths=[str(root / "chatgpt"), str(root / "claude"), str(root / "slack"), str(root / "mail"), str(root / "docs")],
+            paths=[str(path) for path in import_paths],
             processing="async",
-            max_records=20,
+            max_records=40,
         )
         if result["failed"]:
             raise AssertionError(f"Noisy import eval failed to import records: {result['errors']}")
@@ -337,7 +352,8 @@ def seed_noisy_import_memories(store: CortexStore, user_id: str = USER_ID) -> li
             jobs = store.run_due_jobs(user_id, limit=max(50, result["queued"] * 2))
             if jobs["failed"]:
                 raise AssertionError(f"Noisy import eval failed queued jobs: {jobs['jobs']}")
-    memories = [memory for memory in store.recent(user_id, limit=80) if memory["source"] in {"chatgpt", "claude", "slack", "email", "docs"}]
+    expected_sources = {"chatgpt", "claude", "slack", "email", "docs", "notion", "cloud-docs", "calendar", "github"}
+    memories = [memory for memory in store.recent(user_id, limit=120) if memory["source"] in expected_sources]
     joined = "\n".join(memory["content"] for memory in memories)
     for boilerplate in ("Source:", "Conversation:", "Created:", "--- Messages ---"):
         if boilerplate in joined:
@@ -436,6 +452,46 @@ def _write_eval_docs_export(folder: Path) -> None:
     folder.mkdir(parents=True)
     (folder / "Project Lumen Retrieval.md").write_text(
         "# Project Lumen Retrieval\n\nProject Lumen document fixture requires docs retrieval coverage with cited source paths.",
+        encoding="utf-8",
+    )
+
+
+def _write_eval_notion_export(folder: Path) -> None:
+    folder.mkdir(parents=True)
+    (folder / "Project Orion.md").write_text(
+        "# Project Orion\n\nWe decided Project Orion Notion imports must show canonical source-id mapping during source review.",
+        encoding="utf-8",
+    )
+
+
+def _write_eval_cloud_docs_export(folder: Path) -> None:
+    folder.mkdir(parents=True)
+    (folder / "Project Nebula.md").write_text(
+        "# Project Nebula\n\nProject Nebula cloud docs retrieval coverage requires export-ready source health with cited paths.",
+        encoding="utf-8",
+    )
+
+
+def _write_eval_calendar_export(folder: Path) -> None:
+    folder.mkdir(parents=True)
+    ics = """BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+SUMMARY:Project Meridian calendar review
+DTSTART:20260629T170000Z
+DTEND:20260629T173000Z
+DESCRIPTION:On June 29, 2026, Project Meridian calendar import review verified cited schedule memory.
+END:VEVENT
+END:VCALENDAR
+"""
+    (folder / "project-meridian.ics").write_text(ics, encoding="utf-8")
+
+
+def _write_eval_github_export(folder: Path) -> None:
+    folder.mkdir(parents=True)
+    (folder / "issues.csv").write_text(
+        "Title,Body\n"
+        "Project Quarry source paths,We decided Project Quarry GitHub imports should preserve issue source paths.\n",
         encoding="utf-8",
     )
 
@@ -580,6 +636,38 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
             expected_layer="semantic",
             expected_phrase="cited source paths",
             category="noisy_import_docs",
+        ),
+        RetrievalCase(
+            name="noisy_import_notion_decision",
+            query="Project Orion Notion canonical source id mapping",
+            expected_id=noisy_id("Project Orion Notion imports", layer="decision"),
+            expected_layer="decision",
+            expected_phrase="canonical source-id mapping",
+            category="noisy_import_notion",
+        ),
+        RetrievalCase(
+            name="noisy_import_cloud_docs_semantic",
+            query="Project Nebula cloud docs export ready source health",
+            expected_id=noisy_id("cloud docs retrieval coverage", layer="semantic"),
+            expected_layer="semantic",
+            expected_phrase="export-ready source health",
+            category="noisy_import_cloud_docs",
+        ),
+        RetrievalCase(
+            name="noisy_import_calendar_event",
+            query="Project Meridian calendar import review schedule memory",
+            expected_id=noisy_id("Project Meridian calendar import review", layer="episodic"),
+            expected_layer="episodic",
+            expected_phrase="cited schedule memory",
+            category="noisy_import_calendar",
+        ),
+        RetrievalCase(
+            name="noisy_import_github_decision",
+            query="Project Quarry GitHub issue source paths",
+            expected_id=noisy_id("Project Quarry GitHub imports", layer="decision"),
+            expected_layer="decision",
+            expected_phrase="preserve issue source paths",
+            category="noisy_import_github",
         ),
     )
     for case in noisy_cases:
