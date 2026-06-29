@@ -1617,12 +1617,10 @@ final class AppState: ObservableObject {
 
     var onboardingHasReviewedMemory: Bool {
         firstMemoryReviewed
-            || ((stats?.memories ?? 0) > 0 && (stats?.pending_captures ?? 0) == 0)
-            || (review?.stats.memories ?? 0) > 0
     }
 
     var onboardingHasUsedCortex: Bool {
-        cortexUsed || hasSearched || !searchResults.isEmpty
+        cortexUsed
     }
 
     var onboardingHasBackupDecision: Bool {
@@ -2833,9 +2831,6 @@ final class AppState: ObservableObject {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(adaptation, forType: .string)
                 status = label
-                if !adaptation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    markCortexUsed()
-                }
                 await recordContextReuse(surface: surface, query: query, target: target)
             } catch {
                 status = "Agent adaptation layer failed: \(error.localizedDescription)"
@@ -2855,9 +2850,6 @@ final class AppState: ObservableObject {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(profile, forType: .string)
                 status = label
-                if !profile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    markCortexUsed()
-                }
                 await recordContextReuse(surface: surface, query: query, target: target)
             } catch {
                 if !query.isEmpty {
@@ -2866,9 +2858,6 @@ final class AppState: ObservableObject {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(review.context_pack, forType: .string)
                     status = "Memory view prepared"
-                    if !review.context_pack.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        markCortexUsed()
-                    }
                     await recordContextReuse(surface: surface, query: query, target: target)
                 } else {
                     status = "Profile failed: \(error.localizedDescription)"
@@ -3451,6 +3440,7 @@ struct IntegrationCenterView: View {
             header
             summary
             quickActions
+            manualHandoffActions
             ForEach(IntegrationCategory.allCases, id: \.self) { category in
                 let categoryIntegrations = integrations(in: category)
                 if !categoryIntegrations.isEmpty {
@@ -3499,22 +3489,6 @@ struct IntegrationCenterView: View {
             }
             .buttonStyle(.borderedProminent)
 
-            Button {
-                state.copyMCPConfig()
-            } label: {
-                Label("Copy MCP Setup", systemImage: "doc.on.doc")
-            }
-
-            Button {
-                if let chatGPT = state.integrations.first(where: { $0.id == "chatgpt" }) {
-                    state.copyIntegrationContext(chatGPT)
-                } else {
-                    state.copyDailyContextPack()
-                }
-            } label: {
-                Label("Prepare Browser Memory", systemImage: "text.quote")
-            }
-
             if !compact {
                 Button {
                     state.refreshIntegrationStates()
@@ -3524,6 +3498,35 @@ struct IntegrationCenterView: View {
             }
 
             Spacer()
+        }
+    }
+
+    private var manualHandoffActions: some View {
+        DisclosureGroup("Manual setup and browser fallback") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Use these only when a tool cannot install or call Cortex directly.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                HStack {
+                    Button {
+                        state.copyMCPConfig()
+                    } label: {
+                        Label("Copy MCP Setup", systemImage: "doc.on.doc")
+                    }
+
+                    Button {
+                        if let chatGPT = state.integrations.first(where: { $0.id == "chatgpt" }) {
+                            state.copyIntegrationContext(chatGPT)
+                        } else {
+                            state.copyDailyContextPack()
+                        }
+                    } label: {
+                        Label("Prepare Browser Memory", systemImage: "text.quote")
+                    }
+                    Spacer()
+                }
+            }
+            .padding(.top, 4)
         }
     }
 
@@ -4058,7 +4061,7 @@ struct OnboardingAskUseStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Ask Cortex about the memory you just approved, or prepare a focused context pack for an AI tool. This proves the model is usable instead of only imported.")
+            Text("Ask Cortex about the memory you just approved. This proves the local model can retrieve useful personal context before any AI tool uses it.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -4073,12 +4076,6 @@ struct OnboardingAskUseStep: View {
                         Label("Ask Cortex", systemImage: "magnifyingglass")
                     }
                     .buttonStyle(.borderedProminent)
-                    Button {
-                        state.contextQuery = state.searchQuery
-                        state.copyContextPack()
-                    } label: {
-                        Label("Prepare AI Context", systemImage: "text.quote")
-                    }
                     Spacer()
                 }
             }
@@ -4098,7 +4095,7 @@ struct OnboardingAskUseStep: View {
 
             OnboardingCheckRow(
                 title: state.onboardingHasUsedCortex ? "Cortex used once" : "Use Cortex once",
-                detail: state.onboardingHasUsedCortex ? "The personal model has returned or prepared approved memory." : "Run a query with results or prepare context for an AI tool.",
+                detail: state.onboardingHasUsedCortex ? "The personal model returned cited memory from your approved source." : "Run a query that returns memory from the source you reviewed.",
                 systemImage: state.onboardingHasUsedCortex ? "checkmark.seal.fill" : "sparkle.magnifyingglass",
                 color: state.onboardingHasUsedCortex ? .green : .orange
             )
@@ -4444,13 +4441,6 @@ struct TodayModelSection: View {
                     } label: {
                         Label("AI Access", systemImage: "slider.horizontal.3")
                     }
-
-                    Button {
-                        state.searchQuery = ""
-                        state.copyAgentAdaptation()
-                    } label: {
-                        Label("Agent Layer", systemImage: "wand.and.stars")
-                    }
                     Spacer()
                 }
 
@@ -4459,6 +4449,24 @@ struct TodayModelSection: View {
                     ModelMetricPill(label: "Review", value: "\(review.stats.pending_captures)", systemImage: "tray.full")
                     ModelMetricPill(label: "Decisions", value: "\(review.recent_decisions.count)", systemImage: "checkmark.seal")
                     ModelMetricPill(label: "Open work", value: "\(review.open_tasks.count)", systemImage: "circle.dashed")
+                }
+
+                DisclosureGroup("AI handoff options") {
+                    HStack {
+                        Button {
+                            state.searchQuery = ""
+                            state.copyAgentAdaptation()
+                        } label: {
+                            Label("Agent Layer", systemImage: "wand.and.stars")
+                        }
+                        Button {
+                            state.copyDailyContextPack()
+                        } label: {
+                            Label("Model Context", systemImage: "brain.head.profile")
+                        }
+                        Spacer()
+                    }
+                    .padding(.top, 4)
                 }
             } else {
                 HStack {
@@ -5889,28 +5897,39 @@ struct SearchTab: View {
                     .buttonStyle(.borderedProminent)
                 }
                 HStack {
-                    Button {
-                        state.copyAgentAdaptation()
-                    } label: {
-                        Label("Prepare Agent Layer", systemImage: "wand.and.stars")
-                    }
-                    Button {
-                        state.contextQuery = state.searchQuery
-                        state.copyContextPack()
-                    } label: {
-                        Label("Prepare Focused Context", systemImage: "text.quote")
-                    }
-                    Button {
-                        state.copyDailyContextPack()
-                    } label: {
-                        Label("Prepare Model Context", systemImage: "brain.head.profile")
-                    }
-                    Spacer()
                     if state.hasSearched {
                         Text("\(state.searchResults.count) cited result\(state.searchResults.count == 1 ? "" : "s")")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
+                    Spacer()
+                }
+                DisclosureGroup("AI handoff options") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Use these when a tool cannot connect to Cortex directly.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        HStack {
+                            Button {
+                                state.copyAgentAdaptation()
+                            } label: {
+                                Label("Agent Layer", systemImage: "wand.and.stars")
+                            }
+                            Button {
+                                state.contextQuery = state.searchQuery
+                                state.copyContextPack()
+                            } label: {
+                                Label("Focused Context", systemImage: "text.quote")
+                            }
+                            Button {
+                                state.copyDailyContextPack()
+                            } label: {
+                                Label("Model Context", systemImage: "brain.head.profile")
+                            }
+                            Spacer()
+                        }
+                    }
+                    .padding(.top, 4)
                 }
             }
             .padding(12)
@@ -6459,17 +6478,20 @@ struct TrustActionsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Safe sharing")
+            Text("Privacy posture")
                 .font(.headline)
-            HStack {
-                Button {
-                    state.copyDailyContextPack()
-                } label: {
-                    Label("Prepare Redacted Artifact", systemImage: "doc.on.doc")
-                }
-                Spacer()
-            }
             TrustNotice(systemImage: "lock.doc", title: "Local-first", detail: "Trust controls apply to the local backend, MCP agents, safe sharing artifacts, and exports. The vault remains on this Mac.", color: .accentColor)
+            DisclosureGroup("Export and sharing fallback") {
+                HStack {
+                    Button {
+                        state.copyDailyContextPack()
+                    } label: {
+                        Label("Prepare Redacted Artifact", systemImage: "doc.on.doc")
+                    }
+                    Spacer()
+                }
+                .padding(.top, 4)
+            }
         }
     }
 }
