@@ -95,6 +95,28 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(sharding["default"]["shard_id"], "local")
         self.assertIn("db_path", sharding["default"])
 
+    def test_memory_quality_endpoint_exposes_citation_and_review_contract(self) -> None:
+        created = self.client.post(
+            "/v1/captures",
+            json={
+                "content": "FastAPI quality report memory should include cited source coverage.",
+                "source": "quality-test",
+                "source_url": "/tmp/quality-source.md",
+            },
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(created.status_code, 200)
+
+        response = self.client.get("/v1/memory/quality", headers={"Authorization": "Bearer test-token"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("score", payload)
+        self.assertIn("citation_coverage", payload)
+        self.assertIn("review_coverage", payload)
+        self.assertIn("source_health", payload)
+        self.assertTrue(any(source["source"] == "quality-test" for source in payload["source_health"]))
+
     def test_scoped_api_token_prevents_user_header_impersonation_when_required(self) -> None:
         scoped_token = "cxa_fastapi_contract_token_123456789"
         registered = self.client.post(

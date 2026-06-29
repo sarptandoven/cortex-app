@@ -113,6 +113,35 @@ class StatsResponse(BaseModel):
     top_entities: list[dict[str, Any]]
 
 
+class MemoryQualitySource(BaseModel):
+    source: str
+    captures: int
+    pending: int
+    approved: int
+    archived: int
+    active_memories: int
+    cited_memories: int
+    uncited_memories: int
+    citation_coverage: float
+    last_seen: str | None = None
+    status: str
+    warnings: list[str] = Field(default_factory=list)
+
+
+class MemoryQualityResponse(BaseModel):
+    generated_at: str
+    score: int
+    status: str
+    citation_coverage: float
+    review_coverage: float
+    layer_coverage: float
+    layers_present: list[str]
+    totals: dict[str, int]
+    source_health: list[MemoryQualitySource]
+    warnings: list[str]
+    recommendations: list[str]
+
+
 class ProductLoopResponse(BaseModel):
     generated_at: str
     status: str

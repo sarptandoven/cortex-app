@@ -68,6 +68,8 @@ Every retrieval path should return cited memories and explain why they were sele
 9. Optionally rerank the top 30-80 candidates with a local or hosted cross-encoder.
 10. Return a compact context pack with memory IDs, sources, dates, and layers.
 
+`GET /v1/memory/quality` now exposes a lightweight quality report for the current local model: citation coverage, review coverage, layer coverage, per-source health, warnings, and recommendations. The Model tab uses this to show whether memory is ready to rely on instead of treating raw memory count as the only readiness signal.
+
 ## Hosted Data Shape
 
 Add these production concepts before public hosted sync:

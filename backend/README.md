@@ -89,6 +89,7 @@ POST   /v1/loop/reuse
 GET    /v1/context-pack
 GET    /v1/graph
 GET    /v1/stats
+GET    /v1/memory/quality
 GET    /v1/settings
 PUT    /v1/settings
 GET    /v1/trust/summary

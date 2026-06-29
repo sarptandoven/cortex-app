@@ -185,6 +185,36 @@ struct StatsResponse: Codable {
     let top_entities: [EntityBucket]
 }
 
+struct MemoryQualityResponse: Codable {
+    let generated_at: String
+    let score: Int
+    let status: String
+    let citation_coverage: Double
+    let review_coverage: Double
+    let layer_coverage: Double
+    let layers_present: [String]
+    let totals: [String: Int]
+    let source_health: [MemoryQualitySource]
+    let warnings: [String]
+    let recommendations: [String]
+}
+
+struct MemoryQualitySource: Codable, Identifiable, Hashable {
+    var id: String { source }
+    let source: String
+    let captures: Int
+    let pending: Int
+    let approved: Int
+    let archived: Int
+    let active_memories: Int
+    let cited_memories: Int
+    let uncited_memories: Int
+    let citation_coverage: Double
+    let last_seen: String?
+    let status: String
+    let warnings: [String]
+}
+
 struct StatBucket: Codable, Hashable {
     let kind: String
     let count: Int
@@ -1234,6 +1264,7 @@ final class AppState: ObservableObject {
     @Published var graphNodes: [GraphNode] = []
     @Published var graphEdges: [GraphEdge] = []
     @Published var stats: StatsResponse?
+    @Published var memoryQuality: MemoryQualityResponse?
     @Published var review: DailyReviewResponse?
     @Published var productLoop: ProductLoopResponse?
     @Published var appSettings: AppSettingsResponse = .defaults
@@ -1942,8 +1973,18 @@ final class AppState: ObservableObject {
         do {
             let data = try await request(path: "/v1/stats", method: "GET")
             stats = try JSONDecoder().decode(StatsResponse.self, from: data)
+            await loadMemoryQuality()
         } catch {
             status = "Stats failed: \(error.localizedDescription)"
+        }
+    }
+
+    func loadMemoryQuality() async {
+        do {
+            let data = try await request(path: "/v1/memory/quality", method: "GET")
+            memoryQuality = try JSONDecoder().decode(MemoryQualityResponse.self, from: data)
+        } catch {
+            status = "Quality failed: \(error.localizedDescription)"
         }
     }
 
@@ -3839,6 +3880,9 @@ struct TodayTab: View {
                         TodayEmptyModelSection(state: state)
                     } else {
                         TodayModelSection(state: state, review: review)
+                        if let quality = state.memoryQuality {
+                            ModelQualitySection(quality: quality)
+                        }
                         TodayCoverageSection(review: review)
                         TodaySourceCoverageSection(state: state, review: review)
                         ModelSignalSummarySection(review: review)
@@ -4135,6 +4179,53 @@ struct ModelMetricPill: View {
         .background(Color(nsColor: .windowBackgroundColor).opacity(0.65))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct ModelQualitySection: View {
+    let quality: MemoryQualityResponse
+
+    private var color: Color {
+        if quality.score >= 80 { return .green }
+        if quality.score >= 55 { return .orange }
+        return .red
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "Memory quality", detail: "Citation, review, and layer health for the current model.")
+            HStack(alignment: .top, spacing: 12) {
+                ZStack {
+                    Circle()
+                        .stroke(color.opacity(0.18), lineWidth: 8)
+                    Circle()
+                        .trim(from: 0, to: CGFloat(quality.score) / 100)
+                        .stroke(color, style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                    Text("\(quality.score)")
+                        .font(.headline)
+                        .fontWeight(.semibold)
+                }
+                .frame(width: 58, height: 58)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 116), spacing: 8)], spacing: 8) {
+                        ModelMetricPill(label: "Cited", value: percent(quality.citation_coverage), systemImage: "quote.bubble")
+                        ModelMetricPill(label: "Reviewed", value: percent(quality.review_coverage), systemImage: "checkmark.seal")
+                        ModelMetricPill(label: "Layers", value: percent(quality.layer_coverage), systemImage: "square.stack.3d.up")
+                    }
+                    if let warning = quality.warnings.first {
+                        TrustNotice(systemImage: "exclamationmark.triangle.fill", title: "Needs attention", detail: warning, color: .orange)
+                    } else {
+                        TrustNotice(systemImage: "checkmark.seal.fill", title: quality.status.replacingOccurrences(of: "_", with: " ").capitalized, detail: "Imported memory has usable citations, review state, and layer coverage.", color: .green)
+                    }
+                }
+            }
+        }
+    }
+
+    private func percent(_ value: Double) -> String {
+        "\(Int((value * 100).rounded()))%"
     }
 }
 

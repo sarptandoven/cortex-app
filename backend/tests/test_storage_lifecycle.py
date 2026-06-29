@@ -106,6 +106,30 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(self.store.list_tokens(self.user_id, audience="api"), [])
         self.assertEqual(self.store.list_tokens(self.user_id, audience="api", include_revoked=True)[0]["revoked_at"], revoked["revoked_at"])
 
+    def test_memory_quality_report_tracks_citations_review_and_layers(self) -> None:
+        uncited = self.capture("We decided uncited quality memory should warn about missing source paths.")
+        cited = self.store.save_capture(
+            user_id=self.user_id,
+            content="On June 29, 2026, cited quality memory should preserve a source URL.",
+            source="unit-test",
+            source_url="/tmp/cited-quality-note.md",
+            title="Cited quality",
+            extracted=extract_context("On June 29, 2026, cited quality memory should preserve a source URL.", "unit-test"),
+        )
+
+        report = self.store.memory_quality_report(self.user_id)
+
+        self.assertEqual(report["totals"]["captures"], 2)
+        self.assertEqual(report["totals"]["pending_captures"], 2)
+        self.assertGreater(report["totals"]["active_memories"], 0)
+        self.assertGreater(report["totals"]["uncited_memories"], 0)
+        self.assertLess(report["citation_coverage"], 1.0)
+        self.assertTrue(report["layers_present"])
+        self.assertTrue(any("citations" in warning for warning in report["warnings"]))
+        self.assertTrue(any(source["source"] == "unit-test" for source in report["source_health"]))
+        self.assertTrue(uncited["capture_id"])
+        self.assertTrue(cited["capture_id"])
+
     def test_delete_memory_purges_memory_record_and_indexes(self) -> None:
         result = self.capture(
             "Delete the Zephyr memory but keep the surrounding capture for audit context. "

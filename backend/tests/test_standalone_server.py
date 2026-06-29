@@ -83,6 +83,36 @@ class FakeStore:
             "vault": {"record_counts": {}},
         }
 
+    def memory_quality_report(self, user_id: str) -> dict:
+        return {
+            "generated_at": "2026-01-01T00:00:00Z",
+            "score": 72,
+            "status": "usable",
+            "citation_coverage": 0.75,
+            "review_coverage": 0.5,
+            "layer_coverage": 0.5,
+            "layers_present": ["semantic", "decision", "preference"],
+            "totals": {"captures": 2, "pending_captures": 1, "approved_captures": 1, "archived_captures": 0, "active_memories": 4, "cited_memories": 3, "uncited_memories": 1},
+            "source_health": [
+                {
+                    "source": "unit-test",
+                    "captures": 2,
+                    "pending": 1,
+                    "approved": 1,
+                    "archived": 0,
+                    "active_memories": 4,
+                    "cited_memories": 3,
+                    "uncited_memories": 1,
+                    "citation_coverage": 0.75,
+                    "last_seen": "2026-01-01T00:00:00Z",
+                    "status": "needs_attention",
+                    "warnings": ["missing citations"],
+                }
+            ],
+            "warnings": ["Some active memories are missing source citations."],
+            "recommendations": ["Prefer source imports and URL/file captures so retrieved memory has citations."],
+        }
+
     def supported_import_sources(self) -> list[dict]:
         return [{"id": "chatgpt", "name": "ChatGPT", "formats": ["conversations.json"], "status": "native"}]
 
@@ -301,6 +331,14 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(payload["embedding"]["model"], "cortex-hash-v1")
         self.assertEqual(payload["embedding"]["dimensions"], 384)
         self.assertTrue(payload["embedding"]["index_compatible"])
+
+    def test_memory_quality_route_forwards_to_store(self) -> None:
+        with self.get("/v1/memory/quality") as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["score"], 72)
+        self.assertEqual(payload["source_health"][0]["source"], "unit-test")
 
     def test_restore_latest_backup_forwards_to_store(self) -> None:
         with self.post("/v1/backups/restore-latest") as response:

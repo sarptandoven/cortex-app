@@ -178,6 +178,12 @@ def backup_retention_policy() -> dict[str, int]:
     }
 
 
+def _ratio(numerator: int | float, denominator: int | float) -> float:
+    if not denominator:
+        return 0.0
+    return round(max(0.0, min(1.0, float(numerator) / float(denominator))), 4)
+
+
 def normalize_token_scopes(scopes: list[str] | tuple[str, ...] | str | None) -> list[str]:
     if scopes is None:
         values = list(DEFAULT_MCP_TOKEN_SCOPES)
@@ -1693,6 +1699,119 @@ class CortexStore:
                 ).fetchall()
             ]
         return {**counts, "by_kind": by_kind, "by_layer": by_layer, "top_topics": top_topics, "top_entities": top_entities}
+
+    def memory_quality_report(self, user_id: str) -> dict[str, Any]:
+        expected_layers = {"semantic", "episodic", "style", "decision", "preference", "negative"}
+        with connect(self.db_path) as conn:
+            totals = {
+                "captures": conn.execute("SELECT COUNT(*) FROM captures WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "pending_captures": conn.execute("SELECT COUNT(*) FROM captures WHERE user_id = ? AND review_status = 'pending'", (user_id,)).fetchone()[0],
+                "approved_captures": conn.execute("SELECT COUNT(*) FROM captures WHERE user_id = ? AND review_status = 'approved'", (user_id,)).fetchone()[0],
+                "archived_captures": conn.execute("SELECT COUNT(*) FROM captures WHERE user_id = ? AND review_status = 'archived'", (user_id,)).fetchone()[0],
+                "active_memories": conn.execute("SELECT COUNT(*) FROM memories WHERE user_id = ? AND status = 'active'", (user_id,)).fetchone()[0],
+                "cited_memories": conn.execute(
+                    "SELECT COUNT(*) FROM memories WHERE user_id = ? AND status = 'active' AND COALESCE(source_url, '') != ''",
+                    (user_id,),
+                ).fetchone()[0],
+            }
+            totals["uncited_memories"] = max(0, totals["active_memories"] - totals["cited_memories"])
+            layer_rows = conn.execute(
+                """
+                SELECT layer, COUNT(*) AS count
+                FROM memories
+                WHERE user_id = ? AND status = 'active'
+                GROUP BY layer
+                ORDER BY count DESC
+                """,
+                (user_id,),
+            ).fetchall()
+            layers_present = {row["layer"] for row in layer_rows if row["layer"]}
+            source_rows = conn.execute(
+                """
+                SELECT
+                  c.source,
+                  COUNT(DISTINCT c.id) AS captures,
+                  SUM(CASE WHEN c.review_status = 'pending' THEN 1 ELSE 0 END) AS pending,
+                  SUM(CASE WHEN c.review_status = 'approved' THEN 1 ELSE 0 END) AS approved,
+                  SUM(CASE WHEN c.review_status = 'archived' THEN 1 ELSE 0 END) AS archived,
+                  COUNT(m.id) AS active_memories,
+                  SUM(CASE WHEN m.id IS NOT NULL AND COALESCE(m.source_url, '') != '' THEN 1 ELSE 0 END) AS cited_memories,
+                  MAX(c.captured_at) AS last_seen
+                FROM captures c
+                LEFT JOIN memories m ON m.capture_id = c.id AND m.user_id = c.user_id AND m.status = 'active'
+                WHERE c.user_id = ?
+                GROUP BY c.source
+                ORDER BY captures DESC, last_seen DESC
+                LIMIT 24
+                """,
+                (user_id,),
+            ).fetchall()
+
+        citation_coverage = _ratio(totals["cited_memories"], totals["active_memories"])
+        review_coverage = _ratio(totals["captures"] - totals["pending_captures"], totals["captures"])
+        layer_coverage = _ratio(len(layers_present & expected_layers), len(expected_layers))
+        volume_score = _ratio(min(totals["active_memories"], 50), 50)
+        score = round(citation_coverage * 35 + review_coverage * 25 + layer_coverage * 20 + volume_score * 20)
+        score = max(0, min(100, score))
+        status = "strong" if score >= 80 else "usable" if score >= 55 else "needs_sources" if totals["active_memories"] == 0 else "needs_review"
+
+        warnings: list[str] = []
+        recommendations: list[str] = []
+        if totals["active_memories"] == 0:
+            warnings.append("No active memories are available yet.")
+            recommendations.append("Import a real source and approve useful memory before relying on Ask.")
+        if totals["active_memories"] > 0 and citation_coverage < 0.8:
+            warnings.append("Some active memories are missing source citations.")
+            recommendations.append("Prefer source imports and URL/file captures so retrieved memory has citations.")
+        if totals["pending_captures"] > 0 and _ratio(totals["pending_captures"], totals["captures"]) > 0.25:
+            warnings.append("A large share of captured data is still pending review.")
+            recommendations.append("Review or archive pending captures to improve model reliability.")
+        if totals["active_memories"] > 0 and layer_coverage < 0.5:
+            warnings.append("Memory coverage is concentrated in too few layers.")
+            recommendations.append("Add decisions, writing samples, preferences, and rejected approaches for better adaptation.")
+
+        source_health = []
+        for row in source_rows:
+            active_memories = int(row["active_memories"] or 0)
+            cited_memories = int(row["cited_memories"] or 0)
+            pending = int(row["pending"] or 0)
+            captures = int(row["captures"] or 0)
+            source_warnings: list[str] = []
+            if active_memories and cited_memories < active_memories:
+                source_warnings.append("missing citations")
+            if captures and pending / captures > 0.5:
+                source_warnings.append("mostly pending")
+            source_status = "ok" if not source_warnings else "needs_attention"
+            source_health.append(
+                {
+                    "source": row["source"],
+                    "captures": captures,
+                    "pending": pending,
+                    "approved": int(row["approved"] or 0),
+                    "archived": int(row["archived"] or 0),
+                    "active_memories": active_memories,
+                    "cited_memories": cited_memories,
+                    "uncited_memories": max(0, active_memories - cited_memories),
+                    "citation_coverage": _ratio(cited_memories, active_memories),
+                    "last_seen": row["last_seen"],
+                    "status": source_status,
+                    "warnings": source_warnings,
+                }
+            )
+
+        return {
+            "generated_at": now_iso(),
+            "score": score,
+            "status": status,
+            "citation_coverage": citation_coverage,
+            "review_coverage": review_coverage,
+            "layer_coverage": layer_coverage,
+            "layers_present": sorted(layers_present),
+            "totals": totals,
+            "source_health": source_health,
+            "warnings": warnings,
+            "recommendations": recommendations,
+        }
 
     def product_loop(self, user_id: str) -> dict[str, Any]:
         stats = self.stats(user_id)
