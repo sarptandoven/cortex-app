@@ -350,6 +350,7 @@ struct EntityItem: Codable, Identifiable, Hashable {
 
 struct CaptureItem: Codable, Identifiable, Hashable {
     let id: String
+    let import_id: String?
     let source: String
     let source_url: String?
     let title: String?
@@ -1599,6 +1600,8 @@ final class AppState: ObservableObject {
     @Published var firstSourceAdded: Bool = UserDefaults.standard.bool(forKey: "onboardingFirstSourceImported.v1")
     @Published var firstMemoryReviewed: Bool = UserDefaults.standard.bool(forKey: "onboardingFirstMemoryReviewed.v1")
     @Published var cortexUsed: Bool = UserDefaults.standard.bool(forKey: "onboardingCortexUsed.v1")
+    @Published var onboardingFirstImportID: String = UserDefaults.standard.string(forKey: "onboardingFirstImportID.v1") ?? ""
+    @Published var onboardingFirstSourceNames: [String] = UserDefaults.standard.stringArray(forKey: "onboardingFirstSourceNames.v1") ?? []
     @Published var onboardingBackupDecision: String = UserDefaults.standard.string(forKey: "onboardingBackupDecision.v1") ?? ""
     @Published var integrationStates: [String: AIIntegrationState] = [:]
     @Published var isBusy: Bool = false
@@ -1651,16 +1654,11 @@ final class AppState: ObservableObject {
     }
 
     var onboardingHasSource: Bool {
-        firstSourceAdded
-            || importHistory.contains { item in
-                item.deleted_at == nil && item.records_found > 0 && (item.queued + item.saved + item.remaining_captures) > 0
-            }
-            || (sourceReadinessReport?.summary.sources_with_data ?? 0) > 0
+        onboardingFirstImport != nil || (onboardingFirstImportID.isEmpty && firstSourceAdded && latestUsableImport != nil)
     }
 
     var onboardingHasReviewedMemory: Bool {
         firstMemoryReviewed
-            || ((stats?.memories ?? 0) > 0 && (stats?.pending_captures ?? 0) == 0)
     }
 
     var onboardingHasUsedCortex: Bool {
@@ -1669,6 +1667,21 @@ final class AppState: ObservableObject {
 
     var onboardingHasBackupDecision: Bool {
         !onboardingBackupDecision.isEmpty || lastBackupPath != nil
+    }
+
+    var onboardingFirstImport: SourceImportHistoryItem? {
+        guard !onboardingFirstImportID.isEmpty else { return nil }
+        return importHistory.first { item in
+            item.import_id == onboardingFirstImportID && isUsableImport(item)
+        }
+    }
+
+    private var latestUsableImport: SourceImportHistoryItem? {
+        importHistory.first(where: isUsableImport)
+    }
+
+    private func isUsableImport(_ item: SourceImportHistoryItem) -> Bool {
+        item.deleted_at == nil && item.records_found > 0 && (item.queued + item.saved + item.remaining_captures) > 0
     }
 
     var canCompleteOnboarding: Bool {
@@ -2082,7 +2095,7 @@ final class AppState: ObservableObject {
                 let processedSummary = processed > 0 ? ", started \(processed)" : ""
                 lastFileCaptureSummary = "Detected \(response.records_found) source record\(response.records_found == 1 ? "" : "s"). \(queueSummary)\(processedSummary)\(failureSummary)\(skippedSummary)" + (sourceSummary.isEmpty ? "" : " (\(sourceSummary))")
                 status = lastFileCaptureSummary
-                markFirstSourceAdded()
+                markFirstSourceAdded(importID: response.import_id, sources: response.sources.map(\.source))
                 if moveImportedFromInbox {
                     for url in urls {
                         moveToImportedFolder(url)
@@ -2114,9 +2127,6 @@ final class AppState: ObservableObject {
             } catch {
                 failed += 1
             }
-        }
-        if saved > 0 {
-            markFirstSourceAdded()
         }
         lastFileCaptureSummary = failed == 0 ? "Saved \(saved) file\(saved == 1 ? "" : "s")" : "Saved \(saved), failed \(failed)"
         status = lastFileCaptureSummary
@@ -2261,7 +2271,7 @@ final class AppState: ObservableObject {
             askCitations = answer.citations
             hasSearched = true
             status = searchResults.isEmpty ? "No cited memory found" : "Answered with \(answer.citations.count) citation\(answer.citations.count == 1 ? "" : "s")"
-            if !searchResults.isEmpty || !answer.citations.isEmpty {
+            if hasUsableOnboardingCitation(answer.citations) {
                 markCortexUsed()
             }
         } catch {
@@ -2807,12 +2817,19 @@ final class AppState: ObservableObject {
         status = "Local settings copied"
     }
 
-    func markFirstSourceAdded() {
+    func markFirstSourceAdded(importID: String, sources: [String]) {
         firstSourceAdded = true
+        onboardingFirstImportID = importID
+        onboardingFirstSourceNames = sources
         UserDefaults.standard.set(true, forKey: "onboardingFirstSourceImported.v1")
+        UserDefaults.standard.set(importID, forKey: "onboardingFirstImportID.v1")
+        UserDefaults.standard.set(sources, forKey: "onboardingFirstSourceNames.v1")
     }
 
-    func markFirstMemoryReviewed() {
+    func markFirstMemoryReviewed(capture: CaptureItem) {
+        if !onboardingFirstImportID.isEmpty, capture.import_id != onboardingFirstImportID {
+            return
+        }
         firstMemoryReviewed = true
         UserDefaults.standard.set(true, forKey: "onboardingFirstMemoryReviewed.v1")
     }
@@ -2820,6 +2837,18 @@ final class AppState: ObservableObject {
     func markCortexUsed() {
         cortexUsed = true
         UserDefaults.standard.set(true, forKey: "onboardingCortexUsed.v1")
+    }
+
+    private func hasUsableOnboardingCitation(_ citations: [AskCitationItem]) -> Bool {
+        guard !citations.isEmpty else { return false }
+        let sourceNames = Set(onboardingFirstSourceNames.map { $0.lowercased() })
+        guard !sourceNames.isEmpty else { return true }
+        return citations.contains { citation in
+            sourceNames.contains(citation.source.lowercased())
+                || sourceNames.contains { source in
+                    citation.source_url?.lowercased().contains("service=\(source)") == true
+                }
+        }
     }
 
     func markBackupDecision(_ decision: String) {
@@ -3054,7 +3083,7 @@ final class AppState: ObservableObject {
             do {
                 _ = try await request(path: "/v1/captures/\(capture.id)/approve", method: "POST")
                 status = "Approved capture"
-                markFirstMemoryReviewed()
+                markFirstMemoryReviewed(capture: capture)
                 await loadInbox()
                 await loadRecent()
                 await loadStats()
