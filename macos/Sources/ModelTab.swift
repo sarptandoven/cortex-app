@@ -313,6 +313,7 @@ struct ModelQualitySection: View {
                 VStack(alignment: .leading, spacing: 8) {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 116), spacing: 8)], spacing: 8) {
                         ModelMetricPill(label: "Cited", value: percent(quality.citation_coverage), systemImage: "quote.bubble")
+                        ModelMetricPill(label: "Dated", value: percent(quality.date_coverage ?? 0), systemImage: "calendar")
                         ModelMetricPill(label: "Reviewed", value: percent(quality.review_coverage), systemImage: "checkmark.seal")
                         ModelMetricPill(label: "Layers", value: percent(quality.layer_coverage), systemImage: "square.stack.3d.up")
                     }

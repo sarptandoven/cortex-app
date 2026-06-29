@@ -395,6 +395,7 @@ struct MemoryQualityResponse: Codable {
     let score: Int
     let status: String
     let citation_coverage: Double
+    let date_coverage: Double?
     let review_coverage: Double
     let layer_coverage: Double
     let layers_present: [String]
@@ -414,7 +415,12 @@ struct MemoryQualitySource: Codable, Identifiable, Hashable {
     let active_memories: Int
     let cited_memories: Int
     let uncited_memories: Int
+    let dated_memories: Int?
+    let temporal_memories: Int?
+    let dated_temporal_memories: Int?
+    let undated_temporal_memories: Int?
     let citation_coverage: Double
+    let date_coverage: Double?
     let last_seen: String?
     let status: String
     let warnings: [String]

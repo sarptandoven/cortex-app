@@ -273,7 +273,12 @@ class MemoryQualitySource(BaseModel):
     active_memories: int
     cited_memories: int
     uncited_memories: int
+    dated_memories: int = 0
+    temporal_memories: int = 0
+    dated_temporal_memories: int = 0
+    undated_temporal_memories: int = 0
     citation_coverage: float
+    date_coverage: float = 0.0
     last_seen: str | None = None
     status: str
     warnings: list[str] = Field(default_factory=list)
@@ -284,6 +289,7 @@ class MemoryQualityResponse(BaseModel):
     score: int
     status: str
     citation_coverage: float
+    date_coverage: float = 0.0
     review_coverage: float
     layer_coverage: float
     layers_present: list[str]

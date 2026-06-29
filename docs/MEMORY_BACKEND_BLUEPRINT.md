@@ -68,7 +68,7 @@ Every retrieval path should return cited memories and explain why they were sele
 9. Optionally rerank the top 30-80 candidates with a local or hosted cross-encoder.
 10. Return a compact context pack with memory IDs, sources, dates, and layers.
 
-`GET /v1/memory/quality` now exposes a lightweight quality report for the current local model: citation coverage, review coverage, layer coverage, per-source health, warnings, and recommendations. The Model tab uses this to show whether memory is ready to rely on instead of treating raw memory count as the only readiness signal.
+`GET /v1/memory/quality` now exposes a lightweight quality report for the current local model: citation coverage, temporal date coverage for decisions/events, review coverage, layer coverage, per-source health, warnings, and recommendations. The Model tab uses this to show whether memory is ready to rely on instead of treating raw memory count as the only readiness signal.
 
 `GET /v1/agent-adaptation` turns the cited personal profile into concrete operating instructions for an assistant or computer-use agent. It keeps rules tied to memory IDs, source paths, coverage, open loops, and explicit limitations so downstream agents can adapt behavior without pretending the profile is complete or uncited.
 
