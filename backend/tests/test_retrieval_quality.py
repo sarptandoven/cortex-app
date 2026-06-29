@@ -136,16 +136,27 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["seeded_memories"], len(MEMORY_LAYERS))
-        self.assertEqual(result["noisy_import_memories"], 3)
+        self.assertEqual(result["noisy_import_memories"], 7)
         self.assertEqual(set(result["seeded_layers"]), MEMORY_LAYERS)
-        self.assertEqual(len(result["checks"]), len(RETRIEVAL_CASES) + 2)
-        self.assertEqual(result["metrics"]["overall"]["case_count"], len(RETRIEVAL_CASES) + 2)
+        expected_noisy_cases = 6
+        self.assertEqual(len(result["checks"]), len(RETRIEVAL_CASES) + expected_noisy_cases)
+        self.assertEqual(result["metrics"]["overall"]["case_count"], len(RETRIEVAL_CASES) + expected_noisy_cases)
         self.assertEqual(result["metrics"]["overall"]["top1_accuracy"], 1.0)
         self.assertEqual(result["metrics"]["overall"]["recall@1"], 1.0)
         self.assertEqual(result["metrics"]["overall"]["recall@3"], 1.0)
         self.assertEqual(result["metrics"]["by_category"]["noisy_import"]["case_count"], 2)
+        self.assertEqual(result["metrics"]["by_category"]["noisy_import_preference"]["case_count"], 1)
+        self.assertEqual(result["metrics"]["by_category"]["noisy_import_style"]["case_count"], 1)
+        self.assertEqual(result["metrics"]["by_category"]["noisy_import_negative"]["case_count"], 1)
+        self.assertEqual(result["metrics"]["by_category"]["noisy_import_docs"]["case_count"], 1)
 
-        categories = {case.category for case in RETRIEVAL_CASES} | {"noisy_import"}
+        categories = {case.category for case in RETRIEVAL_CASES} | {
+            "noisy_import",
+            "noisy_import_preference",
+            "noisy_import_style",
+            "noisy_import_negative",
+            "noisy_import_docs",
+        }
         self.assertIn("paraphrase", categories)
         self.assertIn("style_recall", categories)
         self.assertIn("negative_recall", categories)

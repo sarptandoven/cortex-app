@@ -236,16 +236,20 @@ def seed_noisy_import_memories(store: CortexStore, user_id: str = USER_ID) -> li
     with tempfile.TemporaryDirectory(prefix="cortex-retrieval-import-") as tmp:
         root = Path(tmp)
         _write_eval_chatgpt_export(root / "chatgpt")
+        _write_eval_claude_export(root / "claude")
+        _write_eval_slack_export(root / "slack")
         _write_eval_external_email(root / "mail")
+        _write_eval_docs_export(root / "docs")
+        store.update_settings(user_id, {"identity_aliases": ["sarpt", "retrieval@example.com"]})
         result = store.import_sources(
             user_id=user_id,
-            paths=[str(root / "chatgpt"), str(root / "mail")],
+            paths=[str(root / "chatgpt"), str(root / "claude"), str(root / "slack"), str(root / "mail"), str(root / "docs")],
             processing="sync",
-            max_records=10,
+            max_records=20,
         )
         if result["failed"]:
             raise AssertionError(f"Noisy import eval failed to import records: {result['errors']}")
-    memories = [memory for memory in store.recent(user_id, limit=40) if memory["source"] in {"chatgpt", "email"}]
+    memories = [memory for memory in store.recent(user_id, limit=80) if memory["source"] in {"chatgpt", "claude", "slack", "email", "docs"}]
     joined = "\n".join(memory["content"] for memory in memories)
     for boilerplate in ("Source:", "Conversation:", "Created:", "--- Messages ---"):
         if boilerplate in joined:
@@ -254,6 +258,8 @@ def seed_noisy_import_memories(store: CortexStore, user_id: str = USER_ID) -> li
         raise AssertionError("Noisy import treated assistant preference as user memory")
     if "long onboarding checklists" in joined or "verbose and salesy" in joined:
         raise AssertionError("Noisy import treated external email sender preference/style as user memory")
+    if "long-form consensus memos" in joined or "glossy launch copy" in joined:
+        raise AssertionError("Noisy import treated external Slack/Claude text as user preference or style")
     if not all(memory.get("source_url") for memory in memories):
         raise AssertionError("Noisy import memories did not preserve source_url citations")
     return memories
@@ -293,6 +299,36 @@ def _write_eval_chatgpt_export(folder: Path) -> None:
     (folder / "conversations.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _write_eval_claude_export(folder: Path) -> None:
+    folder.mkdir(parents=True)
+    payload = [
+        {
+            "name": "Project Lumen retrieval habits",
+            "created_at": "2026-06-29T11:00:00Z",
+            "chat_messages": [
+                {"sender": "human", "text": "I prefer source-trace answers with citation gutters for Project Lumen."},
+                {"sender": "assistant", "text": "I prefer glossy launch copy when explaining Project Lumen."},
+            ],
+        }
+    ]
+    (folder / "conversations.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _write_eval_slack_export(folder: Path) -> None:
+    channel = folder / "general"
+    channel.mkdir(parents=True)
+    (folder / "users.json").write_text(
+        json.dumps([{"id": "U1", "name": "sarpt"}, {"id": "U2", "name": "dana"}]),
+        encoding="utf-8",
+    )
+    messages = [
+        {"type": "message", "user": "U1", "text": "My writing style uses terse Lumen bullets with direct paragraphs.", "ts": "1782739200.0001"},
+        {"type": "message", "user": "U1", "text": "Never use ceremonial launch intros for Project Lumen reviews.", "ts": "1782739201.0001"},
+        {"type": "message", "user": "U2", "text": "I prefer long-form consensus memos for Project Lumen.", "ts": "1782739202.0001"},
+    ]
+    (channel / "2026-06-29.json").write_text(json.dumps(messages), encoding="utf-8")
+
+
 def _write_eval_external_email(folder: Path) -> None:
     folder.mkdir(parents=True)
     message = EmailMessage()
@@ -306,6 +342,14 @@ def _write_eval_external_email(folder: Path) -> None:
         "We decided Project Atlas should preserve external email citations."
     )
     (folder / "external.eml").write_bytes(message.as_bytes())
+
+
+def _write_eval_docs_export(folder: Path) -> None:
+    folder.mkdir(parents=True)
+    (folder / "Project Lumen Retrieval.md").write_text(
+        "# Project Lumen Retrieval\n\nProject Lumen document fixture requires docs retrieval coverage with cited source paths.",
+        encoding="utf-8",
+    )
 
 
 def _metrics_for_results(expected_id: str, result_ids: list[str], k_values: tuple[int, ...]) -> dict[str, float]:
@@ -393,11 +437,17 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
         checks.append(_evaluate_case(store, user_id, case, limit))
 
     noisy_memories = seed_noisy_import_memories(store, user_id)
+    def noisy_id(phrase: str, *, layer: str | None = None) -> str:
+        for memory in noisy_memories:
+            if phrase in memory["content"] and (layer is None or memory["layer"] == layer):
+                return memory["id"]
+        raise AssertionError(f"No noisy import memory contained {phrase!r} in layer {layer!r}: {[memory['content'] for memory in noisy_memories]}")
+
     noisy_cases = (
         RetrievalCase(
             name="noisy_import_decision_tabs",
             query="Project Atlas five tabs Review Trust",
-            expected_id=next(memory["id"] for memory in noisy_memories if "five tabs" in memory["content"]),
+            expected_id=noisy_id("five tabs", layer="decision"),
             expected_layer="decision",
             expected_phrase="five tabs",
             category="noisy_import",
@@ -405,10 +455,42 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
         RetrievalCase(
             name="noisy_import_event_eval",
             query="Project Atlas noisy import retrieval eval June 29",
-            expected_id=next(memory["id"] for memory in noisy_memories if "noisy import retrieval eval" in memory["content"]),
+            expected_id=noisy_id("noisy import retrieval eval", layer="episodic"),
             expected_layer="episodic",
             expected_phrase="noisy import retrieval eval",
             category="noisy_import",
+        ),
+        RetrievalCase(
+            name="noisy_import_claude_preference",
+            query="Project Lumen source trace answers citation gutters",
+            expected_id=noisy_id("source-trace answers", layer="preference"),
+            expected_layer="preference",
+            expected_phrase="citation gutters",
+            category="noisy_import_preference",
+        ),
+        RetrievalCase(
+            name="noisy_import_slack_style",
+            query="terse Lumen bullets direct paragraphs",
+            expected_id=noisy_id("terse Lumen bullets", layer="style"),
+            expected_layer="style",
+            expected_phrase="direct paragraphs",
+            category="noisy_import_style",
+        ),
+        RetrievalCase(
+            name="noisy_import_slack_negative",
+            query="Project Lumen ceremonial launch intros",
+            expected_id=noisy_id("ceremonial launch intros", layer="negative"),
+            expected_layer="negative",
+            expected_phrase="Project Lumen reviews",
+            category="noisy_import_negative",
+        ),
+        RetrievalCase(
+            name="noisy_import_docs_semantic",
+            query="Project Lumen docs retrieval coverage cited source paths",
+            expected_id=noisy_id("docs retrieval coverage", layer="semantic"),
+            expected_layer="semantic",
+            expected_phrase="cited source paths",
+            category="noisy_import_docs",
         ),
     )
     for case in noisy_cases:

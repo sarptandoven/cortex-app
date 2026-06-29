@@ -359,6 +359,8 @@ class SourceIngestTests(unittest.TestCase):
             json.dumps(
                 [
                     {"type": "message", "user": "U1", "text": "I prefer async standups with concise summaries.", "ts": "1700000000.0001"},
+                    {"type": "message", "user": "U1", "text": "My writing style uses short direct paragraphs.", "ts": "1700000000.0002"},
+                    {"type": "message", "user": "U1", "text": "Never use ceremonial launch intros in engineering updates.", "ts": "1700000000.0003"},
                     {"type": "message", "user": "U2", "text": "I prefer long onboarding rituals.", "ts": "1700000001.0001"},
                 ]
             ),
@@ -389,6 +391,8 @@ class SourceIngestTests(unittest.TestCase):
 
         self.assertEqual(result["failed"], 0)
         self.assertTrue(store.search("test-user", "async standups concise summaries", limit=5))
+        self.assertTrue(store.search("test-user", "short direct paragraphs", limit=5))
+        self.assertTrue(store.search("test-user", "ceremonial launch intros", limit=5))
         self.assertTrue(store.search("test-user", "terse launch notes cited source links", limit=5))
         self.assertFalse(store.search("test-user", "long onboarding rituals", limit=5))
 
@@ -399,9 +403,13 @@ class SourceIngestTests(unittest.TestCase):
         finally:
             conn.close()
         preference_text = "\n".join(row["content"] for row in rows if row["kind"] == "preference")
+        style_text = "\n".join(row["content"] for row in rows if row["kind"] == "style")
+        negative_text = "\n".join(row["content"] for row in rows if row["kind"] == "negative")
         self.assertIn("async standups", preference_text)
         self.assertIn("terse launch notes", preference_text)
         self.assertNotIn("long onboarding rituals", preference_text)
+        self.assertIn("short direct paragraphs", style_text)
+        self.assertIn("ceremonial launch intros", negative_text)
 
     def test_key_source_imports_preserve_citations_through_search(self) -> None:
         self._write_chatgpt_export()
