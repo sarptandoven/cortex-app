@@ -62,9 +62,11 @@
       <section>
         <h2>AI tool sharing</h2>
         <ul>
-          <li>Context is shared when the user prepares an approved-memory handoff or enables a local AI integration.</li>
-          <li>Trust controls can block agent reads, writes, exports, and maintenance actions.</li>
+          <li>Context is shared when the user copies chat context or enables a direct local AI integration.</li>
+          <li>New local vaults start with review enabled, connected-tool reads enabled for retrieval, and redaction enabled.</li>
+          <li>Connected-tool writes, exports, maintenance, and destructive actions are disabled until the user opts in.</li>
           <li>Redaction can mask common tokens, secrets, emails, and long account-like numbers before context is shared.</li>
+          <li>Support bundles omit raw capture text, memory bodies, context packs, and exported user data.</li>
         </ul>
       </section>
 

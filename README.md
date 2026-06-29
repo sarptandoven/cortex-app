@@ -16,7 +16,7 @@ Cortex is a local-first personal memory and adaptation layer. It turns approved 
 - Source readiness report covering import-ready services, planned live connectors, connected accounts, review backlog, source errors, active memory, and citation coverage
 - Gated first-run setup for private vault, first source import, first memory review, first Ask/use action, and backup/trust decision
 - Review inbox for approve/archive, decisions, recommended actions, and open loops
-- Ask screen with cited memory search plus focused context packs for ChatGPT, Claude, Cursor, MCP tools, and browser handoffs
+- Ask screen with cited memory search plus secondary handoffs for ChatGPT, Claude, Cursor, MCP tools, and browser-only workflows
 - Local MCP bridge and one-click config helpers
 - Trust controls for agent reads, writes, exports, redaction, and maintenance
 - Reliability report, backup-first repair, and local vault backups

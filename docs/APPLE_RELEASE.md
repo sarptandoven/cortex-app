@@ -181,10 +181,12 @@ Then:
 - drag Cortex to Applications
 - launch from Applications
 - complete first-run setup
-- save one memory
+- import one real source
+- approve one useful memory
+- ask Cortex and verify cited memory appears
 - create one backup
 - export one support bundle
-- copy one context pack into ChatGPT or Claude
+- verify context handoff remains available for ChatGPT or Claude
 - connect one MCP client
 - quit and relaunch
 - verify the vault remains intact

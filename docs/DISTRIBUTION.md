@@ -121,7 +121,7 @@ Recommended beta structure:
 ## Release Flow
 
 1. Update version/build in `macos/Info.plist` when appropriate.
-2. Run backend tests.
+2. Run backend tests and retrieval eval.
 3. Run reliability and battle tests against the packaged app.
 4. Package release artifacts.
 5. Prepare site downloads.
@@ -131,7 +131,7 @@ Recommended beta structure:
 9. Deploy `site/`.
 10. Download the DMG from the deployed page.
 11. Install on a clean Mac profile.
-12. Verify first-run onboarding, Today loop, MCP setup, backup, support bundle export, and update feed.
+12. Verify first-run onboarding, five-tab flow, source readiness, cited Ask results, MCP setup, backup, support bundle export, and update feed.
 
 ## Current Beta Copy
 
@@ -183,9 +183,11 @@ The beta is ready to share with a small group when:
 - a user can download and install in under two minutes
 - the app opens from Applications
 - first-run setup completes without docs
-- the Today loop explains the next action
-- the user can save one memory
-- the user can copy context into ChatGPT or Claude
+- Model explains readiness and the next useful action
+- Sources can preview, import, show readiness, and undo one batch
+- Review can approve or archive pending memory
+- Ask returns cited memory from a real import
+- context handoffs into ChatGPT or Claude remain available as a fallback
 - the user can see where data is stored
 - the user can create a backup
 - the user can read the privacy page

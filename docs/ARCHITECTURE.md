@@ -214,7 +214,7 @@ An audit record for user-visible lifecycle actions such as capture creation, app
 
 ### Product Loop
 
-The simple product loop is backend-owned so the app and MCP agents agree on the same next step. `GET /v1/loop` returns the current Capture, Review, Reuse, Return state, and `POST /v1/loop/reuse` records when a context pack is copied or generated for an AI session.
+The simple product loop is backend-owned so the app and MCP agents agree on the same next step. `GET /v1/loop` returns the current source/import, review, memory-use, and return state, and `POST /v1/loop/reuse` records when approved memory is used through Ask, a context handoff, or an AI session.
 
 ## Local Vault
 

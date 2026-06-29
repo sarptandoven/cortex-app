@@ -13,11 +13,15 @@ It is not yet a millions-of-users hosted system. That requires hosted auth, a ma
 - User-owned local vault folder with JSON records and append-only events
 - SQLite WAL mode with busy timeout and foreign keys as a rebuildable index
 - Structured captures, memories, tasks, entities, topics, graph edges, and events
-- Review inbox for approve/archive lifecycle
-- Daily review surface with recommended actions, open loops, recent decisions, and a paste-ready assistant context pack
-- Simple product loop state for Capture, Review, Reuse, and Return
+- Five-tab product flow: Model, Sources, Review, Ask, Trust
+- Model readiness surface with memory quality, layer coverage, source readiness, decisions, and open loops
+- Sources surface with import preview, duplicate-safe history, undo import, source readiness, and connector health
+- Review inbox for approve/archive lifecycle, decisions, recommended actions, and open loops
+- Ask surface with natural-language cited search; context packs and adaptation artifacts are secondary handoff fallbacks
+- Trust surface for privacy posture, AI access, vault health, backups, backend health, and advanced diagnostics
+- Simple product loop state for source import, review, memory use, and return
 - Reuse tracking when context packs are copied or generated through MCP
-- First-run onboarding for vault location, memory rules, first save, AI-tool setup, and first backup
+- First-run onboarding for private vault health, first real source import, first memory approval, first Ask/use action, and backup/trust decision
 - User-controllable memory behavior for review flow, pending-memory visibility, and context-pack size
 - Active search and graph exclude archived captures and memories
 - JSON and Markdown export
@@ -26,7 +30,7 @@ It is not yet a millions-of-users hosted system. That requires hosted auth, a ma
 - Versioned backend health contract with required feature flags and vault-path handshake
 - User-facing reliability report with backup recency, storage checks, recommended actions, and copyable support context
 - Sanitized support bundle for operational triage without raw memory content
-- Local operational readiness gate covering docs, tests, build, distribution, manifests, support bundle, and optional live backend contracts
+- Local operational readiness gate covering docs, tests, retrieval eval, build, distribution, manifests, support bundle, and optional live backend contracts
 - Backup-first storage repair endpoint for stale search rows and relationship drift
 - Search-index rebuild maintenance endpoint
 - Vault-to-index rebuild maintenance endpoint
@@ -42,16 +46,18 @@ It is not yet a millions-of-users hosted system. That requires hosted auth, a ma
 
 - Dogfood with at least 1,000 captures across clipboard, notes, ChatGPT, Claude, docs, and meetings
 - Run `python3 -m unittest discover backend/tests` before every app package
+- Run `python3 scripts/retrieval_eval.py` before every app package
 - Run `python3 scripts/reliability_check.py` against the packaged app backend before every app package
 - Run `python3 scripts/battle_test_http.py` against a fresh local backend before every app package
-- Verify `GET /v1/loop` moves from review to reuse after approving pending captures
-- Verify `POST /v1/loop/reuse` marks context reuse and updates the Today loop
+- Verify `GET /v1/loop` moves from review to memory use after approving pending captures
+- Verify `POST /v1/loop/reuse` marks approved-memory use and updates product-loop state
 - Verify export and backup files can be opened after a week of use
 - Verify `POST /v1/maintenance/rebuild-index-from-vault` restores search after deleting the local index rows
 - Verify `POST /v1/maintenance/repair-storage` creates a backup before cleaning stale derived rows
 - Verify the vault folder can be copied to another machine and opened there
 - Verify search quality on real noisy notes, not only clean synthetic examples
 - Verify first-run onboarding on a clean user profile before every beta package
+- Verify Model shows memory quality/source coverage, Sources previews/imports/undoes, Review approves/archives, Ask returns cited memory, and Trust shows lifecycle/redaction/support-bundle proof
 - Verify copied MCP config points at the bundled proxy script inside the app
 - Verify `macos/package_release.sh` produces a valid DMG, ZIP, checksums, and `latest.json`
 - Verify `scripts/validate_update_manifest.py` passes against the generated `latest.json`
@@ -84,9 +90,8 @@ See `docs/OPERATIONAL_READINESS.md` for the local-beta operations model, severit
 A free public beta is credible when a nontechnical user can:
 
 - Install the macOS app in under two minutes
-- Save useful context from any app in under two seconds
-- Copy a useful context pack into ChatGPT, Claude, Cursor, or another assistant without reading setup docs
-- Understand the next useful action from the Today loop without reading docs
+- Import a real source, approve one useful memory, and ask Cortex without reading setup docs
+- Understand the five tabs without opening advanced settings
 - Search and recover an old decision without setup help
 - Export or back up their memory without contacting support
 - See whether local storage is healthy and run a backup-first repair without contacting support
