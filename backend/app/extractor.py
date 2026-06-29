@@ -139,6 +139,7 @@ def _extract_locally(raw_text: str, source: str, author_aliases: Iterable[str] |
         if candidate.get("role") not in ASSISTANT_ROLES
         and not _is_disallowed_user_preference_candidate(candidate, has_known_turns)
     ]
+    memory_candidates = _dedupe_candidates(memory_candidates)
     sentences = [candidate["text"] for candidate in memory_candidates]
     cleaned = " ".join(sentences)
     summary = _summarize(sentences, cleaned)
@@ -261,6 +262,18 @@ def _sentence_candidates(text: str, source: str = "unknown", author_aliases: Ite
                 continue
             candidates.append({"text": sentence, "role": role, "speaker_present": speaker_present})
     return candidates
+
+
+def _dedupe_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for candidate in candidates:
+        key = re.sub(r"\s+", " ", candidate.get("text", "").strip().lower())
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
 
 
 def _parse_role_line(line: str, identity_aliases: set[str] | None = None) -> tuple[str | None, str, bool]:

@@ -513,6 +513,37 @@ class SourceIngestTests(unittest.TestCase):
         model_extract.assert_not_called()
         self.assertTrue(store.search("test-user", "deterministic source import memories", limit=3))
 
+    def test_async_source_import_uses_deterministic_extraction_by_default(self) -> None:
+        docs = self.root / "docs"
+        docs.mkdir()
+        note = docs / "Async Deterministic Import.md"
+        note.write_text(
+            "I prefer queued deterministic source import memories for production readiness.",
+            encoding="utf-8",
+        )
+
+        db_path = self.root / "index.sqlite"
+        init_db(db_path)
+        store = CortexStore(db_path, self.root / "vault")
+        result = store.import_sources(
+            user_id="test-user",
+            paths=[str(note)],
+            processing="async",
+            max_records=10,
+        )
+
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["queued"], 1)
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), patch(
+            "backend.app.extractor._extract_with_claude",
+            side_effect=BaseException("model extraction should not run for queued source imports"),
+        ) as model_extract:
+            ran = store.run_due_jobs("test-user", limit=10)
+
+        self.assertEqual(ran["processed"], 1)
+        model_extract.assert_not_called()
+        self.assertTrue(store.search("test-user", "queued deterministic source import memories", limit=3))
+
     def test_generic_file_import_preserves_source_url_for_citations(self) -> None:
         docs = self.root / "docs"
         docs.mkdir()

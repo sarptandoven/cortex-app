@@ -5014,7 +5014,14 @@ class CortexStore:
             )
         content = capture["raw_text"]
         source = capture["source"]
-        extracted = extract_context(content, source, author_aliases=self.settings(user_id).get("identity_aliases"))
+        import_id = capture["import_id"] if "import_id" in capture.keys() else None
+        extraction_mode = "local" if import_id else None
+        extracted = extract_context(
+            content,
+            source,
+            author_aliases=self.settings(user_id).get("identity_aliases"),
+            extraction_mode=extraction_mode,
+        )
         extracted["_timestamp"] = capture["captured_at"] or payload.get("captured_at") or started_at
         saved = self.save_capture(
             user_id=user_id,
@@ -5023,7 +5030,7 @@ class CortexStore:
             source_url=capture["source_url"],
             title=capture["title"],
             extracted=extracted,
-            import_id=capture["import_id"] if "import_id" in capture.keys() else None,
+            import_id=import_id,
         )
         completed_at = now_iso()
         memory_count = len(saved.get("memories", []))

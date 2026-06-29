@@ -203,6 +203,18 @@ Never use Slack for contract approvals.
         self.assertEqual(dated["Cortex shipped a beta on 7/4/26."], "2026-07-04")
         self.assertEqual(dated["On 29 Jun 2026, we emailed Ada about launch readiness."], "2026-06-29")
 
+    def test_repeated_sentences_do_not_duplicate_records_or_summary(self) -> None:
+        data = extract_local(
+            "Ada likes coffee. Ada likes coffee. "
+            "We decided Project Atlas uses five tabs. We decided Project Atlas uses five tabs.",
+            "notes",
+        )
+        contents = [record["content"] for record in data["records"]]
+
+        self.assertEqual(contents.count("We decided Project Atlas uses five tabs."), 1)
+        self.assertEqual(data["summary"].count("Ada likes coffee."), 1)
+        self.assertEqual(data["summary"].count("We decided Project Atlas uses five tabs."), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
