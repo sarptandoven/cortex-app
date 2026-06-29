@@ -154,38 +154,19 @@ struct ModelOverviewSection: View {
                     ModelReadinessRing(value: readinessScore)
                 }
 
-                HStack(spacing: 8) {
+                HStack(alignment: .center, spacing: 10) {
                     Button {
-                        state.selectedTab = .sources
-                        state.status = "Add conversations, notes, files, and decisions"
+                        state.performProductLoopAction(loop.primary_action)
                     } label: {
-                        Label("Add Sources", systemImage: "tray.and.arrow.down")
+                        Label(loop.primary_action.label, systemImage: primaryActionIcon(loop.primary_action.action))
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(loop.primary_action.action == "done")
 
-                    Button {
-                        if review.stats.pending_captures > 0 {
-                            state.selectedTab = .review
-                            state.status = "Review saved items"
-                        } else {
-                            state.selectedTab = .ask
-                            state.searchQuery = ""
-                            state.searchResults = []
-                            state.askAnswer = ""
-                            state.askCitations = []
-                            state.hasSearched = false
-                            state.status = "Ask Cortex what it knows"
-                        }
-                    } label: {
-                        Label(review.stats.pending_captures > 0 ? "Review Memory" : "Ask Cortex", systemImage: review.stats.pending_captures > 0 ? "checklist" : "magnifyingglass")
-                    }
-
-                    Button {
-                        state.selectedTab = .trust
-                        state.status = "Configure AI access"
-                    } label: {
-                        Label("AI Access", systemImage: "slider.horizontal.3")
-                    }
+                    Text(loop.primary_action.detail)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     Spacer()
                 }
 
@@ -196,23 +177,6 @@ struct ModelOverviewSection: View {
                     ModelMetricPill(label: "Open work", value: "\(review.open_tasks.count)", systemImage: "circle.dashed")
                 }
 
-                DisclosureGroup("AI handoff options") {
-                    HStack {
-                        Button {
-                            state.searchQuery = ""
-                            state.copyAgentAdaptation()
-                        } label: {
-                            Label("Agent Layer", systemImage: "wand.and.stars")
-                        }
-                        Button {
-                            state.copyDailyContextPack()
-                        } label: {
-                            Label("Model Context", systemImage: "brain.head.profile")
-                        }
-                        Spacer()
-                    }
-                    .padding(.top, 4)
-                }
             } else {
                 HStack {
                     ProgressView()
@@ -249,6 +213,21 @@ struct ModelOverviewSection: View {
             return "Cortex has new data waiting for review before it becomes part of the personal model."
         }
         return "Cortex is organizing your data into semantic, episodic, style, decision, preference, and negative memory layers for in-house agent adaptation."
+    }
+
+    private func primaryActionIcon(_ action: String) -> String {
+        switch action {
+        case "capture":
+            return "tray.and.arrow.down"
+        case "review":
+            return "checklist"
+        case "reuse":
+            return "magnifyingglass"
+        case "done":
+            return "checkmark.seal"
+        default:
+            return "arrow.right.circle"
+        }
     }
 }
 
