@@ -3607,7 +3607,7 @@ struct IntegrationCenterView: View {
                             state.copyDailyContextPack()
                         }
                     } label: {
-                        Label("Prepare Browser Memory", systemImage: "text.quote")
+                        Label("Copy Browser Fallback", systemImage: "text.quote")
                     }
                     Spacer()
                 }
@@ -4650,7 +4650,7 @@ struct TrustPolicySection: View {
                     )
                     TrustToggleRow(
                         title: "Let connected AI prepare artifacts",
-                        detail: "Connected MCP agents can prepare redacted handoffs, adaptation layers, context packs, or exports.",
+                        detail: "Connected MCP agents can prepare redacted profile artifacts, adaptation instructions, or exports.",
                         systemImage: "square.and.arrow.up",
                         isOn: $state.appSettings.allow_agent_exports
                     )
@@ -4874,12 +4874,12 @@ struct TrustActionsSection: View {
             Text("Privacy posture")
                 .font(.headline)
             TrustNotice(systemImage: "lock.doc", title: "Local-first", detail: "Trust controls apply to the local backend, MCP agents, safe sharing artifacts, and exports. The vault remains on this Mac.", color: .accentColor)
-            DisclosureGroup("Export and sharing fallback") {
+            DisclosureGroup("Export fallback") {
                 HStack {
                     Button {
                         state.copyDailyContextPack()
                     } label: {
-                        Label("Prepare Redacted Artifact", systemImage: "doc.on.doc")
+                        Label("Copy Redacted Profile", systemImage: "doc.on.doc")
                     }
                     Spacer()
                 }

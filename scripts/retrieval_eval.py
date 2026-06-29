@@ -328,11 +328,15 @@ def seed_noisy_import_memories(store: CortexStore, user_id: str = USER_ID) -> li
         result = store.import_sources(
             user_id=user_id,
             paths=[str(root / "chatgpt"), str(root / "claude"), str(root / "slack"), str(root / "mail"), str(root / "docs")],
-            processing="sync",
+            processing="async",
             max_records=20,
         )
         if result["failed"]:
             raise AssertionError(f"Noisy import eval failed to import records: {result['errors']}")
+        if result["queued"]:
+            jobs = store.run_due_jobs(user_id, limit=max(50, result["queued"] * 2))
+            if jobs["failed"]:
+                raise AssertionError(f"Noisy import eval failed queued jobs: {jobs['jobs']}")
     memories = [memory for memory in store.recent(user_id, limit=80) if memory["source"] in {"chatgpt", "claude", "slack", "email", "docs"}]
     joined = "\n".join(memory["content"] for memory in memories)
     for boilerplate in ("Source:", "Conversation:", "Created:", "--- Messages ---"):

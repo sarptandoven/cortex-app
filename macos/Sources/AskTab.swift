@@ -93,27 +93,27 @@ struct AskUseElsewhereSection: View {
     @Binding var isExpanded: Bool
 
     var body: some View {
-        DisclosureGroup("Use in another app", isExpanded: $isExpanded) {
+        DisclosureGroup("Fallback export", isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Use these only when an app cannot connect to Cortex directly.")
+                Text("Use these only when another app cannot connect to Cortex directly.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 HStack {
                     Button {
                         state.copyAgentAdaptation()
                     } label: {
-                        Label("Prepare Adaptation", systemImage: "wand.and.stars")
+                        Label("Copy Adaptation Instructions", systemImage: "wand.and.stars")
                     }
                     Button {
                         state.contextQuery = state.searchQuery
                         state.copyContextPack()
                     } label: {
-                        Label("Prepare Current Context", systemImage: "text.quote")
+                        Label("Copy Focused Evidence", systemImage: "text.quote")
                     }
                     Button {
                         state.copyDailyContextPack()
                     } label: {
-                        Label("Prepare Model Context", systemImage: "brain.head.profile")
+                        Label("Copy Redacted Profile", systemImage: "brain.head.profile")
                     }
                     Spacer()
                 }
