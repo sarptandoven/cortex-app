@@ -77,10 +77,18 @@ FTS5 remains the reliable floor. Vector search improves recall when wording diff
 
 Phase 1 uses `cortex-hash-v1`, a deterministic local embedding fallback. It proves indexing, sync, backups, rebuilds, and hybrid retrieval without paid APIs.
 
-Phase 2 should add real embeddings:
+The current backend also has an opt-in OpenAI embeddings provider:
+
+- `CORTEX_EMBEDDING_PROVIDER=hash` keeps local/offline deterministic embeddings.
+- `CORTEX_EMBEDDING_PROVIDER=openai` calls the OpenAI embeddings endpoint with `CORTEX_EMBEDDING_MODEL`, `CORTEX_EMBEDDING_DIMENSIONS`, and `OPENAI_API_KEY`.
+- non-strict OpenAI mode falls back to `cortex-hash-v1` on provider failures; `CORTEX_EMBEDDING_STRICT=1` makes those failures visible.
+- `CORTEX_EMBEDDING_DIMENSIONS` must stay at `384` until the local sqlite-vec schema becomes dynamically migratable.
+- vector rows store `embedding_model`, text hash, and timestamps so indexes can be rebuilt and re-embedded.
+
+Phase 2 should add more embedding choices:
 
 - Local model first for privacy-focused users.
-- Optional OpenAI or Anthropic-compatible embedding provider for users who want quality over local-only operation.
+- Anthropic-compatible or other embedding providers for users who want quality over local-only operation.
 - Store `embedding_model`, dimensions, text hash, and timestamps so we can re-embed safely.
 
 ## Full Backend Architecture
@@ -191,9 +199,10 @@ The repo now has the first safe layer:
 - optional extension loading
 - vector schema initialization when available
 - deterministic local embeddings
+- opt-in OpenAI embeddings with offline fallback
 - memory vector indexing hooks
 - vector cleanup on archive/delete
 - hybrid search path that falls back to FTS5
-- rebuild endpoint returns vector availability and indexed count
+- diagnostics and rebuild endpoint return vector and embedding provider status
 
 The next engineering step is to ship a backend runtime that actually includes and loads `sqlite-vec` on macOS.

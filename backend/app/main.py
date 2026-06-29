@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import hmac
+import os
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -13,7 +14,7 @@ from .config import load_settings
 from .database import init_db
 from .extractor import extract_context
 from .mcp_tools import TOOLS, call_tool, tool_result_text
-from .models import BackupResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DiagnosticsResponse, GraphResponse, ListResponse, MaintenanceResponse, MCPRequest, ProductLoopResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, StatsResponse, SupportBundleResponse, VaultRebuildResponse
+from .models import BackupResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DiagnosticsResponse, GraphResponse, JobRunResponse, ListResponse, MaintenanceResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, ProductLoopResponse, QueuedCaptureResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, StatsResponse, SupportBundleResponse, VaultRebuildResponse, VectorRebuildResponse
 from .storage import BACKEND_VERSION, CortexStore
 
 
@@ -21,12 +22,35 @@ settings = load_settings()
 init_db(settings.db_path)
 store = CortexStore(settings.db_path, settings.vault_path)
 store.ensure_vault_backfilled(settings.default_user_id)
+if settings.mcp_api_key:
+    store.ensure_mcp_token(
+        settings.default_user_id,
+        settings.mcp_api_key,
+        label="Local MCP integrations",
+        scopes=settings.mcp_api_key_scopes or None,
+        token_id="tok_local_mcp",
+    )
 
 app = FastAPI(title="Cortex API", version="0.1.0")
+
+
+def _cors_origins() -> list[str]:
+    configured = [item.strip() for item in os.environ.get("CORTEX_CORS_ORIGINS", "").split(",") if item.strip()]
+    if configured:
+        return configured
+    public_base = settings.public_base_url.rstrip("/")
+    origins = {
+        public_base,
+        "http://127.0.0.1:8766",
+        "http://localhost:8766",
+    }
+    return sorted(origin for origin in origins if origin)
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins(),
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -40,10 +64,29 @@ def auth(authorization: str | None = Header(default=None), x_cortex_user: str | 
     return x_cortex_user or settings.default_user_id
 
 
+def mcp_auth(authorization: str | None = Header(default=None), x_cortex_user: str | None = Header(default=None)) -> dict[str, Any]:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Cortex MCP token")
+    token = authorization.split(" ", 1)[1].strip()
+    if settings.api_key and hmac.compare_digest(token, settings.api_key):
+        user_id = x_cortex_user or settings.default_user_id
+        return {
+            "user_id": user_id,
+            "token_id": "admin",
+            "label": "Cortex app token",
+            "audience": "admin",
+            "scopes": ["read", "write", "export", "maintenance", "destructive"],
+            "admin": True,
+        }
+    scoped = store.authenticate_mcp_token(token)
+    if scoped:
+        return scoped
+    raise HTTPException(status_code=401, detail="Missing or invalid Cortex MCP token")
+
+
 def _capture_page(message: str = "", status: str = "ready", token: str = "", title: str = "", url: str = "", content: str = "") -> str:
     escaped_message = html.escape(message)
     escaped_status = html.escape(status)
-    escaped_token = html.escape(token)
     escaped_title = html.escape(title)
     escaped_url = html.escape(url)
     escaped_content = html.escape(content)
@@ -71,7 +114,7 @@ def _capture_page(message: str = "", status: str = "ready", token: str = "", tit
         {f"<p><strong>{escaped_message}</strong></p>" if escaped_message else ""}
         <form method="post" action="/capture">
           <label>Token</label>
-          <input name="token" value="{escaped_token}" autocomplete="off" />
+          <input name="token" value="" autocomplete="off" placeholder="Paste Cortex token" />
           <label>Title</label>
           <input name="title" value="{escaped_title}" />
           <label>Source URL</label>
@@ -155,26 +198,31 @@ def capture_page(
     title: str = "",
     url: str = "",
     source: str = "browser-capture",
-) -> str:
+) -> HTMLResponse:
     payload = content or text
     if payload.strip():
         try:
             user_id = _auth_query_token(token)
             response = _save_capture_from_values(payload, source, title, url, user_id)
-            return _capture_page(
-                message=f"Saved {len(response.get('memories', []))} memories.",
-                status="saved",
-                token=token,
-                title=title,
-                url=url,
+            return HTMLResponse(
+                _capture_page(
+                    message=f"Saved {len(response.get('memories', []))} memories.",
+                    status="saved",
+                    token=token,
+                    title=title,
+                    url=url,
+                )
             )
         except HTTPException as exc:
-            return _capture_page(message=str(exc.detail), status="error", token=token, title=title, url=url, content=payload)
-    return _capture_page(token=token, title=title, url=url, content=payload)
+            return HTMLResponse(
+                _capture_page(message=str(exc.detail), status="error", token=token, title=title, url=url, content=payload),
+                status_code=exc.status_code,
+            )
+    return HTMLResponse(_capture_page(token=token, title=title, url=url, content=payload))
 
 
 @app.post("/capture", response_class=HTMLResponse)
-async def capture_form(request: Request) -> str:
+async def capture_form(request: Request) -> HTMLResponse:
     raw = (await request.body()).decode("utf-8")
     params = parse_qs(raw, keep_blank_values=True)
     value = lambda name: (params.get(name) or [""])[0]
@@ -186,19 +234,36 @@ async def capture_form(request: Request) -> str:
     try:
         user_id = _auth_query_token(token)
         response = _save_capture_from_values(content, source, title, url, user_id)
-        return _capture_page(
-            message=f"Saved {len(response.get('memories', []))} memories.",
-            status="saved",
-            token=token,
-            title=title,
-            url=url,
+        return HTMLResponse(
+            _capture_page(
+                message=f"Saved {len(response.get('memories', []))} memories.",
+                status="saved",
+                token=token,
+                title=title,
+                url=url,
+            )
         )
     except HTTPException as exc:
-        return _capture_page(message=str(exc.detail), status="error", token=token, title=title, url=url, content=content)
+        return HTMLResponse(
+            _capture_page(message=str(exc.detail), status="error", token=token, title=title, url=url, content=content),
+            status_code=exc.status_code,
+        )
 
 
-@app.post("/v1/captures", response_model=CaptureResponse)
-def create_capture(request: CaptureRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+@app.post("/v1/captures", response_model=CaptureResponse | QueuedCaptureResponse)
+def create_capture(
+    request: CaptureRequest,
+    processing: str = Query(default="sync", pattern="^(sync|async)$"),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    if processing == "async":
+        return store.enqueue_capture(
+            user_id=user_id or request.user_id,
+            content=request.content,
+            source=request.source,
+            source_url=request.source_url,
+            title=request.title,
+        )
     extracted = extract_context(request.content, request.source)
     return store.save_capture(
         user_id=user_id or request.user_id,
@@ -208,6 +273,99 @@ def create_capture(request: CaptureRequest, user_id: str = Depends(auth)) -> dic
         title=request.title,
         extracted=extracted,
     )
+
+
+@app.post("/v1/captures/queue", response_model=QueuedCaptureResponse, status_code=202)
+def queue_capture(request: CaptureRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    return store.enqueue_capture(
+        user_id=user_id or request.user_id,
+        content=request.content,
+        source=request.source,
+        source_url=request.source_url,
+        title=request.title,
+    )
+
+
+@app.get("/v1/captures/{capture_id}/status")
+def capture_status(capture_id: str, user_id: str = Depends(auth)) -> dict[str, Any]:
+    try:
+        return store.capture_status(user_id, capture_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/v1/imports/sources")
+def supported_import_sources(user_id: str = Depends(auth)) -> dict[str, Any]:
+    return {"results": store.supported_import_sources()}
+
+
+@app.get("/v1/imports")
+def list_imports(limit: int = Query(default=50, ge=1, le=100), include_deleted: bool = True, user_id: str = Depends(auth)) -> dict[str, Any]:
+    return {"results": store.list_imports(user_id, limit=limit, include_deleted=include_deleted)}
+
+
+@app.post("/v1/imports/analyze", response_model=SourceAnalyzeResponse)
+def analyze_import_sources(request: SourceAnalyzeRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    return store.analyze_import_sources(
+        request.paths,
+        source_hint=request.source_hint,
+        max_records=min(request.max_records, 500),
+    )
+
+
+@app.post("/v1/imports", response_model=SourceImportResponse)
+def import_sources(request: SourceImportRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    return store.import_sources(
+        user_id=user_id or request.user_id,
+        paths=request.paths,
+        source_hint=request.source_hint,
+        processing=request.processing,
+        max_records=request.max_records,
+    )
+
+
+@app.get("/v1/imports/{import_id}")
+def get_import(import_id: str, user_id: str = Depends(auth)) -> dict[str, Any]:
+    result = store.get_import(user_id, import_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Import not found")
+    return result
+
+
+@app.delete("/v1/imports/{import_id}", response_model=SourceImportDeleteResponse)
+def delete_import(import_id: str, user_id: str = Depends(auth)) -> dict[str, Any]:
+    try:
+        return store.delete_import(user_id, import_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/v1/jobs")
+def list_jobs(
+    status: str | None = None,
+    job_type: str | None = None,
+    limit: int = Query(default=50, ge=1, le=100),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return {"results": store.list_jobs(user_id, status=status, job_type=job_type, limit=limit)}
+
+
+@app.get("/v1/jobs/{job_id}")
+def get_job(job_id: str, user_id: str = Depends(auth)) -> dict[str, Any]:
+    job = store.get_job(user_id, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.post("/v1/jobs/run", response_model=JobRunResponse)
+def run_jobs(limit: int = Query(default=10, ge=1, le=100), user_id: str = Depends(auth)) -> dict[str, Any]:
+    return store.run_due_jobs(user_id, limit=limit)
+
+
+@app.post("/v1/maintenance/jobs/run", response_model=JobRunResponse)
+def run_maintenance_jobs(limit: int = Query(default=10, ge=1, le=100), user_id: str = Depends(auth)) -> dict[str, Any]:
+    return store.run_due_jobs(user_id, limit=limit)
 
 
 @app.get("/v1/recent")
@@ -221,8 +379,8 @@ def inbox(limit: int = Query(default=30, ge=1, le=100), user_id: str = Depends(a
 
 
 @app.get("/v1/search", response_model=SearchResponse)
-def search(query: str, limit: int = Query(default=10, ge=1, le=50), kind: str | None = None, user_id: str = Depends(auth)) -> dict[str, Any]:
-    return {"query": query, "results": store.search(user_id, query, limit, kind)}
+def search(query: str, limit: int = Query(default=10, ge=1, le=50), kind: str | None = None, layer: str | None = None, user_id: str = Depends(auth)) -> dict[str, Any]:
+    return {"query": query, "results": store.search(user_id, query, limit, kind, layer)}
 
 
 @app.get("/v1/tasks/open")
@@ -270,6 +428,20 @@ def context_pack(query: str = "", limit: int = Query(default=12, ge=1, le=50), u
     return Response(content=store.context_pack(user_id, query=query, limit=limit), media_type="text/markdown")
 
 
+@app.get("/v1/personal-profile", response_model=None)
+def personal_profile(
+    query: str = "",
+    limit: int = Query(default=6, ge=1, le=20),
+    include_pending: bool = Query(default=False),
+    format: str = Query(default="json", pattern="^(json|markdown)$"),
+    user_id: str = Depends(auth),
+) -> dict[str, Any] | Response:
+    profile = store.personal_profile(user_id, query=query, limit=limit, include_pending=include_pending)
+    if format == "markdown":
+        return Response(content=profile["markdown"], media_type="text/markdown")
+    return profile
+
+
 @app.delete("/v1/memories/{memory_id}")
 def forget_memory(memory_id: str, user_id: str = Depends(auth)) -> dict[str, Any]:
     deleted = store.delete_memory(user_id, memory_id)
@@ -292,6 +464,14 @@ def archive_capture(capture_id: str, user_id: str = Depends(auth)) -> dict[str, 
     if not archived:
         raise HTTPException(status_code=404, detail="Capture not found")
     return {"archived": True}
+
+
+@app.delete("/v1/captures/{capture_id}")
+def delete_capture(capture_id: str, user_id: str = Depends(auth)) -> dict[str, Any]:
+    deleted = store.delete_capture(user_id, capture_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Capture not found")
+    return {"deleted": True}
 
 
 @app.get("/v1/graph", response_model=GraphResponse)
@@ -319,6 +499,17 @@ def trust_summary(user_id: str = Depends(auth)) -> dict[str, Any]:
     return store.trust_summary(user_id)
 
 
+@app.post("/v1/integrations/mcp-token", response_model=MCPTokenRegistrationResponse)
+def register_mcp_token(request: MCPTokenRegistrationRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    return store.ensure_mcp_token(
+        user_id,
+        request.token,
+        label=request.label,
+        scopes=request.scopes,
+        token_id="tok_local_mcp",
+    )
+
+
 @app.get("/v1/audit-log", response_model=ListResponse)
 def audit_log(limit: int = Query(default=80, ge=1, le=300), user_id: str = Depends(auth)) -> dict[str, Any]:
     return {"results": store.audit_log(user_id, limit)}
@@ -344,6 +535,24 @@ def create_backup(user_id: str = Depends(auth)) -> dict[str, Any]:
     return store.create_backup(user_id)
 
 
+@app.post("/v1/backups/restore-latest")
+def restore_latest_backup(user_id: str = Depends(auth)) -> dict[str, Any]:
+    try:
+        return store.restore_latest_backup(user_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.delete("/v1/backups")
+def delete_backups(user_id: str = Depends(auth)) -> dict[str, Any]:
+    return store.delete_backups(user_id)
+
+
+@app.delete("/v1/user-data")
+def delete_user_data(include_backups: bool = Query(default=True), user_id: str = Depends(auth)) -> dict[str, Any]:
+    return store.delete_user_data(user_id, include_backups=include_backups)
+
+
 @app.post("/v1/maintenance/repair-storage", response_model=RepairStorageResponse)
 def repair_storage(user_id: str = Depends(auth)) -> dict[str, Any]:
     return store.repair_storage(user_id)
@@ -352,6 +561,11 @@ def repair_storage(user_id: str = Depends(auth)) -> dict[str, Any]:
 @app.post("/v1/maintenance/rebuild-search", response_model=MaintenanceResponse)
 def rebuild_search(user_id: str = Depends(auth)) -> dict[str, Any]:
     return store.rebuild_search_index(user_id)
+
+
+@app.post("/v1/maintenance/rebuild-vectors", response_model=VectorRebuildResponse)
+def rebuild_vectors(user_id: str = Depends(auth)) -> dict[str, Any]:
+    return store.rebuild_vectors(user_id)
 
 
 @app.post("/v1/maintenance/rebuild-index-from-vault", response_model=VaultRebuildResponse)
@@ -381,7 +595,9 @@ def manifest() -> dict[str, Any]:
 
 
 @app.post("/mcp")
-def mcp(request: MCPRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+def mcp(request: MCPRequest, context: dict[str, Any] = Depends(mcp_auth)) -> dict[str, Any]:
+    user_id = context["user_id"]
+    token_scopes = None if context.get("admin") else list(context.get("scopes") or [])
     try:
         if request.method == "initialize":
             result = {
@@ -396,10 +612,10 @@ def mcp(request: MCPRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
             tool_name = params.get("name", "")
             arguments = params.get("arguments", {}) or {}
             try:
-                value = call_tool(store, user_id, tool_name, arguments)
-                store.record_agent_event(user_id, tool_name, arguments, success=True)
+                value = call_tool(store, user_id, tool_name, arguments, token_scopes=token_scopes)
+                store.record_agent_event(user_id, tool_name, arguments, success=True, token=context)
             except Exception as exc:
-                store.record_agent_event(user_id, tool_name, arguments, success=False, error=str(exc))
+                store.record_agent_event(user_id, tool_name, arguments, success=False, error=str(exc), token=context)
                 raise
             result = {
                 "content": [

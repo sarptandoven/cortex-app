@@ -16,6 +16,9 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+MEMORY_LAYERS = {"semantic", "episodic", "style", "decision", "preference", "negative"}
+
+
 def extract_context(raw_text: str, source: str = "unknown") -> dict[str, Any]:
     if os.environ.get("ANTHROPIC_API_KEY"):
         try:
@@ -30,10 +33,10 @@ def _extract_with_claude(raw_text: str, source: str) -> dict[str, Any]:
 
     client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     prompt = """Extract Cortex memory as strict JSON with keys records, tasks, entities, summary.
-records: list of {id, kind, content, confidence, importance, entity_ids, topics, occurred_at}
+records: list of {id, kind, layer, content, confidence, importance, entity_ids, topics, occurred_at}
 tasks: list of {id, kind, content, status, importance, entity_ids, topics}
 entities: list of {id, kind, name, aliases, context}
-Kinds: claim, decision, event, preference, observation. Task kinds: action, question, decision-pending.
+Kinds: claim, decision, event, preference, observation, style, negative. Layers: semantic, episodic, style, decision, preference, negative. Task kinds: action, question, decision-pending.
 Use stable IDs and keep each memory atomic. Return JSON only."""
     response = client.messages.create(
         model=os.environ.get("CORTEX_EXTRACTION_MODEL", "claude-opus-4-5"),
@@ -59,12 +62,18 @@ def _extract_locally(raw_text: str, source: str) -> dict[str, Any]:
         lower = sentence.lower()
         if _looks_like_task(sentence):
             tasks.append(_task(sentence))
+        elif _looks_like_negative(lower):
+            records.append(_record("negative", sentence, importance=4))
         elif _looks_like_decision(lower):
             records.append(_record("decision", sentence, importance=4))
+        elif _looks_like_style(lower):
+            records.append(_record("style", sentence, importance=3))
         elif _looks_like_preference(lower):
             records.append(_record("preference", sentence, importance=3))
+        elif _looks_like_event(lower):
+            records.append(_record("event", sentence, importance=3))
         elif len(sentence.split()) >= 5:
-            records.append(_record("observation", sentence, importance=2))
+            records.append(_record("claim", sentence, importance=2))
 
     if summary and not any(r["kind"] == "summary" for r in records):
         records.insert(0, _record("summary", summary, importance=3))
@@ -96,6 +105,7 @@ def _normalize_extraction(data: dict[str, Any], raw_text: str, source: str) -> d
         content = str(record.get("content", "")).strip()
         record["id"] = record.get("id") or stable_id("mem_", content)
         record["kind"] = record.get("kind") or "observation"
+        record["layer"] = _normalize_layer(record.get("layer"), record["kind"], content)
         record["confidence"] = record.get("confidence") or "confirmed"
         record["importance"] = int(record.get("importance") or 3)
         record["entity_ids"] = list(record.get("entity_ids") or [])
@@ -134,6 +144,52 @@ def _looks_like_preference(lower: str) -> bool:
     return any(signal in lower for signal in signals)
 
 
+def _looks_like_negative(lower: str) -> bool:
+    signals = [
+        "i don't like",
+        "i dislike",
+        "i hate",
+        "avoid ",
+        "rejected",
+        "do not ",
+        "don't ",
+        "never use",
+        "not helpful",
+        "bad fit",
+    ]
+    return any(signal in lower for signal in signals)
+
+
+def _looks_like_style(lower: str) -> bool:
+    signals = [
+        "my writing",
+        "writing style",
+        "tone",
+        "phrasing",
+        "voice",
+        "sentence length",
+        "formatting",
+        "i usually write",
+        "i say",
+    ]
+    return any(signal in lower for signal in signals)
+
+
+def _looks_like_event(lower: str) -> bool:
+    signals = [
+        "yesterday",
+        "today",
+        "last week",
+        "last month",
+        "met with",
+        "talked to",
+        "emailed",
+        "shipped",
+        "launched",
+    ]
+    return any(signal in lower for signal in signals)
+
+
 def _looks_like_task(sentence: str) -> bool:
     lower = sentence.lower()
     return sentence.endswith("?") or any(signal in lower for signal in ["todo", "to do", "need to", "follow up", "we should", "i should", "next step", "open question"])
@@ -143,6 +199,7 @@ def _record(kind: str, content: str, importance: int) -> dict[str, Any]:
     return {
         "id": stable_id("mem_", kind + content),
         "kind": kind,
+        "layer": _normalize_layer(None, kind, content),
         "content": content,
         "confidence": "confirmed",
         "importance": importance,
@@ -150,6 +207,31 @@ def _record(kind: str, content: str, importance: int) -> dict[str, Any]:
         "topics": [],
         "occurred_at": None,
     }
+
+
+def _normalize_layer(value: Any, kind: str, content: str = "") -> str:
+    layer = str(value or "").strip().lower()
+    if layer in MEMORY_LAYERS:
+        return layer
+    kind = str(kind or "").strip().lower()
+    if kind in {"decision"}:
+        return "decision"
+    if kind in {"preference"}:
+        return "preference"
+    if kind in {"event"}:
+        return "episodic"
+    if kind in {"style"}:
+        return "style"
+    if kind in {"negative"}:
+        return "negative"
+    lower = content.lower()
+    if _looks_like_negative(lower):
+        return "negative"
+    if _looks_like_style(lower):
+        return "style"
+    if _looks_like_event(lower):
+        return "episodic"
+    return "semantic"
 
 
 def _task(content: str) -> dict[str, Any]:

@@ -140,7 +140,7 @@ Sparkle is the likely production path for background update download/install. Th
 - Run `./macos/build.sh`.
 - Run `codesign --verify --deep --strict --verbose=2 macos/build/Cortex.app`.
 - Launch the app and verify the bundled backend starts.
-- Run `python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token dev-local-key`.
+- Run `python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"` using the token shown in Cortex Settings.
 - Run `./macos/package_release.sh`.
 - Run `python3 scripts/prepare_distribution_site.py`.
 - Run `python3 scripts/check_distribution_site.py`.

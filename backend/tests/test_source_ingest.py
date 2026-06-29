@@ -1,0 +1,462 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import tempfile
+import unittest
+import zipfile
+from email.message import EmailMessage
+from pathlib import Path
+
+from backend.app.database import init_db
+from backend.app.source_ingest import analyze_sources, import_source_records
+from backend.app.storage import CortexStore
+
+
+class SourceIngestTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_detects_common_service_exports(self) -> None:
+        self._write_chatgpt_export()
+        self._write_claude_export()
+        self._write_slack_export()
+        self._write_discord_export()
+        self._write_google_keep_export()
+        self._write_notion_export()
+        self._write_email_export()
+        self._write_gmail_mbox_zip()
+        self._write_whatsapp_export()
+        self._write_browser_bookmarks_export()
+        self._write_calendar_export()
+        self._write_contacts_export()
+        self._write_twitter_export()
+        self._write_linkedin_export()
+        self._write_cloud_and_work_exports()
+
+        records = import_source_records([str(self.root)], max_records=50)
+        sources = {record.source for record in records}
+
+        self.assertIn("chatgpt", sources)
+        self.assertIn("claude", sources)
+        self.assertIn("slack", sources)
+        self.assertIn("discord", sources)
+        self.assertIn("google-keep", sources)
+        self.assertIn("notion", sources)
+        self.assertIn("email", sources)
+        self.assertIn("whatsapp", sources)
+        self.assertIn("browser-bookmarks", sources)
+        self.assertIn("calendar", sources)
+        self.assertIn("contacts", sources)
+        self.assertIn("twitter-x", sources)
+        self.assertIn("linkedin", sources)
+        self.assertIn("cloud-docs", sources)
+        self.assertIn("apple-notes", sources)
+        self.assertIn("jira", sources)
+        self.assertTrue(any("Project Atlas" in record.content for record in records))
+        self.assertTrue(any("concise technical answers" in record.content for record in records))
+        self.assertTrue(any("Project Kestrel launch" in record.content for record in records))
+        self.assertTrue(any("Ada Lovelace" in record.content for record in records))
+        self.assertTrue(any("browser research" in record.content for record in records))
+
+        analysis = analyze_sources([str(self.root)])
+        self.assertGreaterEqual(analysis["records_found"], 16)
+        self.assertTrue(analysis["supported_sources"])
+
+    def test_store_import_sources_queues_and_processes_records(self) -> None:
+        self._write_chatgpt_export()
+        db_path = self.root / "index.sqlite"
+        init_db(db_path)
+        store = CortexStore(db_path, self.root / "vault")
+
+        result = store.import_sources(
+            user_id="test-user",
+            paths=[str(self.root / "chatgpt")],
+            processing="async",
+            max_records=20,
+        )
+
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["queued"], 1)
+        self.assertEqual(result["sources"], [{"source": "chatgpt", "count": 1}])
+        self.assertTrue(result["import_id"].startswith("imp_"))
+
+        imports = store.list_imports("test-user")
+        self.assertEqual(len(imports), 1)
+        self.assertEqual(imports[0]["import_id"], result["import_id"])
+        self.assertEqual(imports[0]["records_found"], 1)
+        self.assertEqual(imports[0]["queued"], 1)
+        self.assertTrue(imports[0]["can_delete"])
+
+        ran = store.run_due_jobs("test-user", limit=10)
+        self.assertEqual(ran["processed"], 1)
+        results = store.search("test-user", "Project Atlas", limit=5)
+        self.assertTrue(results)
+
+        detail = store.get_import("test-user", result["import_id"])
+        self.assertIsNotNone(detail)
+        self.assertEqual(len(detail["records"]), 1)
+        self.assertEqual(len(detail["captures"]), 1)
+
+        deleted = store.delete_import("test-user", result["import_id"])
+        self.assertTrue(deleted["deleted"])
+        self.assertEqual(deleted["deleted_captures"], 1)
+        self.assertFalse(store.search("test-user", "Project Atlas", limit=5))
+
+        deleted_again = store.delete_import("test-user", result["import_id"])
+        self.assertFalse(deleted_again["deleted"])
+        self.assertEqual(deleted_again["status"], "already_deleted")
+
+    def test_repeated_import_skips_duplicates_without_deleting_original(self) -> None:
+        self._write_chatgpt_export()
+        db_path = self.root / "index.sqlite"
+        init_db(db_path)
+        store = CortexStore(db_path, self.root / "vault")
+
+        first = store.import_sources(
+            user_id="test-user",
+            paths=[str(self.root / "chatgpt")],
+            processing="async",
+            max_records=20,
+        )
+        self.assertEqual(first["queued"], 1)
+        self.assertEqual(first["skipped"], 0)
+        store.run_due_jobs("test-user", limit=10)
+        self.assertTrue(store.search("test-user", "Project Atlas", limit=5))
+
+        second = store.import_sources(
+            user_id="test-user",
+            paths=[str(self.root / "chatgpt")],
+            processing="async",
+            max_records=20,
+        )
+        self.assertNotEqual(first["import_id"], second["import_id"])
+        self.assertEqual(second["queued"], 0)
+        self.assertEqual(second["saved"], 0)
+        self.assertEqual(second["skipped"], 1)
+        self.assertEqual(second["records"][0]["status"], "duplicate")
+
+        detail = store.get_import("test-user", second["import_id"])
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail["skipped"], 1)
+        self.assertEqual(detail["records"][0]["status"], "duplicate")
+        self.assertEqual(detail["captures"], [])
+        self.assertFalse(detail["can_delete"])
+
+        deleted_duplicate_session = store.delete_import("test-user", second["import_id"])
+        self.assertTrue(deleted_duplicate_session["deleted"])
+        self.assertEqual(deleted_duplicate_session["deleted_captures"], 0)
+        self.assertTrue(store.search("test-user", "Project Atlas", limit=5))
+
+    def test_html_with_links_is_not_misclassified_as_bookmarks(self) -> None:
+        folder = self.root / "Notion Export"
+        folder.mkdir()
+        (folder / "Project Notes.html").write_text(
+            "<html><body><h1>Project Notes</h1><p>Notion paragraph with a useful decision.</p><a href=\"https://example.com\">Reference</a></body></html>",
+            encoding="utf-8",
+        )
+
+        records = import_source_records([str(folder)], max_records=10)
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].source, "notion")
+        self.assertIn("Notion paragraph", records[0].content)
+
+    def test_slack_metadata_is_skipped_and_rich_message_text_is_preserved(self) -> None:
+        channel = self.root / "slack" / "general"
+        channel.mkdir(parents=True)
+        (self.root / "slack" / "users.json").write_text(json.dumps([{"id": "U1", "name": "sarpt"}]), encoding="utf-8")
+        messages = [
+            {
+                "type": "message",
+                "user": "U1",
+                "text": "",
+                "ts": "1700000000.0001",
+                "attachments": [{"fallback": "Fallback launch decision", "title": "Launch Plan"}],
+                "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "Block detail for Slack import"}}],
+            }
+        ]
+        (channel / "2026-06-29.json").write_text(json.dumps(messages), encoding="utf-8")
+
+        records = import_source_records([str(self.root / "slack")], max_records=10)
+        sources = [record.source for record in records]
+
+        self.assertEqual(sources, ["slack"])
+        self.assertIn("Fallback launch decision", records[0].content)
+        self.assertIn("Block detail", records[0].content)
+
+    def test_multipart_email_prefers_plain_body_once_and_skips_attachments(self) -> None:
+        folder = self.root / "mail"
+        folder.mkdir()
+        message = EmailMessage()
+        message["Subject"] = "Multipart plan"
+        message["From"] = "alex@example.com"
+        message["To"] = "sarpt@example.com"
+        message.set_content("Plain body should appear once.")
+        message.add_alternative("<html><body><p>Plain body should appear once.</p></body></html>", subtype="html")
+        message.add_attachment("Attachment phrase should not import.", filename="notes.txt")
+        (folder / "multipart.eml").write_bytes(message.as_bytes())
+
+        records = import_source_records([str(folder)], max_records=10)
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].content.count("Plain body should appear once."), 1)
+        self.assertNotIn("Attachment phrase", records[0].content)
+
+    def test_calendar_and_contacts_preserve_escaped_newlines(self) -> None:
+        calendar = self.root / "calendar"
+        calendar.mkdir()
+        (calendar / "calendar.ics").write_text(
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nSUMMARY:Line Test\nDTSTART:20260629T170000Z\nDESCRIPTION:Line one\\nLine two\nEND:VEVENT\nEND:VCALENDAR\n",
+            encoding="utf-8",
+        )
+        contacts = self.root / "contacts"
+        contacts.mkdir()
+        (contacts / "contacts.vcf").write_text(
+            "BEGIN:VCARD\nVERSION:3.0\nFN:Ada Lovelace\nNOTE:First note\\nSecond note\nEND:VCARD\n",
+            encoding="utf-8",
+        )
+
+        records = import_source_records([str(calendar), str(contacts)], max_records=10)
+        combined = "\n".join(record.content for record in records)
+
+        self.assertIn("Line one\nLine two", combined)
+        self.assertIn("First note\nSecond note", combined)
+
+    def test_browser_json_bookmarks_and_history_sqlite_are_imported(self) -> None:
+        browser = self.root / "browser"
+        browser.mkdir()
+        bookmarks = {
+            "roots": {
+                "bookmark_bar": {
+                    "type": "folder",
+                    "name": "Bookmarks Bar",
+                    "children": [
+                        {"type": "url", "name": "Cortex research", "url": "https://example.com/cortex"}
+                    ],
+                }
+            }
+        }
+        (browser / "Bookmarks").write_text(json.dumps(bookmarks), encoding="utf-8")
+        history = browser / "History"
+        conn = sqlite3.connect(history)
+        try:
+            conn.execute("CREATE TABLE urls (url TEXT, title TEXT, visit_count INTEGER, last_visit_time INTEGER)")
+            conn.execute(
+                "INSERT INTO urls (url, title, visit_count, last_visit_time) VALUES (?, ?, ?, ?)",
+                ("https://example.com/history", "History result", 3, 100),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        records = import_source_records([str(browser)], max_records=10)
+        by_source = {record.source: record for record in records}
+
+        self.assertIn("browser-bookmarks", by_source)
+        self.assertIn("browser-history", by_source)
+        self.assertIn("Cortex research", by_source["browser-bookmarks"].content)
+        self.assertIn("History result", by_source["browser-history"].content)
+
+    def test_contacts_csv_is_formatted_as_contacts(self) -> None:
+        contacts = self.root / "contacts"
+        contacts.mkdir()
+        (contacts / "Google Contacts.csv").write_text(
+            "Name,E-mail 1 - Value,Phone 1 - Value,Organization 1 - Name,Notes\nAda Lovelace,ada@example.com,+15551234567,Cortex Labs,Research collaborator\n",
+            encoding="utf-8",
+        )
+
+        records = import_source_records([str(contacts)], max_records=10)
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].source, "contacts")
+        self.assertIn("Ada Lovelace", records[0].content)
+        self.assertIn("ada@example.com", records[0].content)
+        self.assertIn("Research collaborator", records[0].content)
+
+    def test_store_import_sources_sync_materializes_email(self) -> None:
+        self._write_email_export()
+        db_path = self.root / "index.sqlite"
+        init_db(db_path)
+        store = CortexStore(db_path, self.root / "vault")
+
+        result = store.import_sources(
+            user_id="test-user",
+            paths=[str(self.root / "mail")],
+            processing="sync",
+            max_records=20,
+        )
+
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["saved"], 1)
+        self.assertTrue(store.search("test-user", "migration plan", limit=5))
+
+    def _write_chatgpt_export(self) -> None:
+        folder = self.root / "chatgpt"
+        folder.mkdir()
+        payload = [
+            {
+                "title": "Project Atlas planning",
+                "create_time": 1_700_000_000,
+                "mapping": {
+                    "a": {
+                        "message": {
+                            "author": {"role": "user"},
+                            "create_time": 1_700_000_001,
+                            "content": {"parts": ["We decided Project Atlas should use local-first memory."]},
+                        }
+                    },
+                    "b": {
+                        "message": {
+                            "author": {"role": "assistant"},
+                            "create_time": 1_700_000_002,
+                            "content": {"parts": ["Confirmed. Keep citations with every memory."]},
+                        }
+                    },
+                },
+            }
+        ]
+        (folder / "conversations.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def _write_claude_export(self) -> None:
+        folder = self.root / "claude"
+        folder.mkdir()
+        payload = [
+            {
+                "name": "Writing style",
+                "created_at": "2026-06-29T00:00:00Z",
+                "chat_messages": [
+                    {"sender": "human", "text": "I prefer concise technical answers with clear tradeoffs."},
+                    {"sender": "assistant", "text": "I will keep the style concise and concrete."},
+                ],
+            }
+        ]
+        (folder / "conversations.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def _write_slack_export(self) -> None:
+        channel = self.root / "slack" / "general"
+        channel.mkdir(parents=True)
+        (self.root / "slack" / "users.json").write_text(json.dumps([{"id": "U1", "name": "sarpt"}]), encoding="utf-8")
+        messages = [{"type": "message", "user": "U1", "text": "Ship the Cortex importer this week.", "ts": "1700000000.0001"}]
+        (channel / "2026-06-29.json").write_text(json.dumps(messages), encoding="utf-8")
+
+    def _write_discord_export(self) -> None:
+        channel = self.root / "discord" / "messages" / "c123"
+        channel.mkdir(parents=True)
+        (channel / "messages.csv").write_text("ID,Timestamp,Contents,Attachments\n1,2026-06-29,Discord decision memory,\n", encoding="utf-8")
+
+    def _write_google_keep_export(self) -> None:
+        folder = self.root / "takeout" / "Keep"
+        folder.mkdir(parents=True)
+        note = {"title": "Preference", "textContent": "Never use vague summaries when a cited answer is possible."}
+        (folder / "preference.json").write_text(json.dumps(note), encoding="utf-8")
+
+    def _write_notion_export(self) -> None:
+        folder = self.root / "Notion Export"
+        folder.mkdir()
+        (folder / "Roadmap.md").write_text("# Roadmap\n\nCortex importer supports Notion markdown exports.", encoding="utf-8")
+
+    def _write_email_export(self) -> None:
+        folder = self.root / "mail"
+        folder.mkdir()
+        message = EmailMessage()
+        message["Subject"] = "Cortex migration plan"
+        message["From"] = "alex@example.com"
+        message["To"] = "sarpt@example.com"
+        message["Date"] = "Mon, 29 Jun 2026 10:00:00 +0000"
+        message.set_content("The migration plan is to import email as approved memory candidates.")
+        (folder / "migration.eml").write_bytes(message.as_bytes())
+
+    def _write_gmail_mbox_zip(self) -> None:
+        folder = self.root / "gmail"
+        folder.mkdir()
+        mbox_text = """From alex@example.com Mon Jun 29 10:00:00 2026
+Subject: Gmail import decision
+From: alex@example.com
+To: sarpt@example.com
+Date: Mon, 29 Jun 2026 10:00:00 +0000
+
+Gmail import should preserve important project mail.
+"""
+        with zipfile.ZipFile(folder / "takeout.zip", "w") as archive:
+            archive.writestr("Takeout/Mail/All mail Including Spam and Trash.mbox", mbox_text)
+
+    def _write_whatsapp_export(self) -> None:
+        folder = self.root / "whatsapp"
+        folder.mkdir()
+        text = "[6/29/26, 10:00] Alex: WhatsApp exports should become episodic memory.\n"
+        (folder / "WhatsApp Chat with Alex.txt").write_text(text, encoding="utf-8")
+
+    def _write_browser_bookmarks_export(self) -> None:
+        folder = self.root / "browser"
+        folder.mkdir()
+        html = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
+<TITLE>Bookmarks</TITLE>
+<H1>Bookmarks</H1>
+<DL><p><DT><A HREF="https://example.com/research">browser research for Cortex retrieval</A></DT></DL>
+"""
+        (folder / "Bookmarks.html").write_text(html, encoding="utf-8")
+
+    def _write_calendar_export(self) -> None:
+        folder = self.root / "calendar"
+        folder.mkdir()
+        ics = """BEGIN:VCALENDAR
+BEGIN:VEVENT
+SUMMARY:Project Kestrel launch
+DTSTART:20260629T170000Z
+DTEND:20260629T180000Z
+LOCATION:Remote
+DESCRIPTION:Review source ingestion readiness.
+END:VEVENT
+END:VCALENDAR
+"""
+        (folder / "calendar.ics").write_text(ics, encoding="utf-8")
+
+    def _write_contacts_export(self) -> None:
+        folder = self.root / "contacts"
+        folder.mkdir()
+        vcf = """BEGIN:VCARD
+VERSION:3.0
+FN:Ada Lovelace
+ORG:Cortex Labs
+TITLE:Research Lead
+EMAIL:ada@example.com
+NOTE:Important collaborator for adaptation memory.
+END:VCARD
+"""
+        (folder / "contacts.vcf").write_text(vcf, encoding="utf-8")
+
+    def _write_twitter_export(self) -> None:
+        folder = self.root / "twitter" / "data"
+        folder.mkdir(parents=True)
+        tweets = [{"tweet": {"created_at": "Mon Jun 29 10:00:00 +0000 2026", "full_text": "Cortex should remember public writing style.", "favorite_count": "2"}}]
+        dms = [{"dmConversation": {"conversationId": "1-2", "messages": [{"messageCreate": {"senderId": "1", "createdAt": "2026-06-29T10:00:00.000Z", "text": "Twitter DM context can matter."}}]}}]
+        (folder / "tweets.js").write_text("window.YTD.tweets.part0 = " + json.dumps(tweets), encoding="utf-8")
+        (folder / "direct-messages.js").write_text("window.YTD.direct_messages.part0 = " + json.dumps(dms), encoding="utf-8")
+
+    def _write_linkedin_export(self) -> None:
+        folder = self.root / "linkedin"
+        folder.mkdir()
+        messages = "CONVERSATION ID,CONVERSATION TITLE,FROM,DATE,CONTENT\n1,Cortex Advisors,Ada Lovelace,2026-06-29,LinkedIn message about source coverage.\n"
+        connections = "First Name,Last Name,Company,Position,Connected On,Email Address\nGrace,Hopper,Compiler Co,Advisor,2026-06-01,grace@example.com\n"
+        (folder / "Messages.csv").write_text(messages, encoding="utf-8")
+        (folder / "Connections.csv").write_text(connections, encoding="utf-8")
+
+    def _write_cloud_and_work_exports(self) -> None:
+        drive = self.root / "Google Drive" / "Docs"
+        drive.mkdir(parents=True)
+        (drive / "Strategy.md").write_text("# Strategy\n\nCloud docs should become model context.", encoding="utf-8")
+        notes = self.root / "Apple Notes"
+        notes.mkdir()
+        (notes / "Voice.html").write_text("<html><body><h1>Voice</h1><p>Prefer concrete language.</p></body></html>", encoding="utf-8")
+        jira = self.root / "Jira"
+        jira.mkdir()
+        (jira / "issues.csv").write_text("Key,Summary,Status\nCX-1,Importer should support work tools,Done\n", encoding="utf-8")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -52,6 +52,20 @@ python3 scripts/prepare_distribution_site.py \
 
 This copies the DMG, ZIP, checksums, and update feed into `site/downloads/`.
 
+For a public direct download release, use the fail-closed packaging path:
+
+```bash
+CORTEX_BUNDLE_PYTHON=1 \
+CORTEX_CODESIGN_IDENTITY="Developer ID Application: Example, Inc. (TEAMID)" \
+CORTEX_NOTARY_PROFILE=cortex-notary \
+./macos/package_release.sh \
+  --production \
+  --channel stable \
+  --base-url https://your-domain.example/downloads
+```
+
+`--production` refuses to package unless artifacts use HTTPS URLs, the app has a Developer ID signing identity, notarization is configured, and a Python runtime is bundled. Local beta artifacts are useful for QA, but they are not a Gatekeeper-ready public release.
+
 `scripts/check_distribution_site.py` verifies:
 
 - local HTML links and anchors

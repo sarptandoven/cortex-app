@@ -55,8 +55,8 @@ def ast_syntax_check(root: Path) -> dict:
     return {"ok": not errors, "errors": errors, "files_checked": len([*root.glob("backend/app/*.py"), *root.glob("backend/tests/*.py"), *root.glob("scripts/*.py")])}
 
 
-def latest_release_dir(root: Path) -> Path | None:
-    outputs = workspace_root(root) / "outputs"
+def latest_release_dir(output_root: Path) -> Path | None:
+    outputs = output_root.expanduser().resolve()
     candidates = [path for path in outputs.glob("Cortex-*") if path.is_dir() and (path / "latest.json").exists()]
     if not candidates:
         return None
@@ -93,10 +93,12 @@ def main() -> None:
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--refresh-site", action="store_true", help="Run prepare_distribution_site.py before validating the static site.")
     parser.add_argument("--include-package", action="store_true", help="Run macos/package_release.sh. This may require macOS disk-image permissions.")
+    parser.add_argument("--output-root", default=None, help="Directory containing packaged Cortex-* releases. Defaults to the workspace outputs directory.")
     parser.add_argument("--require-live", action="store_true", help="Fail if the running local backend cannot pass live checks.")
     args = parser.parse_args()
 
     root = repo_root()
+    output_root = Path(args.output_root).expanduser() if args.output_root else workspace_root(root) / "outputs"
     checks: list[dict] = []
 
     syntax = ast_syntax_check(root)
@@ -114,7 +116,7 @@ def main() -> None:
         add_check(checks, "macos_build", build_result["ok"], "macOS app builds and signs locally.", build_result)
 
     if args.include_package:
-        package_result = run_command(root, ["./macos/package_release.sh"], timeout=240)
+        package_result = run_command(root, ["./macos/package_release.sh", "--output", str(output_root)], timeout=240)
         add_check(checks, "macos_package", package_result["ok"], "macOS DMG/ZIP package is generated.", package_result)
 
     if args.refresh_site:
@@ -127,12 +129,12 @@ def main() -> None:
     site_manifest_result = run_command(root, [sys.executable, "scripts/validate_update_manifest.py", "site/downloads/latest.json"], timeout=60)
     add_check(checks, "site_update_manifest", site_manifest_result["ok"], "Site update feed validates.", site_manifest_result)
 
-    release_dir = latest_release_dir(root)
+    release_dir = latest_release_dir(output_root)
     if release_dir:
         release_manifest_result = run_command(root, [sys.executable, "scripts/validate_update_manifest.py", str(release_dir / "latest.json")], timeout=60)
         add_check(checks, "release_update_manifest", release_manifest_result["ok"], "Latest packaged release update feed validates.", release_manifest_result)
     else:
-        add_check(checks, "release_update_manifest", False, "No packaged Cortex release found under outputs/.")
+        add_check(checks, "release_update_manifest", False, f"No packaged Cortex release found under {output_root}.")
 
     try:
         bundle = offline_support_bundle(root)

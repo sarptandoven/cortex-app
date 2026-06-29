@@ -25,6 +25,9 @@ Backend endpoints:
 - `GET /v1/reliability/report`: user-readable health checks and recovery actions
 - `GET /v1/support/bundle`: sanitized support payload for support triage
 - `POST /v1/backups`: backup-first recovery action
+- `POST /v1/backups/restore-latest`: restore readable vault records from the latest backup archive and rebuild the local index
+- `DELETE /v1/backups`: remove local backup archives after hard deletion or retention changes
+- `DELETE /v1/user-data`: remove the current user's local vault/index data; includes backups by default
 - `POST /v1/maintenance/repair-storage`: backup, clean derived rows, rebuild search
 - `POST /v1/maintenance/rebuild-search`: rebuild full-text and vector index rows
 - `POST /v1/maintenance/rebuild-index-from-vault`: restore SQLite index from vault files
@@ -66,7 +69,7 @@ python3 scripts/ops_readiness_check.py --refresh-site --include-package
 For a live installed app:
 
 ```bash
-python3 scripts/ops_readiness_check.py --require-live --base-url http://127.0.0.1:8766 --token dev-local-key
+python3 scripts/ops_readiness_check.py --require-live --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
 ```
 
 The gate checks:

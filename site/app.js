@@ -27,25 +27,35 @@
     return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.round(value / 1024)} KB`;
   }
 
+  function artifactUrl(artifact) {
+    return artifact.url || `downloads/${artifact.filename}`;
+  }
+
   function applyRelease(release) {
     const dmg = (release.artifacts || []).find((item) => item.kind === "dmg") || fallbackRelease.artifacts[0];
     const zip = (release.artifacts || []).find((item) => item.kind === "zip") || fallbackRelease.artifacts[1];
     document.querySelectorAll(".download-link").forEach((link) => {
-      link.href = dmg.url || `downloads/${dmg.filename}`;
+      link.href = artifactUrl(dmg);
       link.setAttribute("download", dmg.filename);
     });
     document.querySelectorAll(".zip-link").forEach((link) => {
-      link.href = zip.url || `downloads/${zip.filename}`;
+      link.href = artifactUrl(zip);
       link.setAttribute("download", zip.filename);
     });
     const version = document.getElementById("releaseVersion");
     const channel = document.getElementById("releaseChannel");
     const size = document.getElementById("releaseSize");
+    const primaryArtifact = document.getElementById("primaryArtifactLabel");
+    const zipArtifact = document.getElementById("zipArtifactMeta");
     const checksum = document.getElementById("checksumText");
+    const zipChecksum = document.getElementById("zipChecksumText");
     if (version) version.textContent = `Cortex ${release.version || fallbackRelease.version} (${release.build || fallbackRelease.build})`;
     if (channel) channel.textContent = release.channel || fallbackRelease.channel;
     if (size) size.textContent = `DMG ${bytes(Number(dmg.size_bytes))}`;
-    if (checksum && dmg.sha256) checksum.textContent = `DMG SHA-256: ${dmg.sha256.slice(0, 16)}...`;
+    if (primaryArtifact) primaryArtifact.textContent = `${dmg.filename} for macOS ${release.minimum_macos || "13.0"} or later.`;
+    if (zipArtifact) zipArtifact.textContent = `Manual app archive, ${bytes(Number(zip.size_bytes))}.`;
+    if (checksum && dmg.sha256) checksum.textContent = `DMG SHA-256: ${dmg.sha256}`;
+    if (zipChecksum && zip.sha256) zipChecksum.textContent = `ZIP SHA-256: ${zip.sha256}`;
   }
 
   fetch("downloads/latest.json", { cache: "no-store" })

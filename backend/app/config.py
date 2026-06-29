@@ -14,6 +14,8 @@ class Settings:
     app_name: str = "Cortex"
     default_user_id: str = "local"
     anthropic_api_key: str = ""
+    mcp_api_key: str = ""
+    mcp_api_key_scopes: str = ""
 
 
 def load_settings() -> Settings:
@@ -33,4 +35,6 @@ def load_settings() -> Settings:
         api_key=os.environ.get("CORTEX_API_KEY", "dev-local-key"),
         public_base_url=os.environ.get("CORTEX_PUBLIC_BASE_URL", "http://127.0.0.1:8766"),
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+        mcp_api_key=os.environ.get("CORTEX_MCP_API_KEY", ""),
+        mcp_api_key_scopes=os.environ.get("CORTEX_MCP_API_KEY_SCOPES", ""),
     )

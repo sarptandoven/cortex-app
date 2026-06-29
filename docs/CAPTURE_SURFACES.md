@@ -6,8 +6,8 @@ Capture is the front door of Cortex. The product rule is simple: if a user can s
 
 ### Global Clipboard
 
-- `Cmd+Shift+V` saves the current clipboard from any macOS app.
-- The menu/header Save Clipboard button uses the same path.
+- The menu/header Save Clipboard button saves the current clipboard.
+- Users can opt into the global `Cmd+Shift+V` clipboard hotkey from Settings.
 - Empty clipboards are rejected before hitting the backend.
 
 ### Quick Note
@@ -24,9 +24,9 @@ Capture is the front door of Cortex. The product rule is simple: if a user can s
 ### Browser Bookmarklet
 
 - The app can copy a JavaScript bookmarklet.
-- The bookmarklet posts selected text, or page text when nothing is selected, into `http://127.0.0.1:8766/capture`.
-- It uses an HTML form POST instead of `fetch`, which avoids CORS and mixed-content issues in most browsers.
-- The local endpoint requires the Cortex token.
+- The bookmarklet opens the local capture page with page title and URL prefilled.
+- It does not include the Cortex API token in browser URLs, page DOM, or bookmarklet code.
+- The user submits content through the local capture form or the native app.
 
 ### Files
 
@@ -48,6 +48,9 @@ Capture is the front door of Cortex. The product rule is simple: if a user can s
 ## Backend Endpoints
 
 - `POST /v1/captures`: authenticated JSON capture API used by the app and MCP tools.
+- `POST /v1/captures/queue`: authenticated async capture API that stores raw capture immediately and queues extraction for a worker.
+- `GET /v1/captures/{capture_id}/status`: capture processing status, derived counts, and related jobs.
+- `POST /v1/maintenance/jobs/run`: local/admin worker drain endpoint for queued extraction jobs.
 - `GET /capture`: local browser capture form and query-string capture target.
 - `POST /capture`: form-post target for bookmarklets and manual browser capture.
 
@@ -56,7 +59,7 @@ Capture is the front door of Cortex. The product rule is simple: if a user can s
 - Capture is user-initiated.
 - There is no ambient screen recording.
 - Files are read locally.
-- Browser capture posts only selected/page text to localhost.
+- Browser capture opens a local form; automatic token-bearing browser capture is intentionally avoided until scoped one-time capture grants exist.
 - The local capture endpoint requires the Cortex API token when auth is enabled.
 
 ## Reliability Rules

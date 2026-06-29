@@ -16,6 +16,96 @@ struct CaptureResponse: Codable {
     let entities: [EntityItem]
 }
 
+struct SourceImportResponse: Codable {
+    let import_id: String
+    let status: String
+    let records_found: Int
+    let queued: Int
+    let saved: Int
+    let failed: Int
+    let skipped: Int?
+    let sources: [SourceImportCount]
+    let records: [SourceImportRecordSummary]
+    let errors: [SourceImportError]
+}
+
+struct SourceAnalyzeResponse: Codable {
+    let records_found: Int
+    let sources: [SourceImportCount]
+    let sample: [SourceAnalyzeSample]
+    let supported_sources: [SupportedSource]
+}
+
+struct SourceImportCount: Codable, Hashable {
+    let source: String
+    let count: Int
+}
+
+struct SourceAnalyzeSample: Codable, Hashable {
+    let source: String
+    let title: String
+    let chars: Int
+}
+
+struct SupportedSource: Codable, Hashable {
+    let id: String
+    let name: String
+    let formats: [String]
+    let status: String
+}
+
+struct SourceImportRecordSummary: Codable, Hashable {
+    let capture_id: String?
+    let status: String
+    let source: String
+    let title: String
+}
+
+struct SourceImportError: Codable, Hashable {
+    let source: String
+    let title: String
+    let error: String
+}
+
+struct SourceImportHistoryResponse: Codable {
+    let results: [SourceImportHistoryItem]
+}
+
+struct SourceImportHistoryItem: Codable, Identifiable, Hashable {
+    var id: String { import_id }
+    let import_id: String
+    let status: String
+    let source_hint: String
+    let processing: String
+    let sources: [SourceImportCount]
+    let records_found: Int
+    let queued: Int
+    let saved: Int
+    let failed: Int
+    let skipped: Int?
+    let created_at: String
+    let completed_at: String?
+    let deleted_at: String?
+    let remaining_captures: Int
+    let remaining_memories: Int
+    let remaining_tasks: Int
+    let can_delete: Bool
+}
+
+struct SourceImportDeleteResponse: Codable {
+    let import_id: String
+    let deleted: Bool
+    let status: String
+    let deleted_captures: Int
+    let deleted_memories: Int
+    let deleted_tasks: Int
+    let deleted_edges: Int
+}
+
+struct JobRunResponse: Codable {
+    let processed: Int
+}
+
 struct SearchResponse: Codable {
     let query: String
     let results: [MemoryItem]
@@ -41,6 +131,7 @@ struct GraphResponse: Codable {
 struct MemoryItem: Codable, Identifiable, Hashable {
     let id: String
     let kind: String
+    let layer: String?
     let content: String
     let source: String
     let source_url: String?
@@ -89,12 +180,18 @@ struct StatsResponse: Codable {
     let entities: Int
     let edges: Int
     let by_kind: [StatBucket]
+    let by_layer: [LayerBucket]?
     let top_topics: [TopicBucket]
     let top_entities: [EntityBucket]
 }
 
 struct StatBucket: Codable, Hashable {
     let kind: String
+    let count: Int
+}
+
+struct LayerBucket: Codable, Hashable {
+    let layer: String
     let count: Int
 }
 
@@ -174,13 +271,15 @@ struct ProductLoopStep: Codable, Identifiable, Hashable {
     let detail: String
 }
 
-struct AppSettingsResponse: Codable {
+struct AppSettingsResponse: Codable, Equatable {
     var review_new_captures: Bool
     var allow_pending_in_context: Bool
     var context_pack_limit: Int
     var allow_agent_reads: Bool
     var allow_agent_writes: Bool
     var allow_agent_exports: Bool
+    var allow_agent_maintenance: Bool
+    var allow_agent_destructive_actions: Bool
     var redact_sensitive_context: Bool
 
     static let defaults = AppSettingsResponse(
@@ -188,10 +287,112 @@ struct AppSettingsResponse: Codable {
         allow_pending_in_context: true,
         context_pack_limit: 12,
         allow_agent_reads: true,
-        allow_agent_writes: true,
-        allow_agent_exports: true,
+        allow_agent_writes: false,
+        allow_agent_exports: false,
+        allow_agent_maintenance: false,
+        allow_agent_destructive_actions: false,
         redact_sensitive_context: true
     )
+}
+
+enum TrustPreset: String, CaseIterable, Identifiable, Hashable {
+    case privateMode
+    case readOnly
+    case canSave
+    case advanced
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .privateMode: return "Private"
+        case .readOnly: return "Read Only"
+        case .canSave: return "Can Save"
+        case .advanced: return "Advanced"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .privateMode:
+            return "Connected AI tools cannot read, write, export, maintain, or delete memory."
+        case .readOnly:
+            return "Connected AI tools can read approved memory and prepare redacted handoffs, but cannot save or delete memory."
+        case .canSave:
+            return "Connected AI tools can read memory, save useful context, and prepare redacted handoffs. Deletion and maintenance stay off."
+        case .advanced:
+            return "Tune individual permissions when a connected AI workflow needs a narrower policy."
+        }
+    }
+
+    static func matching(_ settings: AppSettingsResponse) -> TrustPreset {
+        if !settings.allow_pending_in_context
+            && !settings.allow_agent_reads
+            && !settings.allow_agent_writes
+            && !settings.allow_agent_exports
+            && !settings.allow_agent_maintenance
+            && !settings.allow_agent_destructive_actions
+            && settings.redact_sensitive_context {
+            return .privateMode
+        }
+        if settings.allow_pending_in_context
+            && settings.allow_agent_reads
+            && !settings.allow_agent_writes
+            && settings.allow_agent_exports
+            && !settings.allow_agent_maintenance
+            && !settings.allow_agent_destructive_actions
+            && settings.redact_sensitive_context {
+            return .readOnly
+        }
+        if settings.allow_pending_in_context
+            && settings.allow_agent_reads
+            && settings.allow_agent_writes
+            && settings.allow_agent_exports
+            && !settings.allow_agent_maintenance
+            && !settings.allow_agent_destructive_actions
+            && settings.redact_sensitive_context {
+            return .canSave
+        }
+        return .advanced
+    }
+
+    func apply(to settings: inout AppSettingsResponse) {
+        switch self {
+        case .privateMode:
+            settings.allow_pending_in_context = false
+            settings.allow_agent_reads = false
+            settings.allow_agent_writes = false
+            settings.allow_agent_exports = false
+            settings.allow_agent_maintenance = false
+            settings.allow_agent_destructive_actions = false
+            settings.redact_sensitive_context = true
+        case .readOnly:
+            settings.allow_pending_in_context = true
+            settings.allow_agent_reads = true
+            settings.allow_agent_writes = false
+            settings.allow_agent_exports = true
+            settings.allow_agent_maintenance = false
+            settings.allow_agent_destructive_actions = false
+            settings.redact_sensitive_context = true
+        case .canSave:
+            settings.allow_pending_in_context = true
+            settings.allow_agent_reads = true
+            settings.allow_agent_writes = true
+            settings.allow_agent_exports = true
+            settings.allow_agent_maintenance = false
+            settings.allow_agent_destructive_actions = false
+            settings.redact_sensitive_context = true
+        case .advanced:
+            return
+        }
+    }
+}
+
+enum AppTab: Hashable {
+    case today
+    case save
+    case search
+    case settings
 }
 
 struct TrustSummaryResponse: Codable {
@@ -323,6 +524,7 @@ struct RepairAction: Codable, Identifiable, Hashable {
 
 extension Notification.Name {
     static let cortexOnboardingCompleted = Notification.Name("CortexOnboardingCompleted")
+    static let cortexHotkeyPreferenceChanged = Notification.Name("CortexHotkeyPreferenceChanged")
 }
 
 enum IntegrationCategory: String, CaseIterable, Hashable {
@@ -399,7 +601,7 @@ enum AIIntegrationCatalog {
             configTargets: [
                 IntegrationConfigTarget(label: "Claude Desktop", root: .applicationSupport, relativePath: "Claude/claude_desktop_config.json")
             ],
-            setupHint: "Use Claude Desktop for direct MCP access to Cortex search, daily review, context packs, and memory capture.",
+            setupHint: "Use Claude Desktop for direct MCP access to Cortex search, review, approved memory, and source capture.",
             browserURL: "https://claude.ai"
         ),
         AIIntegration(
@@ -407,7 +609,7 @@ enum AIIntegrationCatalog {
             name: "Cursor",
             category: .oneClick,
             systemImage: "cursorarrow.rays",
-            summary: "Gives Cursor agent sessions access to Cortex project memory and context packs.",
+            summary: "Gives Cursor agent sessions access to Cortex project memory and adaptation signals.",
             restartHint: "Restart Cursor, then enable the cortex MCP server in Cursor settings if prompted.",
             bundleIdentifiers: ["com.todesktop.230313mzl4w4u92", "com.cursor.Cursor"],
             configTargets: [
@@ -487,11 +689,11 @@ enum AIIntegrationCatalog {
             name: "ChatGPT",
             category: .browser,
             systemImage: "message.badge",
-            summary: "Copy a paste-ready Cortex context pack and usage instruction for ChatGPT.",
+            summary: "Prepare approved Cortex memory for ChatGPT when direct tools are unavailable.",
             restartHint: "Paste into a new or existing ChatGPT conversation.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Paste the Cortex context pack into ChatGPT when you want the assistant to reuse your local memory.",
+            setupHint: "Paste approved Cortex memory into ChatGPT when you want continuity from your local model.",
             browserURL: "https://chatgpt.com"
         ),
         AIIntegration(
@@ -500,10 +702,10 @@ enum AIIntegrationCatalog {
             category: .browser,
             systemImage: "sparkle.magnifyingglass",
             summary: "Copy Cortex memory into Claude web chats without configuring local files.",
-            restartHint: "Paste the context pack into Claude.",
+            restartHint: "Paste approved Cortex memory into Claude.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Paste the context pack when Claude needs project, person, or decision memory.",
+            setupHint: "Paste approved Cortex memory when Claude needs project, person, or decision memory.",
             browserURL: "https://claude.ai"
         ),
         AIIntegration(
@@ -523,7 +725,7 @@ enum AIIntegrationCatalog {
             name: "Perplexity",
             category: .browser,
             systemImage: "magnifyingglass.circle",
-            summary: "Copy a concise memory brief for Perplexity research threads.",
+            summary: "Prepare relevant Cortex memory for Perplexity research threads.",
             restartHint: "Paste into Perplexity.",
             bundleIdentifiers: [],
             configTargets: [],
@@ -547,7 +749,7 @@ enum AIIntegrationCatalog {
             name: "Grok",
             category: .browser,
             systemImage: "xmark.circle",
-            summary: "Copy a Cortex context pack for Grok conversations.",
+            summary: "Prepare approved Cortex memory for Grok conversations.",
             restartHint: "Paste into Grok.",
             bundleIdentifiers: [],
             configTargets: [],
@@ -563,7 +765,7 @@ enum AIIntegrationCatalog {
             restartHint: "Paste into the target Poe bot.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Paste the context pack into Poe bots that need personal/project memory.",
+            setupHint: "Paste approved Cortex memory into Poe bots that need personal/project memory.",
             browserURL: "https://poe.com"
         ),
         AIIntegration(
@@ -575,7 +777,7 @@ enum AIIntegrationCatalog {
             restartHint: "Paste the copied Markdown into a NotebookLM source.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Use the Markdown export/context pack as a NotebookLM source for grounded Q&A.",
+            setupHint: "Use approved Cortex memory as a NotebookLM source for grounded Q&A.",
             browserURL: "https://notebooklm.google.com"
         ),
         AIIntegration(
@@ -599,7 +801,7 @@ enum AIIntegrationCatalog {
             restartHint: "Paste into your tool/server configuration.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Configure Open WebUI or its pipelines to call Cortex on localhost, or paste context packs manually.",
+            setupHint: "Configure Open WebUI or its pipelines to call Cortex on localhost, or paste approved memory manually.",
             browserURL: "https://openwebui.com"
         ),
         AIIntegration(
@@ -619,7 +821,7 @@ enum AIIntegrationCatalog {
             name: "AnythingLLM",
             category: .local,
             systemImage: "tray.and.arrow.down",
-            summary: "Copy Cortex exports/context packs into AnythingLLM workspaces.",
+            summary: "Bring approved Cortex memory into AnythingLLM workspaces.",
             restartHint: "Paste or import the Markdown/JSON export into the workspace.",
             bundleIdentifiers: [],
             configTargets: [],
@@ -715,7 +917,7 @@ final class BackendSupervisor {
         return base.appendingPathComponent("Cortex", isDirectory: true)
     }
 
-    func ensureRunning(endpoint: String, apiKey: String, vaultPath: String) async -> String {
+    func ensureRunning(endpoint: String, apiKey: String, mcpAPIKey: String, vaultPath: String) async -> String {
         let normalizedEndpoint = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard normalizedEndpoint.contains("127.0.0.1") || normalizedEndpoint.contains("localhost") else {
             return "Using remote backend"
@@ -729,7 +931,7 @@ final class BackendSupervisor {
                 terminateLocalPortListener(endpoint: normalizedEndpoint)
             }
             terminate()
-            try startBundledBackend(apiKey: apiKey, vaultPath: vaultPath)
+            try startBundledBackend(apiKey: apiKey, mcpAPIKey: mcpAPIKey, vaultPath: vaultPath)
             for _ in 0..<30 {
                 if await healthCheck(endpoint: normalizedEndpoint, apiKey: apiKey, expectedVaultPath: vaultPath) == .healthy {
                     return "Local backend started"
@@ -751,7 +953,7 @@ final class BackendSupervisor {
         logHandle = nil
     }
 
-    private func startBundledBackend(apiKey: String, vaultPath: String) throws {
+    private func startBundledBackend(apiKey: String, mcpAPIKey: String, vaultPath: String) throws {
         if let process, process.isRunning {
             return
         }
@@ -774,6 +976,15 @@ final class BackendSupervisor {
         try handle.truncate(atOffset: 0)
         logHandle = handle
 
+        let normalizedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedMCPAPIKey = mcpAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedAPIKey.isEmpty && normalizedAPIKey != "dev-local-key" else {
+            throw NSError(domain: "Cortex", code: 4, userInfo: [NSLocalizedDescriptionKey: "Cortex API token is missing"])
+        }
+        guard !normalizedMCPAPIKey.isEmpty && normalizedMCPAPIKey != normalizedAPIKey else {
+            throw NSError(domain: "Cortex", code: 5, userInfo: [NSLocalizedDescriptionKey: "Cortex MCP token is missing"])
+        }
+
         writeLog("Starting bundled backend from \(backendURL.path)")
         writeLog("Vault path: \(vaultURL.path)")
         writeLog("Index path: \(dbURL.path)")
@@ -794,9 +1005,12 @@ final class BackendSupervisor {
         var environment = ProcessInfo.processInfo.environment
         environment["PYTHONPATH"] = backendURL.path
         environment["PYTHONUNBUFFERED"] = "1"
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
         environment["CORTEX_VAULT_PATH"] = vaultURL.path
         environment["CORTEX_DB_PATH"] = dbURL.path
-        environment["CORTEX_API_KEY"] = apiKey.isEmpty ? "dev-local-key" : apiKey
+        environment["CORTEX_API_KEY"] = normalizedAPIKey
+        environment["CORTEX_MCP_API_KEY"] = normalizedMCPAPIKey
+        environment["CORTEX_MCP_API_KEY_SCOPES"] = "read,write,export,maintenance"
         environment["CORTEX_PUBLIC_BASE_URL"] = "http://127.0.0.1:8766"
         environment["PATH"] = "/Library/Frameworks/Python.framework/Versions/3.12/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         launched.environment = environment
@@ -882,9 +1096,27 @@ final class BackendSupervisor {
             }
             let runningPath = URL(fileURLWithPath: runningVaultPath).standardizedFileURL.path
             let expectedPath = URL(fileURLWithPath: expectedVaultPath).standardizedFileURL.path
-            return runningPath == expectedPath ? .healthy : .incompatible
+            guard runningPath == expectedPath else { return .incompatible }
+            return await authenticatedBackendProbe(endpoint: endpoint, apiKey: apiKey) ? .healthy : .incompatible
         } catch {
             return .unavailable
+        }
+    }
+
+    private func authenticatedBackendProbe(endpoint: String, apiKey: String) async -> Bool {
+        guard let url = URL(string: endpoint + "/v1/settings") else { return false }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 1.5
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return false }
+            return (200...299).contains(http.statusCode)
+        } catch {
+            return false
         }
     }
 
@@ -927,19 +1159,68 @@ final class BackendSupervisor {
 
 @MainActor
 final class AppState: ObservableObject {
+    private static func loadOrCreateAPIKey() -> String {
+        let store = KeychainStore()
+        let existing = store.load(account: "apiKey").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !existing.isEmpty && existing != "dev-local-key" {
+            return existing
+        }
+        let generated = generateAPIKey()
+        store.save(generated, account: "apiKey")
+        return generated
+    }
+
+    private static func loadOrCreateMCPAPIKey() -> String {
+        let store = KeychainStore()
+        let existing = store.load(account: "mcpAPIKey").trimmingCharacters(in: .whitespacesAndNewlines)
+        if existing.hasPrefix("cxm_") {
+            return existing
+        }
+        let generated = generateMCPAPIKey()
+        store.save(generated, account: "mcpAPIKey")
+        return generated
+    }
+
+    private static func generateAPIKey() -> String {
+        generateSecret(prefix: "cx_")
+    }
+
+    private static func generateMCPAPIKey() -> String {
+        generateSecret(prefix: "cxm_")
+    }
+
+    private static func generateSecret(prefix: String) -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        let count = bytes.count
+        let status = bytes.withUnsafeMutableBytes { buffer in
+            SecRandomCopyBytes(kSecRandomDefault, count, buffer.baseAddress!)
+        }
+        if status == errSecSuccess {
+            return prefix + bytes.map { String(format: "%02x", $0) }.joined()
+        }
+        return prefix + UUID().uuidString.replacingOccurrences(of: "-", with: "") + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    }
+
     @Published var endpoint: String = UserDefaults.standard.string(forKey: "endpoint") ?? "http://127.0.0.1:8766"
-    @Published var apiKey: String = KeychainStore().load(account: "apiKey").isEmpty ? "dev-local-key" : KeychainStore().load(account: "apiKey")
+    @Published var apiKey: String = AppState.loadOrCreateAPIKey()
+    @Published var mcpAPIKey: String = AppState.loadOrCreateMCPAPIKey()
     @Published var quickNote: String = ""
     @Published var captureURLString: String = ""
     @Published var captureTitle: String = ""
     @Published var captureNotes: String = ""
     @Published var captureDropTargeted: Bool = false
     @Published var lastFileCaptureSummary: String = ""
+    @Published var importPreview: SourceAnalyzeResponse?
+    @Published var importPreviewURLs: [URL] = []
+    @Published var importPreviewMoveImportedFromInbox: Bool = false
+    @Published var showImportPreview: Bool = false
+    @Published var importHistory: [SourceImportHistoryItem] = []
     @Published var searchQuery: String = ""
     @Published var status: String = "Ready"
     @Published var inbox: [CaptureItem] = []
     @Published var recent: [MemoryItem] = []
     @Published var searchResults: [MemoryItem] = []
+    @Published var hasSearched: Bool = false
     @Published var graphNodes: [GraphNode] = []
     @Published var graphEdges: [GraphEdge] = []
     @Published var stats: StatsResponse?
@@ -960,10 +1241,12 @@ final class AppState: ObservableObject {
     @Published var updateStatus: String = "Not checked"
     @Published var updateManifest: UpdateManifestResponse?
     @Published var contextQuery: String = ""
+    @Published var selectedTab: AppTab = .today
     @Published var vaultPath: String = UserDefaults.standard.string(forKey: "vaultPath") ?? BackendSupervisor.defaultVaultURL.path
+    @Published var globalClipboardHotkeyEnabled: Bool = UserDefaults.standard.bool(forKey: "globalClipboardHotkeyEnabled.v1")
     @Published var showOnboarding: Bool = !UserDefaults.standard.bool(forKey: "onboardingComplete.v1")
     @Published var onboardingStep: Int = min(4, max(0, UserDefaults.standard.integer(forKey: "onboardingStep.v1")))
-    @Published var onboardingNote: String = "A durable preference, decision, project detail, or open loop I want AI assistants to remember."
+    @Published var onboardingNote: String = ""
     @Published var integrationStates: [String: AIIntegrationState] = [:]
     @Published var isBusy: Bool = false
 
@@ -1002,10 +1285,19 @@ final class AppState: ObservableObject {
     }
 
     func persistSettings() {
+        ensureUsableAPIKey()
+        ensureUsableMCPAPIKey()
         UserDefaults.standard.set(endpoint, forKey: "endpoint")
         UserDefaults.standard.set(vaultPath, forKey: "vaultPath")
         keychain.save(apiKey, account: "apiKey")
+        keychain.save(mcpAPIKey, account: "mcpAPIKey")
         status = "Settings saved"
+    }
+
+    func saveHotkeyPreference() {
+        UserDefaults.standard.set(globalClipboardHotkeyEnabled, forKey: "globalClipboardHotkeyEnabled.v1")
+        NotificationCenter.default.post(name: .cortexHotkeyPreferenceChanged, object: nil)
+        status = globalClipboardHotkeyEnabled ? "Global clipboard hotkey enabled" : "Global clipboard hotkey disabled"
     }
 
     func saveUpdateSettings() {
@@ -1034,16 +1326,58 @@ final class AppState: ObservableObject {
         await loadTrust()
         await loadReview()
         await loadProductLoop()
+        await loadImportHistory()
         await loadDiagnostics()
         await loadReliability()
         refreshIntegrationStates()
     }
 
     func ensureBackend() async {
+        ensureUsableAPIKey()
+        ensureUsableMCPAPIKey()
         backendStatus = "Checking backend"
-        let message = await backend.ensureRunning(endpoint: endpoint, apiKey: apiKey, vaultPath: vaultPath)
+        let message = await backend.ensureRunning(endpoint: endpoint, apiKey: apiKey, mcpAPIKey: mcpAPIKey, vaultPath: vaultPath)
         backendStatus = message
         status = message
+        await registerMCPToken()
+    }
+
+    private func registerMCPToken() async {
+        do {
+            _ = try await performRequest(
+                path: "/v1/integrations/mcp-token",
+                method: "POST",
+                body: [
+                    "token": mcpAPIKey,
+                    "label": "Local MCP integrations",
+                    "scopes": ["read", "write", "export", "maintenance"]
+                ]
+            )
+        } catch {
+            status = "MCP token registration failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func ensureUsableAPIKey() {
+        let normalized = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized.isEmpty || normalized == "dev-local-key" {
+            apiKey = AppState.generateAPIKey()
+            keychain.save(apiKey, account: "apiKey")
+        } else if normalized != apiKey {
+            apiKey = normalized
+            keychain.save(apiKey, account: "apiKey")
+        }
+    }
+
+    private func ensureUsableMCPAPIKey() {
+        let normalized = mcpAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !normalized.hasPrefix("cxm_") || normalized == apiKey {
+            mcpAPIKey = AppState.generateMCPAPIKey()
+            keychain.save(mcpAPIKey, account: "mcpAPIKey")
+        } else if normalized != mcpAPIKey {
+            mcpAPIKey = normalized
+            keychain.save(mcpAPIKey, account: "mcpAPIKey")
+        }
     }
 
     func chooseVaultFolder() {
@@ -1138,10 +1472,10 @@ final class AppState: ObservableObject {
 
     func chooseFilesForCapture() {
         let panel = NSOpenPanel()
-        panel.title = "Choose Files to Save to Cortex"
-        panel.prompt = "Save Files"
+        panel.title = "Choose Sources to Add to Cortex"
+        panel.prompt = "Add Sources"
         panel.canChooseFiles = true
-        panel.canChooseDirectories = false
+        panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
         if panel.runModal() == .OK {
             captureFiles(panel.urls)
@@ -1154,7 +1488,7 @@ final class AppState: ObservableObject {
             status = "No files selected"
             return
         }
-        Task { await captureFilesAsync(unique, moveImportedFromInbox: false) }
+        Task { await prepareImportPreview(unique, moveImportedFromInbox: false) }
     }
 
     func openCaptureInbox() {
@@ -1172,31 +1506,31 @@ final class AppState: ObservableObject {
     func importCaptureInbox() {
         try? FileManager.default.createDirectory(at: captureInboxURL, withIntermediateDirectories: true)
         let manager = FileManager.default
-        let urls = (try? manager.contentsOfDirectory(at: captureInboxURL, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])) ?? []
+        let urls = (try? manager.contentsOfDirectory(at: captureInboxURL, includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
         let files = urls.filter { url in
             guard url.lastPathComponent != "Imported" else { return false }
-            let values = try? url.resourceValues(forKeys: [.isRegularFileKey])
-            return values?.isRegularFile == true
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
+            return values?.isRegularFile == true || values?.isDirectory == true
         }
         guard !files.isEmpty else {
             status = "Capture Inbox is empty"
             return
         }
-        Task { await captureFilesAsync(files, moveImportedFromInbox: true) }
+        Task { await prepareImportPreview(files, moveImportedFromInbox: true) }
     }
 
     func copyBrowserBookmarklet() {
         let action = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/capture"
         let js = """
-        javascript:(()=>{const d=document;const s=String(getSelection()||'').trim();const body=(d.body&&d.body.innerText)||'';const content=(s||body).slice(0,120000);const f=d.createElement('form');f.method='POST';f.action=\(jsString(action));f.target='_blank';const data={token:\(jsString(apiKey)),source:'browser-bookmarklet',title:d.title||location.href,url:location.href,content};for(const k in data){const i=d.createElement('input');i.type='hidden';i.name=k;i.value=data[k];f.appendChild(i)}d.body.appendChild(f);f.submit();setTimeout(()=>f.remove(),1000)})()
+        javascript:(()=>{const u=new URL(\(jsString(action)));u.searchParams.set('title',document.title||location.href);u.searchParams.set('url',location.href);window.open(u.toString(),'_blank','noopener')})()
         """
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(js.replacingOccurrences(of: "\n", with: ""), forType: .string)
-        status = "Browser capture bookmarklet copied"
+        status = "Browser capture bookmarklet copied without API token"
     }
 
     func openBrowserCapturePage() {
-        let urlString = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/capture?token=\(apiKey.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? apiKey)"
+        let urlString = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/capture"
         if let url = URL(string: urlString) {
             NSWorkspace.shared.open(url)
         }
@@ -1211,7 +1545,7 @@ final class AppState: ObservableObject {
         Task {
             await capture(text: text, source: "macos-onboarding", title: "First Cortex memory")
             onboardingNote = ""
-            setOnboardingStep(max(onboardingStep, 3))
+            setOnboardingStep(max(onboardingStep, 2))
         }
     }
 
@@ -1243,10 +1577,95 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func prepareImportPreview(_ urls: [URL], moveImportedFromInbox: Bool) async {
+        isBusy = true
+        status = "Scanning \(urls.count) source\(urls.count == 1 ? "" : "s")..."
+        defer { isBusy = false }
+        do {
+            let body: [String: Any] = [
+                "paths": urls.map { $0.path },
+                "max_records": 500
+            ]
+            let data = try await request(path: "/v1/imports/analyze", method: "POST", body: body)
+            let preview = try JSONDecoder().decode(SourceAnalyzeResponse.self, from: data)
+            if preview.records_found > 0 {
+                importPreview = preview
+                importPreviewURLs = urls
+                importPreviewMoveImportedFromInbox = moveImportedFromInbox
+                showImportPreview = true
+                let sourceSummary = preview.sources.prefix(3).map { "\($0.source): \($0.count)" }.joined(separator: ", ")
+                lastFileCaptureSummary = "Detected \(preview.records_found) record\(preview.records_found == 1 ? "" : "s")" + (sourceSummary.isEmpty ? "" : " (\(sourceSummary))")
+                status = lastFileCaptureSummary
+            } else {
+                lastFileCaptureSummary = "No structured records found; saving file references"
+                status = lastFileCaptureSummary
+                await fallbackCaptureFilesAsync(urls, moveImportedFromInbox: moveImportedFromInbox)
+            }
+        } catch {
+            status = "Importer fallback for \(urls.count) file\(urls.count == 1 ? "" : "s")"
+            await fallbackCaptureFilesAsync(urls, moveImportedFromInbox: moveImportedFromInbox)
+        }
+    }
+
+    func confirmImportPreview() {
+        let urls = importPreviewURLs
+        let moveImported = importPreviewMoveImportedFromInbox
+        cancelImportPreview()
+        guard !urls.isEmpty else {
+            status = "No sources selected"
+            return
+        }
+        Task { await captureFilesAsync(urls, moveImportedFromInbox: moveImported) }
+    }
+
+    func cancelImportPreview() {
+        showImportPreview = false
+        importPreview = nil
+        importPreviewURLs = []
+        importPreviewMoveImportedFromInbox = false
+    }
+
     private func captureFilesAsync(_ urls: [URL], moveImportedFromInbox: Bool) async {
         isBusy = true
-        status = "Saving \(urls.count) file\(urls.count == 1 ? "" : "s")..."
+        status = "Importing \(urls.count) source\(urls.count == 1 ? "" : "s")..."
         defer { isBusy = false }
+        do {
+            let body: [String: Any] = [
+                "paths": urls.map { $0.path },
+                "processing": "async",
+                "max_records": 1000
+            ]
+            let data = try await request(path: "/v1/imports", method: "POST", body: body)
+            let response = try JSONDecoder().decode(SourceImportResponse.self, from: data)
+            if response.records_found > 0 {
+                let jobData = try? await request(path: "/v1/maintenance/jobs/run?limit=50", method: "POST")
+                var processed = 0
+                if let jobData, let run = try? JSONDecoder().decode(JobRunResponse.self, from: jobData) {
+                    processed = run.processed
+                }
+                let sourceSummary = response.sources.prefix(3).map { "\($0.source): \($0.count)" }.joined(separator: ", ")
+                let skippedCount = response.skipped ?? 0
+                let queueSummary = response.queued > 0 ? "Queued \(response.queued)" : "Saved \(response.saved)"
+                let failureSummary = response.failed > 0 ? ", \(response.failed) failed" : ""
+                let skippedSummary = skippedCount > 0 ? ", skipped \(skippedCount) duplicate\(skippedCount == 1 ? "" : "s")" : ""
+                let processedSummary = processed > 0 ? ", started \(processed)" : ""
+                lastFileCaptureSummary = "Detected \(response.records_found) source record\(response.records_found == 1 ? "" : "s"). \(queueSummary)\(processedSummary)\(failureSummary)\(skippedSummary)" + (sourceSummary.isEmpty ? "" : " (\(sourceSummary))")
+                status = lastFileCaptureSummary
+                if moveImportedFromInbox {
+                    for url in urls {
+                        moveToImportedFolder(url)
+                    }
+                }
+                await refreshAfterCapture()
+                return
+            }
+        } catch {
+            status = "Importer fallback for \(urls.count) file\(urls.count == 1 ? "" : "s")"
+        }
+        await fallbackCaptureFilesAsync(urls, moveImportedFromInbox: moveImportedFromInbox)
+    }
+
+    private func fallbackCaptureFilesAsync(_ urls: [URL], moveImportedFromInbox: Bool) async {
         var saved = 0
         var failed = 0
         for url in urls {
@@ -1263,12 +1682,17 @@ final class AppState: ObservableObject {
         }
         lastFileCaptureSummary = failed == 0 ? "Saved \(saved) file\(saved == 1 ? "" : "s")" : "Saved \(saved), failed \(failed)"
         status = lastFileCaptureSummary
+        await refreshAfterCapture()
+    }
+
+    private func refreshAfterCapture() async {
         await loadInbox()
         await loadRecent()
         await loadGraph()
         await loadStats()
         await loadReview()
         await loadProductLoop()
+        await loadImportHistory()
         await loadDiagnostics()
         await loadReliability()
         await loadTrust()
@@ -1292,7 +1716,7 @@ final class AppState: ObservableObject {
         if let extracted = extractText(from: url, size: size), !extracted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             content += "\n\n--- Extracted content ---\n\(extracted)"
         } else {
-            content += "\n\nCortex saved this file reference. This file type is not text-readable in the local MVP yet."
+            content += "\n\nCortex saved this file reference. This file type is not text-readable in this local build yet."
         }
         if content.count > 190_000 {
             content = String(content.prefix(190_000)) + "\n\n[Truncated by Cortex before capture.]"
@@ -1364,13 +1788,27 @@ final class AppState: ObservableObject {
         }
     }
 
+    func loadImportHistory() async {
+        do {
+            let data = try await request(path: "/v1/imports?limit=12&include_deleted=false", method: "GET")
+            importHistory = try JSONDecoder().decode(SourceImportHistoryResponse.self, from: data).results
+        } catch {
+            status = "Import history failed: \(error.localizedDescription)"
+        }
+    }
+
     func runSearch() {
         Task { await search() }
     }
 
     func search() async {
         let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        if q.isEmpty { return }
+        if q.isEmpty {
+            searchResults = []
+            hasSearched = false
+            status = "Enter a search term"
+            return
+        }
         isBusy = true
         status = "Searching..."
         defer { isBusy = false }
@@ -1378,8 +1816,10 @@ final class AppState: ObservableObject {
             let encoded = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q
             let data = try await request(path: "/v1/search?query=\(encoded)&limit=20", method: "GET")
             searchResults = try JSONDecoder().decode(SearchResponse.self, from: data).results
-            status = "Found \(searchResults.count) memories"
+            hasSearched = true
+            status = "Found \(searchResults.count) saved items"
         } catch {
+            hasSearched = true
             status = "Search failed: \(error.localizedDescription)"
         }
     }
@@ -1443,11 +1883,16 @@ final class AppState: ObservableObject {
     func performProductLoopAction(_ action: ProductLoopAction) {
         switch action.action {
         case "capture":
-            captureClipboard()
+            selectedTab = .save
+            status = "Add data sources to build your model"
         case "review":
-            status = "Review the inbox below"
+            selectedTab = .today
+            status = "Review new signals below"
         case "reuse":
-            copyDailyContextPack()
+            selectedTab = .search
+            searchQuery = ""
+            hasSearched = false
+            status = "Ask Cortex what it knows"
         default:
             status = "Loop complete"
         }
@@ -1472,6 +1917,8 @@ final class AppState: ObservableObject {
                     "allow_agent_reads": appSettings.allow_agent_reads,
                     "allow_agent_writes": appSettings.allow_agent_writes,
                     "allow_agent_exports": appSettings.allow_agent_exports,
+                    "allow_agent_maintenance": appSettings.allow_agent_maintenance,
+                    "allow_agent_destructive_actions": appSettings.allow_agent_destructive_actions,
                     "redact_sensitive_context": appSettings.redact_sensitive_context
                 ]
                 let data = try await request(path: "/v1/settings", method: "PUT", body: body)
@@ -1491,6 +1938,16 @@ final class AppState: ObservableObject {
         }
     }
 
+    func currentTrustPreset() -> TrustPreset {
+        TrustPreset.matching(appSettings)
+    }
+
+    func applyTrustPreset(_ preset: TrustPreset) {
+        guard preset != .advanced else { return }
+        preset.apply(to: &appSettings)
+        saveMemorySettings()
+    }
+
     func loadTrust() async {
         do {
             let summaryData = try await request(path: "/v1/trust/summary", method: "GET")
@@ -1507,6 +1964,7 @@ final class AppState: ObservableObject {
     }
 
     func copyMCPConfig(for integration: AIIntegration?) {
+        ensureUsableMCPAPIKey()
         let text = mcpConfigJSON()
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
@@ -1520,24 +1978,7 @@ final class AppState: ObservableObject {
     }
 
     func copyIntegrationContext(_ integration: AIIntegration) {
-        let pack = review?.context_pack ?? "Open Cortex Today and copy a context pack after the local backend finishes loading."
-        let text = """
-        Use this Cortex memory pack as the source of truth for this conversation.
-
-        Instructions:
-        - Use the memory below before asking me to repeat context.
-        - If something is missing or stale, ask a focused follow-up.
-        - Treat saved decisions and open loops as higher priority than generic assumptions.
-        - When you suggest next steps, preserve the user's local-first/privacy constraints.
-
-        Target assistant: \(integration.name)
-
-        \(pack)
-        """
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-        status = "\(integration.name) context copied"
-        Task { await recordContextReuse(surface: "integration", target: integration.name) }
+        copyPersonalProfile(query: "", surface: "integration", target: integration.name, label: "\(integration.name) memory prepared")
     }
 
     func installIntegration(_ integration: AIIntegration) {
@@ -1660,6 +2101,7 @@ final class AppState: ObservableObject {
     }
 
     private func mcpServerDefinition() -> [String: Any] {
+        ensureUsableMCPAPIKey()
         let scriptURL = Bundle.main.resourceURL?
             .appendingPathComponent("scripts", isDirectory: true)
             .appendingPathComponent("cortex_mcp_stdio.py")
@@ -1669,7 +2111,7 @@ final class AppState: ObservableObject {
             "args": [scriptPath],
             "env": [
                 "CORTEX_BASE_URL": endpoint,
-                "CORTEX_API_KEY": apiKey
+                "CORTEX_API_KEY": mcpAPIKey
             ]
         ]
     }
@@ -1703,9 +2145,9 @@ final class AppState: ObservableObject {
         MCP server config:
         \(mcpConfigJSON())
 
-        Local API:
+        Local MCP service:
         Base URL: \(endpoint)
-        API token: \(apiKey)
+        Token: scoped integration token
 
         Assistant rule:
         Search Cortex memory before asking the user to repeat project, person, decision, or open-loop context. Use build_context_pack when the assistant needs a concise handoff brief.
@@ -1785,9 +2227,6 @@ final class AppState: ObservableObject {
     }
 
     func nextOnboardingStep(maxStep: Int) {
-        if onboardingStep == 1 {
-            saveMemorySettings()
-        }
         setOnboardingStep(min(maxStep, onboardingStep + 1))
     }
 
@@ -1796,35 +2235,48 @@ final class AppState: ObservableObject {
     }
 
     private func setOnboardingStep(_ step: Int) {
-        onboardingStep = min(4, max(0, step))
+        onboardingStep = min(2, max(0, step))
         UserDefaults.standard.set(onboardingStep, forKey: "onboardingStep.v1")
     }
 
     func copyDailyContextPack() {
-        guard let review else {
-            status = "Review not loaded"
-            return
-        }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(review.context_pack, forType: .string)
-        status = "Context pack copied"
-        Task { await recordContextReuse(surface: "today", target: "clipboard") }
+        copyPersonalProfile(query: "", surface: "model", target: "clipboard", label: "Personal profile prepared")
     }
 
     func copyContextPack() {
+        let query = contextQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        copyPersonalProfile(
+            query: query,
+            surface: "focused-context",
+            target: "clipboard",
+            label: query.isEmpty ? "Personal profile prepared" : "Profile for \(query) prepared"
+        )
+    }
+
+    private func copyPersonalProfile(query: String, surface: String, target: String, label: String) {
         Task {
             do {
-                let query = contextQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-                let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
-                let limit = max(4, min(50, appSettings.context_pack_limit))
-                let data = try await request(path: "/v1/context-pack?query=\(encoded)&limit=\(limit)", method: "GET")
-                let pack = String(data: data, encoding: .utf8) ?? ""
+                var allowed = CharacterSet.urlQueryAllowed
+                allowed.remove(charactersIn: "&+=")
+                let encoded = query.addingPercentEncoding(withAllowedCharacters: allowed) ?? query
+                let limit = max(1, min(20, appSettings.context_pack_limit))
+                let data = try await request(path: "/v1/personal-profile?format=markdown&query=\(encoded)&limit=\(limit)", method: "GET")
+                let profile = String(data: data, encoding: .utf8) ?? ""
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(pack, forType: .string)
-                status = query.isEmpty ? "Recent context copied" : "Context for \(query) copied"
-                await recordContextReuse(surface: "focused-context", query: query, target: "clipboard")
+                NSPasteboard.general.setString(profile, forType: .string)
+                status = label
+                await recordContextReuse(surface: surface, query: query, target: target)
             } catch {
-                status = "Copy failed: \(error.localizedDescription)"
+                if !query.isEmpty {
+                    status = "Profile failed: \(error.localizedDescription)"
+                } else if let review {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(review.context_pack, forType: .string)
+                    status = "Memory view prepared"
+                    await recordContextReuse(surface: surface, query: query, target: target)
+                } else {
+                    status = "Profile failed: \(error.localizedDescription)"
+                }
             }
         }
     }
@@ -1972,7 +2424,7 @@ final class AppState: ObservableObject {
         Task {
             do {
                 _ = try await request(path: "/v1/memories/\(memory.id)", method: "DELETE")
-                status = "Archived memory"
+                status = "Forgot memory"
                 await loadRecent()
                 await search()
                 await loadStats()
@@ -1983,7 +2435,105 @@ final class AppState: ObservableObject {
                 await loadReliability()
                 await loadTrust()
             } catch {
-                status = "Archive failed: \(error.localizedDescription)"
+                status = "Forget failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func deleteImport(_ item: SourceImportHistoryItem) {
+        Task {
+            do {
+                let data = try await request(path: "/v1/imports/\(item.import_id)", method: "DELETE")
+                let response = try JSONDecoder().decode(SourceImportDeleteResponse.self, from: data)
+                if response.deleted {
+                    status = "Removed \(response.deleted_captures) imported capture\(response.deleted_captures == 1 ? "" : "s")"
+                } else {
+                    status = "Import already removed"
+                }
+                await refreshAfterCapture()
+            } catch {
+                status = "Remove import failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func deleteBackups() {
+        Task {
+            do {
+                let data = try await request(path: "/v1/backups", method: "DELETE")
+                let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                let deleted = payload?["deleted"] as? Int ?? 0
+                status = deleted == 1 ? "Deleted 1 backup archive" : "Deleted \(deleted) backup archives"
+                await loadDiagnostics()
+                await loadReliability()
+                await loadTrust()
+            } catch {
+                status = "Delete backups failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func restoreLatestBackup() {
+        Task {
+            do {
+                let data = try await request(path: "/v1/backups/restore-latest", method: "POST")
+                let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                if let rebuild = payload?["rebuild"] as? [String: Any],
+                   let captures = rebuild["captures"] as? Int,
+                   let memories = rebuild["memories"] as? Int {
+                    status = "Restored \(captures) captures and \(memories) memories"
+                } else {
+                    status = "Restored latest backup"
+                }
+                await loadSettings()
+                await loadInbox()
+                await loadRecent()
+                await loadStats()
+                await loadGraph()
+                await loadReview()
+                await loadProductLoop()
+                await loadImportHistory()
+                await loadDiagnostics()
+                await loadReliability()
+                await loadTrust()
+            } catch {
+                status = "Restore failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func deleteAllUserData() {
+        Task {
+            do {
+                _ = try await request(path: "/v1/user-data?include_backups=true", method: "DELETE")
+                inbox = []
+                recent = []
+                searchResults = []
+                hasSearched = false
+                graphNodes = []
+                graphEdges = []
+                importHistory = []
+                stats = nil
+                review = nil
+                productLoop = nil
+                trustSummary = nil
+                auditEvents = []
+                diagnostics = nil
+                reliabilityReport = nil
+                status = "Deleted local Cortex data"
+                await loadSettings()
+                await loadInbox()
+                await loadRecent()
+                await loadStats()
+                await loadGraph()
+                await loadReview()
+                await loadProductLoop()
+                await loadImportHistory()
+                await loadDiagnostics()
+                await loadReliability()
+                await loadTrust()
+            } catch {
+                status = "Delete all data failed: \(error.localizedDescription)"
             }
         }
     }
@@ -2040,11 +2590,15 @@ final class AppState: ObservableObject {
                     data = remoteData
                 }
                 let manifest = try JSONDecoder().decode(UpdateManifestResponse.self, from: data)
-                updateManifest = manifest
                 if manifest.bundle_id != "com.cortex.doppl" {
                     updateStatus = "Feed is for another app"
                     return
                 }
+                guard manifest.artifacts.allSatisfy({ resolvedUpdateArtifactURL($0) != nil }) else {
+                    updateStatus = "Feed has invalid download URLs"
+                    return
+                }
+                updateManifest = manifest
                 let versionComparison = compareVersion(manifest.version, appVersion)
                 let buildComparison = compareBuild(manifest.build, appBuild)
                 if versionComparison > 0 || (versionComparison == 0 && buildComparison > 0) {
@@ -2059,11 +2613,44 @@ final class AppState: ObservableObject {
     }
 
     func openUpdateDownload() {
-        guard let artifact = preferredUpdateArtifact, let url = URL(string: artifact.url) else {
+        guard let artifact = preferredUpdateArtifact, let url = resolvedUpdateArtifactURL(artifact) else {
             updateStatus = "No update artifact available"
             return
         }
         NSWorkspace.shared.open(url)
+    }
+
+    private func resolvedUpdateArtifactURL(_ artifact: UpdateArtifact) -> URL? {
+        let raw = artifact.url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
+        if let absolute = URL(string: raw), absolute.scheme != nil {
+            return absolute
+        }
+        let feedRaw = updateFeedURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let feedURL = URL(string: feedRaw) else {
+            return URL(string: raw)
+        }
+        if feedURL.isFileURL {
+            if raw.hasPrefix("/") {
+                return URL(fileURLWithPath: raw)
+            }
+            let base = raw.hasPrefix("downloads/")
+                ? feedURL.deletingLastPathComponent().deletingLastPathComponent()
+                : feedURL.deletingLastPathComponent()
+            return URL(fileURLWithPath: raw, relativeTo: base).standardizedFileURL
+        }
+        if raw.hasPrefix("/") {
+            var components = URLComponents()
+            components.scheme = feedURL.scheme
+            components.host = feedURL.host
+            components.port = feedURL.port
+            components.path = raw
+            return components.url
+        }
+        let base = raw.hasPrefix("downloads/")
+            ? feedURL.deletingLastPathComponent().deletingLastPathComponent()
+            : feedURL.deletingLastPathComponent()
+        return URL(string: raw, relativeTo: base)?.absoluteURL
     }
 
     func openReleaseDownloadsFolder() {
@@ -2132,26 +2719,30 @@ struct CortexView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            TabView {
+            TabView(selection: $state.selectedTab) {
                 TodayTab(state: state)
-                    .tabItem { Label("Today", systemImage: "sun.max") }
+                    .tabItem { Label("Model", systemImage: "brain.head.profile") }
+                    .tag(AppTab.today)
                 CaptureTab(state: state)
-                    .tabItem { Label("Save", systemImage: "square.and.pencil") }
+                    .tabItem { Label("Sources", systemImage: "tray.and.arrow.down") }
+                    .tag(AppTab.save)
                 SearchTab(state: state)
-                    .tabItem { Label("Search", systemImage: "magnifyingglass") }
-                IntegrationsTab(state: state)
-                    .tabItem { Label("Connect", systemImage: "link.badge.plus") }
-                TrustTab(state: state)
-                    .tabItem { Label("Trust", systemImage: "lock.shield") }
+                    .tabItem { Label("Ask", systemImage: "magnifyingglass") }
+                    .tag(AppTab.search)
                 AdvancedTab(state: state)
-                    .tabItem { Label("More", systemImage: "ellipsis.circle") }
+                    .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
+                    .tag(AppTab.settings)
             }
             footer
         }
-        .frame(minWidth: 500, minHeight: 620)
+        .frame(minWidth: 520, minHeight: 620)
         .sheet(isPresented: $state.showOnboarding) {
             OnboardingView(state: state)
                 .frame(width: 760, height: 660)
+        }
+        .sheet(isPresented: $state.showImportPreview) {
+            ImportPreviewSheet(state: state)
+                .frame(width: 680, height: 560)
         }
     }
 
@@ -2161,15 +2752,16 @@ struct CortexView: View {
                 Text("Cortex")
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text("Save once. Reuse anywhere.")
+                Text("Private adaptation layer for your work, memory, and style.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
             Spacer()
             Button {
-                state.captureClipboard()
+                state.selectedTab = .save
+                state.status = "Import sources to build your model"
             } label: {
-                Label("Save Clipboard", systemImage: "doc.on.clipboard")
+                Label("Add Sources", systemImage: "tray.and.arrow.down")
             }
             .keyboardShortcut("v", modifiers: [.command, .shift])
         }
@@ -2178,19 +2770,32 @@ struct CortexView: View {
     }
 
     private var footer: some View {
-        HStack {
-            if state.isBusy {
-                ProgressView().scaleEffect(0.7)
+        Group {
+            if state.isBusy || footerNeedsAttention {
+                HStack {
+                    if state.isBusy {
+                        ProgressView().scaleEffect(0.7)
+                    }
+                    Text(state.displayStatus)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Color(nsColor: .controlBackgroundColor))
             }
-            Text(state.displayStatus)
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-            Spacer()
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private var footerNeedsAttention: Bool {
+        let status = state.displayStatus.lowercased()
+        return status.contains("error")
+            || status.contains("failed")
+            || status.contains("offline")
+            || status.contains("unhealthy")
+            || status.contains("denied")
     }
 }
 
@@ -2247,10 +2852,10 @@ struct IntegrationCenterView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text("Connect Cortex everywhere")
+            Text("AI access")
                 .font(compact ? .headline : .title3)
                 .fontWeight(.semibold)
-            Text("Install direct MCP tools where safe, and use copy-ready context packs everywhere else.")
+            Text("Give trusted tools direct MCP access to approved memory, with redacted browser handoffs as a fallback.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -2269,14 +2874,14 @@ struct IntegrationCenterView: View {
             Button {
                 state.installDetectedIntegrations()
             } label: {
-                Label("Install Detected", systemImage: "wand.and.stars")
+                Label("Install Tools", systemImage: "wand.and.stars")
             }
             .buttonStyle(.borderedProminent)
 
             Button {
                 state.copyMCPConfig()
             } label: {
-                Label("Copy MCP", systemImage: "doc.on.doc")
+                Label("Copy MCP Setup", systemImage: "doc.on.doc")
             }
 
             Button {
@@ -2286,7 +2891,7 @@ struct IntegrationCenterView: View {
                     state.copyDailyContextPack()
                 }
             } label: {
-                Label("Copy Chat Context", systemImage: "text.quote")
+                Label("Prepare Browser Memory", systemImage: "text.quote")
             }
 
             if !compact {
@@ -2391,7 +2996,7 @@ struct IntegrationCard: View {
                     Button {
                         state.copyMCPConfig(for: integration)
                     } label: {
-                        Label("Copy", systemImage: "doc.on.doc")
+                        Label("Setup", systemImage: "doc.on.doc")
                     }
 
                     Button {
@@ -2403,7 +3008,7 @@ struct IntegrationCard: View {
                     Button {
                         state.copyIntegrationContext(integration)
                     } label: {
-                        Label("Copy Context", systemImage: "text.quote")
+                        Label("Prepare", systemImage: "text.quote")
                     }
                     .buttonStyle(.borderedProminent)
 
@@ -2466,7 +3071,7 @@ struct IntegrationStatusBadge: View {
 
 struct OnboardingView: View {
     @ObservedObject var state: AppState
-    private let steps = ["Vault", "Rules", "First Save", "Connect", "Ready"]
+    private let steps = ["Local", "First Source", "Ready"]
 
     var body: some View {
         HStack(spacing: 0) {
@@ -2496,7 +3101,7 @@ struct OnboardingView: View {
                 Text("Cortex")
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text("Local memory for AI work")
+                Text("Private personal model")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2595,15 +3200,11 @@ struct OnboardingView: View {
     private var stepSubtitle: String {
         switch state.onboardingStep {
         case 0:
-            return "Choose where your local memory lives and confirm the vault is healthy."
+            return "Confirm where your private memory lives on this Mac."
         case 1:
-            return "Decide when new saves become available to your AI tools."
-        case 2:
-            return "Save one useful memory so Cortex is immediately useful."
-        case 3:
-            return "Copy the setup you need for local AI tools or browser chats."
+            return "Add one useful signal so Cortex can start modeling your work."
         default:
-            return "Create a first backup, then move into your daily memory cockpit."
+            return "Create a first backup, then move into your personal model."
         }
     }
 
@@ -2613,11 +3214,7 @@ struct OnboardingView: View {
         case 0:
             OnboardingVaultStep(state: state)
         case 1:
-            OnboardingRulesStep(state: state)
-        case 2:
             OnboardingFirstSaveStep(state: state)
-        case 3:
-            OnboardingConnectStep(state: state)
         default:
             OnboardingReadyStep(state: state)
         }
@@ -2711,7 +3308,7 @@ struct OnboardingRulesStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Choose how strict Cortex should be before AI tools can use newly saved context. You can change this any time from More.")
+            Text("Choose how strict Cortex should be before AI tools can use newly added source data. You can change this any time from Settings.")
                 .foregroundColor(.secondary)
 
             VStack(alignment: .leading, spacing: 10) {
@@ -2728,7 +3325,7 @@ struct OnboardingRulesStep: View {
                         .foregroundColor(.secondary)
                 }
                 Stepper(value: $state.appSettings.context_pack_limit, in: 4...50, step: 2) {
-                    Text("Context pack size: \(state.appSettings.context_pack_limit)")
+                    Text("Shared memory limit: \(state.appSettings.context_pack_limit)")
                 }
                 HStack {
                     Button {
@@ -2751,7 +3348,7 @@ struct OnboardingRulesStep: View {
 
             OnboardingCheckRow(
                 title: state.appSettings.allow_pending_in_context ? "Fast mode" : "Strict mode",
-                detail: state.appSettings.allow_pending_in_context ? "New saves can appear in context immediately." : "Only approved saves appear in context.",
+                detail: state.appSettings.allow_pending_in_context ? "New source data can appear in AI access immediately." : "Only approved source data appears in AI access.",
                 systemImage: state.appSettings.allow_pending_in_context ? "hare.fill" : "lock.shield.fill",
                 color: state.appSettings.allow_pending_in_context ? .accentColor : .green
             )
@@ -2764,25 +3361,35 @@ struct OnboardingFirstSaveStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Start with one useful preference, decision, project detail, or open loop. A good first memory makes Cortex useful immediately.")
+            Text("Start with one useful preference, decision, project detail, writing sample, or open loop. A good first signal makes Cortex useful immediately.")
                 .foregroundColor(.secondary)
 
-            TextEditor(text: $state.onboardingNote)
-                .font(.body)
-                .frame(minHeight: 150)
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.22)))
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $state.onboardingNote)
+                    .font(.body)
+                    .frame(minHeight: 150)
+                    .accessibilityLabel("First source")
+                if state.onboardingNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text("Example: I prefer concise technical answers with clear next steps.")
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 8)
+                        .allowsHitTesting(false)
+                }
+            }
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.22)))
 
             HStack {
                 Button {
                     state.captureOnboardingNote()
                 } label: {
-                    Label("Save First Memory", systemImage: "square.and.arrow.down")
+                    Label("Add First Source", systemImage: "square.and.arrow.down")
                 }
                 .buttonStyle(.borderedProminent)
                 Button {
                     state.captureClipboard()
                 } label: {
-                    Label("Save Clipboard", systemImage: "doc.on.clipboard")
+                    Label("Add Clipboard", systemImage: "doc.on.clipboard")
                 }
                 Spacer()
             }
@@ -2800,9 +3407,75 @@ struct OnboardingFirstSaveStep: View {
 
 struct OnboardingConnectStep: View {
     @ObservedObject var state: AppState
+    private var detectedIntegrations: [AIIntegration] {
+        state.integrations.filter { integration in
+            integration.supportsInstall && state.integrationState(for: integration).appInstalled
+        }
+    }
 
     var body: some View {
-        IntegrationCenterView(state: state, compact: true)
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Connect the tools you use most. Direct MCP access lets agents search approved memory; browser handoff stays available as a controlled fallback.")
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 10)], spacing: 10) {
+                Button {
+                    state.installDetectedIntegrations()
+                } label: {
+                    Label("Connect Detected", systemImage: "wand.and.stars")
+                }
+                .disabled(detectedIntegrations.isEmpty)
+
+                Button {
+                    if let chatGPT = state.integrations.first(where: { $0.id == "chatgpt" }) {
+                        state.copyIntegrationContext(chatGPT)
+                    } else {
+                        state.copyDailyContextPack()
+                    }
+                } label: {
+                    Label("Prepare Browser Memory", systemImage: "text.quote")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+
+            if detectedIntegrations.isEmpty {
+                QuietState(title: "No local MCP apps detected", detail: "Browser chats can still receive approved Cortex memory manually.")
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Detected")
+                        .font(.headline)
+                    ForEach(detectedIntegrations.prefix(4)) { integration in
+                        HStack(spacing: 8) {
+                            Image(systemName: integration.systemImage)
+                                .foregroundColor(.accentColor)
+                                .frame(width: 20)
+                            Text(integration.name)
+                            Spacer()
+                            IntegrationStatusBadge(state: state.integrationState(for: integration), supportsInstall: integration.supportsInstall)
+                        }
+                        .padding(8)
+                        .background(Color(nsColor: .controlBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+            }
+
+            DisclosureGroup("View all integrations") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Button {
+                        state.copyMCPConfig()
+                    } label: {
+                        Label("Copy MCP Setup", systemImage: "doc.on.doc")
+                    }
+                    IntegrationCenterView(state: state, compact: true)
+                }
+                .padding(.top, 8)
+            }
+        }
+        .onAppear {
+            state.refreshIntegrationStates()
+        }
     }
 }
 
@@ -2811,7 +3484,7 @@ struct OnboardingReadyStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Cortex is ready to save memory locally and reuse it in AI sessions.")
+            Text("Cortex is ready to build a local personal model and let trusted AI tools use approved memory.")
                 .foregroundColor(.secondary)
 
             VStack(alignment: .leading, spacing: 10) {
@@ -2902,28 +3575,41 @@ struct OnboardingCheckRow: View {
 
 struct TodayTab: View {
     @ObservedObject var state: AppState
+    @State private var showDetails = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 if let review = state.review {
-                    TodayProductLoopSection(state: state)
-                    TodayScoreHeader(review: review)
-                    TodayContextSection(state: state, review: review)
-                    TodayPendingSection(state: state, captures: review.pending)
-                    if !review.recommended_actions.isEmpty {
-                        TodayActionSection(actions: review.recommended_actions)
-                    }
-                    if !review.open_tasks.isEmpty {
-                        TodayOpenLoopsSection(tasks: review.open_tasks)
-                    }
-                    if !review.recent_decisions.isEmpty {
-                        TodayDecisionSection(decisions: review.recent_decisions)
+                    if review.stats.memories == 0 && review.pending.isEmpty {
+                        TodayEmptyModelSection(state: state)
+                    } else {
+                        TodayModelSection(state: state, review: review)
+                        TodayCoverageSection(review: review)
+                        TodaySourceCoverageSection(state: state, review: review)
+                        TodayPendingSection(state: state, captures: review.pending)
+
+                        DisclosureGroup("Details", isExpanded: $showDetails) {
+                            VStack(alignment: .leading, spacing: 14) {
+                                TodayScoreHeader(review: review)
+                                TodaySearchSection(state: state, review: review)
+                                if !review.recommended_actions.isEmpty {
+                                    TodayActionSection(actions: review.recommended_actions)
+                                }
+                                if !review.open_tasks.isEmpty {
+                                    TodayOpenLoopsSection(tasks: review.open_tasks)
+                                }
+                                if !review.recent_decisions.isEmpty {
+                                    TodayDecisionSection(decisions: review.recent_decisions)
+                                }
+                            }
+                            .padding(.top, 8)
+                        }
                     }
                 } else {
                     VStack(alignment: .center, spacing: 12) {
                         ProgressView()
-                        Text("Preparing today")
+                        Text("Loading personal model")
                             .font(.headline)
                         Text("Cortex is starting the local memory engine.")
                             .foregroundColor(.secondary)
@@ -2933,6 +3619,105 @@ struct TodayTab: View {
             }
             .padding(16)
         }
+    }
+}
+
+struct TodayEmptyModelSection: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.accentColor.opacity(0.14))
+                    Image(systemName: "brain.head.profile")
+                        .font(.system(size: 30, weight: .semibold))
+                        .foregroundColor(.accentColor)
+                }
+                .frame(width: 64, height: 64)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Start your personal model")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                    Text("Add conversations, email, notes, writing samples, decisions, or messages. Cortex turns them into private memory layers for future agent adaptation.")
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    state.selectedTab = .save
+                    state.status = "Add your first source"
+                } label: {
+                    Label("Add First Source", systemImage: "tray.and.arrow.down")
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    state.selectedTab = .settings
+                    state.status = "Review privacy and AI access"
+                } label: {
+                    Label("Review Privacy", systemImage: "lock.shield")
+                }
+
+                Spacer()
+            }
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 128), spacing: 8)], spacing: 8) {
+                EmptyLayerPill(title: "Facts", detail: "what is true", systemImage: "text.book.closed")
+                EmptyLayerPill(title: "Events", detail: "what happened", systemImage: "calendar")
+                EmptyLayerPill(title: "Style", detail: "how you write", systemImage: "signature")
+                EmptyLayerPill(title: "Decisions", detail: "what you chose", systemImage: "checkmark.seal")
+                EmptyLayerPill(title: "Preferences", detail: "what you like", systemImage: "slider.horizontal.3")
+                EmptyLayerPill(title: "Rejections", detail: "what to avoid", systemImage: "hand.raised")
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, minHeight: 420, alignment: .topLeading)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(nsColor: .controlBackgroundColor),
+                    Color.accentColor.opacity(0.08)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct EmptyLayerPill: View {
+    let title: String
+    let detail: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .foregroundColor(.accentColor)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(9)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.64))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -2965,73 +3750,299 @@ struct TodayScoreHeader: View {
     }
 }
 
-struct TodayProductLoopSection: View {
+struct TodayModelSection: View {
     @ObservedObject var state: AppState
+    let review: DailyReviewResponse
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
             if let loop = state.productLoop {
                 HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(loop.primary_action.title)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Personal model")
                             .font(.title3)
                             .fontWeight(.semibold)
-                        Text(loop.primary_action.detail)
+                        Text(modelDetail(loop: loop))
+                            .font(.callout)
                             .foregroundColor(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer()
-                    if loop.primary_action.action == "done" {
-                        Button {
-                            state.performProductLoopAction(loop.primary_action)
-                        } label: {
-                            Label(loop.primary_action.label, systemImage: icon(for: loop.primary_action.action))
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(true)
-                    } else {
-                        Button {
-                            state.performProductLoopAction(loop.primary_action)
-                        } label: {
-                            Label(loop.primary_action.label, systemImage: icon(for: loop.primary_action.action))
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
+                    ModelReadinessRing(value: readinessScore)
                 }
 
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 118), spacing: 8)], spacing: 8) {
-                    ForEach(loop.steps) { step in
-                        LoopStepPill(step: step)
+                HStack(spacing: 8) {
+                    Button {
+                        state.selectedTab = .save
+                        state.status = "Add conversations, notes, files, and decisions"
+                    } label: {
+                        Label("Add Sources", systemImage: "tray.and.arrow.down")
                     }
-                }
+                    .buttonStyle(.borderedProminent)
 
-                HStack(spacing: 10) {
-                    HealthPill(label: "Loop", value: "\(loop.completion)%")
-                    HealthPill(label: "Reused", value: String(loop.counts["reused_today"] ?? 0))
-                    HealthPill(label: "Streak", value: "\(loop.counts["streak_days"] ?? 0)d")
+                    Button {
+                        if review.stats.pending_captures > 0 {
+                            state.status = "Review saved items below"
+                        } else {
+                            state.selectedTab = .search
+                            state.searchQuery = ""
+                            state.hasSearched = false
+                            state.status = "Ask Cortex what it knows"
+                        }
+                    } label: {
+                        Label(review.stats.pending_captures > 0 ? "Review Memory" : "Ask Cortex", systemImage: review.stats.pending_captures > 0 ? "checklist" : "magnifyingglass")
+                    }
+
+                    Button {
+                        state.selectedTab = .settings
+                        state.status = "Configure AI access"
+                    } label: {
+                        Label("AI Access", systemImage: "slider.horizontal.3")
+                    }
                     Spacer()
+                }
+
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 8)], spacing: 8) {
+                    ModelMetricPill(label: "Signals", value: "\(review.stats.memories)", systemImage: "brain.head.profile")
+                    ModelMetricPill(label: "Review", value: "\(review.stats.pending_captures)", systemImage: "tray.full")
+                    ModelMetricPill(label: "Decisions", value: "\(review.recent_decisions.count)", systemImage: "checkmark.seal")
+                    ModelMetricPill(label: "Open work", value: "\(review.open_tasks.count)", systemImage: "circle.dashed")
                 }
             } else {
                 HStack {
                     ProgressView()
-                    Text("Loading loop")
+                    Text("Loading personal model")
                         .foregroundColor(.secondary)
                     Spacer()
                 }
             }
         }
-        .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .padding(16)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(nsColor: .controlBackgroundColor),
+                    Color.accentColor.opacity(0.10)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
-    private func icon(for action: String) -> String {
-        switch action {
-        case "capture": return "square.and.arrow.down"
-        case "review": return "checklist"
-        case "reuse": return "doc.on.doc"
-        default: return "checkmark.circle"
+    private var readinessScore: Int {
+        min(100, max(0, review.stats.memories * 4 + review.recent_decisions.count * 6 + review.stats.entities * 2))
+    }
+
+    private func modelDetail(loop: ProductLoopResponse) -> String {
+        if review.stats.memories == 0 {
+            return "Add conversations, email, notes, writing, decisions, and messages so Cortex can build an adaptation layer around how you think, decide, write, and work."
         }
+        if review.stats.pending_captures > 0 {
+            return "Cortex has new data waiting for review before it becomes part of the personal model."
+        }
+        return "Cortex is organizing your data into semantic, episodic, style, decision, preference, and negative memory layers for in-house agent adaptation."
+    }
+}
+
+struct ModelReadinessRing: View {
+    let value: Int
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.secondary.opacity(0.18), lineWidth: 8)
+            Circle()
+                .trim(from: 0, to: CGFloat(value) / 100)
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            VStack(spacing: 0) {
+                Text("\(value)")
+                    .font(.headline)
+                    .fontWeight(.semibold)
+                Text("model")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .frame(width: 70, height: 70)
+        .accessibilityLabel("Model readiness \(value) percent")
+    }
+}
+
+struct ModelMetricPill: View {
+    let label: String
+    let value: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: systemImage)
+                .foregroundColor(.accentColor)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(value)
+                    .font(.headline)
+                    .fontWeight(.semibold)
+                Text(label)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.65))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct TodayCoverageSection: View {
+    let review: DailyReviewResponse
+
+    private let layers: [(String, String, String)] = [
+        ("Facts", "semantic", "text.book.closed"),
+        ("Events", "episodic", "calendar"),
+        ("Style", "style", "signature"),
+        ("Decisions", "decision", "checkmark.seal"),
+        ("Preferences", "preference", "slider.horizontal.3"),
+        ("Rejections", "negative", "hand.raised")
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "Model coverage", detail: "Memory layers Cortex can use for adaptation.")
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 128), spacing: 8)], spacing: 8) {
+                ForEach(layers, id: \.1) { layer in
+                    LayerCoverageTile(title: layer.0, layer: layer.1, systemImage: layer.2, count: count(for: layer.1))
+                }
+            }
+        }
+    }
+
+    private func count(for layer: String) -> Int {
+        if layer == "decision" {
+            return max(review.recent_decisions.count, review.stats.decisions)
+        }
+        let durableLayerCount = review.stats.by_layer?.first(where: { $0.layer == layer })?.count ?? 0
+        if durableLayerCount > 0 {
+            return durableLayerCount
+        }
+        let recentLayerCount = review.recent_memories.filter { $0.layer == layer }.count
+        if recentLayerCount > 0 {
+            return recentLayerCount
+        }
+        switch layer {
+        case "semantic":
+            return review.stats.memories
+        case "episodic":
+            return review.stats.by_kind.first(where: { $0.kind == "event" })?.count ?? 0
+        case "style":
+            return review.stats.by_kind.first(where: { $0.kind == "style" })?.count ?? 0
+        case "preference":
+            return review.stats.by_kind.first(where: { $0.kind == "preference" })?.count ?? 0
+        case "negative":
+            return review.stats.by_kind.first(where: { $0.kind == "negative" })?.count ?? 0
+        default:
+            return 0
+        }
+    }
+}
+
+struct TodaySourceCoverageSection: View {
+    @ObservedObject var state: AppState
+    let review: DailyReviewResponse
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "Sources", detail: "Chats, notes, files, emails, writing, decisions, and messages become structured memory.")
+            if let summary = state.trustSummary, !summary.source_counts.isEmpty {
+                HStack(spacing: 8) {
+                    ForEach(summary.source_counts.prefix(4)) { source in
+                        SourceCoveragePill(source: source)
+                    }
+                    Spacer(minLength: 0)
+                }
+            } else if review.stats.memories == 0 {
+                QuietState(title: "No personal model yet", detail: "Add conversations, notes, writing samples, files, and decisions to start building your adaptation layer.")
+            } else {
+                HStack(spacing: 8) {
+                    ModelMetricPill(label: "Topics", value: "\(review.top_topics.count)", systemImage: "number")
+                    ModelMetricPill(label: "People & projects", value: "\(review.top_entities.count)", systemImage: "person.2")
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+    }
+}
+
+struct SectionHeader: View {
+    let title: String
+    let detail: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.headline)
+            Text(detail)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+struct LayerCoverageTile: View {
+    let title: String
+    let layer: String
+    let systemImage: String
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: systemImage)
+                .foregroundColor(count > 0 ? .accentColor : .secondary)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.callout)
+                    .fontWeight(.medium)
+                Text(count > 0 ? "\(count) signals" : "Needs data")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(count > 0 ? 0.78 : 0.45))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct SourceCoveragePill: View {
+    let source: SourceTrustSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(source.source)
+                .font(.caption)
+                .fontWeight(.medium)
+                .lineLimit(1)
+            Text("\(source.approved) approved · \(source.pending) review")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(minWidth: 112, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.72))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -3084,28 +4095,30 @@ struct LoopStepPill: View {
     }
 }
 
-struct TodayContextSection: View {
+struct TodaySearchSection: View {
     @ObservedObject var state: AppState
     let review: DailyReviewResponse
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Use in an AI chat")
+            Text("Ask the model")
                 .font(.headline)
             TextField("Focus, person, project, or topic", text: $state.contextQuery)
                 .textFieldStyle(.roundedBorder)
-                .onSubmit { state.copyContextPack() }
+                .onSubmit { searchFocus() }
             HStack {
                 Button {
-                    state.copyDailyContextPack()
+                    state.selectedTab = .search
+                    state.searchQuery = ""
+                    state.hasSearched = false
                 } label: {
-                    Label("Copy Context", systemImage: "doc.on.doc")
+                    Label("Open Ask", systemImage: "magnifyingglass")
                 }
                 .buttonStyle(.borderedProminent)
                 Button {
-                    state.copyContextPack()
+                    searchFocus()
                 } label: {
-                    Label("Copy Focus", systemImage: "scope")
+                    Label("Search Focus", systemImage: "scope")
                 }
                 Button {
                     Task { await state.loadReview() }
@@ -3122,6 +4135,18 @@ struct TodayContextSection: View {
         .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
+
+    private func searchFocus() {
+        let query = state.contextQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        state.selectedTab = .search
+        if !query.isEmpty {
+            state.searchQuery = query
+            state.runSearch()
+        } else {
+            state.hasSearched = false
+            state.status = "Ask Cortex what it knows"
+        }
+    }
 }
 
 struct TodayPendingSection: View {
@@ -3131,7 +4156,7 @@ struct TodayPendingSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Inbox")
+                Text("Review new signals")
                     .font(.headline)
                 Spacer()
                 if !captures.isEmpty {
@@ -3144,7 +4169,7 @@ struct TodayPendingSection: View {
                 }
             }
             if captures.isEmpty {
-                QuietState(title: "Inbox clear", detail: "Saved context is ready when you need it.")
+                QuietState(title: "No new signals", detail: "New source data that needs approval will appear here.")
             } else {
                 ForEach(captures.prefix(3)) { capture in
                     CaptureCard(
@@ -3250,14 +4275,22 @@ struct TodayTopicSection: View {
 
 struct CaptureTab: View {
     @ObservedObject var state: AppState
+    @State private var isLinkOptionsExpanded = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 CaptureHeroSection(state: state)
-                CaptureQuickNoteSection(state: state)
-                CaptureWebSection(state: state)
                 CaptureFileSection(state: state, handleDrop: handleDrop)
+                ImportHistorySection(state: state)
+                CaptureQuickNoteSection(state: state)
+                DisclosureGroup(isExpanded: $isLinkOptionsExpanded) {
+                    CaptureWebSection(state: state)
+                    .padding(.top, 8)
+                } label: {
+                    Label("Links and web capture", systemImage: "link")
+                        .font(.headline)
+                }
                 CaptureRecentSection(state: state)
             }
             .padding(16)
@@ -3305,10 +4338,10 @@ struct CaptureHeroSection: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Capture")
+                    Text("Import sources to build your model")
                         .font(.title3)
                         .fontWeight(.semibold)
-                    Text("Save once from any surface. Cortex structures it, reviews it, and makes it reusable by your AI agents.")
+                    Text("Bring in selected exports, folders, chats, notes, messages, docs, and writing samples. Cortex normalizes them locally into reviewable memory signals.")
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -3317,20 +4350,6 @@ struct CaptureHeroSection: View {
                     Task { await state.loadRecent() }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
-                }
-            }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], spacing: 8) {
-                CaptureActionTile(title: "Clipboard", detail: "Cmd Shift V", systemImage: "doc.on.clipboard", color: .accentColor) {
-                    state.captureClipboard()
-                }
-                CaptureActionTile(title: "Files", detail: "Picker or drop", systemImage: "doc.badge.plus", color: .green) {
-                    state.chooseFilesForCapture()
-                }
-                CaptureActionTile(title: "Browser", detail: "Bookmarklet", systemImage: "safari", color: .purple) {
-                    state.copyBrowserBookmarklet()
-                }
-                CaptureActionTile(title: "Inbox", detail: "Drop folder", systemImage: "tray.and.arrow.down", color: .orange) {
-                    state.openCaptureInbox()
                 }
             }
         }
@@ -3374,7 +4393,7 @@ struct CaptureQuickNoteSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Quick note")
+            Text("Quick signal")
                 .font(.headline)
             TextEditor(text: $state.quickNote)
                 .font(.body)
@@ -3384,13 +4403,13 @@ struct CaptureQuickNoteSection: View {
                 Button {
                     state.captureQuickNote()
                 } label: {
-                    Label("Save Note", systemImage: "square.and.arrow.down")
+                    Label("Add to Model", systemImage: "square.and.arrow.down")
                 }
                 .buttonStyle(.borderedProminent)
                 Button {
                     state.captureClipboard()
                 } label: {
-                    Label("Save Clipboard", systemImage: "doc.on.clipboard")
+                    Label("Add Clipboard", systemImage: "doc.on.clipboard")
                 }
                 Spacer()
             }
@@ -3402,45 +4421,41 @@ struct CaptureWebSection: View {
     @ObservedObject var state: AppState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Web and links")
-                .font(.headline)
-            VStack(alignment: .leading, spacing: 8) {
-                TextField("URL", text: $state.captureURLString)
-                    .textFieldStyle(.roundedBorder)
-                TextField("Title or source name", text: $state.captureTitle)
-                    .textFieldStyle(.roundedBorder)
-                TextEditor(text: $state.captureNotes)
-                    .font(.body)
-                    .frame(minHeight: 80)
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2)))
-                HStack {
-                    Button {
-                        state.captureURLSurface()
-                    } label: {
-                        Label("Save URL", systemImage: "link.badge.plus")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    Button {
-                        state.copyBrowserBookmarklet()
-                    } label: {
-                        Label("Copy Bookmarklet", systemImage: "bookmark")
-                    }
-                    Button {
-                        state.openBrowserCapturePage()
-                    } label: {
-                        Label("Open Capture Page", systemImage: "safari")
-                    }
-                    Spacer()
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("URL", text: $state.captureURLString)
+                .textFieldStyle(.roundedBorder)
+            TextField("Title or source name", text: $state.captureTitle)
+                .textFieldStyle(.roundedBorder)
+            TextEditor(text: $state.captureNotes)
+                .font(.body)
+                .frame(minHeight: 80)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2)))
+            HStack {
+                Button {
+                    state.captureURLSurface()
+                } label: {
+                    Label("Add Link", systemImage: "link.badge.plus")
                 }
-                Text("Use the bookmarklet to capture selected text or page text from ChatGPT, Claude, docs, email, and web research into local Cortex memory.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                .buttonStyle(.borderedProminent)
+                Button {
+                    state.copyBrowserBookmarklet()
+                } label: {
+                    Label("Copy Capture Bookmarklet", systemImage: "bookmark")
+                }
+                Button {
+                    state.openBrowserCapturePage()
+                } label: {
+                    Label("Open Capture Page", systemImage: "safari")
+                }
+                Spacer()
             }
-            .padding(12)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            Text("Use the bookmarklet to send selected pages or research notes to the local importer. Cortex does not place your API token in browser URLs or page scripts.")
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -3450,65 +4465,310 @@ struct CaptureFileSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Files and drop folder")
-                .font(.headline)
-            VStack(alignment: .leading, spacing: 10) {
-                VStack(spacing: 8) {
-                    Image(systemName: state.captureDropTargeted ? "arrow.down.doc.fill" : "arrow.down.doc")
-                        .font(.largeTitle)
-                        .foregroundColor(state.captureDropTargeted ? .accentColor : .secondary)
-                    Text(state.captureDropTargeted ? "Drop to save files" : "Drop files here")
-                        .font(.headline)
-                    Text("Text, Markdown, code, CSV, JSON, RTF, and PDFs are extracted locally. Other files are saved as source references.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, minHeight: 130)
-                .background(Color(nsColor: .textBackgroundColor))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(state.captureDropTargeted ? Color.accentColor : Color.secondary.opacity(0.22), lineWidth: state.captureDropTargeted ? 2 : 1))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .onDrop(of: [UTType.fileURL.identifier], isTargeted: $state.captureDropTargeted, perform: handleDrop)
-
-                HStack {
-                    Button {
-                        state.chooseFilesForCapture()
-                    } label: {
-                        Label("Choose Files", systemImage: "doc.badge.plus")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    Button {
-                        state.openCaptureInbox()
-                    } label: {
-                        Label("Open Inbox", systemImage: "tray")
-                    }
-                    Button {
-                        state.importCaptureInbox()
-                    } label: {
-                        Label("Import Inbox", systemImage: "tray.and.arrow.down")
-                    }
-                    Button {
-                        state.copyCaptureInboxPath()
-                    } label: {
-                        Label("Copy Path", systemImage: "doc.on.doc")
-                    }
-                    Spacer()
-                }
-                Text("Capture Inbox: \(state.captureInboxURL.path)")
-                    .font(.system(.caption, design: .monospaced))
+            VStack(spacing: 8) {
+                Image(systemName: state.captureDropTargeted ? "arrow.down.doc.fill" : "arrow.down.doc")
+                    .font(.largeTitle)
+                    .foregroundColor(state.captureDropTargeted ? .accentColor : .secondary)
+                Text(state.captureDropTargeted ? "Drop to import" : "Drop exports, folders, or files here")
+                    .font(.headline)
+                Text("ChatGPT, Claude, Notion, Gmail/email, Slack, Discord, Telegram, Keep, Messages, WhatsApp, bookmarks, calendar, contacts, LinkedIn, Twitter/X, docs, CSV, JSON, DOCX, RTF, and PDFs are imported locally.")
+                    .font(.caption)
                     .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if !state.lastFileCaptureSummary.isEmpty {
-                    Text(state.lastFileCaptureSummary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity, minHeight: 130)
+            .background(Color(nsColor: .textBackgroundColor))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(state.captureDropTargeted ? Color.accentColor : Color.secondary.opacity(0.22), lineWidth: state.captureDropTargeted ? 2 : 1))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .onDrop(of: [UTType.fileURL.identifier], isTargeted: $state.captureDropTargeted, perform: handleDrop)
+
+            HStack {
+                Button {
+                    state.chooseFilesForCapture()
+                } label: {
+                    Label("Choose Sources", systemImage: "doc.badge.plus")
+                }
+                .buttonStyle(.borderedProminent)
+                Button {
+                    state.openCaptureInbox()
+                } label: {
+                    Label("Open Inbox", systemImage: "tray")
+                }
+                Button {
+                    state.importCaptureInbox()
+                } label: {
+                    Label("Import Inbox", systemImage: "tray.and.arrow.down")
+                }
+                Button {
+                    state.copyCaptureInboxPath()
+                } label: {
+                    Label("Copy Path", systemImage: "doc.on.doc")
+                }
+                Spacer()
+            }
+            Text("Capture Inbox: \(state.captureInboxURL.path)")
+                .font(.system(.caption, design: .monospaced))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if !state.lastFileCaptureSummary.isEmpty {
+                Text(state.lastFileCaptureSummary)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct ImportPreviewSheet: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Review Source Import")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                    Text("\(state.importPreviewURLs.count) selected source\(state.importPreviewURLs.count == 1 ? "" : "s")")
                         .font(.caption)
                         .foregroundColor(.secondary)
+                }
+                Spacer()
+                Button {
+                    state.cancelImportPreview()
+                } label: {
+                    Label("Close", systemImage: "xmark")
+                }
+                .labelStyle(.iconOnly)
+                .help("Close")
+            }
+
+            if let preview = state.importPreview {
+                HStack(spacing: 8) {
+                    ImportMetric(label: "Records", value: preview.records_found)
+                    ImportMetric(label: "Sources", value: preview.sources.count)
+                    ImportMetric(label: "Samples", value: preview.sample.count)
+                }
+
+                if !preview.sources.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Detected Types")
+                            .font(.headline)
+                        FlowWrap(items: preview.sources.map { "\($0.source) \($0.count)" })
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Sample Records")
+                        .font(.headline)
+                    if preview.sample.isEmpty {
+                        QuietState(title: "No sample records", detail: "Cortex did not find structured records in the selected sources.")
+                    } else {
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 8) {
+                                ForEach(preview.sample, id: \.self) { sample in
+                                    HStack(alignment: .top, spacing: 10) {
+                                        Image(systemName: "doc.text.magnifyingglass")
+                                            .foregroundColor(.accentColor)
+                                            .frame(width: 18)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(sample.title.isEmpty ? "Untitled record" : sample.title)
+                                                .font(.headline)
+                                                .lineLimit(2)
+                                            Text("\(sample.source) · \(ByteCountFormatter.string(fromByteCount: Int64(sample.chars), countStyle: .file))")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        }
+                                        Spacer()
+                                    }
+                                    .padding(9)
+                                    .background(Color(nsColor: .controlBackgroundColor))
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                QuietState(title: "Preview unavailable", detail: "Choose sources again to scan them before import.")
+            }
+
+            Spacer(minLength: 0)
+            HStack {
+                Button {
+                    state.cancelImportPreview()
+                } label: {
+                    Label("Cancel", systemImage: "xmark")
+                }
+                Spacer()
+                Button {
+                    state.confirmImportPreview()
+                } label: {
+                    Label("Import to Model", systemImage: "tray.and.arrow.down.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(state.importPreview?.records_found ?? 0 == 0)
+            }
+        }
+        .padding(18)
+    }
+}
+
+struct ImportMetric: View {
+    let label: String
+    let value: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("\(value)")
+                .font(.title3)
+                .fontWeight(.semibold)
+            Text(label)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct FlowWrap: View {
+    let items: [String]
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], alignment: .leading, spacing: 8) {
+            ForEach(items, id: \.self) { item in
+                Text(item)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.accentColor.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+        }
+    }
+}
+
+struct ImportHistorySection: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Import History")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    Task { await state.loadImportHistory() }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .labelStyle(.iconOnly)
+                .help("Refresh")
+            }
+            if state.importHistory.isEmpty {
+                QuietState(title: "No imports yet", detail: "Confirmed source imports appear here as removable batches.")
+            } else {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(state.importHistory) { item in
+                        ImportHistoryRow(item: item) {
+                            state.deleteImport(item)
+                        }
+                    }
                 }
             }
-            .padding(12)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
         }
+    }
+}
+
+struct ImportHistoryRow: View {
+    let item: SourceImportHistoryItem
+    let undoImport: () -> Void
+    @State private var confirmUndo = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: iconName)
+                .foregroundColor(iconColor)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(title)
+                        .font(.headline)
+                        .lineLimit(1)
+                    Spacer()
+                    Text(String(item.created_at.prefix(10)))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Text(summary)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                HStack(spacing: 10) {
+                    Text("\(item.remaining_memories) memories")
+                    Text("\(item.remaining_tasks) tasks")
+                    if (item.skipped ?? 0) > 0 {
+                        Text("\(item.skipped ?? 0) skipped")
+                    }
+                    if item.failed > 0 {
+                        Text("\(item.failed) failed")
+                    }
+                    Spacer()
+                    Button {
+                        confirmUndo = true
+                    } label: {
+                        Label("Undo Import", systemImage: "arrow.uturn.backward")
+                    }
+                    .font(.caption)
+                    .disabled(!item.can_delete)
+                    .confirmationDialog("Undo this import?", isPresented: $confirmUndo) {
+                        Button("Remove Imported Data", role: .destructive) {
+                            undoImport()
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Cortex will remove captures and derived memory created by this import batch.")
+                    }
+                }
+                .font(.caption)
+                .foregroundColor(.secondary)
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var title: String {
+        if let first = item.sources.first?.source, !first.isEmpty {
+            return item.sources.count > 1 ? "\(first) + \(item.sources.count - 1) more" : first
+        }
+        return item.source_hint.isEmpty ? "Source import" : item.source_hint
+    }
+
+    private var summary: String {
+        let sourceSummary = item.sources.prefix(3).map { "\($0.source): \($0.count)" }.joined(separator: ", ")
+        let skipped = item.skipped ?? 0
+        let skippedText = skipped > 0 ? ", \(skipped) skipped" : ""
+        let base = "\(item.records_found) record\(item.records_found == 1 ? "" : "s"), \(item.queued) queued, \(item.saved) saved\(skippedText)"
+        return sourceSummary.isEmpty ? base : "\(base) · \(sourceSummary)"
+    }
+
+    private var iconName: String {
+        item.status == "partial" ? "exclamationmark.triangle.fill" : "tray.full.fill"
+    }
+
+    private var iconColor: Color {
+        item.status == "partial" ? .orange : .accentColor
     }
 }
 
@@ -3526,7 +4786,7 @@ struct CaptureRecentSection: View {
                     .foregroundColor(.secondary)
             }
             if state.recent.isEmpty {
-                QuietState(title: "Nothing saved yet", detail: "Saved notes, web snippets, files, and clipboard text appear here.")
+                QuietState(title: "No model signals yet", detail: "Imported sources, notes, links, files, and clipboard text appear here.")
             } else {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     ForEach(state.recent) { item in
@@ -3546,17 +4806,20 @@ struct SearchTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                TextField("Search your Cortex memory", text: $state.searchQuery)
+                TextField("Ask or search: What did we decide about pricing?", text: $state.searchQuery)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { state.runSearch() }
                 Button {
                     state.runSearch()
                 } label: {
-                    Label("Search", systemImage: "magnifyingglass")
+                    Label("Ask Cortex", systemImage: "magnifyingglass")
                 }
             }
-            if state.searchResults.isEmpty {
-                QuietState(title: "No results", detail: "Try a person, project, decision, or topic.")
+            if state.searchResults.isEmpty && !state.hasSearched {
+                QuietState(title: "Ask your memory", detail: "Try a person, project, decision, preference, or phrase.")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if state.searchResults.isEmpty {
+                QuietState(title: "No saved memory matched that", detail: "Try a different person, project, decision, or topic.")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -3666,11 +4929,13 @@ struct TrustScoreSection: View {
 
 struct TrustPolicySection: View {
     @ObservedObject var state: AppState
+    @State private var selectedPreset: TrustPreset = .advanced
+    @State private var advancedExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Controls")
+                Text("Connected AI Access")
                     .font(.headline)
                 Spacer()
                 Button {
@@ -3680,63 +4945,114 @@ struct TrustPolicySection: View {
                 }
             }
 
-            TrustToggleRow(
-                title: "Review new saves",
-                detail: "New captures enter the inbox before you treat them as trusted.",
-                systemImage: "tray.full",
-                isOn: $state.appSettings.review_new_captures
-            )
-            TrustToggleRow(
-                title: "Let AI use pending saves",
-                detail: "Turn this off when only approved captures should appear in search and context packs.",
-                systemImage: "lock.open",
-                isOn: $state.appSettings.allow_pending_in_context
-            )
-            TrustToggleRow(
-                title: "Agent read access",
-                detail: "Connected MCP agents can search memory, read review context, and inspect stats.",
-                systemImage: "eye",
-                isOn: $state.appSettings.allow_agent_reads
-            )
-            TrustToggleRow(
-                title: "Agent write access",
-                detail: "Connected MCP agents can save, approve, archive, or forget memory.",
-                systemImage: "square.and.pencil",
-                isOn: $state.appSettings.allow_agent_writes
-            )
-            TrustToggleRow(
-                title: "Agent export access",
-                detail: "Connected MCP agents can build context packs or export memory.",
-                systemImage: "square.and.arrow.up",
-                isOn: $state.appSettings.allow_agent_exports
-            )
-            TrustToggleRow(
-                title: "Redact shared context",
-                detail: "Secrets, tokens, emails, and long account-like numbers are masked before sharing.",
-                systemImage: "text.badge.xmark",
-                isOn: $state.appSettings.redact_sensitive_context
-            )
+            Text("Choose what connected AI tools can do with memory stored on this Mac.")
+                .font(.body)
+                .foregroundColor(.secondary)
 
-            Stepper(value: $state.appSettings.context_pack_limit, in: 4...50, step: 2) {
-                Text("Context pack size: \(state.appSettings.context_pack_limit)")
+            Picker("Connected AI Access", selection: $selectedPreset) {
+                ForEach(TrustPreset.allCases) { preset in
+                    Text(preset.title).tag(preset)
+                }
+            }
+            .pickerStyle(.segmented)
+            .onAppear {
+                selectedPreset = state.currentTrustPreset()
+                advancedExpanded = selectedPreset == .advanced
+            }
+            .onChange(of: selectedPreset) { preset in
+                if preset == .advanced {
+                    advancedExpanded = true
+                } else {
+                    advancedExpanded = false
+                    state.applyTrustPreset(preset)
+                }
+            }
+            .onChange(of: state.appSettings) { settings in
+                let preset = TrustPreset.matching(settings)
+                selectedPreset = preset
+                if preset == .advanced {
+                    advancedExpanded = true
+                }
             }
 
-            HStack {
-                Button {
-                    state.saveMemorySettings()
-                } label: {
-                    Label("Save Controls", systemImage: "checkmark.circle")
-                }
-                .buttonStyle(.borderedProminent)
-                Button {
-                    Task {
-                        await state.loadSettings()
-                        await state.loadTrust()
+            TrustNotice(systemImage: "shield.lefthalf.filled", title: selectedPreset.title, detail: selectedPreset.detail, color: selectedPreset == .privateMode ? .green : .accentColor)
+
+            DisclosureGroup("Advanced permissions", isExpanded: $advancedExpanded) {
+                VStack(alignment: .leading, spacing: 12) {
+                    TrustToggleRow(
+                        title: "Review new saves",
+                        detail: "New captures enter the inbox before you treat them as trusted.",
+                        systemImage: "tray.full",
+                        isOn: $state.appSettings.review_new_captures
+                    )
+                    TrustToggleRow(
+                        title: "Let AI use pending saves",
+                        detail: "Turn this off when only approved captures should appear in search and AI access.",
+                        systemImage: "lock.open",
+                        isOn: $state.appSettings.allow_pending_in_context
+                    )
+                    TrustToggleRow(
+                        title: "Let connected AI read memory",
+                        detail: "Connected MCP agents can search memory, read review context, and inspect stats.",
+                        systemImage: "eye",
+                        isOn: $state.appSettings.allow_agent_reads
+                    )
+                    TrustToggleRow(
+                        title: "Let connected AI save memory",
+                        detail: "Connected MCP agents can save, approve, or archive memory.",
+                        systemImage: "square.and.pencil",
+                        isOn: $state.appSettings.allow_agent_writes
+                    )
+                    TrustToggleRow(
+                        title: "Let connected AI export context",
+                        detail: "Connected MCP agents can prepare redacted memory handoffs or export memory.",
+                        systemImage: "square.and.arrow.up",
+                        isOn: $state.appSettings.allow_agent_exports
+                    )
+                    TrustToggleRow(
+                        title: "Let connected AI run maintenance",
+                        detail: "Connected MCP agents can create backups, repair storage, or rebuild local indexes.",
+                        systemImage: "wrench.and.screwdriver",
+                        isOn: $state.appSettings.allow_agent_maintenance
+                    )
+                    TrustToggleRow(
+                        title: "Let connected AI delete data",
+                        detail: "Connected MCP agents can delete memories, captures, backups, or all local user data.",
+                        systemImage: "trash",
+                        isOn: $state.appSettings.allow_agent_destructive_actions
+                    )
+                    TrustToggleRow(
+                        title: "Redact shared context",
+                        detail: "Secrets, tokens, emails, and long account-like numbers are masked before sharing.",
+                        systemImage: "text.badge.xmark",
+                        isOn: $state.appSettings.redact_sensitive_context
+                    )
+
+                    Stepper(value: $state.appSettings.context_pack_limit, in: 4...50, step: 2) {
+                        Text("Shared memory limit: \(state.appSettings.context_pack_limit)")
                     }
-                } label: {
-                    Label("Reload", systemImage: "arrow.clockwise")
                 }
-                Spacer()
+                .padding(.top, 8)
+            }
+
+            if advancedExpanded {
+                HStack {
+                    Button {
+                        state.saveMemorySettings()
+                    } label: {
+                        Label("Save Settings", systemImage: "checkmark.circle")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button {
+                        Task {
+                            await state.loadSettings()
+                            await state.loadTrust()
+                        }
+                    } label: {
+                        Label("Reload", systemImage: "arrow.clockwise")
+                    }
+                    Spacer()
+                }
             }
         }
     }
@@ -3872,27 +5188,17 @@ struct TrustActionsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Receipts and recovery")
+            Text("Browser handoff")
                 .font(.headline)
             HStack {
                 Button {
                     state.copyDailyContextPack()
                 } label: {
-                    Label("Copy Redacted Context", systemImage: "doc.on.doc")
-                }
-                Button {
-                    state.createBackup()
-                } label: {
-                    Label("Backup Now", systemImage: "archivebox")
-                }
-                Button {
-                    state.openVaultFolder()
-                } label: {
-                    Label("Open Vault", systemImage: "folder")
+                    Label("Prepare Redacted Memory", systemImage: "doc.on.doc")
                 }
                 Spacer()
             }
-            TrustNotice(systemImage: "lock.doc", title: "Local-first", detail: "Trust controls apply to the local backend, MCP agents, context packs, and exports. The vault remains on this Mac.", color: .accentColor)
+            TrustNotice(systemImage: "lock.doc", title: "Local-first", detail: "Trust controls apply to the local backend, MCP agents, browser handoffs, and exports. The vault remains on this Mac.", color: .accentColor)
         }
     }
 }
@@ -3929,34 +5235,64 @@ struct AdvancedTab: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Group {
-                    AdvancedGraphSection(state: state)
-                    Divider()
-                    SettingsOnboardingSection(state: state)
-                    Divider()
-                    SettingsUpdatesSection(state: state)
+            VStack(alignment: .leading, spacing: 14) {
+                if let summary = state.trustSummary {
+                    TrustPolicySection(state: state)
+                    TrustScoreSection(summary: summary)
+                } else {
+                    QuietState(title: "AI access is loading", detail: "Cortex is reading local policy and source history.")
                 }
-                Group {
-                    Divider()
+
+                Divider()
+                SettingsPrivacySection(state: state)
+                Divider()
+                SettingsDataRecoverySection(state: state)
+
+                DisclosureGroup("AI apps") {
                     SettingsIntegrationsSection(state: state)
-                    Divider()
-                    SettingsBehaviorSection(state: state)
-                    Divider()
-                    SettingsReliabilitySection(state: state)
-                    Divider()
-                    SettingsHealthSection(state: state)
+                        .padding(.top, 8)
                 }
-                Group {
-                    Divider()
-                    SettingsStatsSection(state: state)
-                    Divider()
-                    SettingsBackendSection(state: state)
-                    Divider()
-                    SettingsPrivacySection()
+
+                DisclosureGroup("Advanced") {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Group {
+                            SettingsOnboardingSection(state: state)
+                            Divider()
+                            SettingsReliabilitySection(state: state)
+                            Divider()
+                        }
+                        Group {
+                            if let summary = state.trustSummary {
+                                TrustSourceSection(summary: summary)
+                                TrustAuditSection(events: state.auditEvents, refresh: {
+                                    Task { await state.loadTrust() }
+                                })
+                                TrustActionsSection(state: state)
+                            } else {
+                                QuietState(title: "Trust controls are loading", detail: "Cortex is reading local policy, source history, and audit events.")
+                            }
+                            Divider()
+                            AdvancedGraphSection(state: state)
+                            SettingsStatsSection(state: state)
+                            Divider()
+                        }
+                        Group {
+                            SettingsUpdatesSection(state: state)
+                            Divider()
+                            SettingsHealthSection(state: state)
+                            SettingsBackendSection(state: state)
+                        }
+                    }
+                    .padding(.top, 8)
                 }
             }
             .padding(16)
+        }
+        .task {
+            await state.loadTrust()
+            await state.loadDiagnostics()
+            await state.loadReliability()
+            await state.loadStats()
         }
     }
 }
@@ -3979,11 +5315,11 @@ struct SettingsOnboardingSection: View {
                 } label: {
                     Label("Open Vault", systemImage: "folder")
                 }
-                Button {
-                    state.copyMCPConfig()
-                } label: {
-                    Label("Copy MCP Config", systemImage: "doc.on.doc")
-                }
+            Button {
+                state.copyMCPConfig()
+            } label: {
+                Label("Copy MCP Setup", systemImage: "doc.on.doc")
+            }
                 Spacer()
             }
             Text("Vault: \(state.vaultPath)")
@@ -4143,7 +5479,7 @@ struct SettingsBehaviorSection: View {
             Toggle("Review new saves before clearing them", isOn: $state.appSettings.review_new_captures)
             Toggle("Let AI use pending saves", isOn: $state.appSettings.allow_pending_in_context)
             Stepper(value: $state.appSettings.context_pack_limit, in: 4...50, step: 2) {
-                Text("Context pack size: \(state.appSettings.context_pack_limit)")
+                Text("Shared memory limit: \(state.appSettings.context_pack_limit)")
             }
             HStack {
                 Button {
@@ -4485,13 +5821,98 @@ struct SettingsStatsSection: View {
 }
 
 struct SettingsPrivacySection: View {
+    @ObservedObject var state: AppState
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Privacy")
                 .font(.headline)
-            Text("Cortex only reads the clipboard when you press the hotkey or click a capture button. No screen recording, no ambient capture, and no background upload in this MVP.")
+            Text("Cortex only reads the clipboard when you click Save or enable the optional keyboard shortcut. No screen recording, no ambient capture, and no background upload.")
                 .font(.body)
                 .foregroundColor(.secondary)
+            Toggle("Keyboard shortcut: Cmd Shift V saves the clipboard", isOn: $state.globalClipboardHotkeyEnabled)
+                .onChange(of: state.globalClipboardHotkeyEnabled) { _ in
+                    state.saveHotkeyPreference()
+                }
+        }
+    }
+}
+
+struct SettingsDataRecoverySection: View {
+    @ObservedObject var state: AppState
+    @State private var confirmRestoreBackup = false
+    @State private var confirmDeleteBackups = false
+    @State private var confirmDeleteAllData = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Data & Recovery")
+                .font(.headline)
+            Text("Backups and destructive actions affect only this Mac's Cortex memory folder.")
+                .font(.body)
+                .foregroundColor(.secondary)
+            HStack {
+                Button {
+                    state.createBackup()
+                } label: {
+                    Label("Back Up Now", systemImage: "archivebox")
+                }
+                Button {
+                    confirmRestoreBackup = true
+                } label: {
+                    Label("Restore Latest Backup", systemImage: "arrow.counterclockwise")
+                }
+                Button {
+                    state.openVaultFolder()
+                } label: {
+                    Label("Open Memory Folder", systemImage: "folder")
+                }
+                Spacer()
+            }
+            HStack {
+                Button {
+                    confirmDeleteBackups = true
+                } label: {
+                    Label("Delete Backup Archives", systemImage: "externaldrive.badge.minus")
+                }
+                Button(role: .destructive) {
+                    confirmDeleteAllData = true
+                } label: {
+                    Label("Delete All Local Data", systemImage: "trash")
+                }
+                Spacer()
+            }
+            if let backup = state.lastBackupPath {
+                Text("Latest backup: \(backup)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+            }
+        }
+        .alert("Restore latest backup?", isPresented: $confirmRestoreBackup) {
+            Button("Restore", role: .destructive) {
+                state.restoreLatestBackup()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This replaces current vault records with the latest local backup, then rebuilds the local search index.")
+        }
+        .alert("Delete local backup archives?", isPresented: $confirmDeleteBackups) {
+            Button("Delete Backups", role: .destructive) {
+                state.deleteBackups()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes local backup archives from the Cortex memory folder. Current memories are not deleted.")
+        }
+        .alert("Delete all local Cortex data?", isPresented: $confirmDeleteAllData) {
+            Button("Delete All Data", role: .destructive) {
+                state.deleteAllUserData()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes current captures, memories, tasks, graph data, settings, events, attachments, and backup archives from this vault.")
         }
     }
 }
@@ -4595,8 +6016,8 @@ struct CaptureCard: View {
             .font(.caption)
             .foregroundColor(.secondary)
             HStack {
-                Button("Approve") { approve() }
-                Button("Archive") { archive() }
+                Button("Keep") { approve() }
+                Button("Ignore") { archive() }
                 Spacer()
             }
         }
@@ -4609,6 +6030,7 @@ struct CaptureCard: View {
 struct MemoryCard: View {
     let item: MemoryItem
     var onArchive: (() -> Void)? = nil
+    @State private var confirmForget = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -4617,6 +6039,11 @@ struct MemoryCard: View {
                     .font(.caption2)
                     .fontWeight(.semibold)
                     .foregroundColor(color(for: item.kind))
+                if let layer = item.layer, layer != item.kind {
+                    Text(layer.uppercased())
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
                 Text(item.source)
                     .font(.caption2)
                     .foregroundColor(.secondary)
@@ -4627,8 +6054,16 @@ struct MemoryCard: View {
                         .foregroundColor(.secondary)
                 }
                 if let onArchive {
-                    Button("Archive") { onArchive() }
+                    Button("Forget") { confirmForget = true }
                         .font(.caption)
+                        .confirmationDialog("Forget this memory?", isPresented: $confirmForget) {
+                            Button("Forget", role: .destructive) {
+                                onArchive()
+                            }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("Cortex will remove this saved memory from local search and exports.")
+                        }
                 }
             }
             Text(item.content)
@@ -4649,6 +6084,8 @@ struct MemoryCard: View {
         switch kind {
         case "decision": return .red
         case "preference": return .purple
+        case "style": return .teal
+        case "negative": return .orange
         case "question": return .orange
         case "action": return .green
         default: return .blue
@@ -4702,6 +6139,8 @@ struct GraphCanvas: View {
         case "person": return .pink
         case "project": return .purple
         case "decision": return .red
+        case "style": return .teal
+        case "negative": return .orange
         case "action", "question": return .orange
         case "source": return .green
         default: return .blue
@@ -4719,6 +6158,7 @@ final class HotKeyManager {
     }
 
     func register() {
+        guard hotKeyRef == nil else { return }
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let callback: EventHandlerUPP = { _, _, userData in
             guard let userData else { return noErr }
@@ -4729,6 +6169,21 @@ final class HotKeyManager {
         InstallEventHandler(GetApplicationEventTarget(), callback, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), &eventHandler)
         let hotKeyID = EventHotKeyID(signature: fourCharCode("CRTX"), id: 1)
         RegisterEventHotKey(UInt32(kVK_ANSI_V), UInt32(cmdKey | shiftKey), hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
+    }
+
+    func unregister() {
+        if let hotKeyRef {
+            UnregisterEventHotKey(hotKeyRef)
+            self.hotKeyRef = nil
+        }
+        if let eventHandler {
+            RemoveEventHandler(eventHandler)
+            self.eventHandler = nil
+        }
+    }
+
+    deinit {
+        unregister()
     }
 }
 
@@ -4755,11 +6210,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         setupStatusItem()
         setupMainWindow()
         NotificationCenter.default.addObserver(self, selector: #selector(onboardingCompleted), name: .cortexOnboardingCompleted, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(hotkeyPreferenceChanged), name: .cortexHotkeyPreferenceChanged, object: nil)
         hotKey = HotKeyManager { [weak self] in
             self?.state.captureClipboard()
             self?.showMainWindow()
         }
-        hotKey.register()
+        applyHotkeyPreference()
         showMainWindow()
         DispatchQueue.main.async { [weak self] in
             self?.showMainWindow()
@@ -4834,6 +6290,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         mainWindow?.level = .normal
         mainWindow?.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         showMainWindow()
+    }
+
+    @objc private func hotkeyPreferenceChanged() {
+        applyHotkeyPreference()
+    }
+
+    private func applyHotkeyPreference() {
+        if UserDefaults.standard.bool(forKey: "globalClipboardHotkeyEnabled.v1") {
+            hotKey.register()
+        } else {
+            hotKey.unregister()
+        }
     }
 
     private func showMainWindow() {

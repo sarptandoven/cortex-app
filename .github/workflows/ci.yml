@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python checks and backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile Python sources
+        run: |
+          python -m compileall -q \
+            backend \
+            scripts \
+            capture.py \
+            github_store.py \
+            ingest.py \
+            instrumentation.py \
+            mcp_server.py \
+            redis_store.py \
+            ui.py
+
+      - name: Run backend unit tests
+        run: python -m unittest discover backend/tests
+
+  distribution:
+    name: Distribution site and update manifest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate distribution site
+        run: python scripts/check_distribution_site.py
+
+      - name: Validate site update manifest
+        run: python scripts/validate_update_manifest.py site/downloads/latest.json
+
+  macos-app:
+    name: macOS app build
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build app bundle
+        env:
+          CORTEX_BUNDLE_PYTHON: "0"
+          CORTEX_CODESIGN_IDENTITY: "-"
+          CORTEX_CODESIGN_TIMESTAMP: "0"
+        run: ./macos/build.sh
+
+      - name: Verify ad-hoc signed app
+        run: codesign --verify --deep --strict --verbose=2 macos/build/Cortex.app

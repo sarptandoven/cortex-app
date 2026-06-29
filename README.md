@@ -1,19 +1,20 @@
 # Cortex
 
-You, but AI.
+Your private personal memory model for AI tools.
 
-Cortex is a local-first memory layer for AI agents. It helps ChatGPT, Claude, Cursor, and MCP-compatible tools reuse your preferences, decisions, project context, people, and open loops instead of starting from zero every time.
+Cortex is a local-first personal memory and adaptation layer. It turns approved chats, notes, files, writing samples, decisions, people, projects, and open loops into cited memory that AI tools can retrieve instead of guessing or starting from zero.
 
 ## What Exists Now
 
 - Native macOS app that opens as a normal window from the Dock
 - Bundled local backend on `127.0.0.1:8766`
 - User-owned local vault at `~/Library/Application Support/Cortex/Cortex.vault/`
-- SQLite FTS search with optional `sqlite-vec`
+- SQLite FTS search with optional `sqlite-vec` and opt-in OpenAI embeddings
 - Capture surfaces for clipboard, quick notes, files, browser capture, and drop-folder import
-- Today loop: Capture, Review, Reuse, Return
+- Stage 1 source import with preview, duplicate-safe history, and batch undo for user-selected exports, folders, and files from ChatGPT, Claude, Notion, Gmail/email, Slack, Discord, Telegram, Google Keep, Messages, WhatsApp, bookmarks, calendars, contacts, LinkedIn, Twitter/X, docs, notes, and work-tool exports
+- Model loop: Signal, Review, Access, Return
 - Review inbox for approve/archive
-- Copy-ready context packs for ChatGPT, Claude, Cursor, and other assistants
+- Cited personal adaptation profile for ChatGPT, Claude, Cursor, MCP tools, and browser handoffs
 - Local MCP bridge and one-click config helpers
 - Trust controls for agent reads, writes, exports, redaction, and maintenance
 - Reliability report, backup-first repair, and local vault backups
@@ -65,8 +66,8 @@ python3 -m http.server 8780
 ```bash
 python3 -m unittest discover backend/tests
 python3 scripts/ops_readiness_check.py --refresh-site
-python3 scripts/reliability_check.py --base-url http://127.0.0.1:8766 --token dev-local-key
-python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token dev-local-key
+python3 scripts/reliability_check.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
+python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
 codesign --verify --deep --strict --verbose=2 macos/build/Cortex.app
 ```
 
@@ -80,8 +81,10 @@ python3 scripts/export_support_bundle.py --mode offline
 ## Key Docs
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Memory Backend Blueprint](docs/MEMORY_BACKEND_BLUEPRINT.md)
 - [Simple Product Loop](docs/SIMPLE_PRODUCT_LOOP.md)
 - [Capture Surfaces](docs/CAPTURE_SURFACES.md)
+- [Source Imports](docs/SOURCE_IMPORTS.md)
 - [Trust Controls](docs/TRUST_CONTROLS.md)
 - [Reliability Hardening](docs/RELIABILITY_HARDENING.md)
 - [Operational Readiness](docs/OPERATIONAL_READINESS.md)

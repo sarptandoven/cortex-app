@@ -12,6 +12,29 @@ Cortex trust controls define what can become memory, what connected agents can r
 
 ## User Controls
 
+## Default Posture
+
+New local vaults start in a guarded mode:
+
+- new saves enter review by default,
+- pending saves can appear in app search/context until the user switches to strict mode,
+- MCP agent read tools are enabled for retrieval,
+- MCP agent write, export, maintenance, and destructive tools are disabled until the user opts in,
+- shared context redaction is enabled.
+
+This keeps the core retrieval loop useful while avoiding silent agent mutation or bulk export on first launch.
+
+## Token Boundary
+
+The packaged app now keeps two local secrets:
+
+- the admin app token, stored in Keychain and used by the macOS app for REST API calls;
+- a scoped `cxm_` MCP token, also stored in Keychain and copied into local AI-tool MCP configs.
+
+REST endpoints require the admin app token. `/mcp` accepts the admin token for backward compatibility, but new copied or installed MCP configs use the scoped MCP token. MCP tool calls must pass both checks: the token must include the needed scope and the user's Trust toggle for that capability must be enabled.
+
+Default MCP token scopes are `read`, `write`, `export`, and `maintenance`. The destructive scope is not included in newly generated local integration tokens.
+
 ### Review New Saves
 
 When enabled, new captures enter the inbox as `pending`.
@@ -56,9 +79,37 @@ When disabled, connected agents cannot inspect memory through MCP.
 - `remember_this`
 - `approve_memory_capture`
 - `archive_memory_capture`
-- `forget_memory`
 
 When disabled, connected agents cannot mutate memory or review state.
+
+This is disabled by default for new local vaults.
+
+### Agent Maintenance Access
+
+`allow_agent_maintenance` controls MCP maintenance tools:
+
+- `create_memory_backup`
+- `repair_memory_storage`
+- `rebuild_memory_search`
+- `rebuild_index_from_vault`
+
+When disabled, connected agents cannot run storage maintenance or rebuild jobs.
+
+This is disabled by default for new local vaults.
+
+### Agent Destructive Access
+
+`allow_agent_destructive_actions` controls MCP destructive tools:
+
+- `forget_memory`
+- `delete_memory_capture`
+- `delete_memory_backups`
+- `restore_latest_memory_backup`
+- `delete_all_user_data`
+
+When disabled, connected agents cannot delete records, delete backup archives, restore backups over current state, or delete all local user data.
+
+This is disabled by default for new local vaults.
 
 ### Agent Export Access
 
@@ -68,6 +119,8 @@ When disabled, connected agents cannot mutate memory or review state.
 - `export_memory`
 
 When disabled, connected agents cannot export or build large context bundles.
+
+This is disabled by default for new local vaults.
 
 ### Redact Shared Context
 
@@ -98,6 +151,8 @@ Important event types:
 - capture created
 - capture approved
 - capture archived
+- import created
+- import deleted
 - memory archived
 - settings updated
 - backup created
@@ -113,6 +168,7 @@ MCP audit events include safe metadata only:
 - content character count
 - query preview
 - short error text
+- token id, label, audience, admin flag, and scopes
 
 They do not store full MCP prompts or full content payloads in audit metadata.
 
@@ -147,6 +203,7 @@ The Trust tab exposes:
 - trust score and warnings
 - review and pending-context toggles
 - agent read/write/export toggles
+- agent maintenance/destructive toggles
 - shared-context redaction toggle
 - context pack size
 - capture source breakdown
@@ -157,7 +214,8 @@ The Trust tab exposes:
 
 This is a local-first trust layer. It does not yet include:
 
-- per-integration OAuth scopes
+- remote per-integration OAuth scopes
+- UI for issuing custom per-integration token scopes
 - per-tool remote consent screens
 - signed event logs
 - biometric unlock

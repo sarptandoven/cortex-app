@@ -3,13 +3,13 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Cortex - You, but AI</title>
+    <title>Cortex - Private Personal Memory Model</title>
     <meta
       name="description"
-      content="Cortex is the local memory and action layer for AI agents, helping ChatGPT, Claude, Cursor, and MCP tools work from your context."
+      content="Cortex builds a private personal memory model from approved life and work data, then gives AI tools scoped, cited memory."
     />
-    <meta property="og:title" content="Cortex - You, but AI" />
-    <meta property="og:description" content="The local memory layer that helps AI agents work the way you do." />
+    <meta property="og:title" content="Cortex - Private Personal Memory Model" />
+    <meta property="og:description" content="The local adaptation layer that gives AI tools scoped, cited memory." />
     <meta property="og:type" content="website" />
     <meta name="theme-color" content="#f8f7f1" />
     <link rel="icon" href="favicon.svg" type="image/svg+xml" />
@@ -34,11 +34,11 @@
       <section class="hero" aria-labelledby="hero-title">
         <canvas id="memoryCanvas" aria-hidden="true"></canvas>
         <div class="hero-copy">
-          <p class="eyebrow">Local-first memory for AI agents</p>
+          <p class="eyebrow">Private personal model for AI tools</p>
           <h1 id="hero-title">Cortex</h1>
-          <p class="hero-line">You, but AI.</p>
+          <p class="hero-line">Your private personal memory model for AI.</p>
           <p class="hero-text">
-            Cortex gives ChatGPT, Claude, Cursor, and MCP agents your memory, preferences, decisions, and open loops so they can work with context instead of starting from zero.
+            Cortex turns approved chats, email, notes, writing, decisions, and messages into cited memory layers that AI tools can retrieve with user-controlled access.
           </p>
           <div class="hero-actions" aria-label="Download actions">
             <a class="button primary download-link" href="downloads/Cortex-0.1.0-1.dmg">Download macOS beta</a>
@@ -51,7 +51,7 @@
             </div>
             <div>
               <dt>Assistants</dt>
-              <dd>ChatGPT, Claude, Cursor, MCP</dd>
+              <dd>ChatGPT, Claude, Cursor</dd>
             </div>
             <div>
               <dt>Price</dt>
@@ -68,7 +68,7 @@
             <h2 id="problem-title">Every assistant forgets the work you already did.</h2>
           </div>
           <p>
-            Cortex turns scattered decisions, notes, project context, people, and open loops into a reusable memory layer. Save once, review what matters, then paste or expose the right context to the AI tool you already use.
+            Cortex builds a private adaptation layer from chats, email, notes, writing, decisions, and messages. It shows what the model covers, what still needs signal, and lets approved AI tools retrieve scoped memory instead of guessing.
           </p>
         </div>
       </section>
@@ -76,31 +76,31 @@
       <section id="loop" class="section" aria-labelledby="loop-title">
         <div class="section-heading">
           <p class="eyebrow">The product loop</p>
-          <h2 id="loop-title">Capture, review, reuse, return.</h2>
+          <h2 id="loop-title">Signal, review, access, return.</h2>
           <p>
-            The first release is intentionally simple. It focuses on the one habit that makes AI memory valuable every day.
+            The first release focuses on the habits that make a personal model trustworthy: add sources, approve useful signals, and let AI tools access only what you allow.
           </p>
         </div>
         <div class="loop-grid">
           <article class="loop-step">
             <span>01</span>
-            <h3>Capture</h3>
-            <p>Save a clipboard snippet, quick note, browser page, file, or AI conversation.</p>
+            <h3>Signal</h3>
+            <p>Import selected exports, folders, and files from chats, email, notes, messages, docs, writing, bookmarks, calendars, contacts, and work tools.</p>
           </article>
           <article class="loop-step">
             <span>02</span>
             <h3>Review</h3>
-            <p>Approve useful context, archive noise, and keep the memory layer trustworthy.</p>
+            <p>Approve useful signals, archive noise, and keep the memory layers trustworthy.</p>
           </article>
           <article class="loop-step">
             <span>03</span>
-            <h3>Reuse</h3>
-            <p>Copy a context pack or connect an MCP tool before starting work in an assistant.</p>
+            <h3>Access</h3>
+            <p>Use a cited adaptation profile or connect a supported local tool before starting work in an assistant.</p>
           </article>
           <article class="loop-step">
             <span>04</span>
             <h3>Return</h3>
-            <p>Open Today to see the next useful action and keep the loop moving.</p>
+            <p>Open Cortex to see coverage, weak layers, and the next source that would improve the model.</p>
           </article>
         </div>
       </section>
@@ -108,9 +108,9 @@
       <section id="integrations" class="section split-section" aria-labelledby="integrations-title">
         <div>
           <p class="eyebrow">Works where users already are</p>
-          <h2 id="integrations-title">A memory layer for everyday AI tools.</h2>
+          <h2 id="integrations-title">A personal model for everyday AI tools.</h2>
           <p>
-            Cortex starts with copy-ready context packs and local MCP setup for tools that can connect directly. That keeps the first version useful before a hosted backend exists.
+            Cortex starts with local source ingestion, approved-memory browser handoff, and local tool setup for apps that can connect directly. The profile stays cited and coverage-limited, not a fake claim that the model is already you.
           </p>
         </div>
         <div class="integration-grid" aria-label="Supported surfaces">
@@ -131,7 +131,7 @@
           <p class="eyebrow">Trust controls</p>
           <h2 id="trust-title">Private by default, useful on purpose.</h2>
           <p>
-            Cortex stores memory on the user's Mac, exposes local diagnostics, and lets users choose what agents can read, write, export, or repair.
+            Cortex stores memory on the user's Mac, shows what is covered, and lets users choose what connected tools can read, write, export, or repair.
           </p>
         </div>
         <div class="trust-grid">
@@ -166,12 +166,31 @@
             <span id="releaseChannel">local-beta</span>
             <span id="releaseSize">DMG ready</span>
           </div>
-          <div class="download-actions">
+          <div class="download-primary-panel">
             <a class="button primary download-link" href="downloads/Cortex-0.1.0-1.dmg">Download DMG</a>
-            <a class="button secondary zip-link" href="downloads/Cortex-0.1.0-1.app.zip">Download ZIP</a>
-            <a class="button secondary" href="downloads/latest.json">Update feed</a>
+            <p id="primaryArtifactLabel">Cortex 0.1.0 installer for macOS 13 or later.</p>
           </div>
-          <p class="checksum" id="checksumText">SHA-256 checksums are included with the release.</p>
+          <details class="download-advanced">
+            <summary>Advanced download details</summary>
+            <div class="advanced-downloads">
+              <a class="advanced-download zip-link" href="downloads/Cortex-0.1.0-1.app.zip">
+                <span>ZIP archive</span>
+                <small id="zipArtifactMeta">Manual app archive for advanced installs.</small>
+              </a>
+              <a class="advanced-download" href="downloads/latest.json">
+                <span>Update feed</span>
+                <small>Machine-readable release manifest.</small>
+              </a>
+              <a class="advanced-download" href="downloads/Cortex-0.1.0-1.checksums.txt">
+                <span>Checksum file</span>
+                <small>All release SHA-256 hashes.</small>
+              </a>
+            </div>
+            <div class="checksum-list" aria-label="Release checksums">
+              <p class="checksum" id="checksumText">DMG SHA-256 checksums are included with the release.</p>
+              <p class="checksum" id="zipChecksumText">ZIP SHA-256 checksums are included with the release.</p>
+            </div>
+          </details>
         </div>
         <ol id="install" class="install-list" aria-label="Install steps">
           <li>
@@ -183,12 +202,12 @@
             <span>If macOS warns, Control-click Cortex and choose Open for this local beta.</span>
           </li>
           <li>
-            <strong>Choose vault</strong>
-            <span>Keep the default local vault or choose a folder you already back up.</span>
+            <strong>Keep local</strong>
+            <span>Use the default local memory folder or choose one you already back up.</span>
           </li>
           <li>
             <strong>Connect</strong>
-            <span>Copy a context pack or install the local MCP config for an assistant.</span>
+            <span>Prepare an approved-memory handoff or connect a supported local AI tool.</span>
           </li>
         </ol>
       </section>

@@ -5,17 +5,19 @@ FastAPI backend for the Cortex MVP.
 It provides:
 
 - capture ingestion
+- source import preview, duplicate-safe history, and batch undo for user-selected exports, folders, and files
 - structured memory extraction
+- layered memory metadata for semantic, episodic, style, decision, preference, and negative memory
 - user-owned local vault persistence
 - SQLite/FTS rebuildable local index
 - full-text search
-- optional `sqlite-vec` vector search
+- optional `sqlite-vec` vector search with offline hash embeddings by default and opt-in OpenAI embeddings
 - review inbox
-- capture approve/archive lifecycle
+- capture approve/archive/delete lifecycle
 - daily review with recommended actions
-- simple product loop for capture, review, reuse, and return
-- copy-ready context packs for ChatGPT, Claude, Cursor, and other assistants
-- user settings for review behavior, pending-memory visibility, and context-pack size
+- model-building loop for signal, review, access, and return
+- cited personal adaptation profiles for ChatGPT, Claude, Cursor, and other assistants
+- user settings for review behavior, pending-memory visibility, and shared-memory size
 - stats and export
 - graph/node mapping
 - diagnostics, reliability reports, support bundles, backups, repair, and search maintenance
@@ -40,9 +42,16 @@ CORTEX_VAULT_PATH=./data/Cortex.vault
 CORTEX_DB_PATH=./data/Cortex.vault/index.sqlite
 CORTEX_API_KEY=dev-local-key
 ANTHROPIC_API_KEY=optional
+CORTEX_EMBEDDING_PROVIDER=hash
+CORTEX_EMBEDDING_MODEL=text-embedding-3-small
+CORTEX_EMBEDDING_DIMENSIONS=384
+CORTEX_EMBEDDING_STRICT=0
+OPENAI_API_KEY=optional
 ```
 
 If `ANTHROPIC_API_KEY` is missing, the backend uses a deterministic local extractor so capture/search still work.
+
+If `CORTEX_EMBEDDING_PROVIDER=openai`, Cortex calls OpenAI's embeddings endpoint with the configured model and stores the resulting vectors in the rebuildable SQLite index. Leave the provider as `hash` for fully offline local search. Non-strict OpenAI mode falls back to hash embeddings when the provider is unavailable; set `CORTEX_EMBEDDING_STRICT=1` when indexing should fail instead. Keep `CORTEX_EMBEDDING_DIMENSIONS=384` for the current local sqlite-vec schema.
 
 ## Core Endpoints
 
@@ -51,9 +60,22 @@ GET    /
 GET    /health
 GET    /ready
 POST   /v1/captures
+POST   /v1/captures/queue
+GET    /v1/captures/{capture_id}/status
+GET    /v1/imports/sources
+POST   /v1/imports/analyze
+GET    /v1/imports
+POST   /v1/imports
+GET    /v1/imports/{import_id}
+DELETE /v1/imports/{import_id}
+GET    /v1/jobs
+GET    /v1/jobs/{job_id}
+POST   /v1/maintenance/jobs/run
 GET    /v1/inbox
 POST   /v1/captures/{capture_id}/approve
 POST   /v1/captures/{capture_id}/archive
+DELETE /v1/captures/{capture_id}
+DELETE /v1/memories/{memory_id}
 GET    /v1/recent
 GET    /v1/search
 GET    /v1/tasks/open
@@ -72,6 +94,9 @@ GET    /v1/diagnostics
 GET    /v1/reliability/report
 GET    /v1/support/bundle
 POST   /v1/backups
+POST   /v1/backups/restore-latest
+DELETE /v1/backups
+DELETE /v1/user-data
 POST   /v1/maintenance/repair-storage
 POST   /v1/maintenance/rebuild-search
 POST   /v1/maintenance/rebuild-index-from-vault
@@ -86,7 +111,7 @@ The macOS app bundles `app.standalone_server`, a dependency-light local HTTP ser
 
 ## Storage
 
-The local beta uses a user-owned vault folder plus a rebuildable SQLite index. Captures, memories, tasks, entities, graph edges, settings, and audit events are written as JSON/JSONL under `Cortex.vault/`. `index.sqlite` is used for fast FTS5/sqlite-vec search and graph queries, but it can be rebuilt from the vault records.
+The local beta uses a user-owned vault folder plus a rebuildable SQLite index. Import sessions, captures, memories, tasks, entities, graph edges, settings, and audit events are written as JSON/JSONL under `Cortex.vault/`. `index.sqlite` is used for fast FTS5/sqlite-vec search, embedding metadata, and graph queries, but it can be rebuilt from the vault records.
 
 See `docs/LOCAL_VAULT_FORMAT.md` for the full disk layout and recovery contract.
 

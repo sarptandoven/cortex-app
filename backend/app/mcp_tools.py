@@ -27,7 +27,12 @@ TOOLS = [
         "description": "Search Cortex memory across saved context.",
         "inputSchema": {
             "type": "object",
-            "properties": {"query": {"type": "string"}, "top_k": {"type": "integer", "default": 8}},
+            "properties": {
+                "query": {"type": "string"},
+                "top_k": {"type": "integer", "default": 8},
+                "kind": {"type": "string"},
+                "layer": {"type": "string", "enum": ["semantic", "episodic", "style", "decision", "preference", "negative"]},
+            },
             "required": ["query"],
         },
     },
@@ -48,12 +53,30 @@ TOOLS = [
     },
     {
         "name": "get_product_loop",
-        "description": "Return the simple Cortex product loop state: capture, review, reuse, and return.",
+        "description": "Return the Cortex model-building loop state: signal, review, access, and return.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_personal_profile",
+        "description": "Return a cited Cortex personal adaptation profile grouped by memory layer, coverage, sources, and limitations.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "default": ""},
+                "limit": {"type": "integer", "default": 6},
+                "include_pending": {"type": "boolean", "default": False},
+                "format": {"type": "string", "default": "json", "enum": ["json", "markdown"]},
+            },
+        },
+    },
+    {
+        "name": "list_supported_import_sources",
+        "description": "List source exports Cortex can import, including chat, email, notes, docs, work tools, and knowledge-base formats.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "build_context_pack",
-        "description": "Build a copy-ready context pack for ChatGPT, Claude, Cursor, or another assistant.",
+        "description": "Build a scoped Cortex memory view for ChatGPT, Claude, Cursor, or another assistant.",
         "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "default": ""}, "limit": {"type": "integer", "default": 12}, "target": {"type": "string", "default": "mcp-agent"}}},
     },
     {
@@ -127,6 +150,21 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
+        "name": "delete_memory_backups",
+        "description": "Delete local Cortex backup archives so older deleted data is not retained there.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "restore_latest_memory_backup",
+        "description": "Restore Cortex vault records from the latest local backup archive and rebuild the local search index.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "delete_all_user_data",
+        "description": "Delete the current user's Cortex data from the local vault and index. Includes backup archives by default.",
+        "inputSchema": {"type": "object", "properties": {"include_backups": {"type": "boolean", "default": True}}},
+    },
+    {
         "name": "repair_memory_storage",
         "description": "Back up Cortex, remove stale local index rows, and rebuild search for active memories.",
         "inputSchema": {"type": "object", "properties": {}},
@@ -148,8 +186,13 @@ TOOLS = [
     },
     {
         "name": "forget_memory",
-        "description": "Archive one memory by id.",
+        "description": "Permanently delete one memory by id from the active index and local vault records.",
         "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
+    },
+    {
+        "name": "delete_memory_capture",
+        "description": "Permanently delete one captured source and its derived memories/tasks from the active index and local vault records.",
+        "inputSchema": {"type": "object", "properties": {"capture_id": {"type": "string"}}, "required": ["capture_id"]},
     },
     {
         "name": "get_trust_summary",
@@ -170,6 +213,8 @@ READ_TOOLS = {
     "get_memory_graph",
     "get_daily_review",
     "get_product_loop",
+    "get_personal_profile",
+    "list_supported_import_sources",
     "get_decisions",
     "get_open_questions",
     "list_memory_topics",
@@ -184,25 +229,36 @@ READ_TOOLS = {
     "get_trust_summary",
     "get_audit_log",
 }
-WRITE_TOOLS = {"remember_this", "approve_memory_capture", "archive_memory_capture", "forget_memory"}
+WRITE_TOOLS = {"remember_this", "approve_memory_capture", "archive_memory_capture", "forget_memory", "delete_memory_capture"}
 EXPORT_TOOLS = {"build_context_pack", "export_memory"}
 MAINTENANCE_TOOLS = {"create_memory_backup", "repair_memory_storage", "rebuild_memory_search", "rebuild_index_from_vault"}
+DESTRUCTIVE_TOOLS = {"forget_memory", "delete_memory_capture", "delete_memory_backups", "restore_latest_memory_backup", "delete_all_user_data"}
 
 
-def _require_tool_access(store: CortexStore, user_id: str, name: str) -> None:
+def tool_required_capabilities(name: str) -> list[str]:
+    capabilities: list[str] = []
     if name in READ_TOOLS:
-        store.require_agent_access(user_id, "read")
+        capabilities.append("read")
     if name in WRITE_TOOLS:
-        store.require_agent_access(user_id, "write")
+        capabilities.append("write")
     if name in EXPORT_TOOLS:
-        store.require_agent_access(user_id, "read")
-        store.require_agent_access(user_id, "export")
+        capabilities.extend(["read", "export"])
     if name in MAINTENANCE_TOOLS:
-        store.require_agent_access(user_id, "maintenance")
+        capabilities.append("maintenance")
+    if name in DESTRUCTIVE_TOOLS:
+        capabilities.append("destructive")
+    return list(dict.fromkeys(capabilities))
 
 
-def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any]) -> Any:
-    _require_tool_access(store, user_id, name)
+def _require_tool_access(store: CortexStore, user_id: str, name: str, token_scopes: list[str] | None = None) -> None:
+    for capability in tool_required_capabilities(name):
+        if token_scopes is not None and capability not in token_scopes:
+            raise PermissionError(f"MCP token is not scoped for {capability} actions.")
+        store.require_agent_access(user_id, capability)
+
+
+def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any], token_scopes: list[str] | None = None) -> Any:
+    _require_tool_access(store, user_id, name, token_scopes)
     if name == "remember_this":
         content = args.get("content", "")
         source = args.get("source", "ai-chat")
@@ -216,7 +272,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any])
             extracted=extracted,
         ))
     if name == "search_memory":
-        return store.agent_payload(user_id, store.search(user_id, args.get("query", ""), int(args.get("top_k", 8))))
+        return store.agent_payload(user_id, store.search(user_id, args.get("query", ""), int(args.get("top_k", 8)), kind=args.get("kind"), layer=args.get("layer")))
     if name == "get_recent_context":
         return store.agent_payload(user_id, store.recent(user_id, int(args.get("limit", 10))))
     if name == "get_memory_graph":
@@ -225,6 +281,19 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any])
         return store.agent_payload(user_id, store.daily_review(user_id))
     if name == "get_product_loop":
         return store.product_loop(user_id)
+    if name == "get_personal_profile":
+        profile = store.personal_profile(
+            user_id,
+            query=args.get("query", ""),
+            limit=int(args.get("limit", 6)),
+            include_pending=bool(args.get("include_pending", False)),
+        )
+        store.record_context_reuse(user_id, surface="mcp", query=args.get("query", ""), target="personal-profile")
+        if args.get("format", "json") == "markdown":
+            return profile["markdown"]
+        return store.agent_payload(user_id, profile)
+    if name == "list_supported_import_sources":
+        return {"results": store.supported_import_sources()}
     if name == "build_context_pack":
         query = args.get("query", "")
         value = store.context_pack(user_id, query, int(args.get("limit", 12)))
@@ -258,6 +327,12 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any])
         return store.support_bundle(user_id)
     if name == "create_memory_backup":
         return store.create_backup(user_id)
+    if name == "delete_memory_backups":
+        return store.delete_backups(user_id)
+    if name == "restore_latest_memory_backup":
+        return store.restore_latest_backup(user_id)
+    if name == "delete_all_user_data":
+        return store.delete_user_data(user_id, include_backups=bool(args.get("include_backups", True)))
     if name == "repair_memory_storage":
         return store.repair_storage(user_id)
     if name == "rebuild_memory_search":
@@ -270,6 +345,8 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any])
         return store.export_markdown(user_id)
     if name == "forget_memory":
         return {"deleted": store.delete_memory(user_id, args["id"])}
+    if name == "delete_memory_capture":
+        return {"deleted": store.delete_capture(user_id, args["capture_id"])}
     if name == "get_trust_summary":
         return store.trust_summary(user_id)
     if name == "get_audit_log":

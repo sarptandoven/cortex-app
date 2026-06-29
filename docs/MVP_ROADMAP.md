@@ -4,9 +4,9 @@
 
 Cortex is the shared memory layer for every AI assistant a person uses. The first product should make one promise extremely well:
 
-> Save context once. ChatGPT, Claude, and other AI tools can retrieve it later with sources.
+> Import your trusted life and work context once. ChatGPT, Claude, and other AI tools can retrieve it later with sources.
 
-The current repo proves the core idea: capture text, extract structured memory, store it, search it, and expose it to AI through MCP. The MVP turns that prototype into a product with a hosted backend, a native macOS capture client, and a stable API contract.
+The current repo proves the core idea: import source data, extract structured memory, store it, search it, and expose it to AI through MCP. The MVP turns that prototype into a product with a native macOS source importer, local-first backend, and stable API contract.
 
 ## Target User
 
@@ -14,11 +14,11 @@ Start with AI power users who already use ChatGPT, Claude, Cursor, Slack, Notion
 
 ## MVP Magic Moment
 
-1. The user copies text from any app.
-2. They press `Cmd+Shift+V`.
-3. Cortex saves and structures the memory.
+1. The user selects exports, folders, or files from tools like ChatGPT, Claude, Notion, Gmail, Slack, Messages, docs, notes, bookmarks, calendars, contacts, LinkedIn, or Twitter/X.
+2. Cortex detects source types, normalizes records locally, and queues extraction.
+3. The user reviews useful memory signals and archives noise.
 4. In a later ChatGPT or Claude session, the user asks, "What did I decide about this?"
-5. The AI retrieves the relevant memories with sources.
+5. The AI retrieves cited semantic, episodic, style, decision, preference, and negative memories with sources.
 
 ## Build Phases
 
@@ -29,7 +29,8 @@ Goal: one developer can run Cortex locally and use the macOS app every day.
 - FastAPI backend with capture, extraction, memory storage, search, graph, and MCP-style endpoints
 - SQLite database with full-text search for zero-cost local use
 - SQLite schema with review status, normalized topics/entities, source graph edges, and lifecycle events
-- Native macOS menu bar app with global hotkey, clipboard capture, quick note, review inbox, search, recent memories, stats, export, and graph view
+- Native macOS app with source import, clipboard capture, optional global hotkey, quick note, review inbox, search, recent memories, stats, export, and graph view
+- Stage 1 local source ingestion for user-selected exports, folders, and files from common chat, email, notes, messages, docs, research, calendar, contact, social, and work tools
 - Health diagnostics, local backups, and search-index maintenance
 - Regression and HTTP battle tests before packaging
 - Deterministic extraction fallback so the product works without model keys
@@ -75,7 +76,7 @@ Goal: make Cortex valuable enough that users invite teammates and collaborators.
 
 - Project brains
 - Shared team memories
-- Slack/Notion/Gmail import
+- Live Slack/Notion/Gmail sync beyond local export import
 - Meeting transcript ingestion
 - Decision and task digests
 

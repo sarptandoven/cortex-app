@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 CREATE TABLE IF NOT EXISTS captures (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
+  import_id TEXT,
   source TEXT NOT NULL,
   source_url TEXT,
   title TEXT,
@@ -32,11 +33,54 @@ CREATE TABLE IF NOT EXISTS captures (
   captured_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS import_sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  source_hint TEXT NOT NULL DEFAULT '',
+  processing TEXT NOT NULL DEFAULT 'async',
+  paths_json TEXT NOT NULL DEFAULT '[]',
+  source_counts_json TEXT NOT NULL DEFAULT '[]',
+  records_found INTEGER NOT NULL DEFAULT 0,
+  queued INTEGER NOT NULL DEFAULT 0,
+  saved INTEGER NOT NULL DEFAULT 0,
+  failed INTEGER NOT NULL DEFAULT 0,
+  skipped INTEGER NOT NULL DEFAULT 0,
+  capture_ids_json TEXT NOT NULL DEFAULT '[]',
+  errors_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS import_records (
+  id TEXT PRIMARY KEY,
+  import_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  ordinal INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  title TEXT NOT NULL,
+  source_url TEXT,
+  content_hash TEXT NOT NULL,
+  chars INTEGER NOT NULL DEFAULT 0,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'preview',
+  capture_id TEXT,
+  job_id TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(import_id) REFERENCES import_sessions(id) ON DELETE CASCADE,
+  FOREIGN KEY(capture_id) REFERENCES captures(id) ON DELETE SET NULL
+);
+
 CREATE TABLE IF NOT EXISTS memories (
   id TEXT PRIMARY KEY,
   capture_id TEXT,
   user_id TEXT NOT NULL,
   kind TEXT NOT NULL,
+  layer TEXT NOT NULL DEFAULT 'semantic',
   content TEXT NOT NULL,
   summary TEXT,
   source TEXT NOT NULL,
@@ -143,6 +187,60 @@ CREATE TABLE IF NOT EXISTS user_settings (
   PRIMARY KEY(user_id, key)
 );
 
+CREATE TABLE IF NOT EXISTS api_tokens (
+  token_id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  audience TEXT NOT NULL,
+  token_salt TEXT NOT NULL,
+  token_hash TEXT NOT NULL,
+  scopes_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_used_at TEXT,
+  revoked_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS capture_processing_state (
+  capture_id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  ingest_status TEXT NOT NULL DEFAULT 'queued',
+  extraction_status TEXT NOT NULL DEFAULT 'queued',
+  embedding_status TEXT NOT NULL DEFAULT 'pending',
+  memory_count INTEGER NOT NULL DEFAULT 0,
+  task_count INTEGER NOT NULL DEFAULT 0,
+  entity_count INTEGER NOT NULL DEFAULT 0,
+  last_job_id TEXT,
+  last_error TEXT,
+  queued_at TEXT NOT NULL,
+  started_at TEXT,
+  completed_at TEXT,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(capture_id) REFERENCES captures(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS memory_jobs (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  job_type TEXT NOT NULL,
+  object_type TEXT NOT NULL,
+  object_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  priority INTEGER NOT NULL DEFAULT 100,
+  run_at TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 3,
+  locked_by TEXT,
+  locked_until TEXT,
+  unique_key TEXT NOT NULL UNIQUE,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  result_json TEXT NOT NULL DEFAULT '{}',
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
   memory_id UNINDEXED,
   content,
@@ -153,8 +251,6 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
 
 CREATE INDEX IF NOT EXISTS idx_memories_user_time ON memories(user_id, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(user_id, kind);
-CREATE INDEX IF NOT EXISTS idx_captures_review ON captures(user_id, review_status, captured_at DESC);
-CREATE INDEX IF NOT EXISTS idx_captures_hash ON captures(user_id, raw_hash);
 CREATE INDEX IF NOT EXISTS idx_tasks_open ON tasks(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_entities_user_name ON entities(user_id, name);
 CREATE INDEX IF NOT EXISTS idx_edges_user_source ON graph_edges(user_id, source_id);
@@ -187,19 +283,51 @@ MIGRATIONS = [
     "ALTER TABLE captures ADD COLUMN review_status TEXT NOT NULL DEFAULT 'pending'",
     "ALTER TABLE captures ADD COLUMN approved_at TEXT",
     "ALTER TABLE captures ADD COLUMN archived_at TEXT",
+    "ALTER TABLE captures ADD COLUMN import_id TEXT",
     "ALTER TABLE memories ADD COLUMN updated_at TEXT",
+    "ALTER TABLE memories ADD COLUMN layer TEXT NOT NULL DEFAULT 'semantic'",
+    "ALTER TABLE import_sessions ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0",
 ]
+
+POST_MIGRATION_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_memories_layer ON memories(user_id, layer);
+CREATE INDEX IF NOT EXISTS idx_memories_active_recent ON memories(user_id, status, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memories_active_kind_rank ON memories(user_id, status, kind, importance DESC, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memories_active_layer_rank ON memories(user_id, status, layer, importance DESC, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memories_capture_status ON memories(user_id, capture_id, status);
+CREATE INDEX IF NOT EXISTS idx_captures_import ON captures(user_id, import_id, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_captures_review ON captures(user_id, review_status, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_captures_hash ON captures(user_id, raw_hash);
+CREATE INDEX IF NOT EXISTS idx_import_sessions_user_created ON import_sessions(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_import_sessions_user_status ON import_sessions(user_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_import_records_import ON import_records(user_id, import_id, ordinal);
+CREATE INDEX IF NOT EXISTS idx_import_records_capture ON import_records(user_id, capture_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_open_rank ON tasks(user_id, status, importance DESC, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_edges_user_created ON graph_edges(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_edges_user_target ON graph_edges(user_id, target_id);
+CREATE INDEX IF NOT EXISTS idx_events_user_created ON memory_events(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_user_type_event_created ON memory_events(user_id, object_type, event_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_active ON api_tokens(audience, revoked_at, user_id);
+CREATE INDEX IF NOT EXISTS idx_capture_processing_user_status ON capture_processing_state(user_id, extraction_status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_jobs_claim ON memory_jobs(status, run_at, priority, created_at);
+CREATE INDEX IF NOT EXISTS idx_memory_jobs_user_status ON memory_jobs(user_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_jobs_object ON memory_jobs(user_id, object_type, object_id);
+"""
 
 
 def init_db(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as conn:
+    conn = sqlite3.connect(path)
+    try:
         conn.executescript(SCHEMA)
+        _apply_lightweight_migrations(conn)
+        conn.executescript(POST_MIGRATION_INDEXES)
         if load_sqlite_vec(conn)[0]:
             conn.executescript(VECTOR_SCHEMA)
-        _apply_lightweight_migrations(conn)
         conn.execute("PRAGMA user_version=1")
         conn.commit()
+    finally:
+        conn.close()
 
 
 def load_sqlite_vec(conn: sqlite3.Connection) -> tuple[bool, str | None]:

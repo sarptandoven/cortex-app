@@ -16,6 +16,8 @@ OUTPUT_ROOT="$DEFAULT_OUTPUT"
 NOTES=()
 SIGN_IDENTITY="${CORTEX_CODESIGN_IDENTITY:--}"
 NOTARY_PROFILE="${CORTEX_NOTARY_PROFILE:-}"
+STRICT_RELEASE="${CORTEX_RELEASE_STRICT:-0}"
+BUNDLE_PYTHON="${CORTEX_BUNDLE_PYTHON:-0}"
 
 usage() {
   cat <<'EOF'
@@ -26,11 +28,14 @@ Options:
   --base-url URL      Public URL prefix for artifacts in latest.json
   --output DIR        Output directory. Default: ../outputs from the workspace root
   --note TEXT         Release note. Can be passed multiple times
+  --production        Require HTTPS URLs, Developer ID signing, notarization, and bundled Python
   -h, --help          Show help
 
 Environment:
   CORTEX_CODESIGN_IDENTITY   Optional Developer ID Application identity.
   CORTEX_NOTARY_PROFILE      Optional notarytool keychain profile.
+  CORTEX_BUNDLE_PYTHON       Set to 1 for production direct builds.
+  CORTEX_RELEASE_STRICT      Set to 1 to enable the same checks as --production.
 
 Creates:
   Cortex-<version>-<build>.dmg
@@ -58,6 +63,10 @@ while [[ $# -gt 0 ]]; do
       NOTES+=("$2")
       shift 2
       ;;
+    --production|--strict)
+      STRICT_RELEASE="1"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -69,6 +78,35 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$CHANNEL" != "local-beta" ]]; then
+  STRICT_RELEASE="1"
+fi
+
+if [[ "$STRICT_RELEASE" == "1" ]]; then
+  if [[ "$BASE_URL" != https://* ]]; then
+    echo "Production release packaging requires --base-url with an https:// URL." >&2
+    exit 2
+  fi
+  if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    echo "Production release packaging requires CORTEX_CODESIGN_IDENTITY." >&2
+    exit 2
+  fi
+  if [[ -z "$NOTARY_PROFILE" ]]; then
+    echo "Production release packaging requires CORTEX_NOTARY_PROFILE for notarization." >&2
+    exit 2
+  fi
+  case "$BUNDLE_PYTHON" in
+    1|true|TRUE|yes|YES) ;;
+    *)
+      echo "Production release packaging requires CORTEX_BUNDLE_PYTHON=1." >&2
+      exit 2
+      ;;
+  esac
+fi
+
+mkdir -p "$OUTPUT_ROOT"
+OUTPUT_ROOT="$(cd "$OUTPUT_ROOT" && pwd)"
 
 INFO="$ROOT/Info.plist"
 VERSION="$(plutil -extract CFBundleShortVersionString raw -o - "$INFO")"
@@ -91,7 +129,7 @@ fi
 
 mkdir -p "$OUT_DIR"
 
-"$ROOT/build.sh"
+CORTEX_BUNDLE_PYTHON="$BUNDLE_PYTHON" "$ROOT/build.sh"
 codesign --verify --deep --strict "$APP"
 
 rm -rf "$STAGING"
@@ -132,6 +170,10 @@ if [[ -n "$NOTARY_PROFILE" ]]; then
   xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
   xcrun stapler staple "$DMG"
   xcrun stapler validate "$DMG"
+fi
+
+if [[ "$STRICT_RELEASE" == "1" ]]; then
+  spctl -a -vvv -t open "$DMG"
 fi
 
 sha256() {

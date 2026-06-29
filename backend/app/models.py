@@ -4,7 +4,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-MemoryKind = Literal["claim", "decision", "event", "preference", "observation", "action", "question", "summary"]
+MemoryKind = Literal["claim", "decision", "event", "preference", "observation", "action", "question", "summary", "style", "negative"]
+MemoryLayer = Literal["semantic", "episodic", "style", "decision", "preference", "negative"]
 
 
 class CaptureRequest(BaseModel):
@@ -22,6 +23,66 @@ class CaptureResponse(BaseModel):
     tasks: list[dict[str, Any]]
     entities: list[dict[str, Any]]
     graph: dict[str, Any]
+
+
+class SourceImportRequest(BaseModel):
+    paths: list[str] = Field(..., min_length=1, max_length=200)
+    source_hint: str = Field(default="", max_length=80)
+    processing: Literal["sync", "async"] = "async"
+    max_records: int = Field(default=1000, ge=1, le=5000)
+    user_id: str = "local"
+
+
+class SourceAnalyzeRequest(BaseModel):
+    paths: list[str] = Field(..., min_length=1, max_length=200)
+    source_hint: str = Field(default="", max_length=80)
+    max_records: int = Field(default=500, ge=1, le=500)
+
+
+class SourceImportResponse(BaseModel):
+    import_id: str
+    status: str
+    records_found: int
+    queued: int
+    saved: int
+    failed: int
+    skipped: int = 0
+    sources: list[dict[str, Any]]
+    records: list[dict[str, Any]]
+    errors: list[dict[str, Any]]
+
+
+class SourceImportDeleteResponse(BaseModel):
+    import_id: str
+    deleted: bool
+    status: str
+    deleted_captures: int
+    deleted_memories: int
+    deleted_tasks: int
+    deleted_edges: int
+
+
+class SourceAnalyzeResponse(BaseModel):
+    records_found: int
+    sources: list[dict[str, Any]]
+    sample: list[dict[str, Any]]
+    supported_sources: list[dict[str, Any]]
+
+
+class QueuedCaptureResponse(BaseModel):
+    capture_id: str
+    status: str
+    summary: str
+    jobs: list[dict[str, Any]]
+    processing: dict[str, Any]
+
+
+class JobRunResponse(BaseModel):
+    ran_at: str
+    processed: int
+    jobs: list[dict[str, Any]]
+    pending: int
+    failed: int
 
 
 class SearchResponse(BaseModel):
@@ -47,6 +108,7 @@ class StatsResponse(BaseModel):
     entities: int
     edges: int
     by_kind: list[dict[str, Any]]
+    by_layer: list[dict[str, Any]]
     top_topics: list[dict[str, Any]]
     top_entities: list[dict[str, Any]]
 
@@ -81,6 +143,8 @@ class SettingsResponse(BaseModel):
     allow_agent_reads: bool
     allow_agent_writes: bool
     allow_agent_exports: bool
+    allow_agent_maintenance: bool
+    allow_agent_destructive_actions: bool
     redact_sensitive_context: bool
 
 
@@ -91,6 +155,8 @@ class SettingsUpdateRequest(BaseModel):
     allow_agent_reads: bool | None = None
     allow_agent_writes: bool | None = None
     allow_agent_exports: bool | None = None
+    allow_agent_maintenance: bool | None = None
+    allow_agent_destructive_actions: bool | None = None
     redact_sensitive_context: bool | None = None
 
 
@@ -107,6 +173,7 @@ class DiagnosticsResponse(BaseModel):
     relation_orphans: int
     last_event_at: str | None
     vector: dict[str, Any] | None = None
+    embedding: dict[str, Any] | None = None
     vault: dict[str, Any] | None = None
 
 
@@ -114,6 +181,23 @@ class BackupResponse(BaseModel):
     backup_path: str
     size_bytes: int
     created_at: str
+    retention: dict[str, Any] | None = None
+    pruned_backups: dict[str, Any] | None = None
+
+
+class MCPTokenRegistrationRequest(BaseModel):
+    token: str = Field(..., min_length=12, max_length=160)
+    label: str = Field(default="Local MCP integrations", max_length=120)
+    scopes: list[str] | None = None
+
+
+class MCPTokenRegistrationResponse(BaseModel):
+    token_id: str
+    user_id: str
+    label: str
+    audience: str
+    scopes: list[str]
+    updated_at: str
 
 
 class ReliabilityReportResponse(BaseModel):
@@ -156,7 +240,20 @@ class MaintenanceResponse(BaseModel):
     rebuilt_at: str
     vector_available: bool | None = None
     vector_indexed_memories: int | None = None
+    vector_queued_memories: int | None = None
     vector_model: str | None = None
+    embedding: dict[str, Any] | None = None
+
+
+class VectorRebuildResponse(BaseModel):
+    queued: int
+    skipped: int
+    checked: int
+    rebuilt_at: str
+    vector_available: bool
+    vector_indexed_memories: int
+    vector_model: str | None = None
+    embedding: dict[str, Any] | None = None
 
 
 class VaultRebuildResponse(BaseModel):

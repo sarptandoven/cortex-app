@@ -98,8 +98,8 @@ Maintenance tools still pass through Trust controls.
 
 ```bash
 python3 -m unittest discover backend/tests
-python3 scripts/reliability_check.py --base-url http://127.0.0.1:8766 --token dev-local-key
-python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token dev-local-key
+python3 scripts/reliability_check.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
+python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
 ```
 
 `scripts/reliability_check.py` fails if the running backend is missing the health contract, required feature flags, vault diagnostics, core reliability checks, or has a critical reliability report.

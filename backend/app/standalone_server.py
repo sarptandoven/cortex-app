@@ -20,6 +20,31 @@ settings = load_settings()
 init_db(settings.db_path)
 store = CortexStore(settings.db_path, settings.vault_path)
 store.ensure_vault_backfilled(settings.default_user_id)
+if settings.mcp_api_key:
+    store.ensure_mcp_token(
+        settings.default_user_id,
+        settings.mcp_api_key,
+        label="Local MCP integrations",
+        scopes=settings.mcp_api_key_scopes or None,
+        token_id="tok_local_mcp",
+    )
+
+
+def _cors_origins() -> set[str]:
+    configured = [item.strip().rstrip("/") for item in os.environ.get("CORTEX_CORS_ORIGINS", "").split(",") if item.strip()]
+    if configured:
+        return set(configured)
+    public_base = settings.public_base_url.rstrip("/")
+    return {
+        origin for origin in {
+            public_base,
+            "http://127.0.0.1:8766",
+            "http://localhost:8766",
+        } if origin
+    }
+
+
+ALLOWED_CORS_ORIGINS = _cors_origins()
 
 
 ROOT_HTML = """
@@ -52,10 +77,31 @@ def _int_param(params: dict[str, list[str]], name: str, default: int, low: int, 
     return min(high, max(low, value))
 
 
+def _source_import_request(body: dict, *, analyze: bool = False) -> dict:
+    raw_paths = body.get("paths")
+    if not isinstance(raw_paths, list):
+        raise ValueError("paths must be a list")
+    paths = [str(path).strip() for path in raw_paths if str(path).strip()]
+    if not paths:
+        raise ValueError("paths must include at least one local file or folder")
+    if len(paths) > 200:
+        raise ValueError("paths cannot include more than 200 entries")
+    source_hint = str(body.get("source_hint") or "")[:80]
+    try:
+        requested_max = int(body.get("max_records") or (500 if analyze else 1000))
+    except (TypeError, ValueError):
+        raise ValueError("max_records must be an integer")
+    high = 500 if analyze else 5000
+    max_records = min(max(requested_max, 1), high)
+    processing = str(body.get("processing") or "async")
+    if processing not in {"sync", "async"}:
+        raise ValueError("processing must be sync or async")
+    return {"paths": paths, "source_hint": source_hint, "max_records": max_records, "processing": processing}
+
+
 def _capture_page(message: str = "", status: str = "ready", token: str = "", title: str = "", url: str = "", content: str = "") -> str:
     escaped_message = html.escape(message)
     escaped_status = html.escape(status)
-    escaped_token = html.escape(token)
     escaped_title = html.escape(title)
     escaped_url = html.escape(url)
     escaped_content = html.escape(content)
@@ -84,7 +130,7 @@ def _capture_page(message: str = "", status: str = "ready", token: str = "", tit
     {f"<p><strong>{escaped_message}</strong></p>" if escaped_message else ""}
     <form method="post" action="/capture">
       <label>Token</label>
-      <input name="token" value="{escaped_token}" autocomplete="off" />
+      <input name="token" value="" autocomplete="off" placeholder="Paste Cortex token" />
       <label>Title</label>
       <input name="title" value="{escaped_title}" />
       <label>Source URL</label>
@@ -185,11 +231,34 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     return
                 self._send_text(_capture_page(f"Saved {len(saved.get('memories', []))} memories.", "saved", token, title, source_url), media_type="text/html")
                 return
+            if method == "POST" and path == "/mcp":
+                context = self._auth_mcp()
+                if not context:
+                    return
+                self._handle_mcp(context)
+                return
 
             user_id = self._auth_user()
             if not user_id:
                 return
 
+            if method == "POST" and path == "/v1/captures/queue":
+                body = self._json_body()
+                try:
+                    self._send_json(
+                        store.enqueue_capture(
+                            user_id=user_id,
+                            content=str(body.get("content", "")),
+                            source=str(body.get("source") or "macos")[:80],
+                            source_url=str(body.get("source_url") or "")[:500] or None,
+                            title=str(body.get("title") or "")[:200] or None,
+                        ),
+                        status=HTTPStatus.ACCEPTED,
+                    )
+                except ValueError as exc:
+                    status = HTTPStatus.REQUEST_ENTITY_TOO_LARGE if "large" in str(exc) else HTTPStatus.UNPROCESSABLE_ENTITY
+                    self._send_json({"detail": str(exc)}, status=status)
+                return
             if method == "POST" and path == "/v1/captures":
                 body = self._json_body()
                 content = str(body.get("content", ""))
@@ -197,10 +266,101 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 title = str(body.get("title") or "")[:200] or None
                 source_url = str(body.get("source_url") or "")[:500] or None
                 try:
-                    self._send_json(self._save_capture(user_id, content, source, title, source_url))
+                    processing = (params.get("processing") or ["sync"])[0].strip().lower()
+                    if processing == "async":
+                        self._send_json(store.enqueue_capture(
+                            user_id=user_id,
+                            content=content,
+                            source=source,
+                            source_url=source_url,
+                            title=title,
+                        ))
+                    else:
+                        self._send_json(self._save_capture(user_id, content, source, title, source_url))
                 except ValueError as exc:
                     status = HTTPStatus.REQUEST_ENTITY_TOO_LARGE if "large" in str(exc) else HTTPStatus.UNPROCESSABLE_ENTITY
                     self._send_json({"detail": str(exc)}, status=status)
+                return
+            if method == "GET" and path.startswith("/v1/captures/") and path.endswith("/status"):
+                capture_id = unquote(path.removeprefix("/v1/captures/").removesuffix("/status").strip("/"))
+                try:
+                    self._send_json(store.capture_status(user_id, capture_id))
+                except FileNotFoundError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.NOT_FOUND)
+                return
+            if method == "GET" and path == "/v1/imports/sources":
+                self._send_json({"results": store.supported_import_sources()})
+                return
+            if method == "GET" and path == "/v1/imports":
+                include_deleted = (params.get("include_deleted") or ["true"])[0].lower() not in {"0", "false", "no"}
+                self._send_json({"results": store.list_imports(
+                    user_id,
+                    limit=_int_param(params, "limit", 50, 1, 100),
+                    include_deleted=include_deleted,
+                )})
+                return
+            if method == "POST" and path == "/v1/imports/analyze":
+                body = self._json_body()
+                try:
+                    parsed = _source_import_request(body, analyze=True)
+                    self._send_json(store.analyze_import_sources(
+                        parsed["paths"],
+                        source_hint=parsed["source_hint"],
+                        max_records=parsed["max_records"],
+                    ))
+                except ValueError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path == "/v1/imports":
+                body = self._json_body()
+                try:
+                    parsed = _source_import_request(body)
+                    self._send_json(store.import_sources(
+                        user_id=user_id,
+                        paths=parsed["paths"],
+                        source_hint=parsed["source_hint"],
+                        processing=parsed["processing"],
+                        max_records=parsed["max_records"],
+                    ))
+                except ValueError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "GET" and path.startswith("/v1/imports/"):
+                import_id = unquote(path.removeprefix("/v1/imports/").strip("/"))
+                result = store.get_import(user_id, import_id)
+                if not result:
+                    self._send_json({"detail": "Import not found"}, status=HTTPStatus.NOT_FOUND)
+                else:
+                    self._send_json(result)
+                return
+            if method == "DELETE" and path.startswith("/v1/imports/"):
+                import_id = unquote(path.removeprefix("/v1/imports/").strip("/"))
+                try:
+                    self._send_json(store.delete_import(user_id, import_id))
+                except FileNotFoundError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.NOT_FOUND)
+                return
+            if method == "GET" and path == "/v1/jobs":
+                self._send_json({"results": store.list_jobs(
+                    user_id,
+                    status=(params.get("status") or [None])[0],
+                    job_type=(params.get("job_type") or [None])[0],
+                    limit=_int_param(params, "limit", 50, 1, 100),
+                )})
+                return
+            if method == "POST" and path == "/v1/jobs/run":
+                self._send_json(store.run_due_jobs(user_id, limit=_int_param(params, "limit", 10, 1, 100)))
+                return
+            if method == "POST" and path == "/v1/maintenance/jobs/run":
+                self._send_json(store.run_due_jobs(user_id, limit=_int_param(params, "limit", 10, 1, 100)))
+                return
+            if method == "GET" and path.startswith("/v1/jobs/"):
+                job_id = unquote(path.removeprefix("/v1/jobs/"))
+                job = store.get_job(user_id, job_id)
+                if not job:
+                    self._send_json({"detail": "Job not found"}, status=HTTPStatus.NOT_FOUND)
+                else:
+                    self._send_json(job)
                 return
 
             if method == "GET" and path == "/v1/recent":
@@ -212,7 +372,8 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/v1/search":
                 query = (params.get("query") or [""])[0]
                 kind = (params.get("kind") or [None])[0]
-                self._send_json({"query": query, "results": store.search(user_id, query, _int_param(params, "limit", 10, 1, 50), kind)})
+                layer = (params.get("layer") or [None])[0]
+                self._send_json({"query": query, "results": store.search(user_id, query, _int_param(params, "limit", 10, 1, 50), kind, layer)})
                 return
             if method == "GET" and path == "/v1/tasks/open":
                 self._send_json({"results": store.open_tasks(user_id, _int_param(params, "limit", 20, 1, 100))})
@@ -250,6 +411,20 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 query = (params.get("query") or [""])[0]
                 self._send_text(store.context_pack(user_id, query=query, limit=_int_param(params, "limit", 12, 1, 50)), media_type="text/markdown")
                 return
+            if method == "GET" and path == "/v1/personal-profile":
+                query = (params.get("query") or [""])[0]
+                include_pending = (params.get("include_pending") or ["false"])[0].strip().lower() in {"1", "true", "yes"}
+                profile = store.personal_profile(
+                    user_id,
+                    query=query,
+                    limit=_int_param(params, "limit", 6, 1, 20),
+                    include_pending=include_pending,
+                )
+                if (params.get("format") or ["json"])[0] == "markdown":
+                    self._send_text(profile["markdown"], media_type="text/markdown")
+                else:
+                    self._send_json(profile)
+                return
             if method == "DELETE" and path.startswith("/v1/memories/"):
                 memory_id = unquote(path.removeprefix("/v1/memories/"))
                 if not store.delete_memory(user_id, memory_id):
@@ -271,6 +446,13 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 else:
                     self._send_json({"archived": True})
                 return
+            if method == "DELETE" and path.startswith("/v1/captures/"):
+                capture_id = unquote(path.removeprefix("/v1/captures/"))
+                if not store.delete_capture(user_id, capture_id):
+                    self._send_json({"detail": "Capture not found"}, status=HTTPStatus.NOT_FOUND)
+                else:
+                    self._send_json({"deleted": True})
+                return
             if method == "GET" and path == "/v1/graph":
                 self._send_json(store.graph(user_id, _int_param(params, "limit", 150, 10, 500)))
                 return
@@ -285,6 +467,16 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and path == "/v1/trust/summary":
                 self._send_json(store.trust_summary(user_id))
+                return
+            if method == "POST" and path == "/v1/integrations/mcp-token":
+                body = self._json_body()
+                self._send_json(store.ensure_mcp_token(
+                    user_id,
+                    str(body.get("token") or ""),
+                    label=str(body.get("label") or "Local MCP integrations")[:120],
+                    scopes=body.get("scopes"),
+                    token_id="tok_local_mcp",
+                ))
                 return
             if method == "GET" and path == "/v1/audit-log":
                 self._send_json({"results": store.audit_log(user_id, _int_param(params, "limit", 80, 1, 300))})
@@ -301,11 +493,27 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if method == "POST" and path == "/v1/backups":
                 self._send_json(store.create_backup(user_id))
                 return
+            if method == "POST" and path == "/v1/backups/restore-latest":
+                try:
+                    self._send_json(store.restore_latest_backup(user_id))
+                except FileNotFoundError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.NOT_FOUND)
+                return
+            if method == "DELETE" and path == "/v1/backups":
+                self._send_json(store.delete_backups(user_id))
+                return
+            if method == "DELETE" and path == "/v1/user-data":
+                include_backups = (params.get("include_backups") or ["true"])[0].strip().lower() not in {"0", "false", "no"}
+                self._send_json(store.delete_user_data(user_id, include_backups=include_backups))
+                return
             if method == "POST" and path == "/v1/maintenance/repair-storage":
                 self._send_json(store.repair_storage(user_id))
                 return
             if method == "POST" and path == "/v1/maintenance/rebuild-search":
                 self._send_json(store.rebuild_search_index(user_id))
+                return
+            if method == "POST" and path == "/v1/maintenance/rebuild-vectors":
+                self._send_json(store.rebuild_vectors(user_id))
                 return
             if method == "POST" and path == "/v1/maintenance/rebuild-index-from-vault":
                 self._send_json(store.rebuild_index_from_vault(user_id))
@@ -316,15 +524,13 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/v1/export.md":
                 self._send_text(store.export_markdown(user_id), media_type="text/markdown")
                 return
-            if method == "POST" and path == "/mcp":
-                self._handle_mcp(user_id)
-                return
-
             self._send_json({"detail": "Not found"}, status=HTTPStatus.NOT_FOUND)
         except Exception as exc:
             self._send_json({"detail": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
-    def _handle_mcp(self, user_id: str) -> None:
+    def _handle_mcp(self, context: dict) -> None:
+        user_id = context["user_id"]
+        token_scopes = None if context.get("admin") else list(context.get("scopes") or [])
         request = self._json_body()
         try:
             method = request.get("method")
@@ -341,10 +547,10 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 tool_name = params.get("name", "")
                 arguments = params.get("arguments", {}) or {}
                 try:
-                    value = call_tool(store, user_id, tool_name, arguments)
-                    store.record_agent_event(user_id, tool_name, arguments, success=True)
+                    value = call_tool(store, user_id, tool_name, arguments, token_scopes=token_scopes)
+                    store.record_agent_event(user_id, tool_name, arguments, success=True, token=context)
                 except Exception as exc:
-                    store.record_agent_event(user_id, tool_name, arguments, success=False, error=str(exc))
+                    store.record_agent_event(user_id, tool_name, arguments, success=False, error=str(exc), token=context)
                     raise
                 result = {
                     "content": [
@@ -368,6 +574,27 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"detail": "Missing or invalid Cortex API token"}, status=HTTPStatus.UNAUTHORIZED)
                 return None
         return self.headers.get("X-Cortex-User") or settings.default_user_id
+
+    def _auth_mcp(self) -> dict | None:
+        authorization = self.headers.get("Authorization", "")
+        if not authorization.lower().startswith("bearer "):
+            self._send_json({"detail": "Missing or invalid Cortex MCP token"}, status=HTTPStatus.UNAUTHORIZED)
+            return None
+        token = authorization.split(" ", 1)[1].strip()
+        if settings.api_key and hmac.compare_digest(token, settings.api_key):
+            return {
+                "user_id": self.headers.get("X-Cortex-User") or settings.default_user_id,
+                "token_id": "admin",
+                "label": "Cortex app token",
+                "audience": "admin",
+                "scopes": ["read", "write", "export", "maintenance", "destructive"],
+                "admin": True,
+            }
+        scoped = store.authenticate_mcp_token(token)
+        if scoped:
+            return scoped
+        self._send_json({"detail": "Missing or invalid Cortex MCP token"}, status=HTTPStatus.UNAUTHORIZED)
+        return None
 
     def _auth_token(self, token: str | None) -> str | None:
         if settings.api_key and not hmac.compare_digest(token or "", settings.api_key):
@@ -414,7 +641,10 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", media_type)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = (self.headers.get("Origin") or "").rstrip("/")
+        if origin and origin in ALLOWED_CORS_ORIGINS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Cortex-User")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.end_headers()

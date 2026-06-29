@@ -5,6 +5,8 @@ import unittest
 import shutil
 import sqlite3
 import json
+import os
+import zipfile
 from pathlib import Path
 
 from backend.app.database import connect, init_db
@@ -57,6 +59,15 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
         self.assertEqual(self.store.stats(self.user_id)["pending_captures"], 0)
 
+        stats = self.store.stats(self.user_id)
+        self.assertTrue(stats["by_layer"])
+        profile = self.store.personal_profile(self.user_id, query="Supabase", limit=4)
+        self.assertEqual(profile["name"], "Cortex Personal Adaptation Profile")
+        self.assertGreater(profile["readiness"], 0)
+        self.assertIn("Decision memory", profile["markdown"])
+        self.assertIn("fine-tuned model", profile["markdown"])
+        self.assertTrue(call_tool(self.store, self.user_id, "get_personal_profile", {"format": "markdown"}).startswith("# Cortex Personal Adaptation Profile"))
+
         export_before_archive = self.store.export_markdown(self.user_id)
         self.assertIn("Supabase", export_before_archive)
 
@@ -70,6 +81,358 @@ class CortexStorageLifecycleTests(unittest.TestCase):
 
         export_after_archive = self.store.export_markdown(self.user_id)
         self.assertIn("Supabase", export_after_archive)
+
+    def test_delete_memory_purges_memory_record_and_indexes(self) -> None:
+        result = self.capture(
+            "Delete the Zephyr memory but keep the surrounding capture for audit context. "
+            "The next step is to verify memory-level forgetting."
+        )
+        memory = result["memories"][0]
+        memory_id = memory["id"]
+
+        self.assertTrue(list((self.store.vault.root / "memories").rglob(f"{memory_id}.json")))
+        self.assertTrue(self.store.search(self.user_id, memory["content"].split()[0]))
+
+        self.assertTrue(self.store.delete_memory(self.user_id, memory_id))
+
+        with connect(self.db_path) as conn:
+            self.assertIsNone(conn.execute("SELECT id FROM memories WHERE id = ?", (memory_id,)).fetchone())
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM memory_fts WHERE memory_id = ?", (memory_id,)).fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM memory_entities WHERE memory_id = ?", (memory_id,)).fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM memory_topics WHERE memory_id = ?", (memory_id,)).fetchone()[0], 0)
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) FROM graph_edges WHERE source_id = ? OR target_id = ? OR evidence_id = ?",
+                    (memory_id, memory_id, memory_id),
+                ).fetchone()[0],
+                0,
+            )
+
+        self.assertFalse(list((self.store.vault.root / "memories").rglob(f"{memory_id}.json")))
+        self.assertNotIn(memory["content"], self.store.export_markdown(self.user_id))
+        self.assertTrue(any(event["event_type"] == "deleted" and event["object_id"] == memory_id for event in self.store.audit_log(self.user_id, limit=10)))
+
+    def test_delete_capture_purges_raw_capture_and_cannot_rebuild_from_vault(self) -> None:
+        phrase = "Purge Nimbus raw source text should disappear from current storage."
+        result = self.capture(
+            f"{phrase} "
+            "Nimbus has an action item to remove all derived tasks and graph links."
+        )
+        capture_id = result["capture_id"]
+        memory_ids = [memory["id"] for memory in result["memories"]]
+        self.assertTrue(memory_ids)
+        self.assertIn("Nimbus", self.store.export_markdown(self.user_id))
+        self.assertTrue(list((self.store.vault.root / "captures").rglob(f"{capture_id}.json")))
+
+        self.assertTrue(self.store.delete_capture(self.user_id, capture_id))
+
+        payload = json.dumps(self.store.export_json(self.user_id), sort_keys=True)
+        self.assertNotIn(phrase, payload)
+        self.assertNotIn(capture_id, payload)
+        for memory_id in memory_ids:
+            self.assertNotIn(memory_id, payload)
+            self.assertFalse(list((self.store.vault.root / "memories").rglob(f"{memory_id}.json")))
+        self.assertFalse(list((self.store.vault.root / "captures").rglob(f"{capture_id}.json")))
+        self.assertEqual(self.store.search(self.user_id, "Nimbus raw source"), [])
+        self.assertEqual(self.store.diagnostics(self.user_id)["relation_orphans"], 0)
+
+        rebuild = self.store.rebuild_index_from_vault(self.user_id)
+        self.assertEqual(rebuild["captures"], 0)
+        self.assertEqual(rebuild["memories"], 0)
+        self.assertEqual(self.store.search(self.user_id, "Nimbus raw source"), [])
+
+    def test_async_capture_queue_materializes_after_worker_run(self) -> None:
+        phrase = "Queued Aurora capture should become searchable only after job processing."
+        queued = self.store.enqueue_capture(
+            user_id=self.user_id,
+            content=phrase,
+            source="unit-test-async",
+            source_url=None,
+            title="Queued capture",
+        )
+        capture_id = queued["capture_id"]
+        job_id = queued["jobs"][0]["id"]
+
+        self.assertEqual(queued["status"], "queued")
+        self.assertEqual(queued["processing"]["processing"]["extraction_status"], "queued")
+        self.assertEqual(self.store.search(self.user_id, "Aurora capture"), [])
+        self.assertEqual(self.store.get_job(self.user_id, job_id)["status"], "queued")
+
+        ran = self.store.run_due_jobs(self.user_id, limit=1)
+        status = self.store.capture_status(self.user_id, capture_id)
+
+        self.assertEqual(ran["processed"], 1)
+        self.assertEqual(ran["jobs"][0]["status"], "succeeded")
+        self.assertEqual(status["processing"]["extraction_status"], "succeeded")
+        self.assertGreaterEqual(status["processing"]["memory_count"], 1)
+        self.assertTrue(self.store.search(self.user_id, "Aurora capture"))
+        with connect(self.db_path) as conn:
+            vector_ready = self.store._vector_ready(conn)
+        if vector_ready:
+            self.assertEqual(status["processing"]["embedding_status"], "queued")
+            self.assertTrue(any(job["job_type"] == "embed_memory" for job in status["jobs"]))
+            embedded = self.store.run_due_jobs(self.user_id, limit=10)
+            self.assertGreaterEqual(embedded["processed"], 1)
+            status_after_embedding = self.store.capture_status(self.user_id, capture_id)
+            self.assertEqual(status_after_embedding["processing"]["embedding_status"], "available")
+        else:
+            self.assertEqual(status["processing"]["embedding_status"], "not_available")
+
+    def test_strict_embedding_failure_keeps_keyword_search_usable(self) -> None:
+        previous_provider = os.environ.get("CORTEX_EMBEDDING_PROVIDER")
+        previous_strict = os.environ.get("CORTEX_EMBEDDING_STRICT")
+        previous_key = os.environ.get("OPENAI_API_KEY")
+        os.environ["CORTEX_EMBEDDING_PROVIDER"] = "openai"
+        os.environ["CORTEX_EMBEDDING_STRICT"] = "1"
+        os.environ.pop("OPENAI_API_KEY", None)
+        try:
+            phrase = "Strict vector outage should leave FTS keyword search usable."
+            result = self.capture(phrase)
+            capture_id = result["capture_id"]
+            self.assertTrue(self.store.search(self.user_id, "Strict vector outage"))
+            status = self.store.capture_status(self.user_id, capture_id)
+            with connect(self.db_path) as conn:
+                vector_ready = self.store._vector_ready(conn)
+            if vector_ready:
+                self.assertEqual(status["processing"]["embedding_status"], "queued")
+                ran = self.store.run_due_jobs(self.user_id, limit=10)
+                self.assertGreaterEqual(ran["processed"], 1)
+                self.assertTrue(self.store.search(self.user_id, "Strict vector outage"))
+                status_after_failure = self.store.capture_status(self.user_id, capture_id)
+                self.assertIn(status_after_failure["processing"]["embedding_status"], {"queued", "failed"})
+            else:
+                self.assertEqual(status["processing"]["embedding_status"], "not_available")
+        finally:
+            if previous_provider is None:
+                os.environ.pop("CORTEX_EMBEDDING_PROVIDER", None)
+            else:
+                os.environ["CORTEX_EMBEDDING_PROVIDER"] = previous_provider
+            if previous_strict is None:
+                os.environ.pop("CORTEX_EMBEDDING_STRICT", None)
+            else:
+                os.environ["CORTEX_EMBEDDING_STRICT"] = previous_strict
+            if previous_key is None:
+                os.environ.pop("OPENAI_API_KEY", None)
+            else:
+                os.environ["OPENAI_API_KEY"] = previous_key
+
+    def test_deleting_queued_capture_removes_pending_job(self) -> None:
+        queued = self.store.enqueue_capture(
+            user_id=self.user_id,
+            content="Queued deletion should not resurrect after worker run.",
+            source="unit-test-async",
+            source_url=None,
+            title="Queued delete",
+        )
+        capture_id = queued["capture_id"]
+        self.assertTrue(self.store.list_jobs(self.user_id, status="queued"))
+
+        self.assertTrue(self.store.delete_capture(self.user_id, capture_id))
+        ran = self.store.run_due_jobs(self.user_id, limit=5)
+
+        self.assertEqual(ran["processed"], 0)
+        self.assertEqual(self.store.search(self.user_id, "Queued deletion"), [])
+        self.assertEqual(self.store.list_jobs(self.user_id), [])
+
+    def test_backup_prune_removes_archives_that_can_retain_deleted_content(self) -> None:
+        phrase = "Backup retention phrase should vanish after backup pruning."
+        result = self.capture(phrase)
+        backup = self.store.create_backup(self.user_id)
+        backup_path = Path(backup["backup_path"])
+        self.assertTrue(backup_path.exists())
+        with zipfile.ZipFile(backup_path) as archive:
+            backup_text = "\n".join(
+                archive.read(name).decode("utf-8", errors="ignore")
+                for name in archive.namelist()
+                if name.endswith(".json") or name.endswith(".jsonl")
+            )
+        self.assertIn(phrase, backup_text)
+
+        self.assertTrue(self.store.delete_capture(self.user_id, result["capture_id"]))
+        self.assertTrue(backup_path.exists())
+
+        pruned = self.store.delete_backups(self.user_id)
+        self.assertEqual(pruned["deleted"], 1)
+        self.assertGreater(pruned["bytes_deleted"], 0)
+        self.assertFalse(backup_path.exists())
+        self.assertEqual(self.store.diagnostics(self.user_id)["vault"]["record_counts"]["backups"], 0)
+
+    def test_backup_retention_prunes_older_archives_by_count(self) -> None:
+        self.capture("Backup retention should keep the newest recovery archive.")
+        backup_paths: list[Path] = []
+        for index in range(3):
+            backup = self.store.create_backup(self.user_id)
+            path = Path(backup["backup_path"])
+            os.utime(path, (1_700_000_000 + index, 1_700_000_000 + index))
+            backup_paths.append(path)
+
+        pruned = self.store.prune_backups(self.user_id, keep_latest=1, max_age_days=0)
+
+        self.assertEqual(pruned["deleted"], 2)
+        self.assertGreater(pruned["bytes_deleted"], 0)
+        self.assertFalse(backup_paths[0].exists())
+        self.assertFalse(backup_paths[1].exists())
+        self.assertTrue(backup_paths[2].exists())
+        self.assertEqual(self.store.latest_backup()["backup_path"], str(backup_paths[2]))
+
+    def test_restore_latest_backup_restores_vault_records_and_rebuilds_index(self) -> None:
+        phrase = "Restore latest backup should recover the Orion memory."
+        self.store.update_settings(self.user_id, {"allow_pending_in_context": False, "context_pack_limit": 7})
+        result = self.capture(phrase)
+        self.assertTrue(self.store.approve_capture(self.user_id, result["capture_id"]))
+        backup = self.store.create_backup(self.user_id)
+        backup_path = Path(backup["backup_path"])
+        self.assertTrue(backup_path.exists())
+
+        self.assertTrue(self.store.delete_user_data(self.user_id, include_backups=False))
+        self.assertEqual(self.store.search(self.user_id, "Orion memory"), [])
+        self.assertTrue(backup_path.exists())
+
+        restored = self.store.restore_latest_backup(self.user_id)
+
+        self.assertEqual(restored["backup_path"], str(backup_path))
+        self.assertEqual(restored["rebuild"]["captures"], 1)
+        self.assertGreaterEqual(restored["rebuild"]["memories"], 1)
+        self.assertTrue(self.store.search(self.user_id, "Orion memory"))
+        self.assertFalse(self.store.settings(self.user_id)["allow_pending_in_context"])
+        self.assertEqual(self.store.settings(self.user_id)["context_pack_limit"], 7)
+        self.assertTrue(any(event["event_type"] == "restored" for event in self.store.audit_log(self.user_id, limit=10)))
+
+    def test_restore_latest_backup_honors_deleted_capture_tombstone(self) -> None:
+        phrase = "Restore should not resurrect this deleted Solstice capture."
+        result = self.capture(
+            f"{phrase} "
+            "Solstice has a derived memory and task that should stay deleted after restore."
+        )
+        capture_id = result["capture_id"]
+        backup = self.store.create_backup(self.user_id)
+        backup_path = Path(backup["backup_path"])
+        self.assertTrue(backup_path.exists())
+
+        self.assertTrue(self.store.delete_capture(self.user_id, capture_id))
+        self.assertTrue(list(self.store.vault.iter_tombstones(self.user_id)))
+
+        restored = self.store.restore_latest_backup(self.user_id)
+
+        self.assertEqual(restored["backup_path"], str(backup_path))
+        self.assertEqual(restored["tombstones"]["captures"], 1)
+        self.assertEqual(restored["rebuild"]["captures"], 0)
+        self.assertEqual(restored["rebuild"]["memories"], 0)
+        self.assertEqual(self.store.search(self.user_id, "Solstice capture"), [])
+        self.assertNotIn(phrase, json.dumps(self.store.export_json(self.user_id), sort_keys=True))
+
+    def test_restore_latest_backup_honors_deleted_memory_tombstone(self) -> None:
+        result = self.capture(
+            "Restore should not resurrect the deleted Meridian memory. "
+            "Meridian chose the retrieval plan because latency matters."
+        )
+        memory_id = result["memories"][0]["id"]
+        backup = self.store.create_backup(self.user_id)
+        backup_path = Path(backup["backup_path"])
+        self.assertTrue(backup_path.exists())
+
+        self.assertTrue(self.store.delete_memory(self.user_id, memory_id))
+        self.assertTrue(list(self.store.vault.iter_tombstones(self.user_id)))
+
+        restored = self.store.restore_latest_backup(self.user_id)
+        memory_ids = {memory["id"] for memory in self.store.export_json(self.user_id)["memories"]}
+
+        self.assertEqual(restored["backup_path"], str(backup_path))
+        self.assertEqual(restored["tombstones"]["memories"], 1)
+        self.assertNotIn(memory_id, memory_ids)
+        self.assertFalse(list((self.store.vault.root / "memories").rglob(f"{memory_id}.json")))
+
+    def test_restore_rejects_unsafe_backup_member_paths(self) -> None:
+        backup_path = self.store.vault.backups_dir / "cortex-vault-unsafe.zip"
+        self.store.vault.backups_dir.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(backup_path, "w") as archive:
+            archive.writestr("../evil.json", "{}")
+
+        with self.assertRaises(ValueError):
+            self.store.restore_latest_backup(self.user_id)
+
+    def test_delete_user_data_purges_current_vault_index_events_and_backups(self) -> None:
+        phrase = "Delete all local Cortex user data phrase."
+        self.capture(phrase)
+        backup = self.store.create_backup(self.user_id)
+        self.assertTrue(Path(backup["backup_path"]).exists())
+        self.assertTrue(self.store.search(self.user_id, "local Cortex user data"))
+        self.assertTrue(list(self.store.vault.iter_events(self.user_id)))
+
+        deleted = self.store.delete_user_data(self.user_id)
+
+        self.assertTrue(deleted["include_backups"])
+        self.assertGreaterEqual(deleted["sqlite"]["captures"], 1)
+        self.assertGreaterEqual(deleted["sqlite"]["memories"], 1)
+        self.assertGreaterEqual(deleted["vault"]["captures"], 1)
+        self.assertGreaterEqual(deleted["vault"]["memories"], 1)
+        self.assertGreaterEqual(deleted["vault"]["events"], 1)
+        self.assertEqual(self.store.search(self.user_id, "local Cortex user data"), [])
+        self.assertEqual(self.store.export_json(self.user_id)["captures"], [])
+        self.assertFalse(list((self.store.vault.root / "captures").rglob("*.json")))
+        self.assertFalse(list((self.store.vault.root / "memories").rglob("*.json")))
+        self.assertFalse(list(self.store.vault.backups_dir.glob("*")))
+        self.assertEqual(list(self.store.vault.iter_events(self.user_id)), [])
+
+        rebuilt = self.store.rebuild_index_from_vault(self.user_id)
+        self.assertEqual(rebuilt["captures"], 0)
+        self.assertEqual(rebuilt["memories"], 0)
+
+    def test_init_db_upgrades_legacy_indexes_after_columns(self) -> None:
+        legacy_path = Path(self.tmp.name) / "legacy.db"
+        conn = sqlite3.connect(legacy_path)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE captures (
+                  id TEXT PRIMARY KEY,
+                  user_id TEXT NOT NULL,
+                  source TEXT NOT NULL,
+                  source_url TEXT,
+                  title TEXT,
+                  raw_text TEXT NOT NULL,
+                  summary TEXT,
+                  captured_at TEXT NOT NULL
+                );
+                CREATE TABLE memories (
+                  id TEXT PRIMARY KEY,
+                  capture_id TEXT,
+                  user_id TEXT NOT NULL,
+                  kind TEXT NOT NULL,
+                  content TEXT NOT NULL,
+                  summary TEXT,
+                  source TEXT NOT NULL,
+                  source_url TEXT,
+                  confidence TEXT NOT NULL DEFAULT 'confirmed',
+                  importance INTEGER NOT NULL DEFAULT 3,
+                  status TEXT NOT NULL DEFAULT 'active',
+                  topics_json TEXT NOT NULL DEFAULT '[]',
+                  entity_ids_json TEXT NOT NULL DEFAULT '[]',
+                  occurred_at TEXT,
+                  captured_at TEXT NOT NULL,
+                  raw_excerpt TEXT
+                );
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        init_db(legacy_path)
+
+        upgraded = sqlite3.connect(legacy_path)
+        try:
+            capture_columns = {row[1] for row in upgraded.execute("PRAGMA table_info(captures)")}
+            memory_columns = {row[1] for row in upgraded.execute("PRAGMA table_info(memories)")}
+            indexes = {row[1] for row in upgraded.execute("PRAGMA index_list(memories)")}
+        finally:
+            upgraded.close()
+
+        self.assertIn("raw_hash", capture_columns)
+        self.assertIn("review_status", capture_columns)
+        self.assertIn("layer", memory_columns)
+        self.assertIn("idx_memories_layer", indexes)
+        self.assertIn("idx_memories_active_layer_rank", indexes)
 
     def test_backup_diagnostics_and_rebuild_search(self) -> None:
         self.capture("Cortex should create recoverable local backups before users trust it.")
@@ -98,7 +461,8 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(report_before["health_contract"], 3)
         self.assertTrue(any(check["name"] == "sqlite_quick_check" for check in report_before["checks"]))
 
-        with sqlite3.connect(self.db_path) as conn:
+        conn = sqlite3.connect(self.db_path)
+        try:
             conn.execute("PRAGMA foreign_keys=OFF")
             conn.execute(
                 "INSERT INTO memory_fts(memory_id, content, summary, source, topics) VALUES (?, ?, ?, ?, ?)",
@@ -110,6 +474,8 @@ class CortexStorageLifecycleTests(unittest.TestCase):
             )
             conn.execute("UPDATE memories SET status = 'archived' WHERE id = ?", (memory_id,))
             conn.commit()
+        finally:
+            conn.close()
 
         broken = self.store.diagnostics(self.user_id)
         self.assertEqual(broken["status"], "needs_maintenance")
@@ -165,7 +531,7 @@ class CortexStorageLifecycleTests(unittest.TestCase):
     def test_daily_review_and_context_pack(self) -> None:
         self.capture(
             "Vamika decided Cortex should become a daily memory cockpit for ChatGPT and Claude. "
-            "Cortex needs a copy-ready context pack before every AI session. "
+            "Cortex needs a cited adaptation profile before every AI session. "
             "The next step is to review open loops and test retention workflows."
         )
 
@@ -178,7 +544,7 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertTrue(review["recent_decisions"])
         self.assertTrue(review["open_tasks"])
         self.assertTrue(any("Review 1 pending capture" in item for item in review["recommended_actions"]))
-        self.assertIn("# Cortex Context Pack", review["context_pack"])
+        self.assertIn("# Cortex Memory View", review["context_pack"])
         self.assertIn("Suggested Assistant Instruction", review["context_pack"])
 
         focused_pack = self.store.context_pack(self.user_id, query="ChatGPT Claude", limit=5)
@@ -186,6 +552,36 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertIn("memory cockpit", focused_pack)
         self.assertIn("## Open Loops", focused_pack)
         self.assertIn("test retention workflows", focused_pack)
+
+    def test_layered_memory_extraction_and_context_pack(self) -> None:
+        result = self.capture(
+            "I prefer concise technical answers. "
+            "My writing style uses short direct sentences. "
+            "I don't like fluffy introductions or vague summaries. "
+            "Yesterday I met with Alex about Cortex onboarding. "
+            "Vamika decided Cortex should group memory layers for retrieval."
+        )
+
+        layers = {item["layer"] for item in result["memories"]}
+        self.assertIn("preference", layers)
+        self.assertIn("style", layers)
+        self.assertIn("negative", layers)
+        self.assertIn("decision", layers)
+        self.assertTrue(any(item["kind"] == "event" and item["layer"] == "episodic" for item in result["memories"]))
+        self.assertEqual(self.store.search(self.user_id, "fluffy", limit=1)[0]["layer"], "negative")
+        self.assertEqual(self.store.search(self.user_id, "writing style", limit=1)[0]["layer"], "style")
+        filtered = self.store.search(self.user_id, "fluffy introductions", limit=5, layer="negative")
+        self.assertTrue(filtered)
+        self.assertTrue(all(item["layer"] == "negative" for item in filtered))
+        mcp_filtered = call_tool(self.store, self.user_id, "search_memory", {"query": "short direct sentences", "layer": "style"})
+        self.assertTrue(mcp_filtered)
+        self.assertTrue(all(item["layer"] == "style" for item in mcp_filtered))
+
+        pack = self.store.context_pack(self.user_id, limit=10)
+        self.assertIn("### Preference Memory", pack)
+        self.assertIn("### Style Memory", pack)
+        self.assertIn("### Negative Memory", pack)
+        self.assertIn("### Decision Memory", pack)
 
     def test_simple_product_loop_tracks_capture_review_and_reuse(self) -> None:
         empty_loop = self.store.product_loop(self.user_id)
@@ -222,8 +618,10 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertTrue(defaults["review_new_captures"])
         self.assertTrue(defaults["allow_pending_in_context"])
         self.assertTrue(defaults["allow_agent_reads"])
-        self.assertTrue(defaults["allow_agent_writes"])
-        self.assertTrue(defaults["allow_agent_exports"])
+        self.assertFalse(defaults["allow_agent_writes"])
+        self.assertFalse(defaults["allow_agent_exports"])
+        self.assertFalse(defaults["allow_agent_maintenance"])
+        self.assertFalse(defaults["allow_agent_destructive_actions"])
         self.assertTrue(defaults["redact_sensitive_context"])
 
         result = self.capture(
@@ -287,6 +685,18 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.store.update_settings(self.user_id, {"allow_agent_reads": True, "allow_agent_exports": False})
         with self.assertRaises(PermissionError):
             call_tool(self.store, self.user_id, "build_context_pack", {"query": "permission"})
+
+        with self.assertRaises(PermissionError):
+            call_tool(self.store, self.user_id, "create_memory_backup", {})
+        self.store.update_settings(self.user_id, {"allow_agent_maintenance": True})
+        backup = call_tool(self.store, self.user_id, "create_memory_backup", {})
+        self.assertIn("backup_path", backup)
+
+        with self.assertRaises(PermissionError):
+            call_tool(self.store, self.user_id, "forget_memory", {"id": saved["memories"][0]["id"]})
+        self.store.update_settings(self.user_id, {"allow_agent_destructive_actions": True})
+        deleted = call_tool(self.store, self.user_id, "forget_memory", {"id": saved["memories"][0]["id"]})
+        self.assertTrue(deleted["deleted"])
 
         self.store.record_agent_event(self.user_id, "search_memory", {"query": "permission"}, success=False, error="blocked")
         audit = self.store.audit_log(self.user_id, limit=5)

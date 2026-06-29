@@ -1,0 +1,378 @@
+from __future__ import annotations
+
+import os
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+MODULE_TMP = tempfile.TemporaryDirectory()
+os.environ["CORTEX_DB_PATH"] = str(Path(MODULE_TMP.name) / "fastapi.sqlite")
+os.environ["CORTEX_VAULT_PATH"] = str(Path(MODULE_TMP.name) / "fastapi.vault")
+os.environ["CORTEX_API_KEY"] = "test-token"
+
+from fastapi.testclient import TestClient
+
+from backend.app.main import app
+
+
+class FastAPIContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.client = TestClient(app)
+
+    def test_capture_get_invalid_token_returns_unauthorized_page(self) -> None:
+        response = self.client.get("/capture", params={"token": "wrong-token", "content": "Remember this."})
+
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("Missing or invalid Cortex capture token", response.text)
+        self.assertNotIn("wrong-token", response.text)
+
+    def test_capture_post_invalid_token_returns_unauthorized_page(self) -> None:
+        response = self.client.post(
+            "/capture",
+            data={"token": "wrong-token", "content": "Remember this."},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("Missing or invalid Cortex capture token", response.text)
+        self.assertNotIn("wrong-token", response.text)
+
+    def test_capture_post_empty_content_returns_validation_status(self) -> None:
+        response = self.client.post(
+            "/capture",
+            data={"token": "test-token", "content": ""},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("content is required", response.text)
+
+    def test_delete_capture_removes_capture_from_search(self) -> None:
+        phrase = "FastAPI delete capture contract phrase"
+        created = self.client.post(
+            "/v1/captures",
+            json={"content": phrase, "source": "fastapi-test"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(created.status_code, 200)
+        capture_id = created.json()["capture_id"]
+
+        deleted = self.client.delete(f"/v1/captures/{capture_id}", headers={"Authorization": "Bearer test-token"})
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(deleted.json(), {"deleted": True})
+
+        search = self.client.get(
+            "/v1/search",
+            params={"query": phrase},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(search.status_code, 200)
+        self.assertEqual(search.json()["results"], [])
+
+    def test_diagnostics_exposes_embedding_provider_contract(self) -> None:
+        response = self.client.get("/v1/diagnostics", headers={"Authorization": "Bearer test-token"})
+
+        self.assertEqual(response.status_code, 200)
+        embedding = response.json()["embedding"]
+        self.assertEqual(embedding["provider"], "hash")
+        self.assertEqual(embedding["model"], "cortex-hash-v1")
+        self.assertEqual(embedding["dimensions"], 384)
+        self.assertEqual(embedding["schema_dimensions"], 384)
+        self.assertTrue(embedding["index_compatible"])
+        self.assertFalse(embedding["network_required"])
+
+    def test_rebuild_vectors_endpoint_exposes_queue_contract(self) -> None:
+        response = self.client.post("/v1/maintenance/rebuild-vectors", headers={"Authorization": "Bearer test-token"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("queued", payload)
+        self.assertIn("skipped", payload)
+        self.assertIn("checked", payload)
+        self.assertIn("vector_available", payload)
+        self.assertIn("vector_indexed_memories", payload)
+        self.assertIn("embedding", payload)
+
+    def test_personal_profile_endpoint_exposes_adaptation_contract(self) -> None:
+        created = self.client.post(
+            "/v1/captures",
+            json={
+                "content": "FastAPI profile: I prefer concise technical answers. We decided Project Atlas uses local-first memory.",
+                "source": "fastapi-profile-test",
+            },
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(created.status_code, 200)
+        capture_id = created.json()["capture_id"]
+        approved = self.client.post(f"/v1/captures/{capture_id}/approve", headers={"Authorization": "Bearer test-token"})
+        self.assertEqual(approved.status_code, 200)
+
+        response = self.client.get("/v1/personal-profile", headers={"Authorization": "Bearer test-token"})
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["name"], "Cortex Personal Adaptation Profile")
+        self.assertIn("coverage", payload)
+        self.assertIn("sections", payload)
+        self.assertIn("markdown", payload)
+
+        markdown = self.client.get(
+            "/v1/personal-profile",
+            params={"format": "markdown", "query": "Project Atlas"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(markdown.status_code, 200)
+        self.assertIn("# Cortex Personal Adaptation Profile", markdown.text)
+        self.assertIn("Project Atlas", markdown.text)
+
+    def test_source_import_endpoint_queues_export_records(self) -> None:
+        export_dir = Path(MODULE_TMP.name) / "chatgpt-import-contract"
+        export_dir.mkdir(exist_ok=True)
+        payload = [
+            {
+                "title": "Importer contract",
+                "mapping": {
+                    "a": {
+                        "message": {
+                            "author": {"role": "user"},
+                            "create_time": 1_700_000_001,
+                            "content": {"parts": ["Importer contract should remember Project Kestrel."]},
+                        }
+                    }
+                },
+            }
+        ]
+        (export_dir / "conversations.json").write_text(json.dumps(payload), encoding="utf-8")
+
+        analysis = self.client.post(
+            "/v1/imports/analyze",
+            json={"paths": [str(export_dir)], "max_records": 10},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(analysis.status_code, 200)
+        self.assertEqual(analysis.json()["records_found"], 1)
+
+        imported = self.client.post(
+            "/v1/imports",
+            json={"paths": [str(export_dir)], "processing": "async", "max_records": 10},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(imported.status_code, 200)
+        import_payload = imported.json()
+        import_id = import_payload["import_id"]
+        self.assertEqual(import_payload["queued"], 1)
+        self.assertEqual(import_payload["skipped"], 0)
+
+        history = self.client.get("/v1/imports", headers={"Authorization": "Bearer test-token"})
+        self.assertEqual(history.status_code, 200)
+        self.assertTrue(any(item["import_id"] == import_id for item in history.json()["results"]))
+        self.assertTrue(any(item["skipped"] == 0 for item in history.json()["results"]))
+
+        detail = self.client.get(f"/v1/imports/{import_id}", headers={"Authorization": "Bearer test-token"})
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.json()["records_found"], 1)
+        self.assertEqual(len(detail.json()["records"]), 1)
+
+        ran = self.client.post("/v1/maintenance/jobs/run?limit=5", headers={"Authorization": "Bearer test-token"})
+        self.assertEqual(ran.status_code, 200)
+        self.assertGreaterEqual(ran.json()["processed"], 1)
+
+        search = self.client.get(
+            "/v1/search",
+            params={"query": "Project Kestrel"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(search.status_code, 200)
+        self.assertTrue(search.json()["results"])
+
+        deleted = self.client.delete(f"/v1/imports/{import_id}", headers={"Authorization": "Bearer test-token"})
+        self.assertEqual(deleted.status_code, 200)
+        self.assertTrue(deleted.json()["deleted"])
+        self.assertGreaterEqual(deleted.json()["deleted_captures"], 1)
+
+        search_after_delete = self.client.get(
+            "/v1/search",
+            params={"query": "Project Kestrel"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(search_after_delete.status_code, 200)
+        self.assertFalse(search_after_delete.json()["results"])
+
+    def test_scoped_mcp_token_can_use_mcp_but_not_rest(self) -> None:
+        scoped_token = "cxm_fastapi_contract_token_123456789"
+        registered = self.client.post(
+            "/v1/integrations/mcp-token",
+            json={"token": scoped_token, "label": "Unit test MCP", "scopes": ["read"]},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(registered.status_code, 200)
+        self.assertEqual(registered.json()["scopes"], ["read"])
+
+        rest = self.client.get("/v1/search", params={"query": "anything"}, headers={"Authorization": f"Bearer {scoped_token}"})
+        self.assertEqual(rest.status_code, 401)
+
+        mcp = self.client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            headers={"Authorization": f"Bearer {scoped_token}"},
+        )
+        self.assertEqual(mcp.status_code, 200)
+        self.assertIn("tools", mcp.json()["result"])
+
+    def test_scoped_mcp_token_blocks_unscoped_tool_even_when_setting_enabled(self) -> None:
+        scoped_token = "cxm_fastapi_read_only_token_123456789"
+        created = self.client.post(
+            "/v1/captures",
+            json={"content": "Scoped token delete attempt phrase.", "source": "fastapi-test"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(created.status_code, 200)
+        memory_id = created.json()["memories"][0]["id"]
+        self.client.put(
+            "/v1/settings",
+            json={"allow_agent_writes": True, "allow_agent_destructive_actions": True},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        registered = self.client.post(
+            "/v1/integrations/mcp-token",
+            json={"token": scoped_token, "label": "Read-only MCP", "scopes": ["read"]},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(registered.status_code, 200)
+
+        mcp = self.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "forget_memory", "arguments": {"id": memory_id}},
+            },
+            headers={"Authorization": f"Bearer {scoped_token}"},
+        )
+
+        self.assertEqual(mcp.status_code, 200)
+        self.assertIn("not scoped", mcp.json()["error"]["message"])
+        still_present = self.client.get(
+            "/v1/search",
+            params={"query": "Scoped token delete attempt"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertTrue(still_present.json()["results"])
+
+    def test_delete_user_data_removes_current_user_records(self) -> None:
+        phrase = "FastAPI delete all user data contract phrase"
+        created = self.client.post(
+            "/v1/captures",
+            json={"content": phrase, "source": "fastapi-test"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(created.status_code, 200)
+
+        deleted = self.client.delete(
+            "/v1/user-data",
+            params={"include_backups": "false"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(deleted.status_code, 200)
+        self.assertFalse(deleted.json()["include_backups"])
+
+        search = self.client.get(
+            "/v1/search",
+            params={"query": phrase},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(search.status_code, 200)
+        self.assertEqual(search.json()["results"], [])
+
+    def test_restore_latest_backup_restores_search_contract(self) -> None:
+        phrase = "FastAPI restore latest backup contract phrase"
+        created = self.client.post(
+            "/v1/captures",
+            json={"content": phrase, "source": "fastapi-test"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(created.status_code, 200)
+
+        backup = self.client.post("/v1/backups", headers={"Authorization": "Bearer test-token"})
+        self.assertEqual(backup.status_code, 200)
+
+        deleted = self.client.delete(
+            "/v1/user-data",
+            params={"include_backups": "false"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(deleted.status_code, 200)
+
+        restored = self.client.post("/v1/backups/restore-latest", headers={"Authorization": "Bearer test-token"})
+        self.assertEqual(restored.status_code, 200)
+        self.assertGreaterEqual(restored.json()["rebuild"]["memories"], 1)
+
+        search = self.client.get(
+            "/v1/search",
+            params={"query": phrase},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(search.status_code, 200)
+        self.assertTrue(search.json()["results"])
+
+    def test_queue_capture_processes_through_job_endpoint(self) -> None:
+        phrase = "FastAPI queued capture async job contract phrase"
+        queued = self.client.post(
+            "/v1/captures/queue",
+            json={"content": phrase, "source": "fastapi-async-test"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(queued.status_code, 202)
+        capture_id = queued.json()["capture_id"]
+        job_id = queued.json()["jobs"][0]["id"]
+
+        search_before = self.client.get(
+            "/v1/search",
+            params={"query": phrase},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(search_before.status_code, 200)
+        self.assertEqual(search_before.json()["results"], [])
+
+        job = self.client.get(f"/v1/jobs/{job_id}", headers={"Authorization": "Bearer test-token"})
+        self.assertEqual(job.status_code, 200)
+        self.assertEqual(job.json()["status"], "queued")
+
+        ran = self.client.post("/v1/maintenance/jobs/run", params={"limit": 1}, headers={"Authorization": "Bearer test-token"})
+        self.assertEqual(ran.status_code, 200)
+        self.assertEqual(ran.json()["processed"], 1)
+
+        status = self.client.get(f"/v1/captures/{capture_id}/status", headers={"Authorization": "Bearer test-token"})
+        self.assertEqual(status.status_code, 200)
+        self.assertEqual(status.json()["processing"]["extraction_status"], "succeeded")
+        self.assertGreaterEqual(status.json()["processing"]["memory_count"], 1)
+
+        search_after = self.client.get(
+            "/v1/search",
+            params={"query": phrase},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(search_after.status_code, 200)
+        self.assertTrue(search_after.json()["results"])
+
+    def test_scoped_mcp_token_cannot_call_queue_rest_endpoint(self) -> None:
+        scoped_token = "cxm_fastapi_queue_blocked_token_123456789"
+        registered = self.client.post(
+            "/v1/integrations/mcp-token",
+            json={"token": scoped_token, "label": "Queue blocked MCP", "scopes": ["read"]},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(registered.status_code, 200)
+
+        queued = self.client.post(
+            "/v1/captures/queue",
+            json={"content": "Scoped MCP token should not call REST queue.", "source": "fastapi-async-test"},
+            headers={"Authorization": f"Bearer {scoped_token}"},
+        )
+        self.assertEqual(queued.status_code, 401)
+
+
+if __name__ == "__main__":
+    unittest.main()

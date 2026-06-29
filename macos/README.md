@@ -9,7 +9,7 @@ The app bundles the dependency-light local backend and starts it automatically o
 - Opens as a normal macOS window from the Dock/app icon
 - Menu bar item opens the same window for quick access
 - First-run setup for vault location, memory rules, first save, and AI-tool connection
-- Global `Cmd+Shift+V` capture
+- Optional global `Cmd+Shift+V` capture, disabled by default
 - Today cockpit with recommended actions, open loops, and one-click context packs
 - Simple Today loop for capture, review, reuse, and return
 - Memory behavior settings for review flow, pending-context visibility, and context-pack size
@@ -30,6 +30,7 @@ The app bundles the dependency-light local backend and starts it automatically o
 - Installer/update feed controls
 - Backend endpoint and token settings
 - Reopenable setup flow under More
+- Separate Keychain tokens for app REST access and scoped MCP integrations
 
 ## Build
 
@@ -51,10 +52,16 @@ Default backend:
 http://127.0.0.1:8766
 ```
 
-Default token:
+Default app token:
 
 ```text
-dev-local-key
+Generated per install, stored in Keychain, and used by the macOS app for REST calls.
+```
+
+Default MCP token:
+
+```text
+Generated per install, stored in Keychain, registered with the local backend, and copied into MCP configs instead of the app token.
 ```
 
 Default local vault:
@@ -87,4 +94,4 @@ python3 ../scripts/ops_readiness_check.py --refresh-site
 
 ## Permissions
 
-The app reads the clipboard only when the user presses the hotkey or clicks a capture button. It does not record the screen or listen in the background.
+The app reads the clipboard only when the user clicks a capture button or enables and uses the optional global hotkey. It does not record the screen or listen in the background.

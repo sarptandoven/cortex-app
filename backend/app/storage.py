@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import platform
 import re
+import secrets
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -10,8 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from .database import connect, sqlite_vec_status
-from .embeddings import VECTOR_MODEL, embed_text, embedding_hash, embedding_json, embedding_source_text
-from .extractor import now_iso, stable_id
+from .embeddings import VECTOR_DIMENSIONS, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status
+from .extractor import extract_context, now_iso, stable_id
+from .source_ingest import SourceRecord, analyze_sources, import_source_records, supported_sources
 from .vault import CortexVault
 
 
@@ -20,13 +24,90 @@ HEALTH_CONTRACT = 3
 BACKEND_FEATURES = (
     "local-vault",
     "capture-surfaces",
+    "layered-memory",
     "trust-controls",
     "installer-updates",
     "reliability-hardening",
     "simple-product-loop",
     "operational-readiness",
+    "source-imports",
 )
 SUPPORT_BUNDLE_SCHEMA = 1
+DEFAULT_BACKUP_RETENTION_COUNT = 20
+DEFAULT_BACKUP_RETENTION_DAYS = 0
+DEFAULT_MCP_TOKEN_SCOPES = ("read", "write", "export", "maintenance")
+MCP_TOKEN_SCOPES = {"read", "write", "export", "maintenance", "destructive"}
+
+MEMORY_LAYERS = {"semantic", "episodic", "style", "decision", "preference", "negative"}
+MEMORY_LAYER_BY_KIND = {
+    "claim": "semantic",
+    "observation": "semantic",
+    "summary": "semantic",
+    "event": "episodic",
+    "decision": "decision",
+    "preference": "preference",
+    "style": "style",
+    "negative": "negative",
+}
+LAYER_RETRIEVAL_BOOST = 0.02
+LAYER_QUERY_INTENTS: tuple[tuple[set[str], set[str]], ...] = (
+    (
+        {"style", "negative"},
+        {
+            "copy",
+            "draft",
+            "language",
+            "paragraph",
+            "paragraphs",
+            "prose",
+            "style",
+            "tone",
+            "voice",
+            "wording",
+            "write",
+            "writing",
+        },
+    ),
+    (
+        {"decision"},
+        {
+            "approach",
+            "choose",
+            "decide",
+            "decided",
+            "decision",
+            "plan",
+            "planning",
+            "prioritize",
+            "roadmap",
+        },
+    ),
+    (
+        {"preference"},
+        {
+            "default",
+            "dislike",
+            "favorite",
+            "prefer",
+            "preference",
+            "preferred",
+            "rather",
+        },
+    ),
+    (
+        {"episodic"},
+        {
+            "event",
+            "happen",
+            "happened",
+            "history",
+            "meeting",
+            "met",
+            "timeline",
+            "when",
+        },
+    ),
+)
 
 
 DEFAULT_USER_SETTINGS: dict[str, Any] = {
@@ -34,8 +115,10 @@ DEFAULT_USER_SETTINGS: dict[str, Any] = {
     "allow_pending_in_context": True,
     "context_pack_limit": 12,
     "allow_agent_reads": True,
-    "allow_agent_writes": True,
-    "allow_agent_exports": True,
+    "allow_agent_writes": False,
+    "allow_agent_exports": False,
+    "allow_agent_maintenance": False,
+    "allow_agent_destructive_actions": False,
     "redact_sensitive_context": True,
 }
 
@@ -77,6 +160,63 @@ SUPPORT_PATH_KEYS = {
 }
 
 
+def _env_int(name: str, default: int, *, minimum: int = 0, maximum: int = 3650) -> int:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+    return min(maximum, max(minimum, parsed))
+
+
+def backup_retention_policy() -> dict[str, int]:
+    return {
+        "keep_latest": _env_int("CORTEX_BACKUP_RETENTION_COUNT", DEFAULT_BACKUP_RETENTION_COUNT, minimum=0, maximum=500),
+        "max_age_days": _env_int("CORTEX_BACKUP_RETENTION_DAYS", DEFAULT_BACKUP_RETENTION_DAYS, minimum=0, maximum=3650),
+    }
+
+
+def normalize_token_scopes(scopes: list[str] | tuple[str, ...] | str | None) -> list[str]:
+    if scopes is None:
+        values = list(DEFAULT_MCP_TOKEN_SCOPES)
+    elif isinstance(scopes, str):
+        values = [item.strip().lower() for item in scopes.split(",")]
+    else:
+        values = [str(item).strip().lower() for item in scopes]
+    return sorted({scope for scope in values if scope in MCP_TOKEN_SCOPES})
+
+
+def memory_layer(kind: str | None, value: str | None = None) -> str:
+    explicit = (value or "").strip().lower()
+    if explicit in MEMORY_LAYERS:
+        return explicit
+    return MEMORY_LAYER_BY_KIND.get((kind or "").strip().lower(), "semantic")
+
+
+def query_layer_boosts(query: str) -> dict[str, float]:
+    tokens = set(re.findall(r"[a-z0-9_]+", query.lower()))
+    boosts: dict[str, float] = {}
+    for layers, keywords in LAYER_QUERY_INTENTS:
+        if tokens & keywords:
+            for layer in layers:
+                boosts[layer] = max(boosts.get(layer, 0.0), LAYER_RETRIEVAL_BOOST)
+    if "what happened" in query.lower():
+        boosts["episodic"] = max(boosts.get("episodic", 0.0), LAYER_RETRIEVAL_BOOST)
+    return boosts
+
+
+def _path_event_summary(path: str) -> dict[str, Any]:
+    candidate = Path(path).expanduser()
+    kind = "directory" if candidate.is_dir() else "file" if candidate.is_file() else "missing"
+    return {
+        "name": candidate.name,
+        "suffix": candidate.suffix.lower(),
+        "kind": kind,
+    }
+
+
 class CortexStore:
     def __init__(self, db_path, vault_path: str | Path | None = None):
         self.db_path = Path(db_path)
@@ -115,6 +255,7 @@ class CortexStore:
                     {
                         "id": row["id"],
                         "user_id": row["user_id"],
+                        "import_id": row["import_id"] if "import_id" in row.keys() else None,
                         "source": row["source"],
                         "source_url": row["source_url"],
                         "title": row["title"],
@@ -134,6 +275,7 @@ class CortexStore:
                         "capture_id": row["capture_id"],
                         "user_id": row["user_id"],
                         "kind": row["kind"],
+                        "layer": memory_layer(row["kind"], row["layer"] if "layer" in row.keys() else None),
                         "content": row["content"],
                         "summary": row["summary"],
                         "source": row["source"],
@@ -206,6 +348,697 @@ class CortexStore:
             "events": len(event_rows),
         }
 
+    def create_mcp_token(self, user_id: str, *, label: str = "MCP integration", scopes: list[str] | tuple[str, ...] | str | None = None) -> dict[str, Any]:
+        token = "cxm_" + secrets.token_urlsafe(32).replace("-", "").replace("_", "")[:43]
+        metadata = self.ensure_mcp_token(user_id, token, label=label, scopes=scopes)
+        return {**metadata, "token": token}
+
+    def ensure_mcp_token(
+        self,
+        user_id: str,
+        token: str,
+        *,
+        label: str = "MCP integration",
+        scopes: list[str] | tuple[str, ...] | str | None = None,
+        token_id: str | None = None,
+    ) -> dict[str, Any]:
+        normalized = token.strip()
+        if not normalized:
+            raise ValueError("MCP token is required")
+        timestamp = now_iso()
+        resolved_scopes = normalize_token_scopes(scopes)
+        resolved_token_id = token_id or stable_id("tok_", f"{user_id}:mcp:{label}")
+        with connect(self.db_path) as conn:
+            existing = conn.execute("SELECT token_salt FROM api_tokens WHERE token_id = ?", (resolved_token_id,)).fetchone()
+            if existing:
+                salt = existing["token_salt"]
+            else:
+                salt = secrets.token_hex(16)
+            token_hash = self._token_hash(normalized, salt)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO api_tokens
+                (token_id, user_id, label, audience, token_salt, token_hash, scopes_json, created_at, updated_at, last_used_at, revoked_at)
+                VALUES (
+                  ?,
+                  ?,
+                  ?,
+                  'mcp',
+                  ?,
+                  ?,
+                  ?,
+                  COALESCE((SELECT created_at FROM api_tokens WHERE token_id = ?), ?),
+                  ?,
+                  (SELECT last_used_at FROM api_tokens WHERE token_id = ?),
+                  NULL
+                )
+                """,
+                (
+                    resolved_token_id,
+                    user_id,
+                    label[:120],
+                    salt,
+                    token_hash,
+                    json.dumps(resolved_scopes),
+                    resolved_token_id,
+                    timestamp,
+                    timestamp,
+                    resolved_token_id,
+                ),
+            )
+        return {
+            "token_id": resolved_token_id,
+            "user_id": user_id,
+            "label": label[:120],
+            "audience": "mcp",
+            "scopes": resolved_scopes,
+            "updated_at": timestamp,
+        }
+
+    def authenticate_mcp_token(self, token: str) -> dict[str, Any] | None:
+        normalized = token.strip()
+        if not normalized:
+            return None
+        timestamp = now_iso()
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT token_id, user_id, label, audience, token_salt, token_hash, scopes_json, created_at, last_used_at
+                FROM api_tokens
+                WHERE audience = 'mcp' AND revoked_at IS NULL
+                ORDER BY created_at DESC
+                """
+            ).fetchall()
+            for row in rows:
+                candidate = self._token_hash(normalized, row["token_salt"])
+                if not secrets.compare_digest(candidate, row["token_hash"]):
+                    continue
+                conn.execute("UPDATE api_tokens SET last_used_at = ? WHERE token_id = ?", (timestamp, row["token_id"]))
+                return {
+                    "token_id": row["token_id"],
+                    "user_id": row["user_id"],
+                    "label": row["label"],
+                    "audience": row["audience"],
+                    "scopes": self._json_list(row["scopes_json"]),
+                    "created_at": row["created_at"],
+                    "last_used_at": timestamp,
+                    "admin": False,
+                }
+        return None
+
+    def enqueue_capture(
+        self,
+        *,
+        user_id: str,
+        content: str,
+        source: str,
+        source_url: str | None,
+        title: str | None,
+        import_id: str | None = None,
+    ) -> dict[str, Any]:
+        content = content.strip()
+        if not content:
+            raise ValueError("content is required")
+        if len(content) > 200_000:
+            raise ValueError("content is too large")
+        captured_at = now_iso()
+        normalized_source = (source or "macos")[:80]
+        capture_id = stable_id("cap_", user_id + normalized_source + captured_at + content[:120])
+        raw_hash = stable_id("", content)
+        summary = "Queued for memory extraction."
+        with connect(self.db_path) as conn:
+            user_settings = self._settings(conn, user_id)
+            review_status = "pending" if user_settings["review_new_captures"] else "approved"
+            approved_at = None if review_status == "pending" else captured_at
+            conn.execute(
+                """
+                INSERT INTO captures
+                (id, user_id, import_id, source, source_url, title, raw_text, raw_hash, summary, review_status, approved_at, captured_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                  user_id = excluded.user_id,
+                  import_id = COALESCE(captures.import_id, excluded.import_id),
+                  source = excluded.source,
+                  source_url = excluded.source_url,
+                  title = excluded.title,
+                  raw_text = excluded.raw_text,
+                  raw_hash = excluded.raw_hash,
+                  summary = excluded.summary,
+                  review_status = excluded.review_status,
+                  approved_at = excluded.approved_at,
+                  captured_at = excluded.captured_at
+                """,
+                (capture_id, user_id, import_id, normalized_source, source_url, title, content, raw_hash, summary, review_status, approved_at, captured_at),
+            )
+            job = self._enqueue_job(
+                conn,
+                user_id=user_id,
+                job_type="extract_capture",
+                object_type="capture",
+                object_id=capture_id,
+                unique_key=f"extract_capture:{capture_id}:{raw_hash}",
+                payload={
+                    "capture_id": capture_id,
+                    "source": normalized_source,
+                    "source_url": source_url,
+                    "title": title,
+                    "captured_at": captured_at,
+                    "raw_hash": raw_hash,
+                },
+                priority=50,
+            )
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO capture_processing_state
+                (capture_id, user_id, ingest_status, extraction_status, embedding_status, memory_count, task_count, entity_count, last_job_id, last_error, queued_at, updated_at)
+                VALUES (?, ?, 'accepted', 'queued', 'pending', 0, 0, 0, ?, NULL, ?, ?)
+                """,
+                (capture_id, user_id, job["id"], captured_at, captured_at),
+            )
+            self._event(conn, user_id, capture_id, "capture", "queued", {"source": normalized_source, "job_id": job["id"]})
+            self.vault.write_settings(user_id, user_settings)
+            self.vault.write_capture(
+                {
+                    "id": capture_id,
+                    "user_id": user_id,
+                    "import_id": import_id,
+                    "source": normalized_source,
+                    "source_url": source_url,
+                    "title": title,
+                    "raw_text": content,
+                    "raw_hash": raw_hash,
+                    "summary": summary,
+                    "review_status": review_status,
+                    "approved_at": approved_at,
+                    "archived_at": None,
+                    "captured_at": captured_at,
+                    "processing": {"ingest_status": "accepted", "extraction_status": "queued", "job_id": job["id"]},
+                }
+            )
+        return {
+            "capture_id": capture_id,
+            "status": "queued",
+            "summary": summary,
+            "jobs": [job],
+            "processing": self.capture_status(user_id, capture_id),
+        }
+
+    def capture_status(self, user_id: str, capture_id: str) -> dict[str, Any]:
+        with connect(self.db_path) as conn:
+            capture = conn.execute(
+                "SELECT id, source, title, review_status, captured_at FROM captures WHERE user_id = ? AND id = ?",
+                (user_id, capture_id),
+            ).fetchone()
+            if not capture:
+                raise FileNotFoundError("Capture not found")
+            state = conn.execute(
+                "SELECT * FROM capture_processing_state WHERE user_id = ? AND capture_id = ?",
+                (user_id, capture_id),
+            ).fetchone()
+            jobs = conn.execute(
+                """
+                SELECT *
+                FROM memory_jobs
+                WHERE user_id = ?
+                  AND (
+                    (object_type = 'capture' AND object_id = ?)
+                    OR (
+                      object_type = 'memory'
+                      AND object_id IN (
+                        SELECT id FROM memories WHERE user_id = ? AND capture_id = ?
+                      )
+                    )
+                  )
+                ORDER BY created_at DESC
+                """,
+                (user_id, capture_id, user_id, capture_id),
+            ).fetchall()
+        state_payload = dict(state) if state else {
+            "capture_id": capture_id,
+            "user_id": user_id,
+            "ingest_status": "materialized",
+            "extraction_status": "succeeded",
+            "embedding_status": "available",
+            "memory_count": None,
+            "task_count": None,
+            "entity_count": None,
+            "last_job_id": None,
+            "last_error": None,
+            "queued_at": capture["captured_at"],
+            "started_at": None,
+            "completed_at": capture["captured_at"],
+            "updated_at": capture["captured_at"],
+        }
+        return {
+            "capture": dict(capture),
+            "processing": state_payload,
+            "jobs": [self._job_from_row(row) for row in jobs],
+        }
+
+    def supported_import_sources(self) -> list[dict[str, Any]]:
+        return supported_sources()
+
+    def analyze_import_sources(self, paths: list[str], source_hint: str = "", max_records: int = 500) -> dict[str, Any]:
+        return analyze_sources(paths, source_hint=source_hint, max_records=max_records)
+
+    def import_sources(
+        self,
+        *,
+        user_id: str,
+        paths: list[str],
+        source_hint: str = "",
+        processing: str = "async",
+        max_records: int = 1000,
+    ) -> dict[str, Any]:
+        cleaned_paths = [str(path).strip() for path in paths if str(path).strip()]
+        if not cleaned_paths:
+            raise ValueError("paths must include at least one local file or folder")
+        if processing not in {"sync", "async"}:
+            raise ValueError("processing must be sync or async")
+        max_records = min(max(int(max_records), 1), 5000)
+        started_at = now_iso()
+        records = import_source_records(cleaned_paths, source_hint=source_hint, max_records=max_records)
+        import_id = stable_id("imp_", user_id + "|".join(cleaned_paths) + started_at + secrets.token_hex(8))
+        queued = 0
+        saved = 0
+        skipped = 0
+        errors: list[dict[str, Any]] = []
+        record_results: list[dict[str, Any]] = []
+        source_counts: dict[str, int] = {}
+        source_summary: list[dict[str, Any]] = []
+        path_summaries = [_path_event_summary(path) for path in cleaned_paths[:20]]
+        with connect(self.db_path) as conn:
+            for record in records:
+                source_counts[record.source] = source_counts.get(record.source, 0) + 1
+            source_summary = [{"source": source, "count": count} for source, count in sorted(source_counts.items())]
+            self._upsert_import_session(
+                conn,
+                {
+                    "id": import_id,
+                    "user_id": user_id,
+                    "status": "running",
+                    "source_hint": source_hint,
+                    "processing": processing,
+                    "paths": path_summaries,
+                    "sources": source_summary,
+                    "records_found": len(records),
+                    "queued": 0,
+                    "saved": 0,
+                    "failed": 0,
+                    "skipped": 0,
+                    "capture_ids": [],
+                    "errors": [],
+                    "records": [],
+                    "created_at": started_at,
+                    "updated_at": started_at,
+                    "completed_at": None,
+                    "deleted_at": None,
+                },
+            )
+            for ordinal, record in enumerate(records):
+                self._upsert_import_record(
+                    conn,
+                    import_id=import_id,
+                    user_id=user_id,
+                    ordinal=ordinal,
+                    record=record,
+                    status="pending",
+                    created_at=started_at,
+                    updated_at=started_at,
+                )
+
+        capture_ids: list[str] = []
+        for ordinal, record in enumerate(records):
+            record_id = stable_id("irec_", import_id + str(ordinal) + record.source + record.title)
+            try:
+                content_hash = stable_id("", record.content)
+                with connect(self.db_path) as conn:
+                    duplicate = conn.execute(
+                        """
+                        SELECT id
+                        FROM captures
+                        WHERE user_id = ?
+                          AND raw_hash = ?
+                          AND source = ?
+                        ORDER BY captured_at DESC
+                        LIMIT 1
+                        """,
+                        (user_id, content_hash, record.source),
+                    ).fetchone()
+                if duplicate:
+                    skipped += 1
+                    record_results.append({
+                        "capture_id": None,
+                        "status": "duplicate",
+                        "source": record.source,
+                        "title": record.title,
+                    })
+                    with connect(self.db_path) as conn:
+                        conn.execute(
+                            """
+                            UPDATE import_records
+                            SET status = 'duplicate',
+                                error = ?,
+                                updated_at = ?
+                            WHERE user_id = ? AND id = ?
+                            """,
+                            (f"Duplicate of existing capture {duplicate['id']}", now_iso(), user_id, record_id),
+                        )
+                    continue
+                if processing == "sync":
+                    extracted = extract_context(record.content, record.source)
+                    result = self.save_capture(
+                        user_id=user_id,
+                        content=record.content,
+                        source=record.source,
+                        source_url=record.source_url,
+                        title=record.title,
+                        extracted=extracted,
+                        import_id=import_id,
+                    )
+                    saved += 1
+                    capture_ids.append(result["capture_id"])
+                    record_results.append({
+                        "capture_id": result["capture_id"],
+                        "status": "saved",
+                        "source": record.source,
+                        "title": record.title,
+                        "memories": len(result.get("memories") or []),
+                    })
+                    with connect(self.db_path) as conn:
+                        conn.execute(
+                            "UPDATE import_records SET status = 'saved', capture_id = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                            (result["capture_id"], now_iso(), user_id, record_id),
+                        )
+                else:
+                    result = self.enqueue_capture(
+                        user_id=user_id,
+                        content=record.content,
+                        source=record.source,
+                        source_url=record.source_url,
+                        title=record.title,
+                        import_id=import_id,
+                    )
+                    queued += 1
+                    capture_ids.append(result["capture_id"])
+                    jobs = result.get("jobs", [])
+                    job_id = jobs[0]["id"] if jobs else None
+                    record_results.append({
+                        "capture_id": result["capture_id"],
+                        "status": "queued",
+                        "source": record.source,
+                        "title": record.title,
+                        "jobs": jobs,
+                    })
+                    with connect(self.db_path) as conn:
+                        conn.execute(
+                            "UPDATE import_records SET status = 'queued', capture_id = ?, job_id = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                            (result["capture_id"], job_id, now_iso(), user_id, record_id),
+                        )
+            except Exception as exc:
+                error = {"source": record.source, "title": record.title, "error": str(exc)}
+                errors.append(error)
+                with connect(self.db_path) as conn:
+                    conn.execute(
+                        "UPDATE import_records SET status = 'failed', error = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                        (str(exc), now_iso(), user_id, record_id),
+                    )
+        completed_at = now_iso()
+        status = "empty" if not records else "complete" if not errors else "partial"
+        with connect(self.db_path) as conn:
+            summary = {
+                "id": import_id,
+                "user_id": user_id,
+                "status": status,
+                "source_hint": source_hint,
+                "processing": processing,
+                "paths": path_summaries,
+                "sources": source_summary,
+                "records_found": len(records),
+                "queued": queued,
+                "saved": saved,
+                "failed": len(errors),
+                "skipped": skipped,
+                "capture_ids": capture_ids,
+                "errors": errors,
+                "records": record_results[:100],
+                "created_at": started_at,
+                "updated_at": completed_at,
+                "completed_at": completed_at,
+                "deleted_at": None,
+            }
+            self._upsert_import_session(conn, summary)
+            self._event(
+                conn,
+                user_id,
+                import_id,
+                "import",
+                "created",
+                {
+                    "paths": path_summaries,
+                    "source_hint": source_hint,
+                    "processing": processing,
+                    "records_found": len(records),
+                    "queued": queued,
+                    "saved": saved,
+                    "failed": len(errors),
+                    "skipped": skipped,
+                    "capture_count": len(capture_ids),
+                },
+            )
+        return {
+            "import_id": import_id,
+            "status": status,
+            "records_found": len(records),
+            "queued": queued,
+            "saved": saved,
+            "failed": len(errors),
+            "skipped": skipped,
+            "sources": source_summary,
+            "records": record_results[:100],
+            "errors": errors,
+        }
+
+    def get_job(self, user_id: str, job_id: str) -> dict[str, Any] | None:
+        with connect(self.db_path) as conn:
+            row = conn.execute("SELECT * FROM memory_jobs WHERE user_id = ? AND id = ?", (user_id, job_id)).fetchone()
+        return self._job_from_row(row) if row else None
+
+    def list_imports(self, user_id: str, limit: int = 50, *, include_deleted: bool = True) -> list[dict[str, Any]]:
+        filters = ["i.user_id = ?"]
+        params: list[Any] = [user_id]
+        if not include_deleted:
+            filters.append("i.deleted_at IS NULL")
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                  i.*,
+                  COUNT(DISTINCT c.id) AS remaining_captures,
+                  COUNT(DISTINCT m.id) AS remaining_memories,
+                  COUNT(DISTINCT t.id) AS remaining_tasks
+                FROM import_sessions i
+                LEFT JOIN captures c ON c.user_id = i.user_id AND c.import_id = i.id
+                LEFT JOIN memories m ON m.user_id = i.user_id AND m.capture_id = c.id AND m.status = 'active'
+                LEFT JOIN tasks t ON t.user_id = i.user_id AND t.capture_id = c.id AND t.status = 'open'
+                WHERE {' AND '.join(filters)}
+                GROUP BY i.id
+                ORDER BY i.created_at DESC
+                LIMIT ?
+                """,
+                [*params, max(1, min(limit, 100))],
+            ).fetchall()
+        return [self._import_session_from_row(row) for row in rows]
+
+    def get_import(self, user_id: str, import_id: str) -> dict[str, Any] | None:
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT
+                  i.*,
+                  COUNT(DISTINCT c.id) AS remaining_captures,
+                  COUNT(DISTINCT m.id) AS remaining_memories,
+                  COUNT(DISTINCT t.id) AS remaining_tasks
+                FROM import_sessions i
+                LEFT JOIN captures c ON c.user_id = i.user_id AND c.import_id = i.id
+                LEFT JOIN memories m ON m.user_id = i.user_id AND m.capture_id = c.id AND m.status = 'active'
+                LEFT JOIN tasks t ON t.user_id = i.user_id AND t.capture_id = c.id AND t.status = 'open'
+                WHERE i.user_id = ? AND i.id = ?
+                GROUP BY i.id
+                """,
+                (user_id, import_id),
+            ).fetchone()
+            if not row:
+                return None
+            records = conn.execute(
+                """
+                SELECT *
+                FROM import_records
+                WHERE user_id = ? AND import_id = ?
+                ORDER BY ordinal
+                LIMIT 500
+                """,
+                (user_id, import_id),
+            ).fetchall()
+            captures = conn.execute(
+                """
+                SELECT
+                  c.*,
+                  COUNT(DISTINCT m.id) AS memory_count,
+                  COUNT(DISTINCT t.id) AS task_count
+                FROM captures c
+                LEFT JOIN memories m ON m.capture_id = c.id AND m.status = 'active'
+                LEFT JOIN tasks t ON t.capture_id = c.id AND t.status = 'open'
+                WHERE c.user_id = ? AND c.import_id = ?
+                GROUP BY c.id
+                ORDER BY c.captured_at DESC
+                LIMIT 500
+                """,
+                (user_id, import_id),
+            ).fetchall()
+        detail = self._import_session_from_row(row)
+        detail["records"] = [self._import_record_from_row(record) for record in records]
+        detail["captures"] = [self._capture_from_row(capture) for capture in captures]
+        return detail
+
+    def delete_import(self, user_id: str, import_id: str) -> dict[str, Any]:
+        timestamp = now_iso()
+        with connect(self.db_path) as conn:
+            session = conn.execute("SELECT * FROM import_sessions WHERE user_id = ? AND id = ?", (user_id, import_id)).fetchone()
+            if not session:
+                raise FileNotFoundError("Import not found")
+            if session["deleted_at"]:
+                return {
+                    "import_id": import_id,
+                    "deleted": False,
+                    "status": "already_deleted",
+                    "deleted_captures": 0,
+                    "deleted_memories": 0,
+                    "deleted_tasks": 0,
+                    "deleted_edges": 0,
+                }
+            capture_ids = [
+                row["id"]
+                for row in conn.execute(
+                    """
+                    SELECT id FROM captures WHERE user_id = ? AND import_id = ?
+                    UNION
+                    SELECT capture_id AS id FROM import_records WHERE user_id = ? AND import_id = ? AND capture_id IS NOT NULL
+                    """,
+                    (user_id, import_id, user_id, import_id),
+                ).fetchall()
+                if row["id"]
+            ]
+            deleted: list[dict[str, Any]] = []
+            for capture_id in sorted(set(capture_ids)):
+                result = self._delete_capture_in_conn(
+                    conn,
+                    user_id,
+                    capture_id,
+                    timestamp=timestamp,
+                    reason="import_deleted",
+                    event_metadata={"import_id": import_id},
+                )
+                if result:
+                    deleted.append(result)
+            deleted_capture_ids = [item["capture_id"] for item in deleted]
+            memory_ids = [memory_id for item in deleted for memory_id in item["memory_ids"]]
+            task_ids = [task_id for item in deleted for task_id in item["task_ids"]]
+            edge_ids = [edge_id for item in deleted for edge_id in item["edge_ids"]]
+            conn.execute(
+                """
+                UPDATE import_sessions
+                SET status = 'deleted', deleted_at = ?, updated_at = ?
+                WHERE user_id = ? AND id = ?
+                """,
+                (timestamp, timestamp, user_id, import_id),
+            )
+            conn.execute(
+                """
+                UPDATE import_records
+                SET status = CASE WHEN capture_id IS NULL THEN status ELSE 'deleted' END,
+                    updated_at = ?
+                WHERE user_id = ? AND import_id = ?
+                """,
+                (timestamp, user_id, import_id),
+            )
+            self._event(
+                conn,
+                user_id,
+                import_id,
+                "import",
+                "deleted",
+                {
+                    "capture_count": len(deleted_capture_ids),
+                    "memory_count": len(memory_ids),
+                    "task_count": len(task_ids),
+                    "edge_count": len(edge_ids),
+                },
+            )
+            self.vault.patch_import(import_id, {"status": "deleted", "deleted_at": timestamp, "updated_at": timestamp})
+            self.vault.write_tombstone(
+                user_id=user_id,
+                object_type="import",
+                object_id=import_id,
+                deleted_at=timestamp,
+                reason="import_deleted",
+                related_ids=[*deleted_capture_ids, *memory_ids, *task_ids, *edge_ids],
+                metadata={
+                    "capture_count": len(deleted_capture_ids),
+                    "memory_count": len(memory_ids),
+                    "task_count": len(task_ids),
+                    "edge_count": len(edge_ids),
+                },
+            )
+        return {
+            "import_id": import_id,
+            "deleted": True,
+            "status": "deleted",
+            "deleted_captures": len(deleted_capture_ids),
+            "deleted_memories": len(memory_ids),
+            "deleted_tasks": len(task_ids),
+            "deleted_edges": len(edge_ids),
+        }
+
+    def list_jobs(self, user_id: str, *, status: str | None = None, job_type: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        filters = ["user_id = ?"]
+        params: list[Any] = [user_id]
+        if status:
+            filters.append("status = ?")
+            params.append(status)
+        if job_type:
+            filters.append("job_type = ?")
+            params.append(job_type)
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM memory_jobs
+                WHERE {' AND '.join(filters)}
+                ORDER BY
+                  CASE status WHEN 'failed' THEN 0 WHEN 'running' THEN 1 WHEN 'queued' THEN 2 ELSE 3 END,
+                  updated_at DESC
+                LIMIT ?
+                """,
+                [*params, limit],
+            ).fetchall()
+        return [self._job_from_row(row) for row in rows]
+
+    def run_due_jobs(self, user_id: str, *, limit: int = 10, worker_id: str = "local-worker") -> dict[str, Any]:
+        processed: list[dict[str, Any]] = []
+        for _ in range(max(0, min(limit, 100))):
+            job = self._claim_next_job(user_id, worker_id)
+            if not job:
+                break
+            processed.append(self._run_job(job, worker_id))
+        return {
+            "ran_at": now_iso(),
+            "processed": len(processed),
+            "jobs": processed,
+            "pending": len(self.list_jobs(user_id, status="queued", limit=100)),
+            "failed": len(self.list_jobs(user_id, status="failed", limit=100)),
+        }
+
     def update_settings(self, user_id: str, updates: dict[str, Any]) -> dict[str, Any]:
         with connect(self.db_path) as conn:
             current = self._settings(conn, user_id)
@@ -220,7 +1053,14 @@ class CortexStore:
                 except (TypeError, ValueError):
                     value = int(DEFAULT_USER_SETTINGS["context_pack_limit"])
                 merged["context_pack_limit"] = min(50, max(4, value))
-            for key in ("allow_agent_reads", "allow_agent_writes", "allow_agent_exports", "redact_sensitive_context"):
+            for key in (
+                "allow_agent_reads",
+                "allow_agent_writes",
+                "allow_agent_exports",
+                "allow_agent_maintenance",
+                "allow_agent_destructive_actions",
+                "redact_sensitive_context",
+            ):
                 if key in updates:
                     merged[key] = bool(updates[key])
             timestamp = now_iso()
@@ -245,6 +1085,7 @@ class CortexStore:
         source_url: str | None,
         title: str | None,
         extracted: dict[str, Any],
+        import_id: str | None = None,
     ) -> dict[str, Any]:
         captured_at = extracted.get("_timestamp") or now_iso()
         capture_id = stable_id("cap_", user_id + source + captured_at + content[:120])
@@ -265,11 +1106,23 @@ class CortexStore:
             approved_at = None if review_status == "pending" else captured_at
             conn.execute(
                 """
-                INSERT OR REPLACE INTO captures
-                (id, user_id, source, source_url, title, raw_text, raw_hash, summary, review_status, approved_at, captured_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO captures
+                (id, user_id, import_id, source, source_url, title, raw_text, raw_hash, summary, review_status, approved_at, captured_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                  user_id = excluded.user_id,
+                  import_id = COALESCE(captures.import_id, excluded.import_id),
+                  source = excluded.source,
+                  source_url = excluded.source_url,
+                  title = excluded.title,
+                  raw_text = excluded.raw_text,
+                  raw_hash = excluded.raw_hash,
+                  summary = excluded.summary,
+                  review_status = excluded.review_status,
+                  approved_at = excluded.approved_at,
+                  captured_at = excluded.captured_at
                 """,
-                (capture_id, user_id, source, source_url, title, content, raw_hash, summary, review_status, approved_at, captured_at),
+                (capture_id, user_id, import_id, source, source_url, title, content, raw_hash, summary, review_status, approved_at, captured_at),
             )
             self._event(conn, user_id, capture_id, "capture", "created", {"source": source, "title": title})
 
@@ -299,11 +1152,33 @@ class CortexStore:
                 for right in entity_ids[index + 1:]:
                     edges.append(self._edge(conn, user_id, left, right, "co_occurs", capture_id, captured_at, weight=0.5))
 
+            embedding_state = self._capture_embedding_status(conn, user_id, capture_id)
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO capture_processing_state
+                (capture_id, user_id, ingest_status, extraction_status, embedding_status, memory_count, task_count, entity_count, last_job_id, last_error, queued_at, started_at, completed_at, updated_at)
+                VALUES (?, ?, 'materialized', 'succeeded', ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)
+                """,
+                (
+                    capture_id,
+                    user_id,
+                    embedding_state,
+                    len(memories),
+                    len(tasks),
+                    len(entities),
+                    captured_at,
+                    captured_at,
+                    captured_at,
+                    captured_at,
+                ),
+            )
+
             self.vault.write_settings(user_id, user_settings_snapshot)
             self.vault.write_capture_bundle(
                 capture={
                     "id": capture_id,
                     "user_id": user_id,
+                    "import_id": import_id,
                     "source": source,
                     "source_url": source_url,
                     "title": title,
@@ -361,16 +1236,17 @@ class CortexStore:
             ).fetchall()
         return [self._memory_from_row(row) for row in rows]
 
-    def search(self, user_id: str, query: str, limit: int = 10, kind: str | None = None) -> list[dict[str, Any]]:
+    def search(self, user_id: str, query: str, limit: int = 10, kind: str | None = None, layer: str | None = None) -> list[dict[str, Any]]:
         query = query.strip()
         if not query:
             return self.recent(user_id, limit)
 
         fts_query = self._fts_query(query)
+        candidate_limit = max(limit * 4, 12)
 
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
-            filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind)
+            filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer)
             where = " AND ".join(filters)
             rows = []
             fts_rows = []
@@ -384,21 +1260,22 @@ class CortexStore:
                     ORDER BY rank ASC, m.importance DESC, m.captured_at DESC
                     LIMIT ?
                     """,
-                    [fts_query, *params, limit * 2],
+                    [fts_query, *params, candidate_limit],
                 ).fetchall()
-            vector_rows = self._vector_search(conn, user_id, query, limit * 2, kind, user_settings)
-            rows = self._fuse_search_rows(fts_rows, vector_rows, limit)
+            vector_rows = self._vector_search(conn, user_id, query, candidate_limit, kind, layer, user_settings)
+            rows = self._fuse_search_rows(query, fts_rows, vector_rows, limit)
             if not rows:
                 like = f"%{query}%"
-                rows = conn.execute(
+                fallback_rows = conn.execute(
                     f"""
                     SELECT * FROM memories m
                     WHERE {where} AND (m.content LIKE ? OR m.summary LIKE ? OR m.source LIKE ?)
                     ORDER BY m.importance DESC, m.captured_at DESC
                     LIMIT ?
                     """,
-                    [*params, like, like, like, limit],
+                    [*params, like, like, like, candidate_limit],
                 ).fetchall()
+                rows = self._rank_rows_with_layer_boosts(query, fallback_rows, limit)
         return [self._memory_from_row(row) for row in rows]
 
     def open_tasks(self, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
@@ -476,7 +1353,7 @@ class CortexStore:
             or name.lower() in item.get("content", "").lower()
         ]
 
-    def delete_memory(self, user_id: str, memory_id: str) -> bool:
+    def archive_memory(self, user_id: str, memory_id: str) -> bool:
         timestamp = now_iso()
         with connect(self.db_path) as conn:
             row = conn.execute("SELECT id FROM memories WHERE user_id = ? AND id = ?", (user_id, memory_id)).fetchone()
@@ -485,8 +1362,106 @@ class CortexStore:
             conn.execute("UPDATE memories SET status = 'archived', updated_at = ? WHERE user_id = ? AND id = ?", (timestamp, user_id, memory_id))
             conn.execute("DELETE FROM memory_fts WHERE memory_id = ?", (memory_id,))
             self._delete_memory_vector(conn, memory_id)
+            conn.execute(
+                "DELETE FROM memory_jobs WHERE user_id = ? AND object_type = 'memory' AND object_id = ?",
+                (user_id, memory_id),
+            )
             self._event(conn, user_id, memory_id, "memory", "archived", {})
             self.vault.patch_memory(memory_id, {"status": "archived", "updated_at": timestamp})
+        return True
+
+    def delete_memory(self, user_id: str, memory_id: str) -> bool:
+        timestamp = now_iso()
+        with connect(self.db_path) as conn:
+            row = conn.execute("SELECT id FROM memories WHERE user_id = ? AND id = ?", (user_id, memory_id)).fetchone()
+            if not row:
+                return False
+            edge_ids = self._purge_edges_for_objects(conn, user_id, [memory_id])
+            self._purge_memory_rows(conn, user_id, [memory_id])
+            self._event(conn, user_id, memory_id, "memory", "deleted", {"hard_delete": True, "edge_count": len(edge_ids)})
+            self.vault.delete_memory(memory_id)
+            for edge_id in edge_ids:
+                self.vault.delete_edge(edge_id)
+            self.vault.write_tombstone(
+                user_id=user_id,
+                object_type="memory",
+                object_id=memory_id,
+                deleted_at=timestamp,
+                reason="memory_deleted",
+                related_ids=edge_ids,
+                metadata={"edge_count": len(edge_ids)},
+            )
+        return True
+
+    def _delete_capture_in_conn(
+        self,
+        conn,
+        user_id: str,
+        capture_id: str,
+        *,
+        timestamp: str,
+        reason: str,
+        event_metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        row = conn.execute("SELECT id FROM captures WHERE user_id = ? AND id = ?", (user_id, capture_id)).fetchone()
+        if not row:
+            return None
+        memory_ids = [
+            row["id"]
+            for row in conn.execute("SELECT id FROM memories WHERE user_id = ? AND capture_id = ?", (user_id, capture_id)).fetchall()
+        ]
+        task_ids = [
+            row["id"]
+            for row in conn.execute("SELECT id FROM tasks WHERE user_id = ? AND capture_id = ?", (user_id, capture_id)).fetchall()
+        ]
+        edge_ids = self._purge_edges_for_objects(conn, user_id, [capture_id, *memory_ids, *task_ids])
+        self._purge_memory_rows(conn, user_id, memory_ids)
+        self._purge_task_rows(conn, user_id, task_ids)
+        conn.execute(
+            "DELETE FROM memory_jobs WHERE user_id = ? AND object_type = 'capture' AND object_id = ?",
+            (user_id, capture_id),
+        )
+        conn.execute("DELETE FROM captures WHERE user_id = ? AND id = ?", (user_id, capture_id))
+        metadata = {
+            "hard_delete": True,
+            "memory_count": len(memory_ids),
+            "task_count": len(task_ids),
+            "edge_count": len(edge_ids),
+            **(event_metadata or {}),
+        }
+        self._event(conn, user_id, capture_id, "capture", "deleted", metadata)
+        self.vault.delete_capture(capture_id)
+        for memory_id in memory_ids:
+            self.vault.delete_memory(memory_id)
+        for task_id in task_ids:
+            self.vault.delete_task(task_id)
+        for edge_id in edge_ids:
+            self.vault.delete_edge(edge_id)
+        self.vault.write_tombstone(
+            user_id=user_id,
+            object_type="capture",
+            object_id=capture_id,
+            deleted_at=timestamp,
+            reason=reason,
+            related_ids=[*memory_ids, *task_ids, *edge_ids],
+            metadata=metadata,
+        )
+        return {
+            "capture_id": capture_id,
+            "memory_ids": memory_ids,
+            "task_ids": task_ids,
+            "edge_ids": edge_ids,
+            "memory_count": len(memory_ids),
+            "task_count": len(task_ids),
+            "edge_count": len(edge_ids),
+        }
+
+    def delete_capture(self, user_id: str, capture_id: str) -> bool:
+        timestamp = now_iso()
+        with connect(self.db_path) as conn:
+            deleted = self._delete_capture_in_conn(conn, user_id, capture_id, timestamp=timestamp, reason="capture_deleted")
+            if not deleted:
+                return False
         return True
 
     def approve_capture(self, user_id: str, capture_id: str) -> bool:
@@ -568,6 +1543,13 @@ class CortexStore:
                     (user_id,),
                 ).fetchall()
             ]
+            by_layer = [
+                {"layer": row["layer"], "count": row["count"]}
+                for row in conn.execute(
+                    "SELECT layer, COUNT(*) AS count FROM memories WHERE user_id = ? AND status = 'active' GROUP BY layer ORDER BY count DESC",
+                    (user_id,),
+                ).fetchall()
+            ]
             top_topics = [
                 {"topic": row["topic"], "count": row["count"]}
                 for row in conn.execute(
@@ -599,7 +1581,7 @@ class CortexStore:
                     (user_id,),
                 ).fetchall()
             ]
-        return {**counts, "by_kind": by_kind, "top_topics": top_topics, "top_entities": top_entities}
+        return {**counts, "by_kind": by_kind, "by_layer": by_layer, "top_topics": top_topics, "top_entities": top_entities}
 
     def product_loop(self, user_id: str) -> dict[str, Any]:
         stats = self.stats(user_id)
@@ -687,30 +1669,30 @@ class CortexStore:
         if not capture_done:
             primary = {
                 "action": "capture",
-                "label": "Save Clipboard",
-                "title": "Save one useful thing",
-                "detail": "Start with a decision, preference, project detail, or open loop.",
+                "label": "Add First Source",
+                "title": "Start your personal model",
+                "detail": "Add a decision, preference, writing sample, project detail, or open loop.",
             }
         elif stats["pending_captures"] > 0:
             primary = {
                 "action": "review",
                 "label": "Review Inbox",
-                "title": "Review new saves",
-                "detail": f"{stats['pending_captures']} capture{'s' if stats['pending_captures'] != 1 else ''} need a quick approve/archive pass.",
+                "title": "Review new signals",
+                "detail": f"{stats['pending_captures']} capture{'s' if stats['pending_captures'] != 1 else ''} need approval before they strengthen the model.",
             }
         elif not reuse_done:
             primary = {
                 "action": "reuse",
-                "label": "Copy Context",
-                "title": "Use memory in an AI chat",
-                "detail": "Copy a context pack before your next ChatGPT, Claude, Cursor, or MCP session.",
+                "label": "Ask Cortex",
+                "title": "Use your personal model",
+                "detail": "Use Cortex memory in your next AI session and check model coverage afterward.",
             }
         else:
             primary = {
                 "action": "done",
                 "label": "Loop Complete",
                 "title": "Loop complete today",
-                "detail": "You saved or reviewed context and reused memory. Keep Cortex nearby as work changes.",
+                "detail": "You added or reviewed signals and used approved memory. Keep Cortex nearby as work changes.",
             }
 
         def step(key: str, title: str, done: bool, detail: str) -> dict[str, Any]:
@@ -718,9 +1700,9 @@ class CortexStore:
             return {"key": key, "title": title, "status": status, "detail": detail}
 
         steps = [
-            step("capture", "Capture", capture_done, f"{captured_today} saved today, {stats['captures']} total."),
+            step("capture", "Signal", capture_done, f"{captured_today} added today, {stats['captures']} total."),
             step("review", "Review", review_done, f"{stats['pending_captures']} waiting in the inbox."),
-            step("reuse", "Reuse", reuse_done, f"{reused_today} context pack{'s' if reused_today != 1 else ''} copied today."),
+            step("reuse", "Access", reuse_done, f"{reused_today} approved memory handoff{'s' if reused_today != 1 else ''} prepared today."),
             step("done", "Return", return_done, f"{streak_days} day streak."),
         ]
         completion = round((sum(1 for item in steps if item["status"] == "done") / len(steps)) * 100)
@@ -833,7 +1815,7 @@ class CortexStore:
         redact = bool(user_settings["redact_sensitive_context"])
 
         lines = [
-            "# Cortex Context Pack",
+            "# Cortex Memory View",
             "",
             f"Generated: {now_iso()}",
         ]
@@ -841,21 +1823,36 @@ class CortexStore:
             lines.append(f"Focus: {query}")
         lines.extend([
             "",
-            "Use this as durable user context. Prefer cited memory IDs and sources when answering.",
+            "Use this Cortex context as partial, cited memory for this conversation. Treat it as coverage-limited, follow the user's newest message when there is conflict, and ask when coverage is missing.",
             "",
             "## Suggested Assistant Instruction",
             "",
-            "Use the Cortex context below as long-term memory for this conversation. When a memory is relevant, ground the answer in it and mention the memory ID if useful. If the context conflicts with the user's newest message, follow the newest message and note the mismatch.",
+            "Use the Cortex context below as scoped memory for this conversation. When a memory is relevant, ground the answer in it and mention the memory ID if useful. If the context conflicts with the user's newest message, follow the newest message and note the mismatch.",
             "",
             "## Relevant Memories",
             "",
         ])
         if memories:
-            for item in memories:
-                date = item.get("captured_at") or ""
-                topics_text = ", ".join(item.get("topics") or [])
-                suffix = f" Topics: {topics_text}." if topics_text else ""
-                lines.append(f"- [{item['id']}] ({item['kind']}, {item['source']}, {date}) {self._redact_text(item['content'], redact)}{suffix}")
+            layer_titles = {
+                "decision": "Decision Memory",
+                "preference": "Preference Memory",
+                "style": "Style Memory",
+                "negative": "Negative Memory",
+                "episodic": "Episodic Memory",
+                "semantic": "Semantic Memory",
+            }
+            layer_order = ["decision", "preference", "style", "negative", "episodic", "semantic"]
+            for layer in layer_order:
+                grouped = [item for item in memories if memory_layer(item.get("kind"), item.get("layer")) == layer]
+                if not grouped:
+                    continue
+                lines.extend([f"### {layer_titles[layer]}", ""])
+                for item in grouped:
+                    date = item.get("captured_at") or ""
+                    topics_text = ", ".join(item.get("topics") or [])
+                    suffix = f" Topics: {topics_text}." if topics_text else ""
+                    lines.append(f"- [{item['id']}] ({item['kind']}, {item['source']}, {date}) {self._redact_text(item['content'], redact)}{suffix}")
+                lines.append("")
         else:
             lines.append("- No active memories matched this focus.")
         lines.extend(["", "## Decisions", ""])
@@ -875,6 +1872,212 @@ class CortexStore:
         lines.extend(["", "## Useful Entities", ""])
         lines.append(", ".join(f"{item['name']} ({item['kind']})" for item in entities) if entities else "No active entities yet.")
         return "\n".join(lines)
+
+    def personal_profile(self, user_id: str, query: str = "", limit: int = 6, include_pending: bool = False) -> dict[str, Any]:
+        query = query.strip()
+        limit = max(1, min(20, int(limit)))
+        user_settings = self.settings(user_id)
+        redact = bool(user_settings["redact_sensitive_context"])
+        stats = self.stats(user_id)
+        layer_counts = {item["layer"]: int(item["count"]) for item in stats["by_layer"]}
+        layer_order = [
+            ("preference", "Preference memory", "Durable likes, dislikes, defaults, and working preferences."),
+            ("negative", "Negative memory", "Rejected approaches, disliked outputs, and constraints to avoid."),
+            ("style", "Style memory", "Writing voice, phrasing, structure, and communication patterns."),
+            ("decision", "Decision memory", "Past choices, reasons, constraints, and settled direction."),
+            ("episodic", "Episodic memory", "Specific conversations, events, project moments, and recent context."),
+            ("semantic", "Semantic memory", "Facts about people, projects, goals, systems, and durable context."),
+        ]
+        sections: list[dict[str, Any]] = []
+        for layer, title, description in layer_order:
+            memories = self._memories_by_layer(user_id, layer, limit=limit, include_pending=include_pending)
+            sections.append(
+                {
+                    "layer": layer,
+                    "title": title,
+                    "description": description,
+                    "count": layer_counts.get(layer, 0),
+                    "items": [self._profile_memory_item(item, redact=redact) for item in memories],
+                }
+            )
+
+        focus_memories = self.search(user_id, query, limit=limit) if query else []
+        focus_memories = self._approved_profile_memories(user_id, focus_memories, include_pending=include_pending)
+        open_loops = self.open_tasks(user_id, limit=limit)
+        topics = self.list_topics(user_id, limit=8)
+        entities = self.list_entities(user_id, limit=8)
+        sources = self._source_freshness(user_id, limit=8)
+        covered_layers = sum(1 for item in layer_order if layer_counts.get(item[0], 0) > 0)
+        readiness = min(
+            100,
+            covered_layers * 12
+            + min(stats["memories"], 20) * 2
+            + min(stats["decisions"], 8) * 4
+            + min(stats["entities"], 12) * 2
+            - min(stats["pending_captures"], 8) * 2,
+        )
+        readiness = max(0, readiness)
+
+        limitations: list[str] = []
+        if stats["memories"] == 0:
+            limitations.append("No approved memory signals exist yet, so this profile cannot adapt an assistant.")
+        missing_layers = [title for layer, title, _ in layer_order if layer_counts.get(layer, 0) == 0]
+        if missing_layers:
+            limitations.append("Missing or weak layers: " + ", ".join(missing_layers[:4]) + ".")
+        if stats["pending_captures"] and not include_pending:
+            limitations.append(f"{stats['pending_captures']} pending capture(s) are excluded until approved.")
+        limitations.append("This is cited retrieved memory, not a fine-tuned model or complete copy of the user.")
+
+        profile: dict[str, Any] = {
+            "generated_at": now_iso(),
+            "name": "Cortex Personal Adaptation Profile",
+            "query": query,
+            "readiness": readiness,
+            "include_pending": include_pending,
+            "summary": {
+                "memories": stats["memories"],
+                "decisions": stats["decisions"],
+                "open_loops": stats["tasks"],
+                "entities": stats["entities"],
+                "covered_layers": covered_layers,
+                "total_layers": len(layer_order),
+            },
+            "coverage": {
+                "by_layer": [
+                    {
+                        "layer": layer,
+                        "title": title,
+                        "count": layer_counts.get(layer, 0),
+                        "status": "ready" if layer_counts.get(layer, 0) > 0 else "needs_signal",
+                    }
+                    for layer, title, _ in layer_order
+                ],
+                "sources": sources,
+            },
+            "focus": [self._profile_memory_item(item, redact=redact) for item in focus_memories],
+            "sections": sections,
+            "open_loops": [
+                {
+                    "id": task["id"],
+                    "kind": task["kind"],
+                    "content": self._redact_text(task["content"], redact),
+                    "captured_at": task["captured_at"],
+                    "topics": task.get("topics") or [],
+                }
+                for task in open_loops
+            ],
+            "topics": topics,
+            "entities": entities,
+            "limitations": limitations,
+        }
+        profile["markdown"] = self._personal_profile_markdown(profile)
+        return profile
+
+    def _personal_profile_markdown(self, profile: dict[str, Any]) -> str:
+        lines = [
+            "# Cortex Personal Adaptation Profile",
+            "",
+            f"Generated: {profile['generated_at']}",
+            f"Readiness: {profile['readiness']}/100",
+            "",
+            "Use this as partial, cited memory for this conversation. It is coverage-limited and should yield to the user's newest message.",
+            "",
+            "## Coverage",
+            "",
+        ]
+        for layer in profile["coverage"]["by_layer"]:
+            lines.append(f"- {layer['title']}: {layer['count']} signal{'s' if layer['count'] != 1 else ''} ({layer['status']})")
+        if profile["coverage"]["sources"]:
+            lines.extend(["", "## Source Freshness", ""])
+            for source in profile["coverage"]["sources"]:
+                last_seen = source.get("last_seen") or "unknown"
+                lines.append(f"- {source['source']}: {source['approved']} approved, {source['pending']} pending, last seen {last_seen}")
+        if profile["focus"]:
+            lines.extend(["", "## Focused Memory", ""])
+            for item in profile["focus"]:
+                lines.append(self._profile_markdown_item(item))
+        for section in profile["sections"]:
+            lines.extend(["", f"## {section['title']}", "", section["description"], ""])
+            if section["items"]:
+                for item in section["items"]:
+                    lines.append(self._profile_markdown_item(item))
+            else:
+                lines.append("- No approved signals yet.")
+        lines.extend(["", "## Open Loops", ""])
+        if profile["open_loops"]:
+            for task in profile["open_loops"]:
+                lines.append(f"- [{task['id']}] ({task['kind']}) {task['content']}")
+        else:
+            lines.append("- No active open loops.")
+        lines.extend(["", "## Topics", ""])
+        lines.append(", ".join(f"#{item['topic']}" for item in profile["topics"]) if profile["topics"] else "No active topics yet.")
+        lines.extend(["", "## People, Projects, And Entities", ""])
+        lines.append(", ".join(f"{item['name']} ({item['kind']})" for item in profile["entities"]) if profile["entities"] else "No active entities yet.")
+        lines.extend(["", "## Limitations", ""])
+        for limitation in profile["limitations"]:
+            lines.append(f"- {limitation}")
+        return "\n".join(lines)
+
+    def _profile_markdown_item(self, item: dict[str, Any]) -> str:
+        date = item.get("captured_at") or "unknown date"
+        topics = item.get("topics") or []
+        topics_text = f" Topics: {', '.join(topics)}." if topics else ""
+        return f"- [{item['id']}] ({item['kind']}, {item['source']}, {date}) {item['content']}{topics_text}"
+
+    def _profile_memory_item(self, item: dict[str, Any], *, redact: bool) -> dict[str, Any]:
+        return {
+            "id": item["id"],
+            "kind": item["kind"],
+            "layer": item["layer"],
+            "content": self._redact_text(item["content"], redact),
+            "summary": self._redact_text(item.get("summary") or "", redact),
+            "source": item["source"],
+            "source_url": item.get("source_url"),
+            "captured_at": item["captured_at"],
+            "occurred_at": item.get("occurred_at"),
+            "topics": item.get("topics") or [],
+            "entity_ids": item.get("entity_ids") or [],
+        }
+
+    def _source_freshness(self, user_id: str, limit: int = 8) -> list[dict[str, Any]]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                  source,
+                  COUNT(*) AS total,
+                  SUM(CASE WHEN review_status = 'approved' THEN 1 ELSE 0 END) AS approved,
+                  SUM(CASE WHEN review_status = 'pending' THEN 1 ELSE 0 END) AS pending,
+                  MAX(captured_at) AS last_seen
+                FROM captures
+                WHERE user_id = ?
+                GROUP BY source
+                ORDER BY total DESC, last_seen DESC
+                LIMIT ?
+                """,
+                (user_id, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _approved_profile_memories(self, user_id: str, memories: list[dict[str, Any]], *, include_pending: bool) -> list[dict[str, Any]]:
+        if include_pending or not memories:
+            return memories
+        ids = [item["id"] for item in memories]
+        placeholders = ",".join("?" for _ in ids)
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT m.id
+                FROM memories m
+                LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
+                WHERE m.user_id = ?
+                  AND m.id IN ({placeholders})
+                  AND (m.capture_id IS NULL OR c.review_status = 'approved')
+                """,
+                [user_id, *ids],
+            ).fetchall()
+        approved_ids = {row["id"] for row in rows}
+        return [item for item in memories if item["id"] in approved_ids]
 
     def graph(self, user_id: str, limit: int = 150) -> dict[str, Any]:
         nodes: dict[str, dict[str, Any]] = {}
@@ -956,6 +2159,7 @@ class CortexStore:
     def export_json(self, user_id: str) -> dict[str, Any]:
         with connect(self.db_path) as conn:
             captures = [self._capture_from_row(row) for row in conn.execute("SELECT * FROM captures WHERE user_id = ? ORDER BY captured_at DESC", (user_id,)).fetchall()]
+            imports = self.list_imports(user_id, limit=100)
             memories = [self._memory_from_row(row) for row in conn.execute("SELECT * FROM memories WHERE user_id = ? ORDER BY captured_at DESC", (user_id,)).fetchall()]
             tasks = [self._task_from_row(row) for row in conn.execute("SELECT * FROM tasks WHERE user_id = ? ORDER BY captured_at DESC", (user_id,)).fetchall()]
             entities = [self._entity_from_row(row) for row in conn.execute("SELECT * FROM entities WHERE user_id = ? ORDER BY last_seen DESC", (user_id,)).fetchall()]
@@ -964,6 +2168,7 @@ class CortexStore:
             "exported_at": now_iso(),
             "user_id": user_id,
             "stats": self.stats(user_id),
+            "imports": imports,
             "captures": captures,
             "memories": memories,
             "tasks": tasks,
@@ -988,7 +2193,11 @@ class CortexStore:
                 "archived_memories": conn.execute("SELECT COUNT(*) FROM memories WHERE user_id = ? AND status = 'archived'", (user_id,)).fetchone()[0],
                 "open_tasks": conn.execute("SELECT COUNT(*) FROM tasks WHERE user_id = ? AND status = 'open'", (user_id,)).fetchone()[0],
                 "events": conn.execute("SELECT COUNT(*) FROM memory_events WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "imports": conn.execute("SELECT COUNT(*) FROM import_sessions WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "vector_embeddings": self._vector_count(conn, user_id),
+                "queued_jobs": conn.execute("SELECT COUNT(*) FROM memory_jobs WHERE user_id = ? AND status = 'queued'", (user_id,)).fetchone()[0],
+                "running_jobs": conn.execute("SELECT COUNT(*) FROM memory_jobs WHERE user_id = ? AND status = 'running'", (user_id,)).fetchone()[0],
+                "failed_jobs": conn.execute("SELECT COUNT(*) FROM memory_jobs WHERE user_id = ? AND status = 'failed'", (user_id,)).fetchone()[0],
             }
             fts_orphans = conn.execute(
                 """
@@ -1032,6 +2241,7 @@ class CortexStore:
             "relation_orphans": relation_orphans,
             "last_event_at": last_event_at,
             "vector": vector_status,
+            "embedding": embedding_status(),
             "vault": vault_diagnostics,
         }
 
@@ -1174,7 +2384,7 @@ class CortexStore:
                 "contains_user_files": False,
                 "review_before_sharing": True,
                 "notes": [
-                    "This bundle is designed for support triage and omits captured text, memory bodies, context packs, and exported user data.",
+                    "This bundle is designed for support triage and omits captured text, memory bodies, memory views, and exported user data.",
                     "It may include local paths shortened to use ~, record counts, health checks, feature flags, and safe event metadata.",
                 ],
             },
@@ -1226,7 +2436,7 @@ class CortexStore:
             return None
         backups = sorted(
             (path for path in backup_dir.glob("*.zip") if path.is_file()),
-            key=lambda path: path.stat().st_mtime,
+            key=lambda path: (path.stat().st_mtime, path.name),
             reverse=True,
         )
         if not backups:
@@ -1339,13 +2549,17 @@ class CortexStore:
         }
 
     def create_backup(self, user_id: str) -> dict[str, Any]:
-        timestamp = now_iso().replace(":", "-")
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S-%fZ")
         backup_dir = self.vault.backups_dir
         backup_dir.mkdir(parents=True, exist_ok=True)
         sqlite_backup_path = backup_dir / f"index-{timestamp}.sqlite"
-        with sqlite3.connect(self.db_path) as source:
-            with sqlite3.connect(sqlite_backup_path) as target:
-                source.backup(target)
+        source = sqlite3.connect(self.db_path)
+        target = sqlite3.connect(sqlite_backup_path)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+            source.close()
         backup_path = self.vault.create_zip_backup(timestamp, sqlite_backup_path)
         try:
             sqlite_backup_path.unlink()
@@ -1360,10 +2574,126 @@ class CortexStore:
                 "created",
                 {"size_bytes": backup_path.stat().st_size, "format": "cortex-vault-zip"},
             )
+        retention = backup_retention_policy()
+        pruned = self.prune_backups(
+            user_id,
+            keep_latest=retention["keep_latest"],
+            max_age_days=retention["max_age_days"],
+        )
         return {
             "backup_path": str(backup_path),
             "size_bytes": backup_path.stat().st_size,
             "created_at": now_iso(),
+            "retention": retention,
+            "pruned_backups": pruned,
+        }
+
+    def delete_backups(self, user_id: str) -> dict[str, Any]:
+        deleted_at = now_iso()
+        result = self.vault.delete_backups()
+        with connect(self.db_path) as conn:
+            self._event(
+                conn,
+                user_id,
+                str(self.vault.backups_dir),
+                "backup",
+                "deleted",
+                {"deleted": result["deleted"], "bytes_deleted": result["bytes_deleted"]},
+            )
+        return {"deleted_at": deleted_at, **result}
+
+    def prune_backups(self, user_id: str, *, keep_latest: int = 20, max_age_days: int = 0) -> dict[str, Any]:
+        pruned_at = now_iso()
+        result = self.vault.prune_backups(keep_latest=keep_latest, max_age_days=max_age_days)
+        if result["deleted"]:
+            with connect(self.db_path) as conn:
+                self._event(
+                    conn,
+                    user_id,
+                    str(self.vault.backups_dir),
+                    "backup",
+                    "pruned",
+                    {
+                        "deleted": result["deleted"],
+                        "bytes_deleted": result["bytes_deleted"],
+                        "retention": result["retention"],
+                    },
+                )
+        return {"pruned_at": pruned_at, **result}
+
+    def delete_user_data(self, user_id: str, *, include_backups: bool = True) -> dict[str, Any]:
+        deleted_at = now_iso()
+        with connect(self.db_path) as conn:
+            counts = {
+                "captures": conn.execute("SELECT COUNT(*) FROM captures WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "memories": conn.execute("SELECT COUNT(*) FROM memories WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "tasks": conn.execute("SELECT COUNT(*) FROM tasks WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "entities": conn.execute("SELECT COUNT(*) FROM entities WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "graph_edges": conn.execute("SELECT COUNT(*) FROM graph_edges WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "events": conn.execute("SELECT COUNT(*) FROM memory_events WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "settings": conn.execute("SELECT COUNT(*) FROM user_settings WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "api_tokens": conn.execute("SELECT COUNT(*) FROM api_tokens WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "imports": conn.execute("SELECT COUNT(*) FROM import_sessions WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "memory_jobs": conn.execute("SELECT COUNT(*) FROM memory_jobs WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "capture_processing_state": conn.execute("SELECT COUNT(*) FROM capture_processing_state WHERE user_id = ?", (user_id,)).fetchone()[0],
+            }
+            self._clear_user_vectors(conn, user_id)
+            conn.execute("DELETE FROM memory_fts WHERE memory_id IN (SELECT id FROM memories WHERE user_id = ?)", (user_id,))
+            conn.execute("DELETE FROM memory_entities WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM memory_topics WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM task_entities WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM task_topics WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM graph_edges WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM tasks WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM entities WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM memory_jobs WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM import_records WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM import_sessions WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM capture_processing_state WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM captures WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM memory_events WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM user_settings WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM api_tokens WHERE user_id = ?", (user_id,))
+            vault_counts = self.vault.delete_user_records(user_id, include_backups=include_backups)
+        return {
+            "deleted_at": deleted_at,
+            "include_backups": include_backups,
+            "sqlite": counts,
+            "vault": vault_counts,
+        }
+
+    def restore_latest_backup(self, user_id: str) -> dict[str, Any]:
+        latest = self.latest_backup()
+        if not latest:
+            raise FileNotFoundError("No Cortex backup archives are available")
+        preserved_tombstones = list(self.vault.iter_tombstones(user_id))
+        restored = self.vault.restore_from_zip_backup(Path(latest["backup_path"]))
+        for tombstone in preserved_tombstones:
+            self.vault.write_tombstone_record(tombstone)
+        rebuild = self.rebuild_index_from_vault(user_id)
+        restored_at = now_iso()
+        with connect(self.db_path) as conn:
+            self._event(
+                conn,
+                user_id,
+                latest["backup_path"],
+                "backup",
+                "restored",
+                {
+                    "captures": rebuild["captures"],
+                    "memories": rebuild["memories"],
+                    "tasks": rebuild["tasks"],
+                    "tombstones": rebuild.get("tombstones", {}),
+                },
+            )
+        return {
+            "restored_at": restored_at,
+            "backup_path": latest["backup_path"],
+            "size_bytes": latest["size_bytes"],
+            "vault": restored,
+            "rebuild": rebuild,
+            "tombstones": rebuild.get("tombstones", {}),
         }
 
     def rebuild_search_index(self, user_id: str) -> dict[str, Any]:
@@ -1378,40 +2708,113 @@ class CortexStore:
             self._clear_user_vectors(conn, user_id)
             rows = conn.execute(
                 """
-                SELECT id, content, summary, source, topics_json
+                SELECT id, capture_id, kind, layer, content, summary, source, topics_json, captured_at
                 FROM memories
                 WHERE user_id = ? AND status = 'active'
                 """,
                 (user_id,),
             ).fetchall()
+            queued_vectors = 0
             for row in rows:
                 topics = " ".join(json.loads(row["topics_json"] or "[]"))
                 conn.execute(
                     "INSERT INTO memory_fts(memory_id, content, summary, source, topics) VALUES (?, ?, ?, ?, ?)",
                     (row["id"], row["content"], row["summary"], row["source"], topics),
                 )
-                self._index_memory_vector(
+                job = self._enqueue_embed_memory_job(
                     conn,
                     memory_id=row["id"],
+                    capture_id=row["capture_id"],
                     user_id=user_id,
                     content=row["content"],
                     summary=row["summary"],
                     source=row["source"],
+                    layer=memory_layer(row["kind"], row["layer"]),
                     topics=json.loads(row["topics_json"] or "[]"),
-                    captured_at=now_iso(),
+                    captured_at=row["captured_at"] or now_iso(),
+                    priority=90,
                 )
+                if job and job["status"] == "queued":
+                    queued_vectors += 1
             vector_count = self._vector_count(conn, user_id)
             vector_available = self._vector_ready(conn)
-            self._event(conn, user_id, "memory_fts", "maintenance", "rebuilt_search_index", {"indexed_memories": len(rows), "vector_indexed_memories": vector_count})
+            self._event(conn, user_id, "memory_fts", "maintenance", "rebuilt_search_index", {"indexed_memories": len(rows), "vector_indexed_memories": vector_count, "vector_queued_memories": queued_vectors})
         return {
             "indexed_memories": len(rows),
             "rebuilt_at": now_iso(),
             "vector_available": vector_available,
             "vector_indexed_memories": vector_count,
-            "vector_model": VECTOR_MODEL,
+            "vector_queued_memories": queued_vectors,
+            "vector_model": embedding_status()["model"],
+            "embedding": embedding_status(),
+        }
+
+    def rebuild_vectors(self, user_id: str) -> dict[str, Any]:
+        timestamp = now_iso()
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, capture_id, kind, layer, content, summary, source, topics_json, captured_at
+                FROM memories
+                WHERE user_id = ? AND status = 'active'
+                """,
+                (user_id,),
+            ).fetchall()
+            vector_available = self._vector_ready(conn)
+            if not vector_available:
+                return {
+                    "queued": 0,
+                    "skipped": len(rows),
+                    "checked": len(rows),
+                    "rebuilt_at": timestamp,
+                    "vector_available": False,
+                    "vector_indexed_memories": self._vector_count(conn, user_id),
+                    "vector_model": embedding_status()["model"],
+                    "embedding": embedding_status(),
+                }
+            queued = 0
+            skipped = 0
+            for row in rows:
+                job = self._enqueue_embed_memory_job(
+                    conn,
+                    memory_id=row["id"],
+                    capture_id=row["capture_id"],
+                    user_id=user_id,
+                    content=row["content"],
+                    summary=row["summary"],
+                    source=row["source"],
+                    layer=memory_layer(row["kind"], row["layer"]),
+                    topics=json.loads(row["topics_json"] or "[]"),
+                    captured_at=row["captured_at"] or timestamp,
+                    priority=90,
+                )
+                if job and job["status"] == "queued":
+                    queued += 1
+                else:
+                    skipped += 1
+            vector_count = self._vector_count(conn, user_id)
+            self._event(
+                conn,
+                user_id,
+                "memory_vec",
+                "maintenance",
+                "queued_vector_rebuild",
+                {"checked": len(rows), "queued": queued, "skipped": skipped, "vector_indexed_memories": vector_count},
+            )
+        return {
+            "queued": queued,
+            "skipped": skipped,
+            "checked": len(rows),
+            "rebuilt_at": timestamp,
+            "vector_available": vector_available,
+            "vector_indexed_memories": vector_count,
+            "vector_model": embedding_status()["model"],
+            "embedding": embedding_status(),
         }
 
     def rebuild_index_from_vault(self, user_id: str) -> dict[str, Any]:
+        tombstone_counts = self.vault.apply_tombstones(user_id)
+        imports = list(self.vault.iter_records("imports", user_id))
         captures = list(self.vault.iter_records("captures", user_id))
         memories = list(self.vault.iter_records("memories", user_id))
         tasks = list(self.vault.iter_records("tasks", user_id))
@@ -1432,6 +2835,8 @@ class CortexStore:
             conn.execute("DELETE FROM tasks WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM entities WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM import_records WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM import_sessions WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM captures WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM memory_events WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM user_settings WHERE user_id = ?", (user_id,))
@@ -1443,16 +2848,42 @@ class CortexStore:
                         (user_id, key, json.dumps(value), timestamp),
                     )
 
+            for import_record in sorted(imports, key=lambda item: item.get("created_at") or ""):
+                session = {
+                    "id": import_record.get("id") or import_record.get("import_id"),
+                    "user_id": user_id,
+                    "status": import_record.get("status", "complete"),
+                    "source_hint": import_record.get("source_hint", ""),
+                    "processing": import_record.get("processing", "async"),
+                    "paths": import_record.get("paths", []),
+                    "sources": import_record.get("sources", []),
+                    "records_found": import_record.get("records_found", 0),
+                    "queued": import_record.get("queued", 0),
+                    "saved": import_record.get("saved", 0),
+                    "failed": import_record.get("failed", 0),
+                    "capture_ids": import_record.get("capture_ids", []),
+                    "errors": import_record.get("errors", []),
+                    "records": import_record.get("records", []),
+                    "created_at": import_record.get("created_at") or timestamp,
+                    "updated_at": import_record.get("updated_at") or import_record.get("created_at") or timestamp,
+                    "completed_at": import_record.get("completed_at"),
+                    "deleted_at": import_record.get("deleted_at"),
+                }
+                if not session["id"]:
+                    continue
+                self._upsert_import_session(conn, session)
+
             for capture in sorted(captures, key=lambda item: item.get("captured_at") or ""):
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO captures
-                    (id, user_id, source, source_url, title, raw_text, raw_hash, summary, review_status, approved_at, archived_at, captured_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, user_id, import_id, source, source_url, title, raw_text, raw_hash, summary, review_status, approved_at, archived_at, captured_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         capture["id"],
                         user_id,
+                        capture.get("import_id"),
                         capture.get("source", "vault"),
                         capture.get("source_url"),
                         capture.get("title"),
@@ -1465,6 +2896,42 @@ class CortexStore:
                         capture.get("captured_at") or timestamp,
                     ),
                 )
+
+            for import_record in sorted(imports, key=lambda item: item.get("created_at") or ""):
+                import_id = import_record.get("id") or import_record.get("import_id")
+                if not import_id:
+                    continue
+                created_at = import_record.get("created_at") or timestamp
+                updated_at = import_record.get("updated_at") or created_at
+                for ordinal, item in enumerate(import_record.get("records", []) or []):
+                    if not isinstance(item, dict):
+                        continue
+                    record_id = stable_id("irec_", import_id + str(ordinal) + str(item.get("source") or "") + str(item.get("title") or ""))
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO import_records
+                        (id, import_id, user_id, ordinal, source, title, source_url, content_hash, chars, metadata_json, status, capture_id, job_id, error, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            record_id,
+                            import_id,
+                            user_id,
+                            ordinal,
+                            str(item.get("source") or "import"),
+                            str(item.get("title") or "Imported source"),
+                            item.get("source_url"),
+                            str(item.get("content_hash") or ""),
+                            int(item.get("chars") or 0),
+                            json.dumps(item.get("metadata") or {}),
+                            str(item.get("status") or "restored"),
+                            item.get("capture_id"),
+                            item.get("job_id"),
+                            item.get("error"),
+                            created_at,
+                            updated_at,
+                        ),
+                    )
 
             for entity in sorted(entities, key=lambda item: item.get("id") or ""):
                 conn.execute(
@@ -1492,14 +2959,15 @@ class CortexStore:
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO memories
-                    (id, capture_id, user_id, kind, content, summary, source, source_url, confidence, importance, status, topics_json, entity_ids_json, occurred_at, captured_at, updated_at, raw_excerpt)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, topics_json, entity_ids_json, occurred_at, captured_at, updated_at, raw_excerpt)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         memory["id"],
                         memory.get("capture_id"),
                         user_id,
                         memory.get("kind", "observation"),
+                        memory_layer(memory.get("kind", "observation"), memory.get("layer")),
                         memory.get("content", ""),
                         memory.get("summary", ""),
                         memory.get("source", "vault"),
@@ -1520,15 +2988,18 @@ class CortexStore:
                         "INSERT INTO memory_fts(memory_id, content, summary, source, topics) VALUES (?, ?, ?, ?, ?)",
                         (memory["id"], memory.get("content", ""), memory.get("summary", ""), memory.get("source", "vault"), " ".join(topics)),
                     )
-                    self._index_memory_vector(
+                    self._enqueue_embed_memory_job(
                         conn,
                         memory_id=memory["id"],
+                        capture_id=memory.get("capture_id"),
                         user_id=user_id,
                         content=memory.get("content", ""),
                         summary=memory.get("summary", ""),
                         source=memory.get("source", "vault"),
+                        layer=memory_layer(memory.get("kind", "observation"), memory.get("layer")),
                         topics=topics,
                         captured_at=captured_at,
+                        priority=90,
                     )
                 for entity_id in entity_ids:
                     conn.execute(
@@ -1617,6 +3088,8 @@ class CortexStore:
                     "entities": len(entities),
                     "edges": len(edges),
                     "events": len(events),
+                    "imports": len(imports),
+                    "tombstones": tombstone_counts,
                 },
             )
 
@@ -1630,6 +3103,8 @@ class CortexStore:
             "entities": len(entities),
             "edges": len(edges),
             "events": len(events),
+            "imports": len(imports),
+            "tombstones": tombstone_counts,
         }
 
     def export_markdown(self, user_id: str) -> str:
@@ -1640,7 +3115,8 @@ class CortexStore:
                 lines.append(f"- {key}: {value}")
         lines.extend(["", "## Memories", ""])
         for memory in data["memories"]:
-            lines.append(f"### {memory['kind'].title()} - {memory['source']} - {memory['captured_at']}")
+            layer = memory_layer(memory.get("kind"), memory.get("layer")).title()
+            lines.append(f"### {layer} / {memory['kind'].title()} - {memory['source']} - {memory['captured_at']}")
             lines.append("")
             lines.append(memory["content"])
             topics = memory.get("topics") or []
@@ -1703,7 +3179,11 @@ class CortexStore:
         if user_settings["allow_agent_writes"]:
             risk_flags.append("Connected agents can write to memory.")
         if user_settings["allow_agent_exports"]:
-            risk_flags.append("Connected agents can export or build context packs.")
+            risk_flags.append("Connected agents can export or prepare memory handoffs.")
+        if user_settings["allow_agent_maintenance"]:
+            risk_flags.append("Connected agents can run maintenance actions.")
+        if user_settings["allow_agent_destructive_actions"]:
+            risk_flags.append("Connected agents can run destructive actions.")
         if not user_settings["redact_sensitive_context"]:
             risk_flags.append("Sensitive-pattern redaction is off for shared context.")
         if diagnostics["status"] != "ok":
@@ -1714,6 +3194,8 @@ class CortexStore:
         score -= 12 if not user_settings["review_new_captures"] else 0
         score -= 12 if user_settings["allow_agent_writes"] else 0
         score -= 10 if user_settings["allow_agent_exports"] else 0
+        score -= 10 if user_settings["allow_agent_maintenance"] else 0
+        score -= 18 if user_settings["allow_agent_destructive_actions"] else 0
         score -= 18 if not user_settings["redact_sensitive_context"] else 0
         score -= min(20, stats["pending_captures"] * 2)
         score -= 12 if diagnostics["status"] != "ok" else 0
@@ -1782,7 +3264,21 @@ class CortexStore:
     def _support_event_summary(self, event: dict[str, Any]) -> dict[str, Any]:
         metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
         safe_metadata: dict[str, Any] = {}
-        for key in ("tool", "success", "content_chars", "memory_count", "size_bytes", "format", "indexed_memories", "vector_indexed_memories"):
+        for key in (
+            "tool",
+            "success",
+            "content_chars",
+            "memory_count",
+            "size_bytes",
+            "format",
+            "indexed_memories",
+            "vector_indexed_memories",
+            "token_id",
+            "token_label",
+            "token_audience",
+            "token_admin",
+            "token_scopes",
+        ):
             if key in metadata:
                 safe_metadata[key] = self._support_safe_payload(metadata[key], key)
         actions = metadata.get("actions")
@@ -1841,12 +3337,14 @@ class CortexStore:
             "write": "Agent memory writes are disabled in Cortex Trust controls.",
             "export": "Agent context exports are disabled in Cortex Trust controls.",
             "maintenance": "Agent maintenance actions are disabled in Cortex Trust controls.",
+            "destructive": "Agent destructive actions are disabled in Cortex Trust controls.",
         }
         setting_by_capability = {
             "read": "allow_agent_reads",
             "write": "allow_agent_writes",
             "export": "allow_agent_exports",
-            "maintenance": "allow_agent_writes",
+            "maintenance": "allow_agent_maintenance",
+            "destructive": "allow_agent_destructive_actions",
         }
         key = setting_by_capability.get(capability)
         if key and not user_settings[key]:
@@ -1855,12 +3353,27 @@ class CortexStore:
     def agent_payload(self, user_id: str, value: Any) -> Any:
         return self._redact_payload(value) if self.settings(user_id)["redact_sensitive_context"] else value
 
-    def record_agent_event(self, user_id: str, tool_name: str, args: dict[str, Any], *, success: bool, error: str | None = None) -> None:
+    def record_agent_event(
+        self,
+        user_id: str,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        success: bool,
+        error: str | None = None,
+        token: dict[str, Any] | None = None,
+    ) -> None:
         metadata: dict[str, Any] = {
             "tool": tool_name,
             "success": success,
             "arg_keys": sorted(args.keys()),
         }
+        if token:
+            metadata["token_id"] = token.get("token_id")
+            metadata["token_label"] = token.get("label")
+            metadata["token_audience"] = token.get("audience", "mcp")
+            metadata["token_admin"] = bool(token.get("admin"))
+            metadata["token_scopes"] = token.get("scopes", [])
         content = args.get("content")
         if isinstance(content, str):
             metadata["content_chars"] = len(content)
@@ -1872,21 +3385,521 @@ class CortexStore:
         with connect(self.db_path) as conn:
             self._event(conn, user_id, f"mcp:{tool_name}", "agent", "tool_call", metadata)
 
+    def _enqueue_job(
+        self,
+        conn,
+        *,
+        user_id: str,
+        job_type: str,
+        object_type: str,
+        object_id: str,
+        unique_key: str,
+        payload: dict[str, Any],
+        priority: int = 100,
+        run_at: str | None = None,
+        max_attempts: int = 3,
+    ) -> dict[str, Any]:
+        timestamp = now_iso()
+        job_id = stable_id("job_", unique_key)
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO memory_jobs
+            (id, user_id, job_type, object_type, object_id, status, priority, run_at, attempts, max_attempts, unique_key, payload_json, result_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 0, ?, ?, ?, '{}', ?, ?)
+            """,
+            (
+                job_id,
+                user_id,
+                job_type,
+                object_type,
+                object_id,
+                priority,
+                run_at or timestamp,
+                max_attempts,
+                unique_key,
+                json.dumps(payload),
+                timestamp,
+                timestamp,
+            ),
+        )
+        row = conn.execute("SELECT * FROM memory_jobs WHERE unique_key = ?", (unique_key,)).fetchone()
+        return self._job_from_row(row)
+
+    def _claim_next_job(self, user_id: str, worker_id: str) -> dict[str, Any] | None:
+        timestamp = now_iso()
+        with connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT *
+                FROM memory_jobs
+                WHERE user_id = ?
+                  AND status = 'queued'
+                  AND run_at <= ?
+                ORDER BY priority ASC, created_at ASC
+                LIMIT 1
+                """,
+                (user_id, timestamp),
+            ).fetchone()
+            if not row:
+                return None
+            conn.execute(
+                """
+                UPDATE memory_jobs
+                SET status = 'running',
+                    attempts = attempts + 1,
+                    locked_by = ?,
+                    locked_until = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (worker_id, timestamp, timestamp, row["id"]),
+            )
+            claimed = conn.execute("SELECT * FROM memory_jobs WHERE id = ?", (row["id"],)).fetchone()
+        return self._job_from_row(claimed)
+
+    def _run_job(self, job: dict[str, Any], worker_id: str) -> dict[str, Any]:
+        try:
+            if job["job_type"] == "extract_capture":
+                result = self._process_extract_capture_job(job)
+            elif job["job_type"] == "embed_memory":
+                result = self._process_embed_memory_job(job)
+            else:
+                raise ValueError(f"Unsupported memory job type: {job['job_type']}")
+            completed = self._complete_job(job["id"], result)
+            if job["job_type"] == "embed_memory" and result.get("capture_id"):
+                self._refresh_capture_embedding_state(
+                    job["user_id"],
+                    str(result["capture_id"]),
+                    last_job_id=job["id"],
+                )
+            return completed
+        except Exception as exc:
+            return self._fail_job(job, str(exc))
+
+    def _process_extract_capture_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        payload = job.get("payload") or {}
+        capture_id = payload["capture_id"]
+        user_id = job["user_id"]
+        started_at = now_iso()
+        with connect(self.db_path) as conn:
+            capture = conn.execute(
+                "SELECT * FROM captures WHERE user_id = ? AND id = ?",
+                (user_id, capture_id),
+            ).fetchone()
+        if not capture:
+            return {
+                "capture_id": capture_id,
+                "skipped": True,
+                "reason": "capture_missing_or_deleted",
+                "completed_at": started_at,
+            }
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE capture_processing_state
+                SET extraction_status = 'running',
+                    started_at = COALESCE(started_at, ?),
+                    updated_at = ?,
+                    last_job_id = ?
+                WHERE user_id = ? AND capture_id = ?
+                """,
+                (started_at, started_at, job["id"], user_id, capture_id),
+            )
+        content = capture["raw_text"]
+        source = capture["source"]
+        extracted = extract_context(content, source)
+        extracted["_timestamp"] = capture["captured_at"] or payload.get("captured_at") or started_at
+        saved = self.save_capture(
+            user_id=user_id,
+            content=content,
+            source=source,
+            source_url=capture["source_url"],
+            title=capture["title"],
+            extracted=extracted,
+            import_id=capture["import_id"] if "import_id" in capture.keys() else None,
+        )
+        completed_at = now_iso()
+        memory_count = len(saved.get("memories", []))
+        task_count = len(saved.get("tasks", []))
+        entity_count = len(saved.get("entities", []))
+        with connect(self.db_path) as conn:
+            embedding_state = self._capture_embedding_status(conn, user_id, capture_id)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO capture_processing_state
+                (capture_id, user_id, ingest_status, extraction_status, embedding_status, memory_count, task_count, entity_count, last_job_id, last_error, queued_at, started_at, completed_at, updated_at)
+                VALUES (?, ?, 'materialized', 'succeeded', ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+                """,
+                (
+                    capture_id,
+                    user_id,
+                    embedding_state,
+                    memory_count,
+                    task_count,
+                    entity_count,
+                    job["id"],
+                    payload.get("captured_at") or started_at,
+                    started_at,
+                    completed_at,
+                    completed_at,
+                ),
+            )
+            self._event(
+                conn,
+                user_id,
+                capture_id,
+                "capture",
+                "processed",
+                {"job_id": job["id"], "memories": memory_count, "tasks": task_count, "entities": entity_count},
+            )
+        return {
+            "capture_id": capture_id,
+            "memories": memory_count,
+            "tasks": task_count,
+            "entities": entity_count,
+            "completed_at": completed_at,
+        }
+
+    def _process_embed_memory_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        payload = job.get("payload") or {}
+        memory_id = str(payload.get("memory_id") or job["object_id"])
+        user_id = job["user_id"]
+        started_at = now_iso()
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT id, capture_id, user_id, kind, layer, content, summary, source, topics_json, status, captured_at
+                FROM memories
+                WHERE user_id = ? AND id = ?
+                """,
+                (user_id, memory_id),
+            ).fetchone()
+            if not row:
+                return {
+                    "memory_id": memory_id,
+                    "capture_id": payload.get("capture_id"),
+                    "skipped": True,
+                    "reason": "memory_missing_or_deleted",
+                    "completed_at": started_at,
+                }
+            capture_id = row["capture_id"]
+            if row["status"] != "active":
+                self._delete_memory_vector(conn, memory_id)
+                return {
+                    "memory_id": memory_id,
+                    "capture_id": capture_id,
+                    "skipped": True,
+                    "reason": "memory_not_active",
+                    "completed_at": started_at,
+                }
+            if not self._vector_ready(conn):
+                return {
+                    "memory_id": memory_id,
+                    "capture_id": capture_id,
+                    "skipped": True,
+                    "reason": "vector_not_available",
+                    "vector_available": False,
+                    "embedding": embedding_status(),
+                    "completed_at": started_at,
+                }
+            topics = self._json_list(row["topics_json"])
+            layer = memory_layer(row["kind"], row["layer"])
+            text = embedding_source_text(row["content"], row["summary"], row["source"], layer, " ".join(topics))
+            if not text:
+                return {
+                    "memory_id": memory_id,
+                    "capture_id": capture_id,
+                    "skipped": True,
+                    "reason": "empty_embedding_text",
+                    "completed_at": started_at,
+                }
+            text_hash = embedding_hash(text)
+            status = embedding_status()
+            if self._memory_vector_current(conn, memory_id, status["model"], text_hash):
+                return {
+                    "memory_id": memory_id,
+                    "capture_id": capture_id,
+                    "skipped": True,
+                    "reason": "vector_already_current",
+                    "text_hash": text_hash,
+                    "embedding_model": status["model"],
+                    "completed_at": started_at,
+                }
+
+        embedding = embed_text_result(text)
+        vector = embedding_json(embedding.vector)
+        completed_at = now_iso()
+        with connect(self.db_path) as conn:
+            if not self._vector_ready(conn):
+                return {
+                    "memory_id": memory_id,
+                    "capture_id": capture_id,
+                    "skipped": True,
+                    "reason": "vector_not_available",
+                    "vector_available": False,
+                    "embedding": embedding_status(),
+                    "completed_at": completed_at,
+                }
+            still_active = conn.execute(
+                "SELECT id FROM memories WHERE user_id = ? AND id = ? AND status = 'active'",
+                (user_id, memory_id),
+            ).fetchone()
+            if not still_active:
+                self._delete_memory_vector(conn, memory_id)
+                return {
+                    "memory_id": memory_id,
+                    "capture_id": capture_id,
+                    "skipped": True,
+                    "reason": "memory_deleted_before_write",
+                    "completed_at": completed_at,
+                }
+            self._write_memory_vector(
+                conn,
+                memory_id=memory_id,
+                user_id=user_id,
+                embedding_model=embedding.model,
+                text_hash=text_hash,
+                vector=vector,
+                timestamp=completed_at,
+            )
+            self._event(
+                conn,
+                user_id,
+                memory_id,
+                "memory",
+                "vector_indexed",
+                {"capture_id": capture_id, "embedding_model": embedding.model, "provider": embedding.provider},
+            )
+        return {
+            "memory_id": memory_id,
+            "capture_id": capture_id,
+            "text_hash": text_hash,
+            "embedding_model": embedding.model,
+            "provider": embedding.provider,
+            "dimensions": embedding.dimensions,
+            "completed_at": completed_at,
+        }
+
+    def _complete_job(self, job_id: str, result: dict[str, Any]) -> dict[str, Any]:
+        timestamp = now_iso()
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE memory_jobs
+                SET status = 'succeeded',
+                    result_json = ?,
+                    last_error = NULL,
+                    locked_by = NULL,
+                    locked_until = NULL,
+                    completed_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (json.dumps(result), timestamp, timestamp, job_id),
+            )
+            row = conn.execute("SELECT * FROM memory_jobs WHERE id = ?", (job_id,)).fetchone()
+        return self._job_from_row(row)
+
+    def _fail_job(self, job: dict[str, Any], error: str) -> dict[str, Any]:
+        timestamp = now_iso()
+        final_status = "failed" if int(job.get("attempts", 0)) >= int(job.get("max_attempts", 3)) else "queued"
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE memory_jobs
+                SET status = ?,
+                    last_error = ?,
+                    locked_by = NULL,
+                    locked_until = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (final_status, error[:500], timestamp, job["id"]),
+            )
+            if job.get("object_type") == "capture":
+                conn.execute(
+                    """
+                    UPDATE capture_processing_state
+                    SET extraction_status = ?,
+                        last_error = ?,
+                        updated_at = ?,
+                        last_job_id = ?
+                    WHERE user_id = ? AND capture_id = ?
+                    """,
+                    (final_status, error[:500], timestamp, job["id"], job["user_id"], job["object_id"]),
+                )
+            row = conn.execute("SELECT * FROM memory_jobs WHERE id = ?", (job["id"],)).fetchone()
+        if job.get("job_type") == "embed_memory":
+            payload = job.get("payload") or {}
+            capture_id = payload.get("capture_id")
+            if capture_id:
+                self._refresh_capture_embedding_state(
+                    job["user_id"],
+                    str(capture_id),
+                    last_job_id=job["id"],
+                    last_error=error[:500],
+                )
+        return self._job_from_row(row)
+
+    def _refresh_capture_embedding_state(
+        self,
+        user_id: str,
+        capture_id: str,
+        *,
+        last_job_id: str | None = None,
+        last_error: str | None = None,
+    ) -> None:
+        timestamp = now_iso()
+        with connect(self.db_path) as conn:
+            capture = conn.execute(
+                "SELECT id, captured_at FROM captures WHERE user_id = ? AND id = ?",
+                (user_id, capture_id),
+            ).fetchone()
+            if not capture:
+                return
+            memory_count = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE user_id = ? AND capture_id = ? AND status = 'active'",
+                (user_id, capture_id),
+            ).fetchone()[0]
+            status = self._capture_embedding_status(conn, user_id, capture_id)
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO capture_processing_state
+                (capture_id, user_id, ingest_status, extraction_status, embedding_status, memory_count, task_count, entity_count, last_job_id, last_error, queued_at, completed_at, updated_at)
+                VALUES (?, ?, 'materialized', 'succeeded', ?, ?, 0, 0, ?, ?, ?, ?, ?)
+                """,
+                (
+                    capture_id,
+                    user_id,
+                    status,
+                    memory_count,
+                    last_job_id,
+                    last_error,
+                    capture["captured_at"] or timestamp,
+                    capture["captured_at"] or timestamp,
+                    timestamp,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE capture_processing_state
+                SET embedding_status = ?,
+                    memory_count = ?,
+                    last_job_id = COALESCE(?, last_job_id),
+                    last_error = ?,
+                    updated_at = ?
+                WHERE user_id = ? AND capture_id = ?
+                """,
+                (status, memory_count, last_job_id, last_error, timestamp, user_id, capture_id),
+            )
+
+    def _capture_embedding_status(self, conn, user_id: str, capture_id: str) -> str:
+        active_count = conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE user_id = ? AND capture_id = ? AND status = 'active'",
+            (user_id, capture_id),
+        ).fetchone()[0]
+        if not active_count:
+            return "not_needed"
+        if not self._vector_ready(conn):
+            return "not_available"
+        vector_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM memory_vec_map map
+            JOIN memories m ON m.id = map.memory_id
+            WHERE m.user_id = ?
+              AND m.capture_id = ?
+              AND m.status = 'active'
+            """,
+            (user_id, capture_id),
+        ).fetchone()[0]
+        if vector_count >= active_count:
+            return "available"
+        job_counts = conn.execute(
+            """
+            SELECT
+              SUM(CASE WHEN j.status IN ('queued', 'running') THEN 1 ELSE 0 END) AS pending,
+              SUM(CASE WHEN j.status = 'failed' THEN 1 ELSE 0 END) AS failed
+            FROM memory_jobs j
+            JOIN memories m ON m.id = j.object_id
+            WHERE j.user_id = ?
+              AND j.job_type = 'embed_memory'
+              AND j.object_type = 'memory'
+              AND m.capture_id = ?
+            """,
+            (user_id, capture_id),
+        ).fetchone()
+        pending = int(job_counts["pending"] or 0)
+        failed = int(job_counts["failed"] or 0)
+        if pending:
+            return "queued"
+        if failed:
+            return "failed"
+        return "queued"
+
+    def _job_from_row(self, row) -> dict[str, Any]:
+        payload = self._json_or_empty(row["payload_json"])
+        result = self._json_or_empty(row["result_json"])
+        return {
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "job_type": row["job_type"],
+            "object_type": row["object_type"],
+            "object_id": row["object_id"],
+            "status": row["status"],
+            "priority": row["priority"],
+            "run_at": row["run_at"],
+            "attempts": row["attempts"],
+            "max_attempts": row["max_attempts"],
+            "locked_by": row["locked_by"],
+            "locked_until": row["locked_until"],
+            "unique_key": row["unique_key"],
+            "payload": payload,
+            "result": result,
+            "last_error": row["last_error"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "completed_at": row["completed_at"],
+        }
+
+    def _token_hash(self, token: str, salt: str) -> str:
+        return hashlib.sha256(f"{salt}:{token}".encode("utf-8")).hexdigest()
+
+    def _json_list(self, value: str | None) -> list[str]:
+        try:
+            parsed = json.loads(value or "[]")
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(parsed, list):
+            return []
+        return [str(item) for item in parsed]
+
+    def _json_array(self, value: str | None) -> list[Any]:
+        try:
+            parsed = json.loads(value or "[]")
+        except json.JSONDecodeError:
+            return []
+        return parsed if isinstance(parsed, list) else []
+
     def _save_memory(self, conn, capture_id: str, user_id: str, record: dict[str, Any], source: str, source_url: str | None, captured_at: str, raw_text: str) -> dict[str, Any]:
         memory_id = record["id"]
+        kind = record.get("kind", "observation")
+        layer = memory_layer(kind, record.get("layer"))
         topics = record.get("topics", [])
         entity_ids = record.get("entity_ids", [])
         conn.execute(
             """
             INSERT OR REPLACE INTO memories
-            (id, capture_id, user_id, kind, content, summary, source, source_url, confidence, importance, status, topics_json, entity_ids_json, occurred_at, captured_at, updated_at, raw_excerpt)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
+            (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, topics_json, entity_ids_json, occurred_at, captured_at, updated_at, raw_excerpt)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
             """,
             (
                 memory_id,
                 capture_id,
                 user_id,
-                record.get("kind", "observation"),
+                kind,
+                layer,
                 record.get("content", ""),
                 record.get("summary", ""),
                 source,
@@ -1918,13 +3931,15 @@ class CortexStore:
             "INSERT INTO memory_fts(memory_id, content, summary, source, topics) VALUES (?, ?, ?, ?, ?)",
             (memory_id, record.get("content", ""), record.get("summary", ""), source, " ".join(topics)),
         )
-        self._index_memory_vector(
+        self._enqueue_embed_memory_job(
             conn,
             memory_id=memory_id,
+            capture_id=capture_id,
             user_id=user_id,
             content=record.get("content", ""),
             summary=record.get("summary", ""),
             source=source,
+            layer=layer,
             topics=topics,
             captured_at=captured_at,
         )
@@ -1932,7 +3947,8 @@ class CortexStore:
             "id": memory_id,
             "capture_id": capture_id,
             "user_id": user_id,
-            "kind": record.get("kind", "observation"),
+            "kind": kind,
+            "layer": layer,
             "content": record.get("content", ""),
             "summary": record.get("summary", ""),
             "source": source,
@@ -1949,6 +3965,8 @@ class CortexStore:
         }
 
     def _vector_ready(self, conn) -> bool:
+        if embedding_status()["dimensions"] != VECTOR_DIMENSIONS:
+            return False
         status = sqlite_vec_status(conn)
         if not status["available"]:
             return False
@@ -1958,12 +3976,15 @@ class CortexStore:
         except sqlite3.Error:
             return False
 
-    def _vector_search(self, conn, user_id: str, query: str, limit: int, kind: str | None, user_settings: dict[str, Any]) -> list[Any]:
+    def _vector_search(self, conn, user_id: str, query: str, limit: int, kind: str | None, layer: str | None, user_settings: dict[str, Any]) -> list[Any]:
         if not self._vector_ready(conn):
             return []
-        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind)
+        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer)
         where = " AND ".join(filters)
-        vector = embedding_json(embed_text(query))
+        try:
+            vector = embedding_json(embed_text(query))
+        except Exception:
+            return []
         try:
             return conn.execute(
                 f"""
@@ -1980,7 +4001,7 @@ class CortexStore:
         except sqlite3.Error:
             return []
 
-    def _fuse_search_rows(self, fts_rows: list[Any], vector_rows: list[Any], limit: int) -> list[Any]:
+    def _fuse_search_rows(self, query: str, fts_rows: list[Any], vector_rows: list[Any], limit: int) -> list[Any]:
         ranked: dict[str, dict[str, Any]] = {}
         for index, row in enumerate(fts_rows):
             entry = ranked.setdefault(row["id"], {"row": row, "score": 0.0})
@@ -1988,35 +4009,154 @@ class CortexStore:
         for index, row in enumerate(vector_rows):
             entry = ranked.setdefault(row["id"], {"row": row, "score": 0.0})
             entry["score"] += 0.4 / (60 + index)
+        layer_boosts = query_layer_boosts(query)
+        for entry in ranked.values():
+            entry["score"] += self._layer_boost(entry["row"], layer_boosts)
         return [item["row"] for item in sorted(ranked.values(), key=lambda item: item["score"], reverse=True)[:limit]]
 
-    def _index_memory_vector(self, conn, *, memory_id: str, user_id: str, content: str, summary: str | None, source: str, topics: list[str], captured_at: str) -> bool:
+    def _rank_rows_with_layer_boosts(self, query: str, rows: list[Any], limit: int) -> list[Any]:
+        layer_boosts = query_layer_boosts(query)
+        ranked = [
+            {"row": row, "score": (0.2 / (60 + index)) + self._layer_boost(row, layer_boosts)}
+            for index, row in enumerate(rows)
+        ]
+        return [item["row"] for item in sorted(ranked, key=lambda item: item["score"], reverse=True)[:limit]]
+
+    def _layer_boost(self, row: Any, layer_boosts: dict[str, float]) -> float:
+        if not layer_boosts:
+            return 0.0
+        keys = set(row.keys())
+        layer = memory_layer(row["kind"], row["layer"] if "layer" in keys else None)
+        return layer_boosts.get(layer, 0.0)
+
+    def _enqueue_embed_memory_job(
+        self,
+        conn,
+        *,
+        memory_id: str,
+        capture_id: str | None,
+        user_id: str,
+        content: str,
+        summary: str | None,
+        source: str,
+        layer: str,
+        topics: list[str],
+        captured_at: str,
+        priority: int = 80,
+    ) -> dict[str, Any] | None:
+        if not self._vector_ready(conn):
+            return None
+        text = embedding_source_text(content, summary, source, layer, " ".join(topics))
+        if not text:
+            return None
+        text_hash = embedding_hash(text)
+        status = embedding_status()
+        if self._memory_vector_current(conn, memory_id, status["model"], text_hash):
+            return None
+        unique_key = f"embed_memory:{memory_id}:{status['model']}:{status['dimensions']}:{text_hash}"
+        payload = {
+            "memory_id": memory_id,
+            "capture_id": capture_id,
+            "text_hash": text_hash,
+            "embedding_model": status["model"],
+            "embedding_provider": status["provider"],
+            "embedding_dimensions": status["dimensions"],
+            "captured_at": captured_at,
+        }
+        job = self._enqueue_job(
+            conn,
+            user_id=user_id,
+            job_type="embed_memory",
+            object_type="memory",
+            object_id=memory_id,
+            unique_key=unique_key,
+            payload=payload,
+            priority=priority,
+        )
+        if job["status"] != "queued":
+            timestamp = now_iso()
+            conn.execute(
+                """
+                UPDATE memory_jobs
+                SET status = 'queued',
+                    attempts = 0,
+                    run_at = ?,
+                    locked_by = NULL,
+                    locked_until = NULL,
+                    payload_json = ?,
+                    result_json = '{}',
+                    last_error = NULL,
+                    completed_at = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (timestamp, json.dumps(payload), timestamp, job["id"]),
+            )
+            row = conn.execute("SELECT * FROM memory_jobs WHERE id = ?", (job["id"],)).fetchone()
+            job = self._job_from_row(row)
+        return job
+
+    def _memory_vector_current(self, conn, memory_id: str, embedding_model: str, text_hash: str) -> bool:
+        try:
+            row = conn.execute(
+                "SELECT vec_rowid, embedding_model, text_hash FROM memory_vec_map WHERE memory_id = ?",
+                (memory_id,),
+            ).fetchone()
+            if not row or row["embedding_model"] != embedding_model or row["text_hash"] != text_hash:
+                return False
+            return conn.execute("SELECT 1 FROM memory_vec WHERE rowid = ?", (row["vec_rowid"],)).fetchone() is not None
+        except sqlite3.Error:
+            return False
+
+    def _write_memory_vector(
+        self,
+        conn,
+        *,
+        memory_id: str,
+        user_id: str,
+        embedding_model: str,
+        text_hash: str,
+        vector: str,
+        timestamp: str,
+    ) -> None:
+        existing = conn.execute("SELECT vec_rowid FROM memory_vec_map WHERE memory_id = ?", (memory_id,)).fetchone()
+        if existing:
+            vec_rowid = existing["vec_rowid"]
+            conn.execute("DELETE FROM memory_vec WHERE rowid = ?", (vec_rowid,))
+            conn.execute(
+                "UPDATE memory_vec_map SET user_id = ?, embedding_model = ?, text_hash = ?, updated_at = ? WHERE vec_rowid = ?",
+                (user_id, embedding_model, text_hash, timestamp, vec_rowid),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                INSERT INTO memory_vec_map(memory_id, user_id, embedding_model, text_hash, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (memory_id, user_id, embedding_model, text_hash, timestamp, timestamp),
+            )
+            vec_rowid = cursor.lastrowid
+        conn.execute("INSERT INTO memory_vec(rowid, embedding) VALUES (?, ?)", (vec_rowid, vector))
+
+    def _index_memory_vector(self, conn, *, memory_id: str, user_id: str, content: str, summary: str | None, source: str, layer: str, topics: list[str], captured_at: str) -> bool:
         if not self._vector_ready(conn):
             return False
-        text = embedding_source_text(content, summary, source, " ".join(topics))
+        text = embedding_source_text(content, summary, source, layer, " ".join(topics))
         if not text:
             return False
         text_hash = embedding_hash(text)
-        vector = embedding_json(embed_text(text))
+        embedding = embed_text_result(text)
+        vector = embedding_json(embedding.vector)
         try:
-            existing = conn.execute("SELECT vec_rowid FROM memory_vec_map WHERE memory_id = ?", (memory_id,)).fetchone()
-            if existing:
-                vec_rowid = existing["vec_rowid"]
-                conn.execute("DELETE FROM memory_vec WHERE rowid = ?", (vec_rowid,))
-                conn.execute(
-                    "UPDATE memory_vec_map SET user_id = ?, embedding_model = ?, text_hash = ?, updated_at = ? WHERE vec_rowid = ?",
-                    (user_id, VECTOR_MODEL, text_hash, captured_at, vec_rowid),
-                )
-            else:
-                cursor = conn.execute(
-                    """
-                    INSERT INTO memory_vec_map(memory_id, user_id, embedding_model, text_hash, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (memory_id, user_id, VECTOR_MODEL, text_hash, captured_at, captured_at),
-                )
-                vec_rowid = cursor.lastrowid
-            conn.execute("INSERT INTO memory_vec(rowid, embedding) VALUES (?, ?)", (vec_rowid, vector))
+            self._write_memory_vector(
+                conn,
+                memory_id=memory_id,
+                user_id=user_id,
+                embedding_model=embedding.model,
+                text_hash=text_hash,
+                vector=vector,
+                timestamp=captured_at,
+            )
             return True
         except sqlite3.Error:
             return False
@@ -2031,6 +4171,52 @@ class CortexStore:
                 conn.execute("DELETE FROM memory_vec_map WHERE vec_rowid = ?", (row["vec_rowid"],))
         except sqlite3.Error:
             return
+
+    def _purge_edges_for_objects(self, conn, user_id: str, object_ids: list[str]) -> list[str]:
+        ids = [value for value in dict.fromkeys(object_ids) if value]
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        rows = conn.execute(
+            f"""
+            SELECT id
+            FROM graph_edges
+            WHERE user_id = ?
+              AND (
+                source_id IN ({placeholders})
+                OR target_id IN ({placeholders})
+                OR evidence_id IN ({placeholders})
+              )
+            """,
+            [user_id, *ids, *ids, *ids],
+        ).fetchall()
+        edge_ids = [row["id"] for row in rows]
+        if edge_ids:
+            edge_placeholders = ",".join("?" for _ in edge_ids)
+            conn.execute(f"DELETE FROM graph_edges WHERE user_id = ? AND id IN ({edge_placeholders})", [user_id, *edge_ids])
+        return edge_ids
+
+    def _purge_memory_rows(self, conn, user_id: str, memory_ids: list[str]) -> None:
+        ids = [value for value in dict.fromkeys(memory_ids) if value]
+        if not ids:
+            return
+        placeholders = ",".join("?" for _ in ids)
+        for memory_id in ids:
+            self._delete_memory_vector(conn, memory_id)
+        conn.execute(f"DELETE FROM memory_jobs WHERE user_id = ? AND object_type = 'memory' AND object_id IN ({placeholders})", [user_id, *ids])
+        conn.execute(f"DELETE FROM memory_fts WHERE memory_id IN ({placeholders})", ids)
+        conn.execute(f"DELETE FROM memory_entities WHERE user_id = ? AND memory_id IN ({placeholders})", [user_id, *ids])
+        conn.execute(f"DELETE FROM memory_topics WHERE user_id = ? AND memory_id IN ({placeholders})", [user_id, *ids])
+        conn.execute(f"DELETE FROM memories WHERE user_id = ? AND id IN ({placeholders})", [user_id, *ids])
+
+    def _purge_task_rows(self, conn, user_id: str, task_ids: list[str]) -> None:
+        ids = [value for value in dict.fromkeys(task_ids) if value]
+        if not ids:
+            return
+        placeholders = ",".join("?" for _ in ids)
+        conn.execute(f"DELETE FROM task_entities WHERE user_id = ? AND task_id IN ({placeholders})", [user_id, *ids])
+        conn.execute(f"DELETE FROM task_topics WHERE user_id = ? AND task_id IN ({placeholders})", [user_id, *ids])
+        conn.execute(f"DELETE FROM tasks WHERE user_id = ? AND id IN ({placeholders})", [user_id, *ids])
 
     def _clear_user_vectors(self, conn, user_id: str) -> None:
         if not self._vector_ready(conn):
@@ -2072,6 +4258,8 @@ class CortexStore:
         settings["allow_agent_reads"] = bool(settings["allow_agent_reads"])
         settings["allow_agent_writes"] = bool(settings["allow_agent_writes"])
         settings["allow_agent_exports"] = bool(settings["allow_agent_exports"])
+        settings["allow_agent_maintenance"] = bool(settings["allow_agent_maintenance"])
+        settings["allow_agent_destructive_actions"] = bool(settings["allow_agent_destructive_actions"])
         settings["redact_sensitive_context"] = bool(settings["redact_sensitive_context"])
         try:
             settings["context_pack_limit"] = min(50, max(4, int(settings["context_pack_limit"])))
@@ -2127,12 +4315,15 @@ class CortexStore:
             pieces.append(f"error={metadata['error']}")
         return ", ".join(str(piece) for piece in pieces[:6])
 
-    def _memory_filters(self, user_id: str, user_settings: dict[str, Any], *, alias: str = "m", kind: str | None = None) -> tuple[list[str], list[Any]]:
+    def _memory_filters(self, user_id: str, user_settings: dict[str, Any], *, alias: str = "m", kind: str | None = None, layer: str | None = None) -> tuple[list[str], list[Any]]:
         filters = [f"{alias}.user_id = ?", f"{alias}.status = 'active'"]
         params: list[Any] = [user_id]
         if kind:
             filters.append(f"{alias}.kind = ?")
             params.append(kind)
+        if layer:
+            filters.append(f"{alias}.layer = ?")
+            params.append(memory_layer(None, layer))
         if not user_settings["allow_pending_in_context"]:
             filters.append(
                 f"({alias}.capture_id IS NULL OR EXISTS (SELECT 1 FROM captures c WHERE c.id = {alias}.capture_id AND c.user_id = {alias}.user_id AND c.review_status = 'approved'))"
@@ -2229,6 +4420,7 @@ class CortexStore:
         keys = set(row.keys())
         return {
             "id": row["id"],
+            "import_id": row["import_id"] if "import_id" in keys else None,
             "source": row["source"],
             "source_url": row["source_url"],
             "title": row["title"],
@@ -2241,10 +4433,143 @@ class CortexStore:
             "task_count": row["task_count"] if "task_count" in keys else None,
         }
 
-    def _memory_from_row(self, row) -> dict[str, Any]:
+    def _import_session_from_row(self, row) -> dict[str, Any]:
+        keys = set(row.keys())
+        remaining_captures = row["remaining_captures"] if "remaining_captures" in keys else 0
+        deleted_at = row["deleted_at"] if "deleted_at" in keys else None
+        return {
+            "import_id": row["id"],
+            "id": row["id"],
+            "status": row["status"],
+            "source_hint": row["source_hint"],
+            "processing": row["processing"],
+            "paths": self._json_array(row["paths_json"]),
+            "sources": self._json_array(row["source_counts_json"]),
+            "records_found": row["records_found"],
+            "queued": row["queued"],
+            "saved": row["saved"],
+            "failed": row["failed"],
+            "skipped": row["skipped"] if "skipped" in keys else 0,
+            "capture_ids": self._json_array(row["capture_ids_json"]),
+            "errors": self._json_array(row["errors_json"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "completed_at": row["completed_at"] if "completed_at" in keys else None,
+            "deleted_at": deleted_at,
+            "remaining_captures": remaining_captures,
+            "remaining_memories": row["remaining_memories"] if "remaining_memories" in keys else 0,
+            "remaining_tasks": row["remaining_tasks"] if "remaining_tasks" in keys else 0,
+            "can_delete": deleted_at is None and int(remaining_captures or 0) > 0,
+        }
+
+    def _import_record_from_row(self, row) -> dict[str, Any]:
         return {
             "id": row["id"],
-            "kind": row["kind"],
+            "import_id": row["import_id"],
+            "ordinal": row["ordinal"],
+            "source": row["source"],
+            "title": row["title"],
+            "source_url": row["source_url"],
+            "content_hash": row["content_hash"],
+            "chars": row["chars"],
+            "metadata": json.loads(row["metadata_json"] or "{}"),
+            "status": row["status"],
+            "capture_id": row["capture_id"],
+            "job_id": row["job_id"],
+            "error": row["error"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def _upsert_import_session(self, conn, session: dict[str, Any]) -> None:
+        conn.execute(
+            """
+            INSERT INTO import_sessions
+            (id, user_id, status, source_hint, processing, paths_json, source_counts_json, records_found, queued, saved, failed, skipped, capture_ids_json, errors_json, created_at, updated_at, completed_at, deleted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              status = excluded.status,
+              source_hint = excluded.source_hint,
+              processing = excluded.processing,
+              paths_json = excluded.paths_json,
+              source_counts_json = excluded.source_counts_json,
+              records_found = excluded.records_found,
+              queued = excluded.queued,
+              saved = excluded.saved,
+              failed = excluded.failed,
+              skipped = excluded.skipped,
+              capture_ids_json = excluded.capture_ids_json,
+              errors_json = excluded.errors_json,
+              updated_at = excluded.updated_at,
+              completed_at = excluded.completed_at,
+              deleted_at = excluded.deleted_at
+            """,
+            (
+                session["id"],
+                session["user_id"],
+                session["status"],
+                session.get("source_hint", ""),
+                session.get("processing", "async"),
+                json.dumps(session.get("paths") or []),
+                json.dumps(session.get("sources") or []),
+                int(session.get("records_found") or 0),
+                int(session.get("queued") or 0),
+                int(session.get("saved") or 0),
+                int(session.get("failed") or 0),
+                int(session.get("skipped") or 0),
+                json.dumps(session.get("capture_ids") or []),
+                json.dumps(session.get("errors") or []),
+                session["created_at"],
+                session["updated_at"],
+                session.get("completed_at"),
+                session.get("deleted_at"),
+            ),
+        )
+        self.vault.write_import(session)
+
+    def _upsert_import_record(
+        self,
+        conn,
+        *,
+        import_id: str,
+        user_id: str,
+        ordinal: int,
+        record: SourceRecord,
+        status: str,
+        created_at: str,
+        updated_at: str,
+    ) -> None:
+        record_id = stable_id("irec_", import_id + str(ordinal) + record.source + record.title)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO import_records
+            (id, import_id, user_id, ordinal, source, title, source_url, content_hash, chars, metadata_json, status, capture_id, job_id, error, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)
+            """,
+            (
+                record_id,
+                import_id,
+                user_id,
+                ordinal,
+                record.source,
+                record.title,
+                record.source_url,
+                stable_id("", record.content),
+                len(record.content),
+                json.dumps(record.metadata),
+                status,
+                created_at,
+                updated_at,
+            ),
+        )
+
+    def _memory_from_row(self, row) -> dict[str, Any]:
+        keys = set(row.keys())
+        kind = row["kind"]
+        return {
+            "id": row["id"],
+            "kind": kind,
+            "layer": memory_layer(kind, row["layer"] if "layer" in keys else None),
             "content": row["content"],
             "summary": row["summary"],
             "source": row["source"],
@@ -2299,6 +4624,25 @@ class CortexStore:
             ).fetchall()
         return [self._memory_from_row(row) for row in rows]
 
+    def _memories_by_layer(self, user_id: str, layer: str, limit: int, *, include_pending: bool = False) -> list[dict[str, Any]]:
+        with connect(self.db_path) as conn:
+            user_settings = self._settings(conn, user_id)
+            if not include_pending:
+                user_settings = {**user_settings, "allow_pending_in_context": False}
+            filters, params = self._memory_filters(user_id, user_settings, alias="m", layer=layer)
+            where = " AND ".join(filters)
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM memories m
+                WHERE {where}
+                ORDER BY m.importance DESC, m.captured_at DESC
+                LIMIT ?
+                """,
+                [*params, limit],
+            ).fetchall()
+        return [self._memory_from_row(row) for row in rows]
+
     def _recommended_actions(
         self,
         *,
@@ -2314,9 +4658,9 @@ class CortexStore:
         if open_task_count:
             actions.append(f"Clear or update {open_task_count} open loop{'s' if open_task_count != 1 else ''}.")
         if captured_today == 0:
-            actions.append("Save one useful note today so your assistants have fresh context.")
+            actions.append("Add one useful source today so your personal model has fresh signal.")
         if top_topics:
-            actions.append(f"Copy a context pack for #{top_topics[0]['topic']} before your next AI session.")
+            actions.append(f"Use Cortex's #{top_topics[0]['topic']} memory before your next AI session.")
         if not recent_decisions:
             actions.append("Capture the next decision explicitly so it is easy to retrieve later.")
         return actions[:5]

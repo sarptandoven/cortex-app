@@ -89,7 +89,7 @@ def validate_html(site_dir: Path) -> list[str]:
         "class=\"button primary download-link\"",
         "href=\"downloads/latest.json\"",
         "href=\"privacy.html\"",
-        "You, but AI.",
+        "Your private personal memory model for AI.",
     ]
     for token in required_tokens:
         if token not in index_text:
