@@ -15,6 +15,7 @@ from email.utils import parseaddr
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import quote
 
 
 MAX_TEXT_BYTES = 12_000_000
@@ -363,7 +364,13 @@ def _parse_chatgpt(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
             if not messages:
                 continue
             lines.extend(["", "--- Messages ---", *messages])
-            records.append(SourceRecord("chatgpt", title, "\n".join(lines), source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "ChatGPT"}))
+            source_url = _source_locator(
+                asset.display_path,
+                service="chatgpt",
+                conversation=title,
+                conversation_id=conversation.get("id") or conversation.get("conversation_id"),
+            )
+            records.append(SourceRecord("chatgpt", title, "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "ChatGPT"}))
     return records
 
 
@@ -444,7 +451,13 @@ def _parse_claude(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
                 if text:
                     lines.append(f"{sender}: {text}")
             if len(lines) > 4:
-                records.append(SourceRecord("claude", title, "\n".join(lines), source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "Claude"}))
+                source_url = _source_locator(
+                    asset.display_path,
+                    service="claude",
+                    conversation=title,
+                    conversation_id=conversation.get("uuid") or conversation.get("id"),
+                )
+                records.append(SourceRecord("claude", title, "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Claude"}))
     return records
 
 
@@ -479,17 +492,21 @@ def _parse_slack(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
             continue
         channel = _path_parts(asset.name)[-2] if len(_path_parts(asset.name)) > 1 else "Slack"
         lines = [f"Source: Slack", f"Channel: {channel}", f"File: {asset.name}", "", "--- Messages ---"]
+        first_ts = ""
         for message in payload:
             if not isinstance(message, dict):
                 continue
             text = _slack_message_text(message)
             if not text:
                 continue
+            if not first_ts and message.get("ts"):
+                first_ts = str(message.get("ts"))
             user = users.get(str(message.get("user") or ""), str(message.get("username") or message.get("user") or "unknown"))
             ts = _slack_time(message.get("ts"))
             lines.append(f"{ts} {user}: {text}".strip())
         if len(lines) > 5:
-            records.append(SourceRecord("slack", f"Slack #{channel} {Path(asset.name).stem}", "\n".join(lines), source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "Slack", "channel": channel}))
+            source_url = _source_locator(asset.display_path, service="slack", channel=channel, file=Path(asset.name).name, first_ts=first_ts)
+            records.append(SourceRecord("slack", f"Slack #{channel} {Path(asset.name).stem}", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Slack", "channel": channel}))
     return records
 
 
@@ -1418,7 +1435,8 @@ def _email_record(message: email.message.EmailMessage, display_path: str, hint: 
     else:
         lines.extend(["", body])
     source = hint if hint and hint not in {"gmail", "email"} else "email"
-    return SourceRecord(source, subject, "\n".join(lines), source_url=display_path, metadata={"asset": display_path, "service": "Email"})
+    source_url = _source_locator(display_path, service=source, subject=subject, message_id=message.get("message-id"))
+    return SourceRecord(source, subject, "\n".join(lines), source_url=source_url, metadata={"asset": display_path, "service": "Email"})
 
 
 def _email_sender_label(sender: str) -> str:
@@ -1613,6 +1631,20 @@ def _format_whatsapp(asset: SourceAsset, text: str) -> str:
 def _record_asset_key(record: SourceRecord) -> str:
     value = record.metadata.get("asset")
     return str(value) if value else ""
+
+
+def _source_locator(display_path: str, **parts: Any) -> str:
+    fragments = []
+    for key, value in parts.items():
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        fragments.append(f"{quote(str(key), safe='')}={quote(text, safe='')}")
+    if not fragments:
+        return display_path
+    return f"{display_path}#{'&'.join(fragments)}"
 
 
 def _normalize_source(value: str) -> str:

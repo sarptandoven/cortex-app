@@ -397,6 +397,13 @@ class SourceIngestTests(unittest.TestCase):
         self.assertTrue(set(expected_queries).issubset(imported_sources))
         self.assertTrue(all(record["source_url"] for record in detail["records"]))
         self.assertTrue(all(capture["source_url"] for capture in detail["captures"]))
+        source_urls: dict[str, list[str]] = {}
+        for record in detail["records"]:
+            source_urls.setdefault(record["source"], []).append(record["source_url"])
+        self.assertTrue(any("service=chatgpt" in url and "conversation=Project%20Atlas%20planning" in url for url in source_urls["chatgpt"]))
+        self.assertTrue(any("service=claude" in url and "conversation=Writing%20style" in url for url in source_urls["claude"]))
+        self.assertTrue(any("service=slack" in url and "channel=general" in url and "first_ts=1700000000.0001" in url for url in source_urls["slack"]))
+        self.assertTrue(any("service=email" in url and "subject=Cortex%20migration%20plan" in url for url in source_urls["email"]))
 
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
