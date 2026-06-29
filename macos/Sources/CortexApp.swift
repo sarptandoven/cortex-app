@@ -3411,7 +3411,7 @@ struct CortexView: View {
                 ModelTab(state: state)
                     .tabItem { Label("Model", systemImage: "brain.head.profile") }
                     .tag(AppTab.model)
-                CaptureTab(state: state)
+                SourcesTab(state: state)
                     .tabItem { Label("Sources", systemImage: "tray.and.arrow.down") }
                     .tag(AppTab.sources)
                 ReviewTab(state: state)
@@ -3454,7 +3454,6 @@ struct CortexView: View {
             } label: {
                 Label("Add Sources", systemImage: "tray.and.arrow.down")
             }
-            .keyboardShortcut("v", modifiers: [.command, .shift])
         }
         .padding(16)
         .background(Color(nsColor: .windowBackgroundColor))
@@ -4522,100 +4521,6 @@ struct ReviewHeaderSection: View {
     }
 }
 
-struct CaptureTab: View {
-    @ObservedObject var state: AppState
-    @State private var isManualCaptureExpanded = false
-    @State private var isLinkOptionsExpanded = false
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                CaptureHeroSection(state: state)
-                CaptureFileSection(state: state, handleDrop: handleDrop)
-                SourceHealthSummarySection(state: state)
-                ImportHistorySection(state: state)
-                DisclosureGroup(isExpanded: $isManualCaptureExpanded) {
-                    CaptureQuickNoteSection(state: state)
-                        .padding(.top, 8)
-                } label: {
-                    Label("Manual memory capture", systemImage: "square.and.pencil")
-                        .font(.headline)
-                }
-                DisclosureGroup(isExpanded: $isLinkOptionsExpanded) {
-                    CaptureWebSection(state: state)
-                    .padding(.top, 8)
-                } label: {
-                    Label("Links and web capture", systemImage: "link")
-                        .font(.headline)
-                }
-            }
-            .padding(16)
-        }
-        .task {
-            await state.loadTrust()
-            await state.loadImportHistory()
-        }
-    }
-
-    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-        let group = DispatchGroup()
-        let lock = NSLock()
-        var urls: [URL] = []
-        for provider in providers {
-            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-                group.enter()
-                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                    defer { group.leave() }
-                    var url: URL?
-                    if let itemURL = item as? URL {
-                        url = itemURL
-                    } else if let data = item as? Data,
-                              let string = String(data: data, encoding: .utf8) {
-                        url = URL(string: string)
-                    } else if let string = item as? String {
-                        url = URL(string: string)
-                    }
-                    if let url {
-                        lock.lock()
-                        urls.append(url)
-                        lock.unlock()
-                    }
-                }
-            }
-        }
-        group.notify(queue: .main) {
-            state.captureDropTargeted = false
-            state.captureFiles(urls)
-        }
-        return !providers.isEmpty
-    }
-}
-
-struct CaptureHeroSection: View {
-    @ObservedObject var state: AppState
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Import sources to build your model")
-                        .font(.title3)
-                        .fontWeight(.semibold)
-                    Text("Bring in selected exports, folders, chats, notes, messages, docs, and writing samples. Cortex normalizes them locally into reviewable memory signals.")
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer()
-                Button {
-                    Task { await state.loadRecent() }
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-            }
-        }
-    }
-}
-
 struct SourceHealthSummarySection: View {
     @ObservedObject var state: AppState
 
@@ -4873,38 +4778,6 @@ struct SourceHealthTile: View {
     }
 }
 
-struct CaptureActionTile: View {
-    let title: String
-    let detail: String
-    let systemImage: String
-    let color: Color
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 9) {
-                Image(systemName: systemImage)
-                    .font(.title3)
-                    .foregroundColor(color)
-                    .frame(width: 24)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title)
-                        .font(.headline)
-                    Text(detail)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .buttonStyle(.plain)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-}
-
 struct CaptureQuickNoteSection: View {
     @ObservedObject var state: AppState
 
@@ -4969,70 +4842,6 @@ struct CaptureWebSection: View {
             Text("Use the bookmarklet to send selected pages or research notes to the local importer. Cortex does not place your API token in browser URLs or page scripts.")
                 .font(.caption)
                 .foregroundColor(.secondary)
-        }
-        .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-struct CaptureFileSection: View {
-    @ObservedObject var state: AppState
-    let handleDrop: ([NSItemProvider]) -> Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            VStack(spacing: 8) {
-                Image(systemName: state.captureDropTargeted ? "arrow.down.doc.fill" : "arrow.down.doc")
-                    .font(.largeTitle)
-                    .foregroundColor(state.captureDropTargeted ? .accentColor : .secondary)
-                Text(state.captureDropTargeted ? "Drop to import" : "Drop exports, folders, or files here")
-                    .font(.headline)
-                Text("ChatGPT, Claude, Notion, Gmail/email, Slack, Discord, Telegram, Keep, Google Chat, Teams, Zoom, Messages, WhatsApp, bookmarks, calendar, contacts, LinkedIn, Twitter/X, docs, CSV, JSON, DOCX, RTF, and PDFs are imported locally.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            .frame(maxWidth: .infinity, minHeight: 130)
-            .background(Color(nsColor: .textBackgroundColor))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(state.captureDropTargeted ? Color.accentColor : Color.secondary.opacity(0.22), lineWidth: state.captureDropTargeted ? 2 : 1))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .onDrop(of: [UTType.fileURL.identifier], isTargeted: $state.captureDropTargeted, perform: handleDrop)
-
-            HStack {
-                Button {
-                    state.chooseFilesForCapture()
-                } label: {
-                    Label("Choose Sources", systemImage: "doc.badge.plus")
-                }
-                .buttonStyle(.borderedProminent)
-                Button {
-                    state.openCaptureInbox()
-                } label: {
-                    Label("Open Inbox", systemImage: "tray")
-                }
-                Button {
-                    state.importCaptureInbox()
-                } label: {
-                    Label("Import Inbox", systemImage: "tray.and.arrow.down")
-                }
-                Button {
-                    state.copyCaptureInboxPath()
-                } label: {
-                    Label("Copy Path", systemImage: "doc.on.doc")
-                }
-                Spacer()
-            }
-            Text("Capture Inbox: \(state.captureInboxURL.path)")
-                .font(.system(.caption, design: .monospaced))
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            if !state.lastFileCaptureSummary.isEmpty {
-                Text(state.lastFileCaptureSummary)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
         }
         .padding(12)
         .background(Color(nsColor: .controlBackgroundColor))
