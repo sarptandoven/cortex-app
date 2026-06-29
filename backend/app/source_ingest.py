@@ -1034,10 +1034,10 @@ def _parse_single_asset(asset: SourceAsset, hint: str) -> list[SourceRecord]:
         return [record] if record else []
     if suffix == ".docx":
         text = _extract_docx(asset)
-        return [_generic_record(asset, hint or "docs", text)] if text.strip() else []
+        return [_generic_record(asset, _infer_generic_source(asset, hint), text)] if text.strip() else []
     if suffix == ".pdf":
         text = _extract_pdf(asset)
-        return [_generic_record(asset, hint or "docs", text)] if text.strip() else []
+        return [_generic_record(asset, _infer_generic_source(asset, hint), text)] if text.strip() else []
     text = asset.read_text() if suffix in TEXT_EXTENSIONS or hint else ""
     if not text.strip():
         return []
@@ -1056,9 +1056,12 @@ def _parse_calendar_asset(asset: SourceAsset, hint: str) -> SourceRecord | None:
     if "BEGIN:VEVENT" not in text:
         return None
     lines = [f"Source: Calendar", f"File: {asset.name}", "", "--- Events ---"]
+    first_summary = ""
     for event in re.findall(r"BEGIN:VEVENT(.*?)END:VEVENT", _unfold_ical(text), flags=re.DOTALL)[:1000]:
         fields = _ical_fields(event)
         summary = fields.get("SUMMARY", "Untitled event").strip()
+        if not first_summary:
+            first_summary = summary
         start = fields.get("DTSTART", "").strip()
         end = fields.get("DTEND", "").strip()
         location = fields.get("LOCATION", "").strip()
@@ -1077,7 +1080,9 @@ def _parse_calendar_asset(asset: SourceAsset, hint: str) -> SourceRecord | None:
         lines.append("\n".join(part for part in detail if part))
     if len(lines) <= 4:
         return None
-    return SourceRecord(hint or "calendar", Path(asset.name).stem or "Calendar export", "\n\n".join(lines), source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "Calendar"})
+    source = hint or "calendar"
+    source_url = _source_locator(asset.display_path, service=source, file=Path(asset.name).name, first_event=first_summary)
+    return SourceRecord(source, Path(asset.name).stem or "Calendar export", "\n\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Calendar"})
 
 
 def _parse_contacts_asset(asset: SourceAsset, hint: str) -> SourceRecord | None:
@@ -1085,9 +1090,12 @@ def _parse_contacts_asset(asset: SourceAsset, hint: str) -> SourceRecord | None:
     if "BEGIN:VCARD" not in text.upper():
         return None
     lines = [f"Source: Contacts", f"File: {asset.name}", "", "--- Contacts ---"]
+    first_contact = ""
     for card in re.findall(r"BEGIN:VCARD(.*?)END:VCARD", _unfold_ical(text), flags=re.DOTALL | re.IGNORECASE)[:2000]:
         fields = _ical_fields(card)
         name = fields.get("FN") or fields.get("N") or "Contact"
+        if not first_contact:
+            first_contact = str(name).strip()
         org = fields.get("ORG", "")
         title = fields.get("TITLE", "")
         notes = fields.get("NOTE", "")
@@ -1102,7 +1110,9 @@ def _parse_contacts_asset(asset: SourceAsset, hint: str) -> SourceRecord | None:
         lines.append("\n".join(detail))
     if len(lines) <= 4:
         return None
-    return SourceRecord(hint or "contacts", Path(asset.name).stem or "Contacts export", "\n\n".join(lines), source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "Contacts"})
+    source = hint or "contacts"
+    source_url = _source_locator(asset.display_path, service=source, file=Path(asset.name).name, first_contact=first_contact)
+    return SourceRecord(source, Path(asset.name).stem or "Contacts export", "\n\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Contacts"})
 
 
 def _parse_bookmarks_asset(asset: SourceAsset, hint: str) -> SourceRecord | None:
@@ -1114,7 +1124,9 @@ def _parse_bookmarks_asset(asset: SourceAsset, hint: str) -> SourceRecord | None
     for url, raw_title in entries[:3000]:
         title = _html_to_text(raw_title).strip() or url
         lines.append(f"{title} - {html.unescape(url)}")
-    return SourceRecord(hint or "browser-bookmarks", Path(asset.name).stem or "Browser bookmarks", "\n".join(lines), source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "Browser Bookmarks"})
+    source = hint or "browser-bookmarks"
+    source_url = _source_locator(asset.display_path, service=source, file=Path(asset.name).name)
+    return SourceRecord(source, Path(asset.name).stem or "Browser bookmarks", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Browser Bookmarks"})
 
 
 def _parse_browser_bookmarks_json_asset(asset: SourceAsset, hint: str) -> SourceRecord | None:
@@ -1137,7 +1149,9 @@ def _parse_browser_bookmarks_json_asset(asset: SourceAsset, hint: str) -> Source
     for folder, title, url in entries[:3000]:
         prefix = f"{folder}: " if folder else ""
         lines.append(f"{prefix}{title} - {url}")
-    return SourceRecord(hint or "browser-bookmarks", Path(asset.name).stem or "Browser bookmarks", "\n".join(lines), source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "Browser Bookmarks"})
+    source = hint or "browser-bookmarks"
+    source_url = _source_locator(asset.display_path, service=source, file=Path(asset.name).name)
+    return SourceRecord(source, Path(asset.name).stem or "Browser bookmarks", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Browser Bookmarks"})
 
 
 def _collect_browser_bookmark_entries(folder: str, node: Any, entries: list[tuple[str, str, str]]) -> None:
@@ -1167,7 +1181,9 @@ def _parse_browser_history_asset(asset: SourceAsset, hint: str) -> SourceRecord 
     for title, url, visits in rows[:1000]:
         visit_text = f" ({visits} visits)" if visits else ""
         lines.append(f"{title or url} - {url}{visit_text}")
-    return SourceRecord(hint or "browser-history", Path(asset.name).stem or "Browser history", "\n".join(lines), source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "Browser History"})
+    source = hint or "browser-history"
+    source_url = _source_locator(asset.display_path, service=source, file=Path(asset.name).name)
+    return SourceRecord(source, Path(asset.name).stem or "Browser history", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Browser History"})
 
 
 def _browser_history_rows(asset: SourceAsset) -> list[tuple[str, str, int]]:
@@ -1540,7 +1556,28 @@ def _email_single_part_text(message: Any) -> str:
 def _generic_record(asset: SourceAsset, source: str, text: str) -> SourceRecord:
     title = Path(asset.name).stem or Path(asset.name).name
     cleaned = _clean_generic_text(asset, text)
-    return SourceRecord(source, title, cleaned, source_url=asset.display_path, metadata={"asset": asset.display_path, "service": source})
+    source_url = _generic_source_locator(asset, source, title)
+    return SourceRecord(source, title, cleaned, source_url=source_url, metadata={"asset": asset.display_path, "service": source})
+
+
+def _generic_source_locator(asset: SourceAsset, source: str, title: str) -> str:
+    if source in {"docs", "file"}:
+        return asset.display_path
+    file_name = Path(asset.name).name
+    if source == "notion":
+        return _source_locator(asset.display_path, service=source, page=title, file=file_name)
+    if source == "cloud-docs":
+        provider = _source_provider(asset, {"google drive": "google-drive", "google docs": "google-drive", "onedrive": "onedrive", "dropbox paper": "dropbox-paper", "microsoft": "microsoft-365", "office 365": "microsoft-365", "takeout/drive": "google-drive", "takeout\\drive": "google-drive"})
+        return _source_locator(asset.display_path, service=source, provider=provider, document=title, file=file_name)
+    if source in {"github", "gitlab"}:
+        repository = _source_container_after(asset, {source})
+        return _source_locator(asset.display_path, service=source, repository=repository, file=file_name)
+    if source in {"linear", "jira", "asana", "trello"}:
+        workspace = _source_container_after(asset, {source})
+        return _source_locator(asset.display_path, service=source, workspace=workspace, file=file_name)
+    if source in {"apple-notes", "obsidian", "logseq", "roam", "knowledge-base", "readwise", "pocket", "instapaper", "raindrop", "structured-export", "whatsapp"}:
+        return _source_locator(asset.display_path, service=source, file=file_name)
+    return asset.display_path
 
 
 def _clean_generic_text(asset: SourceAsset, text: str) -> str:
@@ -1663,6 +1700,25 @@ def _source_locator(display_path: str, **parts: Any) -> str:
     if not fragments:
         return display_path
     return f"{display_path}#{'&'.join(fragments)}"
+
+
+def _source_provider(asset: SourceAsset, markers: dict[str, str]) -> str:
+    lowered = asset.display_path.lower().replace("::", "/")
+    name = asset.name.lower().replace("::", "/")
+    for marker, provider in markers.items():
+        if marker in lowered or marker in name:
+            return provider
+    return ""
+
+
+def _source_container_after(asset: SourceAsset, markers: set[str]) -> str:
+    parts = _path_parts(asset.display_path.replace("::", "/"))
+    lowered_markers = {marker.lower() for marker in markers}
+    for index, part in enumerate(parts[:-1]):
+        normalized = re.sub(r"[^a-z0-9]+", "-", part.lower()).strip("-")
+        if normalized in lowered_markers:
+            return parts[index + 1]
+    return ""
 
 
 def _normalize_source(value: str) -> str:

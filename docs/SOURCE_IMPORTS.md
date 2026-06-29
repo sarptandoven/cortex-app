@@ -111,6 +111,8 @@ The catalog lists common services such as ChatGPT, Claude, Gmail, email files, d
 
 Branded live connectors can map to canonical import sources. For example, Gmail Takeout imports as `email`, Google Drive exports import as `cloud-docs` or `docs`, and GitHub CSV/JSON/project files import as `github` or `work-tools`. The Sources UI shows that mapping so planned OAuth connectors are not mistaken for already-connected live sync.
 
+Citation URLs are service-aware when the importer can infer useful structure. Native chat/email imports include conversation, channel, subject, or message locators. Service-like file imports add fragments such as `service=notion&page=...`, `service=cloud-docs&provider=...&document=...`, `service=github&repository=...&file=...`, and `service=calendar&first_event=...`. Plain local `docs` imports keep the raw file path as the citation.
+
 `GET /v1/sources/readiness` returns the product-level source summary used by the macOS Sources view: import readiness, live connector state, connected account count, sync cursor health, review backlog, active memory count, citation coverage, warnings, and next actions. It is the main endpoint for deciding whether a user's life-data sources are ready for model adaptation.
 
 Source account lifecycle:

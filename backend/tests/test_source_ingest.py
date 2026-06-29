@@ -100,9 +100,13 @@ class SourceIngestTests(unittest.TestCase):
         self.assertIn("cloud-docs", by_source)
         self.assertIn("docs", by_source)
         self.assertIn("github", by_source)
-        self.assertEqual(by_source["cloud-docs"].source_url, str(drive / "Roadmap.md"))
+        self.assertIn("service=cloud-docs", by_source["cloud-docs"].source_url or "")
+        self.assertIn("provider=google-drive", by_source["cloud-docs"].source_url or "")
+        self.assertIn("document=Roadmap", by_source["cloud-docs"].source_url or "")
         self.assertEqual(by_source["docs"].source_url, str(local_docs / "Writing.md"))
-        self.assertEqual(by_source["github"].source_url, str(github / "issues.csv"))
+        self.assertIn("service=github", by_source["github"].source_url or "")
+        self.assertIn("repository=Project%20Cortex", by_source["github"].source_url or "")
+        self.assertIn("file=issues.csv", by_source["github"].source_url or "")
 
     def test_store_import_sources_queues_and_processes_records(self) -> None:
         self._write_chatgpt_export()
@@ -202,6 +206,8 @@ class SourceIngestTests(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0].source, "notion")
         self.assertIn("Notion paragraph", records[0].content)
+        self.assertIn("service=notion", records[0].source_url or "")
+        self.assertIn("page=Project%20Notes", records[0].source_url or "")
 
     def test_slack_metadata_is_skipped_and_rich_message_text_is_preserved(self) -> None:
         channel = self.root / "slack" / "general"
@@ -263,6 +269,11 @@ class SourceIngestTests(unittest.TestCase):
 
         self.assertIn("Line one\nLine two", combined)
         self.assertIn("First note\nSecond note", combined)
+        urls = {record.source: record.source_url or "" for record in records}
+        self.assertIn("service=calendar", urls["calendar"])
+        self.assertIn("first_event=Line%20Test", urls["calendar"])
+        self.assertIn("service=contacts", urls["contacts"])
+        self.assertIn("first_contact=Ada%20Lovelace", urls["contacts"])
 
     def test_browser_json_bookmarks_and_history_sqlite_are_imported(self) -> None:
         browser = self.root / "browser"
@@ -444,7 +455,14 @@ class SourceIngestTests(unittest.TestCase):
         self._write_claude_export()
         self._write_slack_export()
         self._write_email_export()
+        self._write_notion_export()
         self._write_cloud_and_work_exports()
+        github = self.root / "GitHub" / "Project Cortex"
+        github.mkdir(parents=True)
+        (github / "issues.csv").write_text(
+            "Title,Body\nSource paths,GitHub import should preserve source paths for cited work memory.\n",
+            encoding="utf-8",
+        )
         docs = self.root / "docs"
         docs.mkdir()
         (docs / "Source Citation.md").write_text(
@@ -460,8 +478,10 @@ class SourceIngestTests(unittest.TestCase):
             self.root / "claude",
             self.root / "slack",
             self.root / "mail",
+            self.root / "Notion Export",
             self.root / "Apple Notes",
             self.root / "Google Drive",
+            self.root / "GitHub",
             docs,
         ]
         result = store.import_sources(
@@ -480,8 +500,10 @@ class SourceIngestTests(unittest.TestCase):
             "claude": "concise technical answers",
             "slack": "Cortex importer this week",
             "email": "migration plan approved memory candidates",
+            "notion": "Notion markdown exports",
             "apple-notes": "concrete language",
             "cloud-docs": "Cloud docs model context",
+            "github": "GitHub import should preserve source paths",
             "docs": "source citation smoke test",
         }
         imported_sources = {record["source"] for record in detail["records"] if record["source_url"]}
@@ -495,6 +517,10 @@ class SourceIngestTests(unittest.TestCase):
         self.assertTrue(any("service=claude" in url and "conversation=Writing%20style" in url for url in source_urls["claude"]))
         self.assertTrue(any("service=slack" in url and "channel=general" in url and "first_ts=1700000000.0001" in url for url in source_urls["slack"]))
         self.assertTrue(any("service=email" in url and "subject=Cortex%20migration%20plan" in url for url in source_urls["email"]))
+        self.assertTrue(any("service=notion" in url and "page=Roadmap" in url for url in source_urls["notion"]))
+        self.assertTrue(any("service=cloud-docs" in url and "provider=google-drive" in url and "document=Strategy" in url for url in source_urls["cloud-docs"]))
+        self.assertTrue(any("service=github" in url and "repository=Project%20Cortex" in url and "file=issues.csv" in url for url in source_urls["github"]))
+        self.assertTrue(any("service=apple-notes" in url and "file=Voice.html" in url for url in source_urls["apple-notes"]))
 
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
