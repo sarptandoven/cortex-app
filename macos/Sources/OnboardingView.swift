@@ -257,42 +257,6 @@ struct OnboardingFirstSourceStep: View {
                 Spacer()
             }
 
-            DisclosureGroup("Add a quick memory instead") {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Quick memories are useful later, but setup continues after Cortex imports a real source.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    ZStack(alignment: .topLeading) {
-                        TextEditor(text: $state.onboardingNote)
-                            .font(.body)
-                            .frame(minHeight: 120)
-                            .accessibilityLabel("First source")
-                        if state.onboardingNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            Text("Example: I prefer concise technical answers with clear next steps.")
-                                .foregroundColor(.secondary)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 8)
-                                .allowsHitTesting(false)
-                        }
-                    }
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.22)))
-                    HStack {
-                        Button {
-                            state.captureOnboardingQuickNote()
-                        } label: {
-                            Label("Add Quick Memory", systemImage: "square.and.arrow.down")
-                        }
-                        Button {
-                            state.captureClipboard()
-                        } label: {
-                            Label("Add Clipboard", systemImage: "doc.on.clipboard")
-                        }
-                        Spacer()
-                    }
-                }
-                .padding(.top, 8)
-            }
-
             if let stats = state.stats {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 8)], spacing: 8) {
                     StatBox(label: "Captures", value: stats.captures)

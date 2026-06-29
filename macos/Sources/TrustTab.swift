@@ -11,12 +11,9 @@ struct TrustTab: View {
             VStack(alignment: .leading, spacing: 16) {
                 if let summary = state.trustSummary {
                     TrustScoreSection(summary: summary)
-                    if let lifecycle = state.dataLifecycleReport {
-                        TrustLifecycleSection(report: lifecycle)
-                    }
                     TrustPolicySection(state: state)
                     SettingsPrivacySection(state: state)
-                    SettingsDataRecoverySection(state: state)
+                    TrustBackupSummarySection(state: state)
                     TrustActionsSection(state: state)
                     DisclosureGroup("Connected AI tools", isExpanded: $integrationsExpanded) {
                         VStack(alignment: .leading, spacing: 14) {
@@ -36,6 +33,12 @@ struct TrustTab: View {
                     }
                     DisclosureGroup("Advanced diagnostics", isExpanded: $advancedExpanded) {
                         VStack(alignment: .leading, spacing: 14) {
+                            if let lifecycle = state.dataLifecycleReport {
+                                TrustLifecycleSection(report: lifecycle)
+                                Divider()
+                            }
+                            SettingsDataRecoverySection(state: state)
+                            Divider()
                             Group {
                                 SettingsOnboardingSection(state: state)
                                 Divider()
@@ -86,5 +89,55 @@ struct TrustTab: View {
         await state.loadReliability()
         await state.loadStats()
         await state.loadGraph()
+    }
+}
+
+struct TrustBackupSummarySection: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Vault backup")
+                        .font(.headline)
+                    Text("Create a local backup before connecting more tools or importing large source exports.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Button {
+                    state.createBackup()
+                } label: {
+                    Label("Back Up Now", systemImage: "archivebox")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+
+            if let backup = state.lastBackupPath {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundColor(.green)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Latest backup ready")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                        Text(backup)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
+                    Spacer(minLength: 0)
+                }
+            } else {
+                TrustNotice(systemImage: "externaldrive", title: "No backup recorded", detail: "Backups stay local and can be managed from Advanced when needed.", color: .orange)
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }

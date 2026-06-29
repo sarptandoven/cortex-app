@@ -1596,7 +1596,6 @@ final class AppState: ObservableObject {
     @Published var globalClipboardHotkeyEnabled: Bool = UserDefaults.standard.bool(forKey: "globalClipboardHotkeyEnabled.v1")
     @Published var showOnboarding: Bool = !UserDefaults.standard.bool(forKey: "onboardingComplete.v1")
     @Published var onboardingStep: OnboardingStep = OnboardingStep(rawValue: UserDefaults.standard.integer(forKey: "onboardingStep.v2")) ?? .privateVault
-    @Published var onboardingNote: String = ""
     @Published var firstSourceAdded: Bool = UserDefaults.standard.bool(forKey: "onboardingFirstSourceImported.v1")
     @Published var firstMemoryReviewed: Bool = UserDefaults.standard.bool(forKey: "onboardingFirstMemoryReviewed.v1")
     @Published var cortexUsed: Bool = UserDefaults.standard.bool(forKey: "onboardingCortexUsed.v1")
@@ -1974,20 +1973,6 @@ final class AppState: ObservableObject {
         let urlString = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/capture"
         if let url = URL(string: urlString) {
             NSWorkspace.shared.open(url)
-        }
-    }
-
-    func captureOnboardingQuickNote() {
-        let text = onboardingNote.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.isEmpty {
-            status = "First memory is empty"
-            return
-        }
-        Task {
-            if await capture(text: text, source: "macos-onboarding", title: "First Cortex memory") {
-                onboardingNote = ""
-                status = "Quick memory saved. Import a real source to continue setup."
-            }
         }
     }
 

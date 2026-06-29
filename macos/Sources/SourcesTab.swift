@@ -5,8 +5,7 @@ import UniformTypeIdentifiers
 struct SourcesTab: View {
     @ObservedObject var state: AppState
     @State private var isSupportedSourcesExpanded = false
-    @State private var isManualCaptureExpanded = false
-    @State private var isLinkOptionsExpanded = false
+    @State private var isSecondaryCaptureExpanded = false
 
     var body: some View {
         ScrollView {
@@ -19,20 +18,7 @@ struct SourcesTab: View {
                 )
                 SourceHealthSummarySection(state: state)
                 ImportHistorySection(state: state)
-                DisclosureGroup(isExpanded: $isManualCaptureExpanded) {
-                    CaptureQuickNoteSection(state: state)
-                        .padding(.top, 8)
-                } label: {
-                    Label("Manual memory capture", systemImage: "square.and.pencil")
-                        .font(.headline)
-                }
-                DisclosureGroup(isExpanded: $isLinkOptionsExpanded) {
-                    CaptureWebSection(state: state)
-                        .padding(.top, 8)
-                } label: {
-                    Label("Links and web capture", systemImage: "link")
-                        .font(.headline)
-                }
+                SecondaryCaptureToolsSection(state: state, isExpanded: $isSecondaryCaptureExpanded)
             }
             .padding(16)
         }
@@ -73,6 +59,44 @@ struct SourcesTab: View {
             state.captureFiles(urls)
         }
         return !providers.isEmpty
+    }
+}
+
+struct SecondaryCaptureToolsSection: View {
+    @ObservedObject var state: AppState
+    @Binding var isExpanded: Bool
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Use these for one-off notes or links after the main source import. They do not replace source exports for onboarding or model coverage.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                CaptureQuickNoteSection(state: state)
+                Divider()
+                CaptureWebSection(state: state)
+            }
+            .padding(.top, 8)
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "plus.square.dashed")
+                    .foregroundColor(.secondary)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Secondary capture tools")
+                        .font(.callout)
+                        .fontWeight(.medium)
+                    Text("Quick notes and links for edge cases")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.65))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
