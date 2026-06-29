@@ -197,11 +197,26 @@ They do not store full MCP prompts or full content payloads in audit metadata.
 
 The score is not a security guarantee. It is a product signal that helps users understand whether the current setup is strict or permissive.
 
+## Data Lifecycle
+
+`GET /v1/privacy/lifecycle` returns a user-facing lifecycle receipt:
+
+- local database and vault paths
+- record counts for captures, active memories, imports, source accounts, sync cursors, audit events, and deletion tombstones
+- latest backup and retention policy
+- export endpoints and redaction state
+- delete-all coverage for SQLite, vault records, backups, tokens, jobs, settings, and audit events
+- deletion tombstone policy used to block deleted records from being restored from backups
+- connected AI access posture and recent audit activity
+
+The report contains counts, paths, settings, and policy status; it does not include memory bodies or raw capture text.
+
 ## API Surface
 
 - `GET /v1/settings`
 - `PUT /v1/settings`
 - `GET /v1/trust/summary`
+- `GET /v1/privacy/lifecycle`
 - `POST /v1/integrations/api-token`
 - `POST /v1/integrations/mcp-token`
 - `GET /v1/integrations/tokens`

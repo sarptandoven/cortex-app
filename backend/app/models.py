@@ -343,6 +343,19 @@ class ReliabilityReportResponse(BaseModel):
     diagnostics: dict[str, Any]
 
 
+class DataLifecycleReportResponse(BaseModel):
+    generated_at: str
+    status: str
+    storage: dict[str, Any]
+    record_counts: dict[str, int]
+    backups: dict[str, Any]
+    export: dict[str, Any]
+    deletion: dict[str, Any]
+    ai_access: dict[str, Any]
+    audit: dict[str, Any]
+    recommended_actions: list[str]
+
+
 class SupportBundleResponse(BaseModel):
     bundle_schema: int
     generated_at: str

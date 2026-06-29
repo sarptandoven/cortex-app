@@ -103,6 +103,7 @@ GET    /v1/memory/quality
 GET    /v1/settings
 PUT    /v1/settings
 GET    /v1/trust/summary
+GET    /v1/privacy/lifecycle
 POST   /v1/integrations/api-token
 POST   /v1/integrations/mcp-token
 GET    /v1/integrations/tokens

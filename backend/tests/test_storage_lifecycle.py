@@ -690,6 +690,33 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(mcp_bundle["bundle_schema"], 1)
         self.assertFalse(mcp_bundle["privacy"]["contains_memory_content"])
 
+    def test_data_lifecycle_report_explains_storage_backup_export_and_delete(self) -> None:
+        self.capture(
+            "Lifecycle report should explain where local memory lives and how deletion works. "
+            "We decided privacy receipts should preserve citations and backup state."
+        )
+        self.store.create_backup(self.user_id)
+
+        report = self.store.data_lifecycle_report(self.user_id)
+
+        self.assertEqual(report["storage"]["mode"], "local_first")
+        self.assertEqual(report["storage"]["database_path"], str(self.db_path))
+        self.assertEqual(report["storage"]["vault_path"], str(self.store.vault.root))
+        self.assertGreaterEqual(report["record_counts"]["captures"], 1)
+        self.assertGreaterEqual(report["record_counts"]["active_memories"], 1)
+        self.assertGreaterEqual(report["backups"]["count"], 1)
+        self.assertIsNotNone(report["backups"]["latest_backup"])
+        self.assertTrue(report["export"]["redaction_enabled"])
+        self.assertEqual(report["export"]["json_endpoint"], "/v1/export.json")
+        self.assertTrue(report["deletion"]["include_backups_default"])
+        self.assertIn("api_tokens", report["deletion"]["covered_sqlite"])
+        self.assertIn("backups when include_backups=true", report["deletion"]["covered_vault"])
+        self.assertEqual(report["deletion"]["tombstone_policy"], "block_restore")
+        self.assertTrue(report["deletion"]["restore_preserves_tombstones"])
+        self.assertEqual(report["ai_access"]["mode"], report["ai_access"]["mode"].lower())
+        self.assertIn("audit", report)
+        self.assertTrue(report["recommended_actions"])
+
     def test_daily_review_and_context_pack(self) -> None:
         self.capture(
             "Vamika decided Cortex should become a daily memory cockpit for ChatGPT and Claude. "

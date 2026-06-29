@@ -3942,6 +3942,118 @@ class CortexStore:
             ],
         }
 
+    def data_lifecycle_report(self, user_id: str) -> dict[str, Any]:
+        diagnostics = self.diagnostics(user_id)
+        trust = self.trust_summary(user_id)
+        reliability = self.reliability_report(user_id)
+        latest_backup = self.latest_backup()
+        user_settings = trust["settings"]
+        vault_counts = (diagnostics.get("vault") or {}).get("record_counts", {})
+        tombstones_count = int(vault_counts.get("deletion_tombstones") or 0)
+        backup_count = int(vault_counts.get("backups") or 0)
+        warnings: list[str] = []
+        if diagnostics["status"] != "ok":
+            warnings.append("Storage health needs maintenance before the lifecycle report is fully reliable.")
+        if latest_backup is None:
+            warnings.append("No backup has been created yet.")
+        elif isinstance(latest_backup.get("age_days"), int) and latest_backup["age_days"] > 7:
+            warnings.append("Latest backup is older than 7 days.")
+        if not user_settings["redact_sensitive_context"]:
+            warnings.append("Shared exports and context are not redacted.")
+        if user_settings["allow_agent_destructive_actions"]:
+            warnings.append("Connected agents can delete local data.")
+        if not warnings:
+            warnings.append("Lifecycle posture is ready for local beta use.")
+
+        return {
+            "generated_at": now_iso(),
+            "status": "ok" if diagnostics["status"] == "ok" and latest_backup else "needs_attention",
+            "storage": {
+                "mode": "local_first",
+                "database_path": str(self.db_path),
+                "vault_path": str(self.vault.root),
+                "database_bytes": diagnostics["db_size_bytes"],
+                "wal_bytes": diagnostics["wal_size_bytes"],
+                "vault_status": (diagnostics.get("vault") or {}).get("status", "unknown"),
+            },
+            "record_counts": {
+                "captures": diagnostics["counts"].get("captures", 0),
+                "active_memories": diagnostics["counts"].get("active_memories", 0),
+                "archived_memories": diagnostics["counts"].get("archived_memories", 0),
+                "open_tasks": diagnostics["counts"].get("open_tasks", 0),
+                "imports": diagnostics["counts"].get("imports", 0),
+                "source_accounts": vault_counts.get("source_accounts", 0),
+                "sync_cursors": vault_counts.get("sync_cursors", 0),
+                "audit_events": diagnostics["counts"].get("events", 0),
+                "deletion_tombstones": tombstones_count,
+            },
+            "backups": {
+                "count": backup_count,
+                "latest_backup": latest_backup,
+                "retention": backup_retention_policy(),
+                "include_in_delete_default": True,
+            },
+            "export": {
+                "json_endpoint": "/v1/export.json",
+                "markdown_endpoint": "/v1/export.md",
+                "redaction_enabled": bool(user_settings["redact_sensitive_context"]),
+                "contains_raw_capture_text": True,
+                "contains_memory_content": True,
+            },
+            "deletion": {
+                "endpoint": "/v1/user-data?include_backups=true",
+                "include_backups_default": True,
+                "covered_sqlite": [
+                    "captures",
+                    "memories",
+                    "tasks",
+                    "entities",
+                    "graph_edges",
+                    "imports",
+                    "source_accounts",
+                    "sync_cursors",
+                    "jobs",
+                    "events",
+                    "settings",
+                    "api_tokens",
+                ],
+                "covered_vault": [
+                    "captures",
+                    "memories",
+                    "tasks",
+                    "entities",
+                    "graph_edges",
+                    "imports",
+                    "source_accounts",
+                    "sync_cursors",
+                    "settings",
+                    "events",
+                    "attachments",
+                    "backups when include_backups=true",
+                ],
+                "tombstones_count": tombstones_count,
+                "tombstone_policy": "block_restore",
+                "restore_preserves_tombstones": True,
+            },
+            "ai_access": {
+                "mode": trust["mode"],
+                "trust_score": trust["trust_score"],
+                "allow_agent_reads": bool(user_settings["allow_agent_reads"]),
+                "allow_agent_writes": bool(user_settings["allow_agent_writes"]),
+                "allow_agent_exports": bool(user_settings["allow_agent_exports"]),
+                "allow_agent_maintenance": bool(user_settings["allow_agent_maintenance"]),
+                "allow_agent_destructive_actions": bool(user_settings["allow_agent_destructive_actions"]),
+                "redaction_enabled": bool(user_settings["redact_sensitive_context"]),
+                "risk_flags": trust["risk_flags"],
+            },
+            "audit": {
+                "events": diagnostics["counts"].get("events", 0),
+                "last_event_at": diagnostics.get("last_event_at"),
+                "agent_events_7d": trust["counts"].get("agent_events_7d", 0),
+            },
+            "recommended_actions": list(dict.fromkeys(warnings + reliability["recommended_actions"]))[:8],
+        }
+
     def audit_log(self, user_id: str, limit: int = 100) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             rows = conn.execute(

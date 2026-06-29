@@ -578,6 +578,9 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/v1/trust/summary":
                 self._send_json(store.trust_summary(user_id))
                 return
+            if method == "GET" and path == "/v1/privacy/lifecycle":
+                self._send_json(store.data_lifecycle_report(user_id))
+                return
             if method == "POST" and path == "/v1/integrations/mcp-token":
                 body = self._json_body()
                 self._send_json(store.ensure_mcp_token(

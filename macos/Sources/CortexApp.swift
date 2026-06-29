@@ -534,6 +534,78 @@ struct TrustSummaryResponse: Codable {
     let redaction_labels: [String]
 }
 
+struct DataLifecycleReportResponse: Codable {
+    let generated_at: String
+    let status: String
+    let storage: LifecycleStorage
+    let record_counts: [String: Int]
+    let backups: LifecycleBackups
+    let export: LifecycleExport
+    let deletion: LifecycleDeletion
+    let ai_access: LifecycleAIAccess
+    let audit: LifecycleAudit
+    let recommended_actions: [String]
+}
+
+struct LifecycleStorage: Codable {
+    let mode: String
+    let database_path: String
+    let vault_path: String
+    let database_bytes: Int
+    let wal_bytes: Int
+    let vault_status: String
+}
+
+struct LifecycleBackups: Codable {
+    let count: Int
+    let latest_backup: LifecycleLatestBackup?
+    let retention: [String: Int]
+    let include_in_delete_default: Bool
+}
+
+struct LifecycleLatestBackup: Codable {
+    let backup_path: String
+    let size_bytes: Int
+    let created_at: String
+    let age_days: Int
+}
+
+struct LifecycleExport: Codable {
+    let json_endpoint: String
+    let markdown_endpoint: String
+    let redaction_enabled: Bool
+    let contains_raw_capture_text: Bool
+    let contains_memory_content: Bool
+}
+
+struct LifecycleDeletion: Codable {
+    let endpoint: String
+    let include_backups_default: Bool
+    let covered_sqlite: [String]
+    let covered_vault: [String]
+    let tombstones_count: Int
+    let tombstone_policy: String
+    let restore_preserves_tombstones: Bool
+}
+
+struct LifecycleAIAccess: Codable {
+    let mode: String
+    let trust_score: Int
+    let allow_agent_reads: Bool
+    let allow_agent_writes: Bool
+    let allow_agent_exports: Bool
+    let allow_agent_maintenance: Bool
+    let allow_agent_destructive_actions: Bool
+    let redaction_enabled: Bool
+    let risk_flags: [String]
+}
+
+struct LifecycleAudit: Codable {
+    let events: Int
+    let last_event_at: String?
+    let agent_events_7d: Int
+}
+
 struct SourceTrustSummary: Codable, Identifiable {
     var id: String { source }
     let source: String
@@ -1376,6 +1448,7 @@ final class AppState: ObservableObject {
     @Published var productLoop: ProductLoopResponse?
     @Published var appSettings: AppSettingsResponse = .defaults
     @Published var trustSummary: TrustSummaryResponse?
+    @Published var dataLifecycleReport: DataLifecycleReportResponse?
     @Published var auditEvents: [AuditEventItem] = []
     @Published var integrationTokens: [IntegrationTokenItem] = []
     @Published var showRevokedIntegrationTokens: Bool = false
@@ -2239,6 +2312,8 @@ final class AppState: ObservableObject {
         do {
             let summaryData = try await request(path: "/v1/trust/summary", method: "GET")
             trustSummary = try JSONDecoder().decode(TrustSummaryResponse.self, from: summaryData)
+            let lifecycleData = try await request(path: "/v1/privacy/lifecycle", method: "GET")
+            dataLifecycleReport = try JSONDecoder().decode(DataLifecycleReportResponse.self, from: lifecycleData)
             let auditData = try await request(path: "/v1/audit-log?limit=80", method: "GET")
             auditEvents = try JSONDecoder().decode(AuditLogResponse.self, from: auditData).results
             await loadIntegrationTokens()
@@ -2949,6 +3024,7 @@ final class AppState: ObservableObject {
                 review = nil
                 productLoop = nil
                 trustSummary = nil
+                dataLifecycleReport = nil
                 auditEvents = []
                 diagnostics = nil
                 reliabilityReport = nil
@@ -5697,6 +5773,9 @@ struct TrustTab: View {
             VStack(alignment: .leading, spacing: 16) {
                 if let summary = state.trustSummary {
                     TrustScoreSection(summary: summary)
+                    if let lifecycle = state.dataLifecycleReport {
+                        TrustLifecycleSection(report: lifecycle)
+                    }
                     TrustPolicySection(state: state)
                     SettingsPrivacySection(state: state)
                     SettingsDataRecoverySection(state: state)
@@ -5815,6 +5894,115 @@ struct TrustScoreSection: View {
         .padding(12)
         .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct TrustLifecycleSection: View {
+    let report: DataLifecycleReportResponse
+
+    private var statusColor: Color {
+        report.status == "ok" ? .green : .orange
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Data Lifecycle")
+                        .font(.headline)
+                    Text("\(report.record_counts["active_memories"] ?? 0) active memories · \(report.audit.events) audit events · \(report.deletion.tombstones_count) deletion receipts")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Label(report.status == "ok" ? "Ready" : "Review", systemImage: report.status == "ok" ? "checkmark.shield.fill" : "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundColor(statusColor)
+            }
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], spacing: 10) {
+                LifecycleFact(label: "Vault", value: report.storage.vault_status.capitalized, systemImage: "externaldrive")
+                LifecycleFact(label: "Database", value: formatBytes(report.storage.database_bytes + report.storage.wal_bytes), systemImage: "cylinder.split.1x2")
+                LifecycleFact(label: "Backups", value: "\(report.backups.count)", systemImage: "clock.arrow.circlepath")
+                LifecycleFact(label: "Export Redaction", value: report.export.redaction_enabled ? "On" : "Off", systemImage: report.export.redaction_enabled ? "text.badge.checkmark" : "text.badge.xmark")
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                LifecyclePathRow(title: "Vault path", value: report.storage.vault_path)
+                LifecyclePathRow(title: "Database path", value: report.storage.database_path)
+            }
+
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "trash.slash")
+                    .foregroundColor(.accentColor)
+                    .frame(width: 22)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Delete covers local memory, source accounts, jobs, tokens, settings, audit events, and backups by default.")
+                    Text(report.deletion.restore_preserves_tombstones ? "Restore keeps deletion receipts active." : "Restore does not preserve deletion receipts.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .font(.caption)
+                Spacer()
+            }
+
+            if let action = report.recommended_actions.first {
+                TrustNotice(systemImage: report.status == "ok" ? "checkmark.circle" : "exclamationmark.triangle", title: report.status == "ok" ? "Lifecycle posture" : "Lifecycle action", detail: action, color: statusColor)
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func formatBytes(_ bytes: Int) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: Int64(bytes))
+    }
+}
+
+struct LifecycleFact: View {
+    let label: String
+    let value: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: systemImage)
+                .foregroundColor(.accentColor)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Text(value)
+                    .font(.callout)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(minHeight: 42)
+    }
+}
+
+struct LifecyclePathRow: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            Text(value)
+                .font(.caption)
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+        }
     }
 }
 

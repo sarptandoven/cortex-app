@@ -54,6 +54,7 @@ FastAPI backend
   /v1/stats
   /v1/settings
   /v1/trust/summary
+  /v1/privacy/lifecycle
   /v1/audit-log
   /v1/diagnostics
   /v1/reliability/report

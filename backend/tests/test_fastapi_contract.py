@@ -86,6 +86,32 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertTrue(embedding["index_compatible"])
         self.assertFalse(embedding["network_required"])
 
+    def test_privacy_lifecycle_report_exposes_delete_and_backup_contract(self) -> None:
+        phrase = "FastAPI privacy lifecycle contract phrase"
+        created = self.client.post(
+            "/v1/captures",
+            json={"content": phrase, "source": "fastapi-test"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(created.status_code, 200)
+        backup = self.client.post("/v1/backups", headers={"Authorization": "Bearer test-token"})
+        self.assertEqual(backup.status_code, 200)
+
+        response = self.client.get("/v1/privacy/lifecycle", headers={"Authorization": "Bearer test-token"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn(payload["status"], {"ok", "needs_attention"})
+        self.assertEqual(payload["storage"]["mode"], "local_first")
+        self.assertGreaterEqual(payload["record_counts"]["captures"], 1)
+        self.assertGreaterEqual(payload["backups"]["count"], 1)
+        self.assertEqual(payload["export"]["json_endpoint"], "/v1/export.json")
+        self.assertEqual(payload["deletion"]["endpoint"], "/v1/user-data?include_backups=true")
+        self.assertIn("api_tokens", payload["deletion"]["covered_sqlite"])
+        self.assertTrue(payload["deletion"]["restore_preserves_tombstones"])
+        self.assertIn("trust_score", payload["ai_access"])
+        self.assertIn("events", payload["audit"])
+
     def test_health_exposes_sharding_contract(self) -> None:
         response = self.client.get("/health")
 
