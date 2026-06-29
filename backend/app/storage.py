@@ -121,6 +121,7 @@ DEFAULT_USER_SETTINGS: dict[str, Any] = {
     "allow_agent_maintenance": False,
     "allow_agent_destructive_actions": False,
     "redact_sensitive_context": True,
+    "source_policies": {},
 }
 
 
@@ -215,6 +216,32 @@ def _ratio(numerator: int | float, denominator: int | float) -> float:
 
 def _normalize_source_key(value: str) -> str:
     return re.sub(r"[^a-z0-9-]+", "-", str(value or "").strip().lower()).strip("-")
+
+
+def _normalize_source_policies(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, dict):
+        return {}
+    policies: dict[str, dict[str, Any]] = {}
+    for raw_source, raw_policy in value.items():
+        source = str(raw_source or "").strip()[:80]
+        if not source or not isinstance(raw_policy, dict):
+            continue
+        mode = _normalize_source_key(str(raw_policy.get("mode") or "default")) or "default"
+        if mode not in {"default", "trusted", "review", "excluded"}:
+            mode = "default"
+        if mode == "default":
+            continue
+        allow_ai_context = bool(raw_policy.get("allow_ai_context", mode != "excluded"))
+        review_required = bool(raw_policy.get("review_required", mode in {"review", "excluded"}))
+        if mode == "excluded":
+            allow_ai_context = False
+            review_required = True
+        policies[source] = {
+            "mode": mode,
+            "allow_ai_context": allow_ai_context,
+            "review_required": review_required,
+        }
+    return policies
 
 
 def normalize_token_scopes(scopes: list[str] | tuple[str, ...] | str | None) -> list[str]:
@@ -1439,6 +1466,8 @@ class CortexStore:
             ):
                 if key in updates:
                     merged[key] = bool(updates[key])
+            if "source_policies" in updates:
+                merged["source_policies"] = _normalize_source_policies(updates.get("source_policies"))
             timestamp = now_iso()
             for key, value in merged.items():
                 conn.execute(
@@ -1663,6 +1692,15 @@ class CortexStore:
                 filters.append(
                     "(t.capture_id IS NULL OR EXISTS (SELECT 1 FROM captures c WHERE c.id = t.capture_id AND c.user_id = t.user_id AND c.review_status = 'approved'))"
                 )
+            source_policies = _normalize_source_policies(user_settings.get("source_policies"))
+            excluded_sources = [source for source, policy in source_policies.items() if not policy.get("allow_ai_context", True)]
+            if excluded_sources:
+                filters.append(f"(t.capture_id IS NULL OR NOT EXISTS (SELECT 1 FROM captures c WHERE c.id = t.capture_id AND c.user_id = t.user_id AND c.source IN ({','.join('?' for _ in excluded_sources)})))")
+                params.extend(excluded_sources)
+            review_sources = [source for source, policy in source_policies.items() if policy.get("review_required") and source not in excluded_sources]
+            if review_sources:
+                filters.append(f"(t.capture_id IS NULL OR NOT EXISTS (SELECT 1 FROM captures c WHERE c.id = t.capture_id AND c.user_id = t.user_id AND c.source IN ({','.join('?' for _ in review_sources)})) OR EXISTS (SELECT 1 FROM captures c WHERE c.id = t.capture_id AND c.user_id = t.user_id AND c.review_status = 'approved'))")
+                params.extend(review_sources)
             where = " AND ".join(filters)
             rows = conn.execute(
                 f"SELECT * FROM tasks t WHERE {where} ORDER BY t.importance DESC, t.captured_at DESC LIMIT ?",
@@ -1673,43 +1711,40 @@ class CortexStore:
     def list_topics(self, user_id: str, limit: int = 30) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
-            review_filter = ""
-            if not user_settings["allow_pending_in_context"]:
-                review_filter = "AND (m.capture_id IS NULL OR EXISTS (SELECT 1 FROM captures c WHERE c.id = m.capture_id AND c.user_id = m.user_id AND c.review_status = 'approved'))"
+            filters, params = self._memory_filters(user_id, user_settings, alias="m")
+            where = " AND ".join(filters)
             rows = conn.execute(
                 f"""
                 SELECT mt.topic, COUNT(*) AS count, MAX(m.captured_at) AS last_seen
                 FROM memory_topics mt
                 JOIN memories m ON m.id = mt.memory_id AND m.user_id = mt.user_id
-                WHERE mt.user_id = ? AND m.status = 'active'
-                  {review_filter}
+                WHERE mt.user_id = ? AND {where}
                 GROUP BY mt.topic
                 ORDER BY count DESC, last_seen DESC
                 LIMIT ?
                 """,
-                (user_id, limit),
+                [user_id, *params, limit],
             ).fetchall()
         return [dict(row) for row in rows]
 
     def list_entities(self, user_id: str, limit: int = 30) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
-            review_join_filter = ""
-            if not user_settings["allow_pending_in_context"]:
-                review_join_filter = "AND (m.capture_id IS NULL OR EXISTS (SELECT 1 FROM captures c WHERE c.id = m.capture_id AND c.user_id = m.user_id AND c.review_status = 'approved'))"
+            filters, params = self._memory_filters(user_id, user_settings, alias="m")
+            memory_filter = " AND ".join(filters)
             rows = conn.execute(
                 f"""
                 SELECT e.id, e.name, e.kind, e.context, e.first_seen, e.last_seen, COUNT(m.id) AS memory_count
                 FROM entities e
                 LEFT JOIN memory_entities me ON me.entity_id = e.id AND me.user_id = e.user_id
-                LEFT JOIN memories m ON m.id = me.memory_id AND m.user_id = me.user_id AND m.status = 'active' {review_join_filter}
+                LEFT JOIN memories m ON m.id = me.memory_id AND m.user_id = me.user_id AND {memory_filter}
                 WHERE e.user_id = ?
                 GROUP BY e.id
                 HAVING memory_count > 0
                 ORDER BY memory_count DESC, e.last_seen DESC
                 LIMIT ?
                 """,
-                (user_id, limit),
+                [*params, user_id, limit],
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -4825,6 +4860,7 @@ class CortexStore:
         settings["allow_agent_maintenance"] = bool(settings["allow_agent_maintenance"])
         settings["allow_agent_destructive_actions"] = bool(settings["allow_agent_destructive_actions"])
         settings["redact_sensitive_context"] = bool(settings["redact_sensitive_context"])
+        settings["source_policies"] = _normalize_source_policies(settings.get("source_policies"))
         try:
             settings["context_pack_limit"] = min(50, max(4, int(settings["context_pack_limit"])))
         except (TypeError, ValueError):
@@ -4892,6 +4928,17 @@ class CortexStore:
             filters.append(
                 f"({alias}.capture_id IS NULL OR EXISTS (SELECT 1 FROM captures c WHERE c.id = {alias}.capture_id AND c.user_id = {alias}.user_id AND c.review_status = 'approved'))"
             )
+        source_policies = _normalize_source_policies(user_settings.get("source_policies"))
+        excluded_sources = [source for source, policy in source_policies.items() if not policy.get("allow_ai_context", True)]
+        if excluded_sources:
+            filters.append(f"{alias}.source NOT IN ({','.join('?' for _ in excluded_sources)})")
+            params.extend(excluded_sources)
+        review_sources = [source for source, policy in source_policies.items() if policy.get("review_required") and source not in excluded_sources]
+        if review_sources:
+            filters.append(
+                f"({alias}.source NOT IN ({','.join('?' for _ in review_sources)}) OR {alias}.capture_id IS NULL OR EXISTS (SELECT 1 FROM captures c WHERE c.id = {alias}.capture_id AND c.user_id = {alias}.user_id AND c.review_status = 'approved'))"
+            )
+            params.extend(review_sources)
         return filters, params
 
     def _save_task(self, conn, capture_id: str, user_id: str, task: dict[str, Any], captured_at: str) -> dict[str, Any]:

@@ -19,6 +19,7 @@ It provides:
 - model-building loop for signal, review, access, and return
 - cited personal adaptation profiles for ChatGPT, Claude, Cursor, and other assistants
 - user settings for review behavior, pending-memory visibility, and shared-memory size
+- per-source Trust policies for normal use, review-first use, or private/excluded sources
 - stats and export
 - graph/node mapping
 - diagnostics, reliability reports, support bundles, backups, repair, and search maintenance

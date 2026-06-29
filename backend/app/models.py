@@ -240,6 +240,7 @@ class SettingsResponse(BaseModel):
     allow_agent_maintenance: bool
     allow_agent_destructive_actions: bool
     redact_sensitive_context: bool
+    source_policies: dict[str, Any] = Field(default_factory=dict)
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -252,6 +253,7 @@ class SettingsUpdateRequest(BaseModel):
     allow_agent_maintenance: bool | None = None
     allow_agent_destructive_actions: bool | None = None
     redact_sensitive_context: bool | None = None
+    source_policies: dict[str, Any] | None = None
 
 
 class DiagnosticsResponse(BaseModel):

@@ -484,6 +484,43 @@ class FastAPIContractTests(unittest.TestCase):
         )
         self.assertTrue(still_present.json()["results"])
 
+    def test_source_policies_round_trip_and_filter_search(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "source-policy-contract"}
+        created = self.client.post(
+            "/v1/captures",
+            json={
+                "content": "FastAPI Source Policy Echo should disappear when source policy excludes it.",
+                "source": "gmail",
+                "source_url": "gmail://message/echo",
+            },
+            headers=headers,
+        )
+        self.assertEqual(created.status_code, 200)
+
+        before = self.client.get("/v1/search", params={"query": "Source Policy Echo"}, headers=headers)
+        self.assertEqual(before.status_code, 200)
+        self.assertTrue(before.json()["results"])
+
+        updated = self.client.put(
+            "/v1/settings",
+            json={"source_policies": {"gmail": {"mode": "excluded"}}},
+            headers=headers,
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["source_policies"]["gmail"]["mode"], "excluded")
+
+        after = self.client.get("/v1/search", params={"query": "Source Policy Echo"}, headers=headers)
+        self.assertEqual(after.status_code, 200)
+        self.assertEqual(after.json()["results"], [])
+
+        cleared = self.client.put(
+            "/v1/settings",
+            json={"source_policies": {"gmail": {"mode": "default"}}},
+            headers=headers,
+        )
+        self.assertEqual(cleared.status_code, 200)
+        self.assertEqual(cleared.json()["source_policies"], {})
+
     def test_delete_user_data_removes_current_user_records(self) -> None:
         phrase = "FastAPI delete all user data contract phrase"
         created = self.client.post(

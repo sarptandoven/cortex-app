@@ -383,6 +383,7 @@ struct AppSettingsResponse: Codable, Equatable {
     var allow_agent_maintenance: Bool
     var allow_agent_destructive_actions: Bool
     var redact_sensitive_context: Bool
+    var source_policies: [String: SourcePolicySetting]?
 
     static let defaults = AppSettingsResponse(
         review_new_captures: true,
@@ -393,8 +394,39 @@ struct AppSettingsResponse: Codable, Equatable {
         allow_agent_exports: false,
         allow_agent_maintenance: false,
         allow_agent_destructive_actions: false,
-        redact_sensitive_context: true
+        redact_sensitive_context: true,
+        source_policies: [:]
     )
+}
+
+struct SourcePolicySetting: Codable, Equatable, Hashable {
+    var mode: String
+    var allow_ai_context: Bool?
+    var review_required: Bool?
+}
+
+enum SourcePolicyMode: String, CaseIterable, Identifiable, Hashable {
+    case standard = "default"
+    case review = "review"
+    case excluded = "excluded"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .standard: return "Normal"
+        case .review: return "Review first"
+        case .excluded: return "Keep private"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .standard: return "checkmark.circle"
+        case .review: return "tray.full"
+        case .excluded: return "eye.slash"
+        }
+    }
 }
 
 enum TrustPreset: String, CaseIterable, Identifiable, Hashable {
@@ -2129,7 +2161,7 @@ final class AppState: ObservableObject {
     func saveMemorySettings() {
         Task {
             do {
-                let body: [String: Any] = [
+                var body: [String: Any] = [
                     "review_new_captures": appSettings.review_new_captures,
                     "allow_pending_in_context": appSettings.allow_pending_in_context,
                     "context_pack_limit": appSettings.context_pack_limit,
@@ -2140,6 +2172,9 @@ final class AppState: ObservableObject {
                     "allow_agent_destructive_actions": appSettings.allow_agent_destructive_actions,
                     "redact_sensitive_context": appSettings.redact_sensitive_context
                 ]
+                if let policies = sourcePoliciesBody() {
+                    body["source_policies"] = policies
+                }
                 let data = try await request(path: "/v1/settings", method: "PUT", body: body)
                 appSettings = try JSONDecoder().decode(AppSettingsResponse.self, from: data)
                 status = "Memory settings saved"
@@ -2157,6 +2192,19 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func sourcePoliciesBody() -> [String: [String: Any]]? {
+        guard let policies = appSettings.source_policies else { return nil }
+        var body: [String: [String: Any]] = [:]
+        for (source, policy) in policies {
+            body[source] = [
+                "mode": policy.mode,
+                "allow_ai_context": policy.allow_ai_context ?? (policy.mode != SourcePolicyMode.excluded.rawValue),
+                "review_required": policy.review_required ?? (policy.mode == SourcePolicyMode.review.rawValue || policy.mode == SourcePolicyMode.excluded.rawValue)
+            ]
+        }
+        return body
+    }
+
     func currentTrustPreset() -> TrustPreset {
         TrustPreset.matching(appSettings)
     }
@@ -2164,6 +2212,26 @@ final class AppState: ObservableObject {
     func applyTrustPreset(_ preset: TrustPreset) {
         guard preset != .advanced else { return }
         preset.apply(to: &appSettings)
+        saveMemorySettings()
+    }
+
+    func sourcePolicyMode(for source: String) -> SourcePolicyMode {
+        guard let mode = appSettings.source_policies?[source]?.mode else { return .standard }
+        return SourcePolicyMode(rawValue: mode) ?? .standard
+    }
+
+    func setSourcePolicy(source: String, mode: SourcePolicyMode) {
+        var policies = appSettings.source_policies ?? [:]
+        if mode == .standard {
+            policies.removeValue(forKey: source)
+        } else {
+            policies[source] = SourcePolicySetting(
+                mode: mode.rawValue,
+                allow_ai_context: mode != .excluded,
+                review_required: mode == .review || mode == .excluded
+            )
+        }
+        appSettings.source_policies = policies
         saveMemorySettings()
     }
 
@@ -5597,7 +5665,7 @@ struct TrustTab: View {
                     }
                     DisclosureGroup("Sources and audit trail", isExpanded: $sourcesExpanded) {
                         VStack(alignment: .leading, spacing: 14) {
-                            TrustSourceSection(summary: summary)
+                            TrustSourceSection(state: state, summary: summary)
                             TrustAuditSection(events: state.auditEvents, refresh: {
                                 Task { await state.loadTrust() }
                             })
@@ -5860,6 +5928,7 @@ struct TrustToggleRow: View {
 }
 
 struct TrustSourceSection: View {
+    @ObservedObject var state: AppState
     let summary: TrustSummaryResponse
 
     var body: some View {
@@ -5887,6 +5956,20 @@ struct TrustSourceSection: View {
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
+                        Menu {
+                            ForEach(SourcePolicyMode.allCases) { mode in
+                                Button {
+                                    state.setSourcePolicy(source: source.source, mode: mode)
+                                } label: {
+                                    Label(mode.title, systemImage: mode.systemImage)
+                                }
+                            }
+                        } label: {
+                            Label(state.sourcePolicyMode(for: source.source).title, systemImage: state.sourcePolicyMode(for: source.source).systemImage)
+                                .font(.caption)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
                     }
                     .padding(8)
                     .background(Color(nsColor: .controlBackgroundColor))
@@ -6172,7 +6255,7 @@ struct AdvancedTab: View {
                         }
                         Group {
                             if let summary = state.trustSummary {
-                                TrustSourceSection(summary: summary)
+                                TrustSourceSection(state: state, summary: summary)
                                 TrustAuditSection(events: state.auditEvents, refresh: {
                                     Task { await state.loadTrust() }
                                 })

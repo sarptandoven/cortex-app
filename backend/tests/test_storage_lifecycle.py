@@ -799,6 +799,40 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertTrue(self.store.search(self.user_id, "auto approve captures"))
         self.assertTrue(self.store.archive_capture(self.user_id, auto["capture_id"]))
 
+    def test_source_policies_control_retrieval_visibility(self) -> None:
+        result = self.store.save_capture(
+            user_id=self.user_id,
+            content="Private Source Alpha should only appear when its source policy allows it.",
+            source="gmail",
+            source_url="gmail://message/alpha",
+            title="Private source policy",
+            extracted=extract_context("Private Source Alpha should only appear when its source policy allows it.", "gmail"),
+        )
+        capture_id = result["capture_id"]
+
+        self.assertTrue(self.store.search(self.user_id, "Private Source Alpha"))
+
+        excluded = self.store.update_settings(
+            self.user_id,
+            {"source_policies": {"gmail": {"mode": "excluded"}}},
+        )
+        self.assertEqual(excluded["source_policies"]["gmail"]["mode"], "excluded")
+        self.assertEqual(self.store.search(self.user_id, "Private Source Alpha"), [])
+        self.assertNotIn("only appear when its source policy allows it", self.store.context_pack(self.user_id, query="Private Source Alpha"))
+
+        review_first = self.store.update_settings(
+            self.user_id,
+            {"source_policies": {"gmail": {"mode": "review"}}},
+        )
+        self.assertTrue(review_first["source_policies"]["gmail"]["review_required"])
+        self.assertEqual(self.store.search(self.user_id, "Private Source Alpha"), [])
+
+        self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+        self.assertTrue(self.store.search(self.user_id, "Private Source Alpha"))
+
+        cleared = self.store.update_settings(self.user_id, {"source_policies": {"gmail": {"mode": "default"}}})
+        self.assertEqual(cleared["source_policies"], {})
+
     def test_trust_controls_redact_shared_context_and_exports(self) -> None:
         self.capture(
             f"Cortex should never leak password=supersecret123 or {DUMMY_OPENAI_KEY} "

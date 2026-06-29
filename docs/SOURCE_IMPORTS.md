@@ -129,6 +129,27 @@ POST /v1/sync-cursors
 
 Source accounts and sync cursors are written to the local vault under `source_accounts/` and `sync_cursors/`, included in backups, restored by latest-backup restore, and rebuilt by `POST /v1/maintenance/rebuild-index-from-vault`.
 
+## Source Trust Policies
+
+Per-source policies are stored in `settings.source_policies` and updated through `PUT /v1/settings`.
+
+```json
+{
+  "source_policies": {
+    "gmail": { "mode": "review", "allow_ai_context": true, "review_required": true },
+    "browser-capture": { "mode": "excluded", "allow_ai_context": false, "review_required": true }
+  }
+}
+```
+
+Modes:
+
+- `default`: remove the explicit source policy and use global Trust settings.
+- `review`: keep the source available only after captures from that source are approved.
+- `excluded`: keep the source out of Ask, context packs, personal profiles, topic/entity summaries, and open-loop context.
+
+The macOS Trust tab exposes these as Normal, Review first, and Keep private.
+
 ## App Flow
 
 The macOS Sources tab accepts files, folders, and export bundles. It first calls `/v1/imports/analyze` to show a preview of detected records. After confirmation, it calls `/v1/imports`, queues normalized records, starts a local job run for the first batch, refreshes Model, Sources, Review, Ask, and Trust state, and shows the batch in Import History. If a selected file is not readable by the backend importer, the app falls back to its existing local text/PDF extraction path.
