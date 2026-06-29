@@ -155,21 +155,21 @@ def _extract_locally(raw_text: str, source: str, author_aliases: Iterable[str] |
         elif _looks_like_negative(lower):
             if not personal_allowed:
                 continue
-            records.append(_record("negative", sentence, importance=4))
+            records.append(_record("negative", sentence, importance=4, occurred_at=candidate.get("occurred_at")))
         elif _looks_like_decision(lower):
-            records.append(_record("decision", sentence, importance=4))
+            records.append(_record("decision", sentence, importance=4, occurred_at=candidate.get("occurred_at")))
         elif _looks_like_style(lower):
             if not personal_allowed:
                 continue
-            records.append(_record("style", sentence, importance=3))
+            records.append(_record("style", sentence, importance=3, occurred_at=candidate.get("occurred_at")))
         elif _looks_like_preference(lower):
             if not personal_allowed:
                 continue
-            records.append(_record("preference", sentence, importance=3))
+            records.append(_record("preference", sentence, importance=3, occurred_at=candidate.get("occurred_at")))
         elif _looks_like_event(lower):
-            records.append(_record("event", sentence, importance=3))
+            records.append(_record("event", sentence, importance=3, occurred_at=candidate.get("occurred_at")))
         elif len(sentence.split()) >= 5:
-            records.append(_record("claim", sentence, importance=2))
+            records.append(_record("claim", sentence, importance=2, occurred_at=candidate.get("occurred_at")))
 
     if summary and not records:
         records.insert(0, _record("summary", summary, importance=3))
@@ -227,12 +227,14 @@ def _sentence_candidates(text: str, source: str = "unknown", author_aliases: Ite
     saw_email_header = False
     saw_email_from = False
     email_from_is_user = False
+    current_date: str | None = None
     for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         line = raw_line.strip(" -•\t")
         if not line:
             if email_source and saw_email_header and saw_email_from:
                 current_role = "user" if email_from_is_user else NAMED_SPEAKER_ROLE
             continue
+        line_date = _extract_absolute_date(line)
         email_header = re.match(r"^(?P<label>[A-Za-z][A-Za-z0-9 _-]{0,40})\s*:\s*(?P<text>.*)$", line)
         if email_header:
             header_label = email_header.group("label").strip().lower()
@@ -245,7 +247,11 @@ def _sentence_candidates(text: str, source: str = "unknown", author_aliases: Ite
                 if header_label == "from" and header_text:
                     saw_email_from = True
                     email_from_is_user = _matches_identity_alias(header_text, aliases)
+                if header_label == "date":
+                    current_date = _extract_absolute_date(header_text) or line_date or current_date
         if _is_boilerplate_line(line):
+            if line_date and email_source:
+                current_date = line_date
             continue
         role, payload, speaker_present = _parse_role_line(line, aliases)
         if email_from_is_user and role == NAMED_SPEAKER_ROLE:
@@ -260,7 +266,8 @@ def _sentence_candidates(text: str, source: str = "unknown", author_aliases: Ite
         for sentence in _sentences(line):
             if _is_boilerplate_line(sentence):
                 continue
-            candidates.append({"text": sentence, "role": role, "speaker_present": speaker_present})
+            sentence_date = _extract_absolute_date(sentence) or line_date or current_date
+            candidates.append({"text": sentence, "role": role, "speaker_present": speaker_present, "occurred_at": sentence_date})
     return candidates
 
 
@@ -521,7 +528,7 @@ def _looks_like_task(sentence: str) -> bool:
     return sentence.endswith("?") or any(signal in lower for signal in ["todo", "to do", "need to", "follow up", "we should", "i should", "next step", "open question"])
 
 
-def _record(kind: str, content: str, importance: int) -> dict[str, Any]:
+def _record(kind: str, content: str, importance: int, occurred_at: str | None = None) -> dict[str, Any]:
     return {
         "id": stable_id("mem_", kind + content),
         "kind": kind,
@@ -531,7 +538,7 @@ def _record(kind: str, content: str, importance: int) -> dict[str, Any]:
         "importance": importance,
         "entity_ids": [],
         "topics": [],
-        "occurred_at": _extract_absolute_date(content),
+        "occurred_at": _extract_absolute_date(content) or occurred_at,
     }
 
 
@@ -626,9 +633,13 @@ def _topics(text: str) -> list[str]:
 def _extract_absolute_date(text: str) -> str | None:
     if not text:
         return None
-    iso_match = re.search(r"\b((?:19|20)\d{2})[-/](\d{1,2})[-/](\d{1,2})\b", text)
+    iso_match = re.search(r"\b((?:19|20)\d{2})[-/](\d{1,2})[-/](\d{1,2})(?=\D|$)", text)
     if iso_match:
         return _iso_date(iso_match.group(1), iso_match.group(2), iso_match.group(3))
+
+    compact_match = re.search(r"\b((?:19|20)\d{2})(\d{2})(\d{2})(?:T\d{6}Z?)?\b", text)
+    if compact_match:
+        return _iso_date(compact_match.group(1), compact_match.group(2), compact_match.group(3))
 
     slash_match = re.search(r"\b(\d{1,2})/(\d{1,2})/(\d{2}|\d{4})\b", text)
     if slash_match:
@@ -656,6 +667,16 @@ def _extract_absolute_date(text: str) -> str | None:
         month = _month_number(day_first.group(2))
         if month:
             return _iso_date(day_first.group(3), str(month), day_first.group(1))
+
+    rfc_email = re.search(
+        rf"\b(?:mon|tue|wed|thu|fri|sat|sun),?\s+(\d{{1,2}})\s+({MONTH_NAME_PATTERN})\.?\s+((?:19|20)\d{{2}})\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if rfc_email:
+        month = _month_number(rfc_email.group(2))
+        if month:
+            return _iso_date(rfc_email.group(3), str(month), rfc_email.group(1))
     return None
 
 

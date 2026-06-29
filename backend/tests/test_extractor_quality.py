@@ -203,6 +203,35 @@ Never use Slack for contract approvals.
         self.assertEqual(dated["Cortex shipped a beta on 7/4/26."], "2026-07-04")
         self.assertEqual(dated["On 29 Jun 2026, we emailed Ada about launch readiness."], "2026-06-29")
 
+    def test_source_dates_are_preserved_when_record_text_has_no_date(self) -> None:
+        email = extract_local(
+            """Source: Email
+Subject: Source date decision
+From: Alex Partner <alex@example.com>
+To: sarpt@example.com
+Date: Mon, 29 Jun 2026 10:00:00 +0000
+
+We decided Project Atlas should keep source dates for email decisions.
+""",
+            "email",
+        )
+        email_decision = next(record for record in email["records"] if "email decisions" in record["content"])
+        self.assertEqual(email_decision["occurred_at"], "2026-06-29")
+
+        slack = extract_local(
+            "2026-06-29T10:01:00+00:00 Alex: We decided Project Atlas should keep Slack line dates.",
+            "slack",
+        )
+        slack_decision = next(record for record in slack["records"] if "Slack line dates" in record["content"])
+        self.assertEqual(slack_decision["occurred_at"], "2026-06-29")
+
+        calendar = extract_local(
+            "20260629T170000Z - Project Meridian calendar review verified schedule memory.",
+            "calendar",
+        )
+        calendar_event = next(record for record in calendar["records"] if "Project Meridian" in record["content"])
+        self.assertEqual(calendar_event["occurred_at"], "2026-06-29")
+
     def test_repeated_sentences_do_not_duplicate_records_or_summary(self) -> None:
         data = extract_local(
             "Ada likes coffee. Ada likes coffee. "
