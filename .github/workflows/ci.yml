@@ -47,6 +47,9 @@ jobs:
       - name: Run retrieval quality evaluation
         run: python scripts/retrieval_eval.py
 
+      - name: Run adaptation quality evaluation
+        run: python scripts/adaptation_eval.py
+
   distribution:
     name: Distribution site and update manifest
     runs-on: ubuntu-latest

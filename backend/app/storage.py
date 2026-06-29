@@ -2967,6 +2967,29 @@ class CortexStore:
             limitations.append("Readiness is below production-grade adaptation; use cautious defaults and ask before high-impact actions.")
         if not rules:
             limitations.append("No adaptation rules were generated because the approved memory layers are sparse.")
+        coverage_warnings: list[str] = []
+        missing_layers = [
+            layer["title"]
+            for layer in profile["coverage"]["by_layer"]
+            if int(layer.get("count") or 0) == 0
+        ]
+        if missing_layers:
+            coverage_warnings.append("Missing memory layers: " + ", ".join(missing_layers[:4]) + ".")
+        if any(not rule.get("source_url") for rule in rules):
+            coverage_warnings.append("Some adaptation rules only have source labels, not precise source_url citations.")
+
+        def policy_for(layer: str) -> list[dict[str, Any]]:
+            return [
+                {
+                    "memory_id": rule["memory_id"],
+                    "instruction": rule["instruction"],
+                    "source": rule["source"],
+                    "source_url": rule.get("source_url"),
+                    "captured_at": rule.get("captured_at"),
+                }
+                for rule in rules
+                if rule["layer"] == layer
+            ]
 
         artifact: dict[str, Any] = {
             "generated_at": now_iso(),
@@ -2978,6 +3001,16 @@ class CortexStore:
             "operating_principles": operating_principles,
             "rules": rules,
             "evidence": list(evidence_by_id.values())[:20],
+            "style_guide": policy_for("style"),
+            "preference_policy": policy_for("preference"),
+            "decision_policy": policy_for("decision"),
+            "negative_constraints": policy_for("negative"),
+            "citation_requirements": [
+                "Every adaptation rule must keep its memory_id attached to the behavior it changes.",
+                "Use source_url citations when explaining or applying a memory that materially affects an answer or action.",
+                "Do not rely on pending memories unless include_pending is explicitly true.",
+            ],
+            "coverage_warnings": coverage_warnings,
             "coverage": profile["coverage"],
             "summary": profile["summary"],
             "open_loops": profile["open_loops"],
@@ -3001,6 +3034,27 @@ class CortexStore:
         ]
         for principle in artifact["operating_principles"]:
             lines.append(f"- {principle}")
+        policy_sections = [
+            ("Preference Policy", artifact.get("preference_policy") or []),
+            ("Negative Constraints", artifact.get("negative_constraints") or []),
+            ("Style Guide", artifact.get("style_guide") or []),
+            ("Decision Policy", artifact.get("decision_policy") or []),
+        ]
+        for title, items in policy_sections:
+            lines.extend(["", f"## {title}", ""])
+            if items:
+                for item in items:
+                    source = item.get("source_url") or item.get("source") or "unknown source"
+                    lines.append(f"- [{item['memory_id']}] {item['instruction']} Source: {source}.")
+            else:
+                lines.append("- No approved signals yet.")
+        lines.extend(["", "## Citation Requirements", ""])
+        for requirement in artifact.get("citation_requirements") or []:
+            lines.append(f"- {requirement}")
+        if artifact.get("coverage_warnings"):
+            lines.extend(["", "## Coverage Warnings", ""])
+            for warning in artifact["coverage_warnings"]:
+                lines.append(f"- {warning}")
         lines.extend(["", "## Adaptation Rules", ""])
         if artifact["rules"]:
             for rule in artifact["rules"]:

@@ -112,6 +112,8 @@ def main() -> None:
         add_check(checks, "backend_unit_tests", test_result["ok"], "Backend unit tests pass.", test_result)
         retrieval_result = run_command(root, [sys.executable, "scripts/retrieval_eval.py"], timeout=120)
         add_check(checks, "retrieval_quality_eval", retrieval_result["ok"], "Retrieval quality eval passes noisy-import and layer-recall gates.", retrieval_result)
+        adaptation_result = run_command(root, [sys.executable, "scripts/adaptation_eval.py"], timeout=120)
+        add_check(checks, "adaptation_quality_eval", adaptation_result["ok"], "Agent adaptation eval passes layer, citation, safety, and pending-memory gates.", adaptation_result)
 
     if not args.skip_build:
         build_result = run_command(root, ["./macos/build.sh"], timeout=180)
