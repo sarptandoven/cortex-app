@@ -41,6 +41,7 @@ Hosted and multi-user development can also enable scoped REST user tokens:
 - `CORTEX_REQUIRE_SCOPED_API_TOKENS=1` blocks the global app token from selecting another user through `X-Cortex-User`.
 - A scoped REST token can only be used as the user it was issued for; mismatched `X-Cortex-User` headers are rejected.
 - REST token scopes are enforced by endpoint capability: `read`, `write`, `export`, `maintenance`, and `destructive`.
+- Token metadata can be listed and revoked through `GET /v1/integrations/tokens` and `DELETE /v1/integrations/tokens/{token_id}` without exposing raw token values, salts, or hashes.
 - This is a backend boundary, not a full consumer account system. Hosted production still needs login, token revocation, device/session management, organization policies, and recovery flows.
 
 ### Review New Saves
@@ -203,6 +204,8 @@ The score is not a security guarantee. It is a product signal that helps users u
 - `GET /v1/trust/summary`
 - `POST /v1/integrations/api-token`
 - `POST /v1/integrations/mcp-token`
+- `GET /v1/integrations/tokens`
+- `DELETE /v1/integrations/tokens/{token_id}`
 - `GET /v1/audit-log?limit=80`
 - `POST /mcp`
 

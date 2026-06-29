@@ -94,6 +94,8 @@ PUT    /v1/settings
 GET    /v1/trust/summary
 POST   /v1/integrations/api-token
 POST   /v1/integrations/mcp-token
+GET    /v1/integrations/tokens
+DELETE /v1/integrations/tokens/{token_id}
 GET    /v1/diagnostics
 GET    /v1/reliability/report
 GET    /v1/support/bundle
@@ -163,3 +165,5 @@ Scoped REST tokens enforce the same capability names used by Trust controls:
 - `export`: context packs, personal profiles, support bundles, and JSON/Markdown export
 - `maintenance`: diagnostics, reliability reports, jobs, repair/rebuild operations, backups, and token registration
 - `destructive`: capture/memory/import deletion, backup deletion, full user-data deletion, and backup restore
+
+Token lifecycle endpoints return metadata only. They never expose token hashes, salts, or raw token values. Revocation sets `revoked_at`; revoked tokens no longer authenticate and are omitted from token lists unless `include_revoked=true` is passed.

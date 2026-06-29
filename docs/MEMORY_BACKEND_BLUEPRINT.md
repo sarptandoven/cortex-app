@@ -88,7 +88,7 @@ Add these production concepts before public hosted sync:
 
 - Local writes append to the vault and update the local index.
 - The backend now has a `StoreRegistry` facade and `ShardRouter` that can preserve local single-store behavior or route user-scoped calls to per-user/per-bucket SQLite shards.
-- Scoped `cxa_` REST tokens can now resolve a user before shard routing, enforce read/write/export/maintenance/destructive capability classes, and `CORTEX_REQUIRE_SCOPED_API_TOKENS=1` disables global-token user switching for hosted-style runs.
+- Scoped `cxa_` REST tokens can now resolve a user before shard routing, enforce read/write/export/maintenance/destructive capability classes, support metadata listing and revocation, and `CORTEX_REQUIRE_SCOPED_API_TOKENS=1` disables global-token user switching for hosted-style runs.
 - Local async capture is now available through `POST /v1/captures/queue`, `capture_processing_state`, and `memory_jobs`; the existing `POST /v1/captures` path remains synchronous for the macOS app and compatibility.
 - Hosted sync sends signed append-only events, not opaque app state.
 - The server materializes events into a per-user index and can rebuild it from events.

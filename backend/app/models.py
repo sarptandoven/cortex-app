@@ -215,6 +215,26 @@ class APITokenRegistrationResponse(BaseModel):
     updated_at: str
 
 
+class APITokenMetadata(BaseModel):
+    token_id: str
+    user_id: str
+    label: str
+    audience: str
+    scopes: list[str]
+    created_at: str
+    updated_at: str
+    last_used_at: str | None = None
+    revoked_at: str | None = None
+
+
+class APITokenListResponse(BaseModel):
+    results: list[APITokenMetadata]
+
+
+class APITokenRevokeResponse(APITokenMetadata):
+    revoked: bool
+
+
 class ReliabilityReportResponse(BaseModel):
     status: str
     generated_at: str

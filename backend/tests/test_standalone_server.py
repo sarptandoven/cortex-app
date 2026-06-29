@@ -31,6 +31,7 @@ class FakeStore:
         self.list_imports_calls: list[tuple[str, int, bool]] = []
         self.get_import_calls: list[tuple[str, str]] = []
         self.delete_import_calls: list[tuple[str, str]] = []
+        self.revoke_token_calls: list[tuple[str, str]] = []
 
     def search(self, user_id: str, query: str, limit: int, kind: str | None = None, layer: str | None = None) -> list[dict]:
         self.search_calls.append((user_id, query, limit, kind, layer))
@@ -153,6 +154,39 @@ class FakeStore:
 
     def ensure_mcp_token(self, user_id: str, token: str, *, label: str, scopes, token_id: str) -> dict:
         return {"token_id": token_id, "user_id": user_id, "label": label, "audience": "mcp", "scopes": scopes or [], "updated_at": "2026-01-01T00:00:00Z"}
+
+    def list_tokens(self, user_id: str, *, audience: str | None = None, include_revoked: bool = False) -> list[dict]:
+        tokens = [
+            {
+                "token_id": "tok_standalone_api",
+                "user_id": user_id,
+                "label": "Standalone test API",
+                "audience": "api",
+                "scopes": ["read"],
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "last_used_at": None,
+                "revoked_at": None,
+            }
+        ]
+        return [token for token in tokens if not audience or token["audience"] == audience]
+
+    def revoke_token(self, user_id: str, token_id: str) -> dict | None:
+        self.revoke_token_calls.append((user_id, token_id))
+        if token_id != "tok_standalone_api":
+            return None
+        return {
+            "token_id": token_id,
+            "user_id": user_id,
+            "label": "Standalone test API",
+            "audience": "api",
+            "scopes": ["read"],
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:01Z",
+            "last_used_at": None,
+            "revoked_at": "2026-01-01T00:00:01Z",
+            "revoked": True,
+        }
 
     def require_agent_access(self, user_id: str, capability: str) -> None:
         return None
@@ -423,6 +457,33 @@ class StandaloneServerTests(unittest.TestCase):
                 timeout=5,
             )
         self.assertEqual(context.exception.code, 403)
+
+    def test_integration_tokens_can_be_listed_and_revoked(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "alice"}
+        with request.urlopen(request.Request(self.base_url + "/v1/integrations/tokens?audience=api", headers=headers), timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["results"][0]["token_id"], "tok_standalone_api")
+        self.assertNotIn("token_hash", payload["results"][0])
+
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(request.Request(self.base_url + "/v1/integrations/tokens?audience=browser", headers=headers), timeout=5)
+        self.assertEqual(context.exception.code, 422)
+
+        with request.urlopen(
+            request.Request(
+                self.base_url + "/v1/integrations/tokens/tok_standalone_api",
+                headers=headers,
+                method="DELETE",
+            ),
+            timeout=5,
+        ) as response:
+            revoked = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertTrue(revoked["revoked"])
+        self.assertEqual(self.fake_store.revoke_token_calls, [("alice", "tok_standalone_api")])
 
 
 if __name__ == "__main__":

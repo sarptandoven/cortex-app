@@ -457,6 +457,68 @@ class CortexStore:
             "updated_at": timestamp,
         }
 
+    def list_tokens(self, user_id: str, *, audience: str | None = None, include_revoked: bool = False) -> list[dict[str, Any]]:
+        filters = ["user_id = ?"]
+        values: list[Any] = [user_id]
+        if audience:
+            filters.append("audience = ?")
+            values.append(audience)
+        if not include_revoked:
+            filters.append("revoked_at IS NULL")
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT token_id, user_id, label, audience, scopes_json, created_at, updated_at, last_used_at, revoked_at
+                FROM api_tokens
+                WHERE {" AND ".join(filters)}
+                ORDER BY updated_at DESC
+                """,
+                tuple(values),
+            ).fetchall()
+        return [
+            {
+                "token_id": row["token_id"],
+                "user_id": row["user_id"],
+                "label": row["label"],
+                "audience": row["audience"],
+                "scopes": json.loads(row["scopes_json"] or "[]"),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "last_used_at": row["last_used_at"],
+                "revoked_at": row["revoked_at"],
+            }
+            for row in rows
+        ]
+
+    def revoke_token(self, user_id: str, token_id: str) -> dict[str, Any] | None:
+        timestamp = now_iso()
+        with connect(self.db_path) as conn:
+            existing = conn.execute(
+                """
+                SELECT token_id, user_id, label, audience, scopes_json, created_at, updated_at, last_used_at, revoked_at
+                FROM api_tokens
+                WHERE user_id = ? AND token_id = ?
+                """,
+                (user_id, token_id),
+            ).fetchone()
+            if not existing:
+                return None
+            revoked_at = existing["revoked_at"] or timestamp
+            if not existing["revoked_at"]:
+                conn.execute("UPDATE api_tokens SET revoked_at = ?, updated_at = ? WHERE user_id = ? AND token_id = ?", (revoked_at, timestamp, user_id, token_id))
+        return {
+            "token_id": existing["token_id"],
+            "user_id": existing["user_id"],
+            "label": existing["label"],
+            "audience": existing["audience"],
+            "scopes": json.loads(existing["scopes_json"] or "[]"),
+            "created_at": existing["created_at"],
+            "updated_at": timestamp,
+            "last_used_at": existing["last_used_at"],
+            "revoked_at": revoked_at,
+            "revoked": True,
+        }
+
     def authenticate_api_token(self, token: str) -> dict[str, Any] | None:
         return self._authenticate_token(token, audience="api")
 

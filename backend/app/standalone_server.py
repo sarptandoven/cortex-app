@@ -55,7 +55,9 @@ def _required_api_scope(method: str, path: str) -> str:
         return "maintenance"
     if normalized_path.startswith("/v1/maintenance/") or normalized_path in {"/v1/jobs/run", "/v1/maintenance/jobs/run"}:
         return "maintenance"
-    if normalized_path in {"/v1/integrations/api-token", "/v1/integrations/mcp-token"}:
+    if normalized_path in {"/v1/integrations/api-token", "/v1/integrations/mcp-token", "/v1/integrations/tokens"}:
+        return "maintenance"
+    if normalized_path.startswith("/v1/integrations/tokens/"):
         return "maintenance"
     if normalized_path == "/v1/backups/restore-latest":
         return "destructive"
@@ -511,6 +513,22 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     label=str(body.get("label") or "REST API client")[:120],
                     scopes=body.get("scopes"),
                 ))
+                return
+            if method == "GET" and path == "/v1/integrations/tokens":
+                audience = (params.get("audience") or [None])[0]
+                if audience not in {None, "api", "mcp"}:
+                    self._send_json({"detail": "audience must be api or mcp"}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                    return
+                include_revoked = (params.get("include_revoked") or ["false"])[0].strip().lower() in {"1", "true", "yes"}
+                self._send_json({"results": store.list_tokens(user_id, audience=audience, include_revoked=include_revoked)})
+                return
+            if method == "DELETE" and path.startswith("/v1/integrations/tokens/"):
+                token_id = unquote(path.rsplit("/", 1)[-1])
+                revoked = store.revoke_token(user_id, token_id)
+                if not revoked:
+                    self._send_json({"detail": "Token not found"}, status=HTTPStatus.NOT_FOUND)
+                else:
+                    self._send_json(revoked)
                 return
             if method == "GET" and path == "/v1/audit-log":
                 self._send_json({"results": store.audit_log(user_id, _int_param(params, "limit", 80, 1, 300))})

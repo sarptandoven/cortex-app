@@ -145,6 +145,61 @@ class FastAPIContractTests(unittest.TestCase):
         finally:
             main_module.settings = original_settings
 
+    def test_integration_tokens_can_be_listed_and_revoked(self) -> None:
+        scoped_token = "cxa_fastapi_revoke_token_123456789"
+        registered = self.client.post(
+            "/v1/integrations/api-token",
+            json={"token": scoped_token, "label": "Revocable REST client", "scopes": ["read", "maintenance"]},
+            headers={"Authorization": "Bearer test-token", "X-Cortex-User": "alice"},
+        )
+        self.assertEqual(registered.status_code, 200)
+        token_id = registered.json()["token_id"]
+
+        listed = self.client.get(
+            "/v1/integrations/tokens",
+            params={"audience": "api"},
+            headers={"Authorization": "Bearer test-token", "X-Cortex-User": "alice"},
+        )
+        self.assertEqual(listed.status_code, 200)
+        token_ids = [token["token_id"] for token in listed.json()["results"]]
+        self.assertIn(token_id, token_ids)
+        self.assertNotIn("token_hash", listed.json()["results"][0])
+
+        before_revoke = self.client.get(
+            "/v1/stats",
+            headers={"Authorization": f"Bearer {scoped_token}", "X-Cortex-User": "alice"},
+        )
+        self.assertEqual(before_revoke.status_code, 200)
+
+        revoked = self.client.delete(
+            f"/v1/integrations/tokens/{token_id}",
+            headers={"Authorization": "Bearer test-token", "X-Cortex-User": "alice"},
+        )
+        self.assertEqual(revoked.status_code, 200)
+        self.assertTrue(revoked.json()["revoked"])
+        self.assertIsNotNone(revoked.json()["revoked_at"])
+
+        after_revoke = self.client.get(
+            "/v1/stats",
+            headers={"Authorization": f"Bearer {scoped_token}", "X-Cortex-User": "alice"},
+        )
+        self.assertEqual(after_revoke.status_code, 401)
+
+        listed_active = self.client.get(
+            "/v1/integrations/tokens",
+            params={"audience": "api"},
+            headers={"Authorization": "Bearer test-token", "X-Cortex-User": "alice"},
+        )
+        self.assertNotIn(token_id, [token["token_id"] for token in listed_active.json()["results"]])
+
+        listed_revoked = self.client.get(
+            "/v1/integrations/tokens",
+            params={"audience": "api", "include_revoked": "true"},
+            headers={"Authorization": "Bearer test-token", "X-Cortex-User": "alice"},
+        )
+        revoked_tokens = {token["token_id"]: token for token in listed_revoked.json()["results"]}
+        self.assertEqual(revoked_tokens[token_id]["revoked_at"], revoked.json()["revoked_at"])
+
     def test_rebuild_vectors_endpoint_exposes_queue_contract(self) -> None:
         response = self.client.post("/v1/maintenance/rebuild-vectors", headers={"Authorization": "Bearer test-token"})
 

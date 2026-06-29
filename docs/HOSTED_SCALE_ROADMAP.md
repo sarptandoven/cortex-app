@@ -29,6 +29,7 @@ The control plane owns auth, organization membership, token revocation, billing 
 Implemented local primitive:
 
 - `POST /v1/integrations/api-token` stores hashed `cxa_` REST tokens with user ownership, audience, scopes, and last-used metadata.
+- `GET /v1/integrations/tokens` and `DELETE /v1/integrations/tokens/{token_id}` provide token metadata and revocation without exposing token secrets.
 - `CORTEX_REQUIRE_SCOPED_API_TOKENS=1` prevents the global app token from selecting arbitrary users with `X-Cortex-User`.
 - FastAPI and the packaged standalone backend both authenticate scoped REST tokens before routing user-scoped memory calls.
 - REST token scopes are enforced across read, write, export, maintenance, and destructive endpoint classes.

@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import load_settings
 from .extractor import extract_context
 from .mcp_tools import TOOLS, call_tool, tool_result_text
-from .models import APITokenRegistrationRequest, APITokenRegistrationResponse, BackupResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DiagnosticsResponse, GraphResponse, JobRunResponse, ListResponse, MaintenanceResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, ProductLoopResponse, QueuedCaptureResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, StatsResponse, SupportBundleResponse, VaultRebuildResponse, VectorRebuildResponse
+from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, BackupResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DiagnosticsResponse, GraphResponse, JobRunResponse, ListResponse, MaintenanceResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, ProductLoopResponse, QueuedCaptureResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, StatsResponse, SupportBundleResponse, VaultRebuildResponse, VectorRebuildResponse
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
 
@@ -64,7 +64,9 @@ def _required_api_scope(method: str, path: str) -> str:
         return "maintenance"
     if normalized_path.startswith("/v1/maintenance/") or normalized_path in {"/v1/jobs/run", "/v1/maintenance/jobs/run"}:
         return "maintenance"
-    if normalized_path in {"/v1/integrations/api-token", "/v1/integrations/mcp-token"}:
+    if normalized_path in {"/v1/integrations/api-token", "/v1/integrations/mcp-token", "/v1/integrations/tokens"}:
+        return "maintenance"
+    if normalized_path.startswith("/v1/integrations/tokens/"):
         return "maintenance"
     if normalized_path == "/v1/backups/restore-latest":
         return "destructive"
@@ -567,6 +569,23 @@ def register_api_token(request: APITokenRegistrationRequest, user_id: str = Depe
         label=request.label,
         scopes=request.scopes,
     )
+
+
+@app.get("/v1/integrations/tokens", response_model=APITokenListResponse)
+def list_integration_tokens(
+    audience: str | None = Query(default=None, pattern="^(api|mcp)$"),
+    include_revoked: bool = Query(default=False),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return {"results": store.list_tokens(user_id, audience=audience, include_revoked=include_revoked)}
+
+
+@app.delete("/v1/integrations/tokens/{token_id}", response_model=APITokenRevokeResponse)
+def revoke_integration_token(token_id: str, user_id: str = Depends(auth)) -> dict[str, Any]:
+    revoked = store.revoke_token(user_id, token_id)
+    if not revoked:
+        raise HTTPException(status_code=404, detail="Token not found")
+    return revoked
 
 
 @app.get("/v1/audit-log", response_model=ListResponse)

@@ -96,6 +96,16 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertIsNone(self.store.authenticate_api_token(mcp_token))
         self.assertIsNone(self.store.authenticate_mcp_token(api_token))
 
+        active_api_tokens = self.store.list_tokens(self.user_id, audience="api")
+        self.assertEqual([token["token_id"] for token in active_api_tokens], [api_metadata["token_id"]])
+        self.assertNotIn("token_hash", active_api_tokens[0])
+
+        revoked = self.store.revoke_token(self.user_id, api_metadata["token_id"])
+        self.assertTrue(revoked["revoked"])
+        self.assertIsNone(self.store.authenticate_api_token(api_token))
+        self.assertEqual(self.store.list_tokens(self.user_id, audience="api"), [])
+        self.assertEqual(self.store.list_tokens(self.user_id, audience="api", include_revoked=True)[0]["revoked_at"], revoked["revoked_at"])
+
     def test_delete_memory_purges_memory_record_and_indexes(self) -> None:
         result = self.capture(
             "Delete the Zephyr memory but keep the surrounding capture for audit context. "
