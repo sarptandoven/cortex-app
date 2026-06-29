@@ -8,18 +8,21 @@ The app bundles the dependency-light local backend and starts it automatically o
 
 - Opens as a normal macOS window from the Dock/app icon
 - Menu bar item opens the same window for quick access
-- First-run setup for vault location, memory rules, first save, and AI-tool connection
+- Five-step first-run setup for private vault, first source import, first memory review, first Ask/use action, and backup/trust decision
 - Optional global `Cmd+Shift+V` capture, disabled by default
-- Today cockpit with recommended actions, open loops, and one-click context packs
-- Simple Today loop for capture, review, reuse, and return
+- Model screen for readiness, memory coverage, active source health, and model signal quality
+- Sources screen for imports, preview, duplicate-safe history, undo import, and source health
+- Review screen for approvals, archives, recommended actions, open loops, and decisions
+- Ask screen for cited memory search and focused/model context packs
+- Trust screen for privacy, AI access, backup, connected tools, audit, and advanced diagnostics
 - Memory behavior settings for review flow, pending-context visibility, and context-pack size
 - Save clipboard text
 - Quick note capture
-- Review pending captures from Today
+- Review pending captures from the Review screen
 - Approve/archive capture lifecycle
 - Recent memories
 - Search
-- Advanced graph, health, stats, exports, and backend settings
+- Advanced graph, health, stats, exports, updates, and backend settings behind Trust diagnostics
 - Authenticated markdown/JSON export
 - Health diagnostics
 - Local vault diagnostics
@@ -29,7 +32,7 @@ The app bundles the dependency-light local backend and starts it automatically o
 - Search index rebuild
 - Installer/update feed controls
 - Backend endpoint and token settings
-- Reopenable setup flow under More
+- Reopenable setup flow under Trust diagnostics
 - Separate Keychain tokens for app REST access and scoped MCP integrations
 
 ## Build
@@ -82,9 +85,9 @@ The packaged app also bundles `scripts/cortex_mcp_stdio.py` so setup can copy a 
 
 This creates a DMG, ZIP, checksums, and `latest.json` update manifest under `../outputs/Cortex-<version>-<build>/`.
 
-The More tab includes an "Installer and updates" section that can check a local or hosted `latest.json` feed.
+The Trust diagnostics section includes an "Installer and updates" section that can check a local or hosted `latest.json` feed.
 
-The More tab also includes a Reliability section for health checks, storage repair, and sanitized support bundle export.
+The Trust diagnostics section also includes Reliability controls for health checks, storage repair, and sanitized support bundle export.
 
 Before sharing a build, run:
 

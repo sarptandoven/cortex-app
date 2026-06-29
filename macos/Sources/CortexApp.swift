@@ -388,13 +388,6 @@ enum TrustPreset: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
-enum AppTab: Hashable {
-    case today
-    case save
-    case search
-    case settings
-}
-
 struct TrustSummaryResponse: Codable {
     let generated_at: String
     let trust_score: Int
@@ -1241,12 +1234,16 @@ final class AppState: ObservableObject {
     @Published var updateStatus: String = "Not checked"
     @Published var updateManifest: UpdateManifestResponse?
     @Published var contextQuery: String = ""
-    @Published var selectedTab: AppTab = .today
+    @Published var selectedTab: AppTab = .model
     @Published var vaultPath: String = UserDefaults.standard.string(forKey: "vaultPath") ?? BackendSupervisor.defaultVaultURL.path
     @Published var globalClipboardHotkeyEnabled: Bool = UserDefaults.standard.bool(forKey: "globalClipboardHotkeyEnabled.v1")
     @Published var showOnboarding: Bool = !UserDefaults.standard.bool(forKey: "onboardingComplete.v1")
-    @Published var onboardingStep: Int = min(4, max(0, UserDefaults.standard.integer(forKey: "onboardingStep.v1")))
+    @Published var onboardingStep: OnboardingStep = OnboardingStep(rawValue: UserDefaults.standard.integer(forKey: "onboardingStep.v2")) ?? .privateVault
     @Published var onboardingNote: String = ""
+    @Published var firstSourceAdded: Bool = UserDefaults.standard.bool(forKey: "onboardingFirstSourceAdded.v1")
+    @Published var firstMemoryReviewed: Bool = UserDefaults.standard.bool(forKey: "onboardingFirstMemoryReviewed.v1")
+    @Published var cortexUsed: Bool = UserDefaults.standard.bool(forKey: "onboardingCortexUsed.v1")
+    @Published var onboardingBackupDecision: String = UserDefaults.standard.string(forKey: "onboardingBackupDecision.v1") ?? ""
     @Published var integrationStates: [String: AIIntegrationState] = [:]
     @Published var isBusy: Bool = false
 
@@ -1278,6 +1275,69 @@ final class AppState: ObservableObject {
 
     var releaseChannel: String {
         Bundle.main.object(forInfoDictionaryKey: "CortexReleaseChannel") as? String ?? "local-beta"
+    }
+
+    var onboardingStepIndex: Int {
+        onboardingStep.rawValue
+    }
+
+    var isLocalServiceReady: Bool {
+        guard diagnostics?.vault != nil else { return false }
+        let lowered = backendStatus.lowercased()
+        return !lowered.contains("failed")
+            && !lowered.contains("offline")
+            && !lowered.contains("unavailable")
+            && !lowered.contains("incompatible")
+    }
+
+    var onboardingHasSource: Bool {
+        firstSourceAdded
+            || !importHistory.isEmpty
+            || (stats?.captures ?? 0) > 0
+            || (stats?.pending_captures ?? 0) > 0
+            || (stats?.memories ?? 0) > 0
+            || !inbox.isEmpty
+    }
+
+    var onboardingHasReviewedMemory: Bool {
+        firstMemoryReviewed
+            || ((stats?.memories ?? 0) > 0 && (stats?.pending_captures ?? 0) == 0)
+            || (review?.stats.memories ?? 0) > 0
+    }
+
+    var onboardingHasUsedCortex: Bool {
+        cortexUsed || hasSearched || !searchResults.isEmpty
+    }
+
+    var onboardingHasBackupDecision: Bool {
+        !onboardingBackupDecision.isEmpty || lastBackupPath != nil
+    }
+
+    var canCompleteOnboarding: Bool {
+        isLocalServiceReady
+            && onboardingHasSource
+            && onboardingHasReviewedMemory
+            && onboardingHasUsedCortex
+            && onboardingHasBackupDecision
+    }
+
+    func onboardingStepIsComplete(_ step: OnboardingStep) -> Bool {
+        switch step {
+        case .privateVault:
+            return isLocalServiceReady
+        case .firstSource:
+            return onboardingHasSource
+        case .reviewMemory:
+            return onboardingHasReviewedMemory
+        case .askUse:
+            return onboardingHasUsedCortex
+        case .trustBackup:
+            return onboardingHasBackupDecision
+        }
+    }
+
+    var canAdvanceOnboarding: Bool {
+        onboardingStepIsComplete(onboardingStep)
     }
 
     var preferredUpdateArtifact: UpdateArtifact? {
@@ -1427,7 +1487,11 @@ final class AppState: ObservableObject {
             notify("Cortex", "Clipboard is empty")
             return
         }
-        Task { await capture(text: text, source: "macos-clipboard", title: "Clipboard capture") }
+        Task {
+            if await capture(text: text, source: "macos-clipboard", title: "Clipboard capture") {
+                markFirstSourceAdded()
+            }
+        }
     }
 
     func captureQuickNote() {
@@ -1437,8 +1501,10 @@ final class AppState: ObservableObject {
             return
         }
         Task {
-            await capture(text: text, source: "macos-quick-note", title: "Quick note")
-            quickNote = ""
+            if await capture(text: text, source: "macos-quick-note", title: "Quick note") {
+                markFirstSourceAdded()
+                quickNote = ""
+            }
         }
     }
 
@@ -1463,10 +1529,12 @@ final class AppState: ObservableObject {
             ? (URL(string: urlText)?.host ?? "Web capture")
             : captureTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         Task {
-            await capture(text: content.joined(separator: "\n"), source: "web-url", title: title, sourceURL: urlText.isEmpty ? nil : urlText)
-            captureURLString = ""
-            captureTitle = ""
-            captureNotes = ""
+            if await capture(text: content.joined(separator: "\n"), source: "web-url", title: title, sourceURL: urlText.isEmpty ? nil : urlText) {
+                markFirstSourceAdded()
+                captureURLString = ""
+                captureTitle = ""
+                captureNotes = ""
+            }
         }
     }
 
@@ -1536,20 +1604,22 @@ final class AppState: ObservableObject {
         }
     }
 
-    func captureOnboardingNote() {
+    func captureOnboardingQuickNote() {
         let text = onboardingNote.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty {
             status = "First memory is empty"
             return
         }
         Task {
-            await capture(text: text, source: "macos-onboarding", title: "First Cortex memory")
-            onboardingNote = ""
-            setOnboardingStep(max(onboardingStep, 2))
+            if await capture(text: text, source: "macos-onboarding", title: "First Cortex memory") {
+                markFirstSourceAdded()
+                onboardingNote = ""
+                setOnboardingStep(.reviewMemory)
+            }
         }
     }
 
-    func capture(text: String, source: String, title: String, sourceURL: String? = nil) async {
+    func capture(text: String, source: String, title: String, sourceURL: String? = nil) async -> Bool {
         isBusy = true
         status = "Saving..."
         defer { isBusy = false }
@@ -1571,9 +1641,11 @@ final class AppState: ObservableObject {
             await loadDiagnostics()
             await loadReliability()
             await loadTrust()
+            return true
         } catch {
             status = "Save failed: \(error.localizedDescription)"
             notify("Cortex", "Save failed")
+            return false
         }
     }
 
@@ -1651,6 +1723,7 @@ final class AppState: ObservableObject {
                 let processedSummary = processed > 0 ? ", started \(processed)" : ""
                 lastFileCaptureSummary = "Detected \(response.records_found) source record\(response.records_found == 1 ? "" : "s"). \(queueSummary)\(processedSummary)\(failureSummary)\(skippedSummary)" + (sourceSummary.isEmpty ? "" : " (\(sourceSummary))")
                 status = lastFileCaptureSummary
+                markFirstSourceAdded()
                 if moveImportedFromInbox {
                     for url in urls {
                         moveToImportedFolder(url)
@@ -1671,14 +1744,20 @@ final class AppState: ObservableObject {
         for url in urls {
             do {
                 let payload = try fileCapturePayload(for: url)
-                await capture(text: payload.content, source: payload.source, title: payload.title, sourceURL: payload.sourceURL)
-                saved += 1
-                if moveImportedFromInbox {
-                    moveToImportedFolder(url)
+                if await capture(text: payload.content, source: payload.source, title: payload.title, sourceURL: payload.sourceURL) {
+                    saved += 1
+                    if moveImportedFromInbox {
+                        moveToImportedFolder(url)
+                    }
+                } else {
+                    failed += 1
                 }
             } catch {
                 failed += 1
             }
+        }
+        if saved > 0 {
+            markFirstSourceAdded()
         }
         lastFileCaptureSummary = failed == 0 ? "Saved \(saved) file\(saved == 1 ? "" : "s")" : "Saved \(saved), failed \(failed)"
         status = lastFileCaptureSummary
@@ -1818,6 +1897,9 @@ final class AppState: ObservableObject {
             searchResults = try JSONDecoder().decode(SearchResponse.self, from: data).results
             hasSearched = true
             status = "Found \(searchResults.count) saved items"
+            if !searchResults.isEmpty {
+                markCortexUsed()
+            }
         } catch {
             hasSearched = true
             status = "Search failed: \(error.localizedDescription)"
@@ -1883,13 +1965,13 @@ final class AppState: ObservableObject {
     func performProductLoopAction(_ action: ProductLoopAction) {
         switch action.action {
         case "capture":
-            selectedTab = .save
+            selectedTab = .sources
             status = "Add data sources to build your model"
         case "review":
-            selectedTab = .today
+            selectedTab = .review
             status = "Review new signals below"
         case "reuse":
-            selectedTab = .search
+            selectedTab = .ask
             searchQuery = ""
             hasSearched = false
             status = "Ask Cortex what it knows"
@@ -2211,32 +2293,74 @@ final class AppState: ObservableObject {
         status = "Local settings copied"
     }
 
+    func markFirstSourceAdded() {
+        firstSourceAdded = true
+        UserDefaults.standard.set(true, forKey: "onboardingFirstSourceAdded.v1")
+    }
+
+    func markFirstMemoryReviewed() {
+        firstMemoryReviewed = true
+        UserDefaults.standard.set(true, forKey: "onboardingFirstMemoryReviewed.v1")
+    }
+
+    func markCortexUsed() {
+        cortexUsed = true
+        UserDefaults.standard.set(true, forKey: "onboardingCortexUsed.v1")
+    }
+
+    func markBackupDecision(_ decision: String) {
+        onboardingBackupDecision = decision
+        UserDefaults.standard.set(decision, forKey: "onboardingBackupDecision.v1")
+    }
+
     func completeOnboarding() {
+        guard canCompleteOnboarding else {
+            status = "Complete each setup step before starting Cortex"
+            return
+        }
         saveMemorySettings()
         UserDefaults.standard.set(true, forKey: "onboardingComplete.v1")
         showOnboarding = false
-        setOnboardingStep(0)
+        setOnboardingStep(.privateVault)
         status = "Setup complete"
         NotificationCenter.default.post(name: .cortexOnboardingCompleted, object: nil)
     }
 
+    func dismissOnboardingForSession() {
+        showOnboarding = false
+        status = "Setup can be reopened from Trust"
+    }
+
     func showOnboardingAgain() {
         UserDefaults.standard.set(false, forKey: "onboardingComplete.v1")
-        setOnboardingStep(0)
+        setOnboardingStep(.privateVault)
         showOnboarding = true
     }
 
-    func nextOnboardingStep(maxStep: Int) {
-        setOnboardingStep(min(maxStep, onboardingStep + 1))
+    func nextOnboardingStep() {
+        guard canAdvanceOnboarding else {
+            status = "Finish this setup step first"
+            return
+        }
+        let steps = OnboardingStep.allCases
+        let nextIndex = min(steps.count - 1, onboardingStep.rawValue + 1)
+        setOnboardingStep(steps[nextIndex])
     }
 
     func previousOnboardingStep() {
-        setOnboardingStep(max(0, onboardingStep - 1))
+        let steps = OnboardingStep.allCases
+        let previousIndex = max(0, onboardingStep.rawValue - 1)
+        setOnboardingStep(steps[previousIndex])
     }
 
-    private func setOnboardingStep(_ step: Int) {
-        onboardingStep = min(2, max(0, step))
-        UserDefaults.standard.set(onboardingStep, forKey: "onboardingStep.v1")
+    private func setOnboardingStep(_ step: OnboardingStep) {
+        onboardingStep = step
+        UserDefaults.standard.set(step.rawValue, forKey: "onboardingStep.v2")
+    }
+
+    func skipFirstBackup() {
+        markBackupDecision("skipped")
+        status = "First backup skipped"
     }
 
     func copyDailyContextPack() {
@@ -2265,6 +2389,9 @@ final class AppState: ObservableObject {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(profile, forType: .string)
                 status = label
+                if !profile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    markCortexUsed()
+                }
                 await recordContextReuse(surface: surface, query: query, target: target)
             } catch {
                 if !query.isEmpty {
@@ -2273,6 +2400,9 @@ final class AppState: ObservableObject {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(review.context_pack, forType: .string)
                     status = "Memory view prepared"
+                    if !review.context_pack.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        markCortexUsed()
+                    }
                     await recordContextReuse(surface: surface, query: query, target: target)
                 } else {
                     status = "Profile failed: \(error.localizedDescription)"
@@ -2305,6 +2435,7 @@ final class AppState: ObservableObject {
                 let data = try await request(path: "/v1/backups", method: "POST")
                 let backup = try JSONDecoder().decode(BackupResponse.self, from: data)
                 lastBackupPath = backup.backup_path
+                markBackupDecision("backed-up")
                 status = "Backup saved"
                 await loadDiagnostics()
                 await loadReliability()
@@ -2385,6 +2516,7 @@ final class AppState: ObservableObject {
             do {
                 _ = try await request(path: "/v1/captures/\(capture.id)/approve", method: "POST")
                 status = "Approved capture"
+                markFirstMemoryReviewed()
                 await loadInbox()
                 await loadRecent()
                 await loadStats()
@@ -2706,10 +2838,27 @@ final class AppState: ObservableObject {
     }
 
     private func notify(_ title: String, _ body: String) {
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            let send = {
+                let content = UNMutableNotificationContent()
+                content.title = title
+                content.body = body
+                center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+            }
+            switch settings.authorizationStatus {
+            case .authorized, .provisional, .ephemeral:
+                send()
+            case .notDetermined:
+                center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                    if granted {
+                        send()
+                    }
+                }
+            default:
+                break
+            }
+        }
     }
 }
 
@@ -2722,16 +2871,19 @@ struct CortexView: View {
             TabView(selection: $state.selectedTab) {
                 TodayTab(state: state)
                     .tabItem { Label("Model", systemImage: "brain.head.profile") }
-                    .tag(AppTab.today)
+                    .tag(AppTab.model)
                 CaptureTab(state: state)
                     .tabItem { Label("Sources", systemImage: "tray.and.arrow.down") }
-                    .tag(AppTab.save)
+                    .tag(AppTab.sources)
+                ReviewTab(state: state)
+                    .tabItem { Label("Review", systemImage: "checklist") }
+                    .tag(AppTab.review)
                 SearchTab(state: state)
                     .tabItem { Label("Ask", systemImage: "magnifyingglass") }
-                    .tag(AppTab.search)
-                AdvancedTab(state: state)
-                    .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
-                    .tag(AppTab.settings)
+                    .tag(AppTab.ask)
+                TrustTab(state: state)
+                    .tabItem { Label("Trust", systemImage: "lock.shield") }
+                    .tag(AppTab.trust)
             }
             footer
         }
@@ -2758,7 +2910,7 @@ struct CortexView: View {
             }
             Spacer()
             Button {
-                state.selectedTab = .save
+                state.selectedTab = .sources
                 state.status = "Import sources to build your model"
             } label: {
                 Label("Add Sources", systemImage: "tray.and.arrow.down")
@@ -3071,7 +3223,7 @@ struct IntegrationStatusBadge: View {
 
 struct OnboardingView: View {
     @ObservedObject var state: AppState
-    private let steps = ["Local", "First Source", "Ready"]
+    private let steps = OnboardingStep.allCases
 
     var body: some View {
         HStack(spacing: 0) {
@@ -3108,12 +3260,11 @@ struct OnboardingView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(steps.indices, id: \.self) { index in
+                ForEach(steps) { step in
                     OnboardingStepRow(
-                        label: steps[index],
-                        index: index,
-                        selected: state.onboardingStep == index,
-                        completed: state.onboardingStep > index
+                        step: step,
+                        selected: state.onboardingStep == step,
+                        completed: state.onboardingStepIsComplete(step)
                     )
                 }
             }
@@ -3139,21 +3290,21 @@ struct OnboardingView: View {
     private var header: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("Step \(state.onboardingStep + 1) of \(steps.count)")
+                Text("Step \(state.onboardingStepIndex + 1) of \(steps.count)")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                Text(steps[state.onboardingStep])
+                Text(state.onboardingStep.title)
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text(stepSubtitle)
+                Text(state.onboardingStep.subtitle)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
             Button {
-                state.completeOnboarding()
+                state.dismissOnboardingForSession()
             } label: {
-                Label("Skip", systemImage: "xmark")
+                Label("Finish Later", systemImage: "xmark")
             }
         }
         .padding(22)
@@ -3166,7 +3317,7 @@ struct OnboardingView: View {
             } label: {
                 Label("Back", systemImage: "chevron.left")
             }
-            .disabled(state.onboardingStep == 0)
+            .disabled(state.onboardingStep == .privateVault)
 
             Spacer()
 
@@ -3178,60 +3329,54 @@ struct OnboardingView: View {
 
             Spacer()
 
-            if state.onboardingStep == steps.count - 1 {
+            if state.onboardingStep == .trustBackup {
                 Button {
                     state.completeOnboarding()
                 } label: {
                     Label("Start Using Cortex", systemImage: "checkmark.circle")
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(!state.canCompleteOnboarding)
             } else {
                 Button {
-                    state.nextOnboardingStep(maxStep: steps.count - 1)
+                    state.nextOnboardingStep()
                 } label: {
                     Label("Continue", systemImage: "chevron.right")
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(!state.canAdvanceOnboarding)
             }
         }
         .padding(18)
     }
 
-    private var stepSubtitle: String {
-        switch state.onboardingStep {
-        case 0:
-            return "Confirm where your private memory lives on this Mac."
-        case 1:
-            return "Add one useful signal so Cortex can start modeling your work."
-        default:
-            return "Create a first backup, then move into your personal model."
-        }
-    }
-
     @ViewBuilder
     private var stepContent: some View {
         switch state.onboardingStep {
-        case 0:
+        case .privateVault:
             OnboardingVaultStep(state: state)
-        case 1:
-            OnboardingFirstSaveStep(state: state)
-        default:
-            OnboardingReadyStep(state: state)
+        case .firstSource:
+            OnboardingFirstSourceStep(state: state)
+        case .reviewMemory:
+            OnboardingReviewMemoryStep(state: state)
+        case .askUse:
+            OnboardingAskUseStep(state: state)
+        case .trustBackup:
+            OnboardingTrustBackupStep(state: state)
         }
     }
 }
 
 struct OnboardingStepRow: View {
-    let label: String
-    let index: Int
+    let step: OnboardingStep
     let selected: Bool
     let completed: Bool
 
     var body: some View {
         HStack(spacing: 5) {
-            Image(systemName: completed ? "checkmark.circle.fill" : "\(index + 1).circle")
+            Image(systemName: completed ? "checkmark.circle.fill" : step.systemImage)
                 .frame(width: 18)
-            Text(label)
+            Text(step.title)
             Spacer()
         }
         .font(.caption)
@@ -3303,95 +3448,67 @@ struct OnboardingVaultStep: View {
     }
 }
 
-struct OnboardingRulesStep: View {
+struct OnboardingFirstSourceStep: View {
     @ObservedObject var state: AppState
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Choose how strict Cortex should be before AI tools can use newly added source data. You can change this any time from Settings.")
+            Text("Start with the sources that carry your real context: AI chat exports, notes, docs, email, messages, writing samples, decisions, bookmarks, calendar, and project files.")
                 .foregroundColor(.secondary)
 
-            VStack(alignment: .leading, spacing: 10) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Toggle("Review new saves first", isOn: $state.appSettings.review_new_captures)
-                    Text("Recommended for beta: new captures wait in Today until you approve or archive them.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                VStack(alignment: .leading, spacing: 3) {
-                    Toggle("Allow pending saves in AI context", isOn: $state.appSettings.allow_pending_in_context)
-                    Text("Turn this off when assistants should only see approved memory.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                Stepper(value: $state.appSettings.context_pack_limit, in: 4...50, step: 2) {
-                    Text("Shared memory limit: \(state.appSettings.context_pack_limit)")
-                }
-                HStack {
-                    Button {
-                        state.saveMemorySettings()
-                    } label: {
-                        Label("Save Rules", systemImage: "checkmark.circle")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    Button {
-                        Task { await state.loadSettings() }
-                    } label: {
-                        Label("Reload", systemImage: "arrow.clockwise")
-                    }
-                    Spacer()
-                }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 8)], spacing: 8) {
+                OnboardingValueBadge(title: "AI chats", detail: "ChatGPT, Claude", systemImage: "bubble.left.and.bubble.right")
+                OnboardingValueBadge(title: "Work tools", detail: "Slack, Notion, docs", systemImage: "folder.badge.gearshape")
+                OnboardingValueBadge(title: "Personal data", detail: "Email, messages, notes", systemImage: "person.text.rectangle")
+                OnboardingValueBadge(title: "Style", detail: "Writing samples", systemImage: "signature")
             }
-            .padding(12)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-
-            OnboardingCheckRow(
-                title: state.appSettings.allow_pending_in_context ? "Fast mode" : "Strict mode",
-                detail: state.appSettings.allow_pending_in_context ? "New source data can appear in AI access immediately." : "Only approved source data appears in AI access.",
-                systemImage: state.appSettings.allow_pending_in_context ? "hare.fill" : "lock.shield.fill",
-                color: state.appSettings.allow_pending_in_context ? .accentColor : .green
-            )
-        }
-    }
-}
-
-struct OnboardingFirstSaveStep: View {
-    @ObservedObject var state: AppState
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Start with one useful preference, decision, project detail, writing sample, or open loop. A good first signal makes Cortex useful immediately.")
-                .foregroundColor(.secondary)
-
-            ZStack(alignment: .topLeading) {
-                TextEditor(text: $state.onboardingNote)
-                    .font(.body)
-                    .frame(minHeight: 150)
-                    .accessibilityLabel("First source")
-                if state.onboardingNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text("Example: I prefer concise technical answers with clear next steps.")
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 8)
-                        .allowsHitTesting(false)
-                }
-            }
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.22)))
 
             HStack {
                 Button {
-                    state.captureOnboardingNote()
+                    state.chooseFilesForCapture()
                 } label: {
-                    Label("Add First Source", systemImage: "square.and.arrow.down")
+                    Label("Choose Sources", systemImage: "doc.badge.plus")
                 }
                 .buttonStyle(.borderedProminent)
                 Button {
-                    state.captureClipboard()
+                    state.openCaptureInbox()
                 } label: {
-                    Label("Add Clipboard", systemImage: "doc.on.clipboard")
+                    Label("Open Inbox", systemImage: "tray")
                 }
                 Spacer()
+            }
+
+            DisclosureGroup("Add a quick memory instead") {
+                VStack(alignment: .leading, spacing: 10) {
+                    ZStack(alignment: .topLeading) {
+                        TextEditor(text: $state.onboardingNote)
+                            .font(.body)
+                            .frame(minHeight: 120)
+                            .accessibilityLabel("First source")
+                        if state.onboardingNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Text("Example: I prefer concise technical answers with clear next steps.")
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 8)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.22)))
+                    HStack {
+                        Button {
+                            state.captureOnboardingQuickNote()
+                        } label: {
+                            Label("Add Quick Memory", systemImage: "square.and.arrow.down")
+                        }
+                        Button {
+                            state.captureClipboard()
+                        } label: {
+                            Label("Add Clipboard", systemImage: "doc.on.clipboard")
+                        }
+                        Spacer()
+                    }
+                }
+                .padding(.top, 8)
             }
 
             if let stats = state.stats {
@@ -3401,96 +3518,156 @@ struct OnboardingFirstSaveStep: View {
                     StatBox(label: "Memories", value: stats.memories)
                 }
             }
+
+            OnboardingCheckRow(
+                title: state.onboardingHasSource ? "First source added" : "Waiting for a source",
+                detail: state.onboardingHasSource ? "Continue to review and approve useful memory." : "Choose sources, drop files, import the inbox, or add one quick memory.",
+                systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "tray.and.arrow.down",
+                color: state.onboardingHasSource ? .green : .orange
+            )
         }
     }
 }
 
-struct OnboardingConnectStep: View {
+struct OnboardingReviewMemoryStep: View {
     @ObservedObject var state: AppState
-    private var detectedIntegrations: [AIIntegration] {
-        state.integrations.filter { integration in
-            integration.supportsInstall && state.integrationState(for: integration).appInstalled
-        }
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Connect the tools you use most. Direct MCP access lets agents search approved memory; browser handoff stays available as a controlled fallback.")
+            Text("Cortex works best when the first memories are reviewed. Approve useful signals and archive anything noisy before the model starts adapting around them.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 10)], spacing: 10) {
-                Button {
-                    state.installDetectedIntegrations()
-                } label: {
-                    Label("Connect Detected", systemImage: "wand.and.stars")
-                }
-                .disabled(detectedIntegrations.isEmpty)
-
-                Button {
-                    if let chatGPT = state.integrations.first(where: { $0.id == "chatgpt" }) {
-                        state.copyIntegrationContext(chatGPT)
-                    } else {
-                        state.copyDailyContextPack()
-                    }
-                } label: {
-                    Label("Prepare Browser Memory", systemImage: "text.quote")
-                }
-                .buttonStyle(.borderedProminent)
-            }
-
-            if detectedIntegrations.isEmpty {
-                QuietState(title: "No local MCP apps detected", detail: "Browser chats can still receive approved Cortex memory manually.")
+            if state.inbox.isEmpty {
+                QuietState(title: "No pending memory", detail: state.onboardingHasReviewedMemory ? "You already have approved memory." : "Import a source or add a quick memory, then return here.")
             } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Detected")
-                        .font(.headline)
-                    ForEach(detectedIntegrations.prefix(4)) { integration in
-                        HStack(spacing: 8) {
-                            Image(systemName: integration.systemImage)
-                                .foregroundColor(.accentColor)
-                                .frame(width: 20)
-                            Text(integration.name)
-                            Spacer()
-                            IntegrationStatusBadge(state: state.integrationState(for: integration), supportsInstall: integration.supportsInstall)
-                        }
-                        .padding(8)
-                        .background(Color(nsColor: .controlBackgroundColor))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }
+                ForEach(state.inbox.prefix(3)) { capture in
+                    CaptureCard(
+                        capture: capture,
+                        approve: { state.approveCapture(capture) },
+                        archive: { state.archiveCapture(capture) }
+                    )
                 }
             }
 
-            DisclosureGroup("View all integrations") {
-                VStack(alignment: .leading, spacing: 10) {
-                    Button {
-                        state.copyMCPConfig()
-                    } label: {
-                        Label("Copy MCP Setup", systemImage: "doc.on.doc")
+            HStack {
+                Button {
+                    Task {
+                        await state.loadInbox()
+                        await state.loadReview()
+                        await state.loadStats()
                     }
-                    IntegrationCenterView(state: state, compact: true)
+                } label: {
+                    Label("Refresh Review", systemImage: "arrow.clockwise")
                 }
-                .padding(.top, 8)
+                Button {
+                    state.selectedTab = .review
+                    state.dismissOnboardingForSession()
+                } label: {
+                    Label("Open Full Review", systemImage: "checklist")
+                }
+                Spacer()
             }
+
+            OnboardingCheckRow(
+                title: state.onboardingHasReviewedMemory ? "Memory reviewed" : "Approve one useful memory",
+                detail: state.onboardingHasReviewedMemory ? "Cortex has at least one approved memory to use." : "Approve a pending item, or add another source if the current source was noisy.",
+                systemImage: state.onboardingHasReviewedMemory ? "checkmark.seal.fill" : "tray.full",
+                color: state.onboardingHasReviewedMemory ? .green : .orange
+            )
         }
-        .onAppear {
-            state.refreshIntegrationStates()
+        .task {
+            await state.loadInbox()
+            await state.loadReview()
+            await state.loadStats()
         }
     }
 }
 
-struct OnboardingReadyStep: View {
+struct OnboardingAskUseStep: View {
     @ObservedObject var state: AppState
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Cortex is ready to build a local personal model and let trusted AI tools use approved memory.")
+            Text("Ask Cortex about the memory you just approved, or prepare a focused context pack for an AI tool. This proves the model is usable instead of only imported.")
                 .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 10) {
-                OnboardingCheckRow(title: "Vault", detail: state.vaultPath, systemImage: "externaldrive.fill", color: .green)
-                OnboardingCheckRow(title: "Backend", detail: state.backendStatus, systemImage: "checkmark.circle.fill", color: .green)
-                OnboardingCheckRow(title: "Review", detail: state.appSettings.review_new_captures ? "New saves enter the inbox." : "New saves are approved automatically.", systemImage: "tray.full.fill", color: .accentColor)
+                TextField("Ask about your first source", text: $state.searchQuery)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { state.runSearch() }
+                HStack {
+                    Button {
+                        state.runSearch()
+                    } label: {
+                        Label("Ask Cortex", systemImage: "magnifyingglass")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button {
+                        state.contextQuery = state.searchQuery
+                        state.copyContextPack()
+                    } label: {
+                        Label("Prepare AI Context", systemImage: "text.quote")
+                    }
+                    Spacer()
+                }
+            }
+            .padding(12)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            if !state.searchResults.isEmpty {
+                ForEach(state.searchResults.prefix(3)) { item in
+                    MemoryCard(item: item) {
+                        state.deleteMemory(item)
+                    }
+                }
+            } else {
+                QuietState(title: "Ask one real question", detail: "Use a person, project, decision, preference, or phrase from your approved source.")
+            }
+
+            OnboardingCheckRow(
+                title: state.onboardingHasUsedCortex ? "Cortex used once" : "Use Cortex once",
+                detail: state.onboardingHasUsedCortex ? "The personal model has returned or prepared approved memory." : "Run a query with results or prepare context for an AI tool.",
+                systemImage: state.onboardingHasUsedCortex ? "checkmark.seal.fill" : "sparkle.magnifyingglass",
+                color: state.onboardingHasUsedCortex ? .green : .orange
+            )
+        }
+    }
+}
+
+struct OnboardingTrustBackupStep: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Finish by choosing the trust posture for connected AI tools and deciding how the local vault should be backed up.")
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("Review new memories first", isOn: $state.appSettings.review_new_captures)
+                Toggle("Strict mode: only approved memory in AI context", isOn: Binding(
+                    get: { !state.appSettings.allow_pending_in_context },
+                    set: { state.appSettings.allow_pending_in_context = !$0 }
+                ))
+                Toggle("Redact shared context", isOn: $state.appSettings.redact_sensitive_context)
+                HStack {
+                    Button {
+                        state.saveMemorySettings()
+                    } label: {
+                        Label("Save Trust Settings", systemImage: "checkmark.circle")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button {
+                        state.selectedTab = .trust
+                        state.dismissOnboardingForSession()
+                    } label: {
+                        Label("Open Trust", systemImage: "lock.shield")
+                    }
+                    Spacer()
+                }
             }
             .padding(12)
             .background(Color(nsColor: .controlBackgroundColor))
@@ -3500,7 +3677,13 @@ struct OnboardingReadyStep: View {
                 Button {
                     state.createBackup()
                 } label: {
-                    Label("Backup Now", systemImage: "archivebox")
+                    Label("Back Up Now", systemImage: "archivebox")
+                }
+                .buttonStyle(.borderedProminent)
+                Button {
+                    state.skipFirstBackup()
+                } label: {
+                    Label("Skip First Backup", systemImage: "forward")
                 }
                 Button {
                     state.openVaultFolder()
@@ -3517,6 +3700,13 @@ struct OnboardingReadyStep: View {
                     .lineLimit(2)
                     .truncationMode(.middle)
             }
+
+            OnboardingCheckRow(
+                title: state.onboardingHasBackupDecision ? "Backup decision recorded" : "Back up or skip explicitly",
+                detail: state.onboardingHasBackupDecision ? "Setup can be completed." : "Create a first backup, or explicitly skip it for now.",
+                systemImage: state.onboardingHasBackupDecision ? "checkmark.seal.fill" : "externaldrive",
+                color: state.onboardingHasBackupDecision ? .green : .orange
+            )
         }
     }
 }
@@ -3575,7 +3765,6 @@ struct OnboardingCheckRow: View {
 
 struct TodayTab: View {
     @ObservedObject var state: AppState
-    @State private var showDetails = false
 
     var body: some View {
         ScrollView {
@@ -3587,24 +3776,7 @@ struct TodayTab: View {
                         TodayModelSection(state: state, review: review)
                         TodayCoverageSection(review: review)
                         TodaySourceCoverageSection(state: state, review: review)
-                        TodayPendingSection(state: state, captures: review.pending)
-
-                        DisclosureGroup("Details", isExpanded: $showDetails) {
-                            VStack(alignment: .leading, spacing: 14) {
-                                TodayScoreHeader(review: review)
-                                TodaySearchSection(state: state, review: review)
-                                if !review.recommended_actions.isEmpty {
-                                    TodayActionSection(actions: review.recommended_actions)
-                                }
-                                if !review.open_tasks.isEmpty {
-                                    TodayOpenLoopsSection(tasks: review.open_tasks)
-                                }
-                                if !review.recent_decisions.isEmpty {
-                                    TodayDecisionSection(decisions: review.recent_decisions)
-                                }
-                            }
-                            .padding(.top, 8)
-                        }
+                        ModelSignalSummarySection(review: review)
                     }
                 } else {
                     VStack(alignment: .center, spacing: 12) {
@@ -3651,7 +3823,7 @@ struct TodayEmptyModelSection: View {
 
             HStack(spacing: 8) {
                 Button {
-                    state.selectedTab = .save
+                    state.selectedTab = .sources
                     state.status = "Add your first source"
                 } label: {
                     Label("Add First Source", systemImage: "tray.and.arrow.down")
@@ -3659,7 +3831,7 @@ struct TodayEmptyModelSection: View {
                 .buttonStyle(.borderedProminent)
 
                 Button {
-                    state.selectedTab = .settings
+                    state.selectedTab = .trust
                     state.status = "Review privacy and AI access"
                 } label: {
                     Label("Review Privacy", systemImage: "lock.shield")
@@ -3773,7 +3945,7 @@ struct TodayModelSection: View {
 
                 HStack(spacing: 8) {
                     Button {
-                        state.selectedTab = .save
+                        state.selectedTab = .sources
                         state.status = "Add conversations, notes, files, and decisions"
                     } label: {
                         Label("Add Sources", systemImage: "tray.and.arrow.down")
@@ -3782,9 +3954,10 @@ struct TodayModelSection: View {
 
                     Button {
                         if review.stats.pending_captures > 0 {
-                            state.status = "Review saved items below"
+                            state.selectedTab = .review
+                            state.status = "Review saved items"
                         } else {
-                            state.selectedTab = .search
+                            state.selectedTab = .ask
                             state.searchQuery = ""
                             state.hasSearched = false
                             state.status = "Ask Cortex what it knows"
@@ -3794,7 +3967,7 @@ struct TodayModelSection: View {
                     }
 
                     Button {
-                        state.selectedTab = .settings
+                        state.selectedTab = .trust
                         state.status = "Configure AI access"
                     } label: {
                         Label("AI Access", systemImage: "slider.horizontal.3")
@@ -3979,6 +4152,27 @@ struct TodaySourceCoverageSection: View {
     }
 }
 
+struct ModelSignalSummarySection: View {
+    let review: DailyReviewResponse
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "Current signal", detail: "High-level shape of the model without review clutter.")
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 8)], spacing: 8) {
+                ModelMetricPill(label: "Topics", value: "\(review.top_topics.count)", systemImage: "number")
+                ModelMetricPill(label: "People & projects", value: "\(review.top_entities.count)", systemImage: "person.2")
+                ModelMetricPill(label: "Open loops", value: "\(review.open_tasks.count)", systemImage: "circle.dashed")
+                ModelMetricPill(label: "Decisions", value: "\(review.recent_decisions.count)", systemImage: "checkmark.seal")
+            }
+            if review.top_topics.isEmpty && review.top_entities.isEmpty {
+                QuietState(title: "Needs more context", detail: "Import a richer source to improve people, project, topic, and style coverage.")
+            } else {
+                TodayTopicSection(topics: review.top_topics, entities: review.top_entities)
+            }
+        }
+    }
+}
+
 struct SectionHeader: View {
     let title: String
     let detail: String
@@ -4108,7 +4302,7 @@ struct TodaySearchSection: View {
                 .onSubmit { searchFocus() }
             HStack {
                 Button {
-                    state.selectedTab = .search
+                    state.selectedTab = .ask
                     state.searchQuery = ""
                     state.hasSearched = false
                 } label: {
@@ -4138,7 +4332,7 @@ struct TodaySearchSection: View {
 
     private func searchFocus() {
         let query = state.contextQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        state.selectedTab = .search
+        state.selectedTab = .ask
         if !query.isEmpty {
             state.searchQuery = query
             state.runSearch()
@@ -4161,7 +4355,10 @@ struct TodayPendingSection: View {
                 Spacer()
                 if !captures.isEmpty {
                     Button {
-                        Task { await state.loadInbox() }
+                        Task {
+                            await state.loadInbox()
+                            await state.loadReview()
+                        }
                     } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
@@ -4171,7 +4368,7 @@ struct TodayPendingSection: View {
             if captures.isEmpty {
                 QuietState(title: "No new signals", detail: "New source data that needs approval will appear here.")
             } else {
-                ForEach(captures.prefix(3)) { capture in
+                ForEach(captures.prefix(8)) { capture in
                     CaptureCard(
                         capture: capture,
                         approve: { state.approveCapture(capture) },
@@ -4273,8 +4470,81 @@ struct TodayTopicSection: View {
     }
 }
 
+struct ReviewTab: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                ReviewHeaderSection(state: state)
+                TodayPendingSection(state: state, captures: state.inbox)
+                if let review = state.review {
+                    if !review.recommended_actions.isEmpty {
+                        TodayActionSection(actions: review.recommended_actions)
+                    }
+                    if !review.open_tasks.isEmpty {
+                        TodayOpenLoopsSection(tasks: review.open_tasks)
+                    }
+                    if !review.recent_decisions.isEmpty {
+                        TodayDecisionSection(decisions: review.recent_decisions)
+                    }
+                    if review.recommended_actions.isEmpty && review.open_tasks.isEmpty && review.recent_decisions.isEmpty && state.inbox.isEmpty {
+                        QuietState(title: "Nothing to review", detail: "New imports, decisions, and open loops will appear here when Cortex finds them.")
+                    }
+                } else {
+                    QuietState(title: "Review is loading", detail: "Cortex is checking pending memories, decisions, and open loops.")
+                }
+            }
+            .padding(16)
+        }
+        .task {
+            await state.loadInbox()
+            await state.loadReview()
+            await state.loadProductLoop()
+        }
+    }
+}
+
+struct ReviewHeaderSection: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Review memory")
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                    Text("Approve useful signals, archive noise, and keep decisions and open loops visible before agents rely on them.")
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Button {
+                    Task {
+                        await state.loadInbox()
+                        await state.loadReview()
+                        await state.loadProductLoop()
+                    }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+            }
+            if let review = state.review {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 8)], spacing: 8) {
+                    StatBox(label: "Pending", value: state.inbox.count)
+                    StatBox(label: "Memories", value: review.stats.memories)
+                    StatBox(label: "Decisions", value: review.recent_decisions.count)
+                    StatBox(label: "Open", value: review.open_tasks.count)
+                }
+            }
+        }
+    }
+}
+
 struct CaptureTab: View {
     @ObservedObject var state: AppState
+    @State private var isManualCaptureExpanded = false
     @State private var isLinkOptionsExpanded = false
 
     var body: some View {
@@ -4282,8 +4552,15 @@ struct CaptureTab: View {
             VStack(alignment: .leading, spacing: 16) {
                 CaptureHeroSection(state: state)
                 CaptureFileSection(state: state, handleDrop: handleDrop)
+                SourceHealthSummarySection(state: state)
                 ImportHistorySection(state: state)
-                CaptureQuickNoteSection(state: state)
+                DisclosureGroup(isExpanded: $isManualCaptureExpanded) {
+                    CaptureQuickNoteSection(state: state)
+                        .padding(.top, 8)
+                } label: {
+                    Label("Manual memory capture", systemImage: "square.and.pencil")
+                        .font(.headline)
+                }
                 DisclosureGroup(isExpanded: $isLinkOptionsExpanded) {
                     CaptureWebSection(state: state)
                     .padding(.top, 8)
@@ -4291,9 +4568,12 @@ struct CaptureTab: View {
                     Label("Links and web capture", systemImage: "link")
                         .font(.headline)
                 }
-                CaptureRecentSection(state: state)
             }
             .padding(16)
+        }
+        .task {
+            await state.loadTrust()
+            await state.loadImportHistory()
         }
     }
 
@@ -4353,6 +4633,52 @@ struct CaptureHeroSection: View {
                 }
             }
         }
+    }
+}
+
+struct SourceHealthSummarySection: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "Source health", detail: "Imported batches stay removable, and pending source records wait for review.")
+            if let summary = state.trustSummary, !summary.source_counts.isEmpty {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 8)], spacing: 8) {
+                    ForEach(summary.source_counts.prefix(6)) { source in
+                        SourceHealthTile(source: source)
+                    }
+                }
+            } else {
+                QuietState(title: "No sources yet", detail: "Choose sources or drop exports here to start building memory.")
+            }
+        }
+    }
+}
+
+struct SourceHealthTile: View {
+    let source: SourceTrustSummary
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: source.pending > 0 ? "tray.full.fill" : "checkmark.seal.fill")
+                .foregroundColor(source.pending > 0 ? .orange : .green)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(source.source)
+                    .font(.callout)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+                Text("\(source.approved) approved · \(source.pending) review")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -4804,22 +5130,56 @@ struct SearchTab: View {
     @ObservedObject var state: AppState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                TextField("Ask or search: What did we decide about pricing?", text: $state.searchQuery)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { state.runSearch() }
-                Button {
-                    state.runSearch()
-                } label: {
-                    Label("Ask Cortex", systemImage: "magnifyingglass")
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Ask Cortex")
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                Text("Search your approved personal model with citations before an agent uses the memory.")
+                    .foregroundColor(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    TextField("Ask about a person, project, decision, preference, or writing pattern", text: $state.searchQuery)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { state.runSearch() }
+                    Button {
+                        state.runSearch()
+                    } label: {
+                        Label("Ask", systemImage: "magnifyingglass")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                HStack {
+                    Button {
+                        state.contextQuery = state.searchQuery
+                        state.copyContextPack()
+                    } label: {
+                        Label("Prepare Focused Context", systemImage: "text.quote")
+                    }
+                    Button {
+                        state.copyDailyContextPack()
+                    } label: {
+                        Label("Prepare Model Context", systemImage: "brain.head.profile")
+                    }
+                    Spacer()
+                    if state.hasSearched {
+                        Text("\(state.searchResults.count) cited result\(state.searchResults.count == 1 ? "" : "s")")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
+            .padding(12)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
             if state.searchResults.isEmpty && !state.hasSearched {
-                QuietState(title: "Ask your memory", detail: "Try a person, project, decision, preference, or phrase.")
+                QuietState(title: "Ask your model", detail: "Try a question about a project, person, decision, preference, or phrase from your imported sources.")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if state.searchResults.isEmpty {
-                QuietState(title: "No saved memory matched that", detail: "Try a different person, project, decision, or topic.")
+                QuietState(title: "No saved memory matched that", detail: "Try a different person, project, decision, or topic, or import more source context.")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -4839,6 +5199,9 @@ struct SearchTab: View {
 
 struct TrustTab: View {
     @ObservedObject var state: AppState
+    @State private var integrationsExpanded = false
+    @State private var sourcesExpanded = false
+    @State private var advancedExpanded = false
 
     var body: some View {
         ScrollView {
@@ -4846,11 +5209,44 @@ struct TrustTab: View {
                 if let summary = state.trustSummary {
                     TrustScoreSection(summary: summary)
                     TrustPolicySection(state: state)
-                    TrustSourceSection(summary: summary)
-                    TrustAuditSection(events: state.auditEvents, refresh: {
-                        Task { await state.loadTrust() }
-                    })
+                    SettingsPrivacySection(state: state)
+                    SettingsDataRecoverySection(state: state)
                     TrustActionsSection(state: state)
+                    DisclosureGroup("Connected AI tools", isExpanded: $integrationsExpanded) {
+                        IntegrationCenterView(state: state, compact: true)
+                            .padding(.top, 8)
+                    }
+                    DisclosureGroup("Sources and audit trail", isExpanded: $sourcesExpanded) {
+                        VStack(alignment: .leading, spacing: 14) {
+                            TrustSourceSection(summary: summary)
+                            TrustAuditSection(events: state.auditEvents, refresh: {
+                                Task { await state.loadTrust() }
+                            })
+                        }
+                        .padding(.top, 8)
+                    }
+                    DisclosureGroup("Advanced diagnostics", isExpanded: $advancedExpanded) {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Group {
+                                SettingsOnboardingSection(state: state)
+                                Divider()
+                                SettingsReliabilitySection(state: state)
+                                Divider()
+                            }
+                            Group {
+                                AdvancedGraphSection(state: state)
+                                SettingsStatsSection(state: state)
+                                Divider()
+                                SettingsUpdatesSection(state: state)
+                                Divider()
+                            }
+                            Group {
+                                SettingsHealthSection(state: state)
+                                SettingsBackendSection(state: state)
+                            }
+                        }
+                        .padding(.top, 8)
+                    }
                 } else {
                     VStack(spacing: 12) {
                         ProgressView()
@@ -4866,6 +5262,9 @@ struct TrustTab: View {
         }
         .task {
             await state.loadTrust()
+            await state.loadDiagnostics()
+            await state.loadReliability()
+            await state.loadStats()
         }
     }
 }
@@ -6206,7 +6605,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         logApp("applicationDidFinishLaunching")
         NSApp.setActivationPolicy(.regular)
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         setupStatusItem()
         setupMainWindow()
         NotificationCenter.default.addObserver(self, selector: #selector(onboardingCompleted), name: .cortexOnboardingCompleted, object: nil)

@@ -651,7 +651,7 @@ class CortexStorageLifecycleTests(unittest.TestCase):
     def test_trust_controls_redact_shared_context_and_exports(self) -> None:
         self.capture(
             f"Cortex should never leak password=supersecret123 or {DUMMY_OPENAI_KEY} "
-            "to agent context. Email me at vamika@example.com after testing."
+            "or vamika@example.com to agent context after testing."
         )
 
         pack = self.store.context_pack(self.user_id, query="leak", limit=5)

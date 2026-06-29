@@ -12,9 +12,10 @@ Cortex is a local-first personal memory and adaptation layer. It turns approved 
 - SQLite FTS search with optional `sqlite-vec` and opt-in OpenAI embeddings
 - Capture surfaces for clipboard, quick notes, files, browser capture, and drop-folder import
 - Stage 1 source import with preview, duplicate-safe history, and batch undo for user-selected exports, folders, and files from ChatGPT, Claude, Notion, Gmail/email, Slack, Discord, Telegram, Google Keep, Messages, WhatsApp, bookmarks, calendars, contacts, LinkedIn, Twitter/X, docs, notes, and work-tool exports
-- Model loop: Signal, Review, Access, Return
-- Review inbox for approve/archive
-- Cited personal adaptation profile for ChatGPT, Claude, Cursor, MCP tools, and browser handoffs
+- Five-screen product flow: Model, Sources, Review, Ask, Trust
+- Gated first-run setup for private vault, first source import, first memory review, first Ask/use action, and backup/trust decision
+- Review inbox for approve/archive, decisions, recommended actions, and open loops
+- Ask screen with cited memory search plus focused context packs for ChatGPT, Claude, Cursor, MCP tools, and browser handoffs
 - Local MCP bridge and one-click config helpers
 - Trust controls for agent reads, writes, exports, redaction, and maintenance
 - Reliability report, backup-first repair, and local vault backups

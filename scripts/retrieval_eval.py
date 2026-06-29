@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.app.database import init_db
+from backend.app.extractor import extract_context
 from backend.app.storage import CortexStore, MEMORY_LAYERS
 
 
@@ -197,6 +198,17 @@ RETRIEVAL_CASES: tuple[RetrievalCase, ...] = (
     ),
 )
 
+NOISY_IMPORT_TEXT = """Source: ChatGPT
+Conversation: Project Atlas memory UI
+Created: 2026-06-29T12:00:00+00:00
+
+--- Messages ---
+assistant: I prefer splashy launch pages with lots of marketing copy.
+user: We decided Project Atlas should keep the memory UI to five tabs: Model, Sources, Review, Ask, Trust.
+assistant: I will remember that.
+user: On June 29, 2026, Project Atlas passed the noisy import retrieval eval.
+"""
+
 
 def seed_representative_memories(store: CortexStore, user_id: str = USER_ID) -> list[dict[str, Any]]:
     timestamp = SEED_TIMESTAMP
@@ -230,6 +242,28 @@ def seed_representative_memories(store: CortexStore, user_id: str = USER_ID) -> 
         },
     )
     return result["memories"]
+
+
+def seed_noisy_import_memories(store: CortexStore, user_id: str = USER_ID) -> list[dict[str, Any]]:
+    extracted = extract_context(NOISY_IMPORT_TEXT, "chatgpt")
+    result = store.save_capture(
+        user_id=user_id,
+        content=NOISY_IMPORT_TEXT,
+        source="chatgpt",
+        source_url="/tmp/project-atlas-chatgpt-export.json",
+        title="Project Atlas memory UI",
+        extracted=extracted,
+    )
+    memories = result["memories"]
+    joined = "\n".join(memory["content"] for memory in memories)
+    for boilerplate in ("Source:", "Conversation:", "Created:", "--- Messages ---"):
+        if boilerplate in joined:
+            raise AssertionError(f"Noisy import leaked boilerplate into memory content: {boilerplate}")
+    if "splashy launch pages" in joined:
+        raise AssertionError("Noisy import treated assistant preference as user memory")
+    if not all(memory.get("source_url") for memory in memories):
+        raise AssertionError("Noisy import memories did not preserve source_url citations")
+    return memories
 
 
 def _metrics_for_results(expected_id: str, result_ids: list[str], k_values: tuple[int, ...]) -> dict[str, float]:
@@ -267,6 +301,43 @@ def _summarize_metrics(checks: list[dict[str, Any]], k_values: tuple[int, ...]) 
     }
 
 
+def _evaluate_case(store: CortexStore, user_id: str, case: RetrievalCase, limit: int) -> dict[str, Any]:
+    results = store.search(user_id, case.query, limit=limit)
+    if not results:
+        raise AssertionError(f"{case.name}: query returned no results: {case.query!r}")
+
+    top = results[0]
+    if top["id"] != case.expected_id:
+        raise AssertionError(
+            f"{case.name}: expected top result {case.expected_id}, got {top['id']} from {[item['id'] for item in results]}"
+        )
+    if top["layer"] != case.expected_layer:
+        raise AssertionError(f"{case.name}: expected layer {case.expected_layer}, got {top['layer']}")
+    if case.expected_phrase not in top["content"]:
+        raise AssertionError(f"{case.name}: expected phrase {case.expected_phrase!r} in {top['content']!r}")
+
+    layer_results = store.search(user_id, case.query, limit=limit, layer=case.expected_layer)
+    layer_ids = [item["id"] for item in layer_results]
+    if case.expected_id not in layer_ids:
+        raise AssertionError(f"{case.name}: layer-filtered search missed {case.expected_id}: {layer_ids}")
+
+    result_ids = [item["id"] for item in results]
+    expected_rank = result_ids.index(case.expected_id) + 1 if case.expected_id in result_ids else None
+    return {
+        "name": case.name,
+        "category": case.category,
+        "query": case.query,
+        "expected_layer": case.expected_layer,
+        "expected_id": case.expected_id,
+        "expected_rank": expected_rank,
+        "top_result": top["id"],
+        "top_layer": top["layer"],
+        "result_ids": result_ids,
+        "layer_filtered_results": layer_ids,
+        "metrics": _metrics_for_results(case.expected_id, result_ids, METRIC_K_VALUES),
+    }
+
+
 def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 3) -> dict[str, Any]:
     seeded = seed_representative_memories(store, user_id)
     seeded_layers = {memory["layer"] for memory in seeded}
@@ -277,47 +348,34 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
 
     checks: list[dict[str, Any]] = []
     for case in RETRIEVAL_CASES:
-        results = store.search(user_id, case.query, limit=limit)
-        if not results:
-            raise AssertionError(f"{case.name}: query returned no results: {case.query!r}")
+        checks.append(_evaluate_case(store, user_id, case, limit))
 
-        top = results[0]
-        if top["id"] != case.expected_id:
-            raise AssertionError(
-                f"{case.name}: expected top result {case.expected_id}, got {top['id']} from {[item['id'] for item in results]}"
-            )
-        if top["layer"] != case.expected_layer:
-            raise AssertionError(f"{case.name}: expected layer {case.expected_layer}, got {top['layer']}")
-        if case.expected_phrase not in top["content"]:
-            raise AssertionError(f"{case.name}: expected phrase {case.expected_phrase!r} in {top['content']!r}")
-
-        layer_results = store.search(user_id, case.query, limit=limit, layer=case.expected_layer)
-        layer_ids = [item["id"] for item in layer_results]
-        if case.expected_id not in layer_ids:
-            raise AssertionError(f"{case.name}: layer-filtered search missed {case.expected_id}: {layer_ids}")
-
-        result_ids = [item["id"] for item in results]
-        expected_rank = result_ids.index(case.expected_id) + 1 if case.expected_id in result_ids else None
-
-        checks.append(
-            {
-                "name": case.name,
-                "category": case.category,
-                "query": case.query,
-                "expected_layer": case.expected_layer,
-                "expected_id": case.expected_id,
-                "expected_rank": expected_rank,
-                "top_result": top["id"],
-                "top_layer": top["layer"],
-                "result_ids": result_ids,
-                "layer_filtered_results": layer_ids,
-                "metrics": _metrics_for_results(case.expected_id, result_ids, METRIC_K_VALUES),
-            }
-        )
+    noisy_memories = seed_noisy_import_memories(store, user_id)
+    noisy_cases = (
+        RetrievalCase(
+            name="noisy_import_decision_tabs",
+            query="Project Atlas five tabs Review Trust",
+            expected_id=next(memory["id"] for memory in noisy_memories if "five tabs" in memory["content"]),
+            expected_layer="decision",
+            expected_phrase="five tabs",
+            category="noisy_import",
+        ),
+        RetrievalCase(
+            name="noisy_import_event_eval",
+            query="Project Atlas noisy import retrieval eval June 29",
+            expected_id=next(memory["id"] for memory in noisy_memories if "noisy import retrieval eval" in memory["content"]),
+            expected_layer="episodic",
+            expected_phrase="noisy import retrieval eval",
+            category="noisy_import",
+        ),
+    )
+    for case in noisy_cases:
+        checks.append(_evaluate_case(store, user_id, case, limit))
 
     return {
         "status": "ok",
         "seeded_memories": len(seeded),
+        "noisy_import_memories": len(noisy_memories),
         "seeded_layers": sorted(seeded_layers),
         "metrics": _summarize_metrics(checks, METRIC_K_VALUES),
         "checks": checks,

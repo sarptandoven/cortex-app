@@ -295,6 +295,49 @@ class SourceIngestTests(unittest.TestCase):
         self.assertEqual(result["saved"], 1)
         self.assertTrue(store.search("test-user", "migration plan", limit=5))
 
+    def test_generic_file_import_preserves_source_url_for_citations(self) -> None:
+        docs = self.root / "docs"
+        docs.mkdir()
+        note = docs / "Citation Plan.md"
+        note.write_text(
+            "On June 29, 2026, we shipped the source-url citation path. "
+            "We decided imported file memories should keep their source path.",
+            encoding="utf-8",
+        )
+
+        records = import_source_records([str(note)], max_records=10)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].source_url, str(note))
+
+        db_path = self.root / "index.sqlite"
+        init_db(db_path)
+        store = CortexStore(db_path, self.root / "vault")
+        result = store.import_sources(
+            user_id="test-user",
+            paths=[str(note)],
+            processing="sync",
+            max_records=10,
+        )
+
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["saved"], 1)
+        detail = store.get_import("test-user", result["import_id"])
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail["records"][0]["source_url"], str(note))
+        self.assertEqual(detail["captures"][0]["source_url"], str(note))
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            memory_rows = conn.execute("SELECT content, source_url FROM memories").fetchall()
+        finally:
+            conn.close()
+        self.assertTrue(memory_rows)
+        self.assertTrue(all(row["source_url"] == str(note) for row in memory_rows))
+        memory_content = "\n".join(row["content"] for row in memory_rows)
+        self.assertNotIn("Source file:", memory_content)
+        self.assertNotIn("Path:", memory_content)
+
     def _write_chatgpt_export(self) -> None:
         folder = self.root / "chatgpt"
         folder.mkdir()

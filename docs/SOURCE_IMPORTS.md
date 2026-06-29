@@ -95,7 +95,7 @@ Repeated imports are idempotent by content hash and source. If a record already 
 
 ## App Flow
 
-The macOS Sources tab accepts files, folders, and export bundles. It first calls `/v1/imports/analyze` to show a preview of detected records. After confirmation, it calls `/v1/imports`, queues normalized records, starts a local job run for the first batch, refreshes Model, Sources, Ask, and Settings state, and shows the batch in Import History. If a selected file is not readable by the backend importer, the app falls back to its existing local text/PDF extraction path.
+The macOS Sources tab accepts files, folders, and export bundles. It first calls `/v1/imports/analyze` to show a preview of detected records. After confirmation, it calls `/v1/imports`, queues normalized records, starts a local job run for the first batch, refreshes Model, Sources, Review, Ask, and Trust state, and shows the batch in Import History. If a selected file is not readable by the backend importer, the app falls back to its existing local text/PDF extraction path.
 
 ## Privacy Boundaries
 
