@@ -103,6 +103,13 @@ class SourceAccountListResponse(BaseModel):
     results: list[SourceAccountResponse]
 
 
+class SourceReadinessResponse(BaseModel):
+    generated_at: str
+    summary: dict[str, int]
+    sources: list[dict[str, Any]]
+    recommendations: list[str]
+
+
 class SyncCursorRequest(BaseModel):
     source: str = Field(..., min_length=1, max_length=80)
     cursor_name: str = Field(..., min_length=1, max_length=120)

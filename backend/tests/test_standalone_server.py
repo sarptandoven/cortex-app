@@ -131,6 +131,46 @@ class FakeStore:
             }
         ]
 
+    def source_readiness_report(self, user_id: str) -> dict:
+        return {
+            "generated_at": "2026-01-01T00:00:00Z",
+            "summary": {
+                "sources_total": 1,
+                "import_ready": 1,
+                "planned_live": 1,
+                "connected": 1 if not self.source_account_disconnected else 0,
+                "synced": 1 if not self.source_account_disconnected else 0,
+                "sources_with_data": 0,
+                "needs_review": 0,
+                "needs_attention": 1 if self.source_account_disconnected else 0,
+                "active_memories": 0,
+            },
+            "sources": [
+                {
+                    "source": "gmail",
+                    "name": "Gmail",
+                    "category": "communication",
+                    "status": "needs_attention" if self.source_account_disconnected else "synced",
+                    "next_action": "Reconnect Gmail." if self.source_account_disconnected else "Source sync has completed; review new memories as they arrive.",
+                    "import_status": "generic",
+                    "live_status": "planned",
+                    "auth": "oauth",
+                    "formats": [],
+                    "accounts": 1 if not self.source_account_disconnected else 0,
+                    "cursors": 1,
+                    "captures": 0,
+                    "pending": 0,
+                    "approved": 0,
+                    "archived": 0,
+                    "active_memories": 0,
+                    "citation_coverage": 0,
+                    "last_seen_at": "2026-01-01T00:00:00Z",
+                    "warnings": ["Reconnect Gmail."] if self.source_account_disconnected else [],
+                }
+            ],
+            "recommendations": ["Source readiness is healthy for local beta use."],
+        }
+
     def list_source_accounts(self, user_id: str, *, include_disconnected: bool = False) -> list[dict]:
         if self.source_account_disconnected and not include_disconnected:
             return []
@@ -531,6 +571,13 @@ class StandaloneServerTests(unittest.TestCase):
 
         self.assertEqual(response.status, 200)
         self.assertEqual(catalog["results"][0]["id"], "gmail")
+
+        with self.get("/v1/sources/readiness") as response:
+            readiness = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(readiness["sources"][0]["source"], "gmail")
+        self.assertEqual(readiness["summary"]["sources_total"], 1)
 
         with self.post_json(
             "/v1/source-accounts",

@@ -12,7 +12,8 @@ Cortex is a local-first personal memory and adaptation layer. It turns approved 
 - SQLite FTS search with optional `sqlite-vec` and opt-in OpenAI embeddings
 - Capture surfaces for clipboard, quick notes, files, browser capture, and drop-folder import
 - Stage 1 source import with preview, duplicate-safe history, and batch undo for user-selected exports, folders, and files from ChatGPT, Claude, Notion, Gmail/email, Slack, Discord, Telegram, Google Keep, Google Chat, Teams, Zoom, Messages, WhatsApp, bookmarks, calendars, contacts, LinkedIn, Twitter/X, docs, notes, and work-tool exports
-- Five-screen product flow: Model, Sources, Review, Ask, Trust
+- Five-tab product flow: Model, Sources, Review, Ask, Trust
+- Source readiness report covering import-ready services, planned live connectors, connected accounts, review backlog, source errors, active memory, and citation coverage
 - Gated first-run setup for private vault, first source import, first memory review, first Ask/use action, and backup/trust decision
 - Review inbox for approve/archive, decisions, recommended actions, and open loops
 - Ask screen with cited memory search plus focused context packs for ChatGPT, Claude, Cursor, MCP tools, and browser handoffs
@@ -66,6 +67,7 @@ python3 -m http.server 8780
 
 ```bash
 python3 -m unittest discover backend/tests
+python3 scripts/retrieval_eval.py
 python3 scripts/ops_readiness_check.py --refresh-site
 python3 scripts/reliability_check.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
 python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
@@ -96,4 +98,4 @@ python3 scripts/export_support_bundle.py --mode offline
 
 ## Current Boundaries
 
-Cortex is ready for local-first beta testing, not broad public distribution yet. Public launch still needs Developer ID signing, notarization, hosted HTTPS downloads, a formal support path, a hosted update-feed decision, and a production privacy review.
+Cortex is ready for local-first beta testing, not broad public distribution yet. Current source ingestion uses user-selected exports, folders, and files; live OAuth/API sync is registry-backed but not enabled. Public launch still needs Developer ID signing, notarization, hosted HTTPS downloads, a formal support path, a hosted update-feed decision, and a production privacy review.

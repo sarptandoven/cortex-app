@@ -313,6 +313,18 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(listed_cursors.status_code, 200)
         self.assertEqual([item["id"] for item in listed_cursors.json()["results"]], [cursor["id"]])
 
+        readiness_response = self.client.get("/v1/sources/readiness", headers=headers)
+        self.assertEqual(readiness_response.status_code, 200)
+        readiness = readiness_response.json()
+        self.assertIn("generated_at", readiness)
+        self.assertIn("summary", readiness)
+        self.assertIn("sources", readiness)
+        self.assertTrue(readiness["recommendations"])
+        gmail_readiness = next(item for item in readiness["sources"] if item["source"] == "gmail")
+        self.assertEqual(gmail_readiness["accounts"], 1)
+        self.assertEqual(gmail_readiness["cursors"], 1)
+        self.assertIn(gmail_readiness["status"], {"connected", "synced", "needs_review", "needs_attention"})
+
         disconnected = self.client.delete(f"/v1/source-accounts/{account['id']}", headers=headers)
         self.assertEqual(disconnected.status_code, 200)
         self.assertEqual(disconnected.json()["status"], "disconnected")

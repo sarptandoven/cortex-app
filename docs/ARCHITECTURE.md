@@ -33,6 +33,7 @@ FastAPI backend
   /v1/imports/{id}
   DELETE /v1/imports/{id}
   /v1/source-accounts/catalog
+  /v1/sources/readiness
   /v1/source-accounts
   /v1/sync-cursors
   /v1/jobs

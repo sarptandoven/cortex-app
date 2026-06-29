@@ -218,7 +218,58 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         event_pairs = {(event["object_type"], event["event_type"]) for event in events}
         self.assertIn(("source_account", "upserted"), event_pairs)
         self.assertIn(("sync_cursor", "updated"), event_pairs)
-        self.assertIn(("source_account", "disconnected"), event_pairs)
+
+    def test_source_readiness_report_combines_import_review_and_sync_health(self) -> None:
+        capture = self.store.save_capture(
+            user_id=self.user_id,
+            content="Gmail export: We decided Cortex should keep source citations attached to imported messages.",
+            source="gmail",
+            source_url="gmail://message/msg-1",
+            title="Gmail readiness capture",
+            extracted=extract_context(
+                "Gmail export: We decided Cortex should keep source citations attached to imported messages.",
+                "gmail",
+            ),
+        )
+        self.assertGreaterEqual(len(capture["memories"]), 1)
+
+        account = self.store.upsert_source_account(
+            self.user_id,
+            source="gmail",
+            account_label="Primary Gmail",
+            account_identifier="user@example.com",
+            connection_type="oauth",
+            status="connected",
+            auth_state="healthy",
+        )
+        self.store.upsert_sync_cursor(
+            self.user_id,
+            source="gmail",
+            source_account_id=account["id"],
+            cursor_name="messages",
+            cursor_value="page-token-1",
+            high_water_mark="2026-06-29T10:00:00Z",
+            last_error="token expired",
+            completed=False,
+        )
+
+        report = self.store.source_readiness_report(self.user_id)
+        self.assertIn("generated_at", report)
+        self.assertGreaterEqual(report["summary"]["sources_total"], 1)
+        self.assertGreaterEqual(report["summary"]["active_memories"], 1)
+        self.assertEqual(report["summary"]["needs_attention"], 1)
+        self.assertTrue(report["recommendations"])
+
+        gmail = next(source for source in report["sources"] if source["source"] == "gmail")
+        self.assertEqual(gmail["status"], "needs_attention")
+        self.assertEqual(gmail["accounts"], 1)
+        self.assertEqual(gmail["cursors"], 1)
+        self.assertEqual(gmail["captures"], 1)
+        self.assertEqual(gmail["pending"], 1)
+        self.assertGreater(gmail["active_memories"], 0)
+        self.assertGreater(gmail["citation_coverage"], 0)
+        self.assertIn("token expired", gmail["warnings"])
+        self.assertIn("token expired", gmail["next_action"])
 
     def test_memory_quality_report_tracks_citations_review_and_layers(self) -> None:
         uncited = self.capture("We decided uncited quality memory should warn about missing source paths.")

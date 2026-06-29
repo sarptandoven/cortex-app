@@ -72,6 +72,7 @@ POST   /v1/imports
 GET    /v1/imports/{import_id}
 DELETE /v1/imports/{import_id}
 GET    /v1/source-accounts/catalog
+GET    /v1/sources/readiness
 GET    /v1/source-accounts
 POST   /v1/source-accounts
 DELETE /v1/source-accounts/{account_id}

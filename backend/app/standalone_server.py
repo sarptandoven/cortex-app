@@ -331,6 +331,9 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/v1/source-accounts/catalog":
                 self._send_json({"results": store.source_connector_catalog()})
                 return
+            if method == "GET" and path == "/v1/sources/readiness":
+                self._send_json(store.source_readiness_report(user_id))
+                return
             if method == "GET" and path == "/v1/source-accounts":
                 include_disconnected = (params.get("include_disconnected") or ["false"])[0].strip().lower() in {"1", "true", "yes"}
                 self._send_json({"results": store.list_source_accounts(user_id, include_disconnected=include_disconnected)})

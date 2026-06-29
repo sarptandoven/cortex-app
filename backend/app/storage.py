@@ -790,6 +790,163 @@ class CortexStore:
             )
         return catalog
 
+    def source_readiness_report(self, user_id: str) -> dict[str, Any]:
+        catalog = self.source_connector_catalog()
+        accounts = self.list_source_accounts(user_id, include_disconnected=True)
+        cursors = self.list_sync_cursors(user_id)
+        policies = self.settings(user_id).get("source_policies", {})
+        with connect(self.db_path) as conn:
+            capture_rows = conn.execute(
+                """
+                SELECT
+                  c.source,
+                  COUNT(*) AS captures,
+                  SUM(CASE WHEN c.review_status = 'pending' THEN 1 ELSE 0 END) AS pending,
+                  SUM(CASE WHEN c.review_status = 'approved' THEN 1 ELSE 0 END) AS approved,
+                  SUM(CASE WHEN c.review_status = 'archived' THEN 1 ELSE 0 END) AS archived,
+                  COUNT(DISTINCT CASE WHEN m.status = 'active' THEN m.id END) AS active_memories,
+                  COUNT(DISTINCT CASE WHEN m.status = 'active' AND COALESCE(m.source_url, '') != '' THEN m.id END) AS cited_memories,
+                  MAX(c.captured_at) AS last_imported_at
+                FROM captures c
+                LEFT JOIN memories m ON m.capture_id = c.id AND m.user_id = c.user_id
+                WHERE c.user_id = ?
+                GROUP BY c.source
+                """,
+                (user_id,),
+            ).fetchall()
+        captures_by_source = {row["source"]: dict(row) for row in capture_rows}
+        accounts_by_source: dict[str, list[dict[str, Any]]] = {}
+        for account in accounts:
+            accounts_by_source.setdefault(account["source"], []).append(account)
+        cursors_by_source: dict[str, list[dict[str, Any]]] = {}
+        for cursor in cursors:
+            cursors_by_source.setdefault(cursor["source"], []).append(cursor)
+
+        rows: list[dict[str, Any]] = []
+        catalog_ids = {item["id"] for item in catalog}
+        extra_sources = sorted(set(captures_by_source) - catalog_ids)
+        for item in [*catalog, *({"id": source, "name": source, "category": "Imported", "auth": "import", "live_status": "imported", "scopes": [], "notes": "", "import_status": "native", "formats": []} for source in extra_sources)]:
+            source = item["id"]
+            source_accounts = accounts_by_source.get(source, [])
+            active_accounts = [account for account in source_accounts if not account.get("disconnected_at")]
+            source_cursors = cursors_by_source.get(source, [])
+            stats = captures_by_source.get(source, {})
+            pending = int(stats.get("pending") or 0)
+            approved = int(stats.get("approved") or 0)
+            archived = int(stats.get("archived") or 0)
+            captures = int(stats.get("captures") or 0)
+            active_memories = int(stats.get("active_memories") or 0)
+            cited_memories = int(stats.get("cited_memories") or 0)
+            account_errors = [
+                account.get("last_error")
+                for account in source_accounts
+                if account.get("last_error")
+            ]
+            cursor_errors = [
+                cursor.get("last_error")
+                for cursor in source_cursors
+                if cursor.get("last_error")
+            ]
+            revoked_or_disconnected = any(
+                account.get("disconnected_at")
+                or str(account.get("auth_state") or "").lower() in {"revoked", "expired", "error"}
+                or str(account.get("status") or "").lower() in {"error", "failed", "disconnected"}
+                for account in source_accounts
+            )
+            has_attention = bool(account_errors or cursor_errors or revoked_or_disconnected)
+            import_status = str(item.get("import_status") or "")
+            supports_import = import_status in {"native", "generic", "import_ready"} or bool(item.get("formats"))
+            live_status = str(item.get("live_status") or "")
+            has_completed_sync = any(cursor.get("last_completed_at") for cursor in source_cursors) or any(account.get("last_sync_at") for account in active_accounts)
+            if has_attention:
+                status = "needs_attention"
+                next_action = (account_errors + cursor_errors)[0] if account_errors or cursor_errors else "Reconnect or review this source account."
+            elif pending:
+                status = "needs_review"
+                next_action = f"Review {pending} pending capture{'s' if pending != 1 else ''}."
+            elif has_completed_sync:
+                status = "synced"
+                next_action = "Source sync has completed; review new memories as they arrive."
+            elif active_accounts:
+                status = "connected"
+                next_action = "Account is registered; run or wait for the next sync."
+            elif captures or active_memories:
+                status = "imported"
+                next_action = "Imported data is available for retrieval."
+            elif supports_import:
+                status = "import_ready"
+                next_action = "Import an export file or folder for this source."
+            elif live_status == "planned":
+                status = "planned"
+                next_action = "Live OAuth is planned; use exports today."
+            else:
+                status = "available"
+                next_action = "Add this source when it contains useful personal context."
+
+            last_seen = stats.get("last_imported_at") or next((account.get("last_sync_at") for account in active_accounts if account.get("last_sync_at")), None)
+            rows.append(
+                {
+                    "source": source,
+                    "name": item.get("name") or source,
+                    "category": item.get("category") or "Other",
+                    "status": status,
+                    "next_action": next_action,
+                    "import_status": import_status,
+                    "live_status": live_status,
+                    "auth": item.get("auth"),
+                    "formats": item.get("formats") or [],
+                    "accounts": len(active_accounts),
+                    "cursors": len(source_cursors),
+                    "captures": captures,
+                    "pending": pending,
+                    "approved": approved,
+                    "archived": archived,
+                    "active_memories": active_memories,
+                    "citation_coverage": _ratio(cited_memories, active_memories),
+                    "last_seen_at": last_seen,
+                    "policy": policies.get(source) or {"mode": "default", "allow_ai_context": True, "review_required": False},
+                    "warnings": [value for value in [*account_errors, *cursor_errors] if value],
+                }
+            )
+
+        status_rank = {
+            "needs_attention": 0,
+            "needs_review": 1,
+            "import_ready": 2,
+            "connected": 3,
+            "synced": 4,
+            "imported": 5,
+            "planned": 6,
+            "available": 7,
+        }
+        rows.sort(key=lambda row: (status_rank.get(row["status"], 9), -int(row["active_memories"]), row["name"]))
+        summary = {
+            "sources_total": len(rows),
+            "import_ready": sum(1 for row in rows if row["status"] == "import_ready"),
+            "planned_live": sum(1 for row in rows if row["live_status"] == "planned"),
+            "connected": sum(int(row["accounts"]) for row in rows),
+            "synced": sum(1 for row in rows if row["status"] == "synced"),
+            "sources_with_data": sum(1 for row in rows if row["captures"] or row["active_memories"]),
+            "needs_review": sum(1 for row in rows if row["status"] == "needs_review"),
+            "needs_attention": sum(1 for row in rows if row["status"] == "needs_attention"),
+            "active_memories": sum(int(row["active_memories"]) for row in rows),
+        }
+        recommendations: list[str] = []
+        if summary["needs_attention"]:
+            recommendations.append("Resolve source account or sync errors before relying on those memories.")
+        if summary["needs_review"]:
+            recommendations.append("Review pending source captures so they can become trusted model memory.")
+        if not summary["sources_with_data"]:
+            recommendations.append("Import one high-signal source such as ChatGPT, Claude, Gmail, Notion, Slack, or notes.")
+        if not recommendations:
+            recommendations.append("Source readiness is healthy for local beta use.")
+        return {
+            "generated_at": now_iso(),
+            "summary": summary,
+            "sources": rows,
+            "recommendations": recommendations,
+        }
+
     def list_source_accounts(self, user_id: str, *, include_disconnected: bool = False) -> list[dict[str, Any]]:
         filters = ["user_id = ?"]
         values: list[Any] = [user_id]

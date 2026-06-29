@@ -79,6 +79,91 @@ struct SourceConnectorCatalogItem: Codable, Identifiable, Hashable {
     }
 }
 
+struct SourceReadinessResponse: Codable, Hashable {
+    let generated_at: String
+    let summary: SourceReadinessSummary
+    let sources: [SourceReadinessItem]
+    let recommendations: [String]
+}
+
+struct SourceReadinessSummary: Codable, Hashable {
+    let sources_total: Int
+    let import_ready: Int
+    let planned_live: Int
+    let connected: Int
+    let synced: Int
+    let sources_with_data: Int
+    let needs_review: Int
+    let needs_attention: Int
+    let active_memories: Int
+}
+
+struct SourceReadinessItem: Codable, Identifiable, Hashable {
+    var id: String { source }
+    let source: String
+    let name: String
+    let category: String
+    let status: String
+    let next_action: String
+    let import_status: String
+    let live_status: String
+    let auth: String?
+    let formats: [String]
+    let accounts: Int
+    let cursors: Int
+    let captures: Int
+    let pending: Int
+    let approved: Int
+    let archived: Int
+    let active_memories: Int
+    let citation_coverage: Double
+    let last_seen_at: String?
+    let warnings: [String]
+
+    var needsAttention: Bool {
+        status == "needs_attention"
+    }
+
+    var statusTitle: String {
+        switch status {
+        case "needs_attention": return "Needs attention"
+        case "needs_review": return "Review"
+        case "synced": return "Synced"
+        case "connected": return "Connected"
+        case "imported": return "Imported"
+        case "import_ready": return "Ready"
+        case "planned": return "Planned"
+        default: return "Available"
+        }
+    }
+
+    var statusIcon: String {
+        switch status {
+        case "needs_attention": return "exclamationmark.triangle.fill"
+        case "needs_review": return "tray.full.fill"
+        case "synced": return "checkmark.seal.fill"
+        case "connected": return "link.circle.fill"
+        case "imported": return "tray.and.arrow.down.fill"
+        case "import_ready": return "square.and.arrow.down.fill"
+        case "planned": return "calendar.badge.clock"
+        default: return "circle"
+        }
+    }
+
+    var statusColor: Color {
+        switch status {
+        case "needs_attention": return .orange
+        case "needs_review": return .yellow
+        case "synced": return .green
+        case "connected": return .blue
+        case "imported": return .accentColor
+        case "import_ready": return .purple
+        case "planned": return .secondary
+        default: return .secondary
+        }
+    }
+}
+
 struct SourceAccountListResponse: Codable {
     let results: [SourceAccountItem]
 }
@@ -1432,6 +1517,7 @@ final class AppState: ObservableObject {
     @Published var showImportPreview: Bool = false
     @Published var importHistory: [SourceImportHistoryItem] = []
     @Published var sourceConnectorCatalog: [SourceConnectorCatalogItem] = []
+    @Published var sourceReadinessReport: SourceReadinessResponse?
     @Published var sourceAccounts: [SourceAccountItem] = []
     @Published var syncCursors: [SyncCursorItem] = []
     @Published var searchQuery: String = ""
@@ -2331,8 +2417,15 @@ final class AppState: ObservableObject {
             sourceAccounts = try JSONDecoder().decode(SourceAccountListResponse.self, from: accountData).results
             let cursorData = try await request(path: "/v1/sync-cursors", method: "GET")
             syncCursors = try JSONDecoder().decode(SyncCursorListResponse.self, from: cursorData).results
+            do {
+                let readinessData = try await request(path: "/v1/sources/readiness", method: "GET")
+                sourceReadinessReport = try JSONDecoder().decode(SourceReadinessResponse.self, from: readinessData)
+            } catch {
+                sourceReadinessReport = nil
+            }
         } catch {
             sourceConnectorCatalog = []
+            sourceReadinessReport = nil
             sourceAccounts = []
             syncCursors = []
         }
@@ -5075,7 +5168,9 @@ struct SourceHealthSummarySection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             SectionHeader(title: "Source health", detail: "Imported batches stay removable, and pending source records wait for review.")
-            if !state.sourceConnectorCatalog.isEmpty || !state.sourceAccounts.isEmpty || !state.syncCursors.isEmpty {
+            if let report = state.sourceReadinessReport, !report.sources.isEmpty {
+                SourceReadinessPanel(report: report)
+            } else if !state.sourceConnectorCatalog.isEmpty || !state.sourceAccounts.isEmpty || !state.syncCursors.isEmpty {
                 SourceConnectivityPanel(state: state)
             }
             if let summary = state.trustSummary, !summary.source_counts.isEmpty {
@@ -5088,6 +5183,88 @@ struct SourceHealthSummarySection: View {
                 QuietState(title: "No sources yet", detail: "Choose sources or drop exports here to start building memory.")
             }
         }
+    }
+}
+
+struct SourceReadinessPanel: View {
+    let report: SourceReadinessResponse
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 8) {
+                SourceConnectivityMetric(title: "Import ready", value: "\(report.summary.import_ready)", systemImage: "tray.and.arrow.down.fill", color: .accentColor)
+                SourceConnectivityMetric(title: "Connected", value: "\(report.summary.connected)", systemImage: "link.circle.fill", color: report.summary.connected == 0 ? .secondary : .green)
+                SourceConnectivityMetric(title: "With memory", value: "\(report.summary.sources_with_data)", systemImage: "brain.head.profile", color: report.summary.sources_with_data == 0 ? .secondary : .blue)
+                SourceConnectivityMetric(title: "Attention", value: "\(report.summary.needs_attention + report.summary.needs_review)", systemImage: "exclamationmark.triangle.fill", color: report.summary.needs_attention + report.summary.needs_review == 0 ? .secondary : .orange)
+            }
+
+            if let recommendation = report.recommendations.first {
+                HStack(spacing: 8) {
+                    Image(systemName: report.summary.needs_attention == 0 && report.summary.needs_review == 0 ? "checkmark.seal.fill" : "lightbulb.fill")
+                        .foregroundColor(report.summary.needs_attention == 0 && report.summary.needs_review == 0 ? .green : .orange)
+                        .frame(width: 18)
+                    Text(recommendation)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(8)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(report.sources.prefix(5)) { source in
+                    SourceReadinessRow(source: source)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .textBackgroundColor))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct SourceReadinessRow: View {
+    let source: SourceReadinessItem
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: source.statusIcon)
+                .foregroundColor(source.statusColor)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(source.name)
+                        .font(.callout)
+                        .fontWeight(.medium)
+                        .lineLimit(1)
+                    Text(source.statusTitle)
+                        .font(.caption2)
+                        .foregroundColor(source.statusColor)
+                        .lineLimit(1)
+                }
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(8)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var detail: String {
+        let memoryText = "\(source.active_memories) memories"
+        let reviewText = source.pending > 0 ? "\(source.pending) review" : "\(source.approved) approved"
+        if source.needsAttention, let warning = source.warnings.first {
+            return "\(warning) · \(memoryText) · \(reviewText)"
+        }
+        return "\(source.next_action) · \(memoryText) · \(reviewText)"
     }
 }
 
