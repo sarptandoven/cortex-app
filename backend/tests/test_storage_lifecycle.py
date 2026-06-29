@@ -66,7 +66,18 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertGreater(profile["readiness"], 0)
         self.assertIn("Decision memory", profile["markdown"])
         self.assertIn("fine-tuned model", profile["markdown"])
+        self.store.update_settings(self.user_id, {"allow_agent_exports": True})
         self.assertTrue(call_tool(self.store, self.user_id, "get_personal_profile", {"format": "markdown"}).startswith("# Cortex Personal Adaptation Profile"))
+        self.assertFalse(call_tool(self.store, self.user_id, "get_personal_profile", {"include_pending": "false"})["include_pending"])
+        adaptation = self.store.agent_adaptation(self.user_id, query="Supabase", target="Claude", limit=4)
+        self.assertEqual(adaptation["name"], "Cortex Agent Adaptation Layer")
+        self.assertEqual(adaptation["target"], "Claude")
+        self.assertTrue(adaptation["operating_principles"])
+        self.assertTrue(adaptation["rules"])
+        self.assertTrue(adaptation["evidence"])
+        self.assertIn("Respect this prior decision", adaptation["markdown"])
+        self.assertFalse(call_tool(self.store, self.user_id, "get_agent_adaptation", {"include_pending": "false"})["include_pending"])
+        self.assertTrue(call_tool(self.store, self.user_id, "get_agent_adaptation", {"format": "markdown", "target": "Claude"}).startswith("# Cortex Agent Adaptation Layer"))
 
         export_before_archive = self.store.export_markdown(self.user_id)
         self.assertIn("Supabase", export_before_archive)
@@ -870,6 +881,10 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.store.update_settings(self.user_id, {"allow_agent_reads": True, "allow_agent_exports": False})
         with self.assertRaises(PermissionError):
             call_tool(self.store, self.user_id, "build_context_pack", {"query": "permission"})
+        with self.assertRaises(PermissionError):
+            call_tool(self.store, self.user_id, "get_personal_profile", {})
+        with self.assertRaises(PermissionError):
+            call_tool(self.store, self.user_id, "get_agent_adaptation", {})
 
         with self.assertRaises(PermissionError):
             call_tool(self.store, self.user_id, "create_memory_backup", {})

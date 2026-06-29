@@ -49,7 +49,7 @@ ALLOWED_CORS_ORIGINS = _cors_origins()
 def _required_api_scope(method: str, path: str) -> str:
     normalized_method = method.upper()
     normalized_path = path.rstrip("/") or "/"
-    if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/context-pack", "/v1/personal-profile", "/v1/support/bundle"}:
+    if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/context-pack", "/v1/personal-profile", "/v1/agent-adaptation", "/v1/support/bundle"}:
         return "export"
     if normalized_path in {"/v1/diagnostics", "/v1/reliability/report"}:
         return "maintenance"
@@ -515,6 +515,22 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     self._send_text(profile["markdown"], media_type="text/markdown")
                 else:
                     self._send_json(profile)
+                return
+            if method == "GET" and path == "/v1/agent-adaptation":
+                query = (params.get("query") or [""])[0]
+                target = (params.get("target") or ["assistant"])[0][:80]
+                include_pending = (params.get("include_pending") or ["false"])[0].strip().lower() in {"1", "true", "yes"}
+                adaptation = store.agent_adaptation(
+                    user_id,
+                    query=query,
+                    target=target,
+                    limit=_int_param(params, "limit", 8, 1, 20),
+                    include_pending=include_pending,
+                )
+                if (params.get("format") or ["json"])[0] == "markdown":
+                    self._send_text(adaptation["markdown"], media_type="text/markdown")
+                else:
+                    self._send_json(adaptation)
                 return
             if method == "DELETE" and path.startswith("/v1/memories/"):
                 memory_id = unquote(path.removeprefix("/v1/memories/"))

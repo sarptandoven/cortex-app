@@ -95,6 +95,8 @@ GET    /v1/review/today
 GET    /v1/loop
 POST   /v1/loop/reuse
 GET    /v1/context-pack
+GET    /v1/personal-profile
+GET    /v1/agent-adaptation
 GET    /v1/graph
 GET    /v1/stats
 GET    /v1/memory/quality

@@ -2642,6 +2642,39 @@ final class AppState: ObservableObject {
         )
     }
 
+    func copyAgentAdaptation() {
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        copyAgentAdaptation(
+            query: query,
+            surface: "agent-adaptation",
+            target: "assistant",
+            label: query.isEmpty ? "Agent adaptation layer prepared" : "Agent adaptation layer for \(query) prepared"
+        )
+    }
+
+    private func copyAgentAdaptation(query: String, surface: String, target: String, label: String) {
+        Task {
+            do {
+                var allowed = CharacterSet.urlQueryAllowed
+                allowed.remove(charactersIn: "&+=")
+                let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: allowed) ?? query
+                let encodedTarget = target.addingPercentEncoding(withAllowedCharacters: allowed) ?? target
+                let limit = max(1, min(20, appSettings.context_pack_limit))
+                let data = try await request(path: "/v1/agent-adaptation?format=markdown&target=\(encodedTarget)&query=\(encodedQuery)&limit=\(limit)", method: "GET")
+                let adaptation = String(data: data, encoding: .utf8) ?? ""
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(adaptation, forType: .string)
+                status = label
+                if !adaptation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    markCortexUsed()
+                }
+                await recordContextReuse(surface: surface, query: query, target: target)
+            } catch {
+                status = "Agent adaptation layer failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
     private func copyPersonalProfile(query: String, surface: String, target: String, label: String) {
         Task {
             do {
@@ -4242,6 +4275,13 @@ struct TodayModelSection: View {
                     } label: {
                         Label("AI Access", systemImage: "slider.horizontal.3")
                     }
+
+                    Button {
+                        state.searchQuery = ""
+                        state.copyAgentAdaptation()
+                    } label: {
+                        Label("Agent Layer", systemImage: "wand.and.stars")
+                    }
                     Spacer()
                 }
 
@@ -5597,6 +5637,11 @@ struct SearchTab: View {
                 }
                 HStack {
                     Button {
+                        state.copyAgentAdaptation()
+                    } label: {
+                        Label("Prepare Agent Layer", systemImage: "wand.and.stars")
+                    }
+                    Button {
                         state.contextQuery = state.searchQuery
                         state.copyContextPack()
                     } label: {
@@ -5850,8 +5895,8 @@ struct TrustPolicySection: View {
                         isOn: $state.appSettings.allow_agent_writes
                     )
                     TrustToggleRow(
-                        title: "Let connected AI export context",
-                        detail: "Connected MCP agents can prepare redacted memory handoffs or export memory.",
+                        title: "Let connected AI prepare artifacts",
+                        detail: "Connected MCP agents can prepare redacted handoffs, adaptation layers, context packs, or exports.",
                         systemImage: "square.and.arrow.up",
                         isOn: $state.appSettings.allow_agent_exports
                     )
@@ -6049,17 +6094,17 @@ struct TrustActionsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Browser handoff")
+            Text("Safe sharing")
                 .font(.headline)
             HStack {
                 Button {
                     state.copyDailyContextPack()
                 } label: {
-                    Label("Prepare Redacted Memory", systemImage: "doc.on.doc")
+                    Label("Prepare Redacted Artifact", systemImage: "doc.on.doc")
                 }
                 Spacer()
             }
-            TrustNotice(systemImage: "lock.doc", title: "Local-first", detail: "Trust controls apply to the local backend, MCP agents, browser handoffs, and exports. The vault remains on this Mac.", color: .accentColor)
+            TrustNotice(systemImage: "lock.doc", title: "Local-first", detail: "Trust controls apply to the local backend, MCP agents, safe sharing artifacts, and exports. The vault remains on this Mac.", color: .accentColor)
         }
     }
 }

@@ -2497,6 +2497,113 @@ class CortexStore:
         profile["markdown"] = self._personal_profile_markdown(profile)
         return profile
 
+    def agent_adaptation(self, user_id: str, query: str = "", target: str = "assistant", limit: int = 8, include_pending: bool = False) -> dict[str, Any]:
+        target = (target or "assistant").strip()[:80] or "assistant"
+        profile = self.personal_profile(user_id, query=query, limit=limit, include_pending=include_pending)
+        layer_priority = ["preference", "negative", "style", "decision", "episodic", "semantic"]
+        section_by_layer = {section["layer"]: section for section in profile["sections"]}
+        rule_templates = {
+            "preference": "Honor this user preference",
+            "negative": "Avoid this rejected or disliked pattern",
+            "style": "Match this communication style signal",
+            "decision": "Respect this prior decision and its constraints",
+            "episodic": "Use this past event as situational context",
+            "semantic": "Use this durable fact as background context",
+        }
+        rules: list[dict[str, Any]] = []
+        evidence_by_id: dict[str, dict[str, Any]] = {}
+        for layer in layer_priority:
+            section = section_by_layer.get(layer) or {}
+            for item in (section.get("items") or [])[:3]:
+                evidence_by_id[item["id"]] = item
+                rules.append(
+                    {
+                        "layer": layer,
+                        "kind": item["kind"],
+                        "instruction": f"{rule_templates[layer]}: {item['content']}",
+                        "memory_id": item["id"],
+                        "source": item["source"],
+                        "source_url": item.get("source_url"),
+                        "captured_at": item.get("captured_at"),
+                    }
+                )
+        for item in profile.get("focus") or []:
+            evidence_by_id[item["id"]] = item
+
+        operating_principles = [
+            f"Use this Cortex adaptation layer when acting as {target}.",
+            "Do not claim to be the user or imply complete access to the user's mind.",
+            "Follow the user's newest message over older memory when they conflict.",
+            "Use cited memories as behavioral guidance, not as immutable facts.",
+            "Ask a short clarifying question when coverage is missing or confidence is low.",
+            "When a memory materially affects an answer or action, retain the memory ID internally and cite it when useful.",
+        ]
+        limitations = list(profile["limitations"])
+        if profile["readiness"] < 70:
+            limitations.append("Readiness is below production-grade adaptation; use cautious defaults and ask before high-impact actions.")
+        if not rules:
+            limitations.append("No adaptation rules were generated because the approved memory layers are sparse.")
+
+        artifact: dict[str, Any] = {
+            "generated_at": now_iso(),
+            "name": "Cortex Agent Adaptation Layer",
+            "target": target,
+            "query": profile["query"],
+            "readiness": profile["readiness"],
+            "include_pending": profile["include_pending"],
+            "operating_principles": operating_principles,
+            "rules": rules,
+            "evidence": list(evidence_by_id.values())[:20],
+            "coverage": profile["coverage"],
+            "summary": profile["summary"],
+            "open_loops": profile["open_loops"],
+            "limitations": limitations,
+        }
+        artifact["markdown"] = self._agent_adaptation_markdown(artifact)
+        return artifact
+
+    def _agent_adaptation_markdown(self, artifact: dict[str, Any]) -> str:
+        lines = [
+            "# Cortex Agent Adaptation Layer",
+            "",
+            f"Generated: {artifact['generated_at']}",
+            f"Target: {artifact['target']}",
+            f"Readiness: {artifact['readiness']}/100",
+            "",
+            "Use this as a cited, coverage-limited adaptation layer. It is not a fine-tuned model and it must yield to the user's newest message.",
+            "",
+            "## Operating Principles",
+            "",
+        ]
+        for principle in artifact["operating_principles"]:
+            lines.append(f"- {principle}")
+        lines.extend(["", "## Adaptation Rules", ""])
+        if artifact["rules"]:
+            for rule in artifact["rules"]:
+                source = rule.get("source_url") or rule.get("source") or "unknown source"
+                lines.append(f"- [{rule['memory_id']}] {rule['instruction']} Source: {source}.")
+        else:
+            lines.append("- No adaptation rules generated yet.")
+        lines.extend(["", "## Coverage", ""])
+        for layer in artifact["coverage"]["by_layer"]:
+            lines.append(f"- {layer['title']}: {layer['count']} signal{'s' if layer['count'] != 1 else ''} ({layer['status']})")
+        lines.extend(["", "## Evidence", ""])
+        if artifact["evidence"]:
+            for item in artifact["evidence"][:12]:
+                lines.append(self._profile_markdown_item(item))
+        else:
+            lines.append("- No cited evidence yet.")
+        lines.extend(["", "## Open Loops", ""])
+        if artifact["open_loops"]:
+            for task in artifact["open_loops"][:8]:
+                lines.append(f"- [{task['id']}] ({task['kind']}) {task['content']}")
+        else:
+            lines.append("- No active open loops.")
+        lines.extend(["", "## Limits", ""])
+        for limitation in artifact["limitations"]:
+            lines.append(f"- {limitation}")
+        return "\n".join(lines)
+
     def _personal_profile_markdown(self, profile: dict[str, Any]) -> str:
         lines = [
             "# Cortex Personal Adaptation Profile",

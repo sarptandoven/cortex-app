@@ -58,7 +58,7 @@ app.add_middleware(
 def _required_api_scope(method: str, path: str) -> str:
     normalized_method = method.upper()
     normalized_path = path.rstrip("/") or "/"
-    if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/context-pack", "/v1/personal-profile", "/v1/support/bundle"}:
+    if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/context-pack", "/v1/personal-profile", "/v1/agent-adaptation", "/v1/support/bundle"}:
         return "export"
     if normalized_path in {"/v1/diagnostics", "/v1/reliability/report"}:
         return "maintenance"
@@ -553,6 +553,21 @@ def personal_profile(
     if format == "markdown":
         return Response(content=profile["markdown"], media_type="text/markdown")
     return profile
+
+
+@app.get("/v1/agent-adaptation", response_model=None)
+def agent_adaptation(
+    query: str = "",
+    target: str = Query(default="assistant", max_length=80),
+    limit: int = Query(default=8, ge=1, le=20),
+    include_pending: bool = Query(default=False),
+    format: str = Query(default="json", pattern="^(json|markdown)$"),
+    user_id: str = Depends(auth),
+) -> dict[str, Any] | Response:
+    adaptation = store.agent_adaptation(user_id, query=query, target=target, limit=limit, include_pending=include_pending)
+    if format == "markdown":
+        return Response(content=adaptation["markdown"], media_type="text/markdown")
+    return adaptation
 
 
 @app.delete("/v1/memories/{memory_id}")

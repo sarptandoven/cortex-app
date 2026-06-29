@@ -48,6 +48,8 @@ FastAPI backend
   /v1/loop
   /v1/loop/reuse
   /v1/context-pack
+  /v1/personal-profile
+  /v1/agent-adaptation
   /v1/graph
   /v1/stats
   /v1/settings

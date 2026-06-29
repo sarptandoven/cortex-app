@@ -70,6 +70,20 @@ TOOLS = [
         },
     },
     {
+        "name": "get_agent_adaptation",
+        "description": "Return cited operating instructions that adapt an AI assistant to the user's preferences, style, decisions, limits, and current memory coverage.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "default": ""},
+                "target": {"type": "string", "default": "assistant"},
+                "limit": {"type": "integer", "default": 8},
+                "include_pending": {"type": "boolean", "default": False},
+                "format": {"type": "string", "default": "json", "enum": ["json", "markdown"]},
+            },
+        },
+    },
+    {
         "name": "list_supported_import_sources",
         "description": "List source exports Cortex can import, including chat, email, notes, docs, work tools, and knowledge-base formats.",
         "inputSchema": {"type": "object", "properties": {}},
@@ -213,7 +227,6 @@ READ_TOOLS = {
     "get_memory_graph",
     "get_daily_review",
     "get_product_loop",
-    "get_personal_profile",
     "list_supported_import_sources",
     "get_decisions",
     "get_open_questions",
@@ -230,7 +243,7 @@ READ_TOOLS = {
     "get_audit_log",
 }
 WRITE_TOOLS = {"remember_this", "approve_memory_capture", "archive_memory_capture", "forget_memory", "delete_memory_capture"}
-EXPORT_TOOLS = {"build_context_pack", "export_memory"}
+EXPORT_TOOLS = {"build_context_pack", "get_personal_profile", "get_agent_adaptation", "export_memory"}
 MAINTENANCE_TOOLS = {"create_memory_backup", "repair_memory_storage", "rebuild_memory_search", "rebuild_index_from_vault"}
 DESTRUCTIVE_TOOLS = {"forget_memory", "delete_memory_capture", "delete_memory_backups", "restore_latest_memory_backup", "delete_all_user_data"}
 
@@ -255,6 +268,15 @@ def _require_tool_access(store: CortexStore, user_id: str, name: str, token_scop
         if token_scopes is not None and capability not in token_scopes:
             raise PermissionError(f"MCP token is not scoped for {capability} actions.")
         store.require_agent_access(user_id, capability)
+
+
+def _bool_arg(args: dict[str, Any], key: str, default: bool = False) -> bool:
+    value = args.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any], token_scopes: list[str] | None = None) -> Any:
@@ -286,12 +308,24 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             user_id,
             query=args.get("query", ""),
             limit=int(args.get("limit", 6)),
-            include_pending=bool(args.get("include_pending", False)),
+            include_pending=_bool_arg(args, "include_pending"),
         )
         store.record_context_reuse(user_id, surface="mcp", query=args.get("query", ""), target="personal-profile")
         if args.get("format", "json") == "markdown":
             return profile["markdown"]
         return store.agent_payload(user_id, profile)
+    if name == "get_agent_adaptation":
+        adaptation = store.agent_adaptation(
+            user_id,
+            query=args.get("query", ""),
+            target=args.get("target", "assistant"),
+            limit=int(args.get("limit", 8)),
+            include_pending=_bool_arg(args, "include_pending"),
+        )
+        store.record_context_reuse(user_id, surface="mcp", query=args.get("query", ""), target=args.get("target", "agent-adaptation"))
+        if args.get("format", "json") == "markdown":
+            return adaptation["markdown"]
+        return store.agent_payload(user_id, adaptation)
     if name == "list_supported_import_sources":
         return {"results": store.supported_import_sources()}
     if name == "build_context_pack":

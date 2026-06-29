@@ -90,6 +90,8 @@ Browser assistants do not all expose a stable local MCP config. For those, Corte
 - `get_memory_graph`: retrieve the active graph
 - `get_daily_review`: retrieve today's pending captures, open loops, decisions, topics, and recommended actions
 - `build_context_pack`: build a paste-ready Markdown context pack for ChatGPT, Claude, Cursor, or another assistant
+- `get_personal_profile`: retrieve a cited profile grouped by memory layer, coverage, source health, open loops, and limitations
+- `get_agent_adaptation`: retrieve cited operating instructions that adapt an AI assistant to the user's preferences, style, decisions, limits, and current memory coverage
 - `get_decisions`: retrieve saved decisions
 - `get_open_questions`: retrieve open questions and tasks
 - `list_memory_topics`: list active topics
@@ -129,4 +131,5 @@ Agents should search before asking users to repeat context, cite source memory t
 - MCP maintenance tools still respect Trust controls.
 - The app and MCP clients can verify the backend through `health_contract >= 3`, the `reliability-hardening` feature flag, and the `operational-readiness` feature flag.
 - `build_context_pack` records reuse in the loop because generated context means Cortex memory was used in an AI workflow.
+- `get_agent_adaptation` records reuse in the loop because agent instructions are a higher-trust AI workflow and should be visible in review/audit surfaces.
 - `get_support_bundle` is intended for support triage; users should still review the JSON before sharing it.

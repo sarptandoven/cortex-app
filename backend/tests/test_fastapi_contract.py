@@ -349,6 +349,28 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertIn("# Cortex Personal Adaptation Profile", markdown.text)
         self.assertIn("Project Atlas", markdown.text)
 
+        adaptation = self.client.get(
+            "/v1/agent-adaptation",
+            params={"target": "Claude", "query": "Project Atlas"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(adaptation.status_code, 200)
+        adaptation_payload = adaptation.json()
+        self.assertEqual(adaptation_payload["name"], "Cortex Agent Adaptation Layer")
+        self.assertEqual(adaptation_payload["target"], "Claude")
+        self.assertIn("operating_principles", adaptation_payload)
+        self.assertTrue(adaptation_payload["rules"])
+        self.assertTrue(adaptation_payload["evidence"])
+
+        adaptation_markdown = self.client.get(
+            "/v1/agent-adaptation",
+            params={"format": "markdown", "target": "Cursor", "query": "Project Atlas"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(adaptation_markdown.status_code, 200)
+        self.assertIn("# Cortex Agent Adaptation Layer", adaptation_markdown.text)
+        self.assertIn("Operating Principles", adaptation_markdown.text)
+
     def test_source_import_endpoint_queues_export_records(self) -> None:
         export_dir = Path(MODULE_TMP.name) / "chatgpt-import-contract"
         export_dir.mkdir(exist_ok=True)
