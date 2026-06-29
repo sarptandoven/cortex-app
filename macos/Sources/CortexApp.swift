@@ -414,6 +414,23 @@ struct AuditLogResponse: Codable {
     let results: [AuditEventItem]
 }
 
+struct IntegrationTokenListResponse: Codable {
+    let results: [IntegrationTokenItem]
+}
+
+struct IntegrationTokenItem: Codable, Identifiable {
+    var id: String { token_id }
+    let token_id: String
+    let user_id: String
+    let label: String
+    let audience: String
+    let scopes: [String]
+    let created_at: String
+    let updated_at: String
+    let last_used_at: String?
+    let revoked_at: String?
+}
+
 struct AuditEventItem: Codable, Identifiable {
     let id: String
     let object_id: String
@@ -1222,6 +1239,8 @@ final class AppState: ObservableObject {
     @Published var appSettings: AppSettingsResponse = .defaults
     @Published var trustSummary: TrustSummaryResponse?
     @Published var auditEvents: [AuditEventItem] = []
+    @Published var integrationTokens: [IntegrationTokenItem] = []
+    @Published var showRevokedIntegrationTokens: Bool = false
     @Published var diagnostics: DiagnosticsResponse?
     @Published var reliabilityReport: ReliabilityReportResponse?
     @Published var lastBackupPath: String?
@@ -1399,10 +1418,10 @@ final class AppState: ObservableObject {
         let message = await backend.ensureRunning(endpoint: endpoint, apiKey: apiKey, mcpAPIKey: mcpAPIKey, vaultPath: vaultPath)
         backendStatus = message
         status = message
-        await registerMCPToken()
+        _ = await registerMCPToken()
     }
 
-    private func registerMCPToken() async {
+    private func registerMCPToken() async -> Bool {
         do {
             _ = try await performRequest(
                 path: "/v1/integrations/mcp-token",
@@ -1413,8 +1432,10 @@ final class AppState: ObservableObject {
                     "scopes": ["read", "write", "export", "maintenance"]
                 ]
             )
+            return true
         } catch {
             status = "MCP token registration failed: \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -2036,8 +2057,52 @@ final class AppState: ObservableObject {
             trustSummary = try JSONDecoder().decode(TrustSummaryResponse.self, from: summaryData)
             let auditData = try await request(path: "/v1/audit-log?limit=80", method: "GET")
             auditEvents = try JSONDecoder().decode(AuditLogResponse.self, from: auditData).results
+            await loadIntegrationTokens()
         } catch {
             status = "Trust failed: \(error.localizedDescription)"
+        }
+    }
+
+    func loadIntegrationTokens(includeRevoked: Bool? = nil) async {
+        let include = includeRevoked ?? showRevokedIntegrationTokens
+        do {
+            let data = try await request(path: "/v1/integrations/tokens?include_revoked=\(include ? "true" : "false")", method: "GET")
+            integrationTokens = try JSONDecoder().decode(IntegrationTokenListResponse.self, from: data).results
+        } catch {
+            status = "Token refresh failed: \(error.localizedDescription)"
+        }
+    }
+
+    func toggleRevokedIntegrationTokens(_ include: Bool) {
+        showRevokedIntegrationTokens = include
+        Task {
+            await loadIntegrationTokens(includeRevoked: include)
+        }
+    }
+
+    func revokeIntegrationToken(_ token: IntegrationTokenItem) async {
+        guard let tokenID = token.token_id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
+            status = "Token revoke failed: invalid token id"
+            return
+        }
+        do {
+            _ = try await request(path: "/v1/integrations/tokens/\(tokenID)", method: "DELETE")
+            status = "\(token.label) revoked"
+            await loadIntegrationTokens()
+            refreshIntegrationStates()
+        } catch {
+            status = "Token revoke failed: \(error.localizedDescription)"
+        }
+    }
+
+    func resetMCPIntegrationToken() async {
+        mcpAPIKey = AppState.generateMCPAPIKey()
+        keychain.save(mcpAPIKey, account: "mcpAPIKey")
+        let registered = await registerMCPToken()
+        await loadIntegrationTokens()
+        refreshIntegrationStates()
+        if registered {
+            status = "MCP token reset. Reinstall or copy setup for connected AI tools."
         }
     }
 
@@ -5213,8 +5278,11 @@ struct TrustTab: View {
                     SettingsDataRecoverySection(state: state)
                     TrustActionsSection(state: state)
                     DisclosureGroup("Connected AI tools", isExpanded: $integrationsExpanded) {
-                        IntegrationCenterView(state: state, compact: true)
-                            .padding(.top, 8)
+                        VStack(alignment: .leading, spacing: 14) {
+                            IntegrationCenterView(state: state, compact: true)
+                            IntegrationTokensSection(state: state)
+                        }
+                        .padding(.top, 8)
                     }
                     DisclosureGroup("Sources and audit trail", isExpanded: $sourcesExpanded) {
                         VStack(alignment: .leading, spacing: 14) {
@@ -5599,6 +5667,137 @@ struct TrustActionsSection: View {
             }
             TrustNotice(systemImage: "lock.doc", title: "Local-first", detail: "Trust controls apply to the local backend, MCP agents, browser handoffs, and exports. The vault remains on this Mac.", color: .accentColor)
         }
+    }
+}
+
+struct IntegrationTokensSection: View {
+    @ObservedObject var state: AppState
+
+    var revokedTokens: [IntegrationTokenItem] {
+        state.integrationTokens.filter { $0.revoked_at != nil }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Integration tokens")
+                        .font(.headline)
+                    Text("Review and revoke local tokens used by AI tools and REST clients.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Button {
+                    Task { await state.loadIntegrationTokens() }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+            }
+
+            HStack {
+                Toggle("Show revoked", isOn: Binding(
+                    get: { state.showRevokedIntegrationTokens },
+                    set: { state.toggleRevokedIntegrationTokens($0) }
+                ))
+                .toggleStyle(.checkbox)
+                Spacer()
+                Button {
+                    Task { await state.resetMCPIntegrationToken() }
+                } label: {
+                    Label("Reset MCP Token", systemImage: "key")
+                }
+            }
+
+            if state.integrationTokens.isEmpty {
+                QuietState(title: "No integration tokens", detail: "Connect AI tools to create the local MCP token.")
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(state.integrationTokens) { token in
+                        IntegrationTokenRow(state: state, token: token)
+                    }
+                }
+            }
+
+            if !revokedTokens.isEmpty && !state.showRevokedIntegrationTokens {
+                Text("\(revokedTokens.count) revoked token\(revokedTokens.count == 1 ? "" : "s") hidden")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .onAppear {
+            Task { await state.loadIntegrationTokens() }
+        }
+    }
+}
+
+struct IntegrationTokenRow: View {
+    @ObservedObject var state: AppState
+    let token: IntegrationTokenItem
+
+    var isRevoked: Bool {
+        token.revoked_at != nil
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .foregroundColor(isRevoked ? .secondary : .accentColor)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(token.label)
+                        .fontWeight(.medium)
+                    Text(token.audience.uppercased())
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.accentColor.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                    if isRevoked {
+                        Text("Revoked")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                Text(token.token_id)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            if !isRevoked {
+                Button(role: .destructive) {
+                    Task { await state.revokeIntegrationToken(token) }
+                } label: {
+                    Label("Revoke", systemImage: "xmark.shield")
+                }
+            }
+        }
+        .padding(8)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var icon: String {
+        token.audience == "mcp" ? "wand.and.stars" : "network.badge.shield.half.filled"
+    }
+
+    private var detail: String {
+        let scopes = token.scopes.isEmpty ? "no scopes" : token.scopes.joined(separator: ", ")
+        let lastUsed = token.last_used_at.map { "last used \(shortDate($0))" } ?? "not used yet"
+        if let revoked = token.revoked_at {
+            return "\(scopes) · revoked \(shortDate(revoked))"
+        }
+        return "\(scopes) · \(lastUsed)"
+    }
+
+    private func shortDate(_ value: String) -> String {
+        String(value.prefix(19)).replacingOccurrences(of: "T", with: " ")
     }
 }
 

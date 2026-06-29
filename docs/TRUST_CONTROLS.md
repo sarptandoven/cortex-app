@@ -219,6 +219,7 @@ The Trust tab exposes:
 - agent maintenance/destructive toggles
 - shared-context redaction toggle
 - context pack size
+- integration token list, revoke action, and local MCP token reset
 - capture source breakdown
 - audit trail
 - recovery actions: copy redacted context, backup, open vault
