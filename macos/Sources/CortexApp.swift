@@ -1558,7 +1558,7 @@ final class AppState: ObservableObject {
     @Published var showOnboarding: Bool = !UserDefaults.standard.bool(forKey: "onboardingComplete.v1")
     @Published var onboardingStep: OnboardingStep = OnboardingStep(rawValue: UserDefaults.standard.integer(forKey: "onboardingStep.v2")) ?? .privateVault
     @Published var onboardingNote: String = ""
-    @Published var firstSourceAdded: Bool = UserDefaults.standard.bool(forKey: "onboardingFirstSourceAdded.v1")
+    @Published var firstSourceAdded: Bool = UserDefaults.standard.bool(forKey: "onboardingFirstSourceImported.v1")
     @Published var firstMemoryReviewed: Bool = UserDefaults.standard.bool(forKey: "onboardingFirstMemoryReviewed.v1")
     @Published var cortexUsed: Bool = UserDefaults.standard.bool(forKey: "onboardingCortexUsed.v1")
     @Published var onboardingBackupDecision: String = UserDefaults.standard.string(forKey: "onboardingBackupDecision.v1") ?? ""
@@ -1610,15 +1610,15 @@ final class AppState: ObservableObject {
 
     var onboardingHasSource: Bool {
         firstSourceAdded
-            || !importHistory.isEmpty
-            || (stats?.captures ?? 0) > 0
-            || (stats?.pending_captures ?? 0) > 0
-            || (stats?.memories ?? 0) > 0
-            || !inbox.isEmpty
+            || importHistory.contains { item in
+                item.deleted_at == nil && item.records_found > 0 && (item.queued + item.saved + item.remaining_captures) > 0
+            }
+            || (sourceReadinessReport?.summary.sources_with_data ?? 0) > 0
     }
 
     var onboardingHasReviewedMemory: Bool {
         firstMemoryReviewed
+            || ((stats?.memories ?? 0) > 0 && (stats?.pending_captures ?? 0) == 0)
     }
 
     var onboardingHasUsedCortex: Bool {
@@ -1807,7 +1807,7 @@ final class AppState: ObservableObject {
         }
         Task {
             if await capture(text: text, source: "macos-clipboard", title: "Clipboard capture") {
-                markFirstSourceAdded()
+                status = "Clipboard saved. Import a source to finish setup."
             }
         }
     }
@@ -1820,8 +1820,8 @@ final class AppState: ObservableObject {
         }
         Task {
             if await capture(text: text, source: "macos-quick-note", title: "Quick note") {
-                markFirstSourceAdded()
                 quickNote = ""
+                status = "Quick memory saved. Import a source to finish setup."
             }
         }
     }
@@ -1848,10 +1848,10 @@ final class AppState: ObservableObject {
             : captureTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         Task {
             if await capture(text: content.joined(separator: "\n"), source: "web-url", title: title, sourceURL: urlText.isEmpty ? nil : urlText) {
-                markFirstSourceAdded()
                 captureURLString = ""
                 captureTitle = ""
                 captureNotes = ""
+                status = "Web memory saved. Import a source to finish setup."
             }
         }
     }
@@ -1930,9 +1930,8 @@ final class AppState: ObservableObject {
         }
         Task {
             if await capture(text: text, source: "macos-onboarding", title: "First Cortex memory") {
-                markFirstSourceAdded()
                 onboardingNote = ""
-                setOnboardingStep(.reviewMemory)
+                status = "Quick memory saved. Import a real source to continue setup."
             }
         }
     }
@@ -2283,6 +2282,7 @@ final class AppState: ObservableObject {
             } else {
                 await loadProductLoop()
             }
+            markCortexUsed()
             await loadReview()
             await loadTrust()
         } catch {
@@ -2729,7 +2729,7 @@ final class AppState: ObservableObject {
 
     func markFirstSourceAdded() {
         firstSourceAdded = true
-        UserDefaults.standard.set(true, forKey: "onboardingFirstSourceAdded.v1")
+        UserDefaults.standard.set(true, forKey: "onboardingFirstSourceImported.v1")
     }
 
     func markFirstMemoryReviewed() {
@@ -3412,20 +3412,6 @@ struct CortexView: View {
     }
 }
 
-struct IntegrationsTab: View {
-    @ObservedObject var state: AppState
-
-    var body: some View {
-        ScrollView {
-            IntegrationCenterView(state: state, compact: false)
-                .padding(16)
-        }
-        .onAppear {
-            state.refreshIntegrationStates()
-        }
-    }
-}
-
 struct IntegrationCenterView: View {
     @ObservedObject var state: AppState
     let compact: Bool
@@ -3955,6 +3941,9 @@ struct OnboardingFirstSourceStep: View {
 
             DisclosureGroup("Add a quick memory instead") {
                 VStack(alignment: .leading, spacing: 10) {
+                    Text("Quick memories are useful later, but setup continues after Cortex imports a real source.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                     ZStack(alignment: .topLeading) {
                         TextEditor(text: $state.onboardingNote)
                             .font(.body)
@@ -3995,8 +3984,8 @@ struct OnboardingFirstSourceStep: View {
             }
 
             OnboardingCheckRow(
-                title: state.onboardingHasSource ? "First source added" : "Waiting for a source",
-                detail: state.onboardingHasSource ? "Continue to review and approve useful memory." : "Choose sources, drop files, import the inbox, or add one quick memory.",
+                title: state.onboardingHasSource ? "First source imported" : "Waiting for an imported source",
+                detail: state.onboardingHasSource ? "Continue to review and approve useful memory." : "Choose sources, drop files, or import the inbox.",
                 systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "tray.and.arrow.down",
                 color: state.onboardingHasSource ? .green : .orange
             )
@@ -5846,34 +5835,6 @@ struct ImportHistoryRow: View {
     }
 }
 
-struct CaptureRecentSection: View {
-    @ObservedObject var state: AppState
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Recent")
-                    .font(.headline)
-                Spacer()
-                Text("\(state.recent.count)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            if state.recent.isEmpty {
-                QuietState(title: "No model signals yet", detail: "Imported sources, notes, links, files, and clipboard text appear here.")
-            } else {
-                LazyVStack(alignment: .leading, spacing: 10) {
-                    ForEach(state.recent) { item in
-                        MemoryCard(item: item) {
-                            state.deleteMemory(item)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 struct SearchTab: View {
     @ObservedObject var state: AppState
 
@@ -6680,73 +6641,6 @@ struct TrustNotice: View {
     }
 }
 
-struct AdvancedTab: View {
-    @ObservedObject var state: AppState
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                if let summary = state.trustSummary {
-                    TrustPolicySection(state: state)
-                    TrustScoreSection(summary: summary)
-                } else {
-                    QuietState(title: "AI access is loading", detail: "Cortex is reading local policy and source history.")
-                }
-
-                Divider()
-                SettingsPrivacySection(state: state)
-                Divider()
-                SettingsDataRecoverySection(state: state)
-
-                DisclosureGroup("AI apps") {
-                    SettingsIntegrationsSection(state: state)
-                        .padding(.top, 8)
-                }
-
-                DisclosureGroup("Advanced") {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Group {
-                            SettingsOnboardingSection(state: state)
-                            Divider()
-                            SettingsReliabilitySection(state: state)
-                            Divider()
-                        }
-                        Group {
-                            if let summary = state.trustSummary {
-                                TrustSourceSection(state: state, summary: summary)
-                                TrustAuditSection(events: state.auditEvents, refresh: {
-                                    Task { await state.loadTrust() }
-                                })
-                                TrustActionsSection(state: state)
-                            } else {
-                                QuietState(title: "Trust controls are loading", detail: "Cortex is reading local policy, source history, and audit events.")
-                            }
-                            Divider()
-                            AdvancedGraphSection(state: state)
-                            SettingsStatsSection(state: state)
-                            Divider()
-                        }
-                        Group {
-                            SettingsUpdatesSection(state: state)
-                            Divider()
-                            SettingsHealthSection(state: state)
-                            SettingsBackendSection(state: state)
-                        }
-                    }
-                    .padding(.top, 8)
-                }
-            }
-            .padding(16)
-        }
-        .task {
-            await state.loadTrust()
-            await state.loadDiagnostics()
-            await state.loadReliability()
-            await state.loadStats()
-        }
-    }
-}
-
 struct SettingsOnboardingSection: View {
     @ObservedObject var state: AppState
 
@@ -6913,39 +6807,6 @@ struct AdvancedGraphSection: View {
                 .background(Color(nsColor: .textBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             Text("\(state.graphNodes.count) nodes · \(state.graphEdges.count) edges")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
-    }
-}
-
-struct SettingsBehaviorSection: View {
-    @ObservedObject var state: AppState
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Memory behavior")
-                .font(.headline)
-            Toggle("Review new saves before clearing them", isOn: $state.appSettings.review_new_captures)
-            Toggle("Let AI use pending saves", isOn: $state.appSettings.allow_pending_in_context)
-            Stepper(value: $state.appSettings.context_pack_limit, in: 4...50, step: 2) {
-                Text("Shared memory limit: \(state.appSettings.context_pack_limit)")
-            }
-            HStack {
-                Button {
-                    state.saveMemorySettings()
-                } label: {
-                    Label("Save Settings", systemImage: "checkmark.circle")
-                }
-                .buttonStyle(.borderedProminent)
-                Button {
-                    Task { await state.loadSettings() }
-                } label: {
-                    Label("Reload", systemImage: "arrow.clockwise")
-                }
-                Spacer()
-            }
-            Text("Strict mode: turn off pending saves if assistants should only see approved memory.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -7519,6 +7380,19 @@ struct MemoryCard: View {
             Text(item.content)
                 .font(.body)
                 .fixedSize(horizontal: false, vertical: true)
+            if let citation = citationLabel {
+                HStack(spacing: 5) {
+                    Image(systemName: "link")
+                        .font(.caption2)
+                    Text(citation)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .help(item.source_url ?? citation)
+            }
             if let topics = item.topics, !topics.isEmpty {
                 Text(topics.prefix(5).map { "#\($0)" }.joined(separator: " "))
                     .font(.caption)
@@ -7540,6 +7414,17 @@ struct MemoryCard: View {
         case "action": return .green
         default: return .blue
         }
+    }
+
+    private var citationLabel: String? {
+        guard let sourceURL = item.source_url?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sourceURL.isEmpty else {
+            return nil
+        }
+        if sourceURL.hasPrefix("file://"), let url = URL(string: sourceURL) {
+            return url.path
+        }
+        return sourceURL
     }
 }
 

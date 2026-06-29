@@ -42,15 +42,17 @@ Prompts the user to import real source material through preview/import:
 
 This exercises import detection, extraction, duplicate checks, import history, and undo state.
 
+Quick memories, clipboard captures, and web captures are still available as secondary actions, but they do not complete this gate. The goal is to prove Cortex can ingest a real user source before it asks for review and retrieval.
+
 ### 3. Review Memory
 
 Prompts the user to approve at least one useful pending memory. This is the trust boundary before Cortex treats memory as ready.
 
 ### 4. Ask / Use Cortex
 
-Prompts the user to ask Cortex a real question about the approved source. The step completes when Ask returns cited memory.
+Prompts the user to ask Cortex a real question about the approved source. The step completes when Ask returns cited memory, or when the user prepares a context/adaptation handoff from approved memory.
 
-Copyable chat context and direct MCP setup remain available after setup, but they are secondary handoff options rather than the main onboarding goal.
+Copyable chat context and direct MCP setup are secondary handoff options rather than the main onboarding goal.
 
 ### 5. Trust & Backup
 
@@ -64,6 +66,11 @@ The app stores:
 
 ```text
 UserDefaults.onboardingComplete.v1
+UserDefaults.onboardingStep.v2
+UserDefaults.onboardingFirstSourceImported.v1
+UserDefaults.onboardingFirstMemoryReviewed.v1
+UserDefaults.onboardingCortexUsed.v1
+UserDefaults.onboardingBackupDecision.v1
 UserDefaults.vaultPath
 ```
 
@@ -77,9 +84,12 @@ index.sqlite:user_settings
 ## Verification Checklist
 
 - Fresh install shows onboarding automatically.
-- `Skip` dismisses and persists completion.
+- `Finish Later` dismisses setup without marking onboarding complete.
 - `More -> Setup -> Open Setup` reopens the flow.
 - Choosing a vault folder restarts the backend and `/health` returns the chosen path.
-- Saving the first memory writes capture and memory JSON files.
+- Importing the first real source writes an import session and source-linked captures or jobs.
+- Quick memories and clipboard captures do not complete the first-source gate.
+- Approving a pending source capture completes the review gate.
+- Ask with cited results, focused context, model context, or agent adaptation completes the use gate.
 - Copy MCP config uses the bundled script path.
 - Creating a backup writes `backups/cortex-vault-*.zip`.
