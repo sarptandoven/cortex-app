@@ -97,15 +97,28 @@ def _assert_api_token_scope(scoped: dict[str, Any], required_scope: str) -> None
         raise HTTPException(status_code=403, detail=f"Cortex API token requires {required_scope} scope")
 
 
+def _global_token_user_id(x_cortex_user: str | None) -> str:
+    requested_user = (x_cortex_user or "").strip()
+    if requested_user and requested_user != settings.default_user_id and settings.shard_mode != "local":
+        raise HTTPException(
+            status_code=403,
+            detail="Global Cortex API token cannot select another user in sharded mode; use a scoped user token",
+        )
+    if requested_user and requested_user != settings.default_user_id and settings.require_scoped_api_tokens:
+        raise HTTPException(
+            status_code=403,
+            detail="Global Cortex API token cannot select another user when scoped API tokens are required",
+        )
+    return requested_user or settings.default_user_id
+
+
 def auth(request: Request, authorization: str | None = Header(default=None), x_cortex_user: str | None = Header(default=None)) -> str:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid Cortex API token")
     token = authorization.split(" ", 1)[1].strip()
     if settings.api_key:
         if hmac.compare_digest(token, settings.api_key):
-            if settings.require_scoped_api_tokens and x_cortex_user and x_cortex_user != settings.default_user_id:
-                raise HTTPException(status_code=403, detail="Global Cortex API token cannot select another user when scoped API tokens are required")
-            return x_cortex_user or settings.default_user_id
+            return _global_token_user_id(x_cortex_user)
     scoped = store.authenticate_api_token(token, user_id=x_cortex_user)
     if scoped:
         if x_cortex_user and scoped["user_id"] != x_cortex_user:
@@ -120,7 +133,7 @@ def mcp_auth(authorization: str | None = Header(default=None), x_cortex_user: st
         raise HTTPException(status_code=401, detail="Missing or invalid Cortex MCP token")
     token = authorization.split(" ", 1)[1].strip()
     if settings.api_key and hmac.compare_digest(token, settings.api_key):
-        user_id = x_cortex_user or settings.default_user_id
+        user_id = _global_token_user_id(x_cortex_user)
         return {
             "user_id": user_id,
             "token_id": "admin",

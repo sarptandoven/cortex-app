@@ -65,6 +65,22 @@ class ShardingTests(unittest.TestCase):
         self.assertLess(int(first.shard_id.removeprefix("bucket-")), 8)
         self.assertLess(int(other.shard_id.removeprefix("bucket-")), 8)
 
+    def test_bucket_mode_blocks_whole_shard_backup_and_backup_delete(self) -> None:
+        registry = StoreRegistry.from_settings(self.settings(mode="bucket", shard_count=1))
+
+        with self.assertRaisesRegex(ValueError, "not tenant-safe"):
+            registry.create_backup("alice")
+        with self.assertRaisesRegex(ValueError, "not tenant-safe"):
+            registry.delete_backups("alice")
+        with self.assertRaisesRegex(ValueError, "not tenant-safe"):
+            registry.restore_latest_backup("alice")
+        with self.assertRaisesRegex(ValueError, "not tenant-safe"):
+            registry.delete_user_data("alice", include_backups=True)
+
+        registry.update_settings("alice", {"review_new_captures": False})
+        deleted = registry.delete_user_data("alice", include_backups=False)
+        self.assertFalse(deleted["include_backups"])
+
     def test_facade_routes_user_scoped_calls_without_changing_call_sites(self) -> None:
         registry = StoreRegistry.from_settings(self.settings(mode="user"))
         registry.update_settings("alice", {"review_new_captures": False})

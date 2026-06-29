@@ -486,6 +486,8 @@ class CortexVault:
             "imports": 0,
             "source_accounts": 0,
             "sync_cursors": 0,
+            "sync_devices": 0,
+            "sync_receipts": 0,
             "captures": 0,
             "memories": 0,
             "tasks": 0,
@@ -497,7 +499,7 @@ class CortexVault:
             "attachments": 0,
             "backups": 0,
         }
-        for record_dir in ("imports", "source_accounts", "sync_cursors", "captures", "memories", "tasks", "entities", "graph_edges"):
+        for record_dir in ("imports", "source_accounts", "sync_cursors", "sync_devices", "sync_receipts", "captures", "memories", "tasks", "entities", "graph_edges"):
             base = self.root / record_dir
             if not base.exists():
                 continue

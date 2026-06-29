@@ -789,7 +789,10 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
         if settings.api_key:
             if hmac.compare_digest(token, settings.api_key):
                 requested_user = self.headers.get("X-Cortex-User")
-                if settings.require_scoped_api_tokens and requested_user and requested_user != settings.default_user_id:
+                if requested_user and requested_user != settings.default_user_id and settings.shard_mode != "local":
+                    self._send_json({"detail": "Global Cortex API token cannot select another user in sharded mode; use a scoped user token"}, status=HTTPStatus.FORBIDDEN)
+                    return None
+                if requested_user and requested_user != settings.default_user_id and settings.require_scoped_api_tokens:
                     self._send_json({"detail": "Global Cortex API token cannot select another user when scoped API tokens are required"}, status=HTTPStatus.FORBIDDEN)
                     return None
                 return requested_user or settings.default_user_id
@@ -817,8 +820,15 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             return None
         token = authorization.split(" ", 1)[1].strip()
         if settings.api_key and hmac.compare_digest(token, settings.api_key):
+            requested_user = self.headers.get("X-Cortex-User")
+            if requested_user and requested_user != settings.default_user_id and settings.shard_mode != "local":
+                self._send_json({"detail": "Global Cortex API token cannot select another user in sharded mode; use a scoped user token"}, status=HTTPStatus.FORBIDDEN)
+                return None
+            if requested_user and requested_user != settings.default_user_id and settings.require_scoped_api_tokens:
+                self._send_json({"detail": "Global Cortex API token cannot select another user when scoped API tokens are required"}, status=HTTPStatus.FORBIDDEN)
+                return None
             return {
-                "user_id": self.headers.get("X-Cortex-User") or settings.default_user_id,
+                "user_id": requested_user or settings.default_user_id,
                 "token_id": "admin",
                 "label": "Cortex app token",
                 "audience": "admin",

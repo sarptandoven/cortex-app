@@ -393,6 +393,17 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "revoked"):
             self.store.record_sync_receipt(self.user_id, device["id"], cursor=revoked_feed["next_cursor"])
 
+        deleted = self.store.delete_user_data(self.user_id, include_backups=False)
+        self.assertEqual(deleted["sqlite"]["sync_devices"], 1)
+        self.assertEqual(deleted["sqlite"]["sync_receipts"], 1)
+        self.assertEqual(deleted["vault"]["sync_devices"], 1)
+        self.assertEqual(deleted["vault"]["sync_receipts"], 1)
+        rebuilt = self.store.rebuild_index_from_vault(self.user_id)
+        self.assertEqual(rebuilt["sync_devices"], 0)
+        self.assertEqual(rebuilt["sync_receipts"], 0)
+        self.assertEqual(self.store.list_sync_devices(self.user_id, include_revoked=True), [])
+        self.assertEqual(self.store.list_sync_receipts(self.user_id, device["id"]), [])
+
     def test_memory_quality_report_tracks_citations_review_and_layers(self) -> None:
         uncited = self.capture("We decided uncited quality memory should warn about missing source paths.")
         cited = self.store.save_capture(

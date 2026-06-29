@@ -220,6 +220,33 @@ class FastAPIContractTests(unittest.TestCase):
         finally:
             main_module.settings = original_settings
 
+    def test_global_token_cannot_select_user_in_sharded_mode(self) -> None:
+        original_settings = main_module.settings
+        main_module.settings = replace(original_settings, shard_mode="user", require_scoped_api_tokens=False)
+        try:
+            rest = self.client.get(
+                "/v1/stats",
+                headers={"Authorization": "Bearer test-token", "X-Cortex-User": "alice"},
+            )
+            self.assertEqual(rest.status_code, 403)
+            self.assertIn("sharded mode", rest.json()["detail"])
+
+            mcp = self.client.post(
+                "/mcp",
+                json={"jsonrpc": "2.0", "id": 91, "method": "tools/list", "params": {}},
+                headers={"Authorization": "Bearer test-token", "X-Cortex-User": "alice"},
+            )
+            self.assertEqual(mcp.status_code, 403)
+            self.assertIn("sharded mode", mcp.json()["detail"])
+
+            default_user = self.client.get(
+                "/v1/stats",
+                headers={"Authorization": "Bearer test-token", "X-Cortex-User": "local"},
+            )
+            self.assertEqual(default_user.status_code, 200)
+        finally:
+            main_module.settings = original_settings
+
     def test_integration_tokens_can_be_listed_and_revoked(self) -> None:
         scoped_token = "cxa_fastapi_revoke_token_123456789"
         registered = self.client.post(

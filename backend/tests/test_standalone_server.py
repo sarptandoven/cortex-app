@@ -1016,6 +1016,37 @@ class StandaloneServerTests(unittest.TestCase):
             )
         self.assertEqual(context.exception.code, 403)
 
+    def test_global_token_cannot_select_user_in_sharded_mode(self) -> None:
+        standalone_server.settings = Settings(
+            vault_path=Path(self.tmp.name) / "vault",
+            db_path=Path(self.tmp.name) / "index.sqlite",
+            api_key="test-token",
+            public_base_url="http://127.0.0.1:8766",
+            shard_mode="user",
+        )
+
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/stats",
+                    headers={"Authorization": "Bearer test-token", "X-Cortex-User": "alice"},
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 403)
+        self.assertIn("sharded mode", context.exception.read().decode("utf-8"))
+
+        mcp_request = request.Request(
+            self.base_url + "/mcp",
+            data=json.dumps({"jsonrpc": "2.0", "id": 17, "method": "tools/list", "params": {}}).encode("utf-8"),
+            headers={"Authorization": "Bearer test-token", "X-Cortex-User": "alice", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(mcp_request, timeout=5)
+        self.assertEqual(context.exception.code, 403)
+        self.assertIn("sharded mode", context.exception.read().decode("utf-8"))
+
     def test_integration_tokens_can_be_listed_and_revoked(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "alice"}
         with request.urlopen(request.Request(self.base_url + "/v1/integrations/tokens?audience=api", headers=headers), timeout=5) as response:

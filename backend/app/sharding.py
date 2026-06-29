@@ -162,6 +162,11 @@ class StoreRegistry:
             return attr
 
         def routed(*args: Any, **kwargs: Any) -> Any:
+            if self.router.mode == "bucket":
+                if name in {"create_backup", "delete_backups", "prune_backups", "restore_latest_backup"}:
+                    raise ValueError(f"{name} is not tenant-safe in bucket shard mode")
+                if name == "delete_user_data" and kwargs.get("include_backups", True):
+                    raise ValueError("delete_user_data(include_backups=True) is not tenant-safe in bucket shard mode")
             routed_store = self._store_from_call(args, kwargs)
             method: Callable[..., Any] = getattr(routed_store, name)
             return method(*args, **kwargs)
