@@ -35,7 +35,10 @@ class FakeStore:
         self.revoke_token_calls: list[tuple[str, str]] = []
         self.source_account_calls: list[tuple[str, str]] = []
         self.sync_cursor_calls: list[tuple[str, str, str | None]] = []
+        self.sync_device_calls: list[tuple[str, str]] = []
+        self.sync_feed_calls: list[tuple[str, str, int, str, str, dict | None]] = []
         self.source_account_disconnected = False
+        self.sync_device_revoked = False
 
     def search(self, user_id: str, query: str, limit: int, kind: str | None = None, layer: str | None = None) -> list[dict]:
         self.search_calls.append((user_id, query, limit, kind, layer))
@@ -145,7 +148,28 @@ class FakeStore:
             "recommendations": ["Prefer source imports and URL/file captures so retrieved memory has citations."],
         }
 
-    def sync_change_feed(self, user_id: str, *, after: str = "", limit: int = 100) -> dict:
+    def sync_change_feed(
+        self,
+        user_id: str,
+        *,
+        after: str = "",
+        limit: int = 100,
+        device_id: str = "",
+        signing_key: str = "",
+        shard: dict | None = None,
+    ) -> dict:
+        self.sync_feed_calls.append((user_id, after, limit, device_id, signing_key, shard))
+        device = self.list_sync_devices(user_id, include_revoked=True)[0] if device_id else None
+        warnings = ["device_revoked"] if device and device.get("revoked_at") else []
+        signature = None
+        if device:
+            signature = {
+                "algorithm": "hmac-sha256",
+                "configured": bool(signing_key and not warnings),
+                "device_id": device["id"],
+                "payload_hash": "sha256:test",
+                "value": "hmac-sha256:test",
+            }
         if after == "evt_missing":
             return {
                 "generated_at": "2026-01-01T00:00:00Z",
@@ -155,9 +179,12 @@ class FakeStore:
                 "next_cursor": after,
                 "has_more": False,
                 "high_watermark": {"event_id": after, "created_at": None},
-                "counts": {"captures": 0, "memories": 0, "tasks": 0, "entities": 0, "imports": 0, "source_accounts": 0, "sync_cursors": 0, "events": 0},
+                "shard": shard,
+                "counts": {"captures": 0, "memories": 0, "tasks": 0, "entities": 0, "imports": 0, "source_accounts": 0, "sync_cursors": 0, "sync_devices": 1 if device else 0, "events": 0},
+                "device": device,
                 "changes": [],
-                "warnings": ["cursor_not_found"],
+                "warnings": ["cursor_not_found"] + warnings,
+                "signature": signature,
             }
         return {
             "generated_at": "2026-01-01T00:00:00Z",
@@ -167,7 +194,9 @@ class FakeStore:
             "next_cursor": "evt_test",
             "has_more": False,
             "high_watermark": {"event_id": "evt_test", "created_at": "2026-01-01T00:00:00Z"},
-            "counts": {"captures": 1, "memories": 1, "tasks": 0, "entities": 0, "imports": 0, "source_accounts": 0, "sync_cursors": 0, "events": 1},
+            "shard": shard,
+            "counts": {"captures": 1, "memories": 1, "tasks": 0, "entities": 0, "imports": 0, "source_accounts": 0, "sync_cursors": 0, "sync_devices": 1 if device else 0, "events": 1},
+            "device": device,
             "changes": [
                 {
                     "id": "evt_test",
@@ -181,7 +210,8 @@ class FakeStore:
                     "safe_metadata": {"content_chars": 42},
                 }
             ],
-            "warnings": [],
+            "warnings": warnings,
+            "signature": signature,
         }
 
     def supported_import_sources(self) -> list[dict]:
@@ -345,6 +375,55 @@ class FakeStore:
             "last_error": last_error,
             "last_completed_at": "2026-01-01T00:00:00Z" if completed and not last_error else None,
         }
+
+    def list_sync_devices(self, user_id: str, *, include_revoked: bool = False) -> list[dict]:
+        if self.sync_device_revoked and not include_revoked:
+            return []
+        return [
+            {
+                "id": "sdev_test",
+                "user_id": user_id,
+                "device_name": "Standalone Mac",
+                "platform": "macos",
+                "fingerprint": "abcd1234abcd1234",
+                "public_key": None,
+                "capabilities": ["manifest"],
+                "first_cursor": None,
+                "last_cursor": None,
+                "last_seen_at": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "revoked_at": "2026-01-01T00:00:01Z" if self.sync_device_revoked else None,
+            }
+        ]
+
+    def register_sync_device(
+        self,
+        user_id: str,
+        *,
+        device_name: str,
+        platform: str = "unknown",
+        device_key: str | None = None,
+        public_key: str | None = None,
+        capabilities: list[str] | None = None,
+    ) -> dict:
+        if not device_name:
+            raise ValueError("device_name is required")
+        self.sync_device_calls.append((user_id, device_name))
+        self.sync_device_revoked = False
+        return self.list_sync_devices(user_id)[0] | {
+            "device_name": device_name,
+            "platform": platform.lower(),
+            "public_key": public_key,
+            "capabilities": capabilities or [],
+            "device_key": device_key or "csd_test",
+        }
+
+    def revoke_sync_device(self, user_id: str, device_id: str) -> dict | None:
+        if device_id != "sdev_test":
+            return None
+        self.sync_device_revoked = True
+        return self.list_sync_devices(user_id, include_revoked=True)[0]
 
     def analyze_import_sources(self, paths: list[str], source_hint: str = "", max_records: int = 500) -> dict:
         self.import_analysis_calls.append((paths, source_hint, max_records))
@@ -580,13 +659,16 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(payload["source_health"][0]["source"], "unit-test")
 
     def test_sync_changes_route_forwards_to_store(self) -> None:
-        with self.get("/v1/sync/changes?limit=1") as response:
+        with self.get("/v1/sync/changes?limit=1&device_id=sdev_test") as response:
             payload = json.loads(response.read().decode("utf-8"))
 
         self.assertEqual(response.status, 200)
         self.assertEqual(payload["sync_contract"], 1)
         self.assertFalse(payload["content_included"])
         self.assertEqual(payload["changes"][0]["id"], "evt_test")
+        self.assertEqual(payload["device"]["id"], "sdev_test")
+        self.assertFalse(payload["signature"]["configured"])
+        self.assertEqual(self.fake_store.sync_feed_calls[-1], ("local", "", 1, "sdev_test", "", None))
 
         with self.get("/v1/sync/changes?after=evt_missing") as response:
             invalid = json.loads(response.read().decode("utf-8"))
@@ -716,6 +798,21 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(cursors["results"][0]["id"], "sync_test")
 
         with self.post_json(
+            "/v1/sync/devices",
+            {"device_name": "Standalone Mac", "platform": "macOS", "capabilities": ["manifest"]},
+        ) as response:
+            device = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(response.status, 200)
+        self.assertEqual(device["id"], "sdev_test")
+        self.assertEqual(device["device_key"], "csd_test")
+        self.assertEqual(self.fake_store.sync_device_calls, [("local", "Standalone Mac")])
+
+        with self.get("/v1/sync/devices") as response:
+            devices = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(devices["results"][0]["id"], "sdev_test")
+        self.assertNotIn("device_key", devices["results"][0])
+
+        with self.post_json(
             "/v1/sync-cursors",
             {"source": "gmail", "source_account_id": "sacct_test", "cursor_name": "messages", "completed": "false", "last_error": "paused"},
         ) as response:
@@ -733,6 +830,23 @@ class StandaloneServerTests(unittest.TestCase):
 
         with self.assertRaises(error.HTTPError) as context:
             self.delete("/v1/source-accounts/sacct_missing")
+        self.assertEqual(context.exception.code, 404)
+
+        with self.delete("/v1/sync/devices/sdev_test") as response:
+            revoked_device = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(revoked_device["id"], "sdev_test")
+        self.assertIsNotNone(revoked_device["revoked_at"])
+
+        with self.get("/v1/sync/devices") as response:
+            active_devices = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(active_devices["results"], [])
+
+        with self.get("/v1/sync/devices?include_revoked=true") as response:
+            all_devices = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(all_devices["results"][0]["revoked_at"], "2026-01-01T00:00:01Z")
+
+        with self.assertRaises(error.HTTPError) as context:
+            self.delete("/v1/sync/devices/sdev_missing")
         self.assertEqual(context.exception.code, 404)
 
         with self.get("/v1/source-accounts") as response:

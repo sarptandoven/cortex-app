@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import load_settings
 from .extractor import extract_context
 from .mcp_tools import TOOLS, call_tool, tool_result_text
-from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GraphResponse, JobRunResponse, ListResponse, MaintenanceResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, ProductLoopResponse, QueuedCaptureResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, VaultRebuildResponse, VectorRebuildResponse
+from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GraphResponse, JobRunResponse, ListResponse, MaintenanceResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, ProductLoopResponse, QueuedCaptureResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, VaultRebuildResponse, VectorRebuildResponse
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
 
@@ -69,6 +69,10 @@ def _required_api_scope(method: str, path: str) -> str:
     if normalized_path.startswith("/v1/integrations/tokens/"):
         return "maintenance"
     if normalized_path.startswith("/v1/source-accounts/") and normalized_method == "DELETE":
+        return "maintenance"
+    if normalized_path == "/v1/sync/devices" and normalized_method == "POST":
+        return "maintenance"
+    if normalized_path.startswith("/v1/sync/devices/") and normalized_method == "DELETE":
         return "maintenance"
     if normalized_path == "/v1/backups/restore-latest":
         return "destructive"
@@ -417,6 +421,34 @@ def upsert_sync_cursor(request: SyncCursorRequest, user_id: str = Depends(auth))
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@app.get("/v1/sync/devices", response_model=SyncDeviceListResponse)
+def list_sync_devices(include_revoked: bool = Query(default=False), user_id: str = Depends(auth)) -> dict[str, Any]:
+    return {"results": store.list_sync_devices(user_id, include_revoked=include_revoked)}
+
+
+@app.post("/v1/sync/devices", response_model=SyncDeviceResponse)
+def register_sync_device(request: SyncDeviceRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    try:
+        return store.register_sync_device(
+            user_id,
+            device_name=request.device_name,
+            platform=request.platform,
+            device_key=request.device_key,
+            public_key=request.public_key,
+            capabilities=request.capabilities,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.delete("/v1/sync/devices/{device_id}", response_model=SyncDeviceResponse)
+def revoke_sync_device(device_id: str, user_id: str = Depends(auth)) -> dict[str, Any]:
+    revoked = store.revoke_sync_device(user_id, device_id)
+    if not revoked:
+        raise HTTPException(status_code=404, detail="Sync device not found")
+    return revoked
+
+
 @app.get("/v1/imports")
 def list_imports(limit: int = Query(default=50, ge=1, le=100), include_deleted: bool = True, user_id: str = Depends(auth)) -> dict[str, Any]:
     return {"results": store.list_imports(user_id, limit=limit, include_deleted=include_deleted)}
@@ -694,14 +726,21 @@ def audit_log(limit: int = Query(default=80, ge=1, le=300), user_id: str = Depen
 def sync_changes(
     after: str = Query(default="", max_length=120),
     limit: int = Query(default=100, ge=1, le=1000),
+    device_id: str = Query(default="", max_length=120),
     user_id: str = Depends(auth),
 ) -> dict[str, Any]:
-    payload = store.sync_change_feed(user_id, after=after, limit=limit)
     try:
-        payload["shard"] = store.assignment_for(user_id).as_dict()
+        shard = store.assignment_for(user_id).as_dict()
     except Exception:
-        pass
-    return payload
+        shard = None
+    return store.sync_change_feed(
+        user_id,
+        after=after,
+        limit=limit,
+        device_id=device_id,
+        signing_key=settings.sync_signing_key,
+        shard=shard,
+    )
 
 
 @app.get("/v1/diagnostics", response_model=DiagnosticsResponse)

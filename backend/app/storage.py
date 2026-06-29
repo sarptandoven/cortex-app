@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import platform
@@ -32,6 +33,7 @@ BACKEND_FEATURES = (
     "operational-readiness",
     "source-imports",
     "source-account-registry",
+    "sync-device-manifests",
 )
 SUPPORT_BUNDLE_SCHEMA = 1
 DEFAULT_BACKUP_RETENTION_COUNT = 20
@@ -1187,6 +1189,101 @@ class CortexStore:
         if account_row:
             self.vault.write_source_account(self._source_account_from_row(account_row))
         return cursor
+
+    def register_sync_device(
+        self,
+        user_id: str,
+        *,
+        device_name: str,
+        platform: str = "unknown",
+        device_key: str | None = None,
+        public_key: str | None = None,
+        capabilities: list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        name = (device_name or "").strip()[:160]
+        if not name:
+            raise ValueError("device_name is required")
+        normalized_platform = _normalize_source_key(platform or "unknown") or "unknown"
+        generated_key = ""
+        key_material = (device_key or public_key or "").strip()
+        if not key_material:
+            generated_key = "csd_" + secrets.token_urlsafe(32).replace("-", "").replace("_", "")[:43]
+            key_material = generated_key
+        device_key_hash = hashlib.sha256(key_material.encode("utf-8")).hexdigest()
+        device_id = stable_id("sdev_", f"{user_id}:{device_key_hash}")
+        timestamp = now_iso()
+        capability_values = sorted({str(value).strip()[:80] for value in (capabilities or []) if str(value).strip()})
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO sync_devices
+                (id, user_id, device_name, platform, device_key_hash, public_key, capabilities_json, first_cursor, last_cursor, last_seen_at, created_at, updated_at, revoked_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL)
+                ON CONFLICT(id) DO UPDATE SET
+                  device_name = excluded.device_name,
+                  platform = excluded.platform,
+                  public_key = excluded.public_key,
+                  capabilities_json = excluded.capabilities_json,
+                  updated_at = excluded.updated_at,
+                  revoked_at = NULL
+                """,
+                (
+                    device_id,
+                    user_id,
+                    name,
+                    normalized_platform,
+                    device_key_hash,
+                    (public_key or "").strip()[:2000] or None,
+                    json.dumps(capability_values),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            self._event(conn, user_id, device_id, "sync_device", "registered", {"platform": normalized_platform, "capabilities": capability_values})
+            row = conn.execute("SELECT * FROM sync_devices WHERE user_id = ? AND id = ?", (user_id, device_id)).fetchone()
+        device = self._sync_device_from_row(row)
+        self.vault.write_sync_device(self._sync_device_record_from_row(row))
+        if generated_key:
+            return {**device, "device_key": generated_key}
+        return device
+
+    def list_sync_devices(self, user_id: str, *, include_revoked: bool = False) -> list[dict[str, Any]]:
+        filters = ["user_id = ?"]
+        values: list[Any] = [user_id]
+        if not include_revoked:
+            filters.append("revoked_at IS NULL")
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM sync_devices
+                WHERE {" AND ".join(filters)}
+                ORDER BY updated_at DESC, device_name
+                """,
+                tuple(values),
+            ).fetchall()
+        return [self._sync_device_from_row(row) for row in rows]
+
+    def revoke_sync_device(self, user_id: str, device_id: str) -> dict[str, Any] | None:
+        timestamp = now_iso()
+        with connect(self.db_path) as conn:
+            existing = conn.execute("SELECT * FROM sync_devices WHERE user_id = ? AND id = ?", (user_id, device_id)).fetchone()
+            if not existing:
+                return None
+            conn.execute(
+                """
+                UPDATE sync_devices
+                SET updated_at = ?,
+                    revoked_at = ?
+                WHERE user_id = ? AND id = ?
+                """,
+                (timestamp, timestamp, user_id, device_id),
+            )
+            self._event(conn, user_id, device_id, "sync_device", "revoked", {"platform": existing["platform"]})
+            row = conn.execute("SELECT * FROM sync_devices WHERE user_id = ? AND id = ?", (user_id, device_id)).fetchone()
+        device = self._sync_device_from_row(row)
+        self.vault.write_sync_device(self._sync_device_record_from_row(row))
+        return device
 
     def analyze_import_sources(self, paths: list[str], source_hint: str = "", max_records: int = 500) -> dict[str, Any]:
         return analyze_sources(paths, source_hint=source_hint, max_records=max_records)
@@ -3066,6 +3163,9 @@ class CortexStore:
                 "open_tasks": conn.execute("SELECT COUNT(*) FROM tasks WHERE user_id = ? AND status = 'open'", (user_id,)).fetchone()[0],
                 "events": conn.execute("SELECT COUNT(*) FROM memory_events WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "imports": conn.execute("SELECT COUNT(*) FROM import_sessions WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "source_accounts": conn.execute("SELECT COUNT(*) FROM source_accounts WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "sync_cursors": conn.execute("SELECT COUNT(*) FROM sync_cursors WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "sync_devices": conn.execute("SELECT COUNT(*) FROM sync_devices WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "vector_embeddings": self._vector_count(conn, user_id),
                 "queued_jobs": conn.execute("SELECT COUNT(*) FROM memory_jobs WHERE user_id = ? AND status = 'queued'", (user_id,)).fetchone()[0],
                 "running_jobs": conn.execute("SELECT COUNT(*) FROM memory_jobs WHERE user_id = ? AND status = 'running'", (user_id,)).fetchone()[0],
@@ -3508,6 +3608,7 @@ class CortexStore:
                 "imports": conn.execute("SELECT COUNT(*) FROM import_sessions WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "source_accounts": conn.execute("SELECT COUNT(*) FROM source_accounts WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "sync_cursors": conn.execute("SELECT COUNT(*) FROM sync_cursors WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "sync_devices": conn.execute("SELECT COUNT(*) FROM sync_devices WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "memory_jobs": conn.execute("SELECT COUNT(*) FROM memory_jobs WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "capture_processing_state": conn.execute("SELECT COUNT(*) FROM capture_processing_state WHERE user_id = ?", (user_id,)).fetchone()[0],
             }
@@ -3522,6 +3623,7 @@ class CortexStore:
             conn.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM entities WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM memory_jobs WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM sync_devices WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM sync_cursors WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM source_accounts WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM import_records WHERE user_id = ?", (user_id,))
@@ -3693,6 +3795,7 @@ class CortexStore:
         imports = list(self.vault.iter_records("imports", user_id))
         source_accounts = list(self.vault.iter_records("source_accounts", user_id))
         sync_cursors = list(self.vault.iter_records("sync_cursors", user_id))
+        sync_devices = list(self.vault.iter_records("sync_devices", user_id))
         captures = list(self.vault.iter_records("captures", user_id))
         memories = list(self.vault.iter_records("memories", user_id))
         tasks = list(self.vault.iter_records("tasks", user_id))
@@ -3713,6 +3816,7 @@ class CortexStore:
             conn.execute("DELETE FROM tasks WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM entities WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM sync_devices WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM sync_cursors WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM source_accounts WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM import_records WHERE user_id = ?", (user_id,))
@@ -3790,6 +3894,41 @@ class CortexStore:
                     ),
                 )
                 restored_cursor_count += 1
+
+            restored_device_count = 0
+            for device in sorted(sync_devices, key=lambda item: item.get("updated_at") or item.get("created_at") or ""):
+                device_id = device.get("id")
+                if not device_id:
+                    continue
+                key_hash = str(device.get("device_key_hash") or "")
+                if not key_hash and device.get("fingerprint"):
+                    key_hash = str(device.get("fingerprint"))
+                if not key_hash:
+                    continue
+                capabilities = device.get("capabilities") if isinstance(device.get("capabilities"), list) else []
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO sync_devices
+                    (id, user_id, device_name, platform, device_key_hash, public_key, capabilities_json, first_cursor, last_cursor, last_seen_at, created_at, updated_at, revoked_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(device_id),
+                        user_id,
+                        str(device.get("device_name") or "Sync device"),
+                        str(device.get("platform") or "unknown"),
+                        key_hash,
+                        device.get("public_key"),
+                        json.dumps([str(item) for item in capabilities if str(item).strip()]),
+                        device.get("first_cursor"),
+                        device.get("last_cursor"),
+                        device.get("last_seen_at"),
+                        device.get("created_at") or timestamp,
+                        device.get("updated_at") or device.get("created_at") or timestamp,
+                        device.get("revoked_at"),
+                    ),
+                )
+                restored_device_count += 1
 
             for import_record in sorted(imports, key=lambda item: item.get("created_at") or ""):
                 session = {
@@ -4034,6 +4173,7 @@ class CortexStore:
                     "imports": len(imports),
                     "source_accounts": len(restored_account_ids),
                     "sync_cursors": restored_cursor_count,
+                    "sync_devices": restored_device_count,
                     "tombstones": tombstone_counts,
                 },
             )
@@ -4051,6 +4191,7 @@ class CortexStore:
             "imports": len(imports),
             "source_accounts": len(restored_account_ids),
             "sync_cursors": restored_cursor_count,
+            "sync_devices": restored_device_count,
             "tombstones": tombstone_counts,
         }
 
@@ -4222,6 +4363,7 @@ class CortexStore:
                 "imports": diagnostics["counts"].get("imports", 0),
                 "source_accounts": vault_counts.get("source_accounts", 0),
                 "sync_cursors": vault_counts.get("sync_cursors", 0),
+                "sync_devices": vault_counts.get("sync_devices", 0),
                 "audit_events": diagnostics["counts"].get("events", 0),
                 "deletion_tombstones": tombstones_count,
             },
@@ -4250,6 +4392,7 @@ class CortexStore:
                     "imports",
                     "source_accounts",
                     "sync_cursors",
+                    "sync_devices",
                     "jobs",
                     "events",
                     "settings",
@@ -4264,6 +4407,7 @@ class CortexStore:
                     "imports",
                     "source_accounts",
                     "sync_cursors",
+                    "sync_devices",
                     "settings",
                     "events",
                     "attachments",
@@ -4320,10 +4464,21 @@ class CortexStore:
             )
         return events
 
-    def sync_change_feed(self, user_id: str, *, after: str = "", limit: int = 100) -> dict[str, Any]:
+    def sync_change_feed(
+        self,
+        user_id: str,
+        *,
+        after: str = "",
+        limit: int = 100,
+        device_id: str = "",
+        signing_key: str = "",
+        shard: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         limit = max(1, min(1000, int(limit)))
         after = (after or "").strip()
+        device_id = (device_id or "").strip()
         warnings: list[str] = []
+        device_row = None
         with connect(self.db_path) as conn:
             counts = {
                 "captures": conn.execute("SELECT COUNT(*) FROM captures WHERE user_id = ?", (user_id,)).fetchone()[0],
@@ -4333,8 +4488,15 @@ class CortexStore:
                 "imports": conn.execute("SELECT COUNT(*) FROM import_sessions WHERE user_id = ? AND deleted_at IS NULL", (user_id,)).fetchone()[0],
                 "source_accounts": conn.execute("SELECT COUNT(*) FROM source_accounts WHERE user_id = ? AND disconnected_at IS NULL", (user_id,)).fetchone()[0],
                 "sync_cursors": conn.execute("SELECT COUNT(*) FROM sync_cursors WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "sync_devices": conn.execute("SELECT COUNT(*) FROM sync_devices WHERE user_id = ? AND revoked_at IS NULL", (user_id,)).fetchone()[0],
                 "events": conn.execute("SELECT COUNT(*) FROM memory_events WHERE user_id = ?", (user_id,)).fetchone()[0],
             }
+            if device_id:
+                device_row = conn.execute("SELECT * FROM sync_devices WHERE user_id = ? AND id = ?", (user_id, device_id)).fetchone()
+                if not device_row:
+                    warnings.append("device_not_found")
+                elif device_row["revoked_at"]:
+                    warnings.append("device_revoked")
             start_created_at = ""
             start_id = ""
             if after:
@@ -4374,7 +4536,26 @@ class CortexStore:
         selected = rows[:limit]
         events = [self._sync_event_from_row(row) for row in selected]
         next_cursor = events[-1]["id"] if events else after
-        return {
+        device = self._sync_device_from_row(device_row) if device_row else None
+        if device and "device_revoked" not in warnings:
+            seen_at = now_iso()
+            with connect(self.db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE sync_devices
+                    SET first_cursor = COALESCE(first_cursor, ?),
+                        last_cursor = ?,
+                        last_seen_at = ?,
+                        updated_at = ?
+                    WHERE user_id = ? AND id = ?
+                    """,
+                    (next_cursor, next_cursor, seen_at, seen_at, user_id, device["id"]),
+                )
+                updated = conn.execute("SELECT * FROM sync_devices WHERE user_id = ? AND id = ?", (user_id, device["id"])).fetchone()
+            device = self._sync_device_from_row(updated)
+            self.vault.write_sync_device(self._sync_device_record_from_row(updated))
+
+        payload = {
             "generated_at": now_iso(),
             "sync_contract": 1,
             "content_included": False,
@@ -4385,9 +4566,37 @@ class CortexStore:
                 "event_id": next_cursor or None,
                 "created_at": events[-1]["created_at"] if events else start_created_at or None,
             },
+            "shard": shard,
             "counts": counts,
+            "device": device,
             "changes": events,
             "warnings": warnings,
+            "signature": None,
+        }
+        if device:
+            if signing_key and "device_revoked" not in warnings:
+                payload["signature"] = self._sync_feed_signature(payload, signing_key, device_id=device["id"])
+            else:
+                payload["signature"] = {
+                    "algorithm": "hmac-sha256",
+                    "configured": False,
+                    "device_id": device["id"],
+                }
+        return payload
+
+    def _sync_feed_signature(self, payload: dict[str, Any], signing_key: str, *, device_id: str) -> dict[str, Any]:
+        unsigned = {key: value for key, value in payload.items() if key != "signature"}
+        canonical = json.dumps(unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        canonical_bytes = canonical.encode("utf-8")
+        payload_hash = hashlib.sha256(canonical_bytes).hexdigest()
+        value = hmac.new(signing_key.encode("utf-8"), canonical_bytes, hashlib.sha256).hexdigest()
+        return {
+            "algorithm": "hmac-sha256",
+            "configured": True,
+            "key_id": "local-sync-signing-key",
+            "device_id": device_id,
+            "payload_hash": f"sha256:{payload_hash}",
+            "value": f"hmac-sha256:{value}",
         }
 
     def _sync_event_from_row(self, row) -> dict[str, Any]:
@@ -4416,7 +4625,7 @@ class CortexStore:
         }
 
     def _safe_sync_object_id(self, object_id: str) -> str | None:
-        if re.match(r"^(cap|mem|task|ent|edge|evt|imp|irec|job|sacct|sync|tok|backup|tomb|vec)_[A-Za-z0-9]+$", object_id or ""):
+        if re.match(r"^(cap|mem|task|ent|edge|evt|imp|irec|job|sacct|sdev|sync|tok|backup|tomb|vec)_[A-Za-z0-9]+$", object_id or ""):
             return object_id
         return None
 
@@ -5687,6 +5896,29 @@ class CortexStore:
             "last_error": row["last_error"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
+        }
+
+    def _sync_device_from_row(self, row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "device_name": row["device_name"],
+            "platform": row["platform"],
+            "fingerprint": str(row["device_key_hash"] or "")[:16],
+            "public_key": row["public_key"],
+            "capabilities": self._json_list(row["capabilities_json"]),
+            "first_cursor": row["first_cursor"],
+            "last_cursor": row["last_cursor"],
+            "last_seen_at": row["last_seen_at"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "revoked_at": row["revoked_at"],
+        }
+
+    def _sync_device_record_from_row(self, row) -> dict[str, Any]:
+        return {
+            **self._sync_device_from_row(row),
+            "device_key_hash": row["device_key_hash"],
         }
 
     def _upsert_import_session(self, conn, session: dict[str, Any]) -> None:

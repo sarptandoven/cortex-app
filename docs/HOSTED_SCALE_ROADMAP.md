@@ -35,7 +35,7 @@ Implemented local primitive:
 - FastAPI and the packaged standalone backend both authenticate scoped REST tokens before routing user-scoped memory calls.
 - REST token scopes are enforced across read, write, export, maintenance, and destructive endpoint classes.
 - `source_accounts` and `sync_cursors` are implemented locally as vault-backed records plus SQLite indexes. They preserve connector health, policies, high-water marks, and last errors across backups and rebuilds, but they do not yet store OAuth secrets or run live cloud sync.
-- `GET /v1/sync/changes` is implemented locally as a cursorable event manifest for future hosted materialization. It returns safe event metadata, counts, and shard assignment without capture content, memory text, imports, context packs, or vault file payloads.
+- `sync_devices` and `GET /v1/sync/changes?device_id=...` are implemented locally as a device-aware event manifest for future hosted materialization. They return safe event metadata, counts, shard assignment, device cursors, revocation state, and optional HMAC-SHA256 signatures without capture content, memory text, imports, context packs, or vault file payloads.
 - This is not a full hosted identity provider. Public hosted deployments still need login, session management, token revocation UI, account membership checks, and control-plane token issuance.
 
 ## Milestone 2: Shard Runtime
@@ -103,9 +103,9 @@ Sync should use signed append-only events and materialize shard rows from vault 
 
 Implemented local primitive:
 
-- `GET /v1/sync/changes` provides a content-free, cursorable event feed with `sync_contract`, `next_cursor`, `has_more`, high watermark, safe metadata, object ID redaction, per-user counts, and shard assignment.
-- The feed is useful for hosted materialization, support diagnostics, and device upload planning because it proves ordering and scope without exposing raw memory bodies.
-- Remaining hosted work: event signing, device identity, conflict resolution, encrypted payload upload, object-storage manifests, remote materializers, backpressure, replay idempotency, and merge/delete receipts.
+- `POST /v1/sync/devices` registers a local sync device, `DELETE /v1/sync/devices/{device_id}` revokes it, and `GET /v1/sync/changes?device_id=...` provides a content-free, cursorable event feed with `sync_contract`, `next_cursor`, `has_more`, high watermark, safe metadata, object ID redaction, per-user counts, shard assignment, device heartbeat cursors, and optional HMAC signatures.
+- The feed is useful for hosted materialization, support diagnostics, and device upload planning because it proves ordering, scope, and local integrity without exposing raw memory bodies.
+- Remaining hosted work: authenticated cloud device identity, asymmetric signatures or KMS-backed signing, conflict resolution, encrypted payload upload, object-storage manifests, remote materializers, backpressure, replay idempotency, and merge/delete receipts.
 
 ## Milestone 5: Deletion, Observability, Migration
 

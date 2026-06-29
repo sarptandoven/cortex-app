@@ -20,6 +20,7 @@ class Settings:
     shard_root: Path | None = None
     shard_count: int = 16
     require_scoped_api_tokens: bool = False
+    sync_signing_key: str = ""
 
 
 def load_settings() -> Settings:
@@ -46,4 +47,5 @@ def load_settings() -> Settings:
         shard_root=Path(os.environ["CORTEX_SHARD_ROOT"]).expanduser() if os.environ.get("CORTEX_SHARD_ROOT") else None,
         shard_count=max(1, int(os.environ.get("CORTEX_SHARD_COUNT", "16"))),
         require_scoped_api_tokens=require_scoped_api_tokens,
+        sync_signing_key=os.environ.get("CORTEX_SYNC_SIGNING_KEY", ""),
     )

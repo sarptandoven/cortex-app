@@ -323,6 +323,57 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(invalid["warnings"], ["cursor_not_found"])
         self.assertEqual(invalid["next_cursor"], "evt_missing")
 
+    def test_sync_devices_register_revoke_and_sign_change_feed(self) -> None:
+        device = self.store.register_sync_device(
+            self.user_id,
+            device_name="MacBook Pro",
+            platform="macOS",
+            capabilities=["manifest", "upload"],
+        )
+        self.assertTrue(device["id"].startswith("sdev_"))
+        self.assertEqual(device["platform"], "macos")
+        self.assertIn("device_key", device)
+        self.assertEqual(len(device["fingerprint"]), 16)
+
+        listed = self.store.list_sync_devices(self.user_id)
+        self.assertEqual([item["id"] for item in listed], [device["id"]])
+        self.assertNotIn("device_key", json.dumps(listed))
+
+        phrase = "Signed Sync Device Secret Phrase"
+        capture = self.store.save_capture(
+            user_id=self.user_id,
+            content=f"We decided {phrase} must stay out of signed manifests.",
+            source="unit-test",
+            source_url="/tmp/signed-sync.md",
+            title="Signed sync capture",
+            extracted=extract_context(f"We decided {phrase} must stay out of signed manifests.", "unit-test"),
+        )
+        self.assertTrue(self.store.approve_capture(self.user_id, capture["capture_id"]))
+
+        feed = self.store.sync_change_feed(self.user_id, device_id=device["id"], signing_key="unit-secret")
+        self.assertEqual(feed["device"]["id"], device["id"])
+        self.assertEqual(feed["counts"]["sync_devices"], 1)
+        self.assertTrue(feed["signature"]["configured"])
+        self.assertEqual(feed["signature"]["device_id"], device["id"])
+        self.assertTrue(feed["signature"]["payload_hash"].startswith("sha256:"))
+        self.assertTrue(feed["signature"]["value"].startswith("hmac-sha256:"))
+        self.assertNotIn("device_key", json.dumps(feed))
+        self.assertNotIn(phrase, json.dumps(feed))
+
+        refreshed = self.store.list_sync_devices(self.user_id)[0]
+        self.assertEqual(refreshed["last_cursor"], feed["next_cursor"])
+        self.assertIsNotNone(refreshed["last_seen_at"])
+
+        revoked = self.store.revoke_sync_device(self.user_id, device["id"])
+        self.assertEqual(revoked["id"], device["id"])
+        self.assertIsNotNone(revoked["revoked_at"])
+        self.assertEqual(self.store.list_sync_devices(self.user_id), [])
+        self.assertEqual(self.store.list_sync_devices(self.user_id, include_revoked=True)[0]["id"], device["id"])
+
+        revoked_feed = self.store.sync_change_feed(self.user_id, device_id=device["id"], signing_key="unit-secret")
+        self.assertIn("device_revoked", revoked_feed["warnings"])
+        self.assertFalse(revoked_feed["signature"]["configured"])
+
     def test_memory_quality_report_tracks_citations_review_and_layers(self) -> None:
         uncited = self.capture("We decided uncited quality memory should warn about missing source paths.")
         cited = self.store.save_capture(

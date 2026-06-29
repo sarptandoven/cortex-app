@@ -17,6 +17,7 @@ VAULT_DIRECTORIES = (
     "imports",
     "source_accounts",
     "sync_cursors",
+    "sync_devices",
     "captures",
     "memories",
     "tasks",
@@ -28,7 +29,7 @@ VAULT_DIRECTORIES = (
     "exports",
 )
 RESTORE_ROOT_FILES = {"manifest.json", "settings.json", "events.jsonl"}
-RESTORE_DIRECTORIES = {"imports", "source_accounts", "sync_cursors", "captures", "memories", "tasks", "entities", "graph_edges", "deletion_tombstones", "attachments"}
+RESTORE_DIRECTORIES = {"imports", "source_accounts", "sync_cursors", "sync_devices", "captures", "memories", "tasks", "entities", "graph_edges", "deletion_tombstones", "attachments"}
 
 
 def vault_now() -> str:
@@ -186,6 +187,11 @@ class CortexVault:
         source = safe_segment(record.get("source"), "source")
         path = self.root / "sync_cursors" / user_id / source / f"{safe_segment(record.get('id'), 'sync-cursor')}.json"
         return self._write_record(path, "sync_cursor", record)
+
+    def write_sync_device(self, record: dict[str, Any]) -> Path:
+        user_id = safe_segment(record.get("user_id"), "unknown")
+        path = self.root / "sync_devices" / user_id / f"{safe_segment(record.get('id'), 'sync-device')}.json"
+        return self._write_record(path, "sync_device", record)
 
     def write_memory(self, record: dict[str, Any]) -> Path:
         kind = safe_segment(record.get("kind"), "memory")

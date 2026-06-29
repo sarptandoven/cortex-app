@@ -141,6 +141,35 @@ class SyncCursorListResponse(BaseModel):
     results: list[SyncCursorResponse]
 
 
+class SyncDeviceRequest(BaseModel):
+    device_name: str = Field(..., min_length=1, max_length=160)
+    platform: str = Field(default="unknown", max_length=80)
+    device_key: str | None = Field(default=None, max_length=2000)
+    public_key: str | None = Field(default=None, max_length=4000)
+    capabilities: list[str] = Field(default_factory=list)
+
+
+class SyncDeviceResponse(BaseModel):
+    id: str
+    user_id: str
+    device_name: str
+    platform: str
+    fingerprint: str
+    public_key: str | None = None
+    capabilities: list[str]
+    first_cursor: str | None = None
+    last_cursor: str | None = None
+    last_seen_at: str | None = None
+    created_at: str
+    updated_at: str
+    revoked_at: str | None = None
+    device_key: str | None = None
+
+
+class SyncDeviceListResponse(BaseModel):
+    results: list[SyncDeviceResponse]
+
+
 class SyncChangeFeedResponse(BaseModel):
     generated_at: str
     sync_contract: int
@@ -151,8 +180,10 @@ class SyncChangeFeedResponse(BaseModel):
     high_watermark: dict[str, Any]
     shard: dict[str, Any] | None = None
     counts: dict[str, int]
+    device: dict[str, Any] | None = None
     changes: list[dict[str, Any]]
     warnings: list[str]
+    signature: dict[str, Any] | None = None
 
 
 class QueuedCaptureResponse(BaseModel):

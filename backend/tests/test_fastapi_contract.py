@@ -668,6 +668,72 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(invalid_response.json()["warnings"], ["cursor_not_found"])
         self.assertEqual(invalid_response.json()["changes"], [])
 
+    def test_sync_device_registry_contract_and_signed_feed(self) -> None:
+        original_settings = main_module.settings
+        main_module.settings = replace(original_settings, sync_signing_key="contract-signing-key")
+        try:
+            headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "sync-device-contract"}
+            registered = self.client.post(
+                "/v1/sync/devices",
+                json={
+                    "device_name": "Contract Mac",
+                    "platform": "macOS",
+                    "capabilities": ["manifest", "upload"],
+                },
+                headers=headers,
+            )
+            self.assertEqual(registered.status_code, 200)
+            device = registered.json()
+            self.assertTrue(device["id"].startswith("sdev_"))
+            self.assertEqual(device["platform"], "macos")
+            self.assertIn("device_key", device)
+            self.assertEqual(len(device["fingerprint"]), 16)
+
+            listed = self.client.get("/v1/sync/devices", headers=headers)
+            self.assertEqual(listed.status_code, 200)
+            listed_device = listed.json()["results"][0]
+            self.assertEqual(listed_device["id"], device["id"])
+            self.assertIsNone(listed_device.get("device_key"))
+
+            feed_response = self.client.get(
+                "/v1/sync/changes",
+                params={"device_id": device["id"], "limit": 10},
+                headers=headers,
+            )
+            self.assertEqual(feed_response.status_code, 200)
+            feed = feed_response.json()
+            self.assertEqual(feed["device"]["id"], device["id"])
+            self.assertEqual(feed["counts"]["sync_devices"], 1)
+            self.assertTrue(feed["signature"]["configured"])
+            self.assertEqual(feed["signature"]["device_id"], device["id"])
+            self.assertTrue(feed["signature"]["payload_hash"].startswith("sha256:"))
+            self.assertTrue(feed["signature"]["value"].startswith("hmac-sha256:"))
+            self.assertNotIn("device_key", json.dumps(feed))
+
+            revoked = self.client.delete(f"/v1/sync/devices/{device['id']}", headers=headers)
+            self.assertEqual(revoked.status_code, 200)
+            self.assertEqual(revoked.json()["id"], device["id"])
+            self.assertIsNotNone(revoked.json()["revoked_at"])
+
+            active = self.client.get("/v1/sync/devices", headers=headers)
+            self.assertEqual(active.status_code, 200)
+            self.assertEqual(active.json()["results"], [])
+
+            all_devices = self.client.get("/v1/sync/devices", params={"include_revoked": "true"}, headers=headers)
+            self.assertEqual(all_devices.status_code, 200)
+            self.assertEqual(all_devices.json()["results"][0]["id"], device["id"])
+
+            revoked_feed = self.client.get(
+                "/v1/sync/changes",
+                params={"device_id": device["id"]},
+                headers=headers,
+            )
+            self.assertEqual(revoked_feed.status_code, 200)
+            self.assertIn("device_revoked", revoked_feed.json()["warnings"])
+            self.assertFalse(revoked_feed.json()["signature"]["configured"])
+        finally:
+            main_module.settings = original_settings
+
     def test_delete_user_data_removes_current_user_records(self) -> None:
         phrase = "FastAPI delete all user data contract phrase"
         created = self.client.post(

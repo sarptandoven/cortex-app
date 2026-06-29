@@ -61,6 +61,10 @@ def _required_api_scope(method: str, path: str) -> str:
         return "maintenance"
     if normalized_path.startswith("/v1/source-accounts/") and normalized_method == "DELETE":
         return "maintenance"
+    if normalized_path == "/v1/sync/devices" and normalized_method == "POST":
+        return "maintenance"
+    if normalized_path.startswith("/v1/sync/devices/") and normalized_method == "DELETE":
+        return "maintenance"
     if normalized_path == "/v1/backups/restore-latest":
         return "destructive"
     if normalized_method == "DELETE":
@@ -385,6 +389,33 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 except ValueError as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
+            if method == "GET" and path == "/v1/sync/devices":
+                include_revoked = (params.get("include_revoked") or ["false"])[0].lower() in {"1", "true", "yes"}
+                self._send_json({"results": store.list_sync_devices(user_id, include_revoked=include_revoked)})
+                return
+            if method == "POST" and path == "/v1/sync/devices":
+                body = self._json_body()
+                capabilities = body.get("capabilities") if isinstance(body.get("capabilities"), list) else []
+                try:
+                    self._send_json(store.register_sync_device(
+                        user_id,
+                        device_name=str(body.get("device_name") or ""),
+                        platform=str(body.get("platform") or "unknown"),
+                        device_key=str(body.get("device_key") or "") or None,
+                        public_key=str(body.get("public_key") or "") or None,
+                        capabilities=[str(item) for item in capabilities],
+                    ))
+                except ValueError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "DELETE" and path.startswith("/v1/sync/devices/"):
+                device_id = unquote(path.removeprefix("/v1/sync/devices/").strip("/"))
+                revoked = store.revoke_sync_device(user_id, device_id)
+                if not revoked:
+                    self._send_json({"detail": "Sync device not found"}, status=HTTPStatus.NOT_FOUND)
+                else:
+                    self._send_json(revoked)
+                return
             if method == "GET" and path == "/v1/imports":
                 include_deleted = (params.get("include_deleted") or ["true"])[0].lower() not in {"0", "false", "no"}
                 self._send_json({"results": store.list_imports(
@@ -627,15 +658,18 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"results": store.audit_log(user_id, _int_param(params, "limit", 80, 1, 300))})
                 return
             if method == "GET" and path == "/v1/sync/changes":
+                try:
+                    shard = store.assignment_for(user_id).as_dict()
+                except Exception:
+                    shard = None
                 payload = store.sync_change_feed(
                     user_id,
                     after=(params.get("after") or [""])[0][:120],
                     limit=_int_param(params, "limit", 100, 1, 1000),
+                    device_id=(params.get("device_id") or [""])[0][:120],
+                    signing_key=settings.sync_signing_key,
+                    shard=shard,
                 )
-                try:
-                    payload["shard"] = store.assignment_for(user_id).as_dict()
-                except Exception:
-                    pass
                 self._send_json(payload)
                 return
             if method == "GET" and path == "/v1/diagnostics":
