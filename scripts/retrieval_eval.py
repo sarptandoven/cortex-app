@@ -94,6 +94,57 @@ SEED_MEMORIES: tuple[SeedMemory, ...] = (
     ),
 )
 
+DISTRACTOR_MEMORIES: tuple[SeedMemory, ...] = (
+    SeedMemory(
+        id="rq_distractor_helio_analytics",
+        kind="claim",
+        layer="semantic",
+        content="Project Helio has an analytics mirror for dashboard experiments, but that mirror is not the canonical Cortex storage contract.",
+        summary="Helio analytics mirror is experimental and not canonical storage.",
+        topics=("helio", "storage", "analytics", "database"),
+    ),
+    SeedMemory(
+        id="rq_distractor_taipei_catering",
+        kind="event",
+        layer="episodic",
+        content="On 2026-04-18, Vamika met Riley to discuss Taipei catering and travel logistics.",
+        summary="Taipei logistics discussion with Vamika and Riley.",
+        topics=("taipei", "meeting", "logistics"),
+    ),
+    SeedMemory(
+        id="rq_distractor_verbose_style",
+        kind="style",
+        layer="style",
+        content="Writing style draft: a rejected launch page used extended essays, hype-heavy framing, and long paragraphs.",
+        summary="Rejected verbose launch-page writing style.",
+        topics=("writing", "style", "launch"),
+    ),
+    SeedMemory(
+        id="rq_distractor_eval_demo",
+        kind="decision",
+        layer="decision",
+        content="Decision: keep retrieval demos in a JavaScript web harness for UI smoke tests, separate from the production evaluation suite.",
+        summary="Retrieval demos can use a JavaScript UI harness.",
+        topics=("retrieval", "testing", "demo"),
+    ),
+    SeedMemory(
+        id="rq_distractor_risk_first",
+        kind="preference",
+        layer="preference",
+        content="Preference draft that was rejected: when presenting launch options, list every risk before the recommendation.",
+        summary="Rejected risk-first launch-option preference.",
+        topics=("preference", "tradeoffs", "risks"),
+    ),
+    SeedMemory(
+        id="rq_distractor_cartoon_copy",
+        kind="negative",
+        layer="negative",
+        content="Do not use cartoon mascot jokes in release notes for infrastructure migration summaries.",
+        summary="Avoid cartoon mascot jokes in migration summaries.",
+        topics=("negative", "writing", "avoid"),
+    ),
+)
+
 
 RETRIEVAL_CASES: tuple[RetrievalCase, ...] = (
     RetrievalCase(
@@ -224,6 +275,39 @@ def seed_representative_memories(store: CortexStore, user_id: str = USER_ID) -> 
                     "entity_ids": [],
                 }
                 for memory in SEED_MEMORIES
+            ],
+            "tasks": [],
+            "entities": [],
+        },
+    )
+    return result["memories"]
+
+
+def seed_distractor_memories(store: CortexStore, user_id: str = USER_ID) -> list[dict[str, Any]]:
+    timestamp = SEED_TIMESTAMP
+    content = "\n".join(memory.content for memory in DISTRACTOR_MEMORIES)
+    result = store.save_capture(
+        user_id=user_id,
+        content=content,
+        source="retrieval-eval-distractors",
+        source_url=None,
+        title="Retrieval quality distractors",
+        extracted={
+            "_timestamp": timestamp,
+            "summary": "Similar but wrong retrieval distractors.",
+            "records": [
+                {
+                    "id": memory.id,
+                    "kind": memory.kind,
+                    "layer": memory.layer,
+                    "content": memory.content,
+                    "summary": memory.summary,
+                    "confidence": "confirmed",
+                    "importance": 2,
+                    "topics": list(memory.topics),
+                    "entity_ids": [],
+                }
+                for memory in DISTRACTOR_MEMORIES
             ],
             "tasks": [],
             "entities": [],
@@ -426,6 +510,7 @@ def _evaluate_case(store: CortexStore, user_id: str, case: RetrievalCase, limit:
 
 def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 3) -> dict[str, Any]:
     seeded = seed_representative_memories(store, user_id)
+    distractors = seed_distractor_memories(store, user_id)
     seeded_layers = {memory["layer"] for memory in seeded}
     if seeded_layers != MEMORY_LAYERS:
         missing = sorted(MEMORY_LAYERS - seeded_layers)
@@ -499,6 +584,7 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
     return {
         "status": "ok",
         "seeded_memories": len(seeded),
+        "distractor_memories": len(distractors),
         "noisy_import_memories": len(noisy_memories),
         "seeded_layers": sorted(seeded_layers),
         "metrics": _summarize_metrics(checks, METRIC_K_VALUES),

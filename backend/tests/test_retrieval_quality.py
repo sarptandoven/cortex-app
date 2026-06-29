@@ -7,6 +7,7 @@ from pathlib import Path
 from backend.app.database import init_db
 from backend.app.storage import CortexStore, MEMORY_LAYERS
 from scripts.retrieval_eval import (
+    DISTRACTOR_MEMORIES,
     METRIC_K_VALUES,
     RETRIEVAL_CASES,
     evaluate_retrieval,
@@ -136,6 +137,7 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["seeded_memories"], len(MEMORY_LAYERS))
+        self.assertEqual(result["distractor_memories"], len(DISTRACTOR_MEMORIES))
         self.assertEqual(result["noisy_import_memories"], 7)
         self.assertEqual(set(result["seeded_layers"]), MEMORY_LAYERS)
         expected_noisy_cases = 6
