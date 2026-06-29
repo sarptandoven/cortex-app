@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import load_settings
 from .extractor import extract_context
 from .mcp_tools import TOOLS, call_tool, tool_result_text
-from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, BackupResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GraphResponse, JobRunResponse, ListResponse, MaintenanceResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, ProductLoopResponse, QueuedCaptureResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, VaultRebuildResponse, VectorRebuildResponse
+from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, BackupResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GraphResponse, JobRunResponse, ListResponse, MaintenanceResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, ProductLoopResponse, QueuedCaptureResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, VaultRebuildResponse, VectorRebuildResponse
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
 
@@ -683,6 +683,20 @@ def revoke_integration_token(token_id: str, user_id: str = Depends(auth)) -> dic
 @app.get("/v1/audit-log", response_model=ListResponse)
 def audit_log(limit: int = Query(default=80, ge=1, le=300), user_id: str = Depends(auth)) -> dict[str, Any]:
     return {"results": store.audit_log(user_id, limit)}
+
+
+@app.get("/v1/sync/changes", response_model=SyncChangeFeedResponse)
+def sync_changes(
+    after: str = Query(default="", max_length=120),
+    limit: int = Query(default=100, ge=1, le=1000),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    payload = store.sync_change_feed(user_id, after=after, limit=limit)
+    try:
+        payload["shard"] = store.assignment_for(user_id).as_dict()
+    except Exception:
+        pass
+    return payload
 
 
 @app.get("/v1/diagnostics", response_model=DiagnosticsResponse)

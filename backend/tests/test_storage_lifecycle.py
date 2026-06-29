@@ -293,6 +293,36 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertIn("notion://workspace/project-atlas#block-7", profile["markdown"])
         self.assertIn("notion://workspace/project-atlas#block-7", adaptation["markdown"])
 
+    def test_sync_change_feed_is_cursorable_and_content_free(self) -> None:
+        secret_phrase = "Sync Feed Secret Raw Content"
+        capture = self.store.save_capture(
+            user_id=self.user_id,
+            content=f"We decided the {secret_phrase} must never appear in sync manifests.",
+            source="unit-test",
+            source_url="/tmp/sync-feed.md",
+            title="Sync feed capture",
+            extracted=extract_context(f"We decided the {secret_phrase} must never appear in sync manifests.", "unit-test"),
+        )
+        self.assertTrue(self.store.approve_capture(self.user_id, capture["capture_id"]))
+
+        feed = self.store.sync_change_feed(self.user_id, limit=1)
+        self.assertEqual(feed["sync_contract"], 1)
+        self.assertFalse(feed["content_included"])
+        self.assertTrue(feed["changes"])
+        self.assertTrue(feed["has_more"])
+        self.assertEqual(feed["counts"]["captures"], 1)
+        self.assertGreaterEqual(feed["counts"]["events"], 2)
+        self.assertNotIn(secret_phrase, json.dumps(feed))
+
+        next_feed = self.store.sync_change_feed(self.user_id, after=feed["next_cursor"], limit=10)
+        self.assertNotEqual(next_feed["next_cursor"], feed["next_cursor"])
+        self.assertNotIn(secret_phrase, json.dumps(next_feed))
+
+        invalid = self.store.sync_change_feed(self.user_id, after="evt_missing", limit=10)
+        self.assertEqual(invalid["changes"], [])
+        self.assertEqual(invalid["warnings"], ["cursor_not_found"])
+        self.assertEqual(invalid["next_cursor"], "evt_missing")
+
     def test_memory_quality_report_tracks_citations_review_and_layers(self) -> None:
         uncited = self.capture("We decided uncited quality memory should warn about missing source paths.")
         cited = self.store.save_capture(

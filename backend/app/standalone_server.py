@@ -622,6 +622,18 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/v1/audit-log":
                 self._send_json({"results": store.audit_log(user_id, _int_param(params, "limit", 80, 1, 300))})
                 return
+            if method == "GET" and path == "/v1/sync/changes":
+                payload = store.sync_change_feed(
+                    user_id,
+                    after=(params.get("after") or [""])[0][:120],
+                    limit=_int_param(params, "limit", 100, 1, 1000),
+                )
+                try:
+                    payload["shard"] = store.assignment_for(user_id).as_dict()
+                except Exception:
+                    pass
+                self._send_json(payload)
+                return
             if method == "GET" and path == "/v1/diagnostics":
                 self._send_json(store.diagnostics(user_id))
                 return

@@ -596,6 +596,51 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(fetched.status_code, 200)
         self.assertEqual(fetched.json()["identity_aliases"], ["sarpt", "sarpt@example.com"])
 
+    def test_sync_changes_contract_is_cursorable_and_redacted(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "sync-contract"}
+        phrase = "FastAPI Sync Feed Raw Phrase"
+        created = self.client.post(
+            "/v1/captures",
+            json={
+                "content": f"We decided {phrase} must not appear in the sync change feed.",
+                "source": "fastapi-sync",
+            },
+            headers=headers,
+        )
+        self.assertEqual(created.status_code, 200)
+        capture_id = created.json()["capture_id"]
+        approved = self.client.post(f"/v1/captures/{capture_id}/approve", headers=headers)
+        self.assertEqual(approved.status_code, 200)
+
+        feed_response = self.client.get("/v1/sync/changes", params={"limit": 1}, headers=headers)
+        self.assertEqual(feed_response.status_code, 200)
+        feed = feed_response.json()
+        self.assertEqual(feed["sync_contract"], 1)
+        self.assertFalse(feed["content_included"])
+        self.assertTrue(feed["changes"])
+        self.assertTrue(feed["has_more"])
+        self.assertIn("shard", feed)
+        self.assertNotIn(phrase, json.dumps(feed))
+
+        next_response = self.client.get(
+            "/v1/sync/changes",
+            params={"after": feed["next_cursor"], "limit": 50},
+            headers=headers,
+        )
+        self.assertEqual(next_response.status_code, 200)
+        next_feed = next_response.json()
+        self.assertNotEqual(next_feed["next_cursor"], feed["next_cursor"])
+        self.assertNotIn(phrase, json.dumps(next_feed))
+
+        invalid_response = self.client.get(
+            "/v1/sync/changes",
+            params={"after": "evt_missing"},
+            headers=headers,
+        )
+        self.assertEqual(invalid_response.status_code, 200)
+        self.assertEqual(invalid_response.json()["warnings"], ["cursor_not_found"])
+        self.assertEqual(invalid_response.json()["changes"], [])
+
     def test_delete_user_data_removes_current_user_records(self) -> None:
         phrase = "FastAPI delete all user data contract phrase"
         created = self.client.post(

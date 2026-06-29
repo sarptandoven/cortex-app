@@ -36,6 +36,7 @@ FastAPI backend
   /v1/sources/readiness
   /v1/source-accounts
   /v1/sync-cursors
+  /v1/sync/changes
   /v1/jobs
   /v1/maintenance/jobs/run
   /v1/inbox
@@ -215,6 +216,12 @@ An audit record for user-visible lifecycle actions such as capture creation, app
 ### Product Loop
 
 The simple product loop is backend-owned so the app and MCP agents agree on the same next step. `GET /v1/loop` returns the current source/import, review, memory-use, and return state, and `POST /v1/loop/reuse` records when approved memory is used through Ask, a context handoff, or an AI session.
+
+### Sync Change Feed
+
+`GET /v1/sync/changes` exposes the current user's audit-style memory events as a cursorable, content-free feed. The response includes event IDs, event/object types, safe internal object IDs or redacted hashes, whitelisted metadata, per-user counts, the active shard assignment when available, and a high watermark. It intentionally excludes capture content, memory text, imports, context packs, vault files, and support-only payloads.
+
+This is the local primitive for future hosted materialization from append-only events. It does not yet implement device conflict resolution, remote object storage, OAuth live sync, encrypted cloud backups, or multi-device merge semantics.
 
 ## Local Vault
 

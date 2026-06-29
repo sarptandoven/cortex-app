@@ -116,6 +116,45 @@ class FakeStore:
             "recommendations": ["Prefer source imports and URL/file captures so retrieved memory has citations."],
         }
 
+    def sync_change_feed(self, user_id: str, *, after: str = "", limit: int = 100) -> dict:
+        if after == "evt_missing":
+            return {
+                "generated_at": "2026-01-01T00:00:00Z",
+                "sync_contract": 1,
+                "content_included": False,
+                "cursor": after,
+                "next_cursor": after,
+                "has_more": False,
+                "high_watermark": {"event_id": after, "created_at": None},
+                "counts": {"captures": 0, "memories": 0, "tasks": 0, "entities": 0, "imports": 0, "source_accounts": 0, "sync_cursors": 0, "events": 0},
+                "changes": [],
+                "warnings": ["cursor_not_found"],
+            }
+        return {
+            "generated_at": "2026-01-01T00:00:00Z",
+            "sync_contract": 1,
+            "content_included": False,
+            "cursor": after,
+            "next_cursor": "evt_test",
+            "has_more": False,
+            "high_watermark": {"event_id": "evt_test", "created_at": "2026-01-01T00:00:00Z"},
+            "counts": {"captures": 1, "memories": 1, "tasks": 0, "entities": 0, "imports": 0, "source_accounts": 0, "sync_cursors": 0, "events": 1},
+            "changes": [
+                {
+                    "id": "evt_test",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "object_type": "capture",
+                    "event_type": "created",
+                    "object_id": "cap_test",
+                    "object_id_hash": "hash",
+                    "object_id_redacted": False,
+                    "metadata_keys": ["content_chars"],
+                    "safe_metadata": {"content_chars": 42},
+                }
+            ],
+            "warnings": [],
+        }
+
     def supported_import_sources(self) -> list[dict]:
         return [{"id": "chatgpt", "name": "ChatGPT", "formats": ["conversations.json"], "status": "native"}]
 
@@ -501,6 +540,21 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(payload["score"], 72)
         self.assertEqual(payload["source_health"][0]["source"], "unit-test")
+
+    def test_sync_changes_route_forwards_to_store(self) -> None:
+        with self.get("/v1/sync/changes?limit=1") as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["sync_contract"], 1)
+        self.assertFalse(payload["content_included"])
+        self.assertEqual(payload["changes"][0]["id"], "evt_test")
+
+        with self.get("/v1/sync/changes?after=evt_missing") as response:
+            invalid = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(invalid["warnings"], ["cursor_not_found"])
+        self.assertEqual(invalid["changes"], [])
 
     def test_restore_latest_backup_forwards_to_store(self) -> None:
         with self.post("/v1/backups/restore-latest") as response:

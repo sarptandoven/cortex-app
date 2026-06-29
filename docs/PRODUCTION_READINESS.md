@@ -11,6 +11,7 @@ It is not yet a millions-of-users hosted system. That requires hosted auth, a ma
 - User-triggered capture only
 - API-token protected local endpoints
 - User-owned local vault folder with JSON records and append-only events
+- Content-free local sync change feed for event ordering, counts, safe metadata, and future hosted materialization planning
 - SQLite WAL mode with busy timeout and foreign keys as a rebuildable index
 - Structured captures, memories, tasks, entities, topics, graph edges, and events
 - Five-tab product flow: Model, Sources, Review, Ask, Trust

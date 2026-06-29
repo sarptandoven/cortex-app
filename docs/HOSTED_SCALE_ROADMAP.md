@@ -2,7 +2,7 @@
 
 ## Current Stage
 
-Cortex is a local-first beta foundation. The local product now has a user-owned vault, rebuildable SQLite index, scoped MCP tokens, optional scoped REST user tokens, restore-safe tombstones, backup retention, durable source-account/sync-cursor records, and a durable local job queue.
+Cortex is a local-first beta foundation. The local product now has a user-owned vault, rebuildable SQLite index, scoped MCP tokens, optional scoped REST user tokens, restore-safe tombstones, backup retention, durable source-account/sync-cursor records, a content-free local sync change feed, and a durable local job queue.
 
 It is not yet a millions-user hosted product. Hosted scale needs account identity, shard routing, object storage, background workers, observability, billing, deletion guarantees, support operations, and public distribution hardening.
 
@@ -35,6 +35,7 @@ Implemented local primitive:
 - FastAPI and the packaged standalone backend both authenticate scoped REST tokens before routing user-scoped memory calls.
 - REST token scopes are enforced across read, write, export, maintenance, and destructive endpoint classes.
 - `source_accounts` and `sync_cursors` are implemented locally as vault-backed records plus SQLite indexes. They preserve connector health, policies, high-water marks, and last errors across backups and rebuilds, but they do not yet store OAuth secrets or run live cloud sync.
+- `GET /v1/sync/changes` is implemented locally as a cursorable event manifest for future hosted materialization. It returns safe event metadata, counts, and shard assignment without capture content, memory text, imports, context packs, or vault file payloads.
 - This is not a full hosted identity provider. Public hosted deployments still need login, session management, token revocation UI, account membership checks, and control-plane token issuance.
 
 ## Milestone 2: Shard Runtime
@@ -99,6 +100,12 @@ users/{user_id}/backups/{backup_id}/...
 ```
 
 Sync should use signed append-only events and materialize shard rows from vault records. Imports, attachments, support-approved recovery bundles, and large source files should use object storage instead of shard blobs.
+
+Implemented local primitive:
+
+- `GET /v1/sync/changes` provides a content-free, cursorable event feed with `sync_contract`, `next_cursor`, `has_more`, high watermark, safe metadata, object ID redaction, per-user counts, and shard assignment.
+- The feed is useful for hosted materialization, support diagnostics, and device upload planning because it proves ordering and scope without exposing raw memory bodies.
+- Remaining hosted work: event signing, device identity, conflict resolution, encrypted payload upload, object-storage manifests, remote materializers, backpressure, replay idempotency, and merge/delete receipts.
 
 ## Milestone 5: Deletion, Observability, Migration
 

@@ -4279,6 +4279,106 @@ class CortexStore:
             )
         return events
 
+    def sync_change_feed(self, user_id: str, *, after: str = "", limit: int = 100) -> dict[str, Any]:
+        limit = max(1, min(1000, int(limit)))
+        after = (after or "").strip()
+        warnings: list[str] = []
+        with connect(self.db_path) as conn:
+            counts = {
+                "captures": conn.execute("SELECT COUNT(*) FROM captures WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "memories": conn.execute("SELECT COUNT(*) FROM memories WHERE user_id = ? AND status = 'active'", (user_id,)).fetchone()[0],
+                "tasks": conn.execute("SELECT COUNT(*) FROM tasks WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "entities": conn.execute("SELECT COUNT(*) FROM entities WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "imports": conn.execute("SELECT COUNT(*) FROM import_sessions WHERE user_id = ? AND deleted_at IS NULL", (user_id,)).fetchone()[0],
+                "source_accounts": conn.execute("SELECT COUNT(*) FROM source_accounts WHERE user_id = ? AND disconnected_at IS NULL", (user_id,)).fetchone()[0],
+                "sync_cursors": conn.execute("SELECT COUNT(*) FROM sync_cursors WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "events": conn.execute("SELECT COUNT(*) FROM memory_events WHERE user_id = ?", (user_id,)).fetchone()[0],
+            }
+            start_created_at = ""
+            start_id = ""
+            if after:
+                cursor_row = conn.execute(
+                    "SELECT id, created_at FROM memory_events WHERE user_id = ? AND id = ?",
+                    (user_id, after),
+                ).fetchone()
+                if not cursor_row:
+                    warnings.append("cursor_not_found")
+                    rows = []
+                else:
+                    start_created_at = cursor_row["created_at"]
+                    start_id = cursor_row["id"]
+                    rows = conn.execute(
+                        """
+                        SELECT *
+                        FROM memory_events
+                        WHERE user_id = ?
+                          AND (created_at > ? OR (created_at = ? AND id > ?))
+                        ORDER BY created_at ASC, id ASC
+                        LIMIT ?
+                        """,
+                        (user_id, start_created_at, start_created_at, start_id, limit + 1),
+                    ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT *
+                    FROM memory_events
+                    WHERE user_id = ?
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT ?
+                    """,
+                    (user_id, limit + 1),
+                ).fetchall()
+
+        selected = rows[:limit]
+        events = [self._sync_event_from_row(row) for row in selected]
+        next_cursor = events[-1]["id"] if events else after
+        return {
+            "generated_at": now_iso(),
+            "sync_contract": 1,
+            "content_included": False,
+            "cursor": after,
+            "next_cursor": next_cursor,
+            "has_more": len(rows) > limit,
+            "high_watermark": {
+                "event_id": next_cursor or None,
+                "created_at": events[-1]["created_at"] if events else start_created_at or None,
+            },
+            "counts": counts,
+            "changes": events,
+            "warnings": warnings,
+        }
+
+    def _sync_event_from_row(self, row) -> dict[str, Any]:
+        metadata = self._json_or_empty(row["metadata_json"])
+        safe_summary = self._support_event_summary(
+            {
+                "id": row["id"],
+                "object_type": row["object_type"],
+                "event_type": row["event_type"],
+                "metadata": metadata,
+                "created_at": row["created_at"],
+            }
+        )
+        object_id = str(row["object_id"] or "")
+        safe_object_id = self._safe_sync_object_id(object_id)
+        return {
+            "id": row["id"],
+            "created_at": row["created_at"],
+            "object_type": row["object_type"],
+            "event_type": row["event_type"],
+            "object_id": safe_object_id,
+            "object_id_hash": hashlib.sha256(object_id.encode("utf-8")).hexdigest()[:16] if object_id else "",
+            "object_id_redacted": bool(object_id and not safe_object_id),
+            "metadata_keys": safe_summary["metadata_keys"],
+            "safe_metadata": safe_summary["safe_metadata"],
+        }
+
+    def _safe_sync_object_id(self, object_id: str) -> str | None:
+        if re.match(r"^(cap|mem|task|ent|edge|evt|imp|irec|job|sacct|sync|tok|backup|tomb|vec)_[A-Za-z0-9]+$", object_id or ""):
+            return object_id
+        return None
+
     def _support_event_summary(self, event: dict[str, Any]) -> dict[str, Any]:
         metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
         safe_metadata: dict[str, Any] = {}

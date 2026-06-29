@@ -7,6 +7,7 @@ It provides:
 - capture ingestion
 - source import preview, duplicate-safe history, and batch undo for user-selected exports, folders, and files
 - source account registry and sync cursor state for future live connectors
+- content-free sync change feed for hosted-sync materialization work
 - structured memory extraction
 - layered memory metadata for semantic, episodic, style, decision, preference, and negative memory
 - user-owned local vault persistence
@@ -78,6 +79,7 @@ POST   /v1/source-accounts
 DELETE /v1/source-accounts/{account_id}
 GET    /v1/sync-cursors
 POST   /v1/sync-cursors
+GET    /v1/sync/changes
 GET    /v1/jobs
 GET    /v1/jobs/{job_id}
 POST   /v1/maintenance/jobs/run
@@ -170,6 +172,8 @@ export CORTEX_REQUIRE_SCOPED_API_TOKENS=1
 ```
 
 With this enabled, the global `CORTEX_API_KEY` can no longer use `X-Cortex-User` to select another user. Register a user-owned REST token with `POST /v1/integrations/api-token`, then call REST endpoints with that `cxa_` token and the matching `X-Cortex-User` header. This keeps local single-user behavior unchanged while giving hosted deployments a safer boundary between account identity and memory shards.
+
+`GET /v1/sync/changes` returns a cursorable, content-free local event feed for a user. It includes event IDs, safe object IDs or redacted hashes, whitelisted metadata, counts, the active shard assignment, and a high watermark, but no raw capture text, memory bodies, imported source content, context packs, or vault files. This is a hosted-sync foundation for materializing shard state from local events; it is not yet a full sync protocol, conflict resolver, OAuth connector runtime, or remote backup service.
 
 Scoped REST tokens enforce the same capability names used by Trust controls:
 

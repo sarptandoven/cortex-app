@@ -141,6 +141,20 @@ class SyncCursorListResponse(BaseModel):
     results: list[SyncCursorResponse]
 
 
+class SyncChangeFeedResponse(BaseModel):
+    generated_at: str
+    sync_contract: int
+    content_included: bool
+    cursor: str
+    next_cursor: str
+    has_more: bool
+    high_watermark: dict[str, Any]
+    shard: dict[str, Any] | None = None
+    counts: dict[str, int]
+    changes: list[dict[str, Any]]
+    warnings: list[str]
+
+
 class QueuedCaptureResponse(BaseModel):
     capture_id: str
     status: str
