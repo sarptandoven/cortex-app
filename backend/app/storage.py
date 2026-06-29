@@ -1482,7 +1482,12 @@ class CortexStore:
                         )
                     continue
                 if processing == "sync":
-                    extracted = extract_context(record.content, record.source, author_aliases=identity_aliases)
+                    extracted = extract_context(
+                        record.content,
+                        record.source,
+                        author_aliases=identity_aliases,
+                        extraction_mode="local",
+                    )
                     result = self.save_capture(
                         user_id=user_id,
                         content=record.content,

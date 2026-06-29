@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
 import zipfile
 from email.message import EmailMessage
 from pathlib import Path
+from unittest.mock import patch
 
 from backend.app.database import init_db
 from backend.app.source_ingest import analyze_sources, import_source_records
@@ -482,6 +484,34 @@ class SourceIngestTests(unittest.TestCase):
                 hits = [item for item in store.search("test-user", query, limit=8) if item["source"] == source]
                 self.assertTrue(hits)
                 self.assertTrue(all(item["source_url"] for item in hits))
+
+    def test_sync_source_import_uses_deterministic_extraction_by_default(self) -> None:
+        docs = self.root / "docs"
+        docs.mkdir()
+        note = docs / "Deterministic Import.md"
+        note.write_text(
+            "I prefer deterministic source import memories for production readiness.",
+            encoding="utf-8",
+        )
+
+        db_path = self.root / "index.sqlite"
+        init_db(db_path)
+        store = CortexStore(db_path, self.root / "vault")
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), patch(
+            "backend.app.extractor._extract_with_claude",
+            side_effect=BaseException("model extraction should not run for source imports"),
+        ) as model_extract:
+            result = store.import_sources(
+                user_id="test-user",
+                paths=[str(note)],
+                processing="sync",
+                max_records=10,
+            )
+
+        self.assertEqual(result["failed"], 0)
+        self.assertGreaterEqual(result["saved"], 1)
+        model_extract.assert_not_called()
+        self.assertTrue(store.search("test-user", "deterministic source import memories", limit=3))
 
     def test_generic_file_import_preserves_source_url_for_citations(self) -> None:
         docs = self.root / "docs"

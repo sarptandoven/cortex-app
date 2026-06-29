@@ -88,7 +88,15 @@ MONTH_NAME_PATTERN = (
 )
 
 
-def extract_context(raw_text: str, source: str = "unknown", author_aliases: Iterable[str] | None = None) -> dict[str, Any]:
+def extract_context(
+    raw_text: str,
+    source: str = "unknown",
+    author_aliases: Iterable[str] | None = None,
+    extraction_mode: str | None = None,
+) -> dict[str, Any]:
+    mode = (extraction_mode or os.environ.get("CORTEX_EXTRACTION_MODE") or "auto").strip().lower()
+    if mode in {"local", "deterministic"}:
+        return _extract_locally(raw_text, source, author_aliases=author_aliases)
     if os.environ.get("ANTHROPIC_API_KEY"):
         try:
             return _extract_with_claude(raw_text, source, author_aliases=author_aliases)
