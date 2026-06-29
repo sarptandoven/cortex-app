@@ -5,6 +5,8 @@ import json
 import os
 import re
 from datetime import datetime, timezone
+from email.utils import parseaddr
+from collections.abc import Iterable
 from typing import Any
 
 
@@ -86,25 +88,27 @@ MONTH_NAME_PATTERN = (
 )
 
 
-def extract_context(raw_text: str, source: str = "unknown") -> dict[str, Any]:
+def extract_context(raw_text: str, source: str = "unknown", author_aliases: Iterable[str] | None = None) -> dict[str, Any]:
     if os.environ.get("ANTHROPIC_API_KEY"):
         try:
-            return _extract_with_claude(raw_text, source)
+            return _extract_with_claude(raw_text, source, author_aliases=author_aliases)
         except Exception:
             pass
-    return _extract_locally(raw_text, source)
+    return _extract_locally(raw_text, source, author_aliases=author_aliases)
 
 
-def _extract_with_claude(raw_text: str, source: str) -> dict[str, Any]:
+def _extract_with_claude(raw_text: str, source: str, author_aliases: Iterable[str] | None = None) -> dict[str, Any]:
     from anthropic import Anthropic
 
     client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    aliases = ", ".join(sorted(_identity_alias_tokens(author_aliases))[:12])
+    alias_instruction = f"\nUser-authored aliases in speaker-based imports: {aliases}. Only treat preference, style, and negative records as user memory when authored by those aliases or an explicit user/human/me role." if aliases else ""
     prompt = """Extract Cortex memory as strict JSON with keys records, tasks, entities, summary.
 records: list of {id, kind, layer, content, confidence, importance, entity_ids, topics, occurred_at}
 tasks: list of {id, kind, content, status, importance, entity_ids, topics}
 entities: list of {id, kind, name, aliases, context}
 Kinds: claim, decision, event, preference, observation, style, negative. Layers: semantic, episodic, style, decision, preference, negative. Task kinds: action, question, decision-pending.
-Use stable IDs and keep each memory atomic. Return JSON only."""
+Use stable IDs and keep each memory atomic. Return JSON only.""" + alias_instruction
     response = client.messages.create(
         model=os.environ.get("CORTEX_EXTRACTION_MODEL", "claude-opus-4-5"),
         max_tokens=2500,
@@ -118,8 +122,8 @@ Use stable IDs and keep each memory atomic. Return JSON only."""
     return _normalize_extraction(data, raw_text, source)
 
 
-def _extract_locally(raw_text: str, source: str) -> dict[str, Any]:
-    candidates = _sentence_candidates(raw_text, source)
+def _extract_locally(raw_text: str, source: str, author_aliases: Iterable[str] | None = None) -> dict[str, Any]:
+    candidates = _sentence_candidates(raw_text, source, author_aliases=author_aliases)
     has_known_turns = any(candidate.get("role") in KNOWN_TURN_ROLES for candidate in candidates)
     memory_candidates = [
         candidate
@@ -206,17 +210,19 @@ def _normalize_extraction(data: dict[str, Any], raw_text: str, source: str) -> d
     return data
 
 
-def _sentence_candidates(text: str, source: str = "unknown") -> list[dict[str, Any]]:
+def _sentence_candidates(text: str, source: str = "unknown", author_aliases: Iterable[str] | None = None) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     current_role: str | None = None
+    aliases = _identity_alias_tokens(author_aliases)
     email_source = _normalize_source_label(source) in {"email", "gmail"}
     saw_email_header = False
     saw_email_from = False
+    email_from_is_user = False
     for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         line = raw_line.strip(" -•\t")
         if not line:
             if email_source and saw_email_header and saw_email_from:
-                current_role = NAMED_SPEAKER_ROLE
+                current_role = "user" if email_from_is_user else NAMED_SPEAKER_ROLE
             continue
         email_header = re.match(r"^(?P<label>[A-Za-z][A-Za-z0-9 _-]{0,40})\s*:\s*(?P<text>.*)$", line)
         if email_header:
@@ -229,9 +235,12 @@ def _sentence_candidates(text: str, source: str = "unknown") -> list[dict[str, A
                 saw_email_header = True
                 if header_label == "from" and header_text:
                     saw_email_from = True
+                    email_from_is_user = _matches_identity_alias(header_text, aliases)
         if _is_boilerplate_line(line):
             continue
-        role, payload, speaker_present = _parse_role_line(line)
+        role, payload, speaker_present = _parse_role_line(line, aliases)
+        if email_from_is_user and role == NAMED_SPEAKER_ROLE:
+            role = "user"
         if role:
             current_role = role
             line = payload
@@ -246,7 +255,7 @@ def _sentence_candidates(text: str, source: str = "unknown") -> list[dict[str, A
     return candidates
 
 
-def _parse_role_line(line: str) -> tuple[str | None, str, bool]:
+def _parse_role_line(line: str, identity_aliases: set[str] | None = None) -> tuple[str | None, str, bool]:
     timestamped = re.match(
         r"^(?:\[[^\]]+\]|[0-9T:.,+/\- ]{8,40})\s+(?P<label>[A-Za-z][A-Za-z0-9 _.'-]{0,40})\s*:\s*(?P<text>.+)$",
         line,
@@ -254,7 +263,7 @@ def _parse_role_line(line: str) -> tuple[str | None, str, bool]:
     )
     if timestamped:
         label = timestamped.group("label").strip()
-        role = _normalize_role(label)
+        role = _normalize_role(label, identity_aliases)
         if role:
             return role, timestamped.group("text").strip(), True
         if _looks_like_named_speaker(label, allow_lowercase=True):
@@ -266,7 +275,7 @@ def _parse_role_line(line: str) -> tuple[str | None, str, bool]:
         return None, line, False
 
     label = match.group("label").strip()
-    role = _normalize_role(label)
+    role = _normalize_role(label, identity_aliases)
     if role:
         return role, match.group("text").strip(), True
     if _looks_like_named_speaker(label):
@@ -274,7 +283,7 @@ def _parse_role_line(line: str) -> tuple[str | None, str, bool]:
     return None, line, False
 
 
-def _normalize_role(value: str) -> str | None:
+def _normalize_role(value: str, identity_aliases: set[str] | None = None) -> str | None:
     role = re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
     aliases = {
         "human": "human",
@@ -289,7 +298,58 @@ def _normalize_role(value: str) -> str | None:
         "chatgpt": "chatgpt",
         "claude": "claude",
     }
-    return aliases.get(role)
+    known = aliases.get(role)
+    if known:
+        return known
+    if _matches_identity_alias(value, identity_aliases or set()):
+        return "user"
+    return None
+
+
+def _identity_alias_tokens(values: Iterable[str] | None) -> set[str]:
+    tokens: set[str] = set()
+    if not values:
+        return tokens
+    for value in values:
+        tokens.update(_identity_terms(str(value or "")))
+    return {token for token in tokens if token}
+
+
+def _identity_terms(value: str) -> set[str]:
+    terms: set[str] = set()
+    raw = str(value or "").strip()
+    if not raw:
+        return terms
+    normalized = _normalize_identity_value(raw)
+    if normalized:
+        terms.add(normalized)
+    name, address = parseaddr(raw)
+    for part in (name, address):
+        normalized_part = _normalize_identity_value(part)
+        if normalized_part:
+            terms.add(normalized_part)
+    for email in re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", raw):
+        normalized_email = _normalize_identity_value(email)
+        if normalized_email:
+            terms.add(normalized_email)
+        local = email.split("@", 1)[0]
+        normalized_local = _normalize_identity_value(local)
+        if normalized_local:
+            terms.add(normalized_local)
+    return terms
+
+
+def _normalize_identity_value(value: str) -> str:
+    cleaned = str(value or "").strip().strip("@").lower()
+    if not cleaned:
+        return ""
+    return re.sub(r"[^a-z0-9@._+-]+", " ", cleaned).strip()
+
+
+def _matches_identity_alias(value: str, identity_aliases: set[str]) -> bool:
+    if not identity_aliases:
+        return False
+    return bool(_identity_terms(value) & identity_aliases)
 
 
 def _looks_like_named_speaker(label: str, allow_lowercase: bool = False) -> bool:

@@ -59,6 +59,15 @@ When enabled, new captures enter the inbox as `pending`.
 - On: faster, more convenient, useful during active work.
 - Off: stricter, only approved captures appear in search, daily review context, and context packs.
 
+### Identity Aliases
+
+`identity_aliases` is an optional list of names, handles, and email addresses that tell the importer which Slack or email speaker lines were written by the user.
+
+- Empty by default, so named speakers stay conservative and do not become user preference/style/negative memory.
+- Examples: `sarpt`, `@sarpt`, `sarpt@example.com`.
+- Used only during extraction to classify author role; it is not a login system, account proof, or hosted identity layer.
+- Stored in the local settings vault and included in local backups.
+
 ### Agent Read Access
 
 `allow_agent_reads` controls MCP read tools:

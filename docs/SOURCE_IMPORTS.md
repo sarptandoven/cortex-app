@@ -153,6 +153,20 @@ Modes:
 
 The macOS Trust tab exposes these as Normal, Review first, and Keep private.
 
+## User Authorship In Imports
+
+Slack and email exports can contain many named speakers. By default, Cortex does not treat named-speaker preferences, writing style, or rejected approaches as the user's own memory. This prevents an external sender saying "I prefer..." from becoming a durable user preference.
+
+Users can add identity aliases under Trust > Advanced permissions:
+
+```json
+{
+  "identity_aliases": ["sarpt", "@sarpt", "sarpt@example.com"]
+}
+```
+
+When aliases match a Slack handle/name or email sender, that text can seed user-authored preference, style, and negative memory. Other speakers remain external.
+
 ## App Flow
 
 The macOS Sources tab accepts files, folders, and export bundles. It first calls `/v1/imports/analyze` to show a preview of detected records. After confirmation, it calls `/v1/imports`, queues normalized records, starts a local job run for the first batch, refreshes Model, Sources, Review, Ask, and Trust state, and shows the batch in Import History. If a selected file is not readable by the backend importer, the app falls back to its existing local text/PDF extraction path.

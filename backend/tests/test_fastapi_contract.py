@@ -581,6 +581,21 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(cleared.status_code, 200)
         self.assertEqual(cleared.json()["source_policies"], {})
 
+    def test_identity_aliases_settings_round_trip(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "identity-contract"}
+
+        updated = self.client.put(
+            "/v1/settings",
+            json={"identity_aliases": ["sarpt", "sarpt@example.com", "sarpt"]},
+            headers=headers,
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["identity_aliases"], ["sarpt", "sarpt@example.com"])
+
+        fetched = self.client.get("/v1/settings", headers=headers)
+        self.assertEqual(fetched.status_code, 200)
+        self.assertEqual(fetched.json()["identity_aliases"], ["sarpt", "sarpt@example.com"])
+
     def test_delete_user_data_removes_current_user_records(self) -> None:
         phrase = "FastAPI delete all user data contract phrase"
         created = self.client.post(

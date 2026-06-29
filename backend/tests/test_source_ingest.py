@@ -348,6 +348,61 @@ class SourceIngestTests(unittest.TestCase):
         self.assertTrue(all(row["source_url"] for row in rows))
         self.assertFalse(any(row["kind"] in {"preference", "style", "negative"} for row in rows))
 
+    def test_identity_aliases_allow_self_authored_slack_and_email_preferences(self) -> None:
+        slack = self.root / "slack" / "general"
+        slack.mkdir(parents=True)
+        (self.root / "slack" / "users.json").write_text(
+            json.dumps([{"id": "U1", "name": "sarpt"}, {"id": "U2", "name": "dana"}]),
+            encoding="utf-8",
+        )
+        (slack / "2026-06-29.json").write_text(
+            json.dumps(
+                [
+                    {"type": "message", "user": "U1", "text": "I prefer async standups with concise summaries.", "ts": "1700000000.0001"},
+                    {"type": "message", "user": "U2", "text": "I prefer long onboarding rituals.", "ts": "1700000001.0001"},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        mail = self.root / "self-mail"
+        mail.mkdir()
+        message = EmailMessage()
+        message["Subject"] = "Self-authored notes"
+        message["From"] = "Sarpt <sarpt@example.com>"
+        message["To"] = "notes@example.com"
+        message["Date"] = "Mon, 29 Jun 2026 10:00:00 +0000"
+        message.set_content("I prefer terse launch notes with cited source links.")
+        (mail / "self.eml").write_bytes(message.as_bytes())
+
+        db_path = self.root / "index.sqlite"
+        init_db(db_path)
+        store = CortexStore(db_path, self.root / "vault")
+        settings = store.update_settings("test-user", {"identity_aliases": ["sarpt", "sarpt@example.com"]})
+        self.assertEqual(settings["identity_aliases"], ["sarpt", "sarpt@example.com"])
+
+        result = store.import_sources(
+            user_id="test-user",
+            paths=[str(self.root / "slack"), str(mail)],
+            processing="sync",
+            max_records=10,
+        )
+
+        self.assertEqual(result["failed"], 0)
+        self.assertTrue(store.search("test-user", "async standups concise summaries", limit=5))
+        self.assertTrue(store.search("test-user", "terse launch notes cited source links", limit=5))
+        self.assertFalse(store.search("test-user", "long onboarding rituals", limit=5))
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute("SELECT kind, layer, content FROM memories").fetchall()
+        finally:
+            conn.close()
+        preference_text = "\n".join(row["content"] for row in rows if row["kind"] == "preference")
+        self.assertIn("async standups", preference_text)
+        self.assertIn("terse launch notes", preference_text)
+        self.assertNotIn("long onboarding rituals", preference_text)
+
     def test_key_source_imports_preserve_citations_through_search(self) -> None:
         self._write_chatgpt_export()
         self._write_claude_export()

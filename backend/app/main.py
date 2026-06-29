@@ -195,7 +195,7 @@ def _save_capture_from_values(content: str, source: str, title: str | None, sour
     if len(content) > 200_000:
         raise HTTPException(status_code=413, detail="content is too large")
     normalized_source = (source or "browser-capture")[:80]
-    extracted = extract_context(content, normalized_source)
+    extracted = extract_context(content, normalized_source, author_aliases=store.settings(user_id).get("identity_aliases"))
     return store.save_capture(
         user_id=user_id,
         content=content,

@@ -284,7 +284,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
     if name == "remember_this":
         content = args.get("content", "")
         source = args.get("source", "ai-chat")
-        extracted = extract_context(content, source)
+        extracted = extract_context(content, source, author_aliases=store.settings(user_id).get("identity_aliases"))
         return store.agent_payload(user_id, store.save_capture(
             user_id=user_id,
             content=content,

@@ -122,6 +122,7 @@ DEFAULT_USER_SETTINGS: dict[str, Any] = {
     "allow_agent_destructive_actions": False,
     "redact_sensitive_context": True,
     "source_policies": {},
+    "identity_aliases": [],
 }
 
 
@@ -242,6 +243,35 @@ def _normalize_source_policies(value: Any) -> dict[str, dict[str, Any]]:
             "review_required": review_required,
         }
     return policies
+
+
+def _normalize_identity_aliases(value: Any) -> list[str]:
+    raw_values: list[Any]
+    if isinstance(value, dict):
+        raw_values = []
+        for item in value.values():
+            if isinstance(item, (list, tuple, set)):
+                raw_values.extend(item)
+            else:
+                raw_values.append(item)
+    elif isinstance(value, str):
+        raw_values = re.split(r"[,;\n]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        raw_values = list(value)
+    else:
+        raw_values = []
+    aliases: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        alias = str(raw or "").strip()
+        alias = re.sub(r"\s+", " ", alias)[:120]
+        key = alias.lower()
+        if alias and key not in seen:
+            aliases.append(alias)
+            seen.add(key)
+        if len(aliases) >= 40:
+            break
+    return aliases
 
 
 def normalize_token_scopes(scopes: list[str] | tuple[str, ...] | str | None) -> list[str]:
@@ -1228,6 +1258,7 @@ class CortexStore:
                 )
 
         capture_ids: list[str] = []
+        identity_aliases = self.settings(user_id).get("identity_aliases")
         for ordinal, record in enumerate(records):
             record_id = stable_id("irec_", import_id + str(ordinal) + record.source + record.title)
             try:
@@ -1267,7 +1298,7 @@ class CortexStore:
                         )
                     continue
                 if processing == "sync":
-                    extracted = extract_context(record.content, record.source)
+                    extracted = extract_context(record.content, record.source, author_aliases=identity_aliases)
                     result = self.save_capture(
                         user_id=user_id,
                         content=record.content,
@@ -1628,6 +1659,8 @@ class CortexStore:
                     merged[key] = bool(updates[key])
             if "source_policies" in updates:
                 merged["source_policies"] = _normalize_source_policies(updates.get("source_policies"))
+            if "identity_aliases" in updates:
+                merged["identity_aliases"] = _normalize_identity_aliases(updates.get("identity_aliases"))
             timestamp = now_iso()
             for key, value in merged.items():
                 conn.execute(
@@ -4493,7 +4526,7 @@ class CortexStore:
             )
         content = capture["raw_text"]
         source = capture["source"]
-        extracted = extract_context(content, source)
+        extracted = extract_context(content, source, author_aliases=self.settings(user_id).get("identity_aliases"))
         extracted["_timestamp"] = capture["captured_at"] or payload.get("captured_at") or started_at
         saved = self.save_capture(
             user_id=user_id,
@@ -5247,6 +5280,7 @@ class CortexStore:
         settings["allow_agent_destructive_actions"] = bool(settings["allow_agent_destructive_actions"])
         settings["redact_sensitive_context"] = bool(settings["redact_sensitive_context"])
         settings["source_policies"] = _normalize_source_policies(settings.get("source_policies"))
+        settings["identity_aliases"] = _normalize_identity_aliases(settings.get("identity_aliases"))
         try:
             settings["context_pack_limit"] = min(50, max(4, int(settings["context_pack_limit"])))
         except (TypeError, ValueError):

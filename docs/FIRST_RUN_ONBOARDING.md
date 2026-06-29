@@ -56,6 +56,8 @@ Copyable chat context and direct MCP setup remain available after setup, but the
 
 Summarizes the chosen vault, AI access posture, redaction state, backend health, and backup decision. Users can create a first backup or explicitly finish later.
 
+Advanced Trust also includes optional identity aliases, such as Slack handles or email addresses, so future Slack and email imports can distinguish the user's own preferences from other speakers.
+
 ## Persistence
 
 The app stores:

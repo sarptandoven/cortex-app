@@ -23,9 +23,9 @@ user: On June 29, 2026, we launched Project Atlas.
 PERSONAL_MEMORY_KINDS = {"preference", "style", "negative"}
 
 
-def extract_local(raw_text: str, source: str = "unit-test") -> dict:
+def extract_local(raw_text: str, source: str = "unit-test", author_aliases: list[str] | None = None) -> dict:
     with patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
-        return extract_context(raw_text, source)
+        return extract_context(raw_text, source, author_aliases=author_aliases)
 
 
 class ExtractorQualityTests(unittest.TestCase):
@@ -145,6 +145,27 @@ Channel: launch
             self.assertNotIn(leaked, joined_content)
             self.assertNotIn(leaked, data["summary"])
         self.assertTrue(any(record["kind"] == "decision" and "five-tab app" in record["content"] for record in data["records"]))
+
+    def test_identity_aliases_allow_self_authored_slack_preferences(self) -> None:
+        data = extract_local(
+            """Source: Slack
+Channel: general
+
+--- Messages ---
+2026-06-29T12:40:00+00:00 sarpt: I prefer async standups with concise summaries.
+My writing style uses short direct paragraphs.
+2026-06-29T12:41:00+00:00 dana: I prefer long onboarding rituals.
+2026-06-29T12:42:00+00:00 priya: Never use threads for launch decisions.
+""",
+            "slack",
+            author_aliases=["sarpt"],
+        )
+        joined_content = "\n".join(record["content"] for record in data["records"])
+        self.assertTrue(any(record["kind"] == "preference" and "async standups" in record["content"] for record in data["records"]))
+        self.assertTrue(any(record["kind"] == "style" and "short direct paragraphs" in record["content"] for record in data["records"]))
+        for leaked in ("long onboarding rituals", "threads for launch"):
+            self.assertNotIn(leaked, joined_content)
+            self.assertNotIn(leaked, data["summary"])
 
     def test_external_email_sender_body_does_not_seed_personal_memories(self) -> None:
         data = extract_local(

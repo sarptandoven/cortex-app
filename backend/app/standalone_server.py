@@ -785,7 +785,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
         if len(content) > 200_000:
             raise ValueError("content is too large")
         normalized_source = str(source or "browser-capture")[:80]
-        extracted = extract_context(content, normalized_source)
+        extracted = extract_context(content, normalized_source, author_aliases=store.settings(user_id).get("identity_aliases"))
         return store.save_capture(
             user_id=user_id,
             content=content,

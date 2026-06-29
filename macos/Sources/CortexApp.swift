@@ -469,6 +469,7 @@ struct AppSettingsResponse: Codable, Equatable {
     var allow_agent_destructive_actions: Bool
     var redact_sensitive_context: Bool
     var source_policies: [String: SourcePolicySetting]?
+    var identity_aliases: [String]?
 
     static let defaults = AppSettingsResponse(
         review_new_captures: true,
@@ -480,7 +481,8 @@ struct AppSettingsResponse: Codable, Equatable {
         allow_agent_maintenance: false,
         allow_agent_destructive_actions: false,
         redact_sensitive_context: true,
-        source_policies: [:]
+        source_policies: [:],
+        identity_aliases: []
     )
 }
 
@@ -2327,7 +2329,8 @@ final class AppState: ObservableObject {
                     "allow_agent_exports": appSettings.allow_agent_exports,
                     "allow_agent_maintenance": appSettings.allow_agent_maintenance,
                     "allow_agent_destructive_actions": appSettings.allow_agent_destructive_actions,
-                    "redact_sensitive_context": appSettings.redact_sensitive_context
+                    "redact_sensitive_context": appSettings.redact_sensitive_context,
+                    "identity_aliases": appSettings.identity_aliases ?? []
                 ]
                 if let policies = sourcePoliciesBody() {
                     body["source_policies"] = policies
@@ -6302,6 +6305,29 @@ struct TrustPolicySection: View {
                         systemImage: "text.badge.xmark",
                         isOn: $state.appSettings.redact_sensitive_context
                     )
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Your source aliases", systemImage: "person.text.rectangle")
+                            .font(.callout)
+                            .fontWeight(.medium)
+                        Text("Names, handles, or email addresses that mark Slack and email imports as written by you.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        TextField("sarpt, @sarpt, sarpt@example.com", text: Binding(
+                            get: {
+                                (state.appSettings.identity_aliases ?? []).joined(separator: ", ")
+                            },
+                            set: { value in
+                                state.appSettings.identity_aliases = value
+                                    .split { character in
+                                        character == "," || character == ";" || character == "\n"
+                                    }
+                                    .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                                    .filter { !$0.isEmpty }
+                            }
+                        ))
+                        .textFieldStyle(.roundedBorder)
+                    }
 
                     Stepper(value: $state.appSettings.context_pack_limit, in: 4...50, step: 2) {
                         Text("Shared memory limit: \(state.appSettings.context_pack_limit)")
