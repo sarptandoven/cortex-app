@@ -2,7 +2,7 @@
 
 ## Current Stage
 
-Cortex is a local-first beta foundation. The local product now has a user-owned vault, rebuildable SQLite index, scoped MCP tokens, restore-safe tombstones, backup retention, and a durable local job queue.
+Cortex is a local-first beta foundation. The local product now has a user-owned vault, rebuildable SQLite index, scoped MCP tokens, optional scoped REST user tokens, restore-safe tombstones, backup retention, and a durable local job queue.
 
 It is not yet a millions-user hosted product. Hosted scale needs account identity, shard routing, object storage, background workers, observability, billing, deletion guarantees, support operations, and public distribution hardening.
 
@@ -26,6 +26,13 @@ Control-plane tables:
 
 The control plane owns auth, organization membership, token revocation, billing state, quotas, shard assignment, and deletion request orchestration. Shard databases own memory records and retrieval indexes.
 
+Implemented local primitive:
+
+- `POST /v1/integrations/api-token` stores hashed `cxa_` REST tokens with user ownership, audience, scopes, and last-used metadata.
+- `CORTEX_REQUIRE_SCOPED_API_TOKENS=1` prevents the global app token from selecting arbitrary users with `X-Cortex-User`.
+- FastAPI and the packaged standalone backend both authenticate scoped REST tokens before routing user-scoped memory calls.
+- This is not a full hosted identity provider. Public hosted deployments still need login, session management, token revocation UI, account membership checks, and control-plane token issuance.
+
 ## Milestone 2: Shard Runtime
 
 Turn `CortexStore` into a shard-backed service.
@@ -46,6 +53,7 @@ Implemented local primitive:
 - `CORTEX_SHARD_MODE=user` stores each user in a dedicated SQLite/vault directory under `CORTEX_SHARD_ROOT`.
 - `CORTEX_SHARD_MODE=bucket` hashes users into `CORTEX_SHARD_COUNT` bucket directories for small hosted shards.
 - `/health` exposes shard mode and default shard metadata so operators can verify runtime routing.
+- Scoped REST token auth composes with these shard modes: the token resolves the user, then `StoreRegistry` routes the request to that user's local, per-user, or bucketed store.
 
 ## Milestone 3: Async Ingestion Workers
 

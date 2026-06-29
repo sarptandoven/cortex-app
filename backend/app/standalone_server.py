@@ -477,6 +477,15 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     token_id="tok_local_mcp",
                 ))
                 return
+            if method == "POST" and path == "/v1/integrations/api-token":
+                body = self._json_body()
+                self._send_json(store.ensure_api_token(
+                    user_id,
+                    str(body.get("token") or ""),
+                    label=str(body.get("label") or "REST API client")[:120],
+                    scopes=body.get("scopes"),
+                ))
+                return
             if method == "GET" and path == "/v1/audit-log":
                 self._send_json({"results": store.audit_log(user_id, _int_param(params, "limit", 80, 1, 300))})
                 return
@@ -566,13 +575,30 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"jsonrpc": "2.0", "id": request.get("id"), "error": {"code": -32000, "message": str(exc)}})
 
     def _auth_user(self) -> str | None:
+        authorization = self.headers.get("Authorization", "")
+        if not authorization.lower().startswith("bearer "):
+            self._send_json({"detail": "Missing or invalid Cortex API token"}, status=HTTPStatus.UNAUTHORIZED)
+            return None
+        token = authorization.split(" ", 1)[1].strip()
         if settings.api_key:
-            expected = f"Bearer {settings.api_key}"
-            authorization = self.headers.get("Authorization", "")
-            if not hmac.compare_digest(authorization, expected):
-                self._send_json({"detail": "Missing or invalid Cortex API token"}, status=HTTPStatus.UNAUTHORIZED)
+            if hmac.compare_digest(token, settings.api_key):
+                requested_user = self.headers.get("X-Cortex-User")
+                if settings.require_scoped_api_tokens and requested_user and requested_user != settings.default_user_id:
+                    self._send_json({"detail": "Global Cortex API token cannot select another user when scoped API tokens are required"}, status=HTTPStatus.FORBIDDEN)
+                    return None
+                return requested_user or settings.default_user_id
+        try:
+            scoped = store.authenticate_api_token(token, user_id=self.headers.get("X-Cortex-User"))
+        except TypeError:
+            scoped = store.authenticate_api_token(token)
+        if scoped:
+            requested_user = self.headers.get("X-Cortex-User")
+            if requested_user and scoped["user_id"] != requested_user:
+                self._send_json({"detail": "Cortex API token does not match requested user"}, status=HTTPStatus.FORBIDDEN)
                 return None
-        return self.headers.get("X-Cortex-User") or settings.default_user_id
+            return scoped["user_id"]
+        self._send_json({"detail": "Missing or invalid Cortex API token"}, status=HTTPStatus.UNAUTHORIZED)
+        return None
 
     def _auth_mcp(self) -> dict | None:
         authorization = self.headers.get("Authorization", "")
@@ -599,7 +625,17 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
         return None
 
     def _auth_token(self, token: str | None) -> str | None:
-        if settings.api_key and not hmac.compare_digest(token or "", settings.api_key):
+        normalized = (token or "").strip()
+        if settings.api_key and hmac.compare_digest(normalized, settings.api_key):
+            return settings.default_user_id
+        if settings.require_scoped_api_tokens:
+            try:
+                scoped = store.authenticate_api_token(normalized)
+            except TypeError:
+                scoped = None
+            if scoped:
+                return scoped["user_id"]
+        if settings.api_key:
             return None
         return settings.default_user_id
 

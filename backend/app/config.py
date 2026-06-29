@@ -19,6 +19,7 @@ class Settings:
     shard_mode: str = "local"
     shard_root: Path | None = None
     shard_count: int = 16
+    require_scoped_api_tokens: bool = False
 
 
 def load_settings() -> Settings:
@@ -32,6 +33,7 @@ def load_settings() -> Settings:
     else:
         vault_path = root / "data" / "Cortex.vault"
     db_path = Path(db_env).expanduser() if db_env else vault_path / "index.sqlite"
+    require_scoped_api_tokens = os.environ.get("CORTEX_REQUIRE_SCOPED_API_TOKENS", "").strip().lower() in {"1", "true", "yes", "on"}
     return Settings(
         vault_path=vault_path,
         db_path=db_path,
@@ -43,4 +45,5 @@ def load_settings() -> Settings:
         shard_mode=os.environ.get("CORTEX_SHARD_MODE", "local"),
         shard_root=Path(os.environ["CORTEX_SHARD_ROOT"]).expanduser() if os.environ.get("CORTEX_SHARD_ROOT") else None,
         shard_count=max(1, int(os.environ.get("CORTEX_SHARD_COUNT", "16"))),
+        require_scoped_api_tokens=require_scoped_api_tokens,
     )

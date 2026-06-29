@@ -82,6 +82,20 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         export_after_archive = self.store.export_markdown(self.user_id)
         self.assertIn("Supabase", export_after_archive)
 
+    def test_api_and_mcp_tokens_are_audience_scoped(self) -> None:
+        api_token = "cxa_storage_lifecycle_token_123456789"
+        mcp_token = "cxm_storage_lifecycle_token_123456789"
+
+        api_metadata = self.store.ensure_api_token(self.user_id, api_token, label="Unit REST token", scopes=["read", "write"])
+        mcp_metadata = self.store.ensure_mcp_token(self.user_id, mcp_token, label="Unit MCP token", scopes=["read"])
+
+        self.assertEqual(api_metadata["audience"], "api")
+        self.assertEqual(mcp_metadata["audience"], "mcp")
+        self.assertEqual(self.store.authenticate_api_token(api_token)["user_id"], self.user_id)
+        self.assertEqual(self.store.authenticate_mcp_token(mcp_token)["user_id"], self.user_id)
+        self.assertIsNone(self.store.authenticate_api_token(mcp_token))
+        self.assertIsNone(self.store.authenticate_mcp_token(api_token))
+
     def test_delete_memory_purges_memory_record_and_indexes(self) -> None:
         result = self.capture(
             "Delete the Zephyr memory but keep the surrounding capture for audit context. "

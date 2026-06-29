@@ -35,6 +35,13 @@ REST endpoints require the admin app token. `/mcp` accepts the admin token for b
 
 Default MCP token scopes are `read`, `write`, `export`, and `maintenance`. The destructive scope is not included in newly generated local integration tokens.
 
+Hosted and multi-user development can also enable scoped REST user tokens:
+
+- `POST /v1/integrations/api-token` registers a hashed `cxa_` token for the authenticated user.
+- `CORTEX_REQUIRE_SCOPED_API_TOKENS=1` blocks the global app token from selecting another user through `X-Cortex-User`.
+- A scoped REST token can only be used as the user it was issued for; mismatched `X-Cortex-User` headers are rejected.
+- This is a backend boundary, not a full consumer account system. Hosted production still needs login, token revocation, device/session management, organization policies, and recovery flows.
+
 ### Review New Saves
 
 When enabled, new captures enter the inbox as `pending`.
@@ -193,6 +200,8 @@ The score is not a security guarantee. It is a product signal that helps users u
 - `GET /v1/settings`
 - `PUT /v1/settings`
 - `GET /v1/trust/summary`
+- `POST /v1/integrations/api-token`
+- `POST /v1/integrations/mcp-token`
 - `GET /v1/audit-log?limit=80`
 - `POST /mcp`
 
@@ -222,5 +231,6 @@ This is a local-first trust layer. It does not yet include:
 - encrypted vault-at-rest
 - remote device revocation
 - organization policy management
+- consumer login and hosted account recovery
 
 Those become important for hosted or multi-device versions. The local MVP should still make agent access understandable and reversible.

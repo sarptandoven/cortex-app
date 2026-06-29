@@ -136,13 +136,22 @@ class StoreRegistry:
         return payload
 
     def authenticate_mcp_token(self, token: str, user_id: str | None = None) -> dict[str, Any] | None:
+        return self._authenticate_scoped_token(token, audience="mcp", user_id=user_id)
+
+    def authenticate_api_token(self, token: str, user_id: str | None = None) -> dict[str, Any] | None:
+        return self._authenticate_scoped_token(token, audience="api", user_id=user_id)
+
+    def _authenticate_scoped_token(self, token: str, *, audience: str, user_id: str | None = None) -> dict[str, Any] | None:
         if user_id:
-            return self.store_for_user(user_id).authenticate_mcp_token(token)
-        scoped = self.default_store.authenticate_mcp_token(token)
+            method = getattr(self.store_for_user(user_id), f"authenticate_{audience}_token")
+            return method(token)
+        method = getattr(self.default_store, f"authenticate_{audience}_token")
+        scoped = method(token)
         if scoped:
             return scoped
         for store in list(self._stores.values()):
-            scoped = store.authenticate_mcp_token(token)
+            method = getattr(store, f"authenticate_{audience}_token")
+            scoped = method(token)
             if scoped:
                 return scoped
         return None

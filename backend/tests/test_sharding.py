@@ -99,6 +99,17 @@ class ShardingTests(unittest.TestCase):
         self.assertTrue(registry.search("alice", "sharded storage isolated"))
         self.assertFalse(registry.search("bob", "sharded storage isolated"))
 
+    def test_scoped_api_token_authenticates_from_user_shard(self) -> None:
+        registry = StoreRegistry.from_settings(self.settings(mode="user"))
+        token = "cxa_alice_shard_token_123456789"
+        registry.ensure_api_token("alice", token, label="Alice shard token", scopes=["read"])
+
+        scoped = registry.authenticate_api_token(token, user_id="alice")
+        self.assertIsNotNone(scoped)
+        self.assertEqual(scoped["user_id"], "alice")
+        self.assertIsNone(registry.authenticate_api_token(token, user_id="bob"))
+        self.assertEqual(registry.authenticate_api_token(token)["user_id"], "alice")
+
 
 if __name__ == "__main__":
     unittest.main()

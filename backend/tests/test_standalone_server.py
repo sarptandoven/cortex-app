@@ -136,6 +136,21 @@ class FakeStore:
             "admin": False,
         }
 
+    def authenticate_api_token(self, token: str, user_id: str | None = None) -> dict | None:
+        if token != "cxa-standalone-token":
+            return None
+        return {
+            "token_id": "tok_standalone_api",
+            "user_id": "alice",
+            "label": "Standalone test API",
+            "audience": "api",
+            "scopes": ["read"],
+            "admin": False,
+        }
+
+    def ensure_api_token(self, user_id: str, token: str, *, label: str, scopes) -> dict:
+        return {"token_id": "tok_api", "user_id": user_id, "label": label, "audience": "api", "scopes": scopes or [], "updated_at": "2026-01-01T00:00:00Z"}
+
     def ensure_mcp_token(self, user_id: str, token: str, *, label: str, scopes, token_id: str) -> dict:
         return {"token_id": token_id, "user_id": user_id, "label": label, "audience": "mcp", "scopes": scopes or [], "updated_at": "2026-01-01T00:00:00Z"}
 
@@ -343,6 +358,48 @@ class StandaloneServerTests(unittest.TestCase):
         with self.assertRaises(error.HTTPError) as context:
             request.urlopen(request.Request(self.base_url + "/v1/search?query=voice", headers=scoped_headers), timeout=5)
         self.assertEqual(context.exception.code, 401)
+
+    def test_scoped_api_token_prevents_user_header_impersonation_when_required(self) -> None:
+        standalone_server.settings = Settings(
+            vault_path=Path(self.tmp.name) / "vault",
+            db_path=Path(self.tmp.name) / "index.sqlite",
+            api_key="test-token",
+            public_base_url="http://127.0.0.1:8766",
+            require_scoped_api_tokens=True,
+        )
+
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/stats",
+                    headers={"Authorization": "Bearer test-token", "X-Cortex-User": "alice"},
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 403)
+
+        with request.urlopen(
+            request.Request(
+                self.base_url + "/v1/search?query=voice",
+                headers={"Authorization": "Bearer cxa-standalone-token", "X-Cortex-User": "alice"},
+            ),
+            timeout=5,
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["results"][0]["content"], "Layer-aware result")
+        self.assertEqual(self.fake_store.search_calls[-1][0], "alice")
+
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/search?query=voice",
+                    headers={"Authorization": "Bearer cxa-standalone-token", "X-Cortex-User": "bob"},
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 403)
 
 
 if __name__ == "__main__":

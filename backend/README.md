@@ -46,6 +46,7 @@ CORTEX_EMBEDDING_PROVIDER=hash
 CORTEX_EMBEDDING_MODEL=text-embedding-3-small
 CORTEX_EMBEDDING_DIMENSIONS=384
 CORTEX_EMBEDDING_STRICT=0
+CORTEX_REQUIRE_SCOPED_API_TOKENS=0
 OPENAI_API_KEY=optional
 ```
 
@@ -90,6 +91,9 @@ GET    /v1/graph
 GET    /v1/stats
 GET    /v1/settings
 PUT    /v1/settings
+GET    /v1/trust/summary
+POST   /v1/integrations/api-token
+POST   /v1/integrations/mcp-token
 GET    /v1/diagnostics
 GET    /v1/reliability/report
 GET    /v1/support/bundle
@@ -143,3 +147,11 @@ export CORTEX_SHARD_COUNT=64     # only used by bucket mode
 ```
 
 `local` preserves `CORTEX_DB_PATH` and `CORTEX_VAULT_PATH`. `user` creates a dedicated SQLite database and vault per user. `bucket` hashes users into a fixed number of shard directories. `/health` includes the active shard mode and default shard metadata.
+
+For hosted or multi-user development, enable scoped REST API tokens:
+
+```bash
+export CORTEX_REQUIRE_SCOPED_API_TOKENS=1
+```
+
+With this enabled, the global `CORTEX_API_KEY` can no longer use `X-Cortex-User` to select another user. Register a user-owned REST token with `POST /v1/integrations/api-token`, then call REST endpoints with that `cxa_` token and the matching `X-Cortex-User` header. This keeps local single-user behavior unchanged while giving hosted deployments a safer boundary between account identity and memory shards.

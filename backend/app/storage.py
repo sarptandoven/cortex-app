@@ -353,6 +353,29 @@ class CortexStore:
         metadata = self.ensure_mcp_token(user_id, token, label=label, scopes=scopes)
         return {**metadata, "token": token}
 
+    def create_api_token(self, user_id: str, *, label: str = "REST API client", scopes: list[str] | tuple[str, ...] | str | None = None) -> dict[str, Any]:
+        token = "cxa_" + secrets.token_urlsafe(32).replace("-", "").replace("_", "")[:43]
+        metadata = self.ensure_api_token(user_id, token, label=label, scopes=scopes)
+        return {**metadata, "token": token}
+
+    def ensure_api_token(
+        self,
+        user_id: str,
+        token: str,
+        *,
+        label: str = "REST API client",
+        scopes: list[str] | tuple[str, ...] | str | None = None,
+        token_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._ensure_token(
+            user_id,
+            token,
+            audience="api",
+            label=label,
+            scopes=scopes,
+            token_id=token_id or stable_id("tok_", f"{user_id}:api:{label}"),
+        )
+
     def ensure_mcp_token(
         self,
         user_id: str,
@@ -362,14 +385,32 @@ class CortexStore:
         scopes: list[str] | tuple[str, ...] | str | None = None,
         token_id: str | None = None,
     ) -> dict[str, Any]:
+        return self._ensure_token(
+            user_id,
+            token,
+            audience="mcp",
+            label=label,
+            scopes=scopes,
+            token_id=token_id or stable_id("tok_", f"{user_id}:mcp:{label}"),
+        )
+
+    def _ensure_token(
+        self,
+        user_id: str,
+        token: str,
+        *,
+        audience: str,
+        label: str,
+        scopes: list[str] | tuple[str, ...] | str | None,
+        token_id: str,
+    ) -> dict[str, Any]:
         normalized = token.strip()
         if not normalized:
-            raise ValueError("MCP token is required")
+            raise ValueError(f"{audience.upper()} token is required")
         timestamp = now_iso()
         resolved_scopes = normalize_token_scopes(scopes)
-        resolved_token_id = token_id or stable_id("tok_", f"{user_id}:mcp:{label}")
         with connect(self.db_path) as conn:
-            existing = conn.execute("SELECT token_salt FROM api_tokens WHERE token_id = ?", (resolved_token_id,)).fetchone()
+            existing = conn.execute("SELECT token_salt FROM api_tokens WHERE token_id = ?", (token_id,)).fetchone()
             if existing:
                 salt = existing["token_salt"]
             else:
@@ -383,7 +424,7 @@ class CortexStore:
                   ?,
                   ?,
                   ?,
-                  'mcp',
+                  ?,
                   ?,
                   ?,
                   ?,
@@ -394,28 +435,35 @@ class CortexStore:
                 )
                 """,
                 (
-                    resolved_token_id,
+                    token_id,
                     user_id,
                     label[:120],
+                    audience,
                     salt,
                     token_hash,
                     json.dumps(resolved_scopes),
-                    resolved_token_id,
+                    token_id,
                     timestamp,
                     timestamp,
-                    resolved_token_id,
+                    token_id,
                 ),
             )
         return {
-            "token_id": resolved_token_id,
+            "token_id": token_id,
             "user_id": user_id,
             "label": label[:120],
-            "audience": "mcp",
+            "audience": audience,
             "scopes": resolved_scopes,
             "updated_at": timestamp,
         }
 
+    def authenticate_api_token(self, token: str) -> dict[str, Any] | None:
+        return self._authenticate_token(token, audience="api")
+
     def authenticate_mcp_token(self, token: str) -> dict[str, Any] | None:
+        return self._authenticate_token(token, audience="mcp")
+
+    def _authenticate_token(self, token: str, *, audience: str) -> dict[str, Any] | None:
         normalized = token.strip()
         if not normalized:
             return None
@@ -425,9 +473,10 @@ class CortexStore:
                 """
                 SELECT token_id, user_id, label, audience, token_salt, token_hash, scopes_json, created_at, last_used_at
                 FROM api_tokens
-                WHERE audience = 'mcp' AND revoked_at IS NULL
+                WHERE audience = ? AND revoked_at IS NULL
                 ORDER BY created_at DESC
-                """
+                """,
+                (audience,),
             ).fetchall()
             for row in rows:
                 candidate = self._token_hash(normalized, row["token_salt"])

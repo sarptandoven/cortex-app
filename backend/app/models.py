@@ -200,6 +200,21 @@ class MCPTokenRegistrationResponse(BaseModel):
     updated_at: str
 
 
+class APITokenRegistrationRequest(BaseModel):
+    token: str = Field(..., min_length=12, max_length=160)
+    label: str = Field(default="REST API client", max_length=120)
+    scopes: list[str] | None = None
+
+
+class APITokenRegistrationResponse(BaseModel):
+    token_id: str
+    user_id: str
+    label: str
+    audience: str
+    scopes: list[str]
+    updated_at: str
+
+
 class ReliabilityReportResponse(BaseModel):
     status: str
     generated_at: str

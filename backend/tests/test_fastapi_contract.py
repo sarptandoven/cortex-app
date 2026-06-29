@@ -4,6 +4,7 @@ import os
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 MODULE_TMP = tempfile.TemporaryDirectory()
@@ -13,7 +14,9 @@ os.environ["CORTEX_API_KEY"] = "test-token"
 
 from fastapi.testclient import TestClient
 
-from backend.app.main import app
+from backend.app import main as main_module
+
+app = main_module.app
 
 
 class FastAPIContractTests(unittest.TestCase):
@@ -91,6 +94,40 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(sharding["mode"], "local")
         self.assertEqual(sharding["default"]["shard_id"], "local")
         self.assertIn("db_path", sharding["default"])
+
+    def test_scoped_api_token_prevents_user_header_impersonation_when_required(self) -> None:
+        scoped_token = "cxa_fastapi_contract_token_123456789"
+        registered = self.client.post(
+            "/v1/integrations/api-token",
+            json={"token": scoped_token, "label": "Alice REST client", "scopes": ["read", "write"]},
+            headers={"Authorization": "Bearer test-token", "X-Cortex-User": "alice"},
+        )
+        self.assertEqual(registered.status_code, 200)
+        self.assertEqual(registered.json()["audience"], "api")
+        self.assertEqual(registered.json()["user_id"], "alice")
+
+        original_settings = main_module.settings
+        main_module.settings = replace(original_settings, require_scoped_api_tokens=True)
+        try:
+            global_with_user = self.client.get(
+                "/v1/stats",
+                headers={"Authorization": "Bearer test-token", "X-Cortex-User": "alice"},
+            )
+            self.assertEqual(global_with_user.status_code, 403)
+
+            scoped = self.client.get(
+                "/v1/stats",
+                headers={"Authorization": f"Bearer {scoped_token}", "X-Cortex-User": "alice"},
+            )
+            self.assertEqual(scoped.status_code, 200)
+
+            mismatched = self.client.get(
+                "/v1/stats",
+                headers={"Authorization": f"Bearer {scoped_token}", "X-Cortex-User": "bob"},
+            )
+            self.assertEqual(mismatched.status_code, 403)
+        finally:
+            main_module.settings = original_settings
 
     def test_rebuild_vectors_endpoint_exposes_queue_contract(self) -> None:
         response = self.client.post("/v1/maintenance/rebuild-vectors", headers={"Authorization": "Bearer test-token"})

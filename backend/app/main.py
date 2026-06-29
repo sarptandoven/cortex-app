@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import load_settings
 from .extractor import extract_context
 from .mcp_tools import TOOLS, call_tool, tool_result_text
-from .models import BackupResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DiagnosticsResponse, GraphResponse, JobRunResponse, ListResponse, MaintenanceResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, ProductLoopResponse, QueuedCaptureResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, StatsResponse, SupportBundleResponse, VaultRebuildResponse, VectorRebuildResponse
+from .models import APITokenRegistrationRequest, APITokenRegistrationResponse, BackupResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DiagnosticsResponse, GraphResponse, JobRunResponse, ListResponse, MaintenanceResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, ProductLoopResponse, QueuedCaptureResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, StatsResponse, SupportBundleResponse, VaultRebuildResponse, VectorRebuildResponse
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
 
@@ -56,11 +56,20 @@ app.add_middleware(
 
 
 def auth(authorization: str | None = Header(default=None), x_cortex_user: str | None = Header(default=None)) -> str:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Cortex API token")
+    token = authorization.split(" ", 1)[1].strip()
     if settings.api_key:
-        expected = f"Bearer {settings.api_key}"
-        if not authorization or not hmac.compare_digest(authorization, expected):
-            raise HTTPException(status_code=401, detail="Missing or invalid Cortex API token")
-    return x_cortex_user or settings.default_user_id
+        if hmac.compare_digest(token, settings.api_key):
+            if settings.require_scoped_api_tokens and x_cortex_user and x_cortex_user != settings.default_user_id:
+                raise HTTPException(status_code=403, detail="Global Cortex API token cannot select another user when scoped API tokens are required")
+            return x_cortex_user or settings.default_user_id
+    scoped = store.authenticate_api_token(token, user_id=x_cortex_user)
+    if scoped:
+        if x_cortex_user and scoped["user_id"] != x_cortex_user:
+            raise HTTPException(status_code=403, detail="Cortex API token does not match requested user")
+        return scoped["user_id"]
+    raise HTTPException(status_code=401, detail="Missing or invalid Cortex API token")
 
 
 def mcp_auth(authorization: str | None = Header(default=None), x_cortex_user: str | None = Header(default=None)) -> dict[str, Any]:
@@ -129,7 +138,14 @@ def _capture_page(message: str = "", status: str = "ready", token: str = "", tit
 
 
 def _auth_query_token(token: str | None) -> str:
-    if settings.api_key and not hmac.compare_digest(token or "", settings.api_key):
+    normalized = (token or "").strip()
+    if settings.api_key and hmac.compare_digest(normalized, settings.api_key):
+        return settings.default_user_id
+    if settings.require_scoped_api_tokens:
+        scoped = store.authenticate_api_token(normalized)
+        if scoped:
+            return scoped["user_id"]
+    if settings.api_key:
         raise HTTPException(status_code=401, detail="Missing or invalid Cortex capture token")
     return settings.default_user_id
 
@@ -506,6 +522,16 @@ def register_mcp_token(request: MCPTokenRegistrationRequest, user_id: str = Depe
         label=request.label,
         scopes=request.scopes,
         token_id="tok_local_mcp",
+    )
+
+
+@app.post("/v1/integrations/api-token", response_model=APITokenRegistrationResponse)
+def register_api_token(request: APITokenRegistrationRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    return store.ensure_api_token(
+        user_id,
+        request.token,
+        label=request.label,
+        scopes=request.scopes,
     )
 
 
