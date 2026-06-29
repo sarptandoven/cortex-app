@@ -394,6 +394,29 @@ class StandaloneServerTests(unittest.TestCase):
         with self.assertRaises(error.HTTPError) as context:
             request.urlopen(
                 request.Request(
+                    self.base_url + "/v1/context-pack?query=voice",
+                    headers={"Authorization": "Bearer cxa-standalone-token", "X-Cortex-User": "alice"},
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 403)
+        self.assertIn("export scope", context.exception.read().decode("utf-8"))
+
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/captures/capture-1",
+                    headers={"Authorization": "Bearer cxa-standalone-token", "X-Cortex-User": "alice"},
+                    method="DELETE",
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 403)
+        self.assertIn("destructive scope", context.exception.read().decode("utf-8"))
+
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
                     self.base_url + "/v1/search?query=voice",
                     headers={"Authorization": "Bearer cxa-standalone-token", "X-Cortex-User": "bob"},
                 ),

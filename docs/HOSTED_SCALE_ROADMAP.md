@@ -31,6 +31,7 @@ Implemented local primitive:
 - `POST /v1/integrations/api-token` stores hashed `cxa_` REST tokens with user ownership, audience, scopes, and last-used metadata.
 - `CORTEX_REQUIRE_SCOPED_API_TOKENS=1` prevents the global app token from selecting arbitrary users with `X-Cortex-User`.
 - FastAPI and the packaged standalone backend both authenticate scoped REST tokens before routing user-scoped memory calls.
+- REST token scopes are enforced across read, write, export, maintenance, and destructive endpoint classes.
 - This is not a full hosted identity provider. Public hosted deployments still need login, session management, token revocation UI, account membership checks, and control-plane token issuance.
 
 ## Milestone 2: Shard Runtime

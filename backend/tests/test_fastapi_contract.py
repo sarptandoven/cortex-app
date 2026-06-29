@@ -121,6 +121,22 @@ class FastAPIContractTests(unittest.TestCase):
             )
             self.assertEqual(scoped.status_code, 200)
 
+            export_blocked = self.client.get(
+                "/v1/context-pack",
+                params={"query": "anything"},
+                headers={"Authorization": f"Bearer {scoped_token}", "X-Cortex-User": "alice"},
+            )
+            self.assertEqual(export_blocked.status_code, 403)
+            self.assertIn("export scope", export_blocked.json()["detail"])
+
+            destructive_blocked = self.client.delete(
+                "/v1/user-data",
+                params={"include_backups": "false"},
+                headers={"Authorization": f"Bearer {scoped_token}", "X-Cortex-User": "alice"},
+            )
+            self.assertEqual(destructive_blocked.status_code, 403)
+            self.assertIn("destructive scope", destructive_blocked.json()["detail"])
+
             mismatched = self.client.get(
                 "/v1/stats",
                 headers={"Authorization": f"Bearer {scoped_token}", "X-Cortex-User": "bob"},

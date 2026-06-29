@@ -155,3 +155,11 @@ export CORTEX_REQUIRE_SCOPED_API_TOKENS=1
 ```
 
 With this enabled, the global `CORTEX_API_KEY` can no longer use `X-Cortex-User` to select another user. Register a user-owned REST token with `POST /v1/integrations/api-token`, then call REST endpoints with that `cxa_` token and the matching `X-Cortex-User` header. This keeps local single-user behavior unchanged while giving hosted deployments a safer boundary between account identity and memory shards.
+
+Scoped REST tokens enforce the same capability names used by Trust controls:
+
+- `read`: search, inbox, stats, graph, source history, settings reads, and review reads
+- `write`: captures, queued captures, imports, approvals, archives, loop reuse, and settings changes
+- `export`: context packs, personal profiles, support bundles, and JSON/Markdown export
+- `maintenance`: diagnostics, reliability reports, jobs, repair/rebuild operations, backups, and token registration
+- `destructive`: capture/memory/import deletion, backup deletion, full user-data deletion, and backup restore

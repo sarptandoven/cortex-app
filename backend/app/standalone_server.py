@@ -46,6 +46,32 @@ def _cors_origins() -> set[str]:
 ALLOWED_CORS_ORIGINS = _cors_origins()
 
 
+def _required_api_scope(method: str, path: str) -> str:
+    normalized_method = method.upper()
+    normalized_path = path.rstrip("/") or "/"
+    if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/context-pack", "/v1/personal-profile", "/v1/support/bundle"}:
+        return "export"
+    if normalized_path in {"/v1/diagnostics", "/v1/reliability/report"}:
+        return "maintenance"
+    if normalized_path.startswith("/v1/maintenance/") or normalized_path in {"/v1/jobs/run", "/v1/maintenance/jobs/run"}:
+        return "maintenance"
+    if normalized_path in {"/v1/integrations/api-token", "/v1/integrations/mcp-token"}:
+        return "maintenance"
+    if normalized_path == "/v1/backups/restore-latest":
+        return "destructive"
+    if normalized_method == "DELETE":
+        return "destructive"
+    if normalized_path == "/v1/backups" and normalized_method == "POST":
+        return "maintenance"
+    if normalized_method in {"POST", "PUT", "PATCH"}:
+        return "write"
+    return "read"
+
+
+def _api_token_has_scope(scoped: dict, required_scope: str) -> bool:
+    return required_scope in set(scoped.get("scopes") or [])
+
+
 ROOT_HTML = """
 <!doctype html>
 <html>
@@ -237,7 +263,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 self._handle_mcp(context)
                 return
 
-            user_id = self._auth_user()
+            user_id = self._auth_user(method, path)
             if not user_id:
                 return
 
@@ -574,7 +600,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json({"jsonrpc": "2.0", "id": request.get("id"), "error": {"code": -32000, "message": str(exc)}})
 
-    def _auth_user(self) -> str | None:
+    def _auth_user(self, method: str, path: str) -> str | None:
         authorization = self.headers.get("Authorization", "")
         if not authorization.lower().startswith("bearer "):
             self._send_json({"detail": "Missing or invalid Cortex API token"}, status=HTTPStatus.UNAUTHORIZED)
@@ -595,6 +621,10 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             requested_user = self.headers.get("X-Cortex-User")
             if requested_user and scoped["user_id"] != requested_user:
                 self._send_json({"detail": "Cortex API token does not match requested user"}, status=HTTPStatus.FORBIDDEN)
+                return None
+            required_scope = _required_api_scope(method, path)
+            if not _api_token_has_scope(scoped, required_scope):
+                self._send_json({"detail": f"Cortex API token requires {required_scope} scope"}, status=HTTPStatus.FORBIDDEN)
                 return None
             return scoped["user_id"]
         self._send_json({"detail": "Missing or invalid Cortex API token"}, status=HTTPStatus.UNAUTHORIZED)
@@ -624,7 +654,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
         self._send_json({"detail": "Missing or invalid Cortex MCP token"}, status=HTTPStatus.UNAUTHORIZED)
         return None
 
-    def _auth_token(self, token: str | None) -> str | None:
+    def _auth_token(self, token: str | None, *, required_scope: str = "write") -> str | None:
         normalized = (token or "").strip()
         if settings.api_key and hmac.compare_digest(normalized, settings.api_key):
             return settings.default_user_id
@@ -634,6 +664,8 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             except TypeError:
                 scoped = None
             if scoped:
+                if not _api_token_has_scope(scoped, required_scope):
+                    return None
                 return scoped["user_id"]
         if settings.api_key:
             return None

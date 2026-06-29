@@ -55,7 +55,39 @@ app.add_middleware(
 )
 
 
-def auth(authorization: str | None = Header(default=None), x_cortex_user: str | None = Header(default=None)) -> str:
+def _required_api_scope(method: str, path: str) -> str:
+    normalized_method = method.upper()
+    normalized_path = path.rstrip("/") or "/"
+    if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/context-pack", "/v1/personal-profile", "/v1/support/bundle"}:
+        return "export"
+    if normalized_path in {"/v1/diagnostics", "/v1/reliability/report"}:
+        return "maintenance"
+    if normalized_path.startswith("/v1/maintenance/") or normalized_path in {"/v1/jobs/run", "/v1/maintenance/jobs/run"}:
+        return "maintenance"
+    if normalized_path in {"/v1/integrations/api-token", "/v1/integrations/mcp-token"}:
+        return "maintenance"
+    if normalized_path == "/v1/backups/restore-latest":
+        return "destructive"
+    if normalized_method == "DELETE":
+        return "destructive"
+    if normalized_path == "/v1/backups" and normalized_method == "POST":
+        return "maintenance"
+    if normalized_method in {"POST", "PUT", "PATCH"}:
+        return "write"
+    return "read"
+
+
+def _api_token_has_scope(scoped: dict[str, Any], required_scope: str) -> bool:
+    scopes = set(scoped.get("scopes") or [])
+    return required_scope in scopes
+
+
+def _assert_api_token_scope(scoped: dict[str, Any], required_scope: str) -> None:
+    if not _api_token_has_scope(scoped, required_scope):
+        raise HTTPException(status_code=403, detail=f"Cortex API token requires {required_scope} scope")
+
+
+def auth(request: Request, authorization: str | None = Header(default=None), x_cortex_user: str | None = Header(default=None)) -> str:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid Cortex API token")
     token = authorization.split(" ", 1)[1].strip()
@@ -68,6 +100,7 @@ def auth(authorization: str | None = Header(default=None), x_cortex_user: str | 
     if scoped:
         if x_cortex_user and scoped["user_id"] != x_cortex_user:
             raise HTTPException(status_code=403, detail="Cortex API token does not match requested user")
+        _assert_api_token_scope(scoped, _required_api_scope(request.method, request.url.path))
         return scoped["user_id"]
     raise HTTPException(status_code=401, detail="Missing or invalid Cortex API token")
 
@@ -137,13 +170,14 @@ def _capture_page(message: str = "", status: str = "ready", token: str = "", tit
     """
 
 
-def _auth_query_token(token: str | None) -> str:
+def _auth_query_token(token: str | None, *, required_scope: str = "write") -> str:
     normalized = (token or "").strip()
     if settings.api_key and hmac.compare_digest(normalized, settings.api_key):
         return settings.default_user_id
     if settings.require_scoped_api_tokens:
         scoped = store.authenticate_api_token(normalized)
         if scoped:
+            _assert_api_token_scope(scoped, required_scope)
             return scoped["user_id"]
     if settings.api_key:
         raise HTTPException(status_code=401, detail="Missing or invalid Cortex capture token")
