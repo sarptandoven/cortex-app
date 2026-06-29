@@ -10,15 +10,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .config import load_settings
-from .database import init_db
 from .extractor import extract_context
 from .mcp_tools import TOOLS, call_tool, tool_result_text
-from .storage import BACKEND_VERSION, CortexStore
+from .sharding import StoreRegistry
+from .storage import BACKEND_VERSION
 
 
 settings = load_settings()
-init_db(settings.db_path)
-store = CortexStore(settings.db_path, settings.vault_path)
+store = StoreRegistry.from_settings(settings)
 store.ensure_vault_backfilled(settings.default_user_id)
 if settings.mcp_api_key:
     store.ensure_mcp_token(
@@ -590,7 +589,10 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 "scopes": ["read", "write", "export", "maintenance", "destructive"],
                 "admin": True,
             }
-        scoped = store.authenticate_mcp_token(token)
+        try:
+            scoped = store.authenticate_mcp_token(token, user_id=self.headers.get("X-Cortex-User"))
+        except TypeError:
+            scoped = store.authenticate_mcp_token(token)
         if scoped:
             return scoped
         self._send_json({"detail": "Missing or invalid Cortex MCP token"}, status=HTTPStatus.UNAUTHORIZED)

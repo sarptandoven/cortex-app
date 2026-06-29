@@ -16,6 +16,9 @@ class Settings:
     anthropic_api_key: str = ""
     mcp_api_key: str = ""
     mcp_api_key_scopes: str = ""
+    shard_mode: str = "local"
+    shard_root: Path | None = None
+    shard_count: int = 16
 
 
 def load_settings() -> Settings:
@@ -37,4 +40,7 @@ def load_settings() -> Settings:
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
         mcp_api_key=os.environ.get("CORTEX_MCP_API_KEY", ""),
         mcp_api_key_scopes=os.environ.get("CORTEX_MCP_API_KEY_SCOPES", ""),
+        shard_mode=os.environ.get("CORTEX_SHARD_MODE", "local"),
+        shard_root=Path(os.environ["CORTEX_SHARD_ROOT"]).expanduser() if os.environ.get("CORTEX_SHARD_ROOT") else None,
+        shard_count=max(1, int(os.environ.get("CORTEX_SHARD_COUNT", "16"))),
     )

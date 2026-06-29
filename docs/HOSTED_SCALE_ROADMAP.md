@@ -35,9 +35,17 @@ Initial hosted shape:
 - one SQLite/libSQL database per user or small shard;
 - shard migrations based on `backend/app/database.py`;
 - `ShardRouter` for user/workspace to shard lookup;
-- `ShardStoreFactory` for request-time store construction;
+- `StoreRegistry` for request-time `CortexStore` construction and lazy shard initialization;
 - shard health checks, backups, and repair reports;
 - no global vector database until per-user shard search is proven insufficient.
+
+Implemented local primitive:
+
+- `backend/app/sharding.py` supports `local`, `user`, and `bucket` shard modes.
+- `CORTEX_SHARD_MODE=local` preserves the packaged macOS behavior with one database and vault.
+- `CORTEX_SHARD_MODE=user` stores each user in a dedicated SQLite/vault directory under `CORTEX_SHARD_ROOT`.
+- `CORTEX_SHARD_MODE=bucket` hashes users into `CORTEX_SHARD_COUNT` bucket directories for small hosted shards.
+- `/health` exposes shard mode and default shard metadata so operators can verify runtime routing.
 
 ## Milestone 3: Async Ingestion Workers
 
@@ -109,4 +117,3 @@ Migration from local beta:
 4. Verify counts and sample retrieval.
 5. Enable sync cursors.
 6. Keep local export/delete available at every step.
-

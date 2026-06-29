@@ -83,6 +83,15 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertTrue(embedding["index_compatible"])
         self.assertFalse(embedding["network_required"])
 
+    def test_health_exposes_sharding_contract(self) -> None:
+        response = self.client.get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        sharding = response.json()["sharding"]
+        self.assertEqual(sharding["mode"], "local")
+        self.assertEqual(sharding["default"]["shard_id"], "local")
+        self.assertIn("db_path", sharding["default"])
+
     def test_rebuild_vectors_endpoint_exposes_queue_contract(self) -> None:
         response = self.client.post("/v1/maintenance/rebuild-vectors", headers={"Authorization": "Bearer test-token"})
 

@@ -133,3 +133,13 @@ python3 scripts/ops_readiness_check.py --require-live
 ## Hosted Beta
 
 Deploy the same FastAPI service to Render, Fly.io, Railway, or a small VPS. For the hosted beta, keep SQLite WAL plus `sqlite-vec` as the primary memory store, add login/API-token auth, encrypted backups, and eventually per-user or per-shard database files.
+
+Shard routing is opt-in and defaults to the local single-store mode used by the macOS app:
+
+```bash
+export CORTEX_SHARD_MODE=local   # local, user, or bucket
+export CORTEX_SHARD_ROOT=/var/lib/cortex/shards
+export CORTEX_SHARD_COUNT=64     # only used by bucket mode
+```
+
+`local` preserves `CORTEX_DB_PATH` and `CORTEX_VAULT_PATH`. `user` creates a dedicated SQLite database and vault per user. `bucket` hashes users into a fixed number of shard directories. `/health` includes the active shard mode and default shard metadata.

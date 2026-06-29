@@ -11,16 +11,15 @@ from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import load_settings
-from .database import init_db
 from .extractor import extract_context
 from .mcp_tools import TOOLS, call_tool, tool_result_text
 from .models import BackupResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DiagnosticsResponse, GraphResponse, JobRunResponse, ListResponse, MaintenanceResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, ProductLoopResponse, QueuedCaptureResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, StatsResponse, SupportBundleResponse, VaultRebuildResponse, VectorRebuildResponse
-from .storage import BACKEND_VERSION, CortexStore
+from .sharding import StoreRegistry
+from .storage import BACKEND_VERSION
 
 
 settings = load_settings()
-init_db(settings.db_path)
-store = CortexStore(settings.db_path, settings.vault_path)
+store = StoreRegistry.from_settings(settings)
 store.ensure_vault_backfilled(settings.default_user_id)
 if settings.mcp_api_key:
     store.ensure_mcp_token(
@@ -78,7 +77,7 @@ def mcp_auth(authorization: str | None = Header(default=None), x_cortex_user: st
             "scopes": ["read", "write", "export", "maintenance", "destructive"],
             "admin": True,
         }
-    scoped = store.authenticate_mcp_token(token)
+    scoped = store.authenticate_mcp_token(token, user_id=x_cortex_user)
     if scoped:
         return scoped
     raise HTTPException(status_code=401, detail="Missing or invalid Cortex MCP token")
