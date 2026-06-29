@@ -21,6 +21,7 @@ from backend.app import standalone_server
 class FakeStore:
     def __init__(self) -> None:
         self.search_calls: list[tuple[str, str, int, str | None, str | None]] = []
+        self.answer_calls: list[tuple[str, str, int]] = []
         self.delete_capture_calls: list[tuple[str, str]] = []
         self.delete_backups_calls: list[str] = []
         self.delete_user_data_calls: list[tuple[str, bool]] = []
@@ -47,6 +48,34 @@ class FakeStore:
                 "source": "unit-test",
             }
         ]
+
+    def answer_query(self, user_id: str, query: str, limit: int) -> dict:
+        self.answer_calls.append((user_id, query, limit))
+        result = {
+            "id": "memory-1",
+            "kind": "claim",
+            "layer": "semantic",
+            "content": "Layer-aware result",
+            "source": "unit-test",
+            "source_url": "/tmp/source.md",
+        }
+        return {
+            "query": query,
+            "answer": "Cortex found 1 cited memory for this question:\n[1] Layer-aware result (/tmp/source.md)",
+            "citations": [
+                {
+                    "index": 1,
+                    "id": "memory-1",
+                    "kind": "claim",
+                    "layer": "semantic",
+                    "source": "unit-test",
+                    "source_url": "/tmp/source.md",
+                    "excerpt": "Layer-aware result",
+                    "topics": [],
+                }
+            ],
+            "results": [result],
+        }
 
     def delete_capture(self, user_id: str, capture_id: str) -> bool:
         self.delete_capture_calls.append((user_id, capture_id))
@@ -493,6 +522,15 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(payload["results"][0]["layer"], "style")
         self.assertEqual(self.fake_store.search_calls, [("local", "voice", 7, "style", "style")])
+
+    def test_ask_route_forwards_to_store(self) -> None:
+        with self.get("/v1/ask?query=voice&limit=2") as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertIn("cited memory", payload["answer"])
+        self.assertEqual(payload["citations"][0]["source_url"], "/tmp/source.md")
+        self.assertEqual(self.fake_store.answer_calls, [("local", "voice", 2)])
 
     def test_cors_does_not_allow_arbitrary_origin(self) -> None:
         with self.get("/v1/search?query=voice", origin="https://example.invalid") as response:

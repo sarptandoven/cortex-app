@@ -143,6 +143,33 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertIn("source_health", payload)
         self.assertTrue(any(source["source"] == "quality-test" for source in payload["source_health"]))
 
+    def test_ask_endpoint_returns_cited_answer_contract(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "ask-contract"}
+        phrase = "FastAPI Ask citation contract should quote source-backed memory."
+        created = self.client.post(
+            "/v1/captures",
+            json={
+                "content": phrase,
+                "source": "ask-test",
+                "source_url": "/tmp/ask-source.md",
+            },
+            headers=headers,
+        )
+        self.assertEqual(created.status_code, 200)
+        approved = self.client.post(f"/v1/captures/{created.json()['capture_id']}/approve", headers=headers)
+        self.assertEqual(approved.status_code, 200)
+
+        response = self.client.get("/v1/ask", params={"query": "Ask citation contract", "limit": 5}, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["query"], "Ask citation contract")
+        self.assertIn("cited", payload["answer"])
+        self.assertTrue(payload["citations"])
+        self.assertTrue(payload["results"])
+        self.assertEqual(payload["citations"][0]["source_url"], "/tmp/ask-source.md")
+        self.assertIn("Ask citation contract", payload["citations"][0]["excerpt"])
+
     def test_scoped_api_token_prevents_user_header_impersonation_when_required(self) -> None:
         scoped_token = "cxa_fastapi_contract_token_123456789"
         registered = self.client.post(

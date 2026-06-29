@@ -45,6 +45,7 @@ FastAPI backend
   DELETE /v1/captures/{id}
   DELETE /v1/memories/{id}
   /v1/search
+  /v1/ask
   /v1/recent
   /v1/review/today
   /v1/loop

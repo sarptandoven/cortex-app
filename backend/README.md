@@ -90,6 +90,7 @@ DELETE /v1/captures/{capture_id}
 DELETE /v1/memories/{memory_id}
 GET    /v1/recent
 GET    /v1/search
+GET    /v1/ask
 GET    /v1/tasks/open
 GET    /v1/topics
 GET    /v1/entities

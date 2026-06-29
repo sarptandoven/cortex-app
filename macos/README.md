@@ -13,7 +13,7 @@ The app bundles the dependency-light local backend and starts it automatically o
 - Model screen for readiness, memory coverage, active source health, and model signal quality
 - Sources screen for imports, preview, duplicate-safe history, undo import, and source health
 - Review screen for approvals, archives, recommended actions, open loops, and decisions
-- Ask screen for cited memory search and focused/model context packs
+- Ask screen for cited answers, cited memory search, and focused/model context packs
 - Trust screen for privacy, AI access, backup, connected tools, audit, and advanced diagnostics
 - Memory behavior settings for review flow, pending-context visibility, and context-pack size
 - Save clipboard text

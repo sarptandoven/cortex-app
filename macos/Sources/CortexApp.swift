@@ -268,6 +268,40 @@ struct SearchResponse: Codable {
     let results: [MemoryItem]
 }
 
+struct AskCitationItem: Codable, Identifiable, Hashable {
+    var id: String { "\(index)-\(memory_id)" }
+    let index: Int
+    let memory_id: String
+    let kind: String
+    let layer: String
+    let source: String
+    let source_url: String?
+    let captured_at: String?
+    let occurred_at: String?
+    let excerpt: String
+    let topics: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case index
+        case memory_id = "id"
+        case kind
+        case layer
+        case source
+        case source_url
+        case captured_at
+        case occurred_at
+        case excerpt
+        case topics
+    }
+}
+
+struct AskResponse: Codable {
+    let query: String
+    let answer: String
+    let citations: [AskCitationItem]
+    let results: [MemoryItem]
+}
+
 struct RecentResponse: Codable {
     let results: [MemoryItem]
 }
@@ -1527,6 +1561,8 @@ final class AppState: ObservableObject {
     @Published var inbox: [CaptureItem] = []
     @Published var recent: [MemoryItem] = []
     @Published var searchResults: [MemoryItem] = []
+    @Published var askAnswer: String = ""
+    @Published var askCitations: [AskCitationItem] = []
     @Published var hasSearched: Bool = false
     @Published var graphNodes: [GraphNode] = []
     @Published var graphEdges: [GraphEdge] = []
@@ -2201,6 +2237,8 @@ final class AppState: ObservableObject {
         let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         if q.isEmpty {
             searchResults = []
+            askAnswer = ""
+            askCitations = []
             hasSearched = false
             status = "Enter a search term"
             return
@@ -2210,15 +2248,20 @@ final class AppState: ObservableObject {
         defer { isBusy = false }
         do {
             let encoded = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q
-            let data = try await request(path: "/v1/search?query=\(encoded)&limit=20", method: "GET")
-            searchResults = try JSONDecoder().decode(SearchResponse.self, from: data).results
+            let data = try await request(path: "/v1/ask?query=\(encoded)&limit=12", method: "GET")
+            let answer = try JSONDecoder().decode(AskResponse.self, from: data)
+            searchResults = answer.results
+            askAnswer = answer.answer
+            askCitations = answer.citations
             hasSearched = true
-            status = "Found \(searchResults.count) saved items"
-            if !searchResults.isEmpty {
+            status = searchResults.isEmpty ? "No cited memory found" : "Answered with \(answer.citations.count) citation\(answer.citations.count == 1 ? "" : "s")"
+            if !searchResults.isEmpty || !answer.citations.isEmpty {
                 markCortexUsed()
             }
         } catch {
             hasSearched = true
+            askAnswer = ""
+            askCitations = []
             status = "Search failed: \(error.localizedDescription)"
         }
     }
@@ -2301,6 +2344,9 @@ final class AppState: ObservableObject {
         case "reuse":
             selectedTab = .ask
             searchQuery = ""
+            searchResults = []
+            askAnswer = ""
+            askCitations = []
             hasSearched = false
             status = "Ask Cortex what it knows"
         default:
@@ -3099,6 +3145,8 @@ final class AppState: ObservableObject {
                 inbox = []
                 recent = []
                 searchResults = []
+                askAnswer = ""
+                askCitations = []
                 hasSearched = false
                 graphNodes = []
                 graphEdges = []
@@ -4075,6 +4123,10 @@ struct OnboardingAskUseStep: View {
             .background(Color(nsColor: .controlBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
+            if state.hasSearched && !state.askAnswer.isEmpty {
+                AskAnswerPanel(answer: state.askAnswer, citations: state.askCitations)
+            }
+
             if !state.searchResults.isEmpty {
                 ForEach(state.searchResults.prefix(3)) { item in
                     MemoryCard(item: item) {
@@ -4420,6 +4472,9 @@ struct TodayModelSection: View {
                         } else {
                             state.selectedTab = .ask
                             state.searchQuery = ""
+                            state.searchResults = []
+                            state.askAnswer = ""
+                            state.askCitations = []
                             state.hasSearched = false
                             state.status = "Ask Cortex what it knows"
                         }
@@ -4830,6 +4885,9 @@ struct TodaySearchSection: View {
                 Button {
                     state.selectedTab = .ask
                     state.searchQuery = ""
+                    state.searchResults = []
+                    state.askAnswer = ""
+                    state.askCitations = []
                     state.hasSearched = false
                 } label: {
                     Label("Open Ask", systemImage: "magnifyingglass")
@@ -4863,6 +4921,9 @@ struct TodaySearchSection: View {
             state.searchQuery = query
             state.runSearch()
         } else {
+            state.searchResults = []
+            state.askAnswer = ""
+            state.askCitations = []
             state.hasSearched = false
             state.status = "Ask Cortex what it knows"
         }
@@ -5900,6 +5961,10 @@ struct SearchTab: View {
             .background(Color(nsColor: .controlBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
+            if state.hasSearched && !state.askAnswer.isEmpty {
+                AskAnswerPanel(answer: state.askAnswer, citations: state.askCitations)
+            }
+
             if state.searchResults.isEmpty && !state.hasSearched {
                 QuietState(title: "Ask your model", detail: "Try a question about a project, person, decision, preference, or phrase from your imported sources.")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -5919,6 +5984,52 @@ struct SearchTab: View {
             }
         }
         .padding(16)
+    }
+}
+
+struct AskAnswerPanel: View {
+    let answer: String
+    let citations: [AskCitationItem]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Answer", systemImage: "quote.bubble")
+                    .font(.headline)
+                Spacer()
+                if !citations.isEmpty {
+                    Text("\(citations.count) citation\(citations.count == 1 ? "" : "s")")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            Text(answer)
+                .font(.body)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            if !citations.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(citations.prefix(4)) { citation in
+                        HStack(spacing: 6) {
+                            Text("[\(citation.index)]")
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.secondary)
+                            Text(citation.source_url ?? citation.source)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 0)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .textBackgroundColor))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 

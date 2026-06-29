@@ -1876,6 +1876,47 @@ class CortexStore:
                 rows = self._rank_rows_with_layer_boosts(query, fallback_rows, limit)
         return [self._memory_from_row(row) for row in rows]
 
+    def answer_query(self, user_id: str, query: str, limit: int = 8) -> dict[str, Any]:
+        query = query.strip()
+        limit = max(1, min(20, int(limit)))
+        results = self.search(user_id, query, limit=limit)
+        citations: list[dict[str, Any]] = []
+        for index, memory in enumerate(results, start=1):
+            citations.append(
+                {
+                    "index": index,
+                    "id": memory["id"],
+                    "kind": memory["kind"],
+                    "layer": memory["layer"],
+                    "source": memory["source"],
+                    "source_url": memory.get("source_url"),
+                    "captured_at": memory.get("captured_at"),
+                    "occurred_at": memory.get("occurred_at"),
+                    "excerpt": self._answer_excerpt(memory.get("content") or memory.get("summary") or ""),
+                    "topics": memory.get("topics") or [],
+                }
+            )
+        if citations:
+            lines = [f"Cortex found {len(citations)} cited memor{'y' if len(citations) == 1 else 'ies'} for this question:"]
+            for citation in citations[:5]:
+                source = citation["source_url"] or citation["source"]
+                lines.append(f"[{citation['index']}] {citation['excerpt']} ({source})")
+            answer = "\n".join(lines)
+        else:
+            answer = "Cortex did not find cited memory for this question yet. Import or approve more source material, then ask again."
+        return {
+            "query": query,
+            "answer": answer,
+            "citations": citations,
+            "results": results,
+        }
+
+    def _answer_excerpt(self, text: str, limit: int = 220) -> str:
+        cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+        if len(cleaned) <= limit:
+            return cleaned
+        return cleaned[: max(0, limit - 1)].rstrip() + "..."
+
     def open_tasks(self, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)

@@ -469,6 +469,10 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 layer = (params.get("layer") or [None])[0]
                 self._send_json({"query": query, "results": store.search(user_id, query, _int_param(params, "limit", 10, 1, 50), kind, layer)})
                 return
+            if method == "GET" and path == "/v1/ask":
+                query = (params.get("query") or [""])[0]
+                self._send_json(store.answer_query(user_id, query, _int_param(params, "limit", 8, 1, 20)))
+                return
             if method == "GET" and path == "/v1/tasks/open":
                 self._send_json({"results": store.open_tasks(user_id, _int_param(params, "limit", 20, 1, 100))})
                 return

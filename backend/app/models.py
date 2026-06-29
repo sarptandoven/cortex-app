@@ -176,6 +176,13 @@ class SearchResponse(BaseModel):
     results: list[dict[str, Any]]
 
 
+class AskResponse(BaseModel):
+    query: str
+    answer: str
+    citations: list[dict[str, Any]]
+    results: list[dict[str, Any]]
+
+
 class ListResponse(BaseModel):
     results: list[dict[str, Any]]
 
