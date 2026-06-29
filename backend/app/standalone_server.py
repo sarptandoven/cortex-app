@@ -59,6 +59,8 @@ def _required_api_scope(method: str, path: str) -> str:
         return "maintenance"
     if normalized_path.startswith("/v1/integrations/tokens/"):
         return "maintenance"
+    if normalized_path.startswith("/v1/source-accounts/") and normalized_method == "DELETE":
+        return "maintenance"
     if normalized_path == "/v1/backups/restore-latest":
         return "destructive"
     if normalized_method == "DELETE":
@@ -102,6 +104,14 @@ def _int_param(params: dict[str, list[str]], name: str, default: int, low: int, 
     except (TypeError, ValueError):
         value = default
     return min(high, max(low, value))
+
+
+def _bool_value(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _source_import_request(body: dict, *, analyze: bool = False) -> dict:
@@ -317,6 +327,60 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and path == "/v1/imports/sources":
                 self._send_json({"results": store.supported_import_sources()})
+                return
+            if method == "GET" and path == "/v1/source-accounts/catalog":
+                self._send_json({"results": store.source_connector_catalog()})
+                return
+            if method == "GET" and path == "/v1/source-accounts":
+                include_disconnected = (params.get("include_disconnected") or ["false"])[0].strip().lower() in {"1", "true", "yes"}
+                self._send_json({"results": store.list_source_accounts(user_id, include_disconnected=include_disconnected)})
+                return
+            if method == "POST" and path == "/v1/source-accounts":
+                body = self._json_body()
+                try:
+                    self._send_json(store.upsert_source_account(
+                        user_id,
+                        source=str(body.get("source") or ""),
+                        account_label=str(body.get("account_label") or ""),
+                        account_identifier=str(body.get("account_identifier") or "") or None,
+                        connection_type=str(body.get("connection_type") or "manual"),
+                        status=str(body.get("status") or "available"),
+                        auth_state=str(body.get("auth_state") or "not_configured"),
+                        policy=body.get("policy") if isinstance(body.get("policy"), dict) else None,
+                        metadata=body.get("metadata") if isinstance(body.get("metadata"), dict) else None,
+                        last_error=str(body.get("last_error") or "") or None,
+                    ))
+                except ValueError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "DELETE" and path.startswith("/v1/source-accounts/"):
+                account_id = unquote(path.removeprefix("/v1/source-accounts/").strip("/"))
+                disconnected = store.disconnect_source_account(user_id, account_id)
+                if not disconnected:
+                    self._send_json({"detail": "Source account not found"}, status=HTTPStatus.NOT_FOUND)
+                else:
+                    self._send_json(disconnected)
+                return
+            if method == "GET" and path == "/v1/sync-cursors":
+                source_account_id = (params.get("source_account_id") or [None])[0]
+                self._send_json({"results": store.list_sync_cursors(user_id, source_account_id=source_account_id)})
+                return
+            if method == "POST" and path == "/v1/sync-cursors":
+                body = self._json_body()
+                try:
+                    self._send_json(store.upsert_sync_cursor(
+                        user_id,
+                        source=str(body.get("source") or ""),
+                        cursor_name=str(body.get("cursor_name") or ""),
+                        cursor_value=str(body.get("cursor_value") or "") or None,
+                        high_water_mark=str(body.get("high_water_mark") or "") or None,
+                        state=body.get("state") if isinstance(body.get("state"), dict) else None,
+                        source_account_id=str(body.get("source_account_id") or "") or None,
+                        last_error=str(body.get("last_error") or "") or None,
+                        completed=_bool_value(body.get("completed"), default=True),
+                    ))
+                except ValueError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
             if method == "GET" and path == "/v1/imports":
                 include_deleted = (params.get("include_deleted") or ["true"])[0].lower() not in {"0", "false", "no"}

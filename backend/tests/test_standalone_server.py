@@ -32,6 +32,9 @@ class FakeStore:
         self.get_import_calls: list[tuple[str, str]] = []
         self.delete_import_calls: list[tuple[str, str]] = []
         self.revoke_token_calls: list[tuple[str, str]] = []
+        self.source_account_calls: list[tuple[str, str]] = []
+        self.sync_cursor_calls: list[tuple[str, str, str | None]] = []
+        self.source_account_disconnected = False
 
     def search(self, user_id: str, query: str, limit: int, kind: str | None = None, layer: str | None = None) -> list[dict]:
         self.search_calls.append((user_id, query, limit, kind, layer))
@@ -115,6 +118,125 @@ class FakeStore:
 
     def supported_import_sources(self) -> list[dict]:
         return [{"id": "chatgpt", "name": "ChatGPT", "formats": ["conversations.json"], "status": "native"}]
+
+    def source_connector_catalog(self) -> list[dict]:
+        return [
+            {
+                "id": "gmail",
+                "name": "Gmail",
+                "category": "communication",
+                "live_status": "planned",
+                "import_status": "generic",
+                "formats": [],
+            }
+        ]
+
+    def list_source_accounts(self, user_id: str, *, include_disconnected: bool = False) -> list[dict]:
+        if self.source_account_disconnected and not include_disconnected:
+            return []
+        status = "disconnected" if self.source_account_disconnected else "connected"
+        return [
+            {
+                "id": "sacct_test",
+                "user_id": user_id,
+                "source": "gmail",
+                "account_label": "Standalone Gmail",
+                "account_identifier": "standalone@example.com",
+                "connection_type": "oauth",
+                "status": status,
+                "auth_state": "healthy" if not self.source_account_disconnected else "revoked",
+                "policy": {"sync": "incremental"},
+                "metadata": {},
+                "last_sync_at": "2026-01-01T00:00:00Z",
+                "last_error": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "disconnected_at": "2026-01-01T00:00:01Z" if self.source_account_disconnected else None,
+            }
+        ]
+
+    def upsert_source_account(
+        self,
+        user_id: str,
+        *,
+        source: str,
+        account_label: str = "",
+        account_identifier: str | None = None,
+        connection_type: str = "manual",
+        status: str = "available",
+        auth_state: str = "not_configured",
+        policy: dict | None = None,
+        metadata: dict | None = None,
+        last_error: str | None = None,
+    ) -> dict:
+        if not source:
+            raise ValueError("source is required")
+        self.source_account_calls.append((user_id, source))
+        self.source_account_disconnected = False
+        return self.list_source_accounts(user_id)[0] | {
+            "source": source.lower(),
+            "account_label": account_label or "Standalone Gmail",
+            "account_identifier": account_identifier,
+            "connection_type": connection_type,
+            "status": status,
+            "auth_state": auth_state,
+            "policy": policy or {},
+            "metadata": metadata or {},
+            "last_error": last_error,
+        }
+
+    def disconnect_source_account(self, user_id: str, account_id: str) -> dict | None:
+        if account_id != "sacct_test":
+            return None
+        self.source_account_disconnected = True
+        return self.list_source_accounts(user_id, include_disconnected=True)[0]
+
+    def list_sync_cursors(self, user_id: str, *, source_account_id: str | None = None) -> list[dict]:
+        return [
+            {
+                "id": "sync_test",
+                "user_id": user_id,
+                "source_account_id": source_account_id,
+                "source": "gmail",
+                "cursor_name": "messages",
+                "cursor_value": "cursor-1",
+                "high_water_mark": "2026-01-01T00:00:00Z",
+                "state": {"batch": 1},
+                "last_started_at": "2026-01-01T00:00:00Z",
+                "last_completed_at": "2026-01-01T00:00:00Z",
+                "last_error": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            }
+        ]
+
+    def upsert_sync_cursor(
+        self,
+        user_id: str,
+        *,
+        source: str,
+        cursor_name: str,
+        cursor_value: str | None = None,
+        high_water_mark: str | None = None,
+        state: dict | None = None,
+        source_account_id: str | None = None,
+        last_error: str | None = None,
+        completed: bool = True,
+    ) -> dict:
+        if not source or not cursor_name:
+            raise ValueError("source and cursor_name are required")
+        if source_account_id == "sacct_missing":
+            raise ValueError("source account not found")
+        self.sync_cursor_calls.append((user_id, cursor_name, source_account_id))
+        return self.list_sync_cursors(user_id, source_account_id=source_account_id)[0] | {
+            "source": source.lower(),
+            "cursor_name": cursor_name,
+            "cursor_value": cursor_value,
+            "high_water_mark": high_water_mark,
+            "state": state or {},
+            "last_error": last_error,
+            "last_completed_at": "2026-01-01T00:00:00Z" if completed and not last_error else None,
+        }
 
     def analyze_import_sources(self, paths: list[str], source_hint: str = "", max_records: int = 500) -> dict:
         self.import_analysis_calls.append((paths, source_hint, max_records))
@@ -402,6 +524,85 @@ class StandaloneServerTests(unittest.TestCase):
         with self.assertRaises(error.HTTPError) as context:
             self.post_json("/v1/imports/analyze", {"paths": ["/tmp/conversations.json"], "max_records": "many"})
         self.assertEqual(context.exception.code, 422)
+
+    def test_source_account_and_sync_cursor_routes_forward_to_store(self) -> None:
+        with self.get("/v1/source-accounts/catalog") as response:
+            catalog = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(catalog["results"][0]["id"], "gmail")
+
+        with self.post_json(
+            "/v1/source-accounts",
+            {
+                "source": "Gmail",
+                "account_label": "Standalone Gmail",
+                "account_identifier": "standalone@example.com",
+                "connection_type": "oauth",
+                "status": "connected",
+                "auth_state": "healthy",
+                "policy": {"sync": "incremental"},
+            },
+        ) as response:
+            account = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(account["source"], "gmail")
+        self.assertEqual(self.fake_store.source_account_calls, [("local", "Gmail")])
+
+        with self.post_json(
+            "/v1/sync-cursors",
+            {
+                "source": "gmail",
+                "source_account_id": "sacct_test",
+                "cursor_name": "messages",
+                "cursor_value": "cursor-1",
+                "high_water_mark": "2026-01-01T00:00:00Z",
+                "state": {"batch": 1},
+            },
+        ) as response:
+            cursor = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(cursor["source_account_id"], "sacct_test")
+        self.assertEqual(cursor["state"]["batch"], 1)
+        self.assertEqual(self.fake_store.sync_cursor_calls, [("local", "messages", "sacct_test")])
+
+        with self.get("/v1/source-accounts") as response:
+            accounts = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(accounts["results"][0]["id"], "sacct_test")
+
+        with self.get("/v1/sync-cursors?source_account_id=sacct_test") as response:
+            cursors = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(cursors["results"][0]["id"], "sync_test")
+
+        with self.post_json(
+            "/v1/sync-cursors",
+            {"source": "gmail", "source_account_id": "sacct_test", "cursor_name": "messages", "completed": "false", "last_error": "paused"},
+        ) as response:
+            failed_cursor = json.loads(response.read().decode("utf-8"))
+        self.assertIsNone(failed_cursor["last_completed_at"])
+        self.assertEqual(failed_cursor["last_error"], "paused")
+
+        with self.assertRaises(error.HTTPError) as context:
+            self.post_json("/v1/sync-cursors", {"source": "gmail", "source_account_id": "sacct_missing", "cursor_name": "messages"})
+        self.assertEqual(context.exception.code, 422)
+
+        with self.delete("/v1/source-accounts/sacct_test") as response:
+            disconnected = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(disconnected["status"], "disconnected")
+
+        with self.assertRaises(error.HTTPError) as context:
+            self.delete("/v1/source-accounts/sacct_missing")
+        self.assertEqual(context.exception.code, 404)
+
+        with self.get("/v1/source-accounts") as response:
+            active = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(active["results"], [])
+
+        with self.get("/v1/source-accounts?include_disconnected=true") as response:
+            all_accounts = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(all_accounts["results"][0]["status"], "disconnected")
 
     def test_delete_user_data_forwards_include_backups_flag(self) -> None:
         with self.delete("/v1/user-data?include_backups=false") as response:

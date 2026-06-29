@@ -76,7 +76,8 @@ Add these production concepts before public hosted sync:
 
 - `users`: account identity, encryption state, export/delete state
 - `api_tokens`: scoped local, MCP, browser, and automation tokens
-- `sources`: source app, source account, trust policy, retention policy
+- `source_accounts`: source app, account label/identifier, connection health, auth state, trust policy, and retention policy
+- `sync_cursors`: per-source cursor values, high-water marks, sync state, and last error
 - `capture_events`: append-only raw ingestion/event log
 - `captures`: normalized source documents and review state
 - `memories`: atomic extracted memory with `kind`, `layer`, status, visibility, source, and citation

@@ -31,6 +31,7 @@ BACKEND_FEATURES = (
     "simple-product-loop",
     "operational-readiness",
     "source-imports",
+    "source-account-registry",
 )
 SUPPORT_BUNDLE_SCHEMA = 1
 DEFAULT_BACKUP_RETENTION_COUNT = 20
@@ -123,6 +124,34 @@ DEFAULT_USER_SETTINGS: dict[str, Any] = {
 }
 
 
+SOURCE_CONNECTOR_CATALOG: tuple[dict[str, Any], ...] = (
+    {"id": "chatgpt", "name": "ChatGPT", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "OpenAI data export zip or conversations.json."},
+    {"id": "claude", "name": "Claude", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Claude export conversations.json or chats.json."},
+    {"id": "gmail", "name": "Gmail", "category": "Email", "auth": "oauth", "live_status": "planned", "scopes": ["gmail.readonly"], "notes": "Use Gmail Takeout mbox today; OAuth sync later."},
+    {"id": "email", "name": "Email files", "category": "Email", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "mbox, eml, and emlx imports."},
+    {"id": "notion", "name": "Notion", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["read_content"], "notes": "Markdown, CSV, and HTML exports today."},
+    {"id": "google-drive", "name": "Google Drive", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["drive.readonly"], "notes": "Drive/Docs Takeout exports today."},
+    {"id": "microsoft-365", "name": "Microsoft 365", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["Files.Read", "Mail.Read", "Calendars.Read"], "notes": "OneDrive, Outlook, and Office exports today."},
+    {"id": "slack", "name": "Slack", "category": "Work chat", "auth": "oauth", "live_status": "planned", "scopes": ["channels:history", "groups:history", "im:history"], "notes": "Workspace export folders or zips today."},
+    {"id": "google-chat", "name": "Google Chat", "category": "Work chat", "auth": "oauth", "live_status": "planned", "scopes": ["chat.messages.readonly"], "notes": "Google Takeout Chat/Hangouts exports today."},
+    {"id": "teams", "name": "Microsoft Teams", "category": "Work chat", "auth": "oauth", "live_status": "planned", "scopes": ["ChannelMessage.Read.All"], "notes": "Teams JSON/CSV exports today."},
+    {"id": "discord", "name": "Discord", "category": "Messages", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Discord data package messages.csv."},
+    {"id": "telegram", "name": "Telegram", "category": "Messages", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Telegram Desktop result.json."},
+    {"id": "messages", "name": "Messages", "category": "Messages", "auth": "local_file", "live_status": "local_only", "scopes": [], "notes": "User-selected copy of iMessage chat.db."},
+    {"id": "whatsapp", "name": "WhatsApp", "category": "Messages", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Text chat exports."},
+    {"id": "calendar", "name": "Calendar", "category": "Calendar", "auth": "oauth", "live_status": "planned", "scopes": ["calendar.readonly"], "notes": "ICS exports today."},
+    {"id": "contacts", "name": "Contacts", "category": "People", "auth": "oauth", "live_status": "planned", "scopes": ["contacts.readonly"], "notes": "VCF and contacts CSV exports today."},
+    {"id": "github", "name": "GitHub", "category": "Work tools", "auth": "oauth", "live_status": "planned", "scopes": ["repo:read", "read:org"], "notes": "Issue/PR exports and project files today."},
+    {"id": "linear", "name": "Linear", "category": "Work tools", "auth": "oauth", "live_status": "planned", "scopes": ["read"], "notes": "CSV/JSON exports today."},
+    {"id": "jira", "name": "Jira", "category": "Work tools", "auth": "oauth", "live_status": "planned", "scopes": ["read:jira-work"], "notes": "CSV exports today."},
+    {"id": "zoom", "name": "Zoom", "category": "Meetings", "auth": "oauth", "live_status": "planned", "scopes": ["recording:read"], "notes": "VTT and SRT transcript imports today."},
+    {"id": "browser-bookmarks", "name": "Browser bookmarks", "category": "Research", "auth": "local_file", "live_status": "import_ready", "scopes": [], "notes": "Bookmarks HTML/JSON and browser history SQLite."},
+    {"id": "readwise", "name": "Readwise", "category": "Research", "auth": "api_token", "live_status": "planned", "scopes": ["export"], "notes": "CSV/JSON exports today."},
+    {"id": "apple-notes", "name": "Apple Notes", "category": "Notes", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "HTML, RTF, PDF, Markdown, or text exports."},
+    {"id": "obsidian", "name": "Obsidian", "category": "Notes", "auth": "local_folder", "live_status": "planned", "scopes": [], "notes": "Markdown vault imports today."},
+)
+
+
 SENSITIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"), "[REDACTED_OPENAI_KEY]"),
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"), "[REDACTED_GITHUB_TOKEN]"),
@@ -182,6 +211,10 @@ def _ratio(numerator: int | float, denominator: int | float) -> float:
     if not denominator:
         return 0.0
     return round(max(0.0, min(1.0, float(numerator) / float(denominator))), 4)
+
+
+def _normalize_source_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9-]+", "-", str(value or "").strip().lower()).strip("-")
 
 
 def normalize_token_scopes(scopes: list[str] | tuple[str, ...] | str | None) -> list[str]:
@@ -714,6 +747,232 @@ class CortexStore:
 
     def supported_import_sources(self) -> list[dict[str, Any]]:
         return supported_sources()
+
+    def source_connector_catalog(self) -> list[dict[str, Any]]:
+        import_sources = {item["id"]: item for item in supported_sources()}
+        catalog: list[dict[str, Any]] = []
+        for item in SOURCE_CONNECTOR_CATALOG:
+            source_id = item["id"]
+            import_info = import_sources.get(source_id)
+            catalog.append(
+                {
+                    **item,
+                    "import_status": import_info["status"] if import_info else "generic" if item["live_status"] in {"planned", "import_ready"} else "export_only",
+                    "formats": import_info["formats"] if import_info else [],
+                }
+            )
+        return catalog
+
+    def list_source_accounts(self, user_id: str, *, include_disconnected: bool = False) -> list[dict[str, Any]]:
+        filters = ["user_id = ?"]
+        values: list[Any] = [user_id]
+        if not include_disconnected:
+            filters.append("disconnected_at IS NULL")
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM source_accounts
+                WHERE {" AND ".join(filters)}
+                ORDER BY updated_at DESC, source, account_label
+                """,
+                tuple(values),
+            ).fetchall()
+        return [self._source_account_from_row(row) for row in rows]
+
+    def upsert_source_account(
+        self,
+        user_id: str,
+        *,
+        source: str,
+        account_label: str = "",
+        account_identifier: str | None = None,
+        connection_type: str = "manual",
+        status: str = "available",
+        auth_state: str = "not_configured",
+        policy: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        last_error: str | None = None,
+        account_id: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_source = _normalize_source_key(source)
+        if not normalized_source:
+            raise ValueError("source is required")
+        catalog_entry = next((item for item in SOURCE_CONNECTOR_CATALOG if item["id"] == normalized_source), None)
+        label = (account_label or (catalog_entry or {}).get("name") or normalized_source).strip()[:160]
+        identifier = (account_identifier or "").strip()[:240] or None
+        connection = _normalize_source_key(connection_type or "manual") or "manual"
+        account_status = _normalize_source_key(status or "available") or "available"
+        auth = _normalize_source_key(auth_state or "not_configured") or "not_configured"
+        timestamp = now_iso()
+        resolved_id = account_id or stable_id("sacct_", f"{user_id}:{normalized_source}:{identifier or label}")
+        resolved_policy = policy or {}
+        resolved_metadata = metadata or {}
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO source_accounts
+                (id, user_id, source, account_label, account_identifier, connection_type, status, auth_state, policy_json, metadata_json, last_sync_at, last_error, created_at, updated_at, disconnected_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL)
+                ON CONFLICT(id) DO UPDATE SET
+                  source = excluded.source,
+                  account_label = excluded.account_label,
+                  account_identifier = excluded.account_identifier,
+                  connection_type = excluded.connection_type,
+                  status = excluded.status,
+                  auth_state = excluded.auth_state,
+                  policy_json = excluded.policy_json,
+                  metadata_json = excluded.metadata_json,
+                  last_error = excluded.last_error,
+                  updated_at = excluded.updated_at,
+                  disconnected_at = NULL
+                """,
+                (
+                    resolved_id,
+                    user_id,
+                    normalized_source,
+                    label,
+                    identifier,
+                    connection,
+                    account_status,
+                    auth,
+                    json.dumps(resolved_policy),
+                    json.dumps(resolved_metadata),
+                    last_error,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            self._event(
+                conn,
+                user_id,
+                resolved_id,
+                "source_account",
+                "upserted",
+                {"source": normalized_source, "connection_type": connection, "status": account_status, "auth_state": auth},
+            )
+            row = conn.execute("SELECT * FROM source_accounts WHERE user_id = ? AND id = ?", (user_id, resolved_id)).fetchone()
+        account = self._source_account_from_row(row)
+        self.vault.write_source_account(account)
+        return account
+
+    def disconnect_source_account(self, user_id: str, account_id: str) -> dict[str, Any] | None:
+        timestamp = now_iso()
+        with connect(self.db_path) as conn:
+            existing = conn.execute("SELECT * FROM source_accounts WHERE user_id = ? AND id = ?", (user_id, account_id)).fetchone()
+            if not existing:
+                return None
+            conn.execute(
+                """
+                UPDATE source_accounts
+                SET status = 'disconnected',
+                    auth_state = 'revoked',
+                    updated_at = ?,
+                    disconnected_at = ?
+                WHERE user_id = ? AND id = ?
+                """,
+                (timestamp, timestamp, user_id, account_id),
+            )
+            self._event(conn, user_id, account_id, "source_account", "disconnected", {"source": existing["source"]})
+            row = conn.execute("SELECT * FROM source_accounts WHERE user_id = ? AND id = ?", (user_id, account_id)).fetchone()
+        account = self._source_account_from_row(row)
+        self.vault.write_source_account(account)
+        return account
+
+    def list_sync_cursors(self, user_id: str, *, source_account_id: str | None = None) -> list[dict[str, Any]]:
+        filters = ["user_id = ?"]
+        values: list[Any] = [user_id]
+        if source_account_id:
+            filters.append("source_account_id = ?")
+            values.append(source_account_id)
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM sync_cursors
+                WHERE {" AND ".join(filters)}
+                ORDER BY updated_at DESC, source, cursor_name
+                """,
+                tuple(values),
+            ).fetchall()
+        return [self._sync_cursor_from_row(row) for row in rows]
+
+    def upsert_sync_cursor(
+        self,
+        user_id: str,
+        *,
+        source: str,
+        cursor_name: str,
+        cursor_value: str | None = None,
+        high_water_mark: str | None = None,
+        state: dict[str, Any] | None = None,
+        source_account_id: str | None = None,
+        last_error: str | None = None,
+        completed: bool = True,
+    ) -> dict[str, Any]:
+        normalized_source = _normalize_source_key(source)
+        normalized_name = _normalize_source_key(cursor_name)
+        if not normalized_source or not normalized_name:
+            raise ValueError("source and cursor_name are required")
+        timestamp = now_iso()
+        account_id = (source_account_id or "").strip() or None
+        if account_id:
+            with connect(self.db_path) as conn:
+                account = conn.execute("SELECT * FROM source_accounts WHERE user_id = ? AND id = ?", (user_id, account_id)).fetchone()
+            if not account:
+                raise ValueError("source account not found")
+            normalized_source = account["source"]
+        cursor_id = stable_id("sync_", f"{user_id}:{account_id or normalized_source}:{normalized_name}")
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO sync_cursors
+                (id, user_id, source_account_id, source, cursor_name, cursor_value, high_water_mark, state_json, last_started_at, last_completed_at, last_error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                  cursor_value = excluded.cursor_value,
+                  high_water_mark = excluded.high_water_mark,
+                  state_json = excluded.state_json,
+                  last_started_at = excluded.last_started_at,
+                  last_completed_at = excluded.last_completed_at,
+                  last_error = excluded.last_error,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    cursor_id,
+                    user_id,
+                    account_id,
+                    normalized_source,
+                    normalized_name,
+                    cursor_value,
+                    high_water_mark,
+                    json.dumps(state or {}),
+                    timestamp,
+                    timestamp if completed and not last_error else None,
+                    last_error,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            if account_id and completed and not last_error:
+                conn.execute("UPDATE source_accounts SET last_sync_at = ?, updated_at = ?, last_error = NULL WHERE user_id = ? AND id = ?", (timestamp, timestamp, user_id, account_id))
+            elif account_id and last_error:
+                conn.execute("UPDATE source_accounts SET last_error = ?, updated_at = ? WHERE user_id = ? AND id = ?", (last_error, timestamp, user_id, account_id))
+            self._event(
+                conn,
+                user_id,
+                cursor_id,
+                "sync_cursor",
+                "updated",
+                {"source": normalized_source, "source_account_id": account_id, "cursor_name": normalized_name, "completed": completed, "success": not bool(last_error)},
+            )
+            row = conn.execute("SELECT * FROM sync_cursors WHERE user_id = ? AND id = ?", (user_id, cursor_id)).fetchone()
+            account_row = conn.execute("SELECT * FROM source_accounts WHERE user_id = ? AND id = ?", (user_id, account_id)).fetchone() if account_id else None
+        cursor = self._sync_cursor_from_row(row)
+        self.vault.write_sync_cursor(cursor)
+        if account_row:
+            self.vault.write_source_account(self._source_account_from_row(account_row))
+        return cursor
 
     def analyze_import_sources(self, paths: list[str], source_hint: str = "", max_records: int = 500) -> dict[str, Any]:
         return analyze_sources(paths, source_hint=source_hint, max_records=max_records)
@@ -2864,6 +3123,8 @@ class CortexStore:
                 "settings": conn.execute("SELECT COUNT(*) FROM user_settings WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "api_tokens": conn.execute("SELECT COUNT(*) FROM api_tokens WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "imports": conn.execute("SELECT COUNT(*) FROM import_sessions WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "source_accounts": conn.execute("SELECT COUNT(*) FROM source_accounts WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "sync_cursors": conn.execute("SELECT COUNT(*) FROM sync_cursors WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "memory_jobs": conn.execute("SELECT COUNT(*) FROM memory_jobs WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "capture_processing_state": conn.execute("SELECT COUNT(*) FROM capture_processing_state WHERE user_id = ?", (user_id,)).fetchone()[0],
             }
@@ -2878,6 +3139,8 @@ class CortexStore:
             conn.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM entities WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM memory_jobs WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM sync_cursors WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM source_accounts WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM import_records WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM import_sessions WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM capture_processing_state WHERE user_id = ?", (user_id,))
@@ -3045,6 +3308,8 @@ class CortexStore:
     def rebuild_index_from_vault(self, user_id: str) -> dict[str, Any]:
         tombstone_counts = self.vault.apply_tombstones(user_id)
         imports = list(self.vault.iter_records("imports", user_id))
+        source_accounts = list(self.vault.iter_records("source_accounts", user_id))
+        sync_cursors = list(self.vault.iter_records("sync_cursors", user_id))
         captures = list(self.vault.iter_records("captures", user_id))
         memories = list(self.vault.iter_records("memories", user_id))
         tasks = list(self.vault.iter_records("tasks", user_id))
@@ -3065,6 +3330,8 @@ class CortexStore:
             conn.execute("DELETE FROM tasks WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM entities WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM sync_cursors WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM source_accounts WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM import_records WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM import_sessions WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM captures WHERE user_id = ?", (user_id,))
@@ -3077,6 +3344,69 @@ class CortexStore:
                         "INSERT OR REPLACE INTO user_settings(user_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
                         (user_id, key, json.dumps(value), timestamp),
                     )
+
+            restored_account_ids: set[str] = set()
+            for account in sorted(source_accounts, key=lambda item: item.get("updated_at") or item.get("created_at") or ""):
+                account_id = account.get("id")
+                if not account_id:
+                    continue
+                restored_account_ids.add(str(account_id))
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO source_accounts
+                    (id, user_id, source, account_label, account_identifier, connection_type, status, auth_state, policy_json, metadata_json, last_sync_at, last_error, created_at, updated_at, disconnected_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(account_id),
+                        user_id,
+                        str(account.get("source") or "unknown"),
+                        str(account.get("account_label") or account.get("source") or "Source account"),
+                        account.get("account_identifier"),
+                        str(account.get("connection_type") or "manual"),
+                        str(account.get("status") or "available"),
+                        str(account.get("auth_state") or "not_configured"),
+                        json.dumps(account.get("policy") if isinstance(account.get("policy"), dict) else {}),
+                        json.dumps(account.get("metadata") if isinstance(account.get("metadata"), dict) else {}),
+                        account.get("last_sync_at"),
+                        account.get("last_error"),
+                        account.get("created_at") or timestamp,
+                        account.get("updated_at") or account.get("created_at") or timestamp,
+                        account.get("disconnected_at"),
+                    ),
+                )
+
+            restored_cursor_count = 0
+            for cursor in sorted(sync_cursors, key=lambda item: item.get("updated_at") or item.get("created_at") or ""):
+                cursor_id = cursor.get("id")
+                if not cursor_id:
+                    continue
+                account_id = cursor.get("source_account_id")
+                if account_id and str(account_id) not in restored_account_ids:
+                    account_id = None
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO sync_cursors
+                    (id, user_id, source_account_id, source, cursor_name, cursor_value, high_water_mark, state_json, last_started_at, last_completed_at, last_error, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(cursor_id),
+                        user_id,
+                        account_id,
+                        str(cursor.get("source") or "unknown"),
+                        str(cursor.get("cursor_name") or "default"),
+                        cursor.get("cursor_value"),
+                        cursor.get("high_water_mark"),
+                        json.dumps(cursor.get("state") if isinstance(cursor.get("state"), dict) else {}),
+                        cursor.get("last_started_at"),
+                        cursor.get("last_completed_at"),
+                        cursor.get("last_error"),
+                        cursor.get("created_at") or timestamp,
+                        cursor.get("updated_at") or cursor.get("created_at") or timestamp,
+                    ),
+                )
+                restored_cursor_count += 1
 
             for import_record in sorted(imports, key=lambda item: item.get("created_at") or ""):
                 session = {
@@ -3319,6 +3649,8 @@ class CortexStore:
                     "edges": len(edges),
                     "events": len(events),
                     "imports": len(imports),
+                    "source_accounts": len(restored_account_ids),
+                    "sync_cursors": restored_cursor_count,
                     "tombstones": tombstone_counts,
                 },
             )
@@ -3334,6 +3666,8 @@ class CortexStore:
             "edges": len(edges),
             "events": len(events),
             "imports": len(imports),
+            "source_accounts": len(restored_account_ids),
+            "sync_cursors": restored_cursor_count,
             "tombstones": tombstone_counts,
         }
 
@@ -4707,6 +5041,42 @@ class CortexStore:
             "capture_id": row["capture_id"],
             "job_id": row["job_id"],
             "error": row["error"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def _source_account_from_row(self, row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "source": row["source"],
+            "account_label": row["account_label"],
+            "account_identifier": row["account_identifier"],
+            "connection_type": row["connection_type"],
+            "status": row["status"],
+            "auth_state": row["auth_state"],
+            "policy": self._json_or_empty(row["policy_json"]),
+            "metadata": self._json_or_empty(row["metadata_json"]),
+            "last_sync_at": row["last_sync_at"],
+            "last_error": row["last_error"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "disconnected_at": row["disconnected_at"],
+        }
+
+    def _sync_cursor_from_row(self, row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "source_account_id": row["source_account_id"],
+            "source": row["source"],
+            "cursor_name": row["cursor_name"],
+            "cursor_value": row["cursor_value"],
+            "high_water_mark": row["high_water_mark"],
+            "state": self._json_or_empty(row["state_json"]),
+            "last_started_at": row["last_started_at"],
+            "last_completed_at": row["last_completed_at"],
+            "last_error": row["last_error"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }

@@ -2,7 +2,7 @@
 
 ## Current Stage
 
-Cortex is a local-first beta foundation. The local product now has a user-owned vault, rebuildable SQLite index, scoped MCP tokens, optional scoped REST user tokens, restore-safe tombstones, backup retention, and a durable local job queue.
+Cortex is a local-first beta foundation. The local product now has a user-owned vault, rebuildable SQLite index, scoped MCP tokens, optional scoped REST user tokens, restore-safe tombstones, backup retention, durable source-account/sync-cursor records, and a durable local job queue.
 
 It is not yet a millions-user hosted product. Hosted scale needs account identity, shard routing, object storage, background workers, observability, billing, deletion guarantees, support operations, and public distribution hardening.
 
@@ -19,6 +19,7 @@ Control-plane tables:
 - `devices`
 - `user_shards`
 - `api_tokens`
+- `source_accounts`
 - `sync_cursors`
 - `billing_plans`
 - `quotas`
@@ -33,6 +34,7 @@ Implemented local primitive:
 - `CORTEX_REQUIRE_SCOPED_API_TOKENS=1` prevents the global app token from selecting arbitrary users with `X-Cortex-User`.
 - FastAPI and the packaged standalone backend both authenticate scoped REST tokens before routing user-scoped memory calls.
 - REST token scopes are enforced across read, write, export, maintenance, and destructive endpoint classes.
+- `source_accounts` and `sync_cursors` are implemented locally as vault-backed records plus SQLite indexes. They preserve connector health, policies, high-water marks, and last errors across backups and rebuilds, but they do not yet store OAuth secrets or run live cloud sync.
 - This is not a full hosted identity provider. Public hosted deployments still need login, session management, token revocation UI, account membership checks, and control-plane token issuance.
 
 ## Milestone 2: Shard Runtime

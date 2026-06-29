@@ -222,6 +222,90 @@ class FastAPIContractTests(unittest.TestCase):
         revoked_tokens = {token["token_id"]: token for token in listed_revoked.json()["results"]}
         self.assertEqual(revoked_tokens[token_id]["revoked_at"], revoked.json()["revoked_at"])
 
+    def test_source_account_and_sync_cursor_contract(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "source-contract"}
+
+        catalog = self.client.get("/v1/source-accounts/catalog", headers=headers)
+        self.assertEqual(catalog.status_code, 200)
+        catalog_ids = {item["id"] for item in catalog.json()["results"]}
+        self.assertIn("gmail", catalog_ids)
+        self.assertIn("notion", catalog_ids)
+
+        account_response = self.client.post(
+            "/v1/source-accounts",
+            json={
+                "source": "Gmail",
+                "account_label": "Contract Gmail",
+                "account_identifier": "contract@example.com",
+                "connection_type": "oauth",
+                "status": "connected",
+                "auth_state": "healthy",
+                "policy": {"sync": "incremental"},
+                "metadata": {"tenant": "contract"},
+            },
+            headers=headers,
+        )
+        self.assertEqual(account_response.status_code, 200)
+        account = account_response.json()
+        self.assertEqual(account["source"], "gmail")
+        self.assertEqual(account["policy"]["sync"], "incremental")
+
+        cursor_response = self.client.post(
+            "/v1/sync-cursors",
+            json={
+                "source": "gmail",
+                "source_account_id": account["id"],
+                "cursor_name": "messages",
+                "cursor_value": "cursor-1",
+                "high_water_mark": "2026-06-29T12:00:00Z",
+                "state": {"batch": 1},
+            },
+            headers=headers,
+        )
+        self.assertEqual(cursor_response.status_code, 200)
+        cursor = cursor_response.json()
+        self.assertEqual(cursor["source_account_id"], account["id"])
+        self.assertEqual(cursor["state"]["batch"], 1)
+
+        missing_account = self.client.post(
+            "/v1/sync-cursors",
+            json={"source": "gmail", "source_account_id": "sacct_missing", "cursor_name": "messages"},
+            headers=headers,
+        )
+        self.assertEqual(missing_account.status_code, 422)
+
+        listed_accounts = self.client.get("/v1/source-accounts", headers=headers)
+        self.assertEqual(listed_accounts.status_code, 200)
+        self.assertEqual(listed_accounts.json()["results"][0]["id"], account["id"])
+        self.assertIsNotNone(listed_accounts.json()["results"][0]["last_sync_at"])
+
+        listed_cursors = self.client.get(
+            "/v1/sync-cursors",
+            params={"source_account_id": account["id"]},
+            headers=headers,
+        )
+        self.assertEqual(listed_cursors.status_code, 200)
+        self.assertEqual([item["id"] for item in listed_cursors.json()["results"]], [cursor["id"]])
+
+        disconnected = self.client.delete(f"/v1/source-accounts/{account['id']}", headers=headers)
+        self.assertEqual(disconnected.status_code, 200)
+        self.assertEqual(disconnected.json()["status"], "disconnected")
+
+        active_after_disconnect = self.client.get("/v1/source-accounts", headers=headers)
+        self.assertEqual(active_after_disconnect.status_code, 200)
+        self.assertEqual(active_after_disconnect.json()["results"], [])
+
+        all_accounts = self.client.get(
+            "/v1/source-accounts",
+            params={"include_disconnected": "true"},
+            headers=headers,
+        )
+        self.assertEqual(all_accounts.status_code, 200)
+        self.assertEqual(all_accounts.json()["results"][0]["id"], account["id"])
+
+        missing_delete = self.client.delete("/v1/source-accounts/sacct_missing", headers=headers)
+        self.assertEqual(missing_delete.status_code, 404)
+
     def test_rebuild_vectors_endpoint_exposes_queue_contract(self) -> None:
         response = self.client.post("/v1/maintenance/rebuild-vectors", headers={"Authorization": "Bearer test-token"})
 

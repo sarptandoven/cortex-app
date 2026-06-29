@@ -106,6 +106,109 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(self.store.list_tokens(self.user_id, audience="api"), [])
         self.assertEqual(self.store.list_tokens(self.user_id, audience="api", include_revoked=True)[0]["revoked_at"], revoked["revoked_at"])
 
+    def test_source_accounts_and_sync_cursors_track_connector_health(self) -> None:
+        catalog = {item["id"]: item for item in self.store.source_connector_catalog()}
+        self.assertIn("gmail", catalog)
+        self.assertIn("notion", catalog)
+        self.assertIn(catalog["chatgpt"]["import_status"], {"native", "generic", "export_only"})
+
+        account = self.store.upsert_source_account(
+            self.user_id,
+            source="Gmail",
+            account_label="Work Gmail",
+            account_identifier="user@example.com",
+            connection_type="oauth",
+            status="connected",
+            auth_state="healthy",
+            policy={"sync": "metadata_and_content", "include_attachments": False},
+            metadata={"workspace": "doppl"},
+        )
+
+        self.assertTrue(account["id"].startswith("sacct_"))
+        self.assertEqual(account["source"], "gmail")
+        self.assertEqual(account["account_label"], "Work Gmail")
+        self.assertEqual(account["policy"]["sync"], "metadata_and_content")
+        self.assertIsNone(account["last_sync_at"])
+        self.assertEqual([item["id"] for item in self.store.list_source_accounts(self.user_id)], [account["id"]])
+
+        cursor = self.store.upsert_sync_cursor(
+            self.user_id,
+            source="gmail",
+            source_account_id=account["id"],
+            cursor_name="messages",
+            cursor_value="page-token-1",
+            high_water_mark="2026-06-29T10:00:00Z",
+            state={"page": 1},
+            completed=True,
+        )
+        self.assertTrue(cursor["id"].startswith("sync_"))
+        self.assertEqual(cursor["source_account_id"], account["id"])
+        self.assertEqual(cursor["source"], "gmail")
+        self.assertEqual(cursor["cursor_name"], "messages")
+        self.assertEqual(cursor["state"]["page"], 1)
+        self.assertIsNotNone(cursor["last_completed_at"])
+
+        synced_account = self.store.list_source_accounts(self.user_id)[0]
+        self.assertIsNotNone(synced_account["last_sync_at"])
+        self.assertIsNone(synced_account["last_error"])
+
+        failed = self.store.upsert_sync_cursor(
+            self.user_id,
+            source="gmail",
+            source_account_id=account["id"],
+            cursor_name="messages",
+            cursor_value="page-token-1",
+            high_water_mark="2026-06-29T10:00:00Z",
+            last_error="rate limited",
+            completed=False,
+        )
+        self.assertEqual(failed["last_error"], "rate limited")
+        self.assertIsNone(failed["last_completed_at"])
+        self.assertEqual(self.store.list_source_accounts(self.user_id)[0]["last_error"], "rate limited")
+        self.assertEqual([item["id"] for item in self.store.list_sync_cursors(self.user_id, source_account_id=account["id"])], [cursor["id"]])
+        with self.assertRaises(ValueError):
+            self.store.upsert_sync_cursor(
+                self.user_id,
+                source="gmail",
+                source_account_id="sacct_missing",
+                cursor_name="messages",
+            )
+
+        backup = self.store.create_backup(self.user_id)
+        self.assertTrue(Path(backup["backup_path"]).is_file())
+
+        deleted = self.store.delete_user_data(self.user_id, include_backups=False)
+        self.assertEqual(deleted["sqlite"]["source_accounts"], 1)
+        self.assertEqual(deleted["sqlite"]["sync_cursors"], 1)
+        self.assertEqual(deleted["vault"]["source_accounts"], 1)
+        self.assertEqual(deleted["vault"]["sync_cursors"], 1)
+        self.assertEqual(self.store.list_source_accounts(self.user_id, include_disconnected=True), [])
+        self.assertEqual(self.store.list_sync_cursors(self.user_id), [])
+
+        restored = self.store.restore_latest_backup(self.user_id)
+        self.assertEqual(restored["rebuild"]["source_accounts"], 1)
+        self.assertEqual(restored["rebuild"]["sync_cursors"], 1)
+        self.assertEqual(self.store.list_source_accounts(self.user_id)[0]["id"], account["id"])
+        self.assertEqual(self.store.list_sync_cursors(self.user_id)[0]["id"], cursor["id"])
+
+        disconnected = self.store.disconnect_source_account(self.user_id, account["id"])
+        self.assertEqual(disconnected["status"], "disconnected")
+        self.assertEqual(disconnected["auth_state"], "revoked")
+        self.assertEqual(self.store.list_source_accounts(self.user_id), [])
+        self.assertEqual(self.store.list_source_accounts(self.user_id, include_disconnected=True)[0]["id"], account["id"])
+
+        rebuilt = self.store.rebuild_index_from_vault(self.user_id)
+        self.assertEqual(rebuilt["source_accounts"], 1)
+        self.assertEqual(rebuilt["sync_cursors"], 1)
+        self.assertEqual(self.store.list_source_accounts(self.user_id), [])
+        self.assertEqual(self.store.list_source_accounts(self.user_id, include_disconnected=True)[0]["status"], "disconnected")
+
+        events = self.store.audit_log(self.user_id, limit=20)
+        event_pairs = {(event["object_type"], event["event_type"]) for event in events}
+        self.assertIn(("source_account", "upserted"), event_pairs)
+        self.assertIn(("sync_cursor", "updated"), event_pairs)
+        self.assertIn(("source_account", "disconnected"), event_pairs)
+
     def test_memory_quality_report_tracks_citations_review_and_layers(self) -> None:
         uncited = self.capture("We decided uncited quality memory should warn about missing source paths.")
         cited = self.store.save_capture(

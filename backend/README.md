@@ -6,6 +6,7 @@ It provides:
 
 - capture ingestion
 - source import preview, duplicate-safe history, and batch undo for user-selected exports, folders, and files
+- source account registry and sync cursor state for future live connectors
 - structured memory extraction
 - layered memory metadata for semantic, episodic, style, decision, preference, and negative memory
 - user-owned local vault persistence
@@ -69,6 +70,12 @@ GET    /v1/imports
 POST   /v1/imports
 GET    /v1/imports/{import_id}
 DELETE /v1/imports/{import_id}
+GET    /v1/source-accounts/catalog
+GET    /v1/source-accounts
+POST   /v1/source-accounts
+DELETE /v1/source-accounts/{account_id}
+GET    /v1/sync-cursors
+POST   /v1/sync-cursors
 GET    /v1/jobs
 GET    /v1/jobs/{job_id}
 POST   /v1/maintenance/jobs/run
@@ -118,7 +125,7 @@ The macOS app bundles `app.standalone_server`, a dependency-light local HTTP ser
 
 ## Storage
 
-The local beta uses a user-owned vault folder plus a rebuildable SQLite index. Import sessions, captures, memories, tasks, entities, graph edges, settings, and audit events are written as JSON/JSONL under `Cortex.vault/`. `index.sqlite` is used for fast FTS5/sqlite-vec search, embedding metadata, and graph queries, but it can be rebuilt from the vault records.
+The local beta uses a user-owned vault folder plus a rebuildable SQLite index. Import sessions, source accounts, sync cursors, captures, memories, tasks, entities, graph edges, settings, and audit events are written as JSON/JSONL under `Cortex.vault/`. `index.sqlite` is used for fast FTS5/sqlite-vec search, embedding metadata, source health queries, and graph queries, but it can be rebuilt from the vault records.
 
 See `docs/LOCAL_VAULT_FORMAT.md` for the full disk layout and recovery contract.
 
@@ -161,10 +168,10 @@ With this enabled, the global `CORTEX_API_KEY` can no longer use `X-Cortex-User`
 
 Scoped REST tokens enforce the same capability names used by Trust controls:
 
-- `read`: search, inbox, stats, graph, source history, settings reads, and review reads
-- `write`: captures, queued captures, imports, approvals, archives, loop reuse, and settings changes
+- `read`: search, inbox, stats, graph, source history, source accounts, sync cursors, settings reads, and review reads
+- `write`: captures, queued captures, imports, source account registration, sync cursor updates, approvals, archives, loop reuse, and settings changes
 - `export`: context packs, personal profiles, support bundles, and JSON/Markdown export
-- `maintenance`: diagnostics, reliability reports, jobs, repair/rebuild operations, backups, and token registration
+- `maintenance`: diagnostics, reliability reports, jobs, repair/rebuild operations, backups, source account disconnect, and token registration
 - `destructive`: capture/memory/import deletion, backup deletion, full user-data deletion, and backup restore
 
 Token lifecycle endpoints return metadata only. They never expose token hashes, salts, or raw token values. Revocation sets `revoked_at`; revoked tokens no longer authenticate and are omitted from token lists unless `include_revoked=true` is passed.

@@ -15,6 +15,8 @@ VAULT_FORMAT = "cortex-local-vault"
 VAULT_VERSION = 1
 VAULT_DIRECTORIES = (
     "imports",
+    "source_accounts",
+    "sync_cursors",
     "captures",
     "memories",
     "tasks",
@@ -26,7 +28,7 @@ VAULT_DIRECTORIES = (
     "exports",
 )
 RESTORE_ROOT_FILES = {"manifest.json", "settings.json", "events.jsonl"}
-RESTORE_DIRECTORIES = {"imports", "captures", "memories", "tasks", "entities", "graph_edges", "deletion_tombstones", "attachments"}
+RESTORE_DIRECTORIES = {"imports", "source_accounts", "sync_cursors", "captures", "memories", "tasks", "entities", "graph_edges", "deletion_tombstones", "attachments"}
 
 
 def vault_now() -> str:
@@ -173,6 +175,18 @@ class CortexVault:
         path = self.root / "imports" / day / f"{safe_segment(record.get('id'), 'import')}.json"
         return self._write_record(path, "import", record)
 
+    def write_source_account(self, record: dict[str, Any]) -> Path:
+        user_id = safe_segment(record.get("user_id"), "unknown")
+        source = safe_segment(record.get("source"), "source")
+        path = self.root / "source_accounts" / user_id / source / f"{safe_segment(record.get('id'), 'source-account')}.json"
+        return self._write_record(path, "source_account", record)
+
+    def write_sync_cursor(self, record: dict[str, Any]) -> Path:
+        user_id = safe_segment(record.get("user_id"), "unknown")
+        source = safe_segment(record.get("source"), "source")
+        path = self.root / "sync_cursors" / user_id / source / f"{safe_segment(record.get('id'), 'sync-cursor')}.json"
+        return self._write_record(path, "sync_cursor", record)
+
     def write_memory(self, record: dict[str, Any]) -> Path:
         kind = safe_segment(record.get("kind"), "memory")
         path = self.root / "memories" / kind / f"{safe_segment(record.get('id'), 'memory')}.json"
@@ -234,6 +248,12 @@ class CortexVault:
 
     def patch_import(self, import_id: str, updates: dict[str, Any]) -> bool:
         return self._patch_first("imports", import_id, updates)
+
+    def patch_source_account(self, account_id: str, updates: dict[str, Any]) -> bool:
+        return self._patch_first("source_accounts", account_id, updates)
+
+    def patch_sync_cursor(self, cursor_id: str, updates: dict[str, Any]) -> bool:
+        return self._patch_first("sync_cursors", cursor_id, updates)
 
     def patch_memory(self, memory_id: str, updates: dict[str, Any]) -> bool:
         return self._patch_first("memories", memory_id, updates)
@@ -450,6 +470,9 @@ class CortexVault:
     def delete_user_records(self, user_id: str, *, include_backups: bool = False) -> dict[str, Any]:
         self.ensure()
         counts: dict[str, int] = {
+            "imports": 0,
+            "source_accounts": 0,
+            "sync_cursors": 0,
             "captures": 0,
             "memories": 0,
             "tasks": 0,
@@ -461,7 +484,7 @@ class CortexVault:
             "attachments": 0,
             "backups": 0,
         }
-        for record_dir in ("imports", "captures", "memories", "tasks", "entities", "graph_edges"):
+        for record_dir in ("imports", "source_accounts", "sync_cursors", "captures", "memories", "tasks", "entities", "graph_edges"):
             base = self.root / record_dir
             if not base.exists():
                 continue

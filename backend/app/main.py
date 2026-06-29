@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import load_settings
 from .extractor import extract_context
 from .mcp_tools import TOOLS, call_tool, tool_result_text
-from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, BackupResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DiagnosticsResponse, GraphResponse, JobRunResponse, ListResponse, MaintenanceResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, ProductLoopResponse, QueuedCaptureResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, StatsResponse, SupportBundleResponse, VaultRebuildResponse, VectorRebuildResponse
+from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, BackupResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DiagnosticsResponse, GraphResponse, JobRunResponse, ListResponse, MaintenanceResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, ProductLoopResponse, QueuedCaptureResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, StatsResponse, SupportBundleResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, VaultRebuildResponse, VectorRebuildResponse
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
 
@@ -67,6 +67,8 @@ def _required_api_scope(method: str, path: str) -> str:
     if normalized_path in {"/v1/integrations/api-token", "/v1/integrations/mcp-token", "/v1/integrations/tokens"}:
         return "maintenance"
     if normalized_path.startswith("/v1/integrations/tokens/"):
+        return "maintenance"
+    if normalized_path.startswith("/v1/source-accounts/") and normalized_method == "DELETE":
         return "maintenance"
     if normalized_path == "/v1/backups/restore-latest":
         return "destructive"
@@ -348,6 +350,66 @@ def capture_status(capture_id: str, user_id: str = Depends(auth)) -> dict[str, A
 @app.get("/v1/imports/sources")
 def supported_import_sources(user_id: str = Depends(auth)) -> dict[str, Any]:
     return {"results": store.supported_import_sources()}
+
+
+@app.get("/v1/source-accounts/catalog")
+def source_account_catalog(user_id: str = Depends(auth)) -> dict[str, Any]:
+    return {"results": store.source_connector_catalog()}
+
+
+@app.get("/v1/source-accounts", response_model=SourceAccountListResponse)
+def list_source_accounts(include_disconnected: bool = Query(default=False), user_id: str = Depends(auth)) -> dict[str, Any]:
+    return {"results": store.list_source_accounts(user_id, include_disconnected=include_disconnected)}
+
+
+@app.post("/v1/source-accounts", response_model=SourceAccountResponse)
+def upsert_source_account(request: SourceAccountRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    try:
+        return store.upsert_source_account(
+            user_id,
+            source=request.source,
+            account_label=request.account_label,
+            account_identifier=request.account_identifier,
+            connection_type=request.connection_type,
+            status=request.status,
+            auth_state=request.auth_state,
+            policy=request.policy,
+            metadata=request.metadata,
+            last_error=request.last_error,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.delete("/v1/source-accounts/{account_id}", response_model=SourceAccountResponse)
+def disconnect_source_account(account_id: str, user_id: str = Depends(auth)) -> dict[str, Any]:
+    disconnected = store.disconnect_source_account(user_id, account_id)
+    if not disconnected:
+        raise HTTPException(status_code=404, detail="Source account not found")
+    return disconnected
+
+
+@app.get("/v1/sync-cursors", response_model=SyncCursorListResponse)
+def list_sync_cursors(source_account_id: str | None = None, user_id: str = Depends(auth)) -> dict[str, Any]:
+    return {"results": store.list_sync_cursors(user_id, source_account_id=source_account_id)}
+
+
+@app.post("/v1/sync-cursors", response_model=SyncCursorResponse)
+def upsert_sync_cursor(request: SyncCursorRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    try:
+        return store.upsert_sync_cursor(
+            user_id,
+            source=request.source,
+            cursor_name=request.cursor_name,
+            cursor_value=request.cursor_value,
+            high_water_mark=request.high_water_mark,
+            state=request.state,
+            source_account_id=request.source_account_id,
+            last_error=request.last_error,
+            completed=request.completed,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/v1/imports")

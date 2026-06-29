@@ -69,6 +69,71 @@ class SourceAnalyzeResponse(BaseModel):
     supported_sources: list[dict[str, Any]]
 
 
+class SourceAccountRequest(BaseModel):
+    source: str = Field(..., min_length=1, max_length=80)
+    account_label: str = Field(default="", max_length=160)
+    account_identifier: str | None = Field(default=None, max_length=240)
+    connection_type: str = Field(default="manual", max_length=40)
+    status: str = Field(default="available", max_length=40)
+    auth_state: str = Field(default="not_configured", max_length=40)
+    policy: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
+    last_error: str | None = Field(default=None, max_length=500)
+
+
+class SourceAccountResponse(BaseModel):
+    id: str
+    user_id: str
+    source: str
+    account_label: str
+    account_identifier: str | None = None
+    connection_type: str
+    status: str
+    auth_state: str
+    policy: dict[str, Any]
+    metadata: dict[str, Any]
+    last_sync_at: str | None = None
+    last_error: str | None = None
+    created_at: str
+    updated_at: str
+    disconnected_at: str | None = None
+
+
+class SourceAccountListResponse(BaseModel):
+    results: list[SourceAccountResponse]
+
+
+class SyncCursorRequest(BaseModel):
+    source: str = Field(..., min_length=1, max_length=80)
+    cursor_name: str = Field(..., min_length=1, max_length=120)
+    cursor_value: str | None = Field(default=None, max_length=2000)
+    high_water_mark: str | None = Field(default=None, max_length=500)
+    state: dict[str, Any] | None = None
+    source_account_id: str | None = Field(default=None, max_length=80)
+    last_error: str | None = Field(default=None, max_length=500)
+    completed: bool = True
+
+
+class SyncCursorResponse(BaseModel):
+    id: str
+    user_id: str
+    source_account_id: str | None = None
+    source: str
+    cursor_name: str
+    cursor_value: str | None = None
+    high_water_mark: str | None = None
+    state: dict[str, Any]
+    last_started_at: str | None = None
+    last_completed_at: str | None = None
+    last_error: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class SyncCursorListResponse(BaseModel):
+    results: list[SyncCursorResponse]
+
+
 class QueuedCaptureResponse(BaseModel):
     capture_id: str
     status: str

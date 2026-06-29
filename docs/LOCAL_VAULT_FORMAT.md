@@ -41,6 +41,14 @@ Cortex.vault/
   imports/
     YYYY-MM-DD/
       imp_*.json
+  source_accounts/
+    USER_ID/
+      SOURCE/
+        sacct_*.json
+  sync_cursors/
+    USER_ID/
+      SOURCE/
+        sync_*.json
   memories/
     decision/
       mem_*.json
@@ -87,6 +95,8 @@ These files are canonical:
 - `settings.json`: user behavior settings such as review flow and context-pack size
 - `events.jsonl`: append-only audit log for capture, approval, archive, deletion, settings, backup, and maintenance actions
 - `imports/**/*.json`: import session history, selected path summaries, source counts, bounded record previews, linked capture IDs, status, errors, and delete markers
+- `source_accounts/**/*.json`: connector account metadata, health state, policy metadata, last sync time, last error, and disconnect state
+- `sync_cursors/**/*.json`: incremental sync cursor values, high-water marks, per-cursor state, last completion time, and last error
 - `captures/**/*.json`: raw source text and capture lifecycle state
 - `memories/**/*.json`: extracted atomic memory records
 - `tasks/**/*.json`: open loops and questions
@@ -124,7 +134,7 @@ POST /v1/maintenance/rebuild-index-from-vault
 
 The rebuild process:
 
-1. Reads import sessions, captures, memories, tasks, entities, graph edges, settings, and events from the vault.
+1. Reads import sessions, source accounts, sync cursors, captures, memories, tasks, entities, graph edges, settings, and events from the vault.
 2. Clears the current user's SQLite index rows.
 3. Re-inserts normalized records.
 4. Rebuilds FTS rows.
@@ -157,6 +167,7 @@ The backend then backfills an empty vault from the copied index by writing captu
 - settings
 - event log
 - import sessions
+- source accounts and sync cursors
 - captures
 - memories
 - tasks

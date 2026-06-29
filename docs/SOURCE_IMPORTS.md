@@ -96,6 +96,39 @@ Deleting an import is the app-level undo for a bad batch. It hard-deletes captur
 
 Repeated imports are idempotent by content hash and source. If a record already exists for the user, Cortex marks the new import record as `duplicate`, increments `skipped`, and does not link that duplicate session to the existing capture. Undoing the duplicate session therefore cannot remove memory created by an earlier import.
 
+## Source Account Registry
+
+Cortex keeps durable local connector state for live-sync work without turning on cloud OAuth yet.
+
+Connector capability catalog:
+
+```text
+GET /v1/source-accounts/catalog
+```
+
+The catalog lists common services such as ChatGPT, Claude, Gmail, Notion, Google Drive, Microsoft 365, Slack, Google Chat, Teams, Discord, Telegram, Messages, WhatsApp, Calendar, Contacts, GitHub, Linear, Jira, Zoom, Browser Bookmarks, Readwise, Apple Notes, and Obsidian. Each entry includes current import readiness, future live-sync status, auth type, scopes, and supported export formats where known.
+
+Source account lifecycle:
+
+```text
+GET    /v1/source-accounts?include_disconnected=false
+POST   /v1/source-accounts
+DELETE /v1/source-accounts/{account_id}
+```
+
+`POST /v1/source-accounts` records source, account label, account identifier, connection type, status, auth state, policy, and metadata. It stores metadata only; OAuth secrets are not implemented or stored in this layer. `DELETE /v1/source-accounts/{account_id}` marks the account disconnected/revoked rather than removing the historical record.
+
+Sync cursor lifecycle:
+
+```text
+GET  /v1/sync-cursors?source_account_id={account_id}
+POST /v1/sync-cursors
+```
+
+`POST /v1/sync-cursors` records an incremental cursor name/value, optional high-water mark, state metadata, and success/failure state. A successful linked cursor updates the source account `last_sync_at` and clears `last_error`; a failed cursor records `last_error` and leaves `last_completed_at` empty.
+
+Source accounts and sync cursors are written to the local vault under `source_accounts/` and `sync_cursors/`, included in backups, restored by latest-backup restore, and rebuilt by `POST /v1/maintenance/rebuild-index-from-vault`.
+
 ## App Flow
 
 The macOS Sources tab accepts files, folders, and export bundles. It first calls `/v1/imports/analyze` to show a preview of detected records. After confirmation, it calls `/v1/imports`, queues normalized records, starts a local job run for the first batch, refreshes Model, Sources, Review, Ask, and Trust state, and shows the batch in Import History. If a selected file is not readable by the backend importer, the app falls back to its existing local text/PDF extraction path.

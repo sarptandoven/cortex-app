@@ -32,6 +32,9 @@ FastAPI backend
   /v1/imports
   /v1/imports/{id}
   DELETE /v1/imports/{id}
+  /v1/source-accounts/catalog
+  /v1/source-accounts
+  /v1/sync-cursors
   /v1/jobs
   /v1/maintenance/jobs/run
   /v1/inbox
@@ -70,6 +73,8 @@ Local vault
   settings.json
   events.jsonl
   imports/*.json
+  source_accounts/*.json
+  sync_cursors/*.json
   captures/*.json
   memories/*.json
   tasks/*.json
@@ -217,7 +222,7 @@ Default packaged app path:
 ~/Library/Application Support/Cortex/Cortex.vault/
 ```
 
-The vault contains human-readable JSON records for captures, memories, tasks, entities, and graph edges, plus `settings.json`, `events.jsonl`, attachments, exports, backups, and `index.sqlite`.
+The vault contains human-readable JSON records for imports, source accounts, sync cursors, captures, memories, tasks, entities, and graph edges, plus `settings.json`, `events.jsonl`, attachments, exports, backups, and `index.sqlite`.
 
 `POST /v1/maintenance/rebuild-index-from-vault` clears the current user's index rows and rebuilds them from the vault records. This is the recovery path if the local index is corrupted or if a future sync process materializes records before rebuilding search.
 

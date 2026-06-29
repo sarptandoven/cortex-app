@@ -54,6 +54,78 @@ struct SupportedSource: Codable, Hashable {
     let status: String
 }
 
+struct SourceConnectorCatalogResponse: Codable {
+    let results: [SourceConnectorCatalogItem]
+}
+
+struct SourceConnectorCatalogItem: Codable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    let category: String?
+    let auth: String?
+    let live_status: String?
+    let scopes: [String]?
+    let notes: String?
+    let import_status: String?
+    let formats: [String]?
+
+    var isImportReady: Bool {
+        let status = (import_status ?? "").lowercased()
+        return ["native", "generic", "import_ready"].contains(status) || !(formats ?? []).isEmpty
+    }
+
+    var isLivePlanned: Bool {
+        (live_status ?? "").lowercased() == "planned"
+    }
+}
+
+struct SourceAccountListResponse: Codable {
+    let results: [SourceAccountItem]
+}
+
+struct SourceAccountItem: Codable, Identifiable, Hashable {
+    let id: String
+    let user_id: String
+    let source: String
+    let account_label: String
+    let account_identifier: String?
+    let connection_type: String
+    let status: String
+    let auth_state: String
+    let last_sync_at: String?
+    let last_error: String?
+    let created_at: String
+    let updated_at: String
+    let disconnected_at: String?
+
+    var needsAttention: Bool {
+        last_error != nil || disconnected_at != nil || status.lowercased().contains("error") || auth_state.lowercased().contains("expired") || auth_state.lowercased().contains("revoked")
+    }
+}
+
+struct SyncCursorListResponse: Codable {
+    let results: [SyncCursorItem]
+}
+
+struct SyncCursorItem: Codable, Identifiable, Hashable {
+    let id: String
+    let user_id: String
+    let source_account_id: String?
+    let source: String
+    let cursor_name: String
+    let cursor_value: String?
+    let high_water_mark: String?
+    let last_started_at: String?
+    let last_completed_at: String?
+    let last_error: String?
+    let created_at: String
+    let updated_at: String
+
+    var needsAttention: Bool {
+        last_error != nil
+    }
+}
+
 struct SourceImportRecordSummary: Codable, Hashable {
     let capture_id: String?
     let status: String
@@ -1255,6 +1327,9 @@ final class AppState: ObservableObject {
     @Published var importPreviewMoveImportedFromInbox: Bool = false
     @Published var showImportPreview: Bool = false
     @Published var importHistory: [SourceImportHistoryItem] = []
+    @Published var sourceConnectorCatalog: [SourceConnectorCatalogItem] = []
+    @Published var sourceAccounts: [SourceAccountItem] = []
+    @Published var syncCursors: [SyncCursorItem] = []
     @Published var searchQuery: String = ""
     @Published var status: String = "Ready"
     @Published var inbox: [CaptureItem] = []
@@ -2099,8 +2174,24 @@ final class AppState: ObservableObject {
             let auditData = try await request(path: "/v1/audit-log?limit=80", method: "GET")
             auditEvents = try JSONDecoder().decode(AuditLogResponse.self, from: auditData).results
             await loadIntegrationTokens()
+            await loadSourceConnectivity()
         } catch {
             status = "Trust failed: \(error.localizedDescription)"
+        }
+    }
+
+    func loadSourceConnectivity() async {
+        do {
+            let catalogData = try await request(path: "/v1/source-accounts/catalog", method: "GET")
+            sourceConnectorCatalog = try JSONDecoder().decode(SourceConnectorCatalogResponse.self, from: catalogData).results
+            let accountData = try await request(path: "/v1/source-accounts", method: "GET")
+            sourceAccounts = try JSONDecoder().decode(SourceAccountListResponse.self, from: accountData).results
+            let cursorData = try await request(path: "/v1/sync-cursors", method: "GET")
+            syncCursors = try JSONDecoder().decode(SyncCursorListResponse.self, from: cursorData).results
+        } catch {
+            sourceConnectorCatalog = []
+            sourceAccounts = []
+            syncCursors = []
         }
     }
 
@@ -2751,6 +2842,8 @@ final class AppState: ObservableObject {
                 graphNodes = []
                 graphEdges = []
                 importHistory = []
+                sourceAccounts = []
+                syncCursors = []
                 stats = nil
                 review = nil
                 productLoop = nil
@@ -4798,6 +4891,9 @@ struct SourceHealthSummarySection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             SectionHeader(title: "Source health", detail: "Imported batches stay removable, and pending source records wait for review.")
+            if !state.sourceConnectorCatalog.isEmpty || !state.sourceAccounts.isEmpty || !state.syncCursors.isEmpty {
+                SourceConnectivityPanel(state: state)
+            }
             if let summary = state.trustSummary, !summary.source_counts.isEmpty {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 8)], spacing: 8) {
                     ForEach(summary.source_counts.prefix(6)) { source in
@@ -4808,6 +4904,130 @@ struct SourceHealthSummarySection: View {
                 QuietState(title: "No sources yet", detail: "Choose sources or drop exports here to start building memory.")
             }
         }
+    }
+}
+
+struct SourceConnectivityPanel: View {
+    @ObservedObject var state: AppState
+
+    private var importReadyCount: Int {
+        state.sourceConnectorCatalog.filter(\.isImportReady).count
+    }
+
+    private var livePlannedCount: Int {
+        state.sourceConnectorCatalog.filter(\.isLivePlanned).count
+    }
+
+    private var accountsNeedingAttention: [SourceAccountItem] {
+        state.sourceAccounts.filter(\.needsAttention)
+    }
+
+    private var cursorErrors: Int {
+        state.syncCursors.filter(\.needsAttention).count
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 8) {
+                SourceConnectivityMetric(title: "Import ready", value: "\(importReadyCount)", systemImage: "tray.and.arrow.down.fill", color: .accentColor)
+                SourceConnectivityMetric(title: "Live planned", value: "\(livePlannedCount)", systemImage: "arrow.triangle.2.circlepath", color: .blue)
+                SourceConnectivityMetric(title: "Connected", value: "\(state.sourceAccounts.count)", systemImage: "link.circle.fill", color: state.sourceAccounts.isEmpty ? .secondary : .green)
+                SourceConnectivityMetric(title: "Needs attention", value: "\(accountsNeedingAttention.count + cursorErrors)", systemImage: "exclamationmark.triangle.fill", color: accountsNeedingAttention.isEmpty && cursorErrors == 0 ? .secondary : .orange)
+            }
+
+            if state.sourceAccounts.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "point.3.connected.trianglepath.dotted")
+                        .foregroundColor(.secondary)
+                    Text("No live source accounts connected")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 2)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(state.sourceAccounts.prefix(3)) { account in
+                        SourceAccountHealthRow(
+                            account: account,
+                            cursor: state.syncCursors.first(where: { $0.source_account_id == account.id })
+                        )
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .textBackgroundColor))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct SourceConnectivityMetric: View {
+    let title: String
+    let value: String
+    let systemImage: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .foregroundColor(color)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(value)
+                    .font(.headline)
+                Text(title)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(8)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct SourceAccountHealthRow: View {
+    let account: SourceAccountItem
+    let cursor: SyncCursorItem?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: account.needsAttention || cursor?.needsAttention == true ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+                .foregroundColor(account.needsAttention || cursor?.needsAttention == true ? .orange : .green)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(account.account_label.isEmpty ? account.source : account.account_label)
+                    .font(.callout)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(8)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var detail: String {
+        if let error = account.last_error ?? cursor?.last_error {
+            return error
+        }
+        if let synced = account.last_sync_at ?? cursor?.last_completed_at {
+            return "\(account.source) · \(account.status) · synced \(shortDate(synced))"
+        }
+        return "\(account.source) · \(account.status) · \(account.auth_state)"
+    }
+
+    private func shortDate(_ value: String) -> String {
+        String(value.prefix(19)).replacingOccurrences(of: "T", with: " ")
     }
 }
 

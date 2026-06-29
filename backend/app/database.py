@@ -201,6 +201,41 @@ CREATE TABLE IF NOT EXISTS api_tokens (
   revoked_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS source_accounts (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  account_label TEXT NOT NULL,
+  account_identifier TEXT,
+  connection_type TEXT NOT NULL DEFAULT 'manual',
+  status TEXT NOT NULL DEFAULT 'available',
+  auth_state TEXT NOT NULL DEFAULT 'not_configured',
+  policy_json TEXT NOT NULL DEFAULT '{}',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  last_sync_at TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  disconnected_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS sync_cursors (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  source_account_id TEXT,
+  source TEXT NOT NULL,
+  cursor_name TEXT NOT NULL,
+  cursor_value TEXT,
+  high_water_mark TEXT,
+  state_json TEXT NOT NULL DEFAULT '{}',
+  last_started_at TEXT,
+  last_completed_at TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(source_account_id) REFERENCES source_accounts(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS capture_processing_state (
   capture_id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
@@ -308,6 +343,10 @@ CREATE INDEX IF NOT EXISTS idx_edges_user_target ON graph_edges(user_id, target_
 CREATE INDEX IF NOT EXISTS idx_events_user_created ON memory_events(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_user_type_event_created ON memory_events(user_id, object_type, event_type, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_api_tokens_active ON api_tokens(audience, revoked_at, user_id);
+CREATE INDEX IF NOT EXISTS idx_source_accounts_user_source ON source_accounts(user_id, source, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_source_accounts_identifier ON source_accounts(user_id, source, account_identifier);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_cursors_unique ON sync_cursors(user_id, source_account_id, source, cursor_name);
+CREATE INDEX IF NOT EXISTS idx_sync_cursors_user_source ON sync_cursors(user_id, source, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_capture_processing_user_status ON capture_processing_state(user_id, extraction_status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memory_jobs_claim ON memory_jobs(status, run_at, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_memory_jobs_user_status ON memory_jobs(user_id, status, updated_at DESC);

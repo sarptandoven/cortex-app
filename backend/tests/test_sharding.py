@@ -110,6 +110,41 @@ class ShardingTests(unittest.TestCase):
         self.assertIsNone(registry.authenticate_api_token(token, user_id="bob"))
         self.assertEqual(registry.authenticate_api_token(token)["user_id"], "alice")
 
+    def test_source_accounts_and_sync_cursors_are_user_sharded(self) -> None:
+        registry = StoreRegistry.from_settings(self.settings(mode="user"))
+
+        alice_account = registry.upsert_source_account(
+            "alice",
+            source="gmail",
+            account_label="Alice Gmail",
+            account_identifier="alice@example.com",
+            connection_type="oauth",
+            status="connected",
+            auth_state="healthy",
+        )
+        bob_account = registry.upsert_source_account(
+            "bob",
+            source="gmail",
+            account_label="Bob Gmail",
+            account_identifier="bob@example.com",
+            connection_type="oauth",
+            status="connected",
+            auth_state="healthy",
+        )
+        registry.upsert_sync_cursor(
+            "alice",
+            source="gmail",
+            source_account_id=alice_account["id"],
+            cursor_name="messages",
+            cursor_value="alice-cursor",
+        )
+
+        self.assertNotEqual(alice_account["id"], bob_account["id"])
+        self.assertEqual([item["account_label"] for item in registry.list_source_accounts("alice")], ["Alice Gmail"])
+        self.assertEqual([item["account_label"] for item in registry.list_source_accounts("bob")], ["Bob Gmail"])
+        self.assertEqual(registry.list_sync_cursors("alice")[0]["cursor_value"], "alice-cursor")
+        self.assertEqual(registry.list_sync_cursors("bob"), [])
+
 
 if __name__ == "__main__":
     unittest.main()
