@@ -710,6 +710,29 @@ class FastAPIContractTests(unittest.TestCase):
             self.assertTrue(feed["signature"]["value"].startswith("hmac-sha256:"))
             self.assertNotIn("device_key", json.dumps(feed))
 
+            receipt_response = self.client.post(
+                f"/v1/sync/devices/{device['id']}/receipts",
+                json={
+                    "cursor": feed["next_cursor"],
+                    "status": "uploaded",
+                    "manifest_hash": feed["signature"]["payload_hash"],
+                    "remote_ref": "local-sync://contract/upload-1",
+                    "stats": {"changes": len(feed["changes"])},
+                },
+                headers=headers,
+            )
+            self.assertEqual(receipt_response.status_code, 200)
+            receipt = receipt_response.json()
+            self.assertTrue(receipt["id"].startswith("srec_"))
+            self.assertEqual(receipt["device_id"], device["id"])
+            self.assertEqual(receipt["cursor"], feed["next_cursor"])
+            self.assertEqual(receipt["status"], "uploaded")
+            self.assertEqual(receipt["stats"]["changes"], len(feed["changes"]))
+
+            listed_receipts = self.client.get(f"/v1/sync/devices/{device['id']}/receipts", headers=headers)
+            self.assertEqual(listed_receipts.status_code, 200)
+            self.assertEqual([item["id"] for item in listed_receipts.json()["results"]], [receipt["id"]])
+
             revoked = self.client.delete(f"/v1/sync/devices/{device['id']}", headers=headers)
             self.assertEqual(revoked.status_code, 200)
             self.assertEqual(revoked.json()["id"], device["id"])

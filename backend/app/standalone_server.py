@@ -63,6 +63,8 @@ def _required_api_scope(method: str, path: str) -> str:
         return "maintenance"
     if normalized_path == "/v1/sync/devices" and normalized_method == "POST":
         return "maintenance"
+    if normalized_path.startswith("/v1/sync/devices/") and normalized_path.endswith("/receipts") and normalized_method == "POST":
+        return "maintenance"
     if normalized_path.startswith("/v1/sync/devices/") and normalized_method == "DELETE":
         return "maintenance"
     if normalized_path == "/v1/backups/restore-latest":
@@ -408,6 +410,27 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 except ValueError as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
+            if path.startswith("/v1/sync/devices/") and path.endswith("/receipts"):
+                device_id = unquote(path.removeprefix("/v1/sync/devices/").removesuffix("/receipts").strip("/"))
+                if method == "GET":
+                    self._send_json({"results": store.list_sync_receipts(user_id, device_id, limit=_int_param(params, "limit", 50, 1, 200))})
+                    return
+                if method == "POST":
+                    body = self._json_body()
+                    try:
+                        self._send_json(store.record_sync_receipt(
+                            user_id,
+                            device_id,
+                            cursor=str(body.get("cursor") or ""),
+                            status=str(body.get("status") or "accepted"),
+                            manifest_hash=str(body.get("manifest_hash") or "") or None,
+                            remote_ref=str(body.get("remote_ref") or "") or None,
+                            error=str(body.get("error") or "") or None,
+                            stats=body.get("stats") if isinstance(body.get("stats"), dict) else None,
+                        ))
+                    except ValueError as exc:
+                        self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                    return
             if method == "DELETE" and path.startswith("/v1/sync/devices/"):
                 device_id = unquote(path.removeprefix("/v1/sync/devices/").strip("/"))
                 revoked = store.revoke_sync_device(user_id, device_id)

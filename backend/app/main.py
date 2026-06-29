@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import load_settings
 from .extractor import extract_context
 from .mcp_tools import TOOLS, call_tool, tool_result_text
-from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GraphResponse, JobRunResponse, ListResponse, MaintenanceResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, ProductLoopResponse, QueuedCaptureResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, VaultRebuildResponse, VectorRebuildResponse
+from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GraphResponse, JobRunResponse, ListResponse, MaintenanceResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, ProductLoopResponse, QueuedCaptureResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
 
@@ -71,6 +71,8 @@ def _required_api_scope(method: str, path: str) -> str:
     if normalized_path.startswith("/v1/source-accounts/") and normalized_method == "DELETE":
         return "maintenance"
     if normalized_path == "/v1/sync/devices" and normalized_method == "POST":
+        return "maintenance"
+    if normalized_path.startswith("/v1/sync/devices/") and normalized_path.endswith("/receipts") and normalized_method == "POST":
         return "maintenance"
     if normalized_path.startswith("/v1/sync/devices/") and normalized_method == "DELETE":
         return "maintenance"
@@ -447,6 +449,28 @@ def revoke_sync_device(device_id: str, user_id: str = Depends(auth)) -> dict[str
     if not revoked:
         raise HTTPException(status_code=404, detail="Sync device not found")
     return revoked
+
+
+@app.get("/v1/sync/devices/{device_id}/receipts", response_model=SyncReceiptListResponse)
+def list_sync_receipts(device_id: str, limit: int = Query(default=50, ge=1, le=200), user_id: str = Depends(auth)) -> dict[str, Any]:
+    return {"results": store.list_sync_receipts(user_id, device_id, limit=limit)}
+
+
+@app.post("/v1/sync/devices/{device_id}/receipts", response_model=SyncReceiptResponse)
+def record_sync_receipt(device_id: str, request: SyncReceiptRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    try:
+        return store.record_sync_receipt(
+            user_id,
+            device_id,
+            cursor=request.cursor,
+            status=request.status,
+            manifest_hash=request.manifest_hash,
+            remote_ref=request.remote_ref,
+            error=request.error,
+            stats=request.stats,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/v1/imports")

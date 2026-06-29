@@ -34,6 +34,7 @@ BACKEND_FEATURES = (
     "source-imports",
     "source-account-registry",
     "sync-device-manifests",
+    "sync-receipts",
 )
 SUPPORT_BUNDLE_SCHEMA = 1
 DEFAULT_BACKUP_RETENTION_COUNT = 20
@@ -1284,6 +1285,92 @@ class CortexStore:
         device = self._sync_device_from_row(row)
         self.vault.write_sync_device(self._sync_device_record_from_row(row))
         return device
+
+    def record_sync_receipt(
+        self,
+        user_id: str,
+        device_id: str,
+        *,
+        cursor: str,
+        status: str = "accepted",
+        manifest_hash: str | None = None,
+        remote_ref: str | None = None,
+        error: str | None = None,
+        stats: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized_device_id = (device_id or "").strip()
+        normalized_cursor = (cursor or "").strip()[:160]
+        if not normalized_device_id:
+            raise ValueError("device_id is required")
+        if not normalized_cursor:
+            raise ValueError("cursor is required")
+        normalized_status = (status or "accepted").strip().lower()
+        if normalized_status not in {"accepted", "uploaded", "failed"}:
+            raise ValueError("status must be accepted, uploaded, or failed")
+        timestamp = now_iso()
+        receipt_id = stable_id("srec_", f"{user_id}:{normalized_device_id}:{normalized_cursor}")
+        stats_payload = stats if isinstance(stats, dict) else {}
+        with connect(self.db_path) as conn:
+            device = conn.execute("SELECT * FROM sync_devices WHERE user_id = ? AND id = ?", (user_id, normalized_device_id)).fetchone()
+            if not device:
+                raise ValueError("sync device not found")
+            if device["revoked_at"]:
+                raise ValueError("sync device is revoked")
+            conn.execute(
+                """
+                INSERT INTO sync_receipts
+                (id, user_id, device_id, cursor, status, manifest_hash, remote_ref, error, stats_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, device_id, cursor) DO UPDATE SET
+                  status = excluded.status,
+                  manifest_hash = excluded.manifest_hash,
+                  remote_ref = excluded.remote_ref,
+                  error = excluded.error,
+                  stats_json = excluded.stats_json,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    receipt_id,
+                    user_id,
+                    normalized_device_id,
+                    normalized_cursor,
+                    normalized_status,
+                    (manifest_hash or "").strip()[:256] or None,
+                    (remote_ref or "").strip()[:500] or None,
+                    (error or "").strip()[:500] or None,
+                    json.dumps(stats_payload),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            self._event(
+                conn,
+                user_id,
+                receipt_id,
+                "sync_receipt",
+                normalized_status,
+                {"device_id": normalized_device_id, "cursor": normalized_cursor, "manifest_hash": (manifest_hash or "")[:80]},
+            )
+            row = conn.execute("SELECT * FROM sync_receipts WHERE user_id = ? AND id = ?", (user_id, receipt_id)).fetchone()
+        receipt = self._sync_receipt_from_row(row)
+        self.vault.write_sync_receipt(receipt)
+        return receipt
+
+    def list_sync_receipts(self, user_id: str, device_id: str, *, limit: int = 50) -> list[dict[str, Any]]:
+        normalized_device_id = (device_id or "").strip()
+        limit = max(1, min(200, int(limit)))
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM sync_receipts
+                WHERE user_id = ? AND device_id = ?
+                ORDER BY updated_at DESC, cursor DESC
+                LIMIT ?
+                """,
+                (user_id, normalized_device_id, limit),
+            ).fetchall()
+        return [self._sync_receipt_from_row(row) for row in rows]
 
     def analyze_import_sources(self, paths: list[str], source_hint: str = "", max_records: int = 500) -> dict[str, Any]:
         return analyze_sources(paths, source_hint=source_hint, max_records=max_records)
@@ -3166,6 +3253,7 @@ class CortexStore:
                 "source_accounts": conn.execute("SELECT COUNT(*) FROM source_accounts WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "sync_cursors": conn.execute("SELECT COUNT(*) FROM sync_cursors WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "sync_devices": conn.execute("SELECT COUNT(*) FROM sync_devices WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "sync_receipts": conn.execute("SELECT COUNT(*) FROM sync_receipts WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "vector_embeddings": self._vector_count(conn, user_id),
                 "queued_jobs": conn.execute("SELECT COUNT(*) FROM memory_jobs WHERE user_id = ? AND status = 'queued'", (user_id,)).fetchone()[0],
                 "running_jobs": conn.execute("SELECT COUNT(*) FROM memory_jobs WHERE user_id = ? AND status = 'running'", (user_id,)).fetchone()[0],
@@ -3609,6 +3697,7 @@ class CortexStore:
                 "source_accounts": conn.execute("SELECT COUNT(*) FROM source_accounts WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "sync_cursors": conn.execute("SELECT COUNT(*) FROM sync_cursors WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "sync_devices": conn.execute("SELECT COUNT(*) FROM sync_devices WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "sync_receipts": conn.execute("SELECT COUNT(*) FROM sync_receipts WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "memory_jobs": conn.execute("SELECT COUNT(*) FROM memory_jobs WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "capture_processing_state": conn.execute("SELECT COUNT(*) FROM capture_processing_state WHERE user_id = ?", (user_id,)).fetchone()[0],
             }
@@ -3623,6 +3712,7 @@ class CortexStore:
             conn.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM entities WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM memory_jobs WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM sync_receipts WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM sync_devices WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM sync_cursors WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM source_accounts WHERE user_id = ?", (user_id,))
@@ -3796,6 +3886,7 @@ class CortexStore:
         source_accounts = list(self.vault.iter_records("source_accounts", user_id))
         sync_cursors = list(self.vault.iter_records("sync_cursors", user_id))
         sync_devices = list(self.vault.iter_records("sync_devices", user_id))
+        sync_receipts = list(self.vault.iter_records("sync_receipts", user_id))
         captures = list(self.vault.iter_records("captures", user_id))
         memories = list(self.vault.iter_records("memories", user_id))
         tasks = list(self.vault.iter_records("tasks", user_id))
@@ -3816,6 +3907,7 @@ class CortexStore:
             conn.execute("DELETE FROM tasks WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM entities WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM sync_receipts WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM sync_devices WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM sync_cursors WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM source_accounts WHERE user_id = ?", (user_id,))
@@ -3896,6 +3988,7 @@ class CortexStore:
                 restored_cursor_count += 1
 
             restored_device_count = 0
+            restored_device_ids: set[str] = set()
             for device in sorted(sync_devices, key=lambda item: item.get("updated_at") or item.get("created_at") or ""):
                 device_id = device.get("id")
                 if not device_id:
@@ -3929,6 +4022,37 @@ class CortexStore:
                     ),
                 )
                 restored_device_count += 1
+                restored_device_ids.add(str(device_id))
+
+            restored_receipt_count = 0
+            for receipt in sorted(sync_receipts, key=lambda item: item.get("updated_at") or item.get("created_at") or ""):
+                receipt_id = receipt.get("id")
+                device_id = str(receipt.get("device_id") or "")
+                cursor = str(receipt.get("cursor") or "")
+                if not receipt_id or not device_id or not cursor or device_id not in restored_device_ids:
+                    continue
+                stats = receipt.get("stats") if isinstance(receipt.get("stats"), dict) else {}
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO sync_receipts
+                    (id, user_id, device_id, cursor, status, manifest_hash, remote_ref, error, stats_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(receipt_id),
+                        user_id,
+                        device_id,
+                        cursor,
+                        str(receipt.get("status") or "accepted"),
+                        receipt.get("manifest_hash"),
+                        receipt.get("remote_ref"),
+                        receipt.get("error"),
+                        json.dumps(stats),
+                        receipt.get("created_at") or timestamp,
+                        receipt.get("updated_at") or receipt.get("created_at") or timestamp,
+                    ),
+                )
+                restored_receipt_count += 1
 
             for import_record in sorted(imports, key=lambda item: item.get("created_at") or ""):
                 session = {
@@ -4174,6 +4298,7 @@ class CortexStore:
                     "source_accounts": len(restored_account_ids),
                     "sync_cursors": restored_cursor_count,
                     "sync_devices": restored_device_count,
+                    "sync_receipts": restored_receipt_count,
                     "tombstones": tombstone_counts,
                 },
             )
@@ -4192,6 +4317,7 @@ class CortexStore:
             "source_accounts": len(restored_account_ids),
             "sync_cursors": restored_cursor_count,
             "sync_devices": restored_device_count,
+            "sync_receipts": restored_receipt_count,
             "tombstones": tombstone_counts,
         }
 
@@ -4364,6 +4490,7 @@ class CortexStore:
                 "source_accounts": vault_counts.get("source_accounts", 0),
                 "sync_cursors": vault_counts.get("sync_cursors", 0),
                 "sync_devices": vault_counts.get("sync_devices", 0),
+                "sync_receipts": vault_counts.get("sync_receipts", 0),
                 "audit_events": diagnostics["counts"].get("events", 0),
                 "deletion_tombstones": tombstones_count,
             },
@@ -4393,6 +4520,7 @@ class CortexStore:
                     "source_accounts",
                     "sync_cursors",
                     "sync_devices",
+                    "sync_receipts",
                     "jobs",
                     "events",
                     "settings",
@@ -4408,6 +4536,7 @@ class CortexStore:
                     "source_accounts",
                     "sync_cursors",
                     "sync_devices",
+                    "sync_receipts",
                     "settings",
                     "events",
                     "attachments",
@@ -4489,6 +4618,7 @@ class CortexStore:
                 "source_accounts": conn.execute("SELECT COUNT(*) FROM source_accounts WHERE user_id = ? AND disconnected_at IS NULL", (user_id,)).fetchone()[0],
                 "sync_cursors": conn.execute("SELECT COUNT(*) FROM sync_cursors WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "sync_devices": conn.execute("SELECT COUNT(*) FROM sync_devices WHERE user_id = ? AND revoked_at IS NULL", (user_id,)).fetchone()[0],
+                "sync_receipts": conn.execute("SELECT COUNT(*) FROM sync_receipts WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "events": conn.execute("SELECT COUNT(*) FROM memory_events WHERE user_id = ?", (user_id,)).fetchone()[0],
             }
             if device_id:
@@ -4625,7 +4755,7 @@ class CortexStore:
         }
 
     def _safe_sync_object_id(self, object_id: str) -> str | None:
-        if re.match(r"^(cap|mem|task|ent|edge|evt|imp|irec|job|sacct|sdev|sync|tok|backup|tomb|vec)_[A-Za-z0-9]+$", object_id or ""):
+        if re.match(r"^(cap|mem|task|ent|edge|evt|imp|irec|job|sacct|sdev|srec|sync|tok|backup|tomb|vec)_[A-Za-z0-9]+$", object_id or ""):
             return object_id
         return None
 
@@ -4646,6 +4776,9 @@ class CortexStore:
             "token_audience",
             "token_admin",
             "token_scopes",
+            "device_id",
+            "cursor",
+            "manifest_hash",
         ):
             if key in metadata:
                 safe_metadata[key] = self._support_safe_payload(metadata[key], key)
@@ -5919,6 +6052,21 @@ class CortexStore:
         return {
             **self._sync_device_from_row(row),
             "device_key_hash": row["device_key_hash"],
+        }
+
+    def _sync_receipt_from_row(self, row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "device_id": row["device_id"],
+            "cursor": row["cursor"],
+            "status": row["status"],
+            "manifest_hash": row["manifest_hash"],
+            "remote_ref": row["remote_ref"],
+            "error": row["error"],
+            "stats": self._json_or_empty(row["stats_json"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
         }
 
     def _upsert_import_session(self, conn, session: dict[str, Any]) -> None:

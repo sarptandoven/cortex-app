@@ -252,6 +252,21 @@ CREATE TABLE IF NOT EXISTS sync_devices (
   revoked_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS sync_receipts (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  device_id TEXT NOT NULL,
+  cursor TEXT NOT NULL,
+  status TEXT NOT NULL,
+  manifest_hash TEXT,
+  remote_ref TEXT,
+  error TEXT,
+  stats_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(device_id) REFERENCES sync_devices(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS capture_processing_state (
   capture_id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
@@ -365,6 +380,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_cursors_unique ON sync_cursors(user_i
 CREATE INDEX IF NOT EXISTS idx_sync_cursors_user_source ON sync_cursors(user_id, source, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sync_devices_user_updated ON sync_devices(user_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sync_devices_key_hash ON sync_devices(user_id, device_key_hash);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_receipts_device_cursor ON sync_receipts(user_id, device_id, cursor);
+CREATE INDEX IF NOT EXISTS idx_sync_receipts_device_updated ON sync_receipts(user_id, device_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_capture_processing_user_status ON capture_processing_state(user_id, extraction_status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memory_jobs_claim ON memory_jobs(status, run_at, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_memory_jobs_user_status ON memory_jobs(user_id, status, updated_at DESC);

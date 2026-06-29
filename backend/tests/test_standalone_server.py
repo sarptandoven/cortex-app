@@ -36,6 +36,7 @@ class FakeStore:
         self.source_account_calls: list[tuple[str, str]] = []
         self.sync_cursor_calls: list[tuple[str, str, str | None]] = []
         self.sync_device_calls: list[tuple[str, str]] = []
+        self.sync_receipt_calls: list[tuple[str, str, str, str]] = []
         self.sync_feed_calls: list[tuple[str, str, int, str, str, dict | None]] = []
         self.source_account_disconnected = False
         self.sync_device_revoked = False
@@ -425,6 +426,51 @@ class FakeStore:
         self.sync_device_revoked = True
         return self.list_sync_devices(user_id, include_revoked=True)[0]
 
+    def list_sync_receipts(self, user_id: str, device_id: str, *, limit: int = 50) -> list[dict]:
+        if device_id != "sdev_test":
+            return []
+        return [
+            {
+                "id": "srec_test",
+                "user_id": user_id,
+                "device_id": device_id,
+                "cursor": "evt_test",
+                "status": "uploaded",
+                "manifest_hash": "sha256:test",
+                "remote_ref": "local-sync://standalone/upload-1",
+                "error": None,
+                "stats": {"changes": 1},
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            }
+        ][:limit]
+
+    def record_sync_receipt(
+        self,
+        user_id: str,
+        device_id: str,
+        *,
+        cursor: str,
+        status: str = "accepted",
+        manifest_hash: str | None = None,
+        remote_ref: str | None = None,
+        error: str | None = None,
+        stats: dict | None = None,
+    ) -> dict:
+        if device_id != "sdev_test":
+            raise ValueError("sync device not found")
+        if self.sync_device_revoked:
+            raise ValueError("sync device is revoked")
+        self.sync_receipt_calls.append((user_id, device_id, cursor, status))
+        return self.list_sync_receipts(user_id, device_id)[0] | {
+            "cursor": cursor,
+            "status": status,
+            "manifest_hash": manifest_hash,
+            "remote_ref": remote_ref,
+            "error": error,
+            "stats": stats or {},
+        }
+
     def analyze_import_sources(self, paths: list[str], source_hint: str = "", max_records: int = 500) -> dict:
         self.import_analysis_calls.append((paths, source_hint, max_records))
         return {"records_found": 1, "sources": [{"source": "chatgpt", "count": 1}], "sample": [], "supported_sources": self.supported_import_sources()}
@@ -811,6 +857,26 @@ class StandaloneServerTests(unittest.TestCase):
             devices = json.loads(response.read().decode("utf-8"))
         self.assertEqual(devices["results"][0]["id"], "sdev_test")
         self.assertNotIn("device_key", devices["results"][0])
+
+        with self.post_json(
+            "/v1/sync/devices/sdev_test/receipts",
+            {
+                "cursor": "evt_test",
+                "status": "uploaded",
+                "manifest_hash": "sha256:test",
+                "remote_ref": "local-sync://standalone/upload-1",
+                "stats": {"changes": 1},
+            },
+        ) as response:
+            receipt = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(response.status, 200)
+        self.assertEqual(receipt["id"], "srec_test")
+        self.assertEqual(receipt["status"], "uploaded")
+        self.assertEqual(self.fake_store.sync_receipt_calls, [("local", "sdev_test", "evt_test", "uploaded")])
+
+        with self.get("/v1/sync/devices/sdev_test/receipts?limit=5") as response:
+            receipts = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(receipts["results"][0]["id"], "srec_test")
 
         with self.post_json(
             "/v1/sync-cursors",

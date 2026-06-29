@@ -82,6 +82,8 @@ POST   /v1/sync-cursors
 GET    /v1/sync/devices
 POST   /v1/sync/devices
 DELETE /v1/sync/devices/{device_id}
+GET    /v1/sync/devices/{device_id}/receipts
+POST   /v1/sync/devices/{device_id}/receipts
 GET    /v1/sync/changes
 GET    /v1/jobs
 GET    /v1/jobs/{job_id}
@@ -177,7 +179,7 @@ export CORTEX_REQUIRE_SCOPED_API_TOKENS=1
 
 With this enabled, the global `CORTEX_API_KEY` can no longer use `X-Cortex-User` to select another user. Register a user-owned REST token with `POST /v1/integrations/api-token`, then call REST endpoints with that `cxa_` token and the matching `X-Cortex-User` header. This keeps local single-user behavior unchanged while giving hosted deployments a safer boundary between account identity and memory shards.
 
-`GET /v1/sync/devices`, `POST /v1/sync/devices`, and `DELETE /v1/sync/devices/{device_id}` manage local sync device manifests. Registration returns a one-time `device_key` when no key or public key is supplied; later list/feed responses expose only a short fingerprint.
+`GET /v1/sync/devices`, `POST /v1/sync/devices`, and `DELETE /v1/sync/devices/{device_id}` manage local sync device manifests. Registration returns a one-time `device_key` when no key or public key is supplied; later list/feed responses expose only a short fingerprint. `GET/POST /v1/sync/devices/{device_id}/receipts` records whether a device accepted, uploaded, or failed a manifest cursor without storing raw payload content.
 
 `GET /v1/sync/changes` returns a cursorable, content-free local event feed for a user. It includes event IDs, safe object IDs or redacted hashes, whitelisted metadata, counts, optional device metadata when `device_id` is supplied, the active shard assignment, and a high watermark, but no raw capture text, memory bodies, imported source content, context packs, or vault files. If `CORTEX_SYNC_SIGNING_KEY` is set, device-bound responses include an HMAC-SHA256 signature over the manifest payload. This is a hosted-sync foundation for materializing shard state from local events; it is not yet a full sync protocol, conflict resolver, OAuth connector runtime, or remote backup service.
 
@@ -186,7 +188,7 @@ Scoped REST tokens enforce the same capability names used by Trust controls:
 - `read`: search, inbox, stats, graph, source history, source accounts, sync cursors, sync devices, settings reads, and review reads
 - `write`: captures, queued captures, imports, source account registration, sync cursor updates, approvals, archives, loop reuse, and settings changes
 - `export`: context packs, personal profiles, support bundles, and JSON/Markdown export
-- `maintenance`: diagnostics, reliability reports, jobs, repair/rebuild operations, backups, source account disconnect, sync device registration/revocation, and token registration
+- `maintenance`: diagnostics, reliability reports, jobs, repair/rebuild operations, backups, source account disconnect, sync device registration/revocation, sync receipt recording, and token registration
 - `destructive`: capture/memory/import deletion, backup deletion, full user-data deletion, and backup restore
 
 Token lifecycle endpoints return metadata only. They never expose token hashes, salts, or raw token values. Revocation sets `revoked_at`; revoked tokens no longer authenticate and are omitted from token lists unless `include_revoked=true` is passed.

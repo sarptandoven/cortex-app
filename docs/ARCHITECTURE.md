@@ -37,6 +37,7 @@ FastAPI backend
   /v1/source-accounts
   /v1/sync-cursors
   /v1/sync/devices
+  /v1/sync/devices/{id}/receipts
   /v1/sync/changes
   /v1/jobs
   /v1/maintenance/jobs/run
@@ -221,7 +222,7 @@ The simple product loop is backend-owned so the app and MCP agents agree on the 
 
 ### Sync Change Feed
 
-`GET /v1/sync/devices`, `POST /v1/sync/devices`, and `DELETE /v1/sync/devices/{device_id}` maintain local device manifests in the vault and SQLite index. Device registration can generate a one-time local key; stored/listed records expose only a fingerprint plus health cursors and revocation state.
+`GET /v1/sync/devices`, `POST /v1/sync/devices`, and `DELETE /v1/sync/devices/{device_id}` maintain local device manifests in the vault and SQLite index. Device registration can generate a one-time local key; stored/listed records expose only a fingerprint plus health cursors and revocation state. `GET/POST /v1/sync/devices/{device_id}/receipts` stores content-free manifest acknowledgements so future materializers can distinguish served cursors from accepted, uploaded, or failed cursors.
 
 `GET /v1/sync/changes` exposes the current user's audit-style memory events as a cursorable, content-free feed. The response includes event IDs, event/object types, safe internal object IDs or redacted hashes, whitelisted metadata, per-user counts, optional device metadata when `device_id` is supplied, the active shard assignment when available, and a high watermark. When `CORTEX_SYNC_SIGNING_KEY` is configured, device-bound responses include an HMAC-SHA256 signature over the returned manifest. It intentionally excludes capture content, memory text, imports, context packs, vault files, and support-only payloads.
 

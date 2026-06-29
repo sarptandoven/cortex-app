@@ -364,6 +364,23 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(refreshed["last_cursor"], feed["next_cursor"])
         self.assertIsNotNone(refreshed["last_seen_at"])
 
+        receipt = self.store.record_sync_receipt(
+            self.user_id,
+            device["id"],
+            cursor=feed["next_cursor"],
+            status="uploaded",
+            manifest_hash=feed["signature"]["payload_hash"],
+            remote_ref="local-sync://unit-test/upload-1",
+            stats={"changes": len(feed["changes"])},
+        )
+        self.assertTrue(receipt["id"].startswith("srec_"))
+        self.assertEqual(receipt["device_id"], device["id"])
+        self.assertEqual(receipt["cursor"], feed["next_cursor"])
+        self.assertEqual(receipt["status"], "uploaded")
+        self.assertEqual(receipt["stats"]["changes"], len(feed["changes"]))
+        receipts = self.store.list_sync_receipts(self.user_id, device["id"])
+        self.assertEqual([item["id"] for item in receipts], [receipt["id"]])
+
         revoked = self.store.revoke_sync_device(self.user_id, device["id"])
         self.assertEqual(revoked["id"], device["id"])
         self.assertIsNotNone(revoked["revoked_at"])
@@ -373,6 +390,8 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         revoked_feed = self.store.sync_change_feed(self.user_id, device_id=device["id"], signing_key="unit-secret")
         self.assertIn("device_revoked", revoked_feed["warnings"])
         self.assertFalse(revoked_feed["signature"]["configured"])
+        with self.assertRaisesRegex(ValueError, "revoked"):
+            self.store.record_sync_receipt(self.user_id, device["id"], cursor=revoked_feed["next_cursor"])
 
     def test_memory_quality_report_tracks_citations_review_and_layers(self) -> None:
         uncited = self.capture("We decided uncited quality memory should warn about missing source paths.")

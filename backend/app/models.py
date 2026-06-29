@@ -170,6 +170,33 @@ class SyncDeviceListResponse(BaseModel):
     results: list[SyncDeviceResponse]
 
 
+class SyncReceiptRequest(BaseModel):
+    cursor: str = Field(..., min_length=1, max_length=160)
+    status: str = Field(default="accepted", max_length=40)
+    manifest_hash: str | None = Field(default=None, max_length=256)
+    remote_ref: str | None = Field(default=None, max_length=500)
+    error: str | None = Field(default=None, max_length=500)
+    stats: dict[str, Any] | None = None
+
+
+class SyncReceiptResponse(BaseModel):
+    id: str
+    user_id: str
+    device_id: str
+    cursor: str
+    status: str
+    manifest_hash: str | None = None
+    remote_ref: str | None = None
+    error: str | None = None
+    stats: dict[str, Any]
+    created_at: str
+    updated_at: str
+
+
+class SyncReceiptListResponse(BaseModel):
+    results: list[SyncReceiptResponse]
+
+
 class SyncChangeFeedResponse(BaseModel):
     generated_at: str
     sync_contract: int
