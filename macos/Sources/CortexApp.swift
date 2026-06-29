@@ -1638,9 +1638,13 @@ final class AppState: ObservableObject {
     }
 
     var isLocalServiceReady: Bool {
-        guard diagnostics?.vault != nil else { return false }
+        guard let diagnostics, let vault = diagnostics.vault else { return false }
         let lowered = backendStatus.lowercased()
-        return !lowered.contains("failed")
+        let configuredVault = URL(fileURLWithPath: vaultPath).standardizedFileURL.path
+        let reportedVault = URL(fileURLWithPath: vault.path).standardizedFileURL.path
+        return diagnostics.status == "ok"
+            && reportedVault == configuredVault
+            && !lowered.contains("failed")
             && !lowered.contains("offline")
             && !lowered.contains("unavailable")
             && !lowered.contains("incompatible")
@@ -3378,6 +3382,7 @@ final class AppState: ObservableObject {
 
     private func notify(_ title: String, _ body: String) {
         let center = UNUserNotificationCenter.current()
+        let shouldRequestPermission = UserDefaults.standard.bool(forKey: "onboardingComplete.v1") && !showOnboarding
         center.getNotificationSettings { settings in
             let send = {
                 let content = UNMutableNotificationContent()
@@ -3389,6 +3394,7 @@ final class AppState: ObservableObject {
             case .authorized, .provisional, .ephemeral:
                 send()
             case .notDetermined:
+                guard shouldRequestPermission else { return }
                 center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
                     if granted {
                         send()
