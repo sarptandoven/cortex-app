@@ -140,7 +140,7 @@ def _extract_locally(raw_text: str, source: str) -> dict[str, Any]:
         if _looks_like_task(sentence):
             tasks.append(_task(sentence))
         elif _looks_like_negative(lower):
-            if _looks_like_user_preference_memory(lower) and not personal_allowed:
+            if not personal_allowed:
                 continue
             records.append(_record("negative", sentence, importance=4))
         elif _looks_like_decision(lower):
@@ -379,9 +379,12 @@ def _looks_like_user_preference_memory(lower: str) -> bool:
             "i dislike",
             "i hate",
             "avoid ",
+            "rejected",
             "do not ",
             "don't ",
             "never use",
+            "not helpful",
+            "bad fit",
         ]
     )
 

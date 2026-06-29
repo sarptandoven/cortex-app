@@ -127,6 +127,25 @@ My writing style is emoji-heavy and casual.
             self.assertNotIn(leaked, joined_content)
             self.assertNotIn(leaked, data["summary"])
 
+    def test_external_named_speaker_rejections_do_not_seed_negative_memory(self) -> None:
+        data = extract_local(
+            """Source: Slack
+Channel: launch
+
+--- Messages ---
+2026-06-29T13:00:00+00:00 Alex: Rejected splashy launch pages as a bad fit.
+2026-06-29T13:01:00+00:00 Alex: The animated onboarding prototype was not helpful.
+2026-06-29T13:02:00+00:00 Sarpt: We decided Project Atlas should keep the five-tab app structure.
+""",
+            "slack",
+        )
+        joined_content = "\n".join(record["content"] for record in data["records"])
+        self.assertFalse(any(record["kind"] == "negative" for record in data["records"]))
+        for leaked in ("splashy launch", "bad fit", "animated onboarding", "not helpful"):
+            self.assertNotIn(leaked, joined_content)
+            self.assertNotIn(leaked, data["summary"])
+        self.assertTrue(any(record["kind"] == "decision" and "five-tab app" in record["content"] for record in data["records"]))
+
     def test_external_email_sender_body_does_not_seed_personal_memories(self) -> None:
         data = extract_local(
             """Source: Email

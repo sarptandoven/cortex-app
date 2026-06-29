@@ -2535,14 +2535,15 @@ class CortexStore:
                     date = item.get("captured_at") or ""
                     topics_text = ", ".join(item.get("topics") or [])
                     suffix = f" Topics: {topics_text}." if topics_text else ""
-                    lines.append(f"- [{item['id']}] ({item['kind']}, {item['source']}, {date}) {self._redact_text(item['content'], redact)}{suffix}")
+                    citation = self._memory_citation(item)
+                    lines.append(f"- [{item['id']}] ({item['kind']}, {item['source']}, {date}) Source: {citation}. {self._redact_text(item['content'], redact)}{suffix}")
                 lines.append("")
         else:
             lines.append("- No active memories matched this focus.")
         lines.extend(["", "## Decisions", ""])
         if decisions:
             for item in decisions:
-                lines.append(f"- [{item['id']}] {self._redact_text(item['content'], redact)}")
+                lines.append(f"- [{item['id']}] Source: {self._memory_citation(item)}. {self._redact_text(item['content'], redact)}")
         else:
             lines.append("- No active decisions yet.")
         lines.extend(["", "## Open Loops", ""])
@@ -2813,7 +2814,13 @@ class CortexStore:
         date = item.get("captured_at") or "unknown date"
         topics = item.get("topics") or []
         topics_text = f" Topics: {', '.join(topics)}." if topics else ""
-        return f"- [{item['id']}] ({item['kind']}, {item['source']}, {date}) {item['content']}{topics_text}"
+        return f"- [{item['id']}] ({item['kind']}, {item['source']}, {date}) Source: {self._memory_citation(item)}. {item['content']}{topics_text}"
+
+    def _memory_citation(self, item: dict[str, Any]) -> str:
+        source_url = str(item.get("source_url") or "").strip()
+        if source_url:
+            return source_url
+        return str(item.get("source") or "unknown source")
 
     def _profile_memory_item(self, item: dict[str, Any], *, redact: bool) -> dict[str, Any]:
         return {

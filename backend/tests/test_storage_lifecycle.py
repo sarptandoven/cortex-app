@@ -271,6 +271,28 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertIn("token expired", gmail["warnings"])
         self.assertIn("token expired", gmail["next_action"])
 
+    def test_markdown_handoffs_include_source_urls(self) -> None:
+        capture = self.store.save_capture(
+            user_id=self.user_id,
+            content="We decided Project Atlas handoffs must include source locators for cited memory.",
+            source="notion",
+            source_url="notion://workspace/project-atlas#block-7",
+            title="Project Atlas decision",
+            extracted=extract_context(
+                "We decided Project Atlas handoffs must include source locators for cited memory.",
+                "notion",
+            ),
+        )
+        self.assertTrue(self.store.approve_capture(self.user_id, capture["capture_id"]))
+
+        context_pack = self.store.context_pack(self.user_id, query="Project Atlas", limit=5)
+        profile = self.store.personal_profile(self.user_id, query="Project Atlas", limit=5)
+        adaptation = self.store.agent_adaptation(self.user_id, query="Project Atlas", target="Claude", limit=5)
+
+        self.assertIn("notion://workspace/project-atlas#block-7", context_pack)
+        self.assertIn("notion://workspace/project-atlas#block-7", profile["markdown"])
+        self.assertIn("notion://workspace/project-atlas#block-7", adaptation["markdown"])
+
     def test_memory_quality_report_tracks_citations_review_and_layers(self) -> None:
         uncited = self.capture("We decided uncited quality memory should warn about missing source paths.")
         cited = self.store.save_capture(
