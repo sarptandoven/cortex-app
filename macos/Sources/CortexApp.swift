@@ -4797,7 +4797,7 @@ struct CaptureFileSection: View {
                     .foregroundColor(state.captureDropTargeted ? .accentColor : .secondary)
                 Text(state.captureDropTargeted ? "Drop to import" : "Drop exports, folders, or files here")
                     .font(.headline)
-                Text("ChatGPT, Claude, Notion, Gmail/email, Slack, Discord, Telegram, Keep, Messages, WhatsApp, bookmarks, calendar, contacts, LinkedIn, Twitter/X, docs, CSV, JSON, DOCX, RTF, and PDFs are imported locally.")
+                Text("ChatGPT, Claude, Notion, Gmail/email, Slack, Discord, Telegram, Keep, Google Chat, Teams, Zoom, Messages, WhatsApp, bookmarks, calendar, contacts, LinkedIn, Twitter/X, docs, CSV, JSON, DOCX, RTF, and PDFs are imported locally.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)

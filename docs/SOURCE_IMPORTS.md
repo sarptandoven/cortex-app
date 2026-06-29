@@ -16,6 +16,9 @@ These formats have dedicated parsers in `backend/app/source_ingest.py`:
 | Discord | Discord data package `messages.csv` | Parses timestamps, message contents, and attachments. |
 | Telegram | Telegram Desktop `result.json` | Parses chats and ordered messages. |
 | Google Keep | Google Takeout Keep JSON/HTML | Parses note titles, text, and checklist content. |
+| Google Chat / Hangouts | Google Takeout Chat/Hangouts `messages.json` | Parses conversation messages, creators, and timestamps. |
+| Microsoft Teams | Teams JSON or CSV message exports | Parses sender, created time, and HTML/plain message bodies. |
+| Zoom | `.vtt` and `.srt` transcripts | Preserves speaker lines and transcript text from meeting exports. |
 | Messages | User-selected copy of iMessage `chat.db` | Read-only import of recent message text by chat. This is only read when the user explicitly selects the database copy. |
 | WhatsApp | Text chat export | Parses common timestamped text exports as episodic message history. |
 | Browser bookmarks and research | Chrome, Edge, Safari, and Firefox Netscape bookmark HTML exports; Chrome/Edge Bookmarks JSON; Chrome/Firefox history SQLite | Preserves bookmark titles, URLs, and bounded browser history as research/source signals. |
@@ -105,12 +108,12 @@ The macOS Sources tab accepts files, folders, and export bundles. It first calls
 - Browser handoff and connected AI tools remain controlled by trust settings.
 - Large source imports enter the review pipeline before becoming trusted memory when review is enabled.
 - Re-importing the same source skips duplicate content instead of creating duplicate captures.
-- Parser guards avoid treating arbitrary linked HTML as bookmarks, skip Slack workspace metadata files, preserve rich Slack attachment/block text, prefer plain email bodies over duplicated HTML alternatives, skip email attachments, and preserve escaped calendar/contact line breaks.
+- Parser guards avoid treating arbitrary linked HTML as bookmarks, skip Slack workspace metadata files, preserve rich Slack attachment/block text, prefer plain email bodies over duplicated HTML alternatives, skip email attachments, preserve escaped calendar/contact line breaks, and keep native importer citation paths in `source_url`.
 
 ## Current Limits
 
-- Live OAuth/API connectors are not implemented yet for Gmail, Notion, Slack, Google Drive, Microsoft 365, Linear, Jira, GitHub, LinkedIn, Twitter/X, or browser history.
-- Notion, Google Drive, Microsoft 365, Apple Notes, and work-tool support currently depends on user-selected exports rather than direct cloud sync.
+- Live OAuth/API connectors are not implemented yet for Gmail, Notion, Slack, Google Chat, Google Drive, Microsoft 365, Teams, Linear, Jira, GitHub, LinkedIn, Twitter/X, Zoom, or browser history.
+- Notion, Google Drive, Microsoft 365, Teams, Apple Notes, Zoom, and work-tool support currently depends on user-selected exports rather than direct cloud sync.
 - PDF extraction depends on optional `pypdf`; otherwise the macOS fallback can extract PDFs selected through the app.
 - Very large exports are capped by record count and per-record character limits, then chunking/reranking should be improved in the next ingestion pass.
 - The importer normalizes data into candidate captures; extraction quality still depends on the local heuristic extractor or the configured LLM extractor.

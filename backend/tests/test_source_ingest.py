@@ -37,6 +37,7 @@ class SourceIngestTests(unittest.TestCase):
         self._write_twitter_export()
         self._write_linkedin_export()
         self._write_cloud_and_work_exports()
+        self._write_collaboration_exports()
 
         records = import_source_records([str(self.root)], max_records=50)
         sources = {record.source for record in records}
@@ -54,18 +55,26 @@ class SourceIngestTests(unittest.TestCase):
         self.assertIn("contacts", sources)
         self.assertIn("twitter-x", sources)
         self.assertIn("linkedin", sources)
+        self.assertIn("google-chat", sources)
+        self.assertIn("teams", sources)
+        self.assertIn("zoom", sources)
         self.assertIn("cloud-docs", sources)
         self.assertIn("apple-notes", sources)
         self.assertIn("jira", sources)
+        self.assertEqual([(record.source, record.title) for record in records if not record.source_url], [])
         self.assertTrue(any("Project Atlas" in record.content for record in records))
         self.assertTrue(any("concise technical answers" in record.content for record in records))
         self.assertTrue(any("Project Kestrel launch" in record.content for record in records))
         self.assertTrue(any("Ada Lovelace" in record.content for record in records))
         self.assertTrue(any("browser research" in record.content for record in records))
+        self.assertTrue(any("Google Chat launch plan" in record.content for record in records))
+        self.assertTrue(any("Teams migration note" in record.content for record in records))
+        self.assertTrue(any("Zoom transcript memory" in record.content for record in records))
 
         analysis = analyze_sources([str(self.root)])
         self.assertGreaterEqual(analysis["records_found"], 16)
         self.assertTrue(analysis["supported_sources"])
+        self.assertTrue(all(sample["source_url"] for sample in analysis["sample"]))
 
     def test_store_import_sources_queues_and_processes_records(self) -> None:
         self._write_chatgpt_export()
@@ -499,6 +508,48 @@ END:VCARD
         jira = self.root / "Jira"
         jira.mkdir()
         (jira / "issues.csv").write_text("Key,Summary,Status\nCX-1,Importer should support work tools,Done\n", encoding="utf-8")
+
+    def _write_collaboration_exports(self) -> None:
+        google_chat = self.root / "Takeout" / "Google Chat" / "Project Space"
+        google_chat.mkdir(parents=True)
+        (google_chat / "messages.json").write_text(
+            json.dumps(
+                {
+                    "messages": [
+                        {
+                            "created_date": "2026-06-29T10:00:00Z",
+                            "creator": {"name": "Ada Lovelace", "email": "ada@example.com"},
+                            "text": "Google Chat launch plan should be imported with citations.",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        teams = self.root / "Microsoft Teams" / "General"
+        teams.mkdir(parents=True)
+        (teams / "messages.json").write_text(
+            json.dumps(
+                {
+                    "messages": [
+                        {
+                            "createdDateTime": "2026-06-29T11:00:00Z",
+                            "from": {"user": {"displayName": "Grace Hopper"}},
+                            "body": {"content": "<p>Teams migration note should become retrievable memory.</p>"},
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        zoom = self.root / "Zoom"
+        zoom.mkdir()
+        (zoom / "Project Sync.vtt").write_text(
+            "WEBVTT\n\n1\n00:00:01.000 --> 00:00:04.000\nAda: Zoom transcript memory should keep speaker lines.\n",
+            encoding="utf-8",
+        )
 
 
 if __name__ == "__main__":

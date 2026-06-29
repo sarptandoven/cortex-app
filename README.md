@@ -11,7 +11,7 @@ Cortex is a local-first personal memory and adaptation layer. It turns approved 
 - User-owned local vault at `~/Library/Application Support/Cortex/Cortex.vault/`
 - SQLite FTS search with optional `sqlite-vec` and opt-in OpenAI embeddings
 - Capture surfaces for clipboard, quick notes, files, browser capture, and drop-folder import
-- Stage 1 source import with preview, duplicate-safe history, and batch undo for user-selected exports, folders, and files from ChatGPT, Claude, Notion, Gmail/email, Slack, Discord, Telegram, Google Keep, Messages, WhatsApp, bookmarks, calendars, contacts, LinkedIn, Twitter/X, docs, notes, and work-tool exports
+- Stage 1 source import with preview, duplicate-safe history, and batch undo for user-selected exports, folders, and files from ChatGPT, Claude, Notion, Gmail/email, Slack, Discord, Telegram, Google Keep, Google Chat, Teams, Zoom, Messages, WhatsApp, bookmarks, calendars, contacts, LinkedIn, Twitter/X, docs, notes, and work-tool exports
 - Five-screen product flow: Model, Sources, Review, Ask, Trust
 - Gated first-run setup for private vault, first source import, first memory review, first Ask/use action, and backup/trust decision
 - Review inbox for approve/archive, decisions, recommended actions, and open loops
