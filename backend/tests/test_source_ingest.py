@@ -78,6 +78,32 @@ class SourceIngestTests(unittest.TestCase):
         self.assertTrue(analysis["supported_sources"])
         self.assertTrue(all(sample["source_url"] for sample in analysis["sample"]))
 
+    def test_branded_exports_emit_canonical_import_source_ids(self) -> None:
+        self._write_gmail_mbox_zip()
+        gmail_records = import_source_records([str(self.root / "gmail")], source_hint="gmail", max_records=10)
+        self.assertTrue(gmail_records)
+        self.assertEqual({record.source for record in gmail_records}, {"email"})
+        self.assertTrue(all("service=email" in (record.source_url or "") for record in gmail_records))
+
+        drive = self.root / "Google Drive" / "Docs"
+        drive.mkdir(parents=True)
+        (drive / "Roadmap.md").write_text("Google Drive export should import as cloud docs.", encoding="utf-8")
+        local_docs = self.root / "local-docs"
+        local_docs.mkdir()
+        (local_docs / "Writing.md").write_text("Plain writing sample should import as docs.", encoding="utf-8")
+        github = self.root / "GitHub" / "Project Cortex"
+        github.mkdir(parents=True)
+        (github / "issues.csv").write_text("Title,Body\nMemory UI,GitHub import should be cited.\n", encoding="utf-8")
+
+        records = import_source_records([str(drive), str(local_docs), str(github)], max_records=10)
+        by_source = {record.source: record for record in records}
+        self.assertIn("cloud-docs", by_source)
+        self.assertIn("docs", by_source)
+        self.assertIn("github", by_source)
+        self.assertEqual(by_source["cloud-docs"].source_url, str(drive / "Roadmap.md"))
+        self.assertEqual(by_source["docs"].source_url, str(local_docs / "Writing.md"))
+        self.assertEqual(by_source["github"].source_url, str(github / "issues.csv"))
+
     def test_store_import_sources_queues_and_processes_records(self) -> None:
         self._write_chatgpt_export()
         db_path = self.root / "index.sqlite"

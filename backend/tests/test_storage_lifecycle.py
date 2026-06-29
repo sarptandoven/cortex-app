@@ -122,6 +122,27 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertIn("gmail", catalog)
         self.assertIn("notion", catalog)
         self.assertIn(catalog["chatgpt"]["import_status"], {"native", "generic", "export_only"})
+        self.assertNotIn("gemini", catalog)
+
+        advertised_source_ids = {source_id for item in catalog.values() for source_id in item["source_ids"]}
+        for source_id in ("chatgpt", "claude", "email", "docs", "cloud-docs", "notion", "slack", "calendar", "github"):
+            self.assertIn(source_id, advertised_source_ids)
+        self.assertEqual(catalog["gmail"]["source_ids"], ["email"])
+        self.assertEqual(catalog["gmail"]["export_status"], "native_via_email")
+        self.assertTrue(catalog["gmail"]["supports_import"])
+        self.assertIn("Gmail Takeout", catalog["gmail"]["import_label"])
+        self.assertIn("cloud-docs", catalog["google-drive"]["source_ids"])
+        self.assertIn("docs", catalog["google-drive"]["source_ids"])
+        self.assertEqual(catalog["google-drive"]["live_status"], "planned")
+        self.assertEqual(catalog["google-drive"]["export_status"], "generic")
+        self.assertTrue(catalog["github"]["formats"])
+
+        readiness = self.store.source_readiness_report(self.user_id)
+        gmail_readiness = next(item for item in readiness["sources"] if item["source"] == "gmail")
+        self.assertEqual(gmail_readiness["status"], "import_ready")
+        self.assertEqual(gmail_readiness["source_ids"], ["email"])
+        self.assertEqual(gmail_readiness["export_status"], "native_via_email")
+        self.assertIn("live OAuth sync is planned", gmail_readiness["next_action"])
 
         account = self.store.upsert_source_account(
             self.user_id,

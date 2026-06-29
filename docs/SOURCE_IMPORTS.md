@@ -107,7 +107,9 @@ GET /v1/source-accounts/catalog
 GET /v1/sources/readiness
 ```
 
-The catalog lists common services such as ChatGPT, Claude, Gmail, Notion, Google Drive, Microsoft 365, Slack, Google Chat, Teams, Discord, Telegram, Messages, WhatsApp, Calendar, Contacts, GitHub, Linear, Jira, Zoom, Browser Bookmarks, Readwise, Apple Notes, and Obsidian. Each entry includes current import readiness, future live-sync status, auth type, scopes, and supported export formats where known.
+The catalog lists common services such as ChatGPT, Claude, Gmail, email files, docs, cloud-doc exports, Notion, Google Drive, Google Keep, Microsoft 365, Slack, Google Chat, Teams, Discord, Telegram, Messages, WhatsApp, Calendar, Contacts, GitHub, Linear, Jira, Zoom, Browser Bookmarks, Readwise, LinkedIn, Twitter/X, Apple Notes, and Obsidian. Each entry includes current import readiness, future live-sync status, auth type, scopes, supported export formats, `export_status`, and the canonical `source_ids` that imported captures and memories will use.
+
+Branded live connectors can map to canonical import sources. For example, Gmail Takeout imports as `email`, Google Drive exports import as `cloud-docs` or `docs`, and GitHub CSV/JSON/project files import as `github` or `work-tools`. The Sources UI shows that mapping so planned OAuth connectors are not mistaken for already-connected live sync.
 
 `GET /v1/sources/readiness` returns the product-level source summary used by the macOS Sources view: import readiness, live connector state, connected account count, sync cursor health, review backlog, active memory count, citation coverage, warnings, and next actions. It is the main endpoint for deciding whether a user's life-data sources are ready for model adaptation.
 

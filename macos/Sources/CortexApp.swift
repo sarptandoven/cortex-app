@@ -67,9 +67,17 @@ struct SourceConnectorCatalogItem: Codable, Identifiable, Hashable {
     let scopes: [String]?
     let notes: String?
     let import_status: String?
+    let export_status: String?
+    let source_ids: [String]?
+    let source_aliases: [String]?
+    let import_label: String?
+    let supports_import: Bool?
     let formats: [String]?
 
     var isImportReady: Bool {
+        if supports_import == true {
+            return true
+        }
         let status = (import_status ?? "").lowercased()
         return ["native", "generic", "import_ready"].contains(status) || !(formats ?? []).isEmpty
     }
@@ -106,6 +114,11 @@ struct SourceReadinessItem: Codable, Identifiable, Hashable {
     let status: String
     let next_action: String
     let import_status: String
+    let export_status: String?
+    let source_ids: [String]?
+    let source_aliases: [String]?
+    let import_label: String?
+    let supports_import: Bool?
     let live_status: String
     let auth: String?
     let formats: [String]

@@ -11,7 +11,7 @@ import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from .database import connect, sqlite_vec_status
 from .embeddings import VECTOR_DIMENSIONS, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status
@@ -134,8 +134,11 @@ SOURCE_CONNECTOR_CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "claude", "name": "Claude", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Claude export conversations.json or chats.json."},
     {"id": "gmail", "name": "Gmail", "category": "Email", "auth": "oauth", "live_status": "planned", "scopes": ["gmail.readonly"], "notes": "Use Gmail Takeout mbox today; OAuth sync later."},
     {"id": "email", "name": "Email files", "category": "Email", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "mbox, eml, and emlx imports."},
+    {"id": "docs", "name": "Docs and writing", "category": "Docs", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Markdown, text, HTML, DOCX, RTF, and PDF imports."},
+    {"id": "cloud-docs", "name": "Cloud docs exports", "category": "Docs", "auth": "export", "live_status": "import_ready", "scopes": [], "notes": "Google Drive, OneDrive, and Dropbox Paper export files."},
     {"id": "notion", "name": "Notion", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["read_content"], "notes": "Markdown, CSV, and HTML exports today."},
     {"id": "google-drive", "name": "Google Drive", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["drive.readonly"], "notes": "Drive/Docs Takeout exports today."},
+    {"id": "google-keep", "name": "Google Keep", "category": "Notes", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Google Takeout Keep JSON and HTML exports."},
     {"id": "microsoft-365", "name": "Microsoft 365", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["Files.Read", "Mail.Read", "Calendars.Read"], "notes": "OneDrive, Outlook, and Office exports today."},
     {"id": "slack", "name": "Slack", "category": "Work chat", "auth": "oauth", "live_status": "planned", "scopes": ["channels:history", "groups:history", "im:history"], "notes": "Workspace export folders or zips today."},
     {"id": "google-chat", "name": "Google Chat", "category": "Work chat", "auth": "oauth", "live_status": "planned", "scopes": ["chat.messages.readonly"], "notes": "Google Takeout Chat/Hangouts exports today."},
@@ -146,15 +149,54 @@ SOURCE_CONNECTOR_CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "whatsapp", "name": "WhatsApp", "category": "Messages", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Text chat exports."},
     {"id": "calendar", "name": "Calendar", "category": "Calendar", "auth": "oauth", "live_status": "planned", "scopes": ["calendar.readonly"], "notes": "ICS exports today."},
     {"id": "contacts", "name": "Contacts", "category": "People", "auth": "oauth", "live_status": "planned", "scopes": ["contacts.readonly"], "notes": "VCF and contacts CSV exports today."},
+    {"id": "work-tools", "name": "Work tool exports", "category": "Work tools", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Issue, PR, task, and project CSV/JSON exports."},
     {"id": "github", "name": "GitHub", "category": "Work tools", "auth": "oauth", "live_status": "planned", "scopes": ["repo:read", "read:org"], "notes": "Issue/PR exports and project files today."},
+    {"id": "linkedin", "name": "LinkedIn", "category": "Work tools", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "LinkedIn data export messages and connections CSV."},
     {"id": "linear", "name": "Linear", "category": "Work tools", "auth": "oauth", "live_status": "planned", "scopes": ["read"], "notes": "CSV/JSON exports today."},
     {"id": "jira", "name": "Jira", "category": "Work tools", "auth": "oauth", "live_status": "planned", "scopes": ["read:jira-work"], "notes": "CSV exports today."},
     {"id": "zoom", "name": "Zoom", "category": "Meetings", "auth": "oauth", "live_status": "planned", "scopes": ["recording:read"], "notes": "VTT and SRT transcript imports today."},
     {"id": "browser-bookmarks", "name": "Browser bookmarks", "category": "Research", "auth": "local_file", "live_status": "import_ready", "scopes": [], "notes": "Bookmarks HTML/JSON and browser history SQLite."},
     {"id": "readwise", "name": "Readwise", "category": "Research", "auth": "api_token", "live_status": "planned", "scopes": ["export"], "notes": "CSV/JSON exports today."},
+    {"id": "knowledge-base", "name": "Knowledge base exports", "category": "Research", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Obsidian, Roam, Logseq, Readwise, Pocket, and Instapaper exports."},
+    {"id": "twitter-x", "name": "Twitter/X", "category": "Social", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Twitter/X archive tweets and direct messages."},
     {"id": "apple-notes", "name": "Apple Notes", "category": "Notes", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "HTML, RTF, PDF, Markdown, or text exports."},
     {"id": "obsidian", "name": "Obsidian", "category": "Notes", "auth": "local_folder", "live_status": "planned", "scopes": [], "notes": "Markdown vault imports today."},
 )
+
+
+SOURCE_CONNECTOR_IMPORT_METADATA: dict[str, dict[str, Any]] = {
+    "chatgpt": {"source_ids": ["chatgpt"], "export_status": "native", "import_label": "Native OpenAI export import"},
+    "claude": {"source_ids": ["claude"], "export_status": "native", "import_label": "Native Claude export import"},
+    "gmail": {"source_ids": ["email"], "source_aliases": ["gmail", "google-mail"], "export_status": "native_via_email", "import_status": "native", "import_label": "Gmail Takeout mbox imports as Email"},
+    "email": {"source_ids": ["email"], "export_status": "native", "import_label": "Email files import directly"},
+    "docs": {"source_ids": ["docs"], "export_status": "native", "import_label": "Docs and writing files import directly"},
+    "cloud-docs": {"source_ids": ["cloud-docs", "docs"], "export_status": "generic", "import_status": "generic", "import_label": "Cloud document exports import as Cloud docs"},
+    "notion": {"source_ids": ["notion"], "export_status": "native", "import_label": "Native Notion export import"},
+    "google-drive": {"source_ids": ["cloud-docs", "docs"], "export_status": "generic", "import_status": "generic", "import_label": "Google Drive Takeout imports as Cloud docs"},
+    "google-keep": {"source_ids": ["google-keep"], "export_status": "native", "import_label": "Native Google Keep Takeout import"},
+    "microsoft-365": {"source_ids": ["cloud-docs", "email", "calendar", "contacts"], "export_status": "generic", "import_status": "generic", "import_label": "Microsoft exports import as Cloud docs, Email, Calendar, and Contacts"},
+    "slack": {"source_ids": ["slack"], "export_status": "native", "import_label": "Native Slack workspace export import"},
+    "google-chat": {"source_ids": ["google-chat"], "export_status": "native", "import_label": "Native Google Chat Takeout import"},
+    "teams": {"source_ids": ["teams"], "export_status": "native", "import_label": "Native Teams JSON or CSV import"},
+    "discord": {"source_ids": ["discord"], "export_status": "native", "import_label": "Native Discord data package import"},
+    "telegram": {"source_ids": ["telegram"], "export_status": "native", "import_label": "Native Telegram Desktop export import"},
+    "messages": {"source_ids": ["messages"], "export_status": "native", "import_label": "Messages database import"},
+    "whatsapp": {"source_ids": ["whatsapp", "messages"], "export_status": "generic", "import_status": "generic", "import_label": "WhatsApp text exports import as Messages"},
+    "calendar": {"source_ids": ["calendar"], "export_status": "native", "import_label": "Native ICS calendar import"},
+    "contacts": {"source_ids": ["contacts"], "export_status": "native", "import_label": "Native contacts export import"},
+    "work-tools": {"source_ids": ["work-tools", "github", "linear", "jira"], "export_status": "generic", "import_status": "generic", "import_label": "Work tool exports import from CSV, JSON, and project files"},
+    "github": {"source_ids": ["github", "work-tools"], "export_status": "generic", "import_status": "generic", "import_label": "GitHub CSV, JSON, and project files import as Work tools"},
+    "linkedin": {"source_ids": ["linkedin"], "export_status": "native", "import_label": "Native LinkedIn data export import"},
+    "linear": {"source_ids": ["linear", "work-tools"], "export_status": "generic", "import_status": "generic", "import_label": "Linear exports import as Work tools"},
+    "jira": {"source_ids": ["jira", "work-tools"], "export_status": "generic", "import_status": "generic", "import_label": "Jira exports import as Work tools"},
+    "zoom": {"source_ids": ["zoom"], "export_status": "native", "import_label": "Native Zoom transcript import"},
+    "browser-bookmarks": {"source_ids": ["browser-bookmarks", "browser-history"], "export_status": "native", "import_label": "Native bookmarks and browser history import"},
+    "readwise": {"source_ids": ["readwise", "knowledge-base"], "export_status": "generic", "import_status": "generic", "import_label": "Readwise exports import as Knowledge bases"},
+    "knowledge-base": {"source_ids": ["knowledge-base", "obsidian", "logseq", "roam", "readwise", "pocket", "instapaper", "raindrop"], "export_status": "generic", "import_status": "generic", "import_label": "Knowledge base exports import from local files"},
+    "twitter-x": {"source_ids": ["twitter-x"], "export_status": "native", "import_label": "Native Twitter/X archive import"},
+    "apple-notes": {"source_ids": ["apple-notes", "docs"], "export_status": "generic", "import_status": "generic", "import_label": "Apple Notes exports import as Notes and writing"},
+    "obsidian": {"source_ids": ["obsidian", "knowledge-base"], "export_status": "generic", "import_status": "generic", "import_label": "Obsidian vault imports as Knowledge bases"},
+}
 
 
 SENSITIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -246,6 +288,29 @@ def _normalize_source_policies(value: Any) -> dict[str, dict[str, Any]]:
             "review_required": review_required,
         }
     return policies
+
+
+def _unique_catalog_strings(values: Iterable[Any]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _default_import_label(import_status: str, source_name: str) -> str:
+    status = str(import_status or "").lower()
+    if status == "native":
+        return f"{source_name} export imports directly"
+    if status in {"generic", "import_ready"}:
+        return f"{source_name} can be imported from files or folders"
+    if status == "export_only":
+        return f"{source_name} uses export files today"
+    return "Import exported files when available"
 
 
 def _normalize_identity_aliases(value: Any) -> list[str]:
@@ -813,12 +878,28 @@ class CortexStore:
         catalog: list[dict[str, Any]] = []
         for item in SOURCE_CONNECTOR_CATALOG:
             source_id = item["id"]
-            import_info = import_sources.get(source_id)
+            import_metadata = SOURCE_CONNECTOR_IMPORT_METADATA.get(source_id, {})
+            source_ids = _unique_catalog_strings(import_metadata.get("source_ids") or [source_id])
+            source_aliases = _unique_catalog_strings(import_metadata.get("source_aliases") or [])
+            import_infos = [import_sources[source] for source in source_ids if source in import_sources]
+            import_info = import_sources.get(source_id) or (import_infos[0] if import_infos else None)
+            import_status = str(import_metadata.get("import_status") or (import_info or {}).get("status") or "")
+            if not import_status:
+                import_status = "generic" if item["live_status"] in {"planned", "import_ready"} else "export_only"
+            formats = _unique_catalog_strings(format for info in import_infos for format in info.get("formats", []))
+            if import_info and not formats:
+                formats = _unique_catalog_strings(import_info.get("formats", []))
+            export_status = str(import_metadata.get("export_status") or import_status)
             catalog.append(
                 {
                     **item,
-                    "import_status": import_info["status"] if import_info else "generic" if item["live_status"] in {"planned", "import_ready"} else "export_only",
-                    "formats": import_info["formats"] if import_info else [],
+                    "import_status": import_status,
+                    "export_status": export_status,
+                    "source_ids": source_ids,
+                    "source_aliases": source_aliases,
+                    "import_label": import_metadata.get("import_label") or _default_import_label(import_status, item.get("name") or source_id),
+                    "supports_import": import_status in {"native", "generic", "import_ready"} or bool(formats),
+                    "formats": formats,
                 }
             )
         return catalog
@@ -858,7 +939,7 @@ class CortexStore:
         rows: list[dict[str, Any]] = []
         catalog_ids = {item["id"] for item in catalog}
         extra_sources = sorted(set(captures_by_source) - catalog_ids)
-        for item in [*catalog, *({"id": source, "name": source, "category": "Imported", "auth": "import", "live_status": "imported", "scopes": [], "notes": "", "import_status": "native", "formats": []} for source in extra_sources)]:
+        for item in [*catalog, *({"id": source, "name": source, "category": "Imported", "auth": "import", "live_status": "imported", "scopes": [], "notes": "", "import_status": "native", "export_status": "imported", "source_ids": [source], "source_aliases": [], "import_label": "Imported source data", "supports_import": True, "formats": []} for source in extra_sources)]:
             source = item["id"]
             source_accounts = accounts_by_source.get(source, [])
             active_accounts = [account for account in source_accounts if not account.get("disconnected_at")]
@@ -888,7 +969,7 @@ class CortexStore:
             )
             has_attention = bool(account_errors or cursor_errors or revoked_or_disconnected)
             import_status = str(item.get("import_status") or "")
-            supports_import = import_status in {"native", "generic", "import_ready"} or bool(item.get("formats"))
+            supports_import = bool(item.get("supports_import")) or import_status in {"native", "generic", "import_ready"} or bool(item.get("formats"))
             live_status = str(item.get("live_status") or "")
             has_completed_sync = any(cursor.get("last_completed_at") for cursor in source_cursors) or any(account.get("last_sync_at") for account in active_accounts)
             if has_attention:
@@ -908,7 +989,9 @@ class CortexStore:
                 next_action = "Imported data is available for retrieval."
             elif supports_import:
                 status = "import_ready"
-                next_action = "Import an export file or folder for this source."
+                next_action = str(item.get("import_label") or "Import an export file or folder for this source.")
+                if live_status == "planned":
+                    next_action = f"{next_action}; live OAuth sync is planned."
             elif live_status == "planned":
                 status = "planned"
                 next_action = "Live OAuth is planned; use exports today."
@@ -925,6 +1008,11 @@ class CortexStore:
                     "status": status,
                     "next_action": next_action,
                     "import_status": import_status,
+                    "export_status": item.get("export_status") or import_status,
+                    "source_ids": item.get("source_ids") or [source],
+                    "source_aliases": item.get("source_aliases") or [],
+                    "import_label": item.get("import_label") or "",
+                    "supports_import": supports_import,
                     "live_status": live_status,
                     "auth": item.get("auth"),
                     "formats": item.get("formats") or [],

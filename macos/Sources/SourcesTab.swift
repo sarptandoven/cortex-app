@@ -24,6 +24,9 @@ struct SourcesTab: View {
         }
         .task {
             await state.loadTrust()
+            if state.sourceConnectorCatalog.isEmpty {
+                await state.loadSourceConnectivity()
+            }
             await state.loadImportHistory()
         }
     }
@@ -117,6 +120,9 @@ struct SourcesHeroSection: View {
             Button {
                 Task {
                     await state.loadTrust()
+                    if state.sourceConnectorCatalog.isEmpty {
+                        await state.loadSourceConnectivity()
+                    }
                     await state.loadImportHistory()
                 }
             } label: {
@@ -131,13 +137,42 @@ struct SourcesImportSection: View {
     @Binding var isSupportedSourcesExpanded: Bool
     let handleDrop: ([NSItemProvider]) -> Bool
 
-    private let supportedGroups = [
-        SupportedSourceGroup(title: "AI chats", items: ["ChatGPT", "Claude", "Gemini"]),
-        SupportedSourceGroup(title: "Workspaces", items: ["Notion", "Google Drive", "Docs", "Slack", "Teams"]),
-        SupportedSourceGroup(title: "Messages", items: ["Email", "Messages", "WhatsApp", "Discord", "Telegram"]),
-        SupportedSourceGroup(title: "Personal data", items: ["Notes", "Calendar", "Contacts", "Bookmarks"]),
-        SupportedSourceGroup(title: "Files", items: ["PDF", "DOCX", "RTF", "Markdown", "CSV", "JSON"])
-    ]
+    private var supportedGroups: [SupportedSourceGroup] {
+        var readinessBySource: [String: SourceReadinessItem] = [:]
+        for source in state.sourceReadinessReport?.sources ?? [] {
+            readinessBySource[source.source] = source
+        }
+        let grouped = Dictionary(grouping: state.sourceConnectorCatalog) { item in
+            item.category ?? "Other"
+        }
+        return grouped.map { title, items in
+            SupportedSourceGroup(
+                title: title,
+                items: items
+                    .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                    .map { SupportedSourceDisplayItem(catalog: $0, readiness: readinessBySource[$0.id]) }
+            )
+        }
+        .sorted { lhs, rhs in
+            sourceCategoryRank(lhs.title) < sourceCategoryRank(rhs.title)
+        }
+    }
+
+    private func sourceCategoryRank(_ title: String) -> String {
+        let ranks = [
+            "AI chats": "00",
+            "Email": "01",
+            "Docs": "02",
+            "Notes": "03",
+            "Work chat": "04",
+            "Messages": "05",
+            "Calendar": "06",
+            "People": "07",
+            "Work tools": "08",
+            "Research": "09",
+        ]
+        return "\(ranks[title] ?? "99")-\(title)"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -198,7 +233,7 @@ struct SourcesImportSection: View {
             }
 
             DisclosureGroup("Supported source types", isExpanded: $isSupportedSourcesExpanded) {
-                SupportedSourceGroupsSection(groups: supportedGroups)
+                SupportedSourceGroupsSection(groups: supportedGroups, isLoading: state.sourceConnectorCatalog.isEmpty)
                     .padding(.top, 8)
             }
         }
@@ -210,30 +245,145 @@ struct SourcesImportSection: View {
 
 struct SupportedSourceGroup {
     let title: String
-    let items: [String]
+    let items: [SupportedSourceDisplayItem]
+}
+
+struct SupportedSourceDisplayItem: Identifiable {
+    let id: String
+    let name: String
+    let status: String
+    let statusTitle: String
+    let detail: String
+    let sourceIds: [String]
+    let formats: [String]
+
+    init(catalog: SourceConnectorCatalogItem, readiness: SourceReadinessItem?) {
+        id = catalog.id
+        name = catalog.name
+        sourceIds = catalog.source_ids ?? [catalog.id]
+        formats = catalog.formats ?? []
+        if let readiness {
+            status = readiness.status
+            statusTitle = readiness.statusTitle
+            detail = readiness.next_action
+        } else if catalog.isImportReady && catalog.isLivePlanned {
+            status = "planned_import"
+            statusTitle = "Export now"
+            detail = "\(catalog.import_label ?? "Import exported files today"); live sync is planned."
+        } else if catalog.isImportReady {
+            status = "import_ready"
+            statusTitle = "Import ready"
+            detail = catalog.import_label ?? "Import exported files or folders."
+        } else if catalog.isLivePlanned {
+            status = "planned"
+            statusTitle = "Live planned"
+            detail = catalog.notes ?? "Live connection is planned."
+        } else if (catalog.live_status ?? "").lowercased() == "export_only" {
+            status = "export_only"
+            statusTitle = "Export"
+            detail = catalog.import_label ?? catalog.notes ?? "Use an exported file."
+        } else {
+            status = catalog.live_status ?? "available"
+            statusTitle = "Available"
+            detail = catalog.notes ?? "Add this source when it contains useful context."
+        }
+    }
+
+    var statusColor: Color {
+        switch status {
+        case "needs_attention": return .orange
+        case "needs_review": return .yellow
+        case "synced", "connected": return .green
+        case "imported", "import_ready", "planned_import", "export_only": return .accentColor
+        case "planned": return .secondary
+        default: return .secondary
+        }
+    }
+
+    var systemImage: String {
+        switch status {
+        case "needs_attention": return "exclamationmark.triangle.fill"
+        case "needs_review": return "tray.full.fill"
+        case "synced": return "checkmark.seal.fill"
+        case "connected": return "link.circle.fill"
+        case "imported": return "tray.and.arrow.down.fill"
+        case "import_ready", "planned_import", "export_only": return "square.and.arrow.down.fill"
+        case "planned": return "calendar.badge.clock"
+        default: return "circle"
+        }
+    }
+
+    var sourceSummary: String {
+        let ids = sourceIds.prefix(3).joined(separator: ", ")
+        if sourceIds.count > 3 {
+            return "\(ids), +\(sourceIds.count - 3)"
+        }
+        return ids
+    }
 }
 
 struct SupportedSourceGroupsSection: View {
     let groups: [SupportedSourceGroup]
+    let isLoading: Bool
 
     var body: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], alignment: .leading, spacing: 8) {
-            ForEach(groups, id: \.title) { group in
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(group.title)
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                    Text(group.items.joined(separator: " · "))
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+        if groups.isEmpty {
+            QuietState(
+                title: isLoading ? "Loading source catalog" : "Source catalog unavailable",
+                detail: isLoading ? "Cortex is checking supported imports." : "Refresh Sources after the local backend is healthy."
+            )
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(groups, id: \.title) { group in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(group.title)
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 240), spacing: 8)], alignment: .leading, spacing: 8) {
+                            ForEach(group.items) { item in
+                                SupportedSourceCatalogRow(item: item)
+                            }
+                        }
+                    }
                 }
-                .padding(9)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(nsColor: .textBackgroundColor))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
             }
         }
+    }
+}
+
+struct SupportedSourceCatalogRow: View {
+    let item: SupportedSourceDisplayItem
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: item.systemImage)
+                .foregroundColor(item.statusColor)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(item.name)
+                        .font(.callout)
+                        .fontWeight(.medium)
+                        .lineLimit(1)
+                    Text(item.statusTitle)
+                        .font(.caption2)
+                        .foregroundColor(item.statusColor)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                Text(item.detail)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                if !item.sourceSummary.isEmpty {
+                    Text("Imports as \(item.sourceSummary)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary.opacity(0.85))
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 4)
     }
 }

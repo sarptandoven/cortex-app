@@ -171,6 +171,24 @@ SUPPORTED_SOURCES: list[dict[str, Any]] = [
         "status": "generic",
     },
     {
+        "id": "github",
+        "name": "GitHub",
+        "formats": ["GitHub issue, pull request, project, CSV, JSON, Markdown, and text exports"],
+        "status": "generic",
+    },
+    {
+        "id": "linear",
+        "name": "Linear",
+        "formats": ["Linear CSV and JSON exports"],
+        "status": "generic",
+    },
+    {
+        "id": "jira",
+        "name": "Jira",
+        "formats": ["Jira CSV exports"],
+        "status": "generic",
+    },
+    {
         "id": "knowledge-base",
         "name": "Knowledge bases",
         "formats": ["Obsidian", "Roam", "Logseq", "Readwise, Pocket, Instapaper CSV/JSON"],
