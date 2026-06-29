@@ -136,7 +136,7 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["seeded_memories"], len(MEMORY_LAYERS))
-        self.assertEqual(result["noisy_import_memories"], 2)
+        self.assertEqual(result["noisy_import_memories"], 3)
         self.assertEqual(set(result["seeded_layers"]), MEMORY_LAYERS)
         self.assertEqual(len(result["checks"]), len(RETRIEVAL_CASES) + 2)
         self.assertEqual(result["metrics"]["overall"]["case_count"], len(RETRIEVAL_CASES) + 2)

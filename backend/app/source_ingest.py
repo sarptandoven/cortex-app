@@ -11,6 +11,7 @@ import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from email import policy
+from email.utils import parseaddr
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
@@ -1405,9 +1406,30 @@ def _email_record(message: email.message.EmailMessage, display_path: str, hint: 
         lines.append(f"To: {recipients}")
     if date:
         lines.append(f"Date: {date}")
-    lines.extend(["", body])
+    sender_label = _email_sender_label(sender)
+    if sender_label:
+        lines.extend(["", "--- Body ---"])
+        for raw_line in body.splitlines():
+            line = raw_line.strip()
+            if line:
+                lines.append(f"{sender_label}: {line}")
+            else:
+                lines.append("")
+    else:
+        lines.extend(["", body])
     source = hint if hint and hint not in {"gmail", "email"} else "email"
     return SourceRecord(source, subject, "\n".join(lines), source_url=display_path, metadata={"asset": display_path, "service": "Email"})
+
+
+def _email_sender_label(sender: str) -> str:
+    name, address = parseaddr(sender)
+    label = name or address.split("@", 1)[0] or "Sender"
+    label = re.sub(r"[^A-Za-z0-9 _.'-]+", " ", label).strip()
+    if not label:
+        return "Sender"
+    if label[:1].islower():
+        label = label[:1].upper() + label[1:]
+    return label[:40]
 
 
 def _email_body(message: email.message.EmailMessage) -> str:

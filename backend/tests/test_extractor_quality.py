@@ -20,6 +20,9 @@ user: On June 29, 2026, we launched Project Atlas.
 """
 
 
+PERSONAL_MEMORY_KINDS = {"preference", "style", "negative"}
+
+
 def extract_local(raw_text: str, source: str = "unit-test") -> dict:
     with patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
         return extract_context(raw_text, source)
@@ -64,6 +67,85 @@ assistant: Never use vague summaries in generated answers.
         self.assertTrue(any(record["kind"] == "preference" and "line-aware parsing" in record["content"] for record in records))
         self.assertTrue(any(record["kind"] == "negative" and "importer boilerplate" in record["content"] for record in records))
         self.assertNotIn("vague summaries", joined_content)
+
+    def test_timestamped_named_speakers_do_not_become_user_preferences(self) -> None:
+        data = extract_local(
+            """Source: Slack
+Channel: general
+
+--- Messages ---
+2026-06-29T10:00:00+00:00 Alex: I prefer long onboarding checklists for you.
+2026-06-29T10:01:00+00:00 Alex: My writing style is verbose and salesy.
+2026-06-29T10:02:00+00:00 Sarpt: We decided Project Atlas should keep five clear tabs.
+""",
+            "slack",
+        )
+        records = data["records"]
+        joined_content = "\n".join(record["content"] for record in records)
+
+        self.assertNotIn("long onboarding checklists", joined_content)
+        self.assertNotIn("verbose and salesy", joined_content)
+        self.assertTrue(any(record["kind"] == "decision" and "five clear tabs" in record["content"] for record in records))
+        self.assertFalse(any(record["kind"] in {"preference", "style", "negative"} for record in records))
+
+    def test_chatgpt_claude_assistant_alias_turns_do_not_seed_personal_memories(self) -> None:
+        for source, label in (("chatgpt", "ChatGPT"), ("claude", "Claude")):
+            with self.subTest(source=source):
+                data = extract_local(
+                    f"""Source: {label}
+Conversation: Assistant-only import
+
+--- Messages ---
+2026-06-29T10:00:00+00:00 {label}: I prefer verbose onboarding checklists.
+My writing style should be expansive and warm.
+2026-06-29T10:02:00+00:00 {label}: Never use terse implementation notes.
+""",
+                    source,
+                )
+                joined_content = "\n".join(record["content"] for record in data["records"])
+                self.assertFalse(any(record["kind"] in PERSONAL_MEMORY_KINDS for record in data["records"]))
+                for leaked in ("verbose onboarding", "expansive and warm", "terse implementation"):
+                    self.assertNotIn(leaked, joined_content)
+                    self.assertNotIn(leaked, data["summary"])
+
+    def test_slack_lowercase_named_speakers_and_continuations_do_not_seed_personal_memories(self) -> None:
+        data = extract_local(
+            """Source: Slack
+Channel: general
+File: slack/general/2026-06-29.json
+
+--- Messages ---
+2026-06-29T12:40:00+00:00 dana: I prefer async standups.
+My writing style is emoji-heavy and casual.
+2026-06-29T12:41:00+00:00 priya: Never use threads for launch decisions.
+""",
+            "slack",
+        )
+        joined_content = "\n".join(record["content"] for record in data["records"])
+        self.assertFalse(any(record["kind"] in PERSONAL_MEMORY_KINDS for record in data["records"]))
+        for leaked in ("async standups", "emoji-heavy", "threads for launch"):
+            self.assertNotIn(leaked, joined_content)
+            self.assertNotIn(leaked, data["summary"])
+
+    def test_external_email_sender_body_does_not_seed_personal_memories(self) -> None:
+        data = extract_local(
+            """Source: Email
+Subject: Partner preferences
+From: Alex Partner <alex@external.example>
+To: sarpt@example.com
+Date: Mon, 29 Jun 2026 10:00:00 +0000
+
+I prefer weekly PDF status reports.
+My writing style is formal and legalistic.
+Never use Slack for contract approvals.
+""",
+            "email",
+        )
+        joined_content = "\n".join(record["content"] for record in data["records"])
+        self.assertFalse(any(record["kind"] in PERSONAL_MEMORY_KINDS for record in data["records"]))
+        for leaked in ("weekly PDF", "formal and legalistic", "contract approvals"):
+            self.assertNotIn(leaked, joined_content)
+            self.assertNotIn(leaked, data["summary"])
 
     def test_simple_absolute_dates_are_normalized_to_occurred_at(self) -> None:
         data = extract_local(

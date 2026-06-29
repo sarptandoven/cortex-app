@@ -304,6 +304,115 @@ class SourceIngestTests(unittest.TestCase):
         self.assertEqual(result["saved"], 1)
         self.assertTrue(store.search("test-user", "migration plan", limit=5))
 
+    def test_external_email_sender_preferences_are_not_user_preferences(self) -> None:
+        folder = self.root / "external-mail"
+        folder.mkdir()
+        message = EmailMessage()
+        message["Subject"] = "Outside onboarding advice"
+        message["From"] = "Alex Advisor <alex@example.com>"
+        message["To"] = "Sarpt <sarpt@example.com>"
+        message["Date"] = "Mon, 29 Jun 2026 10:00:00 +0000"
+        message.set_content(
+            "I prefer long onboarding checklists for you.\n"
+            "My writing style is verbose and salesy.\n"
+            "We decided Project Atlas should keep five clear tabs."
+        )
+        (folder / "outside.eml").write_bytes(message.as_bytes())
+
+        db_path = self.root / "index.sqlite"
+        init_db(db_path)
+        store = CortexStore(db_path, self.root / "vault")
+        result = store.import_sources(
+            user_id="test-user",
+            paths=[str(folder)],
+            processing="sync",
+            max_records=10,
+        )
+
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["saved"], 1)
+        self.assertFalse(store.search("test-user", "long onboarding checklists", limit=5))
+        decision_results = store.search("test-user", "Project Atlas five clear tabs", limit=5)
+        self.assertTrue(decision_results)
+        self.assertTrue(all(item["source_url"] for item in decision_results))
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute("SELECT kind, layer, content, source_url FROM memories").fetchall()
+        finally:
+            conn.close()
+        joined = "\n".join(row["content"] for row in rows)
+        self.assertNotIn("long onboarding checklists", joined)
+        self.assertNotIn("verbose and salesy", joined)
+        self.assertTrue(all(row["source_url"] for row in rows))
+        self.assertFalse(any(row["kind"] in {"preference", "style", "negative"} for row in rows))
+
+    def test_key_source_imports_preserve_citations_through_search(self) -> None:
+        self._write_chatgpt_export()
+        self._write_claude_export()
+        self._write_slack_export()
+        self._write_email_export()
+        self._write_cloud_and_work_exports()
+        docs = self.root / "docs"
+        docs.mkdir()
+        (docs / "Source Citation.md").write_text(
+            "Docs import should preserve a source citation smoke test for retrieval.",
+            encoding="utf-8",
+        )
+
+        db_path = self.root / "index.sqlite"
+        init_db(db_path)
+        store = CortexStore(db_path, self.root / "vault")
+        paths = [
+            self.root / "chatgpt",
+            self.root / "claude",
+            self.root / "slack",
+            self.root / "mail",
+            self.root / "Apple Notes",
+            self.root / "Google Drive",
+            docs,
+        ]
+        result = store.import_sources(
+            user_id="test-user",
+            paths=[str(path) for path in paths],
+            processing="sync",
+            max_records=30,
+        )
+
+        self.assertEqual(result["failed"], 0)
+        self.assertTrue(all(record["source_url"] for record in result["records"]))
+        detail = store.get_import("test-user", result["import_id"])
+        self.assertIsNotNone(detail)
+        expected_queries = {
+            "chatgpt": "local-first memory",
+            "claude": "concise technical answers",
+            "slack": "Cortex importer this week",
+            "email": "migration plan approved memory candidates",
+            "apple-notes": "concrete language",
+            "cloud-docs": "Cloud docs model context",
+            "docs": "source citation smoke test",
+        }
+        imported_sources = {record["source"] for record in detail["records"] if record["source_url"]}
+        self.assertTrue(set(expected_queries).issubset(imported_sources))
+        self.assertTrue(all(record["source_url"] for record in detail["records"]))
+        self.assertTrue(all(capture["source_url"] for capture in detail["captures"]))
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            memory_rows = conn.execute("SELECT source, source_url FROM memories").fetchall()
+        finally:
+            conn.close()
+        memory_sources = {row["source"] for row in memory_rows if row["source_url"]}
+        self.assertTrue(set(expected_queries).issubset(memory_sources))
+
+        for source, query in expected_queries.items():
+            with self.subTest(source=source):
+                hits = [item for item in store.search("test-user", query, limit=8) if item["source"] == source]
+                self.assertTrue(hits)
+                self.assertTrue(all(item["source_url"] for item in hits))
+
     def test_generic_file_import_preserves_source_url_for_citations(self) -> None:
         docs = self.root / "docs"
         docs.mkdir()

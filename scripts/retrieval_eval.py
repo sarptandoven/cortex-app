@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from email.message import EmailMessage
 import json
 import sys
 import tempfile
@@ -14,7 +15,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.app.database import init_db
-from backend.app.extractor import extract_context
 from backend.app.storage import CortexStore, MEMORY_LAYERS
 
 
@@ -198,18 +198,6 @@ RETRIEVAL_CASES: tuple[RetrievalCase, ...] = (
     ),
 )
 
-NOISY_IMPORT_TEXT = """Source: ChatGPT
-Conversation: Project Atlas memory UI
-Created: 2026-06-29T12:00:00+00:00
-
---- Messages ---
-assistant: I prefer splashy launch pages with lots of marketing copy.
-user: We decided Project Atlas should keep the memory UI to five tabs: Model, Sources, Review, Ask, Trust.
-assistant: I will remember that.
-user: On June 29, 2026, Project Atlas passed the noisy import retrieval eval.
-"""
-
-
 def seed_representative_memories(store: CortexStore, user_id: str = USER_ID) -> list[dict[str, Any]]:
     timestamp = SEED_TIMESTAMP
     content = "\n".join(memory.content for memory in SEED_MEMORIES)
@@ -245,25 +233,79 @@ def seed_representative_memories(store: CortexStore, user_id: str = USER_ID) -> 
 
 
 def seed_noisy_import_memories(store: CortexStore, user_id: str = USER_ID) -> list[dict[str, Any]]:
-    extracted = extract_context(NOISY_IMPORT_TEXT, "chatgpt")
-    result = store.save_capture(
-        user_id=user_id,
-        content=NOISY_IMPORT_TEXT,
-        source="chatgpt",
-        source_url="/tmp/project-atlas-chatgpt-export.json",
-        title="Project Atlas memory UI",
-        extracted=extracted,
-    )
-    memories = result["memories"]
+    with tempfile.TemporaryDirectory(prefix="cortex-retrieval-import-") as tmp:
+        root = Path(tmp)
+        _write_eval_chatgpt_export(root / "chatgpt")
+        _write_eval_external_email(root / "mail")
+        result = store.import_sources(
+            user_id=user_id,
+            paths=[str(root / "chatgpt"), str(root / "mail")],
+            processing="sync",
+            max_records=10,
+        )
+        if result["failed"]:
+            raise AssertionError(f"Noisy import eval failed to import records: {result['errors']}")
+    memories = [memory for memory in store.recent(user_id, limit=40) if memory["source"] in {"chatgpt", "email"}]
     joined = "\n".join(memory["content"] for memory in memories)
     for boilerplate in ("Source:", "Conversation:", "Created:", "--- Messages ---"):
         if boilerplate in joined:
             raise AssertionError(f"Noisy import leaked boilerplate into memory content: {boilerplate}")
     if "splashy launch pages" in joined:
         raise AssertionError("Noisy import treated assistant preference as user memory")
+    if "long onboarding checklists" in joined or "verbose and salesy" in joined:
+        raise AssertionError("Noisy import treated external email sender preference/style as user memory")
     if not all(memory.get("source_url") for memory in memories):
         raise AssertionError("Noisy import memories did not preserve source_url citations")
     return memories
+
+
+def _write_eval_chatgpt_export(folder: Path) -> None:
+    folder.mkdir(parents=True)
+    payload = [
+        {
+            "title": "Project Atlas memory UI",
+            "create_time": 1_782_739_200,
+            "mapping": {
+                "assistant_pref": {
+                    "message": {
+                        "author": {"role": "assistant"},
+                        "create_time": 1_782_739_201,
+                        "content": {"parts": ["I prefer splashy launch pages with lots of marketing copy."]},
+                    }
+                },
+                "decision": {
+                    "message": {
+                        "author": {"role": "user"},
+                        "create_time": 1_782_739_202,
+                        "content": {"parts": ["We decided Project Atlas should keep the memory UI to five tabs: Model, Sources, Review, Ask, Trust."]},
+                    }
+                },
+                "event": {
+                    "message": {
+                        "author": {"role": "user"},
+                        "create_time": 1_782_739_203,
+                        "content": {"parts": ["On June 29, 2026, Project Atlas passed the noisy import retrieval eval."]},
+                    }
+                },
+            },
+        }
+    ]
+    (folder / "conversations.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _write_eval_external_email(folder: Path) -> None:
+    folder.mkdir(parents=True)
+    message = EmailMessage()
+    message["Subject"] = "External advice"
+    message["From"] = "Alex Advisor <alex@example.com>"
+    message["To"] = "cortex@example.com"
+    message["Date"] = "Mon, 29 Jun 2026 10:00:00 +0000"
+    message.set_content(
+        "I prefer long onboarding checklists for you.\n"
+        "My writing style is verbose and salesy.\n"
+        "We decided Project Atlas should preserve external email citations."
+    )
+    (folder / "external.eml").write_bytes(message.as_bytes())
 
 
 def _metrics_for_results(expected_id: str, result_ids: list[str], k_values: tuple[int, ...]) -> dict[str, float]:

@@ -19,7 +19,8 @@ def now_iso() -> str:
 MEMORY_LAYERS = {"semantic", "episodic", "style", "decision", "preference", "negative"}
 USER_AUTHORED_ROLES = {"user", "human", "me", "self"}
 ASSISTANT_ROLES = {"assistant", "model", "bot", "tool", "system", "chatgpt", "claude"}
-KNOWN_TURN_ROLES = USER_AUTHORED_ROLES | ASSISTANT_ROLES
+NAMED_SPEAKER_ROLE = "speaker"
+KNOWN_TURN_ROLES = USER_AUTHORED_ROLES | ASSISTANT_ROLES | {NAMED_SPEAKER_ROLE}
 BOILERPLATE_PREFIXES = {
     "archive file",
     "channel",
@@ -118,7 +119,7 @@ Use stable IDs and keep each memory atomic. Return JSON only."""
 
 
 def _extract_locally(raw_text: str, source: str) -> dict[str, Any]:
-    candidates = _sentence_candidates(raw_text)
+    candidates = _sentence_candidates(raw_text, source)
     has_known_turns = any(candidate.get("role") in KNOWN_TURN_ROLES for candidate in candidates)
     memory_candidates = [
         candidate
@@ -205,13 +206,29 @@ def _normalize_extraction(data: dict[str, Any], raw_text: str, source: str) -> d
     return data
 
 
-def _sentence_candidates(text: str) -> list[dict[str, Any]]:
+def _sentence_candidates(text: str, source: str = "unknown") -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     current_role: str | None = None
+    email_source = _normalize_source_label(source) in {"email", "gmail"}
+    saw_email_header = False
+    saw_email_from = False
     for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         line = raw_line.strip(" -•\t")
         if not line:
+            if email_source and saw_email_header and saw_email_from:
+                current_role = NAMED_SPEAKER_ROLE
             continue
+        email_header = re.match(r"^(?P<label>[A-Za-z][A-Za-z0-9 _-]{0,40})\s*:\s*(?P<text>.*)$", line)
+        if email_header:
+            header_label = email_header.group("label").strip().lower()
+            header_text = email_header.group("text").strip().lower()
+            if header_label == "source" and header_text == "email":
+                email_source = True
+                saw_email_header = True
+            elif email_source and header_label in {"subject", "from", "to", "date", "cc", "bcc", "reply-to"}:
+                saw_email_header = True
+                if header_label == "from" and header_text:
+                    saw_email_from = True
         if _is_boilerplate_line(line):
             continue
         role, payload, speaker_present = _parse_role_line(line)
@@ -231,13 +248,18 @@ def _sentence_candidates(text: str) -> list[dict[str, Any]]:
 
 def _parse_role_line(line: str) -> tuple[str | None, str, bool]:
     timestamped = re.match(
-        r"^(?:\[[^\]]+\]|[0-9T:.,+/\- ]{8,40})\s+(?P<role>me|user|human|assistant|bot|model)\s*:\s*(?P<text>.+)$",
+        r"^(?:\[[^\]]+\]|[0-9T:.,+/\- ]{8,40})\s+(?P<label>[A-Za-z][A-Za-z0-9 _.'-]{0,40})\s*:\s*(?P<text>.+)$",
         line,
         flags=re.IGNORECASE,
     )
     if timestamped:
-        role = _normalize_role(timestamped.group("role"))
-        return role, timestamped.group("text").strip(), role is not None
+        label = timestamped.group("label").strip()
+        role = _normalize_role(label)
+        if role:
+            return role, timestamped.group("text").strip(), True
+        if _looks_like_named_speaker(label, allow_lowercase=True):
+            return NAMED_SPEAKER_ROLE, timestamped.group("text").strip(), True
+        return None, line, False
 
     match = re.match(r"^(?P<label>[A-Za-z][A-Za-z0-9 _.'-]{0,40})\s*:\s*(?P<text>.+)$", line)
     if not match:
@@ -247,7 +269,9 @@ def _parse_role_line(line: str) -> tuple[str | None, str, bool]:
     role = _normalize_role(label)
     if role:
         return role, match.group("text").strip(), True
-    return None, line, _looks_like_named_speaker(label)
+    if _looks_like_named_speaker(label):
+        return NAMED_SPEAKER_ROLE, match.group("text").strip(), True
+    return None, line, False
 
 
 def _normalize_role(value: str) -> str | None:
@@ -268,7 +292,7 @@ def _normalize_role(value: str) -> str | None:
     return aliases.get(role)
 
 
-def _looks_like_named_speaker(label: str) -> bool:
+def _looks_like_named_speaker(label: str, allow_lowercase: bool = False) -> bool:
     cleaned = label.strip()
     lowered = cleaned.lower()
     if lowered in NON_SPEAKER_LABELS:
@@ -278,7 +302,13 @@ def _looks_like_named_speaker(label: str) -> bool:
     words = cleaned.split()
     if not words or len(words) > 4:
         return False
+    if allow_lowercase:
+        return all(re.match(r"^[A-Za-z][A-Za-z0-9_.'-]*$", word) for word in words)
     return cleaned[:1].isupper()
+
+
+def _normalize_source_label(value: str) -> str:
+    return re.sub(r"[^a-z0-9-]+", "-", str(value or "").strip().lower()).strip("-")
 
 
 def _is_boilerplate_line(line: str) -> bool:
@@ -305,6 +335,8 @@ def _allows_user_authored_memory(candidate: dict[str, Any], has_known_turns: boo
     if role in USER_AUTHORED_ROLES:
         return True
     if role in ASSISTANT_ROLES:
+        return False
+    if role == NAMED_SPEAKER_ROLE:
         return False
     if candidate.get("speaker_present"):
         return False

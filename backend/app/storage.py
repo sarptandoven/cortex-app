@@ -1094,6 +1094,7 @@ class CortexStore:
                         "capture_id": None,
                         "status": "duplicate",
                         "source": record.source,
+                        "source_url": record.source_url,
                         "title": record.title,
                     })
                     with connect(self.db_path) as conn:
@@ -1125,6 +1126,7 @@ class CortexStore:
                         "capture_id": result["capture_id"],
                         "status": "saved",
                         "source": record.source,
+                        "source_url": record.source_url,
                         "title": record.title,
                         "memories": len(result.get("memories") or []),
                     })
@@ -1150,6 +1152,7 @@ class CortexStore:
                         "capture_id": result["capture_id"],
                         "status": "queued",
                         "source": record.source,
+                        "source_url": record.source_url,
                         "title": record.title,
                         "jobs": jobs,
                     })
@@ -1159,7 +1162,7 @@ class CortexStore:
                             (result["capture_id"], job_id, now_iso(), user_id, record_id),
                         )
             except Exception as exc:
-                error = {"source": record.source, "title": record.title, "error": str(exc)}
+                error = {"source": record.source, "source_url": record.source_url, "title": record.title, "error": str(exc)}
                 errors.append(error)
                 with connect(self.db_path) as conn:
                     conn.execute(
