@@ -1789,9 +1789,12 @@ class CortexStore:
                   SUM(CASE WHEN c.review_status = 'archived' THEN 1 ELSE 0 END) AS archived,
                   COUNT(DISTINCT CASE WHEN m.status = 'active' THEN m.id END) AS active_memories,
                   COUNT(DISTINCT CASE WHEN m.status = 'active' AND COALESCE(m.source_url, '') != '' THEN m.id END) AS cited_memories,
+                  COUNT(DISTINCT CASE WHEN cps.extraction_status IN ('queued', 'running') THEN c.id END) AS processing,
+                  COUNT(DISTINCT CASE WHEN cps.extraction_status = 'failed' THEN c.id END) AS processing_failed,
                   MAX(c.captured_at) AS last_imported_at
                 FROM captures c
                 LEFT JOIN memories m ON m.capture_id = c.id AND m.user_id = c.user_id
+                LEFT JOIN capture_processing_state cps ON cps.capture_id = c.id AND cps.user_id = c.user_id
                 WHERE c.user_id = ?
                 GROUP BY c.source
                 """,
@@ -1820,6 +1823,8 @@ class CortexStore:
             captures = int(stats.get("captures") or 0)
             active_memories = int(stats.get("active_memories") or 0)
             cited_memories = int(stats.get("cited_memories") or 0)
+            processing = int(stats.get("processing") or 0)
+            processing_failed = int(stats.get("processing_failed") or 0)
             account_errors = [
                 account.get("last_error")
                 for account in source_accounts
@@ -1830,13 +1835,14 @@ class CortexStore:
                 for cursor in source_cursors
                 if cursor.get("last_error")
             ]
+            processing_errors = [f"{processing_failed} source record{'s' if processing_failed != 1 else ''} failed processing"] if processing_failed else []
             revoked_or_disconnected = any(
                 account.get("disconnected_at")
                 or str(account.get("auth_state") or "").lower() in {"revoked", "expired", "error"}
                 or str(account.get("status") or "").lower() in {"error", "failed", "disconnected"}
                 for account in source_accounts
             )
-            has_attention = bool(account_errors or cursor_errors or revoked_or_disconnected)
+            has_attention = bool(account_errors or cursor_errors or processing_errors or revoked_or_disconnected)
             import_status = str(item.get("import_status") or "")
             supports_import = bool(item.get("supports_import")) or import_status in {"native", "generic", "import_ready"} or bool(item.get("formats"))
             live_status = str(item.get("live_status") or "")
@@ -1856,7 +1862,10 @@ class CortexStore:
                 show_in_primary_ui = bool(item.get("show_in_primary_ui"))
             if has_attention:
                 status = "needs_attention"
-                next_action = (account_errors + cursor_errors)[0] if account_errors or cursor_errors else "Reconnect or review this source account."
+                next_action = (account_errors + cursor_errors + processing_errors)[0] if account_errors or cursor_errors or processing_errors else "Reconnect or review this source account."
+            elif processing:
+                status = "syncing"
+                next_action = f"Processing {processing} source record{'s' if processing != 1 else ''} before Review and Ask use them."
             elif pending:
                 status = "needs_review"
                 next_action = f"Review {pending} pending capture{'s' if pending != 1 else ''}."
@@ -1916,25 +1925,28 @@ class CortexStore:
                     "pending": pending,
                     "approved": approved,
                     "archived": archived,
+                    "processing": processing,
+                    "processing_failed": processing_failed,
                     "active_memories": active_memories,
                     "citation_coverage": _ratio(cited_memories, active_memories),
                     "last_seen_at": last_seen,
                     "policy": policies.get(source) or {"mode": "default", "allow_ai_context": True, "review_required": False},
-                    "warnings": [value for value in [*account_errors, *cursor_errors] if value],
+                    "warnings": [value for value in [*account_errors, *cursor_errors, *processing_errors] if value],
                 }
             )
 
         status_rank = {
             "needs_attention": 0,
-            "needs_review": 1,
-            "import_ready": 2,
-            "connected": 3,
-            "synced": 4,
-            "imported": 5,
-            "planned": 6,
-            "advanced_fallback": 7,
-            "connector_needed": 8,
-            "available": 9,
+            "syncing": 1,
+            "needs_review": 2,
+            "import_ready": 3,
+            "connected": 4,
+            "synced": 5,
+            "imported": 6,
+            "planned": 7,
+            "advanced_fallback": 8,
+            "connector_needed": 9,
+            "available": 10,
         }
         rows.sort(key=lambda row: (status_rank.get(row["status"], 9), -int(row["active_memories"]), row["name"]))
         summary = {
@@ -1948,6 +1960,9 @@ class CortexStore:
             "connector_needed": sum(1 for row in rows if row["beta_status"] == "needs-connector"),
             "connected": sum(int(row["accounts"]) for row in rows),
             "synced": sum(1 for row in rows if row["status"] == "synced"),
+            "syncing": sum(1 for row in rows if row["status"] == "syncing"),
+            "processing": sum(int(row["processing"]) for row in rows),
+            "processing_failed": sum(int(row["processing_failed"]) for row in rows),
             "sources_with_data": sum(1 for row in rows if row["captures"] or row["active_memories"]),
             "needs_review": sum(1 for row in rows if row["status"] == "needs_review"),
             "needs_attention": sum(1 for row in rows if row["status"] == "needs_attention"),
@@ -1956,6 +1971,8 @@ class CortexStore:
         recommendations: list[str] = []
         if summary["needs_attention"]:
             recommendations.append("Resolve source account or sync errors before relying on those memories.")
+        if summary["syncing"]:
+            recommendations.append("Wait for source processing to finish before judging Review and Ask coverage.")
         if summary["needs_review"]:
             recommendations.append("Review pending source captures so they can become trusted model memory.")
         if not summary["sources_with_data"]:

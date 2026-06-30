@@ -1320,6 +1320,53 @@ Never use [[Templates/Marketing]] boilerplate in memory.
         else:
             self.assertEqual(status["processing"]["embedding_status"], "not_available")
 
+    def test_source_readiness_reports_syncing_until_async_source_records_materialize(self) -> None:
+        account = self.store.upsert_source_account(
+            self.user_id,
+            source="obsidian",
+            account_label="Demo Vault",
+            account_identifier="vault-demo",
+            connection_type="local_folder",
+            status="connected",
+            auth_state="healthy",
+        )
+        synced = self.store.sync_source_account_records(
+            self.user_id,
+            account["id"],
+            records=[
+                {
+                    "content": "Decision: Cortex async source readiness should wait for materialized memory.",
+                    "title": "Async readiness",
+                    "external_id": "readiness-note",
+                }
+            ],
+            processing="async",
+        )
+        self.assertEqual(synced["status"], "complete")
+        self.assertEqual(synced["queued"], 1)
+        self.assertIsNotNone(synced["cursor"]["last_completed_at"])
+
+        queued_report = self.store.source_readiness_report(self.user_id)
+        queued_obsidian = next(source for source in queued_report["sources"] if source["source"] == "obsidian")
+        self.assertEqual(queued_obsidian["status"], "syncing")
+        self.assertEqual(queued_obsidian["processing"], 1)
+        self.assertEqual(queued_obsidian["pending"], 1)
+        self.assertEqual(queued_report["summary"]["syncing"], 1)
+        self.assertEqual(queued_report["summary"]["processing"], 1)
+        self.assertIn("Processing 1 source record", queued_obsidian["next_action"])
+        self.assertTrue(any("source processing" in item for item in queued_report["recommendations"]))
+
+        ran = self.store.run_due_jobs(self.user_id, limit=10)
+        self.assertGreaterEqual(ran["processed"], 1)
+
+        materialized_report = self.store.source_readiness_report(self.user_id)
+        materialized_obsidian = next(source for source in materialized_report["sources"] if source["source"] == "obsidian")
+        self.assertEqual(materialized_obsidian["status"], "needs_review")
+        self.assertEqual(materialized_obsidian["processing"], 0)
+        self.assertEqual(materialized_obsidian["pending"], 1)
+        self.assertEqual(materialized_report["summary"]["syncing"], 0)
+        self.assertEqual(materialized_report["summary"]["processing"], 0)
+
     def test_async_source_record_update_replaces_stale_memory(self) -> None:
         account = self.store.upsert_source_account(
             self.user_id,
