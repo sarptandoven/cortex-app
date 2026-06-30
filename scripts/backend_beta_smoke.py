@@ -97,7 +97,7 @@ def write_obsidian_fixture(tmp: Path, marker: str) -> Path:
                     "review approval, cited Ask answers, markdown export, and Trust controls before beta invites."
                 ),
                 "I prefer concise technical answers when debugging Cortex beta issues.",
-                "Action: follow up with Mira about the beta invite checklist.",
+                f"Action: follow up with Mira about the beta invite checklist for smoke marker {marker}.",
                 f"The beta smoke redaction fixture includes password=supersecret123 and {DUMMY_OPENAI_KEY}.",
             ]
         ),
