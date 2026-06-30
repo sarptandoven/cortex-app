@@ -2898,12 +2898,6 @@ final class AppState: ObservableObject {
         status = "Setup will reopen until finished; reopen it from Trust anytime"
     }
 
-    func skipOnboarding() {
-        UserDefaults.standard.set(true, forKey: "onboardingComplete.v1")
-        showOnboarding = false
-        status = "Setup skipped; start from Sources when you are ready"
-    }
-
     func showOnboardingAgain() {
         UserDefaults.standard.set(false, forKey: "onboardingComplete.v1")
         setOnboardingStep(.privateVault)

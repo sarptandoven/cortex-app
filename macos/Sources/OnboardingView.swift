@@ -85,12 +85,6 @@ struct OnboardingView: View {
             } label: {
                 Label("Finish Later", systemImage: "xmark")
             }
-            Button {
-                state.skipOnboarding()
-            } label: {
-                Label("Skip Setup", systemImage: "forward.end")
-            }
-            .foregroundColor(.secondary)
         }
         .padding(22)
     }
