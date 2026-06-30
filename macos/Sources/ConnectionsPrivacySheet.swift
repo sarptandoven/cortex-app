@@ -217,8 +217,8 @@ private struct ConnectionsPrivacyOverview: View {
         } label: {
             ConnectionsDisclosureLabel(
                 systemImage: "slider.horizontal.3",
-                title: "Advanced",
-                detail: "Backup, tool access, audit, and diagnostics"
+                title: "Troubleshooting",
+                detail: "Backup, audit, and repair tools when needed"
             )
         }
         .padding(14)

@@ -99,19 +99,19 @@ struct SourceConnectorStatusCard: View {
             return "The last folder did not produce usable Markdown notes. Choose a notes folder with real content."
         }
         if connected {
-            return "Cortex can resync these notes and send new memory to Review."
+            return "Cortex keeps these notes synced and sends new memory to Review."
         }
         return "Choose a notes folder once. Cortex reads Markdown locally and keeps citations attached."
     }
 
     private var primaryButtonTitle: String {
         if needsContent { return "Choose notes" }
-        return connected ? "Sync notes" : "Connect notes"
+        return connected ? "Check status" : "Connect notes"
     }
 
     private var primaryButtonIcon: String {
         if needsContent { return "folder.badge.questionmark" }
-        return connected ? "arrow.clockwise" : "folder.badge.plus"
+        return connected ? "checkmark.seal" : "folder.badge.plus"
     }
 }
 

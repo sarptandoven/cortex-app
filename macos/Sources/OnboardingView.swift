@@ -260,9 +260,12 @@ struct OnboardingFirstSourceStep: View {
                 systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "folder.badge.plus",
                 isPrimary: true,
                 status: state.onboardingHasSource ? "Synced" : (state.hasConnectedObsidianVault ? "Connected" : "Local"),
-                buttonTitle: state.hasConnectedObsidianVault ? "Sync notes" : "Connect notes"
+                buttonTitle: state.hasConnectedObsidianVault ? "Check status" : "Connect notes"
             ) {
-                if let connector = obsidianConnector {
+                if state.hasConnectedObsidianVault {
+                    Task { await state.loadSourceConnectivity() }
+                    state.status = "Checking notes"
+                } else if let connector = obsidianConnector {
                     state.connectLocalNotesFolder(connector)
                 } else {
                     Task { await state.loadSourceConnectivity() }
@@ -312,7 +315,7 @@ struct OnboardingFirstSourceStep: View {
             return "Review has memory from a connected source."
         }
         if state.onboardingHasConnectedMemoryLayer {
-            return "Sync notes so useful memory appears in Review."
+            return "Cortex is checking notes so useful memory appears in Review."
         }
         return "Connect notes from Home when ready."
     }
@@ -516,9 +519,7 @@ struct OnboardingAskUseStep: View {
 
             if !state.searchResults.isEmpty {
                 ForEach(state.searchResults.prefix(2)) { item in
-                    MemoryCard(item: item) {
-                        state.deleteMemory(item)
-                    }
+                    MemoryCard(item: item)
                 }
             } else {
                 QuietState(title: askEmptyTitle, detail: askEmptyDetail)

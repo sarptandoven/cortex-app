@@ -3156,7 +3156,7 @@ final class AppState: ObservableObject {
 
         Local Cortex service:
         Base URL: \(endpoint)
-        Token: use Copy setup details from Connection details when the app requires pasted setup.
+        Token: use Copy manual setup from Troubleshooting setup only if this app asks for pasted setup.
 
         Assistant rule:
         Search Cortex memory before asking the user to repeat project, person, decision, or open-loop context. Prefer cited memory search or agent adaptation when another app needs approved personal context.
@@ -3934,11 +3934,11 @@ struct CortexView: View {
                 Button {
                     state.openConnectionsPrivacy(statusMessage: "Connections")
                 } label: {
-                    Image(systemName: "lock.shield")
-                        .font(.system(size: 17, weight: .semibold))
-                        .frame(width: 44, height: 40)
+                    Label("Connections", systemImage: "lock.shield")
+                        .font(.callout.weight(.semibold))
+                        .frame(minHeight: 40)
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.bordered)
                 .controlSize(.large)
                 .help("Connections & Privacy")
                 CortexLayerStatusPill(state: state)
@@ -4097,7 +4097,7 @@ struct IntegrationCenterView: View {
             summary
             quickActions
             if !compact {
-                setupRecoveryActions
+                troubleshootingSetupActions
             }
             ForEach(IntegrationCategory.allCases, id: \.self) { category in
                 let categoryIntegrations = integrations(in: category)
@@ -4158,17 +4158,17 @@ struct IntegrationCenterView: View {
         }
     }
 
-    private var setupRecoveryActions: some View {
-        DisclosureGroup("Connection details") {
+    private var troubleshootingSetupActions: some View {
+        DisclosureGroup("Troubleshooting setup") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Use this only when a supported local tool asks for pasted setup details.")
+                Text("Most tools connect automatically. Use these only when a local AI app asks for manual setup details.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 HStack {
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy setup details", systemImage: "doc.on.doc")
+                        Label("Copy manual setup", systemImage: "doc.on.doc")
                     }
                     Spacer()
                 }
@@ -4470,24 +4470,6 @@ struct IntegrationCard: View {
                         .frame(minHeight: 40)
                 }
                 .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-
-                Menu {
-                    Button {
-                        state.copyMCPConfig(for: integration)
-                    } label: {
-                        Label("Copy setup details", systemImage: "doc.on.doc")
-                    }
-                    Button {
-                        state.openIntegrationConfig(integration)
-                    } label: {
-                        Label("Open tool settings", systemImage: "folder")
-                    }
-                } label: {
-                    Label("More", systemImage: "ellipsis.circle")
-                        .frame(minHeight: 40)
-                }
-                .menuStyle(.borderlessButton)
                 .controlSize(.large)
             } else {
                 Button {
@@ -5284,8 +5266,8 @@ struct TrustPolicySection: View {
                             isOn: $state.appSettings.allow_agent_writes
                         )
                         TrustToggleRow(
-                            title: "Let connected AI prepare optional files",
-                            detail: "Advanced workflows can prepare redacted profile files or adaptation instructions.",
+                            title: "Let connected AI export memory",
+                            detail: "Connected AI tools can request redacted exports only when this is on.",
                             systemImage: "square.and.arrow.up",
                             isOn: $state.appSettings.allow_agent_exports
                         )
@@ -5708,7 +5690,7 @@ struct SettingsOnboardingSection: View {
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy setup details", systemImage: "doc.on.doc")
+                        Label("Copy manual setup", systemImage: "doc.on.doc")
                             .frame(minHeight: 40)
                     }
                     .controlSize(.large)
@@ -6166,12 +6148,12 @@ struct SettingsStatsSection: View {
                 Button {
                     state.openExport(format: "json")
                 } label: {
-                    Label("Save JSON", systemImage: "curlybraces")
+                    Label("Export JSON", systemImage: "curlybraces")
                 }
                 Button {
                     state.openExport(format: "markdown")
                 } label: {
-                    Label("Save Markdown", systemImage: "doc.text")
+                    Label("Export Markdown", systemImage: "doc.text")
                 }
                 Spacer()
             }
@@ -6189,13 +6171,6 @@ struct SettingsPrivacySection: View {
             Text("Cortex does not monitor the clipboard, record the screen, capture ambient activity, or send background data.")
                 .font(.body)
                 .foregroundColor(.secondary)
-            DisclosureGroup("Optional keyboard shortcut") {
-                Toggle("Enable Cmd Shift V review shortcut", isOn: $state.globalClipboardHotkeyEnabled)
-                    .onChange(of: state.globalClipboardHotkeyEnabled) { _ in
-                        state.saveHotkeyPreference()
-                    }
-                    .padding(.top, 6)
-            }
         }
     }
 }
