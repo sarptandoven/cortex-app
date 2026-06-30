@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import unittest
 import zipfile
+from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from unittest.mock import patch
@@ -852,6 +853,7 @@ class SourceIngestTests(unittest.TestCase):
         self._write_email_export()
         self._write_notion_export()
         self._write_cloud_and_work_exports()
+        self._write_imessage_db()
         github = self.root / "GitHub" / "Project Cortex"
         github.mkdir(parents=True)
         (github / "issues.csv").write_text(
@@ -877,6 +879,7 @@ class SourceIngestTests(unittest.TestCase):
             self.root / "Apple Notes",
             self.root / "Google Drive",
             self.root / "GitHub",
+            self.root / "Messages",
             docs,
         ]
         result = store.import_sources(
@@ -899,6 +902,7 @@ class SourceIngestTests(unittest.TestCase):
             "apple-notes": "concrete language",
             "cloud-docs": "Cloud docs model context",
             "github": "GitHub import should preserve source paths",
+            "messages": "iMessage source citation coverage",
             "docs": "source citation smoke test",
         }
         imported_sources = {record["source"] for record in detail["records"] if record["source_url"]}
@@ -915,6 +919,7 @@ class SourceIngestTests(unittest.TestCase):
         self.assertTrue(any("service=notion" in url and "page=Roadmap" in url for url in source_urls["notion"]))
         self.assertTrue(any("service=cloud-docs" in url and "provider=google-drive" in url and "document=Strategy" in url for url in source_urls["cloud-docs"]))
         self.assertTrue(any("service=github" in url and "repository=Project%20Cortex" in url and "file=issues.csv" in url for url in source_urls["github"]))
+        self.assertTrue(any("service=messages" in url and "chat=Project%20Cortex" in url and "file=chat.db" in url for url in source_urls["messages"]))
         self.assertTrue(any("service=apple-notes" in url and "file=Voice.html" in url for url in source_urls["apple-notes"]))
 
         conn = sqlite3.connect(db_path)
@@ -1398,6 +1403,28 @@ Gmail import should preserve important project mail.
         folder.mkdir()
         text = "[6/29/26, 10:00] Alex: WhatsApp exports should become episodic memory.\n"
         (folder / "WhatsApp Chat with Alex.txt").write_text(text, encoding="utf-8")
+
+    def _write_imessage_db(self) -> None:
+        folder = self.root / "Messages"
+        folder.mkdir()
+        db_path = folder / "chat.db"
+        timestamp = int((datetime(2026, 6, 29, 10, 0, tzinfo=timezone.utc).timestamp() - 978_307_200) * 1_000_000_000)
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("CREATE TABLE message (ROWID INTEGER PRIMARY KEY, text TEXT, date INTEGER, is_from_me INTEGER, handle_id INTEGER)")
+            conn.execute("CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT)")
+            conn.execute("CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, display_name TEXT)")
+            conn.execute("CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER)")
+            conn.execute("INSERT INTO handle (ROWID, id) VALUES (1, ?)", ("+15551234567",))
+            conn.execute("INSERT INTO chat (ROWID, display_name) VALUES (1, ?)", ("Project Cortex",))
+            conn.execute(
+                "INSERT INTO message (ROWID, text, date, is_from_me, handle_id) VALUES (1, ?, ?, 1, 1)",
+                ("We decided iMessage source citation coverage should use chat database paths.", timestamp),
+            )
+            conn.execute("INSERT INTO chat_message_join (chat_id, message_id) VALUES (1, 1)")
+            conn.commit()
+        finally:
+            conn.close()
 
     def _write_browser_bookmarks_export(self) -> None:
         folder = self.root / "browser"
