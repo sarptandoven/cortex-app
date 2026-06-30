@@ -225,6 +225,118 @@ class FastAPIContractTests(unittest.TestCase):
         finally:
             main_module.settings = original_settings
 
+    def test_scoped_api_tokens_obey_trust_controls(self) -> None:
+        user = "scoped-rest-trust"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+        tokens = {
+            "write": "cxa_fastapi_trust_write_123456789",
+            "export": "cxa_fastapi_trust_export_123456789",
+            "maintenance": "cxa_fastapi_trust_maint_123456789",
+            "destructive": "cxa_fastapi_trust_delete_123456789",
+        }
+        registrations = {
+            "write": ["read", "write"],
+            "export": ["read", "export"],
+            "maintenance": ["read", "maintenance"],
+            "destructive": ["read", "destructive"],
+        }
+        for label, scopes in registrations.items():
+            response = self.client.post(
+                "/v1/integrations/api-token",
+                json={"token": tokens[label], "label": f"{label} REST client", "scopes": scopes},
+                headers=headers,
+            )
+            self.assertEqual(response.status_code, 200)
+
+        write_blocked = self.client.post(
+            "/v1/captures",
+            json={"content": "rest write trust gate memory.", "source": "fastapi-test"},
+            headers={"Authorization": f"Bearer {tokens['write']}", "X-Cortex-User": user},
+        )
+        self.assertEqual(write_blocked.status_code, 403)
+        self.assertIn("writes are disabled", write_blocked.json()["detail"])
+
+        export_blocked = self.client.get(
+            "/v1/context-pack",
+            params={"query": "anything"},
+            headers={"Authorization": f"Bearer {tokens['export']}", "X-Cortex-User": user},
+        )
+        self.assertEqual(export_blocked.status_code, 403)
+        self.assertIn("exports are disabled", export_blocked.json()["detail"])
+
+        maintenance_blocked = self.client.post(
+            "/v1/maintenance/rebuild-vectors",
+            headers={"Authorization": f"Bearer {tokens['maintenance']}", "X-Cortex-User": user},
+        )
+        self.assertEqual(maintenance_blocked.status_code, 403)
+        self.assertIn("maintenance actions are disabled", maintenance_blocked.json()["detail"])
+
+        created = self.client.post(
+            "/v1/captures",
+            json={"content": "rest destructive trust gate memory.", "source": "fastapi-test"},
+            headers=headers,
+        )
+        self.assertEqual(created.status_code, 200)
+        destructive_blocked = self.client.delete(
+            f"/v1/captures/{created.json()['capture_id']}",
+            headers={"Authorization": f"Bearer {tokens['destructive']}", "X-Cortex-User": user},
+        )
+        self.assertEqual(destructive_blocked.status_code, 403)
+        self.assertIn("destructive actions are disabled", destructive_blocked.json()["detail"])
+
+        self.client.put("/v1/settings", json={"allow_agent_writes": True}, headers=headers)
+        write_allowed = self.client.post(
+            "/v1/captures",
+            json={"content": "rest write trust gate allowed memory.", "source": "fastapi-test"},
+            headers={"Authorization": f"Bearer {tokens['write']}", "X-Cortex-User": user},
+        )
+        self.assertEqual(write_allowed.status_code, 200)
+
+        settings_escalation_blocked = self.client.put(
+            "/v1/settings",
+            json={"allow_agent_exports": True},
+            headers={"Authorization": f"Bearer {tokens['write']}", "X-Cortex-User": user},
+        )
+        self.assertEqual(settings_escalation_blocked.status_code, 403)
+        self.assertIn("maintenance scope", settings_escalation_blocked.json()["detail"])
+
+    def test_scoped_capture_query_token_obeys_trust_controls(self) -> None:
+        user = "scoped-capture-query-trust"
+        scoped_token = "cxa_fastapi_query_capture_123456789"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+        registered = self.client.post(
+            "/v1/integrations/api-token",
+            json={"token": scoped_token, "label": "Capture query token", "scopes": ["write"]},
+            headers=headers,
+        )
+        self.assertEqual(registered.status_code, 200)
+
+        original_settings = main_module.settings
+        main_module.settings = replace(original_settings, require_scoped_api_tokens=True)
+        try:
+            blocked = self.client.get(
+                "/capture",
+                params={"token": scoped_token, "content": "query capture trust gate memory."},
+            )
+            self.assertEqual(blocked.status_code, 403)
+            self.assertIn("writes are disabled", blocked.text)
+        finally:
+            main_module.settings = original_settings
+
+        enabled = self.client.put("/v1/settings", json={"allow_agent_writes": True}, headers=headers)
+        self.assertEqual(enabled.status_code, 200)
+
+        main_module.settings = replace(original_settings, require_scoped_api_tokens=True)
+        try:
+            allowed = self.client.get(
+                "/capture",
+                params={"token": scoped_token, "content": "query capture trust gate memory."},
+            )
+            self.assertEqual(allowed.status_code, 200)
+            self.assertIn("Saved", allowed.text)
+        finally:
+            main_module.settings = original_settings
+
     def test_global_token_cannot_select_user_in_sharded_mode(self) -> None:
         original_settings = main_module.settings
         main_module.settings = replace(original_settings, shard_mode="user", require_scoped_api_tokens=False)

@@ -60,6 +60,8 @@ def _required_api_scope(method: str, path: str) -> str:
     normalized_path = path.rstrip("/") or "/"
     if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/context-pack", "/v1/personal-profile", "/v1/agent-adaptation", "/v1/support/bundle"}:
         return "export"
+    if normalized_path == "/v1/settings" and normalized_method in {"PUT", "PATCH"}:
+        return "maintenance"
     if normalized_path in {"/v1/diagnostics", "/v1/reliability/report"}:
         return "maintenance"
     if normalized_path.startswith("/v1/maintenance/") or normalized_path in {"/v1/jobs/run", "/v1/maintenance/jobs/run"}:
@@ -97,6 +99,13 @@ def _assert_api_token_scope(scoped: dict[str, Any], required_scope: str) -> None
         raise HTTPException(status_code=403, detail=f"Cortex API token requires {required_scope} scope")
 
 
+def _assert_api_token_trust(user_id: str, required_scope: str) -> None:
+    try:
+        store.require_agent_access(user_id, required_scope)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
 def _global_token_user_id(x_cortex_user: str | None) -> str:
     requested_user = (x_cortex_user or "").strip()
     if requested_user and requested_user != settings.default_user_id and settings.shard_mode != "local":
@@ -123,7 +132,9 @@ def auth(request: Request, authorization: str | None = Header(default=None), x_c
     if scoped:
         if x_cortex_user and scoped["user_id"] != x_cortex_user:
             raise HTTPException(status_code=403, detail="Cortex API token does not match requested user")
-        _assert_api_token_scope(scoped, _required_api_scope(request.method, request.url.path))
+        required_scope = _required_api_scope(request.method, request.url.path)
+        _assert_api_token_scope(scoped, required_scope)
+        _assert_api_token_trust(scoped["user_id"], required_scope)
         return scoped["user_id"]
     raise HTTPException(status_code=401, detail="Missing or invalid Cortex API token")
 
@@ -201,6 +212,7 @@ def _auth_query_token(token: str | None, *, required_scope: str = "write") -> st
         scoped = store.authenticate_api_token(normalized)
         if scoped:
             _assert_api_token_scope(scoped, required_scope)
+            _assert_api_token_trust(scoped["user_id"], required_scope)
             return scoped["user_id"]
     if settings.api_key:
         raise HTTPException(status_code=401, detail="Missing or invalid Cortex capture token")
