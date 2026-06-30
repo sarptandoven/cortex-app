@@ -434,6 +434,75 @@ def _normalize_identity_aliases(value: Any) -> list[str]:
     return aliases
 
 
+COMMUNICATION_IDENTITY_SOURCES = {
+    "email",
+    "gmail",
+    "microsoft-365",
+    "slack",
+    "google-chat",
+    "teams",
+    "discord",
+    "telegram",
+    "messages",
+    "whatsapp",
+    "linkedin",
+    "twitter-x",
+}
+
+
+def _source_account_alias_sources(source: str) -> set[str]:
+    normalized = _normalize_source_key(source)
+    if not normalized:
+        return set()
+    matches = {normalized}
+    for connector, metadata in SOURCE_CONNECTOR_IMPORT_METADATA.items():
+        source_ids = {_normalize_source_key(item) for item in metadata.get("source_ids") or []}
+        source_aliases = {_normalize_source_key(item) for item in metadata.get("source_aliases") or []}
+        if normalized == connector or normalized in source_ids or normalized in source_aliases:
+            matches.add(_normalize_source_key(connector))
+            matches.update(item for item in source_ids if item)
+            matches.update(item for item in source_aliases if item)
+    return {item for item in matches if item}
+
+
+def _source_account_identity_values(account: dict[str, Any], source: str) -> list[str]:
+    values: list[Any] = [account.get("account_identifier")]
+    metadata = account.get("metadata") if isinstance(account.get("metadata"), dict) else {}
+    for key in (
+        "email",
+        "email_address",
+        "account_email",
+        "user_email",
+        "username",
+        "user_name",
+        "handle",
+        "screen_name",
+        "real_name",
+        "display_name",
+        "name",
+    ):
+        value = metadata.get(key)
+        if isinstance(value, (list, tuple, set)):
+            values.extend(value)
+        else:
+            values.append(value)
+    if source in COMMUNICATION_IDENTITY_SOURCES:
+        label = str(account.get("account_label") or "").strip()
+        connector_name = next((item["name"] for item in SOURCE_CONNECTOR_CATALOG if item["id"] == source), "")
+        generic_labels = {
+            source.lower(),
+            connector_name.lower(),
+            "email",
+            "email files",
+            "slack",
+            "gmail",
+            "microsoft 365",
+        }
+        if label and label.lower() not in generic_labels:
+            values.append(label)
+    return _normalize_identity_aliases(values)
+
+
 def normalize_token_scopes(scopes: list[str] | tuple[str, ...] | str | None) -> list[str]:
     if scopes is None:
         values = list(DEFAULT_MCP_TOKEN_SCOPES)
@@ -1392,6 +1461,24 @@ class CortexStore:
             ).fetchall()
         return [self._source_account_from_row(row) for row in rows]
 
+    def _identity_aliases_for_source(
+        self,
+        user_id: str,
+        source: str,
+        *,
+        base_aliases: Any | None = None,
+        accounts: list[dict[str, Any]] | None = None,
+    ) -> list[str]:
+        aliases: list[Any] = list(_normalize_identity_aliases(base_aliases if base_aliases is not None else self.settings(user_id).get("identity_aliases")))
+        source_matches = _source_account_alias_sources(source)
+        if source_matches:
+            active_accounts = accounts if accounts is not None else self.list_source_accounts(user_id)
+            for account in active_accounts:
+                account_source = _normalize_source_key(str(account.get("source") or ""))
+                if account_source in source_matches:
+                    aliases.extend(_source_account_identity_values(account, account_source))
+        return _normalize_identity_aliases(aliases)
+
     def upsert_source_account(
         self,
         user_id: str,
@@ -1837,7 +1924,8 @@ class CortexStore:
                 )
 
         capture_ids: list[str] = []
-        identity_aliases = self.settings(user_id).get("identity_aliases")
+        base_identity_aliases = self.settings(user_id).get("identity_aliases")
+        source_accounts = self.list_source_accounts(user_id)
         for ordinal, record in enumerate(records):
             record_id = stable_id("irec_", import_id + str(ordinal) + record.source + record.title)
             try:
@@ -1877,6 +1965,12 @@ class CortexStore:
                         )
                     continue
                 if processing == "sync":
+                    identity_aliases = self._identity_aliases_for_source(
+                        user_id,
+                        record.source,
+                        base_aliases=base_identity_aliases,
+                        accounts=source_accounts,
+                    )
                     extracted = extract_context(
                         record.content,
                         record.source,
@@ -5514,7 +5608,7 @@ class CortexStore:
         extracted = extract_context(
             content,
             source,
-            author_aliases=self.settings(user_id).get("identity_aliases"),
+            author_aliases=self._identity_aliases_for_source(user_id, source),
             extraction_mode=extraction_mode,
         )
         extracted["_timestamp"] = capture["captured_at"] or payload.get("captured_at") or started_at

@@ -511,6 +511,125 @@ class SourceIngestTests(unittest.TestCase):
         self.assertIn("short direct paragraphs", style_text)
         self.assertIn("ceremonial launch intros", negative_text)
 
+    def test_source_accounts_contribute_identity_aliases_for_imports(self) -> None:
+        slack = self.root / "account-slack" / "general"
+        slack.mkdir(parents=True)
+        (self.root / "account-slack" / "users.json").write_text(
+            json.dumps(
+                [
+                    {"id": "U1", "name": "u1", "real_name": "Sarpt Tandoven"},
+                    {"id": "U2", "name": "dana", "real_name": "Dana Partner"},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (slack / "2026-06-29.json").write_text(
+            json.dumps(
+                [
+                    {"type": "message", "user": "U1", "text": "I prefer source-account identity matching for Slack imports.", "ts": "1782739200.0001"},
+                    {"type": "message", "user": "U2", "text": "I prefer sprawling review memos for the team.", "ts": "1782739201.0001"},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        mail = self.root / "account-mail"
+        mail.mkdir()
+        message = EmailMessage()
+        message["Subject"] = "Self-authored source account note"
+        message["From"] = "Sarpt <sarpt@example.com>"
+        message["To"] = "notes@example.com"
+        message["Date"] = "Mon, 29 Jun 2026 10:00:00 +0000"
+        message.set_content("I prefer Gmail account identity to classify self-authored email preferences.")
+        (mail / "self.eml").write_bytes(message.as_bytes())
+
+        db_path = self.root / "source-account-identity.sqlite"
+        init_db(db_path)
+        store = CortexStore(db_path, self.root / "source-account-identity-vault")
+        store.upsert_source_account(
+            "test-user",
+            source="gmail",
+            account_label="Sarpt",
+            account_identifier="sarpt@example.com",
+            connection_type="oauth",
+            status="connected",
+        )
+        store.upsert_source_account(
+            "test-user",
+            source="slack",
+            account_label="Sarpt Tandoven",
+            account_identifier="U1",
+            connection_type="oauth",
+            status="connected",
+        )
+
+        result = store.import_sources(
+            user_id="test-user",
+            paths=[str(self.root / "account-slack"), str(mail)],
+            processing="sync",
+            max_records=10,
+        )
+
+        self.assertEqual(result["failed"], 0)
+        self.assertTrue(store.search("test-user", "source-account identity matching Slack imports", limit=5))
+        self.assertTrue(store.search("test-user", "Gmail account identity classify email preferences", limit=5))
+        self.assertFalse(store.search("test-user", "sprawling review memos", limit=5))
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute("SELECT kind, source, content FROM memories").fetchall()
+        finally:
+            conn.close()
+        preference_text = "\n".join(row["content"] for row in rows if row["kind"] == "preference")
+        self.assertIn("source-account identity matching", preference_text)
+        self.assertIn("Gmail account identity", preference_text)
+        self.assertNotIn("sprawling review memos", preference_text)
+
+    def test_source_account_identity_aliases_apply_to_async_import_jobs(self) -> None:
+        mail = self.root / "async-account-mail"
+        mail.mkdir()
+        message = EmailMessage()
+        message["Subject"] = "Async source account note"
+        message["From"] = "Sarpt <sarpt@example.com>"
+        message["To"] = "notes@example.com"
+        message["Date"] = "Mon, 29 Jun 2026 10:00:00 +0000"
+        message.set_content("I prefer async import workers to keep source-account identity.")
+        (mail / "self.eml").write_bytes(message.as_bytes())
+
+        db_path = self.root / "async-source-account-identity.sqlite"
+        init_db(db_path)
+        store = CortexStore(db_path, self.root / "async-source-account-identity-vault")
+        store.upsert_source_account(
+            "test-user",
+            source="gmail",
+            account_label="Sarpt",
+            account_identifier="sarpt@example.com",
+            connection_type="oauth",
+            status="connected",
+        )
+
+        result = store.import_sources(
+            user_id="test-user",
+            paths=[str(mail)],
+            processing="async",
+            max_records=10,
+        )
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["queued"], 1)
+
+        ran = store.run_due_jobs("test-user", limit=10)
+        self.assertEqual(ran["processed"], 1)
+        self.assertTrue(store.search("test-user", "async import workers source-account identity", limit=5))
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute("SELECT kind, content FROM memories").fetchall()
+        finally:
+            conn.close()
+        preference_text = "\n".join(row["content"] for row in rows if row["kind"] == "preference")
+        self.assertIn("async import workers", preference_text)
+
     def test_slack_profile_email_alias_matches_real_name_speaker(self) -> None:
         slack = self.root / "profile-slack" / "general"
         slack.mkdir(parents=True)
