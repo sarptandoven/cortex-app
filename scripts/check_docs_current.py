@@ -68,6 +68,9 @@ FORBIDDEN_PHRASES: dict[str, tuple[str, ...]] = {
         "manual MCP setup",
         "local MCP settings",
         "Open Vault",
+        "Connect Obsidian Vault",
+        "Connect Vault",
+        "Connected through MCP",
     ),
     "macos/Sources/ProductFlowTypes.swift": (
         'return "Vault"',
@@ -76,6 +79,7 @@ FORBIDDEN_PHRASES: dict[str, tuple[str, ...]] = {
     "macos/Sources/ModelTab.swift": (
         "Connect MCP tools",
         "MCP tools or Obsidian",
+        "Obsidian vault",
     ),
     "macos/Sources/ConnectionsPrivacySheet.swift": (
         "Memory syncs from MCP tools",
@@ -95,6 +99,13 @@ FORBIDDEN_PHRASES: dict[str, tuple[str, ...]] = {
         "Advanced vault",
         "Vault ready",
         "MCP clients",
+        "Obsidian vault",
+        "Connect vault",
+    ),
+    "macos/Sources/SourceConnectionComponents.swift": (
+        "Obsidian vault",
+        "Connect vault",
+        "Sync vault",
     ),
 }
 

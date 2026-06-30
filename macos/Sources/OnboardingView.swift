@@ -334,7 +334,7 @@ struct OnboardingFirstSourceStep: View {
                     systemImage: state.hasConnectedObsidianVault ? "checkmark.seal.fill" : "folder.badge.plus",
                     isPrimary: false,
                     status: state.hasConnectedObsidianVault ? "Connected" : "Local",
-                    buttonTitle: state.hasConnectedObsidianVault ? "Connected" : "Connect vault"
+                    buttonTitle: state.hasConnectedObsidianVault ? "Connected" : "Connect notes"
                 ) {
                     if state.hasConnectedObsidianVault {
                         state.status = "Obsidian will sync automatically"
@@ -361,7 +361,7 @@ struct OnboardingFirstSourceStep: View {
 
             OnboardingCheckRow(
                 title: state.onboardingHasSource ? "Connection ready" : "Waiting for one connection",
-                detail: state.onboardingHasSource ? "Setup can continue. New memory will appear in Review when a connected source or tool saves context." : "Connect one AI tool or Obsidian vault to continue.",
+                detail: state.onboardingHasSource ? "Setup can continue. New memory will appear in Review when a connected source or tool saves context." : "Connect Obsidian notes, or use a connected AI tool to send useful memory into Review.",
                 systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "link.circle",
                 color: state.onboardingHasSource ? .green : .orange
             )
@@ -499,7 +499,7 @@ struct OnboardingReviewMemoryStep: View {
         if state.onboardingHasSource {
             return "No reviewable memory is waiting yet. New source or tool memory will land here before Cortex uses it."
         }
-        return "Connect an AI tool or Obsidian vault first. Anything useful will appear here before Cortex remembers it."
+        return "Connect Obsidian notes first, or send useful memory from a connected AI tool. Anything useful will appear here before Cortex remembers it."
     }
 
     private var reviewPathTitle: String {
@@ -516,7 +516,7 @@ struct OnboardingReviewMemoryStep: View {
         if state.onboardingHasSource {
             return "Approve one useful memory to let Cortex cite it in Ask."
         }
-        return "Connect an AI tool or beta source before Review can receive memory."
+        return "Connect notes or send useful memory from a connected AI tool before Review can receive memory."
     }
 }
 
@@ -620,7 +620,7 @@ struct OnboardingAskUseStep: View {
         if state.onboardingHasSource {
             return "Ask becomes useful after one memory is approved in Review."
         }
-        return "Connect an AI tool or Obsidian vault before Ask can cite memory."
+        return "Connect notes or send useful memory from a connected AI tool before Ask can cite memory."
     }
 }
 

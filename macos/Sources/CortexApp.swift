@@ -2107,8 +2107,9 @@ final class AppState: ObservableObject {
 
     var onboardingHasSource: Bool {
         hasConnectedSourceAccount
-            || connectedAIIntegrationCount > 0
             || (firstSourceAdded && !onboardingFirstSourceNames.isEmpty)
+            || !inbox.isEmpty
+            || (stats?.memories ?? 0) > 0
     }
 
     var hasConnectedSourceAccount: Bool {
@@ -2739,9 +2740,9 @@ final class AppState: ObservableObject {
         }
 
         let panel = NSOpenPanel()
-        panel.title = "Connect Obsidian Vault"
-        panel.message = "Choose the Obsidian vault folder Cortex should sync into Review."
-        panel.prompt = "Connect Vault"
+        panel.title = "Connect Obsidian Notes"
+        panel.message = "Choose the Obsidian notes folder Cortex should sync into Review."
+        panel.prompt = "Connect Notes"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
@@ -4207,7 +4208,7 @@ struct IntegrationCompactRow: View {
                 Text(integration.name)
                     .font(.callout)
                     .fontWeight(.medium)
-                Text(integrationState.configured ? "Connected through MCP" : "Installed and ready to connect")
+                Text(integrationState.configured ? "Connected locally" : "Installed and ready to connect")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

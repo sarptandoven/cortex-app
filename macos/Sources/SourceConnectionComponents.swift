@@ -23,7 +23,7 @@ struct SourceConnectorStatusCard: View {
                 Text(connector.name)
                     .font(.title3)
                     .fontWeight(.semibold)
-                Text(connected ? "Cortex can resync this vault and send new notes to Review." : "Choose an Obsidian vault once. Cortex reads Markdown notes locally and keeps citations attached.")
+                Text(connected ? "Cortex can resync these notes and send new memory to Review." : "Choose an Obsidian notes folder once. Cortex reads Markdown locally and keeps citations attached.")
                     .font(.callout)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -34,7 +34,7 @@ struct SourceConnectorStatusCard: View {
                     Button {
                         state.connectLocalNotesFolder(connector)
                     } label: {
-                        Label(connected ? "Sync vault" : "Connect vault", systemImage: connected ? "arrow.clockwise" : "folder.badge.plus")
+                        Label(connected ? "Sync notes" : "Connect notes", systemImage: connected ? "arrow.clockwise" : "folder.badge.plus")
                             .frame(maxWidth: .infinity, minHeight: 46)
                     }
                     .buttonStyle(.borderedProminent)

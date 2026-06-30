@@ -299,7 +299,7 @@ struct HomeFirstRunNotes: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Connect once")
                         .font(.headline)
-                    Text("Connect local AI tools or an Obsidian vault. Cortex syncs quietly, sends useful memory to Review, then answers with citations.")
+                    Text("Connect local AI tools or Obsidian notes. Cortex syncs quietly, sends useful memory to Review, then answers with citations.")
                         .font(.callout)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
