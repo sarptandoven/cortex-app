@@ -2170,7 +2170,7 @@ final class AppState: ObservableObject {
     }
 
     var canCompleteOnboarding: Bool {
-        isLocalServiceReady
+        OnboardingStep.allCases.allSatisfy { onboardingStepIsComplete($0) }
     }
 
     var incompleteOnboardingStepTitles: [String] {
@@ -3264,7 +3264,8 @@ final class AppState: ObservableObject {
 
     func completeOnboarding() {
         guard canCompleteOnboarding else {
-            status = "Start the local memory engine before opening Cortex"
+            let remaining = incompleteOnboardingStepTitles.prefix(2).joined(separator: ", ")
+            status = remaining.isEmpty ? "Finish the first memory loop before completing setup." : "Finish setup steps: \(remaining)."
             return
         }
         saveMemorySettings()
@@ -3279,7 +3280,7 @@ final class AppState: ObservableObject {
     func finishOnboarding() {
         guard canCompleteOnboarding else {
             dismissOnboardingForSession()
-            status = "Setup closed. Start the local memory engine from Home when ready."
+            status = "Setup closed. Continue the first memory loop from Home."
             return
         }
         completeOnboarding()

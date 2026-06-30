@@ -161,7 +161,7 @@ struct OnboardingView: View {
                     state.finishOnboarding()
                 } label: {
                     Label(
-                        state.canCompleteOnboarding ? "Start Cortex" : "Finish Later",
+                        state.canCompleteOnboarding ? "Finish Setup" : "Finish Later",
                         systemImage: state.canCompleteOnboarding ? "checkmark.circle" : "arrow.right.circle"
                     )
                 }
@@ -343,7 +343,7 @@ struct OnboardingFirstSourceStep: View {
 
             OnboardingCheckRow(
                 title: state.onboardingHasSource ? "Connection ready" : "No source connected yet",
-                detail: state.onboardingHasSource ? "New memory will appear in Review when connected notes sync." : "You can start Cortex now and connect notes from Home when ready.",
+                detail: state.onboardingHasSource ? "New memory will appear in Review when connected notes sync." : "Close setup if needed, then connect notes from Home when ready.",
                 systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "link.circle",
                 color: state.onboardingHasSource ? .green : .secondary
             )
