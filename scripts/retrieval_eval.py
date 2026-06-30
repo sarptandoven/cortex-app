@@ -42,6 +42,8 @@ class RetrievalCase:
     expected_layer: str
     expected_phrase: str
     category: str = "focused"
+    source_url_contains: tuple[str, ...] = ()
+    expected_occurred_at: str | None = None
 
 
 SEED_MEMORIES: tuple[SeedMemory, ...] = (
@@ -568,6 +570,12 @@ def _evaluate_case(store: CortexStore, user_id: str, case: RetrievalCase, limit:
         raise AssertionError(f"{case.name}: expected layer {case.expected_layer}, got {top['layer']}")
     if case.expected_phrase not in top["content"]:
         raise AssertionError(f"{case.name}: expected phrase {case.expected_phrase!r} in {top['content']!r}")
+    source_url = str(top.get("source_url") or "")
+    for expected_fragment in case.source_url_contains:
+        if expected_fragment not in source_url:
+            raise AssertionError(f"{case.name}: expected source_url fragment {expected_fragment!r} in {source_url!r}")
+    if case.expected_occurred_at and top.get("occurred_at") != case.expected_occurred_at:
+        raise AssertionError(f"{case.name}: expected occurred_at {case.expected_occurred_at}, got {top.get('occurred_at')}")
 
     layer_results = store.search(user_id, case.query, limit=limit, layer=case.expected_layer)
     layer_ids = [item["id"] for item in layer_results]
@@ -585,6 +593,8 @@ def _evaluate_case(store: CortexStore, user_id: str, case: RetrievalCase, limit:
         "expected_rank": expected_rank,
         "top_result": top["id"],
         "top_layer": top["layer"],
+        "top_source_url": top.get("source_url"),
+        "top_occurred_at": top.get("occurred_at"),
         "result_ids": result_ids,
         "layer_filtered_results": layer_ids,
         "metrics": _metrics_for_results(case.expected_id, result_ids, METRIC_K_VALUES),
@@ -619,6 +629,7 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
             expected_layer="decision",
             expected_phrase="five tabs",
             category="noisy_import",
+            source_url_contains=("service=chatgpt", "conversation=Project%20Atlas%20memory%20UI", "line=", "message=", "excerpt="),
         ),
         RetrievalCase(
             name="noisy_import_event_eval",
@@ -627,6 +638,8 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
             expected_layer="episodic",
             expected_phrase="noisy import retrieval eval",
             category="noisy_import",
+            source_url_contains=("service=chatgpt", "conversation=Project%20Atlas%20memory%20UI", "line=", "message=", "excerpt="),
+            expected_occurred_at="2026-06-29",
         ),
         RetrievalCase(
             name="noisy_import_claude_preference",
@@ -635,6 +648,7 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
             expected_layer="preference",
             expected_phrase="citation gutters",
             category="noisy_import_preference",
+            source_url_contains=("service=claude", "conversation=Project%20Lumen%20retrieval%20habits", "line=", "message=", "excerpt="),
         ),
         RetrievalCase(
             name="noisy_import_slack_style",
@@ -643,6 +657,7 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
             expected_layer="style",
             expected_phrase="direct paragraphs",
             category="noisy_import_style",
+            source_url_contains=("service=slack", "channel=general", "line=", "message=1", "excerpt="),
         ),
         RetrievalCase(
             name="noisy_import_slack_negative",
@@ -651,6 +666,7 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
             expected_layer="negative",
             expected_phrase="Project Lumen reviews",
             category="noisy_import_negative",
+            source_url_contains=("service=slack", "channel=general", "line=", "message=2", "excerpt="),
         ),
         RetrievalCase(
             name="noisy_import_docs_semantic",
@@ -659,6 +675,7 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
             expected_layer="semantic",
             expected_phrase="cited source paths",
             category="noisy_import_docs",
+            source_url_contains=("Project Lumen Retrieval.md", "line=", "excerpt="),
         ),
         RetrievalCase(
             name="noisy_import_notion_decision",
@@ -667,6 +684,7 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
             expected_layer="decision",
             expected_phrase="canonical source-id mapping",
             category="noisy_import_notion",
+            source_url_contains=("service=notion", "page=Project%20Orion", "line=", "excerpt="),
         ),
         RetrievalCase(
             name="noisy_import_cloud_docs_semantic",
@@ -675,6 +693,7 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
             expected_layer="semantic",
             expected_phrase="export-ready source health",
             category="noisy_import_cloud_docs",
+            source_url_contains=("service=cloud-docs", "provider=google-drive", "document=Project%20Nebula", "line=", "excerpt="),
         ),
         RetrievalCase(
             name="noisy_import_calendar_event",
@@ -683,6 +702,8 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
             expected_layer="episodic",
             expected_phrase="cited schedule memory",
             category="noisy_import_calendar",
+            source_url_contains=("service=calendar", "first_event=Project%20Meridian%20calendar%20review", "line=", "event=1", "excerpt="),
+            expected_occurred_at="2026-06-29",
         ),
         RetrievalCase(
             name="noisy_import_github_decision",
@@ -691,6 +712,7 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
             expected_layer="decision",
             expected_phrase="preserve issue source paths",
             category="noisy_import_github",
+            source_url_contains=("service=github", "repository=Project%20Quarry", "file=issues.csv", "line=", "row=1", "excerpt="),
         ),
     )
     for case in noisy_cases:

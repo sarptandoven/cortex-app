@@ -483,6 +483,12 @@ def _identity_terms(value: str) -> set[str]:
         normalized_local = _normalize_identity_value(local)
         if normalized_local:
             terms.add(normalized_local)
+    for normalized_term in list(terms):
+        if "@" in normalized_term:
+            continue
+        for token in normalized_term.split():
+            if len(token) >= 4:
+                terms.add(token)
     return terms
 
 

@@ -654,8 +654,20 @@ def _slack_users(assets: list[SourceAsset]) -> dict[str, str]:
             return {}
         if not isinstance(payload, list):
             return {}
-        return {str(item.get("id")): str(item.get("real_name") or item.get("name") or item.get("id")) for item in payload if isinstance(item, dict)}
+        return {str(item.get("id")): _slack_user_label(item) for item in payload if isinstance(item, dict)}
     return {}
+
+
+def _slack_user_label(item: dict[str, Any]) -> str:
+    label = str(item.get("real_name") or item.get("name") or item.get("id") or "unknown").strip()
+    profile = item.get("profile") if isinstance(item.get("profile"), dict) else {}
+    email = str(profile.get("email") or item.get("email") or "").strip()
+    local = email.split("@", 1)[0].strip() if "@" in email else ""
+    if local and local.lower() not in {part.lower() for part in label.split()}:
+        combined = f"{label} {local}".strip()
+        if len(combined) <= 40:
+            return combined
+    return label
 
 
 def _slack_message_text(message: dict[str, Any]) -> str:

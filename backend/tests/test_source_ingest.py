@@ -511,6 +511,67 @@ class SourceIngestTests(unittest.TestCase):
         self.assertIn("short direct paragraphs", style_text)
         self.assertIn("ceremonial launch intros", negative_text)
 
+    def test_slack_profile_email_alias_matches_real_name_speaker(self) -> None:
+        slack = self.root / "profile-slack" / "general"
+        slack.mkdir(parents=True)
+        (self.root / "profile-slack" / "users.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "id": "U1",
+                        "name": "sarpt",
+                        "real_name": "Sarpt Tandoven",
+                        "profile": {"email": "sarpt@example.com"},
+                    },
+                    {
+                        "id": "U2",
+                        "name": "dana",
+                        "real_name": "Dana Partner",
+                        "profile": {"email": "dana@example.com"},
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (slack / "2026-06-29.json").write_text(
+            json.dumps(
+                [
+                    {"type": "message", "user": "U1", "text": "I prefer source-backed AI handoffs with short citations.", "ts": "1782739200.0001"},
+                    {"type": "message", "user": "U1", "text": "My writing style uses direct status notes.", "ts": "1782739201.0001"},
+                    {"type": "message", "user": "U2", "text": "I prefer long stakeholder recaps for everyone.", "ts": "1782739202.0001"},
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        db_path = self.root / "profile-slack.sqlite"
+        init_db(db_path)
+        store = CortexStore(db_path, self.root / "profile-slack-vault")
+        store.update_settings("test-user", {"identity_aliases": ["sarpt@example.com"]})
+        result = store.import_sources(
+            user_id="test-user",
+            paths=[str(self.root / "profile-slack")],
+            processing="sync",
+            max_records=10,
+        )
+
+        self.assertEqual(result["failed"], 0)
+        self.assertTrue(store.search("test-user", "source-backed AI handoffs short citations", limit=5))
+        self.assertTrue(store.search("test-user", "direct status notes", limit=5))
+        self.assertFalse(store.search("test-user", "long stakeholder recaps", limit=5))
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute("SELECT kind, content FROM memories").fetchall()
+        finally:
+            conn.close()
+        preference_text = "\n".join(row["content"] for row in rows if row["kind"] == "preference")
+        style_text = "\n".join(row["content"] for row in rows if row["kind"] == "style")
+        self.assertIn("source-backed AI handoffs", preference_text)
+        self.assertIn("direct status notes", style_text)
+        self.assertNotIn("long stakeholder recaps", preference_text)
+
     def test_key_source_imports_preserve_citations_through_search(self) -> None:
         self._write_chatgpt_export()
         self._write_claude_export()
@@ -682,6 +743,35 @@ class SourceIngestTests(unittest.TestCase):
         self.assertEqual(len(rows), 3)
         self.assertTrue(all(row["raw_excerpt"] and "Source:" not in row["raw_excerpt"] for row in rows))
         self.assertTrue(all("excerpt=" in row["source_url"] for row in rows))
+
+    def test_chatgpt_claude_email_memories_get_granular_source_url_fragments(self) -> None:
+        self._write_chatgpt_export()
+        self._write_claude_export()
+        self._write_email_export()
+
+        db_path = self.root / "chat-email-granular.sqlite"
+        init_db(db_path)
+        store = CortexStore(db_path, self.root / "chat-email-granular-vault")
+        result = store.import_sources(
+            user_id="test-user",
+            paths=[str(self.root / "chatgpt"), str(self.root / "claude"), str(self.root / "mail")],
+            processing="sync",
+            max_records=10,
+        )
+
+        self.assertEqual(result["failed"], 0)
+        expectations = {
+            "chatgpt": ("Project Atlas local-first memory", ("service=chatgpt", "conversation=Project%20Atlas%20planning", "line=", "message=1", "excerpt=")),
+            "claude": ("concise technical answers clear tradeoffs", ("service=claude", "conversation=Writing%20style", "line=", "message=1", "excerpt=")),
+            "email": ("migration plan approved memory candidates", ("service=email", "subject=Cortex%20migration%20plan", "line=", "excerpt=")),
+        }
+        for source, (query, fragments) in expectations.items():
+            with self.subTest(source=source):
+                hits = [item for item in store.search("test-user", query, limit=8) if item["source"] == source]
+                self.assertTrue(hits)
+                for fragment in fragments:
+                    self.assertIn(fragment, hits[0]["source_url"] or "")
+                self.assertNotIn("Source:", hits[0]["raw_excerpt"])
 
     def test_sync_source_import_uses_deterministic_extraction_by_default(self) -> None:
         docs = self.root / "docs"
