@@ -126,6 +126,61 @@ class ShardingTests(unittest.TestCase):
         self.assertIsNone(registry.authenticate_api_token(token, user_id="bob"))
         self.assertEqual(registry.authenticate_api_token(token)["user_id"], "alice")
 
+    def test_scoped_api_token_authenticates_from_control_index_without_opening_user_shard(self) -> None:
+        settings = self.settings(mode="user")
+        issuer = StoreRegistry.from_settings(settings)
+        token = "cxa_alice_control_index_token_123456789"
+        issuer.ensure_api_token("alice", token, label="Alice API", scopes=["read", "write"])
+
+        registry = StoreRegistry.from_settings(settings)
+        self.assertEqual(registry._stores, {})
+
+        scoped = registry.authenticate_api_token(token)
+
+        self.assertIsNotNone(scoped)
+        self.assertEqual(scoped["user_id"], "alice")
+        self.assertEqual(scoped["audience"], "api")
+        self.assertEqual(scoped["scopes"], ["read", "write"])
+        self.assertTrue(scoped["control_index"])
+        self.assertEqual(registry._stores, {})
+
+    def test_scoped_mcp_token_uses_control_index_in_bucket_mode(self) -> None:
+        settings = self.settings(mode="bucket", shard_count=8)
+        issuer = StoreRegistry.from_settings(settings)
+        token = "cxm_alice_control_index_token_123456789"
+        issuer.ensure_mcp_token("alice", token, label="Alice MCP", scopes=["read", "export"])
+
+        registry = StoreRegistry.from_settings(settings)
+        scoped = registry.authenticate_mcp_token(token)
+
+        self.assertIsNotNone(scoped)
+        self.assertEqual(scoped["user_id"], "alice")
+        self.assertEqual(scoped["audience"], "mcp")
+        self.assertEqual(set(scoped["scopes"]), {"read", "export"})
+        self.assertEqual(registry._stores, {})
+
+    def test_control_index_respects_user_hint_revoke_and_user_deletion(self) -> None:
+        settings = self.settings(mode="user")
+        registry = StoreRegistry.from_settings(settings)
+        token = "cxa_alice_revoked_control_index_token_123456789"
+        metadata = registry.ensure_api_token("alice", token, label="Alice API", scopes=["read"])
+
+        self.assertIsNone(registry.authenticate_api_token(token, user_id="bob"))
+        self.assertIsNotNone(StoreRegistry.from_settings(settings).authenticate_api_token(token, user_id="alice"))
+
+        revoked = registry.revoke_token("alice", metadata["token_id"])
+        self.assertIsNotNone(revoked)
+        self.assertIsNone(StoreRegistry.from_settings(settings).authenticate_api_token(token))
+
+        replacement = "cxa_alice_deleted_control_index_token_123456789"
+        registry.ensure_api_token("alice", replacement, label="Alice API replacement", scopes=["read"])
+        self.assertIsNotNone(StoreRegistry.from_settings(settings).authenticate_api_token(replacement))
+
+        deleted = registry.delete_user_data("alice", include_backups=False)
+        self.assertFalse(deleted["include_backups"])
+        self.assertEqual(deleted["sqlite"]["api_tokens"], 2)
+        self.assertIsNone(StoreRegistry.from_settings(settings).authenticate_api_token(replacement))
+
     def test_source_accounts_and_sync_cursors_are_user_sharded(self) -> None:
         registry = StoreRegistry.from_settings(self.settings(mode="user"))
 

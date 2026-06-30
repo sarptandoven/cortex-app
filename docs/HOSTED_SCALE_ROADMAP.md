@@ -31,6 +31,7 @@ Implemented local primitive:
 
 - `POST /v1/integrations/api-token` stores hashed `cxa_` REST tokens with user ownership, audience, scopes, and last-used metadata.
 - `GET /v1/integrations/tokens` and `DELETE /v1/integrations/tokens/{token_id}` provide token metadata and revocation without exposing token secrets.
+- `StoreRegistry` also keeps a small SQLite control-plane token index under the shard root so scoped API and MCP tokens can resolve their user before a user shard is opened. This keeps cold `user` and `bucket` shard modes usable without scanning every shard.
 - `CORTEX_REQUIRE_SCOPED_API_TOKENS=1` prevents the global app token from selecting arbitrary users with `X-Cortex-User`.
 - FastAPI `GET /health` and the packaged standalone backend both expose a `hosted_readiness` contract documenting whether the process is in hosted-style shard mode, whether scoped API tokens are required, and whether global-token user switching is allowed only for local compatibility.
 - FastAPI `GET /ready` and standalone `GET /ready` fail closed with HTTP 503 in hosted-style shard modes (`CORTEX_SHARD_MODE=user` or `bucket`) until the production gates pass.
@@ -52,8 +53,8 @@ Current multi-user/token assumptions:
 
 - Local mode keeps the global app token as a compatibility admin token for the default user.
 - The global app token cannot select a different `X-Cortex-User` when scoped API tokens are required or when shard mode is not `local`.
-- Scoped REST tokens are user-owned, hashed at rest, revocable, and must carry the scope class required by each endpoint.
-- In `user` and `bucket` shard modes, hosted callers should send a resolved user identity with the scoped token. Without a control-plane token index, token lookup can only search the default store and stores already opened by the process.
+- Scoped REST and MCP tokens are user-owned, hashed at rest, revocable, and must carry the scope class required by each endpoint/tool class.
+- In `user` and `bucket` shard modes, hosted callers may send a resolved user identity with the scoped token, but token lookup can now resolve through the local control index even when the user's shard has not been opened in the current process.
 - Standalone server readiness uses the same hosted readiness contract as FastAPI.
 
 ## Milestone 2: Postgres/pgvector Runtime

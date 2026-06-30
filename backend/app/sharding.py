@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+import secrets
+import sqlite3
 import threading
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -91,6 +95,167 @@ class ShardRouter:
         return f"{slug}-{digest}"
 
 
+class TokenControlIndex:
+    """Small control-plane token index used to route scoped auth before opening user shards."""
+
+    SCHEMA = """
+    PRAGMA journal_mode=WAL;
+    CREATE TABLE IF NOT EXISTS scoped_token_index (
+      token_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      audience TEXT NOT NULL,
+      label TEXT NOT NULL DEFAULT '',
+      token_salt TEXT NOT NULL,
+      token_hash TEXT NOT NULL,
+      scopes_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_used_at TEXT,
+      revoked_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_scoped_token_index_audience ON scoped_token_index(audience, revoked_at);
+    CREATE INDEX IF NOT EXISTS idx_scoped_token_index_user ON scoped_token_index(user_id, audience, revoked_at);
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path).expanduser()
+        self._lock = threading.Lock()
+
+    def upsert(self, *, token: str, metadata: dict[str, Any]) -> None:
+        normalized = token.strip()
+        if not normalized:
+            return
+        token_id = str(metadata["token_id"])
+        timestamp = _control_now_iso()
+        with self._lock:
+            conn = self._connect()
+            try:
+                with conn:
+                    existing = conn.execute(
+                        "SELECT token_salt, created_at FROM scoped_token_index WHERE token_id = ?",
+                        (token_id,),
+                    ).fetchone()
+                    salt = existing["token_salt"] if existing else secrets.token_hex(16)
+                    created_at = existing["created_at"] if existing else str(metadata.get("updated_at") or timestamp)
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO scoped_token_index
+                        (token_id, user_id, audience, label, token_salt, token_hash, scopes_json,
+                         created_at, updated_at, last_used_at, revoked_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                (SELECT last_used_at FROM scoped_token_index WHERE token_id = ?), NULL)
+                        """,
+                        (
+                            token_id,
+                            str(metadata.get("user_id") or ""),
+                            str(metadata.get("audience") or ""),
+                            str(metadata.get("label") or "")[:120],
+                            salt,
+                            self._token_hash(normalized, salt),
+                            json.dumps(list(metadata.get("scopes") or [])),
+                            created_at,
+                            str(metadata.get("updated_at") or timestamp),
+                            token_id,
+                        ),
+                    )
+            finally:
+                conn.close()
+
+    def authenticate(self, token: str, *, audience: str, user_id: str | None = None) -> dict[str, Any] | None:
+        normalized = token.strip()
+        if not normalized or not self.path.exists():
+            return None
+        filters = ["audience = ?", "revoked_at IS NULL"]
+        params: list[Any] = [audience]
+        if user_id:
+            filters.append("user_id = ?")
+            params.append(user_id)
+        timestamp = _control_now_iso()
+        conn = self._connect()
+        try:
+            with conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT token_id, user_id, audience, label, token_salt, token_hash, scopes_json, created_at, last_used_at
+                    FROM scoped_token_index
+                    WHERE {" AND ".join(filters)}
+                    ORDER BY updated_at DESC, created_at DESC
+                    """,
+                    tuple(params),
+                ).fetchall()
+                for row in rows:
+                    candidate = self._token_hash(normalized, row["token_salt"])
+                    if not secrets.compare_digest(candidate, row["token_hash"]):
+                        continue
+                    conn.execute(
+                        "UPDATE scoped_token_index SET last_used_at = ? WHERE token_id = ?",
+                        (timestamp, row["token_id"]),
+                    )
+                    return {
+                        "token_id": row["token_id"],
+                        "user_id": row["user_id"],
+                        "label": row["label"],
+                        "audience": row["audience"],
+                        "scopes": self._json_list(row["scopes_json"]),
+                        "created_at": row["created_at"],
+                        "last_used_at": timestamp,
+                        "admin": False,
+                        "control_index": True,
+                    }
+        finally:
+            conn.close()
+        return None
+
+    def revoke(self, *, user_id: str, token_id: str, revoked_at: str | None = None) -> None:
+        if not self.path.exists():
+            return
+        timestamp = revoked_at or _control_now_iso()
+        with self._lock:
+            conn = self._connect()
+            try:
+                with conn:
+                    conn.execute(
+                        "UPDATE scoped_token_index SET revoked_at = ?, updated_at = ? WHERE user_id = ? AND token_id = ?",
+                        (timestamp, timestamp, user_id, token_id),
+                    )
+            finally:
+                conn.close()
+
+    def delete_user(self, user_id: str) -> None:
+        if not self.path.exists():
+            return
+        with self._lock:
+            conn = self._connect()
+            try:
+                with conn:
+                    conn.execute("DELETE FROM scoped_token_index WHERE user_id = ?", (user_id,))
+            finally:
+                conn.close()
+
+    def _connect(self) -> sqlite3.Connection:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.path)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(self.SCHEMA)
+        return conn
+
+    def _token_hash(self, token: str, salt: str) -> str:
+        return hashlib.sha256(f"{salt}:{token}".encode("utf-8")).hexdigest()
+
+    def _json_list(self, value: str | None) -> list[str]:
+        try:
+            parsed = json.loads(value or "[]")
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(parsed, list):
+            return []
+        return [str(item) for item in parsed]
+
+
+def _control_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
 class StoreRegistry:
     """CortexStore facade that lazily opens the shard for each user-scoped call."""
 
@@ -99,6 +264,7 @@ class StoreRegistry:
     def __init__(self, router: ShardRouter, *, default_user_id: str = "local") -> None:
         self.router = router
         self.default_user_id = default_user_id
+        self.token_index = TokenControlIndex(router.shard_root / "control" / "token_index.sqlite")
         self._stores: dict[str, CortexStore] = {}
         self._lock = threading.Lock()
 
@@ -142,6 +308,9 @@ class StoreRegistry:
         return self._authenticate_scoped_token(token, audience="api", user_id=user_id)
 
     def _authenticate_scoped_token(self, token: str, *, audience: str, user_id: str | None = None) -> dict[str, Any] | None:
+        indexed = self.token_index.authenticate(token, audience=audience, user_id=user_id)
+        if indexed:
+            return indexed
         if user_id:
             method = getattr(self.store_for_user(user_id), f"authenticate_{audience}_token")
             return method(token)
@@ -155,6 +324,57 @@ class StoreRegistry:
             if scoped:
                 return scoped
         return None
+
+    def ensure_api_token(
+        self,
+        user_id: str,
+        token: str,
+        *,
+        label: str = "REST API client",
+        scopes: list[str] | tuple[str, ...] | str | None = None,
+        token_id: str | None = None,
+    ) -> dict[str, Any]:
+        metadata = self.store_for_user(user_id).ensure_api_token(
+            user_id,
+            token,
+            label=label,
+            scopes=scopes,
+            token_id=token_id,
+        )
+        self.token_index.upsert(token=token, metadata=metadata)
+        return metadata
+
+    def ensure_mcp_token(
+        self,
+        user_id: str,
+        token: str,
+        *,
+        label: str = "MCP integration",
+        scopes: list[str] | tuple[str, ...] | str | None = None,
+        token_id: str | None = None,
+    ) -> dict[str, Any]:
+        metadata = self.store_for_user(user_id).ensure_mcp_token(
+            user_id,
+            token,
+            label=label,
+            scopes=scopes,
+            token_id=token_id,
+        )
+        self.token_index.upsert(token=token, metadata=metadata)
+        return metadata
+
+    def revoke_token(self, user_id: str, token_id: str) -> dict[str, Any] | None:
+        revoked = self.store_for_user(user_id).revoke_token(user_id, token_id)
+        if revoked:
+            self.token_index.revoke(user_id=user_id, token_id=token_id, revoked_at=revoked.get("revoked_at"))
+        return revoked
+
+    def delete_user_data(self, user_id: str, *, include_backups: bool = True) -> dict[str, Any]:
+        if self.router.mode == "bucket" and include_backups:
+            raise ValueError("delete_user_data(include_backups=True) is not tenant-safe in bucket shard mode")
+        deleted = self.store_for_user(user_id).delete_user_data(user_id, include_backups=include_backups)
+        self.token_index.delete_user(user_id)
+        return deleted
 
     def __getattr__(self, name: str) -> Any:
         attr = getattr(self.default_store, name)
