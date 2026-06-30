@@ -145,6 +145,36 @@ def manifest_errors() -> list[str]:
         result = run_command([sys.executable, "scripts/validate_update_manifest.py", str(direct_manifest)])
         if not result["ok"]:
             errors.append(f"release-artifacts/direct-mac/latest.json: validation failed: {result['stderr'] or result['stdout']}")
+    site_manifest = ROOT / "site" / "downloads" / "latest.json"
+    if direct_manifest.exists() and site_manifest.exists():
+        errors.extend(artifact_consistency_errors(direct_manifest, site_manifest))
+    return errors
+
+
+def artifact_consistency_errors(direct_manifest: Path, site_manifest: Path) -> list[str]:
+    errors: list[str] = []
+    try:
+        direct_payload = json.loads(direct_manifest.read_text(encoding="utf-8"))
+        site_payload = json.loads(site_manifest.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return [f"release manifest comparison failed: invalid JSON: {exc}"]
+
+    direct_artifacts = {
+        artifact.get("filename"): artifact
+        for artifact in direct_payload.get("artifacts", [])
+        if artifact.get("filename")
+    }
+    site_artifacts = {
+        artifact.get("filename"): artifact
+        for artifact in site_payload.get("artifacts", [])
+        if artifact.get("filename")
+    }
+    for filename in sorted(set(direct_artifacts) & set(site_artifacts)):
+        direct = direct_artifacts[filename]
+        site = site_artifacts[filename]
+        for key in ("sha256", "size_bytes"):
+            if direct.get(key) != site.get(key):
+                errors.append(f"{filename}: release-artifacts/direct-mac and site/downloads disagree on {key}")
     return errors
 
 

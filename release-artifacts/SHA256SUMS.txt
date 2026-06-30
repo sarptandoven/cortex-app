@@ -1,3 +1,1 @@
 90608d1df390653544011e74fdbff08a1462abb6bf178f6c48d71423ca4fa588  release-artifacts/app-store/Doppl-AppStore-0.1.0-1.pkg
-bdd4d38813143ca3af0fada361576ea973bf65e80ecbe7c2e47cffb5cb1d9f80  release-artifacts/direct-mac/Cortex-0.1.0-1.dmg
-5748d6714f467dbd6dd39ea705474f1b9f6e299de0a9f03b525f3c5a9f405c9d  release-artifacts/direct-mac/Cortex-0.1.0-1.app.zip
