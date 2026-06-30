@@ -912,7 +912,7 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
         RetrievalCase(
             name="noisy_import_docs_semantic",
             query="Project Lumen docs retrieval coverage cited source paths",
-            expected_id=noisy_id("docs retrieval coverage", layer="semantic"),
+            expected_id=noisy_id("document fixture requires docs retrieval coverage", layer="semantic"),
             expected_layer="semantic",
             expected_phrase="cited source paths",
             category="noisy_import_docs",
