@@ -83,7 +83,7 @@ The validator confirms required keys, artifact existence, byte size, and SHA-256
 
 ## In-App Update Check
 
-The macOS app has a More -> Installer and updates section.
+The macOS app keeps update controls under `Trust > Advanced > Installer and updates`.
 
 Users can:
 
@@ -140,7 +140,7 @@ Sparkle is the likely production path for background update download/install. Th
 - Run `./macos/build.sh`.
 - Run `codesign --verify --deep --strict --verbose=2 macos/build/Cortex.app`.
 - Launch the app and verify the bundled backend starts.
-- Run `python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"` using the token shown in Cortex Settings.
+- Run `python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"` using the local API token from `Trust > Advanced`.
 - Run `./macos/package_release.sh`.
 - Run `python3 scripts/prepare_distribution_site.py`.
 - Run `python3 scripts/check_distribution_site.py`.
@@ -148,7 +148,7 @@ Sparkle is the likely production path for background update download/install. Th
 - Run `python3 scripts/validate_update_manifest.py <release>/latest.json`.
 - Test the landing page download buttons against `site/downloads/latest.json`.
 - Test the DMG by opening it and launching a copied app.
-- Test More -> Installer and updates with the generated `latest.json`.
+- Test `Trust > Advanced > Installer and updates` with the generated `latest.json`.
 - Export a support bundle with `python3 scripts/export_support_bundle.py --mode live` after launch.
 
 ## Current Boundaries

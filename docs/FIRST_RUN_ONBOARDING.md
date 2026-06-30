@@ -50,9 +50,9 @@ Prompts the user to approve at least one useful pending memory. This is the trus
 
 ### 4. Ask / Use Cortex
 
-Prompts the user to ask Cortex a real question about the approved source. The step completes when Ask returns cited memory, or when the user prepares a context/adaptation handoff from approved memory.
+Prompts the user to ask Cortex a real question about the approved source. The step completes when Ask returns cited memory.
 
-Copyable chat context and direct MCP setup are secondary handoff options rather than the main onboarding goal.
+Copyable chat context and direct MCP setup are secondary handoff options rather than the main onboarding goal, and they do not complete the core Ask step.
 
 ### 5. Trust & Backup
 
@@ -85,11 +85,11 @@ index.sqlite:user_settings
 
 - Fresh install shows onboarding automatically.
 - `Finish Later` dismisses setup without marking onboarding complete.
-- `More -> Setup -> Open Setup` reopens the flow.
+- `Trust > Advanced > Setup` reopens the flow.
 - Choosing a vault folder restarts the backend and `/health` returns the chosen path.
 - Importing the first real source writes an import session and source-linked captures or jobs.
 - Quick memories and clipboard captures do not complete the first-source gate.
 - Approving a pending source capture completes the review gate.
-- Ask with cited results, focused context, model context, or agent adaptation completes the use gate.
+- Ask with cited results completes the use gate.
 - Copy MCP config uses the bundled script path.
 - Creating a backup writes `backups/cortex-vault-*.zip`.

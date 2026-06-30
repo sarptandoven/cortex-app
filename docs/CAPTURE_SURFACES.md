@@ -6,13 +6,13 @@ Capture is the front door of Cortex. The product rule is simple: if a user can s
 
 ### Global Clipboard
 
-- The menu/header Save Clipboard button saves the current clipboard.
-- Users can opt into the global `Cmd+Shift+V` clipboard hotkey from Settings.
+- The secondary capture tools in `Sources` can save the current clipboard.
+- Users can opt into the global `Cmd+Shift+V` clipboard hotkey from `Trust > Advanced`.
 - Empty clipboards are rejected before hitting the backend.
 
 ### Quick Note
 
-- The Save tab includes a focused note box for decisions, preferences, open loops, and project facts.
+- `Sources > Secondary capture tools` includes a focused note box for decisions, preferences, open loops, and project facts.
 - Quick notes are saved as `macos-quick-note` captures.
 
 ### Web And Link Capture
@@ -30,7 +30,7 @@ Capture is the front door of Cortex. The product rule is simple: if a user can s
 
 ### Files
 
-- Users can choose files or drag files onto the Save tab.
+- Users can choose files or drag files onto `Sources`.
 - Cortex extracts text locally from:
   - `.txt`, `.md`, `.json`, `.jsonl`, `.csv`, `.tsv`, `.log`
   - common source-code and config files
@@ -43,7 +43,7 @@ Capture is the front door of Cortex. The product rule is simple: if a user can s
 
 - Cortex creates `~/Library/Application Support/Cortex/Capture Inbox`.
 - Users can drop files into that folder from automations, downloads, scripts, or Finder.
-- The Save tab can import the folder and then moves successfully imported files into `Capture Inbox/Imported`.
+- `Sources` can import the folder and then moves successfully imported files into `Capture Inbox/Imported`.
 
 ## Backend Endpoints
 

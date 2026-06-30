@@ -106,6 +106,8 @@ def main() -> None:
 
     missing_docs = [path for path in REQUIRED_DOCS if not (root / path).exists()]
     add_check(checks, "operator_docs", not missing_docs, "Required operator docs exist.", {"missing": missing_docs})
+    docs_current_result = run_command(root, [sys.executable, "scripts/check_docs_current.py"], timeout=60)
+    add_check(checks, "docs_current", docs_current_result["ok"], "Beta docs match the current five-tab local-first app and release manifest.", docs_current_result)
 
     if not args.skip_tests:
         test_result = run_command(root, [sys.executable, "-W", "error::ResourceWarning", "-m", "unittest", "discover", "backend/tests"], timeout=120)

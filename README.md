@@ -68,7 +68,7 @@ python3 -m http.server 8780
 ```bash
 python3 -m unittest discover backend/tests
 python3 scripts/retrieval_eval.py
-python3 scripts/ops_readiness_check.py --refresh-site
+python3 scripts/ops_readiness_check.py
 python3 scripts/reliability_check.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
 python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
 codesign --verify --deep --strict --verbose=2 macos/build/Cortex.app

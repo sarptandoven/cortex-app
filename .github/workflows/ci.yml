@@ -50,6 +50,9 @@ jobs:
       - name: Run adaptation quality evaluation
         run: python scripts/adaptation_eval.py
 
+      - name: Check beta docs currency
+        run: python scripts/check_docs_current.py
+
   distribution:
     name: Distribution site and update manifest
     runs-on: ubuntu-latest

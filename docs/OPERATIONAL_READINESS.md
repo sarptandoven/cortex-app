@@ -51,6 +51,7 @@ Operator scripts:
 - `python3 scripts/ops_readiness_check.py`
 - `python3 scripts/check_distribution_site.py`
 - `python3 scripts/validate_update_manifest.py`
+- `python3 scripts/check_docs_current.py`
 
 ## Ship Gate
 
@@ -76,6 +77,7 @@ The local readiness gate checks:
 
 - Python syntax without creating bytecode as the syntax step
 - required operator docs
+- beta docs and committed direct-release manifest currency
 - backend unit tests
 - macOS local build
 - DMG/ZIP packaging when `--include-package` is set
