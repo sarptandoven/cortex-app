@@ -1671,7 +1671,8 @@ final class AppState: ObservableObject {
     }
 
     var onboardingHasSource: Bool {
-        onboardingFirstImport != nil || (onboardingFirstImportID.isEmpty && firstSourceAdded && latestUsableImport != nil)
+        onboardingFirstImport != nil
+            || (onboardingFirstImportID.isEmpty && firstSourceAdded && (latestUsableImport != nil || !inbox.isEmpty || !recent.isEmpty || (stats?.captures ?? 0) > 0))
     }
 
     var onboardingHasReviewedMemory: Bool {
@@ -2116,11 +2117,15 @@ final class AppState: ObservableObject {
     private func fallbackCaptureFilesAsync(_ urls: [URL], moveImportedFromInbox: Bool) async {
         var saved = 0
         var failed = 0
+        var savedSources: [String] = []
         for url in urls {
             do {
                 let payload = try fileCapturePayload(for: url)
                 if await capture(text: payload.content, source: payload.source, title: payload.title, sourceURL: payload.sourceURL) {
                     saved += 1
+                    if !savedSources.contains(payload.source) {
+                        savedSources.append(payload.source)
+                    }
                     if moveImportedFromInbox {
                         moveToImportedFolder(url)
                     }
@@ -2133,6 +2138,9 @@ final class AppState: ObservableObject {
         }
         lastFileCaptureSummary = failed == 0 ? "Saved \(saved) file\(saved == 1 ? "" : "s")" : "Saved \(saved), failed \(failed)"
         status = lastFileCaptureSummary
+        if saved > 0 {
+            markFirstSourceAdded(importID: "", sources: savedSources)
+        }
         await refreshAfterCapture()
     }
 
