@@ -42,7 +42,7 @@ BACKEND_FEATURES = (
 SUPPORT_BUNDLE_SCHEMA = 1
 DEFAULT_BACKUP_RETENTION_COUNT = 20
 DEFAULT_BACKUP_RETENTION_DAYS = 0
-DEFAULT_MCP_TOKEN_SCOPES = ("read", "write", "export", "maintenance")
+DEFAULT_MCP_TOKEN_SCOPES = ("read",)
 MCP_TOKEN_SCOPES = {"read", "write", "export", "maintenance", "destructive"}
 
 MEMORY_LAYERS = {"semantic", "episodic", "style", "decision", "preference", "negative", "procedural"}
@@ -788,6 +788,11 @@ def normalize_token_scopes(scopes: list[str] | tuple[str, ...] | str | None) -> 
     else:
         values = [str(item).strip().lower() for item in scopes]
     return sorted({scope for scope in values if scope in MCP_TOKEN_SCOPES})
+
+
+def _sync_cursor_offset(value: Any) -> int | None:
+    match = re.search(r"(?:^|;)offset=(\d+);", str(value or ""))
+    return int(match.group(1)) if match else None
 
 
 def _parse_iso_timestamp(value: str | None) -> datetime | None:
@@ -1852,6 +1857,7 @@ class CortexStore:
                   SUM(CASE WHEN c.review_status = 'pending' THEN 1 ELSE 0 END) AS pending,
                   SUM(CASE WHEN c.review_status = 'approved' THEN 1 ELSE 0 END) AS approved,
                   SUM(CASE WHEN c.review_status = 'archived' THEN 1 ELSE 0 END) AS archived,
+                  SUM(CASE WHEN c.review_status != 'archived' THEN 1 ELSE 0 END) AS current_captures,
                   COUNT(DISTINCT CASE WHEN m.status = 'active' THEN m.id END) AS active_memories,
                   COUNT(DISTINCT CASE WHEN m.status = 'active' AND COALESCE(m.source_url, '') != '' THEN m.id END) AS cited_memories,
                   COUNT(DISTINCT CASE WHEN cps.extraction_status IN ('queued', 'running') THEN c.id END) AS processing,
@@ -1886,6 +1892,7 @@ class CortexStore:
             approved = int(stats.get("approved") or 0)
             archived = int(stats.get("archived") or 0)
             captures = int(stats.get("captures") or 0)
+            current_captures = int(stats.get("current_captures") or 0)
             active_memories = int(stats.get("active_memories") or 0)
             cited_memories = int(stats.get("cited_memories") or 0)
             processing = int(stats.get("processing") or 0)
@@ -1915,8 +1922,15 @@ class CortexStore:
             catalog_primary_beta = bool(item.get("primary_beta"))
             planned_connector = _planned_connector_without_native_sync(item)
             has_completed_sync = any(cursor.get("last_completed_at") for cursor in source_cursors) or any(account.get("last_sync_at") for account in active_accounts)
+            sync_incomplete = False
+            if source == "obsidian":
+                sync_incomplete = any(
+                    bool((cursor.get("state") or {}).get("truncated"))
+                    and (_sync_cursor_offset(cursor.get("cursor_value")) or 0) > 0
+                    for cursor in source_cursors
+                )
             obsidian_empty_sync = False
-            if source == "obsidian" and has_completed_sync and not captures and not active_memories:
+            if source == "obsidian" and has_completed_sync and not current_captures and not active_memories:
                 sync_states = [cursor.get("state") or {} for cursor in source_cursors]
                 account_states = [account.get("metadata") or {} for account in active_accounts]
                 obsidian_empty_sync = any(
@@ -1925,7 +1939,7 @@ class CortexStore:
                     and not (state or {}).get("scan_errors")
                     for state in [*sync_states, *account_states]
                 )
-            has_synced_data = (has_completed_sync and not obsidian_empty_sync) or captures or active_memories
+            has_synced_data = (has_completed_sync and not obsidian_empty_sync and not sync_incomplete) or current_captures or active_memories
             if has_synced_data and catalog_primary_beta:
                 beta_status = "active"
                 primary_beta_path = "connected-source-account"
@@ -1948,6 +1962,9 @@ class CortexStore:
             elif obsidian_empty_sync:
                 status = "empty"
                 next_action = "No Markdown notes were found in this Obsidian vault. Choose a vault with notes before Cortex can build memory."
+            elif sync_incomplete:
+                status = "syncing"
+                next_action = "Cortex is still scanning this Obsidian vault in batches."
             elif has_completed_sync:
                 status = "synced"
                 next_action = "Source sync has completed; review new memories as they arrive."
@@ -2001,6 +2018,7 @@ class CortexStore:
                     "accounts": len(active_accounts),
                     "cursors": len(source_cursors),
                     "captures": captures,
+                    "current_captures": current_captures,
                     "pending": pending,
                     "approved": approved,
                     "archived": archived,
@@ -4554,8 +4572,10 @@ class CortexStore:
     def approve_capture(self, user_id: str, capture_id: str) -> bool:
         timestamp = now_iso()
         with connect(self.db_path) as conn:
-            row = conn.execute("SELECT id FROM captures WHERE user_id = ? AND id = ?", (user_id, capture_id)).fetchone()
+            row = conn.execute("SELECT id, review_status FROM captures WHERE user_id = ? AND id = ?", (user_id, capture_id)).fetchone()
             if not row:
+                return False
+            if row["review_status"] == "archived":
                 return False
             conn.execute(
                 "UPDATE captures SET review_status = 'approved', approved_at = ?, archived_at = NULL WHERE user_id = ? AND id = ?",
@@ -9169,6 +9189,9 @@ class CortexStore:
         if redact_sensitive:
             return self._redact_payload(value)
         return self._redact_local_path_payload(value)
+
+    def public_payload(self, user_id: str, value: Any) -> Any:
+        return self._shared_payload(value, redact_sensitive=bool(self.settings(user_id)["redact_sensitive_context"]))
 
     def _redact_local_path_payload(self, value: Any, key: str = "") -> Any:
         if isinstance(value, str):

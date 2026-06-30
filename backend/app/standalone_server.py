@@ -384,12 +384,14 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and path == "/v1/source-accounts":
                 include_disconnected = (params.get("include_disconnected") or ["false"])[0].strip().lower() in {"1", "true", "yes"}
-                self._send_json({"results": store.list_source_accounts(user_id, include_disconnected=include_disconnected)})
+                accounts = store.list_source_accounts(user_id, include_disconnected=include_disconnected)
+                accounts = store.public_payload(user_id, accounts) if hasattr(store, "public_payload") else accounts
+                self._send_json({"results": accounts})
                 return
             if method == "POST" and path == "/v1/source-accounts":
                 body = self._json_body()
                 try:
-                    self._send_json(store.upsert_source_account(
+                    account = store.upsert_source_account(
                         user_id,
                         source=str(body.get("source") or ""),
                         account_label=str(body.get("account_label") or ""),
@@ -400,7 +402,8 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         policy=body.get("policy") if isinstance(body.get("policy"), dict) else None,
                         metadata=body.get("metadata") if isinstance(body.get("metadata"), dict) else None,
                         last_error=str(body.get("last_error") or "") or None,
-                    ))
+                    )
+                    self._send_json(store.public_payload(user_id, account) if hasattr(store, "public_payload") else account)
                 except ValueError as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
@@ -410,14 +413,14 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 if not disconnected:
                     self._send_json({"detail": "Source account not found"}, status=HTTPStatus.NOT_FOUND)
                 else:
-                    self._send_json(disconnected)
+                    self._send_json(store.public_payload(user_id, disconnected) if hasattr(store, "public_payload") else disconnected)
                 return
             if method == "POST" and path.startswith("/v1/source-accounts/") and path.endswith("/sync"):
                 account_id = unquote(path.removeprefix("/v1/source-accounts/").removesuffix("/sync").strip("/"))
                 body = self._json_body()
                 records = body.get("records") if isinstance(body.get("records"), list) else []
                 try:
-                    self._send_json(store.sync_source_account_records(
+                    result = store.sync_source_account_records(
                         user_id,
                         account_id,
                         records=records,
@@ -427,14 +430,15 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         state=body.get("state") if isinstance(body.get("state"), dict) else None,
                         processing=str(body.get("processing") or "async"),
                         archive_missing=_bool_value(body.get("archive_missing"), default=False),
-                    ))
+                    )
+                    self._send_json(store.public_payload(user_id, result) if hasattr(store, "public_payload") else result)
                 except ValueError as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
             if method == "POST" and path == "/v1/connectors/obsidian/sync":
                 body = self._json_body()
                 try:
-                    self._send_json(store.sync_obsidian_vault(
+                    result = store.sync_obsidian_vault(
                         user_id,
                         vault_path=str(body.get("vault_path") or ""),
                         source_account_id=str(body.get("source_account_id") or "") or None,
@@ -443,7 +447,8 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         processing=str(body.get("processing") or "sync"),
                         max_records=int(body.get("max_records") or 200),
                         cursor_name=str(body.get("cursor_name") or "local-folder"),
-                    ))
+                    )
+                    self._send_json(store.public_payload(user_id, result) if hasattr(store, "public_payload") else result)
                 except FileNotFoundError as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.NOT_FOUND)
                 except (TypeError, ValueError) as exc:

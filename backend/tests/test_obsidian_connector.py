@@ -305,6 +305,8 @@ Decision: Cortex should keep this Obsidian section searchable.
         self.assertEqual(second["archived_missing"], 1)
         self.assertTrue(self.store.search(self.user_id, "keep this Obsidian section searchable", limit=5))
         self.assertEqual(self.store.search(self.user_id, "zinnia-retire marker", limit=5), [])
+        removed_capture_id = next(record["capture_id"] for record in first["records"] if record["title"].endswith("Remove"))
+        self.assertFalse(self.store.approve_capture(self.user_id, removed_capture_id))
 
     def test_sync_vault_archives_removed_section_when_multiple_sections_remain(self) -> None:
         note = self.write_note(
@@ -463,6 +465,12 @@ Decision: Cortex should archive the orchid-block marker when an explicit block d
             )
 
         first = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync", max_records=2)
+        for capture_id in first["capture_ids"]:
+            self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+        first_readiness = self.store.source_readiness_report(self.user_id)
+        first_obsidian = next(item for item in first_readiness["sources"] if item["source"] == "obsidian")
+        self.assertEqual(first_obsidian["status"], "syncing")
+        self.assertIn("still scanning", first_obsidian["next_action"])
         second = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync", max_records=2)
         third = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync", max_records=2)
 

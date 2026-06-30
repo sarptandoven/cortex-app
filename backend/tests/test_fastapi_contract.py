@@ -890,8 +890,23 @@ class FastAPIContractTests(unittest.TestCase):
             self.assertEqual(payload["saved"], 1)
             self.assertEqual(payload["scan"]["records_found"], 1)
             self.assertEqual(payload["source_account"]["source"], "obsidian")
-            self.assertTrue(payload["records"][0]["source_url"].startswith("file://"))
+            encoded_payload = json.dumps(payload)
+            self.assertNotIn(str(vault), encoded_payload)
+            self.assertNotIn("file:///", encoded_payload)
+            self.assertTrue(payload["records"][0]["source_url"].startswith("local-file://Project%20Atlas.md"))
+            self.assertTrue(payload["scan"]["vault_path"].startswith("local-file://Endpoint%20Vault"))
+            self.assertTrue(payload["source_account"]["metadata"]["vault_path"].startswith("local-file://Endpoint%20Vault"))
             self.assertEqual(payload["records"][0]["title"], "Project Atlas")
+
+            accounts = self.client.get(
+                "/v1/source-accounts",
+                headers=headers,
+            )
+            self.assertEqual(accounts.status_code, 200)
+            encoded_accounts = json.dumps(accounts.json())
+            self.assertNotIn(str(vault), encoded_accounts)
+            self.assertNotIn("file:///", encoded_accounts)
+            self.assertTrue(accounts.json()["results"][0]["metadata"]["vault_path"].startswith("local-file://Endpoint%20Vault"))
 
             duplicate = self.client.post(
                 "/v1/connectors/obsidian/sync",
@@ -1182,6 +1197,38 @@ class FastAPIContractTests(unittest.TestCase):
             headers={"Authorization": "Bearer test-token"},
         )
         self.assertTrue(still_present.json()["results"])
+
+    def test_mcp_token_registration_defaults_to_read_only_scope(self) -> None:
+        user = "mcp-default-read-only-contract"
+        scoped_token = "cxm_fastapi_default_read_token_123456789"
+        self.client.put(
+            "/v1/settings",
+            json={"allow_agent_writes": True},
+            headers={"Authorization": "Bearer test-token", "X-Cortex-User": user},
+        )
+        registered = self.client.post(
+            "/v1/integrations/mcp-token",
+            json={"token": scoped_token, "label": "Default read MCP"},
+            headers={"Authorization": "Bearer test-token", "X-Cortex-User": user},
+        )
+        self.assertEqual(registered.status_code, 200)
+        self.assertEqual(registered.json()["scopes"], ["read"])
+
+        blocked = self.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": "default-read-blocked",
+                "method": "tools/call",
+                "params": {
+                    "name": "connect_source_account",
+                    "arguments": {"source": "slack", "account_label": "Default Read Slack"},
+                },
+            },
+            headers={"Authorization": f"Bearer {scoped_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(blocked.status_code, 200)
+        self.assertIn("not scoped", blocked.json()["error"]["message"])
 
     def test_scoped_mcp_token_can_register_and_sync_connected_source_records(self) -> None:
         user = "mcp-connected-source-contract"

@@ -423,13 +423,13 @@ def source_readiness(user_id: str = Depends(auth)) -> dict[str, Any]:
 
 @app.get("/v1/source-accounts", response_model=SourceAccountListResponse)
 def list_source_accounts(include_disconnected: bool = Query(default=False), user_id: str = Depends(auth)) -> dict[str, Any]:
-    return {"results": store.list_source_accounts(user_id, include_disconnected=include_disconnected)}
+    return {"results": store.public_payload(user_id, store.list_source_accounts(user_id, include_disconnected=include_disconnected))}
 
 
 @app.post("/v1/source-accounts", response_model=SourceAccountResponse)
 def upsert_source_account(request: SourceAccountRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
     try:
-        return store.upsert_source_account(
+        account = store.upsert_source_account(
             user_id,
             source=request.source,
             account_label=request.account_label,
@@ -441,6 +441,7 @@ def upsert_source_account(request: SourceAccountRequest, user_id: str = Depends(
             metadata=request.metadata,
             last_error=request.last_error,
         )
+        return store.public_payload(user_id, account)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -450,13 +451,13 @@ def disconnect_source_account(account_id: str, user_id: str = Depends(auth)) -> 
     disconnected = store.disconnect_source_account(user_id, account_id)
     if not disconnected:
         raise HTTPException(status_code=404, detail="Source account not found")
-    return disconnected
+    return store.public_payload(user_id, disconnected)
 
 
 @app.post("/v1/source-accounts/{account_id}/sync", response_model=SourceAccountSyncResponse)
 def sync_source_account(account_id: str, request: SourceAccountSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
     try:
-        return store.sync_source_account_records(
+        result = store.sync_source_account_records(
             user_id,
             account_id,
             records=[record.model_dump() for record in request.records],
@@ -467,6 +468,7 @@ def sync_source_account(account_id: str, request: SourceAccountSyncRequest, user
             processing=request.processing,
             archive_missing=request.archive_missing,
         )
+        return store.public_payload(user_id, result)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -474,7 +476,7 @@ def sync_source_account(account_id: str, request: SourceAccountSyncRequest, user
 @app.post("/v1/connectors/obsidian/sync", response_model=ObsidianVaultSyncResponse)
 def sync_obsidian_vault(request: ObsidianVaultSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
     try:
-        return store.sync_obsidian_vault(
+        result = store.sync_obsidian_vault(
             user_id,
             vault_path=request.vault_path,
             source_account_id=request.source_account_id,
@@ -484,6 +486,7 @@ def sync_obsidian_vault(request: ObsidianVaultSyncRequest, user_id: str = Depend
             max_records=request.max_records,
             cursor_name=request.cursor_name,
         )
+        return store.public_payload(user_id, result)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
