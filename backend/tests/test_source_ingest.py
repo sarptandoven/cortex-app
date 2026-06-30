@@ -205,6 +205,7 @@ class SourceIngestTests(unittest.TestCase):
                 str(self.root / "dated-chatgpt"),
                 str(self.root / "dated-claude"),
                 str(self.root / "dated-keep"),
+                str(self.root / "dated-twitter"),
             ],
             processing="sync",
             max_records=10,
@@ -223,11 +224,12 @@ class SourceIngestTests(unittest.TestCase):
             ).fetchall()
         finally:
             conn.close()
-        self.assertEqual(len(rows), 3)
+        self.assertEqual(len(rows), 4)
         by_source = {row[0]: row[2] for row in rows}
         self.assertEqual(by_source["chatgpt"], "2026-06-29")
         self.assertEqual(by_source["claude"], "2026-06-30")
         self.assertEqual(by_source["google-keep"], "2026-07-01")
+        self.assertEqual(by_source["twitter-x"], "2026-07-02")
 
     def test_repeated_import_skips_duplicates_without_deleting_original(self) -> None:
         self._write_chatgpt_export()
@@ -1157,6 +1159,18 @@ class SourceIngestTests(unittest.TestCase):
             "textContent": "We decided Project MetadataDate Keep should use note timestamps.",
         }
         (keep / "metadata-date.json").write_text(json.dumps(keep_payload), encoding="utf-8")
+
+        twitter = self.root / "dated-twitter" / "data"
+        twitter.mkdir(parents=True)
+        tweets = [
+            {
+                "tweet": {
+                    "created_at": "Thu Jul 02 10:00:00 +0000 2026",
+                    "full_text": "We decided Project MetadataDate Twitter should use archive timestamps.",
+                }
+            }
+        ]
+        (twitter / "tweets.js").write_text("window.YTD.tweets.part0 = " + json.dumps(tweets), encoding="utf-8")
 
     def _write_claude_export(self) -> None:
         folder = self.root / "claude"

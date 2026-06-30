@@ -828,6 +828,16 @@ def _extract_absolute_date(text: str) -> str | None:
         month = _month_number(rfc_email.group(2))
         if month:
             return _iso_date(rfc_email.group(3), str(month), rfc_email.group(1))
+
+    service_archive = re.search(
+        rf"\b(?:mon|tue|wed|thu|fri|sat|sun),?\s+({MONTH_NAME_PATTERN})\.?\s+(\d{{1,2}})\s+\d{{1,2}}:\d{{2}}:\d{{2}}\s+(?:[+-]\d{{4}}\s+)?((?:19|20)\d{{2}})\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if service_archive:
+        month = _month_number(service_archive.group(1))
+        if month:
+            return _iso_date(service_archive.group(3), str(month), service_archive.group(2))
     return None
 
 
