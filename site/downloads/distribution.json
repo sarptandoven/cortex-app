@@ -3,20 +3,20 @@
     {
       "filename": "Cortex-0.1.0-1.dmg",
       "kind": "dmg",
-      "sha256": "8e017dcf954cfd13c2a545886674522d7adcb482f5824625cb77b91534d7cfdf",
-      "size_bytes": 2880776,
+      "sha256": "a1f90e8c9efad2a2627e659a9e78a36cdc3286d7a40ff2a576d784c773b1d6b9",
+      "size_bytes": 2882067,
       "url": "downloads/Cortex-0.1.0-1.dmg"
     },
     {
       "filename": "Cortex-0.1.0-1.app.zip",
       "kind": "zip",
-      "sha256": "f059d85d03ac56134e7c6e3c2d1e7dd34b57477bf8a52f95c7fd8ba3c98325be",
-      "size_bytes": 2365045,
+      "sha256": "e4e037e3496e51fcbba7e886ee1f73753dd4a4f84730ebe4d08d6497326855ac",
+      "size_bytes": 2366247,
       "url": "downloads/Cortex-0.1.0-1.app.zip"
     }
   ],
   "build": "1",
   "channel": "local-beta",
-  "prepared_at": "2026-06-30T18:22:51+00:00",
+  "prepared_at": "2026-06-30T18:28:27+00:00",
   "version": "0.1.0"
 }
