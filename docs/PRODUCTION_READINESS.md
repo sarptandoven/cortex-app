@@ -79,6 +79,7 @@ The remaining roadmap should stay non-overengineered:
 - Dogfood with at least 1,000 captures across clipboard, notes, ChatGPT, Claude, docs, and meetings
 - Run `python3 -m unittest discover backend/tests` before every app package
 - Run `python3 scripts/retrieval_eval.py` before every app package
+- Run `python3 scripts/backend_beta_smoke.py` before inviting beta users
 - Run `python3 scripts/reliability_check.py` against the packaged app backend before every app package
 - Run `python3 scripts/battle_test_http.py` against a fresh local backend before every app package
 - Verify `GET /v1/loop` moves from review to memory use after approving pending captures

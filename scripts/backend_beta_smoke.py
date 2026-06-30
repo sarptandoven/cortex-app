@@ -1,0 +1,402 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import contextlib
+import json
+import os
+import socket
+import sys
+import tempfile
+import traceback
+import uuid
+from pathlib import Path
+from typing import Any, Callable
+
+
+API_TOKEN = "beta-smoke-local-token-1234567890"
+DUMMY_OPENAI_KEY = "sk-" + ("0" * 24)
+
+
+class SmokeFailure(AssertionError):
+    def __init__(self, message: str, payload: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.payload = payload or {}
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def configure_offline_environment(tmp: Path) -> Path:
+    vault_path = tmp / "Cortex.vault"
+    os.environ.update(
+        {
+            "CORTEX_VAULT_PATH": str(vault_path),
+            "CORTEX_DB_PATH": str(vault_path / "index.sqlite"),
+            "CORTEX_API_KEY": API_TOKEN,
+            "CORTEX_PUBLIC_BASE_URL": "http://127.0.0.1:8766",
+            "CORTEX_EMBEDDING_PROVIDER": "hash",
+            "CORTEX_EMBEDDING_STRICT": "0",
+            "CORTEX_EXTRACTION_MODE": "local",
+            "CORTEX_REQUIRE_SCOPED_API_TOKENS": "0",
+            "CORTEX_SHARD_MODE": "local",
+        }
+    )
+    for name in (
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "CORTEX_OPENAI_EMBEDDINGS_URL",
+        "CORTEX_MCP_API_KEY",
+        "CORTEX_MCP_API_KEY_SCOPES",
+        "CORTEX_SHARD_ROOT",
+        "CORTEX_ALLOW_INSECURE_DEV_TOKEN",
+    ):
+        os.environ.pop(name, None)
+    return vault_path
+
+
+@contextlib.contextmanager
+def block_network() -> Any:
+    attempts: list[str] = []
+    original_connect = socket.socket.connect
+    original_create_connection = socket.create_connection
+
+    def blocked_connect(sock: socket.socket, address: Any) -> None:
+        attempts.append(repr(address))
+        raise RuntimeError(f"Network access is blocked during backend beta smoke: {address!r}")
+
+    def blocked_create_connection(address: Any, *args: Any, **kwargs: Any) -> socket.socket:
+        attempts.append(repr(address))
+        raise RuntimeError(f"Network access is blocked during backend beta smoke: {address!r}")
+
+    socket.socket.connect = blocked_connect  # type: ignore[method-assign]
+    socket.create_connection = blocked_create_connection  # type: ignore[assignment]
+    try:
+        yield attempts
+    finally:
+        socket.socket.connect = original_connect  # type: ignore[method-assign]
+        socket.create_connection = original_create_connection  # type: ignore[assignment]
+
+
+def write_import_fixture(tmp: Path, marker: str) -> Path:
+    source_dir = tmp / "source-import" / "docs"
+    source_dir.mkdir(parents=True)
+    (source_dir / "Beta Smoke Notes.md").write_text(
+        "\n".join(
+            [
+                "# Beta Smoke Notes",
+                "",
+                (
+                    f"Decision: Project Taipei backend smoke marker {marker} verifies source import, "
+                    "review approval, cited Ask answers, markdown export, and Trust controls before beta invites."
+                ),
+                "I prefer concise technical answers when debugging Cortex beta issues.",
+                "Action: follow up with Mira about the beta invite checklist.",
+                f"The beta smoke redaction fixture includes password=supersecret123 and {DUMMY_OPENAI_KEY}.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return source_dir
+
+
+class SmokeRunner:
+    def __init__(self, client: Any, tmp: Path, vault_path: Path, marker: str) -> None:
+        self.client = client
+        self.tmp = tmp
+        self.vault_path = vault_path
+        self.marker = marker
+        self.headers = {"Authorization": f"Bearer {API_TOKEN}"}
+        self.checks: list[dict[str, Any]] = []
+        self.import_id = ""
+        self.capture_ids: list[str] = []
+        self.export_token = "cxa_beta_smoke_export_1234567890"
+        self.write_token = "cxa_beta_smoke_write_1234567890"
+
+    def run_step(self, name: str, func: Callable[[], dict[str, Any]]) -> None:
+        try:
+            payload = func()
+        except Exception as exc:
+            failed = {"name": name, "status": "failed", "detail": str(exc)}
+            if isinstance(exc, SmokeFailure):
+                failed["payload"] = exc.payload
+            self.checks.append(failed)
+            raise
+        self.checks.append({"name": name, "status": "ok", **payload})
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        expected_status: int = 200,
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        response = self.client.request(method, path, headers=headers or self.headers, **kwargs)
+        if response.status_code != expected_status:
+            raise SmokeFailure(
+                f"{method} {path} returned HTTP {response.status_code}, expected {expected_status}",
+                {"body": response.text[:1200]},
+            )
+        return response
+
+    def ensure(self, condition: bool, message: str, payload: dict[str, Any] | None = None) -> None:
+        if not condition:
+            raise SmokeFailure(message, payload)
+
+    def startup_health(self) -> dict[str, Any]:
+        health = self.request("GET", "/health", headers={}).json()
+        ready = self.request("GET", "/ready", headers={}).json()
+        diagnostics = self.request("GET", "/v1/diagnostics").json()
+        self.ensure(health.get("status") == "ok", "Health did not return ok", health)
+        self.ensure(ready.get("status") == "ok", "Ready did not return ok", ready)
+        self.ensure(diagnostics.get("status") == "ok", "Diagnostics did not return ok", diagnostics)
+        embedding = diagnostics.get("embedding") or {}
+        self.ensure(embedding.get("provider") == "hash", "Smoke must use hash embeddings", embedding)
+        self.ensure(embedding.get("network_required") is False, "Smoke embeddings must not require network", embedding)
+        self.ensure(str(self.vault_path) in str(diagnostics.get("db_path")), "Diagnostics did not use temp vault", diagnostics)
+        return {
+            "detail": "FastAPI app imported, temp store initialized, health/ready/diagnostics passed.",
+            "payload": {
+                "mode": health.get("mode"),
+                "health_contract": health.get("health_contract"),
+                "db_path": diagnostics.get("db_path"),
+                "embedding": embedding,
+            },
+        }
+
+    def baseline_trust_settings(self) -> dict[str, Any]:
+        settings = self.request(
+            "PUT",
+            "/v1/settings",
+            json={
+                "review_new_captures": True,
+                "allow_pending_in_context": False,
+                "allow_agent_reads": True,
+                "allow_agent_writes": False,
+                "allow_agent_exports": False,
+                "allow_agent_maintenance": False,
+                "allow_agent_destructive_actions": False,
+                "redact_sensitive_context": True,
+            },
+        ).json()
+        self.ensure(settings["review_new_captures"] is True, "Review gate is not enabled", settings)
+        self.ensure(settings["allow_pending_in_context"] is False, "Pending context gate is not enabled", settings)
+        self.ensure(settings["allow_agent_writes"] is False, "Agent writes should start disabled", settings)
+        self.ensure(settings["allow_agent_exports"] is False, "Agent exports should start disabled", settings)
+        return {
+            "detail": "Guarded beta Trust settings applied.",
+            "payload": {
+                "review_new_captures": settings["review_new_captures"],
+                "allow_pending_in_context": settings["allow_pending_in_context"],
+                "allow_agent_writes": settings["allow_agent_writes"],
+                "allow_agent_exports": settings["allow_agent_exports"],
+            },
+        }
+
+    def import_review_and_approve(self) -> dict[str, Any]:
+        source_dir = write_import_fixture(self.tmp, self.marker)
+        analyzed = self.request(
+            "POST",
+            "/v1/imports/analyze",
+            json={"paths": [str(source_dir)], "source_hint": "docs", "max_records": 10},
+        ).json()
+        self.ensure(analyzed["records_found"] >= 1, "Import analysis found no records", analyzed)
+
+        imported = self.request(
+            "POST",
+            "/v1/imports",
+            json={"paths": [str(source_dir)], "source_hint": "docs", "processing": "sync", "max_records": 10},
+        ).json()
+        self.import_id = imported["import_id"]
+        self.capture_ids = [record["capture_id"] for record in imported["records"] if record.get("capture_id")]
+        self.ensure(imported["status"] == "complete", "Import did not complete", imported)
+        self.ensure(imported["saved"] >= 1, "Import did not save any captures", imported)
+        self.ensure(imported["failed"] == 0, "Import had failures", imported)
+        self.ensure(bool(self.capture_ids), "Import returned no capture IDs", imported)
+
+        search_pending = self.request("GET", "/v1/search", params={"query": self.marker, "limit": 5}).json()
+        self.ensure(search_pending["results"] == [], "Pending import leaked into search", search_pending)
+
+        review = self.request("GET", "/v1/review/today").json()
+        pending_ids = {item["id"] for item in review["pending"]}
+        self.ensure(any(capture_id in pending_ids for capture_id in self.capture_ids), "Imported capture was not pending review", review)
+        self.ensure(review["recommended_actions"], "Daily review did not include recommended actions", review)
+
+        for capture_id in self.capture_ids:
+            approved = self.request("POST", f"/v1/captures/{capture_id}/approve").json()
+            self.ensure(approved["approved"] is True, f"Capture {capture_id} was not approved", approved)
+
+        search_approved = self.request("GET", "/v1/search", params={"query": self.marker, "limit": 5}).json()
+        self.ensure(search_approved["results"], "Approved import was not searchable", search_approved)
+        return {
+            "detail": "Generated docs import analyzed, saved, held for review, approved, and became searchable.",
+            "payload": {
+                "import_id": self.import_id,
+                "records_found": analyzed["records_found"],
+                "capture_ids": self.capture_ids,
+                "approved_results": len(search_approved["results"]),
+            },
+        }
+
+    def ask_and_export(self) -> dict[str, Any]:
+        asked = self.request("GET", "/v1/ask", params={"query": f"{self.marker} beta invite checklist", "limit": 5}).json()
+        self.ensure(asked["citations"], "Ask returned no citations", asked)
+        self.ensure(
+            any(self.marker in citation.get("excerpt", "") for citation in asked["citations"]),
+            "Ask citations did not include the smoke marker",
+            asked,
+        )
+
+        exported = self.request("GET", "/v1/export.json").json()
+        self.ensure(any(item["id"] == self.import_id for item in exported["imports"]), "JSON export omitted import session", exported)
+        self.ensure(exported["stats"]["memories"] >= 1, "JSON export did not include memory stats", exported.get("stats"))
+
+        markdown = self.request("GET", "/v1/export.md").text
+        self.ensure("# Cortex Export" in markdown, "Markdown export did not render Cortex export heading")
+        self.ensure(self.marker in markdown, "Markdown export omitted approved smoke memory")
+        self.ensure("[REDACTED_SECRET]" in markdown, "Markdown export did not redact password fixture")
+        self.ensure("[REDACTED_OPENAI_KEY]" in markdown, "Markdown export did not redact API key fixture")
+        self.ensure("supersecret123" not in markdown and DUMMY_OPENAI_KEY not in markdown, "Markdown export leaked secret fixture")
+        return {
+            "detail": "Ask returned cited memory and exports included approved, redacted temp data.",
+            "payload": {
+                "citations": len(asked["citations"]),
+                "export_memories": exported["stats"]["memories"],
+            },
+        }
+
+    def scoped_trust_controls(self) -> dict[str, Any]:
+        for token, label, scopes in (
+            (self.write_token, "Beta smoke write token", ["read", "write"]),
+            (self.export_token, "Beta smoke export token", ["read", "export"]),
+        ):
+            registered = self.request(
+                "POST",
+                "/v1/integrations/api-token",
+                json={"token": token, "label": label, "scopes": scopes},
+            ).json()
+            self.ensure(set(registered["scopes"]) == set(scopes), "Scoped token registration returned unexpected scopes", registered)
+
+        write_headers = {"Authorization": f"Bearer {self.write_token}", "X-Cortex-User": "local"}
+        export_headers = {"Authorization": f"Bearer {self.export_token}", "X-Cortex-User": "local"}
+        blocked_write = self.request(
+            "POST",
+            "/v1/captures",
+            expected_status=403,
+            headers=write_headers,
+            json={"content": "Blocked scoped write should not save.", "source": "beta-smoke"},
+        ).json()
+        self.ensure("writes are disabled" in blocked_write["detail"], "Scoped write was not blocked by Trust", blocked_write)
+
+        blocked_export = self.request("GET", "/v1/export.md", expected_status=403, headers=export_headers).json()
+        self.ensure("exports are disabled" in blocked_export["detail"], "Scoped export was not blocked by Trust", blocked_export)
+
+        enabled = self.request("PUT", "/v1/settings", json={"allow_agent_writes": True, "allow_agent_exports": True}).json()
+        self.ensure(enabled["allow_agent_writes"] is True, "Agent writes did not enable", enabled)
+        self.ensure(enabled["allow_agent_exports"] is True, "Agent exports did not enable", enabled)
+
+        allowed_write = self.request(
+            "POST",
+            "/v1/captures",
+            headers=write_headers,
+            json={
+                "content": f"Scoped write allowed for backend beta smoke marker {self.marker}.",
+                "source": "beta-smoke",
+            },
+        ).json()
+        self.ensure(bool(allowed_write["capture_id"]), "Scoped write did not create capture", allowed_write)
+        scoped_markdown = self.request("GET", "/v1/export.md", headers=export_headers).text
+        self.ensure("# Cortex Export" in scoped_markdown, "Scoped export did not return markdown export")
+
+        trust = self.request("GET", "/v1/trust/summary").json()
+        risk_text = "\n".join(trust["risk_flags"])
+        self.ensure("write" in risk_text.lower(), "Trust summary did not flag enabled writes", trust)
+        self.ensure("export" in risk_text.lower(), "Trust summary did not flag enabled exports", trust)
+        return {
+            "detail": "Scoped REST tokens were blocked by Trust defaults, then allowed after explicit Trust updates.",
+            "payload": {
+                "allowed_capture_id": allowed_write["capture_id"],
+                "trust_score": trust["trust_score"],
+                "risk_flags": trust["risk_flags"],
+            },
+        }
+
+    def run(self) -> dict[str, Any]:
+        self.run_step("startup_health", self.startup_health)
+        self.run_step("baseline_trust_settings", self.baseline_trust_settings)
+        self.run_step("import_review_approve", self.import_review_and_approve)
+        self.run_step("ask_export", self.ask_and_export)
+        self.run_step("scoped_trust_controls", self.scoped_trust_controls)
+        return {
+            "status": "ok",
+            "marker": self.marker,
+            "checks": self.checks,
+            "temp_vault": str(self.vault_path),
+            "network": "socket connect/create_connection blocked during smoke checks",
+        }
+
+
+def run_smoke(tmp: Path) -> dict[str, Any]:
+    root = repo_root()
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    vault_path = configure_offline_environment(tmp)
+    marker = f"backend-beta-smoke-{uuid.uuid4().hex[:10]}"
+
+    from fastapi.testclient import TestClient
+
+    with block_network() as network_attempts:
+        from backend.app import main as main_module
+
+        runner = SmokeRunner(TestClient(main_module.app), tmp, vault_path, marker)
+        try:
+            result = runner.run()
+        except Exception as exc:
+            if isinstance(exc, SmokeFailure):
+                exc.payload = {**exc.payload, "checks": runner.checks}
+            else:
+                setattr(exc, "smoke_checks", runner.checks)
+            raise
+        runner.ensure(not network_attempts, "Smoke attempted network access", {"attempts": network_attempts})
+        return result
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Run the Cortex backend beta smoke lane against temp data with network sockets blocked."
+    )
+    parser.add_argument("--keep-temp", action="store_true", help="Keep the temp vault and import fixture for debugging.")
+    args = parser.parse_args()
+
+    tmp_root = Path(tempfile.mkdtemp(prefix="cortex-backend-beta-smoke-"))
+    try:
+        result = run_smoke(tmp_root)
+    except Exception as exc:
+        payload = {
+            "status": "failed",
+            "error": str(exc),
+            "temp_root": str(tmp_root),
+            "traceback": traceback.format_exc(limit=8),
+        }
+        if isinstance(exc, SmokeFailure):
+            payload["payload"] = exc.payload
+            payload["checks"] = exc.payload.get("checks", [])
+        elif hasattr(exc, "smoke_checks"):
+            payload["checks"] = getattr(exc, "smoke_checks")
+        print(json.dumps(payload, indent=2))
+        raise SystemExit(1) from exc
+    else:
+        result["temp_root"] = str(tmp_root) if args.keep_temp else "removed"
+        print(json.dumps(result, indent=2))
+    finally:
+        if not args.keep_temp:
+            import shutil
+
+            shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()

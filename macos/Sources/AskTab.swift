@@ -29,7 +29,7 @@ struct AskTab: View {
                 } else {
                     QuietState(
                         title: "Ask for a cited answer",
-                        detail: "Try a question about a project, person, decision, preference, or phrase from your imported sources."
+                        detail: "Ask about something you approved in Review. Citations show which source backed the answer."
                     )
                 }
 
@@ -84,7 +84,7 @@ struct AskQuerySection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                TextField("Ask about a person, project, decision, preference, or writing pattern", text: $state.searchQuery)
+                TextField("Ask about approved memory, a project, a person, or an exact phrase", text: $state.searchQuery)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { state.runSearch() }
                 Button {
@@ -143,12 +143,12 @@ struct AskResponseSection: View {
             } else if state.searchResults.isEmpty {
                 QuietState(
                     title: "No cited answer found",
-                    detail: "Try a project, person, decision, or exact phrase from an approved source."
+                    detail: "Try an exact phrase from a source you approved in Review, or add more context in Sources."
                 )
             } else {
                 QuietState(
                     title: "Source result found",
-                    detail: "Cortex found matching source context, but no natural-language answer was returned."
+                    detail: "Cortex found matching context, but no natural-language answer was returned. Open source details below."
                 )
             }
 
@@ -173,10 +173,10 @@ struct AskResultsSection: View {
     var body: some View {
         Group {
             if state.searchResults.isEmpty && !state.hasSearched {
-                QuietState(title: "Ask your model", detail: "Try a question about a project, person, decision, preference, or phrase from your imported sources.")
+                QuietState(title: "Ask your model", detail: "Ask about approved memory, a project, a person, or an exact phrase from a source.")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if state.searchResults.isEmpty {
-                QuietState(title: "No cited result matched that", detail: "Try a project, person, decision, or exact phrase from an approved source.")
+                QuietState(title: "No cited result matched that", detail: "Try an exact phrase from an approved source, or approve more memory in Review.")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -203,6 +203,11 @@ struct AskAIHandoffSection: View {
                 Text("Use these copy formats when another AI app needs more than the cited answer.")
                     .font(.caption)
                     .foregroundColor(.secondary)
+                if !state.canPrepareArtifacts {
+                    Text("Artifact sharing is off in Trust.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
                 HStack {
                     Button {
                         state.copyAgentAdaptation()
@@ -222,6 +227,7 @@ struct AskAIHandoffSection: View {
                     }
                     Spacer()
                 }
+                .disabled(!state.canPrepareArtifacts)
             }
             .padding(.top, 4)
         }

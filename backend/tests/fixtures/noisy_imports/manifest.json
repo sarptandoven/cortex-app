@@ -60,6 +60,16 @@
       "source_url_contains": ["service=email", "subject=Quoted%20fixture%20reply", "line=", "excerpt="]
     },
     {
+      "name": "email_forwarded_decision",
+      "query": "Project Forwarded current sender decision precise source citations",
+      "source": "email",
+      "layer": "decision",
+      "kind": "decision",
+      "must_include": "current sender decision",
+      "occurred_at": "2026-06-29",
+      "source_url_contains": ["service=email", "subject=Forwarded%20fixture%20decision", "line=", "excerpt="]
+    },
+    {
       "name": "docs_negative",
       "query": "ceremonial fixture intros",
       "source": "docs",
@@ -143,7 +153,19 @@
     "wall-of-text import summaries",
     "storybook-only demos",
     "long public launch testimonials",
+    "long QBR narratives",
+    "confetti rollout decks",
     "long stakeholder recap rituals"
+  ],
+  "rejected_queries": [
+    {
+      "query": "long QBR narratives launch readiness",
+      "must_not_include": "long QBR narratives"
+    },
+    {
+      "query": "confetti rollout decks",
+      "must_not_include": "confetti rollout decks"
+    }
   ],
   "boilerplate_phrases": [
     "Source:",

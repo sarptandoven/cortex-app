@@ -84,6 +84,9 @@ The packaged app also bundles `scripts/cortex_mcp_stdio.py` so setup can copy a 
 ```
 
 This creates a DMG, ZIP, checksums, and `latest.json` update manifest under `../outputs/Cortex-<version>-<build>/`.
+It also writes `BETA_HANDOFF.md` beside the artifacts with tester-facing build,
+install, checksum, readiness, live-backend, and manual first-user verification
+steps.
 
 The Trust diagnostics section includes an "Installer and updates" section that can check a local or hosted `latest.json` feed.
 

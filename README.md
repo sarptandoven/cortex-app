@@ -50,6 +50,9 @@ Release artifacts are written to:
 ../outputs/Cortex-<version>-<build>/
 ```
 
+Each packaged release includes `BETA_HANDOFF.md` with the tester build, install,
+checksum, readiness, live-backend, and manual first-user verification steps.
+
 The static landing page lives in:
 
 ```text
@@ -68,6 +71,7 @@ python3 -m http.server 8780
 ```bash
 python3 -m unittest discover backend/tests
 python3 scripts/retrieval_eval.py
+python3 scripts/backend_beta_smoke.py
 python3 scripts/ops_readiness_check.py
 python3 scripts/reliability_check.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
 python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"

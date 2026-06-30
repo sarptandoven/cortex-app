@@ -22,7 +22,7 @@ enum OnboardingStep: Int, CaseIterable, Identifiable {
         case .privateVault: return "Private Vault"
         case .firstSource: return "Add First Source"
         case .reviewMemory: return "Review Memory"
-        case .askUse: return "Ask / Use Cortex"
+        case .askUse: return "Ask Cortex"
         case .trustBackup: return "Trust & Backup"
         }
     }
@@ -32,13 +32,13 @@ enum OnboardingStep: Int, CaseIterable, Identifiable {
         case .privateVault:
             return "Confirm the local memory engine and readable vault on this Mac."
         case .firstSource:
-            return "Import real context from the tools and files that describe your life and work."
+            return "Import one real source from the tools or files that describe your work."
         case .reviewMemory:
             return "Approve the first useful memory before it becomes part of your model."
         case .askUse:
-            return "Use Cortex once through Ask or an AI handoff so the loop is real."
+            return "Ask one cited question so you can see what Cortex actually knows."
         case .trustBackup:
-            return "Choose your privacy posture and decide how this vault is backed up."
+            return "Confirm privacy defaults and decide how this vault is backed up."
         }
     }
 

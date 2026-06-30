@@ -48,6 +48,15 @@ class NoisyImportGoldenTests(unittest.TestCase):
             self.assertNotIn(phrase, joined_content)
             self.assertNotIn(phrase, joined_excerpt)
 
+        original_vector_ready = self.store._vector_ready
+        self.store._vector_ready = lambda conn: False
+        try:
+            for rejected in manifest.get("rejected_queries", []):
+                with self.subTest(rejected_query=rejected["query"]):
+                    self.assertEqual([], self.store.search("test-user", rejected["query"], limit=3))
+        finally:
+            self.store._vector_ready = original_vector_ready
+
         for expected in manifest["expected"]:
             with self.subTest(expected=expected["name"]):
                 hits = [

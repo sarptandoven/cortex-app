@@ -147,6 +147,7 @@ See `docs/LOCAL_VAULT_FORMAT.md` for the full disk layout and recovery contract.
 
 ```bash
 python3 -m unittest discover backend/tests
+python3 scripts/backend_beta_smoke.py
 ```
 
 With the backend running:

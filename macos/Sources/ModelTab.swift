@@ -66,10 +66,10 @@ struct ModelEmptySection: View {
                 .frame(width: 64, height: 64)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Start your personal model")
+                    Text("Start with one source")
                         .font(.title2)
                         .fontWeight(.semibold)
-                    Text("Add conversations, email, notes, writing samples, decisions, or messages. Cortex turns them into private memory layers for future agent adaptation.")
+                    Text("Add one readable export or file. Cortex scans it locally, then asks you to review useful memory before it shapes the model.")
                         .font(.callout)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -82,7 +82,7 @@ struct ModelEmptySection: View {
                     state.selectedTab = .sources
                     state.status = "Add your first source"
                 } label: {
-                    Label("Add First Source", systemImage: "tray.and.arrow.down")
+                    Label("Add Source", systemImage: "tray.and.arrow.down")
                 }
                 .buttonStyle(.borderedProminent)
 
@@ -90,7 +90,7 @@ struct ModelEmptySection: View {
                     state.selectedTab = .trust
                     state.status = "Review privacy and AI access"
                 } label: {
-                    Label("Review Privacy", systemImage: "lock.shield")
+                    Label("Set Trust", systemImage: "lock.shield")
                 }
 
                 Spacer()
@@ -504,7 +504,7 @@ struct ModelSourceCoverageSection: View {
                     Spacer(minLength: 0)
                 }
             } else if review.stats.memories == 0 {
-                QuietState(title: "No personal model yet", detail: "Add conversations, notes, writing samples, files, and decisions to start building your adaptation layer.")
+                QuietState(title: "No personal model yet", detail: "Add one source, then approve useful memory in Review before expecting Ask to answer.")
             } else {
                 HStack(spacing: 8) {
                     ModelMetricPill(label: "Topics", value: "\(review.top_topics.count)", systemImage: "number")
@@ -531,7 +531,7 @@ struct ModelSignalSummarySection: View {
                 ModelMetricPill(label: "Decisions", value: "\(review.recent_decisions.count)", systemImage: "checkmark.seal")
             }
             if review.top_topics.isEmpty && review.top_entities.isEmpty {
-                QuietState(title: "Needs more context", detail: "Import a richer source to improve people, project, topic, and style coverage.")
+                QuietState(title: "Needs more context", detail: "Approve more memory or import a richer source to improve people, project, topic, and style coverage.")
             } else {
                 ModelTopicSection(topics: review.top_topics, entities: review.top_entities)
             }

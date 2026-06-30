@@ -84,7 +84,6 @@ When enabled, new captures enter the inbox as `pending`.
 - `get_about_entity`
 - `get_memory_stats`
 - `get_memory_inbox`
-- `get_memory_diagnostics`
 - `get_trust_summary`
 - `get_audit_log`
 
@@ -106,6 +105,8 @@ This is disabled by default for new local vaults.
 
 `allow_agent_maintenance` controls MCP maintenance tools:
 
+- `get_memory_diagnostics`
+- `get_reliability_report`
 - `create_memory_backup`
 - `repair_memory_storage`
 - `rebuild_memory_search`

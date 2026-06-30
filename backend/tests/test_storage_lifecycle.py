@@ -1392,6 +1392,13 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(reuse_loop["primary_action"]["action"], "reuse")
         self.assertEqual(reuse_loop["counts"]["pending_captures"], 0)
 
+        answer = self.store.answer_query(self.user_id, "daily loop", limit=5)
+        self.assertTrue(answer["citations"])
+        ask_loop = self.store.product_loop(self.user_id)
+        self.assertEqual(ask_loop["primary_action"]["action"], "done")
+        self.assertGreaterEqual(ask_loop["counts"]["used_today"], 1)
+        self.assertTrue(any(step["key"] == "reuse" and step["status"] == "done" for step in ask_loop["steps"]))
+
         recorded = self.store.record_context_reuse(self.user_id, surface="unit-test", query="daily loop", target="Claude")
         self.assertTrue(recorded["recorded"])
         done_loop = recorded["product_loop"]
@@ -1472,14 +1479,34 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         cleared = self.store.update_settings(self.user_id, {"source_policies": {"gmail": {"mode": "default"}}})
         self.assertEqual(cleared["source_policies"], {})
 
+    def test_graph_honors_pending_review_visibility(self) -> None:
+        pending = self.store.save_capture(
+            user_id=self.user_id,
+            content="Pending Graph Alpha should not appear in graph while pending context is disabled.",
+            source="docs",
+            source_url="/tmp/pending-graph-alpha.md",
+            title="Pending graph alpha",
+            extracted=extract_context("Pending Graph Alpha should not appear in graph while pending context is disabled.", "docs"),
+        )
+        self.assertTrue(pending["memories"])
+
+        self.store.update_settings(self.user_id, {"allow_pending_in_context": False})
+        graph_text = json.dumps(self.store.graph(self.user_id))
+        self.assertNotIn("Pending Graph Alpha", graph_text)
+        self.assertNotIn("Pending graph alpha", graph_text)
+
+        self.assertTrue(self.store.approve_capture(self.user_id, pending["capture_id"]))
+        approved_graph_text = json.dumps(self.store.graph(self.user_id))
+        self.assertIn("Pending Graph Alpha", approved_graph_text)
+
     def test_source_policy_exclusion_filters_exports_and_mcp_export(self) -> None:
         private = self.store.save_capture(
             user_id=self.user_id,
             content="Private Export Alpha should never leave through full memory export.",
-            source="gmail",
-            source_url="gmail://message/private-export-alpha",
+            source="email",
+            source_url="/tmp/mail.mbox#service=email&subject=Private%20Export%20Alpha",
             title="Private export source policy",
-            extracted=extract_context("Private Export Alpha should never leave through full memory export.", "gmail"),
+            extracted=extract_context("Private Export Alpha should never leave through full memory export.", "email"),
         )
         public = self.store.save_capture(
             user_id=self.user_id,
@@ -1501,14 +1528,18 @@ class CortexStorageLifecycleTests(unittest.TestCase):
                 "source_policies": {"gmail": {"mode": "excluded"}},
             },
         )
+        self.assertEqual(self.store.search(self.user_id, "Private Export Alpha"), [])
+        excluded_pack = self.store.context_pack(self.user_id, query="Private Export Alpha")
+        self.assertNotIn("should never leave through full memory export", excluded_pack)
+        self.assertNotIn("service=email", excluded_pack)
 
         exported = self.store.export_json(self.user_id)
         exported_text = json.dumps(exported)
         self.assertNotIn("Private Export Alpha", exported_text)
-        self.assertNotIn("gmail://message/private-export-alpha", exported_text)
+        self.assertNotIn("Private%20Export%20Alpha", exported_text)
         self.assertIn("Public Export Beta", exported_text)
-        self.assertTrue(all(capture["source"] != "gmail" for capture in exported["captures"]))
-        self.assertTrue(all(memory["source"] != "gmail" for memory in exported["memories"]))
+        self.assertTrue(all(capture["source"] != "email" for capture in exported["captures"]))
+        self.assertTrue(all(memory["source"] != "email" for memory in exported["memories"]))
 
         markdown = self.store.export_markdown(self.user_id)
         self.assertNotIn("Private Export Alpha", markdown)
@@ -1523,12 +1554,18 @@ class CortexStorageLifecycleTests(unittest.TestCase):
 
         profile = self.store.personal_profile(self.user_id, query="Export", limit=5)
         self.assertNotIn("Private Export Alpha", json.dumps(profile))
-        self.assertNotIn("gmail", json.dumps(profile["coverage"]))
+        self.assertNotIn("email", json.dumps(profile["coverage"]))
         self.assertIn("Public Export Beta", json.dumps(profile))
         adaptation = self.store.agent_adaptation(self.user_id, query="Export", target="Claude", limit=5)
         self.assertNotIn("Private Export Alpha", json.dumps(adaptation))
-        self.assertNotIn("gmail", json.dumps(adaptation["coverage"]))
+        self.assertNotIn("email", json.dumps(adaptation["coverage"]))
         self.assertIn("Public Export Beta", json.dumps(adaptation))
+
+        graph = self.store.graph(self.user_id)
+        graph_text = json.dumps(graph)
+        self.assertNotIn("Private Export Alpha", graph_text)
+        self.assertNotIn("Private export source policy", graph_text)
+        self.assertIn("Public Export Beta", graph_text)
 
     def test_trust_controls_redact_shared_context_and_exports(self) -> None:
         self.capture(
@@ -1574,9 +1611,15 @@ class CortexStorageLifecycleTests(unittest.TestCase):
 
         with self.assertRaises(PermissionError):
             call_tool(self.store, self.user_id, "create_memory_backup", {})
+        with self.assertRaises(PermissionError):
+            call_tool(self.store, self.user_id, "get_memory_diagnostics", {})
+        with self.assertRaises(PermissionError):
+            call_tool(self.store, self.user_id, "get_reliability_report", {})
         self.store.update_settings(self.user_id, {"allow_agent_maintenance": True})
         backup = call_tool(self.store, self.user_id, "create_memory_backup", {})
         self.assertIn("backup_path", backup)
+        diagnostics = call_tool(self.store, self.user_id, "get_memory_diagnostics", {})
+        self.assertIn("quick_check", diagnostics)
 
         with self.assertRaises(PermissionError):
             call_tool(self.store, self.user_id, "forget_memory", {"id": saved["memories"][0]["id"]})

@@ -5,3 +5,4 @@ __pycache__/
 .DS_Store
 backend/data/
 macos/build/
+outputs/

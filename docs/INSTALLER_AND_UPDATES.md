@@ -10,6 +10,7 @@ Cortex is currently a local-first macOS beta. The release system should make it 
 - `Cortex-<version>-<build>.app.zip`
 - `Cortex-<version>-<build>.checksums.txt`
 - `latest.json`
+- `BETA_HANDOFF.md`
 
 The DMG is the user-facing installer. It contains:
 
@@ -18,6 +19,11 @@ The DMG is the user-facing installer. It contains:
 - `README.txt` with install/update instructions
 
 The ZIP is useful for direct download, testing, CI artifacts, and update tooling.
+
+`BETA_HANDOFF.md` is the tester-facing local beta artifact. It gives one
+repeatable source build path, package install path, checksum check, manifest
+validation command, readiness gate, live-backend verification commands, support
+bundle commands, and the five-step manual first-user loop.
 
 ## Build A Release
 
@@ -142,6 +148,7 @@ Sparkle is the likely production path for background update download/install. Th
 - Launch the app and verify the bundled backend starts.
 - Run `python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"` using the local API token from `Trust > Advanced`.
 - Run `./macos/package_release.sh`.
+- Confirm the generated release directory includes `BETA_HANDOFF.md`.
 - Run `python3 scripts/prepare_distribution_site.py`.
 - Run `python3 scripts/check_distribution_site.py`.
 - Run `python3 scripts/ops_readiness_check.py --refresh-site`.

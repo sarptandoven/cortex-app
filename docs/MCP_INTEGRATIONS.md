@@ -138,6 +138,8 @@ Browser assistants do not all expose a stable local MCP config. For those, Corte
 - `rebuild_memory_search`: rebuild full-text search
 - `rebuild_index_from_vault`: rebuild the SQLite search index from user-owned vault files
 - `export_memory`: export memory as Markdown or JSON
+
+Diagnostics and reliability reports require the MCP token `maintenance` scope and the Trust maintenance toggle, because they include local operational paths and repair context.
 - `forget_memory`: permanently delete one memory by ID from the current local vault and index
 
 ## Product Rule

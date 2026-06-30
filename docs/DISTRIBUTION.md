@@ -124,14 +124,15 @@ Recommended beta structure:
 2. Run backend tests and retrieval eval.
 3. Run reliability and battle tests against the packaged app.
 4. Package release artifacts.
-5. Prepare site downloads.
-6. Run static site validation.
-7. Run `python3 scripts/ops_readiness_check.py --refresh-site`.
-8. Run static site browser QA locally.
-9. Deploy `site/`.
-10. Download the DMG from the deployed page.
-11. Install on a clean Mac profile.
-12. Verify first-run onboarding, five-tab flow, source readiness, cited Ask results, MCP setup, backup, support bundle export, and update feed.
+5. Review the generated `BETA_HANDOFF.md` in the release directory.
+6. Prepare site downloads.
+7. Run static site validation.
+8. Run `python3 scripts/ops_readiness_check.py --refresh-site`.
+9. Run static site browser QA locally.
+10. Deploy `site/`.
+11. Download the DMG from the deployed page.
+12. Install on a clean Mac profile.
+13. Verify first-run onboarding, five-tab flow, source readiness, cited Ask results, MCP setup, backup, support bundle export, and update feed.
 
 ## Current Beta Copy
 

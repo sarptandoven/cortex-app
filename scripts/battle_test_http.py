@@ -194,6 +194,7 @@ def main() -> None:
     )
     assert "primary_action" in mcp_loop["result"]["content"][0]["text"], mcp_loop
 
+    request(args.base_url, args.token, "/v1/settings", "PUT", {"allow_agent_maintenance": True})
     mcp_reliability = request(
         args.base_url,
         args.token,

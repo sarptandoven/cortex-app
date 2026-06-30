@@ -42,6 +42,7 @@ Creates:
   Cortex-<version>-<build>.app.zip
   Cortex-<version>-<build>.checksums.txt
   latest.json
+  BETA_HANDOFF.md
 EOF
 }
 
@@ -122,6 +123,7 @@ DMG="$OUT_DIR/$RELEASE_NAME.dmg"
 ZIP="$OUT_DIR/$RELEASE_NAME.app.zip"
 MANIFEST="$OUT_DIR/latest.json"
 CHECKSUMS="$OUT_DIR/$RELEASE_NAME.checksums.txt"
+HANDOFF="$OUT_DIR/BETA_HANDOFF.md"
 
 if [[ ${#NOTES[@]} -eq 0 ]]; then
   NOTES+=("Local-first Cortex beta with bundled backend, capture, MCP, and trust controls.")
@@ -153,7 +155,7 @@ Channel: ${CHANNEL}
 Released: ${STAMP}
 EOF
 
-rm -f "$DMG" "$ZIP" "$CHECKSUMS" "$MANIFEST"
+rm -f "$DMG" "$ZIP" "$CHECKSUMS" "$MANIFEST" "$HANDOFF"
 COPYFILE_DISABLE=1 hdiutil create -volname "Cortex ${VERSION}" -srcfolder "$STAGING" -ov -format UDZO "$DMG" >/dev/null
 (cd "$ROOT/build" && COPYFILE_DISABLE=1 zip -qry -X "$ZIP" Cortex.app)
 
@@ -251,8 +253,125 @@ PY
 
 python3 "$PROJECT_ROOT/scripts/validate_update_manifest.py" "$MANIFEST"
 
+cat > "$HANDOFF" <<EOF
+# Cortex Local Beta Handoff
+
+Build: Cortex ${VERSION} (${BUILD})
+Channel: ${CHANNEL}
+Released: ${STAMP}
+Minimum macOS: ${MIN_MACOS}
+
+This handoff is for local-first beta testing. It does not require screenshots,
+browser automation, hosted accounts, Redis, Docker, or cloud sync.
+
+## Package Contents
+
+- ${DMG_FILE}: tester-facing installer DMG
+- ${ZIP_FILE}: zipped app bundle for direct QA or update tooling
+- $(basename "$CHECKSUMS"): SHA-256 checksums for the DMG and ZIP
+- latest.json: local update manifest for Trust diagnostics
+
+## Verify Package Integrity
+
+Run from this release directory:
+
+~~~bash
+shasum -a 256 -c "$(basename "$CHECKSUMS")"
+~~~
+
+Run from the repository root, with RELEASE_DIR pointed at this release directory:
+
+~~~bash
+RELEASE_DIR="/path/to/${RELEASE_NAME}"
+python3 scripts/validate_update_manifest.py "\$RELEASE_DIR/latest.json"
+~~~
+
+## Install And Run The Packaged App
+
+1. Open ${DMG_FILE}.
+2. Drag Cortex.app to Applications.
+3. Open Cortex from Applications.
+4. If macOS blocks this local beta because it is not notarized yet,
+   Control-click Cortex.app and choose Open.
+
+The app starts its local backend on:
+
+~~~text
+http://127.0.0.1:8766
+~~~
+
+The local vault remains outside the app bundle at:
+
+~~~text
+~/Library/Application Support/Cortex/Cortex.vault
+~~~
+
+## Build And Run From Source
+
+Run from the repository root:
+
+~~~bash
+./macos/build.sh
+open macos/build/Cortex.app
+~~~
+
+Backend development without opening the app can use:
+
+~~~bash
+./scripts/dev_backend.sh
+~~~
+
+## Verify The Local App
+
+Run source and package checks from the repository root:
+
+~~~bash
+python3 -W error::ResourceWarning -m unittest discover backend/tests
+python3 scripts/retrieval_eval.py
+python3 scripts/adaptation_eval.py
+./macos/build.sh
+codesign --verify --deep --strict --verbose=2 macos/build/Cortex.app
+python3 scripts/ops_readiness_check.py --refresh-site
+~~~
+
+For a full package refresh, include packaging:
+
+~~~bash
+python3 scripts/ops_readiness_check.py --refresh-site --include-package
+~~~
+
+With the packaged app running, copy the local API token from
+Trust > Advanced and run:
+
+~~~bash
+python3 scripts/reliability_check.py --base-url http://127.0.0.1:8766 --token "\$CORTEX_API_KEY"
+python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "\$CORTEX_API_KEY"
+python3 scripts/export_support_bundle.py --mode live --token "\$CORTEX_API_KEY"
+python3 scripts/export_support_bundle.py --mode offline
+~~~
+
+## Manual First-User Loop
+
+Use the product flow without browser automation:
+
+1. Model: confirm readiness, source health, decisions, and open loops.
+2. Sources: import one real user-selected export, folder, or file.
+3. Review: approve at least one useful memory and archive obvious noise.
+4. Ask: ask a question that should return cited memory from the import.
+5. Trust: confirm vault path, backup, export, support bundle, and update feed controls.
+
+## Beta Boundaries
+
+- User data stays in the local vault.
+- Live OAuth/API sync is not enabled for this local beta.
+- Manual app replacement is the update path.
+- Developer ID notarization is required before broad public distribution.
+- Support should ask for the sanitized support bundle before any raw data.
+EOF
+
 echo "Release packaged:"
 echo "  $DMG"
 echo "  $ZIP"
 echo "  $MANIFEST"
 echo "  $CHECKSUMS"
+echo "  $HANDOFF"

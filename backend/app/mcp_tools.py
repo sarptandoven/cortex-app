@@ -236,15 +236,20 @@ READ_TOOLS = {
     "get_about_entity",
     "get_memory_stats",
     "get_memory_inbox",
-    "get_memory_diagnostics",
-    "get_reliability_report",
     "get_support_bundle",
     "get_trust_summary",
     "get_audit_log",
 }
 WRITE_TOOLS = {"remember_this", "approve_memory_capture", "archive_memory_capture", "forget_memory", "delete_memory_capture"}
 EXPORT_TOOLS = {"build_context_pack", "get_personal_profile", "get_agent_adaptation", "export_memory"}
-MAINTENANCE_TOOLS = {"create_memory_backup", "repair_memory_storage", "rebuild_memory_search", "rebuild_index_from_vault"}
+MAINTENANCE_TOOLS = {
+    "create_memory_backup",
+    "get_memory_diagnostics",
+    "get_reliability_report",
+    "repair_memory_storage",
+    "rebuild_memory_search",
+    "rebuild_index_from_vault",
+}
 DESTRUCTIVE_TOOLS = {"forget_memory", "delete_memory_capture", "delete_memory_backups", "restore_latest_memory_backup", "delete_all_user_data"}
 
 

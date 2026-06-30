@@ -1,15 +1,14 @@
 {
-  "_comment": "Add this block to ~/Library/Application Support/Claude/claude_desktop_config.json under 'mcpServers'",
+  "_comment": "Add this block to ~/Library/Application Support/Claude/claude_desktop_config.json under mcpServers. Use the app-generated path from Trust > Connected AI when possible.",
   "mcpServers": {
     "cortex": {
-      "command": "python",
-      "args": ["/path/to/cortex/mcp_server.py"],
+      "command": "python3",
+      "args": [
+        "/Applications/Cortex.app/Contents/Resources/scripts/cortex_mcp_stdio.py"
+      ],
       "env": {
-        "ANTHROPIC_API_KEY": "<anthropic-api-key>",
-        "GITHUB_TOKEN": "<github-token>",
-        "CORTEX_REPO": "vamikasinghal/cortex-brain",
-        "OPENAI_API_KEY": "<openai-api-key>",
-        "REDIS_URL": "redis://localhost:6379"
+        "CORTEX_API_BASE_URL": "http://127.0.0.1:8766",
+        "CORTEX_MCP_API_KEY": "<copy from Cortex Trust > Connected AI>"
       }
     }
   }

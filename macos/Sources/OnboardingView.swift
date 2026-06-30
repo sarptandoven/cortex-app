@@ -83,7 +83,7 @@ struct OnboardingView: View {
             Button {
                 state.dismissOnboardingForSession()
             } label: {
-                Label("Finish Later", systemImage: "xmark")
+                Label("Open App for Now", systemImage: "xmark")
             }
         }
         .padding(22)
@@ -259,7 +259,7 @@ struct OnboardingFirstSourceStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Start with one source that has real context: an AI chat export, notes, docs, email, messages, or project files.")
+            Text("Start with one source that has real context: an AI chat export, notes, docs, email, messages, or a project file.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -268,7 +268,7 @@ struct OnboardingFirstSourceStep: View {
                     Button {
                         state.chooseFilesForCapture()
                     } label: {
-                        Label("Choose Sources", systemImage: "doc.badge.plus")
+                        Label("Choose File or Export", systemImage: "doc.badge.plus")
                     }
                     .buttonStyle(.borderedProminent)
                     Button {
@@ -307,7 +307,7 @@ struct OnboardingFirstSourceStep: View {
 
             OnboardingCheckRow(
                 title: state.onboardingHasSource ? "First source imported" : "Waiting for an imported source",
-                detail: state.onboardingHasSource ? "Continue to review and approve useful memory." : "Choose a supported export or readable file to continue.",
+                detail: state.onboardingHasSource ? "Continue to review and approve useful memory." : "Choose one supported export or readable file to continue.",
                 systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "tray.and.arrow.down",
                 color: state.onboardingHasSource ? .green : .orange
             )
@@ -325,7 +325,7 @@ struct OnboardingReviewMemoryStep: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             if state.inbox.isEmpty {
-                QuietState(title: "No pending memory", detail: state.onboardingHasReviewedMemory ? "You already reviewed memory from your first source." : "Import a source, then return here to approve useful memory.")
+                QuietState(title: "No pending memory", detail: emptyReviewDetail)
             } else {
                 ForEach(state.inbox.prefix(2)) { capture in
                     CaptureCard(
@@ -367,6 +367,16 @@ struct OnboardingReviewMemoryStep: View {
             await state.loadReview()
             await state.loadStats()
         }
+    }
+
+    private var emptyReviewDetail: String {
+        if state.onboardingHasReviewedMemory {
+            return "You already reviewed memory from your first source."
+        }
+        if state.onboardingHasSource {
+            return "No reviewable memory is waiting yet. Refresh Review, or add another source with more text."
+        }
+        return "Import a source first. Reviewable memory will appear here before it shapes Cortex."
     }
 }
 
@@ -427,7 +437,7 @@ struct OnboardingAskUseStep: View {
                     }
                 }
             } else {
-                QuietState(title: "Use approved context once", detail: "Ask a question about your imported source. Cortex will answer with citations when approved context matches.")
+                QuietState(title: askEmptyTitle, detail: askEmptyDetail)
             }
 
             OnboardingCheckRow(
@@ -437,6 +447,17 @@ struct OnboardingAskUseStep: View {
                 color: state.onboardingHasUsedCortex ? .green : .orange
             )
         }
+    }
+
+    private var askEmptyTitle: String {
+        state.hasSearched ? "No cited answer yet" : "Use approved context once"
+    }
+
+    private var askEmptyDetail: String {
+        if state.hasSearched {
+            return "Try an exact phrase from an approved source, or go back to Review and approve one useful memory."
+        }
+        return "Ask a question about your imported source. Cortex will answer with citations when approved context matches."
     }
 }
 

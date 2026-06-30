@@ -501,6 +501,16 @@ def _normalize_source_policies(value: Any) -> dict[str, dict[str, Any]]:
     return policies
 
 
+def _source_policy_sources(source_policies: dict[str, dict[str, Any]], predicate) -> list[str]:
+    sources: set[str] = set()
+    for source, policy in source_policies.items():
+        if not predicate(policy):
+            continue
+        aliases = _source_account_alias_sources(source)
+        sources.update(aliases or {_normalize_source_key(source)})
+    return sorted(source for source in sources if source)
+
+
 def _unique_catalog_strings(values: Iterable[Any]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -2744,6 +2754,20 @@ class CortexStore:
                 source = citation["source_url"] or citation["source"]
                 lines.append(f"[{citation['index']}] {citation['excerpt']} ({source})")
             answer = "\n".join(lines)
+            with connect(self.db_path) as conn:
+                self._event(
+                    conn,
+                    user_id,
+                    "ask",
+                    "loop",
+                    "cited_answer_used",
+                    {
+                        "surface": "ask",
+                        "query": query[:160],
+                        "citation_count": len(citations),
+                        "result_ids": [citation["id"] for citation in citations[:10]],
+                    },
+                )
         else:
             answer = "Cortex did not find a cited item for this question yet. Import or approve more source material, then ask again."
         return {
@@ -3229,24 +3253,24 @@ class CortexStore:
                 "SELECT COUNT(*) FROM captures WHERE user_id = ? AND approved_at IS NOT NULL AND substr(approved_at, 1, 10) = date('now')",
                 (user_id,),
             ).fetchone()[0]
-            reused_today = conn.execute(
+            used_today = conn.execute(
                 """
                 SELECT COUNT(*)
                 FROM memory_events
                 WHERE user_id = ?
                   AND object_type = 'loop'
-                  AND event_type = 'context_reused'
+                  AND event_type IN ('context_reused', 'cited_answer_used')
                   AND substr(created_at, 1, 10) = date('now')
                 """,
                 (user_id,),
             ).fetchone()[0]
-            last_reused_at = conn.execute(
+            last_used_at = conn.execute(
                 """
                 SELECT MAX(created_at)
                 FROM memory_events
                 WHERE user_id = ?
                   AND object_type = 'loop'
-                  AND event_type = 'context_reused'
+                  AND event_type IN ('context_reused', 'cited_answer_used')
                 """,
                 (user_id,),
             ).fetchone()[0]
@@ -3264,7 +3288,7 @@ class CortexStore:
                       FROM memory_events
                       WHERE user_id = ?
                         AND object_type = 'loop'
-                        AND event_type = 'context_reused'
+                        AND event_type IN ('context_reused', 'cited_answer_used')
                         AND created_at >= datetime('now', '-30 days')
                     )
                     GROUP BY day
@@ -3298,7 +3322,7 @@ class CortexStore:
 
         capture_done = stats["captures"] > 0
         review_done = stats["captures"] > 0 and stats["pending_captures"] == 0
-        reuse_done = reused_today > 0
+        reuse_done = used_today > 0
         return_done = streak_days >= 2
 
         if not capture_done:
@@ -3320,14 +3344,14 @@ class CortexStore:
                 "action": "reuse",
                 "label": "Ask Cortex",
                 "title": "Use your personal model",
-                "detail": "Use Cortex memory in your next AI session and check model coverage afterward.",
+                "detail": "Ask a cited question or prepare approved memory for another AI tool.",
             }
         else:
             primary = {
                 "action": "done",
                 "label": "Loop Complete",
                 "title": "Loop complete today",
-                "detail": "You added or reviewed signals and used approved memory. Keep Cortex nearby as work changes.",
+                "detail": "You added or reviewed signals and used cited memory. Keep Cortex nearby as work changes.",
             }
 
         def step(key: str, title: str, done: bool, detail: str) -> dict[str, Any]:
@@ -3337,7 +3361,7 @@ class CortexStore:
         steps = [
             step("capture", "Signal", capture_done, f"{captured_today} added today, {stats['captures']} total."),
             step("review", "Review", review_done, f"{stats['pending_captures']} waiting in the inbox."),
-            step("reuse", "Access", reuse_done, f"{reused_today} approved memory handoff{'s' if reused_today != 1 else ''} prepared today."),
+            step("reuse", "Use", reuse_done, f"{used_today} cited Cortex use{'s' if used_today != 1 else ''} today."),
             step("done", "Return", return_done, f"{streak_days} day streak."),
         ]
         completion = round((sum(1 for item in steps if item["status"] == "done") / len(steps)) * 100)
@@ -3352,11 +3376,13 @@ class CortexStore:
                 "captures_today": captured_today,
                 "approved_today": approved_today,
                 "pending_captures": stats["pending_captures"],
-                "reused_today": reused_today,
+                "reused_today": used_today,
+                "used_today": used_today,
                 "active_days_30d": len(active_day_set),
                 "streak_days": streak_days,
             },
-            "last_reused_at": last_reused_at,
+            "last_reused_at": last_used_at,
+            "last_used_at": last_used_at,
             "today": today,
         }
 
@@ -3661,7 +3687,7 @@ class CortexStore:
                 [user_id, *memory_params],
             ).fetchone()[0]
             source_policies = _normalize_source_policies(user_settings.get("source_policies"))
-            excluded_sources = [source for source, policy in source_policies.items() if not policy.get("allow_ai_context", True)]
+            excluded_sources = _source_policy_sources(source_policies, lambda policy: not policy.get("allow_ai_context", True))
             capture_filters = ["user_id = ?", "review_status = 'pending'"]
             capture_params: list[Any] = [user_id]
             if excluded_sources:
@@ -3915,7 +3941,7 @@ class CortexStore:
 
     def _source_freshness(self, user_id: str, limit: int = 8, *, user_settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         source_policies = _normalize_source_policies((user_settings or {}).get("source_policies"))
-        excluded_sources = [source for source, policy in source_policies.items() if not policy.get("allow_ai_context", True)]
+        excluded_sources = _source_policy_sources(source_policies, lambda policy: not policy.get("allow_ai_context", True))
         filters = ["user_id = ?"]
         params: list[Any] = [user_id]
         if user_settings and not user_settings.get("allow_pending_in_context", True):
@@ -3966,15 +3992,27 @@ class CortexStore:
         nodes: dict[str, dict[str, Any]] = {}
         edges: list[dict[str, Any]] = []
         with connect(self.db_path) as conn:
+            user_settings = self._settings(conn, user_id)
+            source_policies = _normalize_source_policies(user_settings.get("source_policies"))
+            excluded_sources = _source_policy_sources(source_policies, lambda policy: not policy.get("allow_ai_context", True))
+            capture_filters = ["user_id = ?"]
+            capture_params: list[Any] = [user_id]
+            if not user_settings["allow_pending_in_context"]:
+                capture_filters.append("review_status = 'approved'")
+            else:
+                capture_filters.append("review_status IN ('pending', 'approved')")
+            if excluded_sources:
+                capture_filters.append(f"source NOT IN ({','.join('?' for _ in excluded_sources)})")
+                capture_params.extend(excluded_sources)
             for row in conn.execute(
-                """
+                f"""
                 SELECT id, source, title, summary, captured_at, review_status
                 FROM captures
-                WHERE user_id = ? AND review_status IN ('pending', 'approved')
+                WHERE {' AND '.join(capture_filters)}
                 ORDER BY captured_at DESC
                 LIMIT ?
                 """,
-                (user_id, limit // 3),
+                [*capture_params, limit // 3],
             ).fetchall():
                 nodes[row["id"]] = {
                     "id": row["id"],
@@ -3984,13 +4022,23 @@ class CortexStore:
                     "status": row["review_status"],
                     "created_at": row["captured_at"],
                 }
+            memory_filters, memory_params = self._memory_filters(user_id, user_settings, alias="m")
             for row in conn.execute(
-                "SELECT id, kind, content, importance, captured_at FROM memories WHERE user_id = ? AND status = 'active' ORDER BY captured_at DESC LIMIT ?",
-                (user_id, limit),
+                f"""
+                SELECT m.id, m.kind, m.content, m.importance, m.captured_at
+                FROM memories m
+                WHERE {' AND '.join(memory_filters)}
+                ORDER BY m.captured_at DESC
+                LIMIT ?
+                """,
+                [*memory_params, limit],
             ).fetchall():
                 nodes[row["id"]] = {"id": row["id"], "type": row["kind"], "label": row["content"][:72], "importance": row["importance"], "created_at": row["captured_at"]}
+            task_filters, task_params = self._task_filters(user_id, user_settings, alias="t", capture_alias="c")
+            task_where = " AND ".join(task_filters)
+            memory_where = " AND ".join(memory_filters)
             for row in conn.execute(
-                """
+                f"""
                 SELECT DISTINCT e.id, e.kind, e.name, e.context, e.last_seen
                 FROM entities e
                 WHERE e.user_id = ?
@@ -3999,43 +4047,46 @@ class CortexStore:
                       SELECT 1
                       FROM memory_entities me
                       JOIN memories m ON m.id = me.memory_id AND m.user_id = me.user_id
-                      WHERE me.user_id = e.user_id AND me.entity_id = e.id AND m.status = 'active'
+                      WHERE me.user_id = e.user_id AND me.entity_id = e.id AND {memory_where}
                     )
                     OR EXISTS (
                       SELECT 1
                       FROM task_entities te
                       JOIN tasks t ON t.id = te.task_id AND t.user_id = te.user_id
-                      WHERE te.user_id = e.user_id AND te.entity_id = e.id AND t.status = 'open'
+                      LEFT JOIN captures c ON c.id = t.capture_id AND c.user_id = t.user_id
+                      WHERE te.user_id = e.user_id AND te.entity_id = e.id AND {task_where}
                     )
                   )
                 ORDER BY e.last_seen DESC
                 LIMIT ?
                 """,
-                (user_id, limit),
+                [user_id, *memory_params, *task_params, limit],
             ).fetchall():
                 nodes[row["id"]] = {"id": row["id"], "type": row["kind"], "label": row["name"], "detail": row["context"] or ""}
-            for row in conn.execute("SELECT id, kind, content, status FROM tasks WHERE user_id = ? AND status = 'open' ORDER BY captured_at DESC LIMIT ?", (user_id, limit // 2)).fetchall():
+            for row in conn.execute(
+                f"""
+                SELECT t.id, t.kind, t.content, t.status
+                FROM tasks t
+                LEFT JOIN captures c ON c.id = t.capture_id AND c.user_id = t.user_id
+                WHERE {task_where}
+                ORDER BY t.captured_at DESC
+                LIMIT ?
+                """,
+                [*task_params, limit // 2],
+            ).fetchall():
                 nodes[row["id"]] = {"id": row["id"], "type": row["kind"], "label": row["content"][:72], "status": row["status"]}
             for row in conn.execute(
                 """
                 SELECT ge.*
                 FROM graph_edges ge
-                LEFT JOIN captures c ON c.id = ge.evidence_id AND c.user_id = ge.user_id
-                LEFT JOIN memories m ON m.id = ge.evidence_id AND m.user_id = ge.user_id
-                LEFT JOIN tasks t ON t.id = ge.evidence_id AND t.user_id = ge.user_id
                 WHERE ge.user_id = ?
-                  AND (
-                    ge.evidence_id IS NULL
-                    OR c.review_status IN ('pending', 'approved')
-                    OR m.status = 'active'
-                    OR t.status = 'open'
-                  )
                 ORDER BY ge.created_at DESC
                 LIMIT ?
                 """,
                 (user_id, limit * 2),
             ).fetchall():
-                if row["source_id"] in nodes and row["target_id"] in nodes:
+                evidence_id = row["evidence_id"]
+                if row["source_id"] in nodes and row["target_id"] in nodes and (not evidence_id or evidence_id in nodes):
                     edges.append(dict(row))
         return {"nodes": list(nodes.values()), "edges": edges}
 
@@ -4066,27 +4117,31 @@ class CortexStore:
 
     def _filter_export_by_source_policy(self, payload: dict[str, Any], user_settings: dict[str, Any]) -> dict[str, Any]:
         source_policies = _normalize_source_policies(user_settings.get("source_policies"))
-        excluded_sources = {source for source, policy in source_policies.items() if not policy.get("allow_ai_context", True)}
+        excluded_sources = set(_source_policy_sources(source_policies, lambda policy: not policy.get("allow_ai_context", True)))
         if not excluded_sources:
             return payload
 
         captures = list(payload.get("captures") or [])
         all_capture_sources = {capture.get("id"): capture.get("source") for capture in captures}
-        filtered_captures = [capture for capture in captures if capture.get("source") not in excluded_sources]
+
+        def source_blocked(source: Any) -> bool:
+            return _normalize_source_key(source) in excluded_sources
+
+        filtered_captures = [capture for capture in captures if not source_blocked(capture.get("source"))]
         allowed_capture_ids = {capture.get("id") for capture in filtered_captures if capture.get("id")}
 
         def memory_allowed(memory: dict[str, Any]) -> bool:
-            if memory.get("source") in excluded_sources:
+            if source_blocked(memory.get("source")):
                 return False
             capture_id = memory.get("capture_id")
-            return not capture_id or all_capture_sources.get(capture_id) not in excluded_sources
+            return not capture_id or not source_blocked(all_capture_sources.get(capture_id))
 
         filtered_memories = [memory for memory in payload.get("memories") or [] if memory_allowed(memory)]
         allowed_memory_ids = {memory.get("id") for memory in filtered_memories if memory.get("id")}
 
         def task_allowed(task: dict[str, Any]) -> bool:
             capture_id = task.get("capture_id")
-            return not capture_id or all_capture_sources.get(capture_id) not in excluded_sources
+            return not capture_id or not source_blocked(all_capture_sources.get(capture_id))
 
         filtered_tasks = [task for task in payload.get("tasks") or [] if task_allowed(task)]
         allowed_task_ids = {task.get("id") for task in filtered_tasks if task.get("id")}
@@ -4197,8 +4252,8 @@ class CortexStore:
     ) -> dict[str, Any] | None:
         def source_id(entry: Any) -> str:
             if isinstance(entry, dict):
-                return str(entry.get("source") or "")
-            return str(entry or "")
+                return _normalize_source_key(entry.get("source") or "")
+            return _normalize_source_key(entry or "")
 
         sources = list(item.get("sources") or [])
         filtered_sources = [source for source in sources if source_id(source) not in excluded_sources]
@@ -5558,14 +5613,15 @@ class CortexStore:
         events: list[dict[str, Any]] = []
         for row in rows:
             metadata = self._json_or_empty(row["metadata_json"])
+            safe_metadata = self._support_safe_payload(metadata)
             events.append(
                 {
                     "id": row["id"],
                     "object_id": row["object_id"],
                     "object_type": row["object_type"],
                     "event_type": row["event_type"],
-                    "metadata": metadata,
-                    "metadata_text": self._metadata_summary(metadata),
+                    "metadata": safe_metadata,
+                    "metadata_text": self._metadata_summary(safe_metadata),
                     "created_at": row["created_at"],
                 }
             )
@@ -7153,11 +7209,15 @@ class CortexStore:
                 f"({alias}.capture_id IS NULL OR EXISTS (SELECT 1 FROM captures c WHERE c.id = {alias}.capture_id AND c.user_id = {alias}.user_id AND c.review_status = 'approved'))"
             )
         source_policies = _normalize_source_policies(user_settings.get("source_policies"))
-        excluded_sources = [source for source, policy in source_policies.items() if not policy.get("allow_ai_context", True)]
+        excluded_sources = _source_policy_sources(source_policies, lambda policy: not policy.get("allow_ai_context", True))
         if excluded_sources:
             filters.append(f"{alias}.source NOT IN ({','.join('?' for _ in excluded_sources)})")
             params.extend(excluded_sources)
-        review_sources = [source for source, policy in source_policies.items() if policy.get("review_required") and source not in excluded_sources]
+        review_sources = [
+            source
+            for source in _source_policy_sources(source_policies, lambda policy: policy.get("review_required"))
+            if source not in excluded_sources
+        ]
         if review_sources:
             filters.append(
                 f"({alias}.source NOT IN ({','.join('?' for _ in review_sources)}) OR {alias}.capture_id IS NULL OR EXISTS (SELECT 1 FROM captures c WHERE c.id = {alias}.capture_id AND c.user_id = {alias}.user_id AND c.review_status = 'approved'))"
@@ -7183,13 +7243,17 @@ class CortexStore:
         if not user_settings["allow_pending_in_context"]:
             filters.append(f"({capture_missing} OR {capture_alias}.review_status = 'approved')")
         source_policies = _normalize_source_policies(user_settings.get("source_policies"))
-        excluded_sources = [source for source, policy in source_policies.items() if not policy.get("allow_ai_context", True)]
+        excluded_sources = _source_policy_sources(source_policies, lambda policy: not policy.get("allow_ai_context", True))
         if excluded_sources:
             filters.append(
                 f"({capture_missing} OR {capture_alias}.source NOT IN ({','.join('?' for _ in excluded_sources)}))"
             )
             params.extend(excluded_sources)
-        review_sources = [source for source, policy in source_policies.items() if policy.get("review_required") and source not in excluded_sources]
+        review_sources = [
+            source
+            for source in _source_policy_sources(source_policies, lambda policy: policy.get("review_required"))
+            if source not in excluded_sources
+        ]
         if review_sources:
             filters.append(
                 f"({capture_missing} OR {capture_alias}.source NOT IN ({','.join('?' for _ in review_sources)}) OR {capture_alias}.review_status = 'approved')"

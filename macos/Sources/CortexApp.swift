@@ -1618,6 +1618,7 @@ final class AppState: ObservableObject {
     @Published var selectedTab: AppTab = .model
     @Published var vaultPath: String = UserDefaults.standard.string(forKey: "vaultPath") ?? BackendSupervisor.defaultVaultURL.path
     @Published var globalClipboardHotkeyEnabled: Bool = UserDefaults.standard.bool(forKey: "globalClipboardHotkeyEnabled.v1")
+    @Published var onboardingComplete: Bool = UserDefaults.standard.bool(forKey: "onboardingComplete.v1")
     @Published var showOnboarding: Bool = !UserDefaults.standard.bool(forKey: "onboardingComplete.v1")
     @Published var onboardingStep: OnboardingStep = OnboardingStep(rawValue: UserDefaults.standard.integer(forKey: "onboardingStep.v2")) ?? .privateVault
     @Published var firstSourceAdded: Bool = UserDefaults.standard.bool(forKey: "onboardingFirstSourceImported.v1")
@@ -1683,6 +1684,7 @@ final class AppState: ObservableObject {
 
     var onboardingHasReviewedMemory: Bool {
         firstMemoryReviewed
+            || (onboardingHasSource && (stats?.pending_captures ?? 0) == 0 && !recent.isEmpty)
     }
 
     var onboardingHasUsedCortex: Bool {
@@ -1718,6 +1720,22 @@ final class AppState: ObservableObject {
 
     var incompleteOnboardingStepTitles: [String] {
         OnboardingStep.allCases.filter { !onboardingStepIsComplete($0) }.map(\.title)
+    }
+
+    var setupIncomplete: Bool {
+        !onboardingComplete
+    }
+
+    var setupIncompleteDetail: String {
+        let remaining = incompleteOnboardingStepTitles.prefix(2).joined(separator: ", ")
+        if remaining.isEmpty {
+            return "Setup is ready to finish."
+        }
+        return "Still needs: \(remaining)."
+    }
+
+    var canPrepareArtifacts: Bool {
+        appSettings.allow_agent_exports
     }
 
     func onboardingStepIsComplete(_ step: OnboardingStep) -> Bool {
@@ -2650,6 +2668,10 @@ final class AppState: ObservableObject {
     }
 
     func copyIntegrationContext(_ integration: AIIntegration) {
+        guard canPrepareArtifacts else {
+            status = "Enable Trust > AI access > prepare artifacts before copying memory"
+            return
+        }
         copyPersonalProfile(query: "", surface: "integration", target: integration.name, label: "\(integration.name) memory prepared")
     }
 
@@ -2907,9 +2929,7 @@ final class AppState: ObservableObject {
 
     private func hasUsableOnboardingCitation(_ citations: [AskCitationItem]) -> Bool {
         guard !citations.isEmpty else { return false }
-        return citations.contains { citation in
-            matchesOnboardingSource(source: citation.source, sourceURL: citation.source_url)
-        }
+        return onboardingHasReviewedMemory
     }
 
     private func matchesOnboardingSource(source: String, sourceURL: String?) -> Bool {
@@ -2944,6 +2964,7 @@ final class AppState: ObservableObject {
             return
         }
         saveMemorySettings()
+        onboardingComplete = true
         UserDefaults.standard.set(true, forKey: "onboardingComplete.v1")
         showOnboarding = false
         setOnboardingStep(.privateVault)
@@ -2972,6 +2993,7 @@ final class AppState: ObservableObject {
     }
 
     func resetOnboardingProgressAfterDataDeletion() {
+        onboardingComplete = false
         firstSourceAdded = false
         firstMemoryReviewed = false
         cortexUsed = false
@@ -3021,10 +3043,18 @@ final class AppState: ObservableObject {
     }
 
     func copyDailyContextPack() {
+        guard canPrepareArtifacts else {
+            status = "Enable Trust > AI access > prepare artifacts before copying memory"
+            return
+        }
         copyPersonalProfile(query: "", surface: "model", target: "clipboard", label: "Personal profile prepared")
     }
 
     func copyContextPack() {
+        guard canPrepareArtifacts else {
+            status = "Enable Trust > AI access > prepare artifacts before copying memory"
+            return
+        }
         let query = contextQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         copyPersonalProfile(
             query: query,
@@ -3035,6 +3065,10 @@ final class AppState: ObservableObject {
     }
 
     func copyAgentAdaptation() {
+        guard canPrepareArtifacts else {
+            status = "Enable Trust > AI access > prepare artifacts before copying memory"
+            return
+        }
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         copyAgentAdaptation(
             query: query,
@@ -3631,24 +3665,52 @@ struct CortexView: View {
     }
 
     private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Cortex")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                Text("Private adaptation layer for your work, memory, and style.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Cortex")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                    Text("Private adaptation layer for your work, memory, and style.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Button {
+                    state.selectedTab = .sources
+                    state.status = "Import sources to build your model"
+                } label: {
+                    Label("Add Sources", systemImage: "tray.and.arrow.down")
+                }
             }
-            Spacer()
-            Button {
-                state.selectedTab = .sources
-                state.status = "Import sources to build your model"
-            } label: {
-                Label("Add Sources", systemImage: "tray.and.arrow.down")
+            .padding(16)
+
+            if state.setupIncomplete && !state.showOnboarding {
+                HStack(spacing: 10) {
+                    Image(systemName: "checklist.unchecked")
+                        .foregroundColor(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Setup incomplete")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                        Text(state.setupIncompleteDetail)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Button {
+                        state.showOnboardingAgain()
+                    } label: {
+                        Label("Resume Setup", systemImage: "arrow.right.circle")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Color.orange.opacity(0.08))
             }
         }
-        .padding(16)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
@@ -3782,6 +3844,7 @@ struct IntegrationCenterView: View {
                     } label: {
                         Label("Copy Browser Fallback", systemImage: "text.quote")
                     }
+                    .disabled(!state.canPrepareArtifacts)
                     Spacer()
                 }
             }
@@ -3894,6 +3957,7 @@ struct IntegrationCard: View {
                         Label("Prepare", systemImage: "text.quote")
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(!state.canPrepareArtifacts)
 
                     Button {
                         state.copyIntegrationGuide(integration)

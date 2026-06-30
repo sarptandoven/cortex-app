@@ -46,6 +46,7 @@ MCP tools:
 Operator scripts:
 
 - `python3 scripts/reliability_check.py`
+- `python3 scripts/backend_beta_smoke.py`
 - `python3 scripts/battle_test_http.py`
 - `python3 scripts/export_support_bundle.py`
 - `python3 scripts/ops_readiness_check.py`
@@ -58,6 +59,7 @@ Operator scripts:
 Run before sharing a beta build:
 
 ```bash
+python3 scripts/backend_beta_smoke.py
 python3 scripts/ops_readiness_check.py --refresh-site
 ```
 
@@ -78,6 +80,7 @@ The local readiness gate checks:
 - Python syntax without creating bytecode as the syntax step
 - required operator docs
 - beta docs and committed direct-release manifest currency
+- backend beta smoke on temp data with network sockets blocked
 - backend unit tests
 - macOS local build
 - DMG/ZIP packaging when `--include-package` is set

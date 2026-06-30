@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -81,11 +82,29 @@ def manifest_errors() -> list[str]:
     return errors
 
 
+def mcp_config_errors() -> list[str]:
+    errors: list[str] = []
+    config = ROOT / "claude_desktop_config.json"
+    if not config.exists():
+        return errors
+    try:
+        payload: dict[str, Any] = json.loads(config.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return [f"claude_desktop_config.json: invalid JSON: {exc}"]
+    text = json.dumps(payload)
+    for phrase in ("mcp_server.py", "github_store", "redis_store", "GITHUB_TOKEN", "REDIS_URL"):
+        if phrase in text:
+            errors.append(f"claude_desktop_config.json: stale MCP config references {phrase!r}")
+    if "scripts/cortex_mcp_stdio.py" not in text and "cortex_mcp_stdio.py" not in text:
+        errors.append("claude_desktop_config.json: must use scripts/cortex_mcp_stdio.py")
+    return errors
+
+
 def main() -> None:
-    errors = [*phrase_errors(), *manifest_errors()]
+    errors = [*phrase_errors(), *manifest_errors(), *mcp_config_errors()]
     payload = {
         "status": "error" if errors else "ok",
-        "checks": ["stale-ui-phrases", "direct-release-manifest"],
+        "checks": ["stale-ui-phrases", "direct-release-manifest", "mcp-config"],
         "errors": errors,
     }
     print(json.dumps(payload, indent=2))

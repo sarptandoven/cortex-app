@@ -257,7 +257,7 @@ struct SourcesImportSection: View {
                     Text("Import sources")
                         .font(.title3)
                         .fontWeight(.semibold)
-                    Text("Drop exports or choose files. Cortex scans locally, previews detected records, then queues reviewable memory signals.")
+                    Text("Pick one readable export or file to start. Cortex scans locally and sends detected memory to Review before it affects the model.")
                         .font(.callout)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -284,7 +284,7 @@ struct SourcesImportSection: View {
                 Button {
                     state.chooseFilesForCapture()
                 } label: {
-                    Label("Choose Sources", systemImage: "doc.badge.plus")
+                    Label("Choose File or Export", systemImage: "doc.badge.plus")
                 }
                 .buttonStyle(.borderedProminent)
 
@@ -309,9 +309,9 @@ struct SourcesDropZone: View {
             Image(systemName: state.captureDropTargeted ? "arrow.down.doc.fill" : "arrow.down.doc")
                 .font(.largeTitle)
                 .foregroundColor(state.captureDropTargeted ? .accentColor : .secondary)
-            Text(state.captureDropTargeted ? "Drop to import" : "Drop source exports here")
+            Text(state.captureDropTargeted ? "Drop to import" : "Drop exports or files here")
                 .font(.headline)
-            Text("Conversations, notes, documents, messages, and writing samples all start here.")
+            Text("AI chat exports, notes, docs, messages, and writing samples are good first sources.")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -336,7 +336,7 @@ struct SourcesLastImportResult: View {
                 Text("Last import result")
                     .font(.callout)
                     .fontWeight(.medium)
-                Text(summary.isEmpty ? "No import result yet. Choose or drop a source to start." : summary)
+                Text(summary.isEmpty ? "No import yet. Choose or drop one source to preview it." : summary)
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -361,7 +361,14 @@ struct SourcesReviewNextAction: View {
         if pendingCount > 0 {
             return "\(pendingCount) item\(pendingCount == 1 ? "" : "s") waiting for approval or archive."
         }
-        return "Review imported signals before they strengthen the model."
+        if state.lastFileCaptureSummary.isEmpty {
+            return "After import, Review will show anything that needs approval."
+        }
+        return "No review items yet. Try another source or refresh Review if import just finished."
+    }
+
+    private var buttonTitle: String {
+        pendingCount > 0 ? "Review Pending" : "Open Review"
     }
 
     var body: some View {
@@ -383,7 +390,7 @@ struct SourcesReviewNextAction: View {
                 state.selectedTab = .review
                 state.status = "Review new signals below"
             } label: {
-                Label("Open Review", systemImage: "arrow.right")
+                Label(buttonTitle, systemImage: "arrow.right")
             }
             .buttonStyle(.borderedProminent)
         }

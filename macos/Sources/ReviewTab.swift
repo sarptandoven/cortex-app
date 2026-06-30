@@ -42,7 +42,7 @@ struct ReviewHeaderSection: View {
                     Text("Review queue")
                         .font(.title3)
                         .fontWeight(.semibold)
-                    Text("Approve memory worth keeping or archive noise before agents rely on it.")
+                    Text("Approve useful memory or archive noise. Approved items are what Ask and AI handoffs can cite.")
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -112,7 +112,7 @@ struct ReviewInboxSection: View {
             }
 
             if captures.isEmpty {
-                QuietState(title: "Queue clear", detail: "New source records will appear here for approval before they strengthen your model.")
+                QuietState(title: "Nothing to review", detail: emptyDetail)
             } else {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     ForEach(visibleCaptures) { capture in
@@ -137,12 +137,19 @@ struct ReviewInboxSection: View {
 
     private var queueDetail: String {
         if captures.isEmpty {
-            return "No captures are waiting for approval."
+            return "No pending items right now."
         }
         if captures.count > visibleCount {
             return "\(captures.count) pending. Showing the first \(visibleCount) for batch actions."
         }
         return "\(captures.count) pending item\(captures.count == 1 ? "" : "s")."
+    }
+
+    private var emptyDetail: String {
+        if (state.review?.stats.memories ?? 0) == 0 {
+            return "Add a source first. Imported records land here before they shape your model."
+        }
+        return "All caught up. New imports land here before they shape your model."
     }
 }
 

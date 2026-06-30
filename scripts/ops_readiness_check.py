@@ -110,6 +110,8 @@ def main() -> None:
     add_check(checks, "operator_docs", not missing_docs, "Required operator docs exist.", {"missing": missing_docs})
     docs_current_result = run_command(root, [sys.executable, "scripts/check_docs_current.py"], timeout=60)
     add_check(checks, "docs_current", docs_current_result["ok"], "Beta docs match the current five-tab local-first app and release manifest.", docs_current_result)
+    smoke_result = run_command(root, [sys.executable, "scripts/backend_beta_smoke.py"], timeout=120)
+    add_check(checks, "backend_beta_smoke", smoke_result["ok"], "Backend beta smoke passes with temp data and blocked network sockets.", smoke_result)
 
     if not args.skip_tests:
         test_result = run_command(root, [sys.executable, "-W", "error::ResourceWarning", "-m", "unittest", "discover", "backend/tests"], timeout=120)
