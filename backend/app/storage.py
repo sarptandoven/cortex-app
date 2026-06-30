@@ -2207,6 +2207,7 @@ class CortexStore:
         state: dict[str, Any] | None = None,
         processing: str = "async",
         archive_missing: bool = False,
+        archive_external_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         account_id = (account_id or "").strip()
         if not account_id:
@@ -2237,7 +2238,11 @@ class CortexStore:
         capture_ids: list[str] = []
         record_results: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
-        active_external_ids = {str(record.get("external_id") or "").strip()[:240] for record in records if str(record.get("external_id") or "").strip()}
+        active_external_ids = (
+            {str(value).strip()[:240] for value in archive_external_ids if str(value).strip()}
+            if archive_external_ids is not None
+            else {str(record.get("external_id") or "").strip()[:240] for record in records if str(record.get("external_id") or "").strip()}
+        )
         base_identity_aliases = self.settings(user_id).get("identity_aliases")
         source_accounts = self.list_source_accounts(user_id)
 
@@ -2579,17 +2584,72 @@ class CortexStore:
                 "scan": scan_summary,
             }
 
-        result = self.sync_source_account_records(
-            user_id,
-            account["id"],
-            records=[record.to_source_account_record() for record in scan.records],
-            cursor_name=cursor_name,
-            cursor_value=scan.cursor_value,
-            high_water_mark=scan.high_water_mark,
-            state=state,
-            processing=processing,
-            archive_missing=complete_record_set,
-        )
+        source_records = [record.to_source_account_record() for record in scan.records]
+        active_external_ids = {str(record.get("external_id") or "").strip()[:240] for record in source_records if str(record.get("external_id") or "").strip()}
+        if len(source_records) <= 500:
+            result = self.sync_source_account_records(
+                user_id,
+                account["id"],
+                records=source_records,
+                cursor_name=cursor_name,
+                cursor_value=scan.cursor_value,
+                high_water_mark=scan.high_water_mark,
+                state=state,
+                processing=processing,
+                archive_missing=complete_record_set,
+                archive_external_ids=active_external_ids if complete_record_set else None,
+            )
+        else:
+            batches = [source_records[index:index + 500] for index in range(0, len(source_records), 500)]
+            result = {
+                "source_account_id": account["id"],
+                "source": OBSIDIAN_SOURCE,
+                "status": "complete",
+                "processing": processing,
+                "received": 0,
+                "queued": 0,
+                "saved": 0,
+                "skipped": 0,
+                "failed": 0,
+                "archived_missing": 0,
+                "capture_ids": [],
+                "records": [],
+                "errors": [],
+                "cursor": None,
+            }
+            for index, batch in enumerate(batches):
+                is_last_batch = index == len(batches) - 1
+                batch_state = dict(state)
+                batch_state.update({
+                    "batch_index": index + 1,
+                    "batch_count": len(batches),
+                    "batch_size": len(batch),
+                    "records_returned": len(source_records),
+                })
+                batch_result = self.sync_source_account_records(
+                    user_id,
+                    account["id"],
+                    records=batch,
+                    cursor_name=cursor_name,
+                    cursor_value=scan.cursor_value,
+                    high_water_mark=scan.high_water_mark,
+                    state=batch_state,
+                    processing=processing,
+                    archive_missing=complete_record_set and is_last_batch,
+                    archive_external_ids=active_external_ids if complete_record_set and is_last_batch else None,
+                )
+                result["received"] += int(batch_result.get("received") or 0)
+                result["queued"] += int(batch_result.get("queued") or 0)
+                result["saved"] += int(batch_result.get("saved") or 0)
+                result["skipped"] += int(batch_result.get("skipped") or 0)
+                result["failed"] += int(batch_result.get("failed") or 0)
+                result["archived_missing"] += int(batch_result.get("archived_missing") or 0)
+                result["capture_ids"].extend(batch_result.get("capture_ids") or [])
+                result["records"].extend(batch_result.get("records") or [])
+                result["errors"].extend(batch_result.get("errors") or [])
+                result["cursor"] = batch_result.get("cursor")
+            if result["failed"] > 0:
+                result["status"] = "partial"
         if scan.errors:
             result["errors"] = [*(result.get("errors") or []), *scan.errors]
             result["failed"] = int(result.get("failed") or 0) + len(scan.errors)

@@ -487,6 +487,56 @@ Decision: Cortex should archive the orchid-block marker when an explicit block d
             ).fetchone()[0]
         self.assertEqual(capture_count, 5)
 
+    def test_sync_vault_batches_large_complete_scan_and_archives_removed_notes(self) -> None:
+        for index in range(502):
+            self.write_note(
+                f"Large/Note {index:03d}.md",
+                f"Decision: Cortex large vault marker {index:03d} should sync without a single oversized backend batch.",
+            )
+
+        first = self.store.sync_obsidian_vault(
+            self.user_id,
+            vault_path=str(self.vault),
+            processing="async",
+            max_records=5000,
+        )
+
+        self.assertEqual(first["status"], "complete")
+        self.assertEqual(first["received"], 502)
+        self.assertEqual(first["queued"], 502)
+        self.assertEqual(first["failed"], 0)
+        self.assertEqual(first["archived_missing"], 0)
+        self.assertEqual(first["scan"]["records_returned"], 502)
+        self.assertFalse(first["scan"]["truncated"])
+
+        removed = self.vault / "Large/Note 501.md"
+        removed.unlink()
+        second = self.store.sync_obsidian_vault(
+            self.user_id,
+            vault_path=str(self.vault),
+            processing="async",
+            max_records=5000,
+        )
+
+        self.assertEqual(second["status"], "complete")
+        self.assertEqual(second["received"], 501)
+        self.assertEqual(second["queued"] + second["saved"] + second["skipped"], 501)
+        self.assertEqual(second["archived_missing"], 1)
+        self.assertEqual(second["failed"], 0)
+        self.assertFalse(second["scan"]["truncated"])
+        with connect(self.db_path) as conn:
+            active_count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM captures
+                WHERE user_id = ?
+                  AND source = 'obsidian'
+                  AND review_status != 'archived'
+                """,
+                (self.user_id,),
+            ).fetchone()[0]
+        self.assertEqual(active_count, 501)
+
     def test_obsidian_review_required_policy_overrides_global_auto_approve(self) -> None:
         self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": False})
         self.write_note(
