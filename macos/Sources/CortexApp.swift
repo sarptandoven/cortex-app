@@ -130,6 +130,7 @@ struct SourceReadinessSummary: Codable, Hashable {
     let sources_with_data: Int
     let needs_review: Int
     let needs_attention: Int
+    let empty: Int?
     let active_memories: Int
     let primary_beta_ready: Int?
     let primary_beta_active: Int?
@@ -180,6 +181,7 @@ struct SourceReadinessItem: Codable, Identifiable, Hashable {
     var statusTitle: String {
         switch status {
         case "needs_attention": return "Needs attention"
+        case "empty": return "No notes"
         case "needs_review": return "Review"
         case "synced": return "Synced"
         case "connected": return "Connected"
@@ -195,6 +197,7 @@ struct SourceReadinessItem: Codable, Identifiable, Hashable {
     var statusIcon: String {
         switch status {
         case "needs_attention": return "exclamationmark.triangle.fill"
+        case "empty": return "folder.badge.questionmark"
         case "needs_review": return "tray.full.fill"
         case "synced": return "checkmark.seal.fill"
         case "connected": return "link.circle.fill"
@@ -208,6 +211,7 @@ struct SourceReadinessItem: Codable, Identifiable, Hashable {
     var statusColor: Color {
         switch status {
         case "needs_attention": return .orange
+        case "empty": return .orange
         case "needs_review": return .yellow
         case "synced": return .green
         case "connected": return .blue
@@ -2128,11 +2132,27 @@ final class AppState: ObservableObject {
             && !lowered.contains("incompatible")
     }
 
-    var onboardingHasSource: Bool {
+    var onboardingHasConnectedMemoryLayer: Bool {
         hasConnectedSourceAccount
-            || (firstSourceAdded && !onboardingFirstSourceNames.isEmpty)
-            || !inbox.isEmpty
-            || (stats?.memories ?? 0) > 0
+            || hasConnectedObsidianVault
+            || connectedAIIntegrationCount > 0
+    }
+
+    var onboardingHasSyncedMemory: Bool {
+        if !inbox.isEmpty || (stats?.pending_captures ?? 0) > 0 || (stats?.memories ?? 0) > 0 {
+            return true
+        }
+        return sourceReadinessReport?.sources.contains { source in
+            let hasUsableData = source.captures > 0
+                || source.pending > 0
+                || source.approved > 0
+                || source.active_memories > 0
+            return hasUsableData && ["needs_review", "synced", "imported"].contains(source.status)
+        } ?? false
+    }
+
+    var onboardingHasSource: Bool {
+        onboardingHasConnectedMemoryLayer && onboardingHasSyncedMemory
     }
 
     var hasConnectedSourceAccount: Bool {
@@ -2158,7 +2178,9 @@ final class AppState: ObservableObject {
     }
 
     var onboardingHasReviewedMemory: Bool {
-        firstMemoryReviewed || (stats?.memories ?? 0) > 0
+        firstMemoryReviewed
+            || (stats?.memories ?? 0) > 0
+            || (sourceReadinessReport?.summary.active_memories ?? 0) > 0
     }
 
     var onboardingHasUsedCortex: Bool {
@@ -2203,7 +2225,16 @@ final class AppState: ObservableObject {
     }
 
     var canAdvanceOnboarding: Bool {
-        isLocalServiceReady
+        switch onboardingStep {
+        case .privateVault:
+            return isLocalServiceReady
+        case .firstSource:
+            return onboardingStepIsComplete(.firstSource)
+        case .reviewMemory:
+            return onboardingStepIsComplete(.reviewMemory)
+        case .askUse:
+            return true
+        }
     }
 
     var onboardingAskSuggestions: [String] {
@@ -2826,9 +2857,11 @@ final class AppState: ObservableObject {
                 ]
             )
             let synced = try JSONDecoder().decode(ObsidianConnectorSyncResponse.self, from: syncData)
-            guard synced.scan.records_found > 0 else {
+            guard synced.scan.records_found > 0, synced.scan.records_returned > 0 else {
+                await loadSourceConnectivity()
+                await loadTrust()
                 if !automatic {
-                    status = "No Markdown or text notes found in \(synced.scan.vault_name)"
+                    status = "No usable notes found in \(synced.scan.vault_name). Choose a vault with Markdown notes."
                 }
                 return
             }
@@ -3322,7 +3355,16 @@ final class AppState: ObservableObject {
     func nextOnboardingStep() {
         let steps = OnboardingStep.allCases
         if !canAdvanceOnboarding {
-            status = "Start the local memory engine before continuing"
+            switch onboardingStep {
+            case .privateVault:
+                status = "Start the local memory engine before continuing"
+            case .firstSource:
+                status = "Connect notes or MCP, then sync memory into Review"
+            case .reviewMemory:
+                status = "Approve one review item before asking Cortex"
+            case .askUse:
+                status = "Ask once with citations before finishing setup"
+            }
             return
         }
         let nextIndex = min(steps.count - 1, onboardingStep.rawValue + 1)
@@ -6369,14 +6411,7 @@ struct MemoryCard: View {
     }
 
     private var citationLabel: String? {
-        guard let sourceURL = item.source_url?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !sourceURL.isEmpty else {
-            return nil
-        }
-        if sourceURL.hasPrefix("file://"), let url = URL(string: sourceURL) {
-            return url.path
-        }
-        return sourceURL
+        CitationDisplay.label(sourceURL: item.source_url)
     }
 }
 

@@ -183,11 +183,29 @@ struct OnboardingView: View {
 
     private var continueButtonTitle: String {
         guard !state.canAdvanceOnboarding else { return "Continue" }
-        return "Waiting for Service"
+        switch state.onboardingStep {
+        case .privateVault:
+            return "Waiting for Service"
+        case .firstSource:
+            return "Connect and Sync"
+        case .reviewMemory:
+            return "Review One Item"
+        case .askUse:
+            return "Ask with Citations"
+        }
     }
 
     private var continueButtonIcon: String {
-        "clock"
+        switch state.onboardingStep {
+        case .privateVault:
+            return "clock"
+        case .firstSource:
+            return "arrow.triangle.2.circlepath"
+        case .reviewMemory:
+            return "checklist"
+        case .askUse:
+            return "quote.bubble"
+        }
     }
 
     @ViewBuilder
@@ -233,7 +251,7 @@ struct OnboardingVaultStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Cortex starts with a private memory folder on this Mac. Once the local engine is healthy, you can enter the app and connect notes from Home.")
+            Text("Cortex keeps memory local on this Mac. Once the engine is ready, connect notes or MCP and let Cortex sync useful items into Review.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -293,22 +311,20 @@ struct OnboardingFirstSourceStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Start with Obsidian or a local notes folder. Cortex syncs notes automatically and sends useful memory to Review.")
+            Text("Connect a notes folder or MCP tool, then sync one useful memory candidate into Review. Notes sync automatically after the first connection.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 240), spacing: 12)], spacing: 12) {
                 OnboardingConnectionCard(
                     title: state.hasConnectedObsidianVault ? "Notes connected" : "Connect notes",
-                    detail: state.hasConnectedObsidianVault ? "Cortex syncs saved notes automatically on launch and periodically." : "Choose an Obsidian or Markdown notes folder once. Cortex reads notes locally and keeps citations attached.",
-                    systemImage: state.hasConnectedObsidianVault ? "checkmark.seal.fill" : "folder.badge.plus",
+                    detail: state.hasConnectedObsidianVault ? "Cortex syncs saved notes on launch and periodically, then sends new memory to Review with citations." : "Pick an Obsidian or Markdown notes folder once. Cortex keeps it synced locally and attaches citations.",
+                    systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "folder.badge.plus",
                     isPrimary: true,
-                    status: state.hasConnectedObsidianVault ? "Connected" : "Local",
-                    buttonTitle: state.hasConnectedObsidianVault ? "Connected" : "Connect notes"
+                    status: state.onboardingHasSource ? "Synced" : (state.hasConnectedObsidianVault ? "Connected" : "Local"),
+                    buttonTitle: state.hasConnectedObsidianVault ? "Sync notes" : "Connect notes"
                 ) {
-                    if state.hasConnectedObsidianVault {
-                        state.status = "Notes will sync automatically"
-                    } else if let connector = obsidianConnector {
+                    if let connector = obsidianConnector {
                         state.connectLocalNotesFolder(connector)
                     } else {
                         Task { await state.loadSourceConnectivity() }
@@ -317,12 +333,12 @@ struct OnboardingFirstSourceStep: View {
                 }
 
                 OnboardingConnectionCard(
-                    title: state.connectedAIIntegrationCount > 0 ? "AI tools connected" : "AI tool access",
-                    detail: "Optional: let Claude Desktop, Cursor, Windsurf, and other local AI tools use approved memory after Review.",
+                    title: state.connectedAIIntegrationCount > 0 ? "MCP connected" : "Connect MCP",
+                    detail: "Let Claude Desktop, Cursor, Windsurf, and other local AI tools read approved memory and save useful items to Review.",
                     systemImage: state.connectedAIIntegrationCount > 0 ? "checkmark.seal.fill" : "wand.and.stars",
                     isPrimary: false,
-                    status: state.connectedAIIntegrationCount > 0 ? "\(state.connectedAIIntegrationCount) connected" : "Use layer",
-                    buttonTitle: state.connectedAIIntegrationCount > 0 ? "Manage" : "Set up later"
+                    status: state.connectedAIIntegrationCount > 0 ? "\(state.connectedAIIntegrationCount) connected" : "MCP",
+                    buttonTitle: state.connectedAIIntegrationCount > 0 ? "Manage" : "Connect MCP"
                 ) {
                     state.openConnectionsPrivacy(statusMessage: "Connect local AI tools")
                     state.dismissOnboardingForSession()
@@ -331,7 +347,7 @@ struct OnboardingFirstSourceStep: View {
 
             if !state.onboardingFirstSourceNames.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Connected path")
+                    Text("Connected source")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Text(state.onboardingFirstSourceNames.joined(separator: ", "))
@@ -342,10 +358,10 @@ struct OnboardingFirstSourceStep: View {
             }
 
             OnboardingCheckRow(
-                title: state.onboardingHasSource ? "Connection ready" : "No source connected yet",
-                detail: state.onboardingHasSource ? "New memory will appear in Review when connected notes sync." : "Close setup if needed, then connect notes from Home when ready.",
+                title: connectionCheckTitle,
+                detail: connectionCheckDetail,
                 systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "link.circle",
-                color: state.onboardingHasSource ? .green : .secondary
+                color: state.onboardingHasSource ? .green : (state.onboardingHasConnectedMemoryLayer ? .orange : .secondary)
             )
         }
         .task {
@@ -354,6 +370,26 @@ struct OnboardingFirstSourceStep: View {
                 await state.loadSourceConnectivity()
             }
         }
+    }
+
+    private var connectionCheckTitle: String {
+        if state.onboardingHasSource {
+            return "Memory layer synced"
+        }
+        if state.onboardingHasConnectedMemoryLayer {
+            return "Waiting for synced memory"
+        }
+        return "Connect notes or MCP"
+    }
+
+    private var connectionCheckDetail: String {
+        if state.onboardingHasSource {
+            return "Review has memory from a connected notes or MCP layer."
+        }
+        if state.onboardingHasConnectedMemoryLayer {
+            return "Sync notes or save one item through MCP so it appears in Review."
+        }
+        return "Connect notes or MCP from Home when ready."
     }
 }
 
@@ -425,7 +461,7 @@ struct OnboardingReviewMemoryStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Review is the safety layer. When connected sources produce memory candidates, approve only what Cortex should remember.")
+            Text("Review one synced item before Cortex can use it. Approve only memory with enough context to cite later.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -479,16 +515,16 @@ struct OnboardingReviewMemoryStep: View {
             return "You already reviewed memory from your first connection."
         }
         if state.onboardingHasSource {
-            return "No reviewable memory is waiting yet. New source memory will land here before Cortex uses it."
+            return "No reviewable memory is waiting yet. Let notes sync finish or save one item through MCP."
         }
-        return "Useful memory will appear here after you connect notes from Home."
+        return "Connect notes or MCP first; synced memory appears here before Cortex uses it."
     }
 
     private var reviewPathTitle: String {
         if state.onboardingHasReviewedMemory {
             return "Memory reviewed"
         }
-        return state.onboardingHasSource ? "Approve one memory" : "Review later"
+        return state.onboardingHasSource ? "Approve one memory" : "Sync memory first"
     }
 
     private var reviewPathDetail: String {
@@ -498,7 +534,7 @@ struct OnboardingReviewMemoryStep: View {
         if state.onboardingHasSource {
             return "Approve one useful memory to let Cortex cite it in Ask."
         }
-        return "Review will become active after your first source syncs."
+        return "Review unlocks after a connected notes or MCP source syncs memory."
     }
 }
 
@@ -507,12 +543,12 @@ struct OnboardingAskUseStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Ask is where approved memory becomes useful. It answers with citations once Review has accepted memory.")
+            Text("Ask is the proof loop: approved memory should produce an answer with citations.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 10) {
-                TextField("Ask about an approved memory or exact phrase", text: $state.searchQuery)
+                TextField("Ask about an approved memory", text: $state.searchQuery)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { state.runSearch() }
                 HStack {
@@ -579,7 +615,7 @@ struct OnboardingAskUseStep: View {
         if state.hasSearched {
             return "Try an exact phrase from approved memory, or go back to Review and approve one useful item."
         }
-        return "Ask about connected memory. Cortex answers with citations when approved memory matches."
+        return "Ask about approved memory from notes or MCP. Setup finishes after Cortex returns a cited answer."
     }
 
     private var askPathTitle: String {

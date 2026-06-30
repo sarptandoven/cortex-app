@@ -8,7 +8,6 @@ struct ModelTab: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 HomeHeroSection(state: state, review: state.review)
-                HomeActionSection(state: state, review: state.review)
 
                 if let review = state.review, review.stats.memories > 0 || !review.pending.isEmpty {
                     DisclosureGroup(isExpanded: $modelDetailsExpanded) {
@@ -25,14 +24,12 @@ struct ModelTab: View {
                         ModelDisclosureLabel(
                             systemImage: "square.stack.3d.up",
                             title: "Memory details",
-                            detail: "Coverage, citations, topics, people, and quality"
+                            detail: "Optional coverage and citation diagnostics"
                         )
                     }
                     .padding(12)
-                    .background(Color(nsColor: .controlBackgroundColor).opacity(0.65))
+                    .background(Color(nsColor: .controlBackgroundColor).opacity(0.42))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
-                } else {
-                    HomeFirstRunNotes(state: state)
                 }
             }
             .padding(16)
@@ -51,7 +48,21 @@ struct HomeHeroSection: View {
     let review: DailyReviewResponse?
 
     private var activeSources: Int {
-        state.activeSourceAccounts.count
+        if let connected = state.sourceReadinessReport?.summary.connected {
+            return connected
+        }
+        return state.activeSourceAccounts.filter { account in
+            account.status.lowercased() != "empty" && account.auth_state.lowercased() != "needs-content"
+        }.count
+    }
+
+    private var hasEmptySource: Bool {
+        if let report = state.sourceReadinessReport {
+            return report.sources.contains { $0.status == "empty" }
+        }
+        return state.activeSourceAccounts.contains { account in
+            account.status.lowercased() == "empty" || account.auth_state.lowercased() == "needs-content"
+        }
     }
 
     private var memoryCount: Int {
@@ -62,199 +73,161 @@ struct HomeHeroSection: View {
         review?.stats.pending_captures ?? state.inbox.count
     }
 
-    private var title: String {
-        if memoryCount > 0 {
-            return "Cortex is ready"
+    private var hasMemory: Bool {
+        memoryCount > 0
+    }
+
+    private var statusSummary: (label: String, systemImage: String, color: Color) {
+        if !state.isLocalServiceReady {
+            if CortexRecoveryText.needsAttention(state.displayStatus) {
+                return ("Needs attention", "exclamationmark.triangle.fill", .orange)
+            }
+            return ("Starting locally", "externaldrive.badge.checkmark", .accentColor)
         }
         if pendingCount > 0 {
-            return "Review new memory"
+            return ("Review needed", "tray.full.fill", .orange)
+        }
+        if hasMemory {
+            return ("Ready", "checkmark.seal.fill", .green)
         }
         if activeSources > 0 {
-            return "Cortex is syncing"
+            return ("Syncing", "arrow.triangle.2.circlepath", .accentColor)
+        }
+        if hasEmptySource {
+            return ("No notes found", "folder.badge.questionmark", .orange)
         }
         if state.connectedAIIntegrationCount > 0 {
-            return "Connect a memory source"
+            return ("Waiting for notes", "folder.badge.plus", .accentColor)
         }
-        return "Cortex is running locally"
+        return ("Private on this Mac", "lock.shield", .secondary)
+    }
+
+    private var title: String {
+        if !state.isLocalServiceReady {
+            return "Cortex is waking up"
+        }
+        if pendingCount > 0 {
+            return "A few memories are ready to review"
+        }
+        if hasMemory {
+            return "Ask Cortex about your notes"
+        }
+        if activeSources > 0 {
+            return "Cortex is learning from your notes"
+        }
+        if hasEmptySource {
+            return "Choose a vault with notes"
+        }
+        if state.connectedAIIntegrationCount > 0 {
+            return "Connect notes to unlock memory"
+        }
+        return "Bring Cortex one source"
     }
 
     private var detail: String {
-        if pendingCount > 0 {
-            return "New memories are waiting for review before they shape answers."
+        if !state.isLocalServiceReady {
+            if CortexRecoveryText.needsAttention(state.displayStatus) {
+                return state.displayStatus
+            }
+            return "The private memory engine is starting on this Mac."
         }
-        if memoryCount > 0 {
-            return "Ask questions, inspect citations, and let connected AI tools use approved memory."
+        if pendingCount > 0 {
+            return "Approve what Cortex should remember. Ask and connected AI tools use only approved memory."
+        }
+        if hasMemory {
+            return "Cortex answers from approved memory and shows the sources behind each answer."
         }
         if activeSources > 0 {
-            return "Cortex is syncing connected notes. Useful memory will appear in Review."
+            return "New memories will appear in Review when sync finishes."
+        }
+        if hasEmptySource {
+            return "The last folder did not produce usable Markdown notes. Choose a notes folder with real content."
         }
         if state.connectedAIIntegrationCount > 0 {
-            return "Your AI tool is connected. Add Obsidian or local notes so Cortex has memory to use."
+            return "Your AI tool is connected. Add a notes folder so Cortex has something to recall."
         }
-        return "Connect notes once. Cortex syncs quietly, sends useful memory to Review, then answers with citations."
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top, spacing: 14) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.accentColor.opacity(0.14))
-                    Image(systemName: "circle.grid.cross.fill")
-                        .font(.system(size: 30, weight: .semibold))
-                        .foregroundColor(.accentColor)
-                }
-                .frame(width: 64, height: 64)
-
-                VStack(alignment: .leading, spacing: 7) {
-                    Text(title)
-                        .font(.system(size: 28, weight: .semibold))
-                    Text(detail)
-                        .font(.title3)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
-            }
-
-            VStack(spacing: 10) {
-                HomeStatusRow(
-                    title: activeSources > 0 ? "Memory source connected" : "No memory source connected",
-                    detail: sourceDetail(activeSources: activeSources),
-                    systemImage: activeSources > 0 ? "checkmark.seal.fill" : "folder.badge.plus",
-                    color: activeSources > 0 ? .green : .accentColor
-                )
-                HomeStatusRow(
-                    title: pendingCount > 0 ? "Memory waiting for review" : (memoryCount > 0 ? "Approved memory ready" : "Memory will appear after sync"),
-                    detail: memoryDetail(memoryCount: memoryCount, pendingCount: pendingCount),
-                    systemImage: pendingCount > 0 ? "tray.full.fill" : (memoryCount > 0 ? "brain.head.profile.fill" : "brain.head.profile"),
-                    color: pendingCount > 0 ? .orange : (memoryCount > 0 ? .accentColor : .secondary)
-                )
-                if state.connectedAIIntegrationCount > 0 || state.detectedAIIntegrationCount > 0 {
-                    HomeStatusRow(
-                        title: state.connectedAIIntegrationCount > 0 ? "AI tool connected" : "AI tool detected",
-                        detail: aiToolDetail,
-                        systemImage: state.connectedAIIntegrationCount > 0 ? "checkmark.circle.fill" : "app.badge.checkmark",
-                        color: state.connectedAIIntegrationCount > 0 ? .green : .accentColor
-                    )
-                }
-            }
-        }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func sourceDetail(activeSources: Int) -> String {
-        if activeSources > 0 {
-            return "\(activeSources) source\(activeSources == 1 ? "" : "s") syncing automatically"
-        }
-        return "Connect Obsidian or a local notes folder from Connections & Privacy"
-    }
-
-    private var aiToolDetail: String {
-        if state.connectedAIIntegrationCount > 0 {
-            return "\(state.connectedAIIntegrationCount) tool\(state.connectedAIIntegrationCount == 1 ? "" : "s") can use approved memory after Review"
-        }
-        return "Detected tools can be connected after a memory source is ready"
-    }
-
-    private func memoryDetail(memoryCount: Int, pendingCount: Int) -> String {
-        if pendingCount > 0 {
-            return "\(pendingCount) item\(pendingCount == 1 ? "" : "s") need approval before Ask uses them"
-        }
-        if memoryCount > 0 {
-            return "\(memoryCount) approved memor\(memoryCount == 1 ? "y" : "ies") available with citations"
-        }
-        return "Cortex keeps new signals in Review before they shape answers"
-    }
-}
-
-struct HomeStatusRow: View {
-    let title: String
-    let detail: String
-    let systemImage: String
-    let color: Color
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: systemImage)
-                .font(.title3)
-                .foregroundColor(color)
-                .frame(width: 32, height: 32)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.callout)
-                    .fontWeight(.semibold)
-                Text(detail)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(2)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(12)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-struct HomeActionSection: View {
-    @ObservedObject var state: AppState
-    let review: DailyReviewResponse?
-
-    private var pendingCount: Int {
-        review?.stats.pending_captures ?? state.inbox.count
-    }
-
-    private var hasMemory: Bool {
-        (review?.stats.memories ?? state.stats?.memories ?? 0) > 0
-    }
-
-    var body: some View {
-        HomePrimaryActionButton(
-            title: actionTitle,
-            detail: actionDetail,
-            systemImage: actionIcon,
-            isDisabled: actionDisabled
-        ) {
-            runNextAction()
-        }
+        return "Choose a notes folder. Cortex keeps sync automatic and review-first."
     }
 
     private var actionTitle: String {
-        if !state.isLocalServiceReady { return "Start private vault" }
-        if state.activeSourceAccounts.isEmpty { return "Connect notes" }
+        if !state.isLocalServiceReady { return "Start Cortex" }
+        if activeSources == 0 { return hasEmptySource ? "Choose notes" : "Connect notes" }
         if pendingCount > 0 { return "Review memory" }
         if hasMemory { return "Ask Cortex" }
-        return "Check connections"
+        return "Check sync"
     }
 
     private var actionDetail: String {
         if !state.isLocalServiceReady { return state.displayBackendStatus }
-        if state.activeSourceAccounts.isEmpty {
-            if state.connectedAIIntegrationCount > 0 {
-                return "Your AI tool is ready. Add notes so memory can sync automatically."
+        if activeSources == 0 {
+            if hasEmptySource {
+                return "Pick a vault that contains Markdown notes."
             }
-            return "Connect Obsidian or local notes once. Cortex keeps sync automatic after that."
+            if state.connectedAIIntegrationCount > 0 {
+                return "Your AI tool is ready; notes are the missing piece."
+            }
+            return "Add a Markdown notes folder."
         }
-        if pendingCount > 0 { return "\(pendingCount) new item\(pendingCount == 1 ? "" : "s") waiting for approval" }
-        if hasMemory { return "Search approved memory with citations" }
-        return "Confirm source health and privacy controls"
+        if pendingCount > 0 {
+            return "\(pendingCount) item\(pendingCount == 1 ? "" : "s") waiting"
+        }
+        if hasMemory {
+            return "\(memoryCount) approved memor\(memoryCount == 1 ? "y" : "ies") available"
+        }
+        return "Confirm the connected source is healthy."
     }
 
     private var actionIcon: String {
-        if !state.isLocalServiceReady { return "externaldrive.badge.checkmark" }
-        if state.activeSourceAccounts.isEmpty { return "folder.badge.plus" }
+        if !state.isLocalServiceReady { return "power" }
+        if activeSources == 0 { return hasEmptySource ? "folder.badge.questionmark" : "folder.badge.plus" }
         if pendingCount > 0 { return "checklist" }
         if hasMemory { return "magnifyingglass" }
-        return "lock.shield"
+        return "arrow.clockwise"
     }
 
-    private var actionDisabled: Bool {
-        state.isBusy
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label(statusSummary.label, systemImage: statusSummary.systemImage)
+                .font(.callout)
+                .fontWeight(.semibold)
+                .foregroundColor(statusSummary.color)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(statusSummary.color.opacity(0.12))
+                .clipShape(Capsule())
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title)
+                    .font(.system(size: 34, weight: .semibold))
+                Text(detail)
+                    .font(.title3)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 680, alignment: .leading)
+            }
+
+            HStack(alignment: .center, spacing: 12) {
+                Button {
+                    runNextAction()
+                } label: {
+                    Label(actionTitle, systemImage: actionIcon)
+                        .frame(minWidth: 150, minHeight: 48)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(state.isBusy)
+
+                Text(actionDetail)
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.vertical, 30)
+        .padding(.horizontal, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func runNextAction() {
@@ -265,7 +238,7 @@ struct HomeActionSection: View {
                 await state.loadReview()
                 await state.loadStats()
             }
-        } else if state.activeSourceAccounts.isEmpty {
+        } else if activeSources == 0 {
             state.openConnectionsPrivacy(statusMessage: "Connect notes")
         } else if pendingCount > 0 {
             state.selectedTab = .review
@@ -276,69 +249,6 @@ struct HomeActionSection: View {
         } else {
             state.openConnectionsPrivacy(statusMessage: "Check source health and privacy")
         }
-    }
-}
-
-struct HomePrimaryActionButton: View {
-    let title: String
-    let detail: String
-    let systemImage: String
-    let isDisabled: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                Image(systemName: systemImage)
-                    .font(.title2)
-                    .frame(width: 34, height: 34)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title)
-                        .font(.title3)
-                        .fontWeight(.semibold)
-                    Text(detail)
-                        .font(.callout)
-                        .foregroundColor(.white.opacity(0.86))
-                        .lineLimit(2)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(18)
-            .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
-        }
-        .buttonStyle(.plain)
-        .foregroundColor(.white)
-        .background(Color.accentColor)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .disabled(isDisabled)
-        .opacity(isDisabled ? 0.55 : 1)
-    }
-}
-
-struct HomeFirstRunNotes: View {
-    @ObservedObject var state: AppState
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 12) {
-                Image(systemName: "link.circle")
-                    .font(.title2)
-                    .foregroundColor(.accentColor)
-                    .frame(width: 36, height: 36)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Connect once")
-                        .font(.headline)
-                    Text("Connect Obsidian or local notes once. Cortex syncs quietly, sends useful memory to Review, then answers with citations.")
-                        .font(.callout)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
-            }
-        }
-        .padding(16)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.72))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 

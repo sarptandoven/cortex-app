@@ -17,7 +17,7 @@ enum OnboardingStep: Int, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .privateVault: return "Memory"
-        case .firstSource: return "Source"
+        case .firstSource: return "Connect"
         case .reviewMemory: return "Review"
         case .askUse: return "Ask"
         }
@@ -28,11 +28,11 @@ enum OnboardingStep: Int, CaseIterable, Identifiable {
         case .privateVault:
             return "Confirm the local memory engine is ready on this Mac."
         case .firstSource:
-            return "Connect Obsidian or a local notes folder once."
+            return "Connect notes or MCP, then sync memory into Review."
         case .reviewMemory:
-            return "Useful memory waits for approval before Cortex uses it."
+            return "Approve one synced item before Cortex uses it."
         case .askUse:
-            return "Ask approved memory with citations."
+            return "Ask once and confirm Cortex cites memory."
         }
     }
 

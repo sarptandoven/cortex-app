@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -125,13 +126,14 @@ def write_obsidian_fixture(root: Path, marker: str) -> Path:
 
 
 class LiveSmokeRunner:
-    def __init__(self, *, base_url: str, token: str, user_id: str, tmp: Path, include_backup: bool) -> None:
+    def __init__(self, *, base_url: str, token: str, user_id: str, tmp: Path, include_backup: bool, mcp_stdio_path: Path) -> None:
         self.base_url = base_url
         self.token = token
         self.mcp_token = f"cxm_first100_live_smoke_{uuid.uuid4().hex}"
         self.user_id = user_id
         self.tmp = tmp
         self.include_backup = include_backup
+        self.mcp_stdio_path = mcp_stdio_path
         self.marker = f"first100-live-smoke-{uuid.uuid4().hex[:10]}"
         self.checks: list[dict[str, Any]] = []
         self.capture_ids: list[str] = []
@@ -311,6 +313,67 @@ class LiveSmokeRunner:
             "payload": {"capture_ids": self.capture_ids, "citations": len(asked["citations"])},
         }
 
+    def mcp_stdio_bridge(self) -> dict[str, Any]:
+        script = self.mcp_stdio_path.expanduser()
+        ensure(script.exists(), "MCP stdio proxy script is missing", {"path": str(script)})
+        ensure(script.is_file(), "MCP stdio proxy path is not a file", {"path": str(script)})
+        messages = [
+            {"jsonrpc": "2.0", "id": "initialize", "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": "tools", "method": "tools/list", "params": {}},
+            {
+                "jsonrpc": "2.0",
+                "id": "search",
+                "method": "tools/call",
+                "params": {"name": "search_memory", "arguments": {"query": self.marker, "top_k": 5}},
+            },
+        ]
+        stdin = "\n".join(json.dumps(message) for message in messages) + "\n"
+        env = os.environ.copy()
+        env["CORTEX_BASE_URL"] = self.base_url.rstrip("/")
+        env["CORTEX_API_KEY"] = self.mcp_token
+        python = shutil.which("python3") or sys.executable
+        try:
+            result = subprocess.run(
+                [python, str(script)],
+                input=stdin,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise LiveSmokeFailure("MCP stdio proxy could not be executed", {"path": str(script), "error": str(exc)}) from exc
+        payload = {
+            "path": str(script),
+            "returncode": result.returncode,
+            "stdout": result.stdout[-2000:],
+            "stderr": result.stderr[-2000:],
+        }
+        ensure(result.returncode == 0, "MCP stdio proxy exited non-zero", payload)
+        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        ensure(len(lines) == len(messages), "MCP stdio proxy did not emit one response per request", payload)
+        responses: dict[str, dict[str, Any]] = {}
+        for line in lines:
+            try:
+                response = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise LiveSmokeFailure("MCP stdio proxy emitted invalid JSON", {**payload, "line": line}) from exc
+            responses[str(response.get("id"))] = response
+        missing_ids = [message["id"] for message in messages if str(message["id"]) not in responses]
+        ensure(not missing_ids, "MCP stdio proxy omitted expected response ids", {**payload, "missing_ids": missing_ids})
+        ensure("error" not in responses.get("initialize", {}), "MCP stdio initialize failed", responses.get("initialize"))
+        ensure("error" not in responses.get("tools", {}), "MCP stdio tools/list failed", responses.get("tools"))
+        ensure("error" not in responses.get("search", {}), "MCP stdio search_memory failed", responses.get("search"))
+        tools = {tool["name"] for tool in responses["tools"]["result"]["tools"]}
+        ensure("search_memory" in tools, "MCP stdio tools/list omitted search_memory", {"tools": sorted(tools)})
+        search_text = responses["search"]["result"]["content"][0]["text"]
+        ensure(self.marker in search_text, "MCP stdio search did not return approved smoke memory", {"text": search_text[:2000]})
+        return {
+            "detail": "MCP stdio proxy initialized, listed tools, and retrieved approved Obsidian memory.",
+            "payload": {"path": str(script), "tool_count": len(tools)},
+        }
+
     def privacy_and_queue(self) -> dict[str, Any]:
         markdown = self.request("/v1/export.md", text=True)
         ensure(self.marker in markdown, "Markdown export omitted smoke memory")
@@ -348,6 +411,7 @@ class LiveSmokeRunner:
         self.run_step("scoped_mcp_token", self.scoped_mcp_token)
         self.run_step("mcp_tools", self.mcp_tools)
         self.run_step("obsidian_review_ask", self.obsidian_review_ask)
+        self.run_step("mcp_stdio_bridge", self.mcp_stdio_bridge)
         self.run_step("privacy_and_queue", self.privacy_and_queue)
         return {
             "status": "ok",
@@ -365,6 +429,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--user-id", default=f"first100-live-smoke-{uuid.uuid4().hex[:10]}")
     parser.add_argument("--keep-data", action="store_true", help="Do not delete smoke user rows after the run.")
     parser.add_argument("--include-backup", action="store_true", help="Also create a real local vault backup. Off by default to avoid backup churn.")
+    parser.add_argument(
+        "--mcp-stdio-path",
+        type=Path,
+        default=Path(__file__).resolve().with_name("cortex_mcp_stdio.py"),
+        help="Path to the MCP stdio proxy script to verify. Defaults to the repo script bundled into the macOS app.",
+    )
     args = parser.parse_args(argv)
 
     token = args.token.strip() or read_default_token()
@@ -373,7 +443,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     tmp = Path(tempfile.mkdtemp(prefix="cortex-first100-live-smoke-"))
-    runner = LiveSmokeRunner(base_url=args.base_url, token=token, user_id=args.user_id, tmp=tmp, include_backup=args.include_backup)
+    runner = LiveSmokeRunner(
+        base_url=args.base_url,
+        token=token,
+        user_id=args.user_id,
+        tmp=tmp,
+        include_backup=args.include_backup,
+        mcp_stdio_path=args.mcp_stdio_path,
+    )
     cleanup: dict[str, Any] | None = None
     try:
         result = runner.run()

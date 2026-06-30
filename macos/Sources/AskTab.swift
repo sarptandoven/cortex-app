@@ -206,14 +206,7 @@ struct AskSourceDetailRow: View {
     }
 
     private var citationLabel: String? {
-        guard let sourceURL = item.source_url?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !sourceURL.isEmpty else {
-            return nil
-        }
-        if sourceURL.hasPrefix("file://"), let url = URL(string: sourceURL) {
-            return url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
-        }
-        return sourceURL
+        CitationDisplay.label(sourceURL: item.source_url)
     }
 }
 
@@ -288,17 +281,19 @@ struct AskCitationRow: View {
     }
 
     private var sourceLabel: String {
-        if let path = citation.citation_path?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty {
-            return path
-        }
-        let sourceURL = citation.source_url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return sourceURL.isEmpty ? citation.source : sourceURL
+        CitationDisplay.label(
+            path: citation.citation_path,
+            sourceURL: citation.source_url,
+            fallback: citation.source,
+            lineStart: citation.line_start,
+            lineEnd: citation.line_end
+        ) ?? citation.source
     }
 
     private var sourceDetail: String? {
         let pieces = [
             citation.section_title?.trimmingCharacters(in: .whitespacesAndNewlines),
-            lineLabel,
+            citation.citation_path == nil ? lineLabel : nil,
             citation.record_scope?.trimmingCharacters(in: .whitespacesAndNewlines)
         ]
         let detail = pieces.compactMap { value -> String? in

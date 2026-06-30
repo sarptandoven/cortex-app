@@ -148,6 +148,46 @@ I prefer #cortex notes that preserve citations.
         self.assertEqual(found[0]["provenance"]["record_metadata"]["connector"], "obsidian")
         self.assertIn("Memory", found[0]["topics"])
 
+    def test_empty_vault_does_not_count_as_synced_source(self) -> None:
+        empty = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+
+        self.assertEqual(empty["status"], "empty")
+        self.assertEqual(empty["saved"], 0)
+        self.assertEqual(empty["received"], 0)
+        self.assertEqual(empty["source_account"]["status"], "empty")
+        self.assertEqual(empty["source_account"]["auth_state"], "needs-content")
+        self.assertEqual(empty["scan"]["records_found"], 0)
+        self.assertEqual(empty["scan"]["records_returned"], 0)
+
+        readiness = self.store.source_readiness_report(self.user_id)
+        obsidian = next(item for item in readiness["sources"] if item["source"] == "obsidian")
+        self.assertEqual(obsidian["status"], "empty")
+        self.assertEqual(obsidian["accounts"], 1)
+        self.assertEqual(obsidian["captures"], 0)
+        self.assertEqual(obsidian["active_memories"], 0)
+        self.assertEqual(readiness["summary"]["synced"], 0)
+        self.assertEqual(readiness["summary"]["sources_with_data"], 0)
+        self.assertEqual(readiness["summary"]["empty"], 1)
+        self.assertIn("No Markdown notes", obsidian["next_action"])
+
+    def test_vault_with_no_memory_ready_notes_does_not_count_as_synced_source(self) -> None:
+        self.write_note("Empty.md", "")
+
+        empty = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+
+        self.assertEqual(empty["status"], "empty")
+        self.assertEqual(empty["source_account"]["status"], "empty")
+        self.assertEqual(empty["scan"]["files_seen"], 1)
+        self.assertEqual(empty["scan"]["records_found"], 0)
+        self.assertEqual(empty["scan"]["records_returned"], 0)
+
+        readiness = self.store.source_readiness_report(self.user_id)
+        obsidian = next(item for item in readiness["sources"] if item["source"] == "obsidian")
+        self.assertEqual(obsidian["status"], "empty")
+        self.assertEqual(obsidian["active_memories"], 0)
+        self.assertEqual(readiness["summary"]["synced"], 0)
+        self.assertEqual(readiness["summary"]["sources_with_data"], 0)
+
     def test_long_note_keeps_late_explicit_decision_and_procedure(self) -> None:
         low_value_lines = "\n".join(
             f"Project Atlas background note {index} documents routine context without a durable decision."

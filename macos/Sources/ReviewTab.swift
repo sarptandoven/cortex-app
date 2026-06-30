@@ -1,24 +1,17 @@
+import Foundation
 import SwiftUI
 
 struct ReviewTab: View {
     @ObservedObject var state: AppState
-    @State private var isContextExpanded = false
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 20) {
                 ReviewHeaderSection(state: state)
                 ReviewInboxSection(state: state, captures: state.inbox)
-                if let review = state.review {
-                    if hasReviewContext(review) {
-                        ReviewContextDisclosure(
-                            review: review,
-                            isExpanded: $isContextExpanded
-                        )
-                    }
-                }
             }
-            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
         }
         .task {
             await state.loadInbox()
@@ -26,37 +19,25 @@ struct ReviewTab: View {
             await state.loadProductLoop()
         }
     }
-
-    private func hasReviewContext(_ review: DailyReviewResponse) -> Bool {
-        !review.recommended_actions.isEmpty || !review.open_tasks.isEmpty || !review.recent_decisions.isEmpty
-    }
 }
 
 struct ReviewHeaderSection: View {
     @ObservedObject var state: AppState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Review queue")
-                        .font(.title3)
+                    Text("Review")
+                        .font(.title2)
                         .fontWeight(.semibold)
-                    Text("Approve what Cortex should remember, and archive noise. Ask and connected AI tools can cite only approved items.")
+                    Text("Approve what Cortex should remember. Archive anything noisy or unclear.")
+                        .font(.body)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
                 ReviewPendingBadge(count: state.inbox.count)
-                Button {
-                    Task {
-                        await state.loadInbox()
-                        await state.loadReview()
-                        await state.loadProductLoop()
-                    }
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
             }
         }
     }
@@ -66,16 +47,16 @@ struct ReviewPendingBadge: View {
     let count: Int
 
     var body: some View {
-        VStack(alignment: .trailing, spacing: 1) {
+        VStack(alignment: .trailing, spacing: 2) {
             Text("\(count)")
-                .font(.title3)
+                .font(.title2)
                 .fontWeight(.semibold)
             Text("Pending")
-                .font(.caption2)
+                .font(.caption)
                 .foregroundColor(.secondary)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
         .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
@@ -86,13 +67,14 @@ struct ReviewInboxSection: View {
     let captures: [CaptureItem]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 14) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Pending items")
-                        .font(.headline)
+                        .font(.title3)
+                        .fontWeight(.semibold)
                     Text(queueDetail)
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundColor(.secondary)
                 }
                 Spacer()
@@ -101,9 +83,9 @@ struct ReviewInboxSection: View {
             if captures.isEmpty {
                 QuietState(title: "Nothing to review", detail: emptyDetail)
             } else {
-                LazyVStack(alignment: .leading, spacing: 10) {
+                LazyVStack(alignment: .leading, spacing: 14) {
                     ForEach(visibleCaptures) { capture in
-                        ReviewCaptureCard(
+                        ReviewQueueCaptureCard(
                             capture: capture,
                             approve: { state.approveCapture(capture) },
                             archive: { state.archiveCapture(capture) }
@@ -127,16 +109,210 @@ struct ReviewInboxSection: View {
             return "Nothing waiting for review right now."
         }
         if captures.count > visibleCount {
-            return "\(captures.count) pending. Showing the first \(visibleCount)."
+            return "Showing \(visibleCount) of \(captures.count) waiting for review."
         }
-        return "\(captures.count) pending item\(captures.count == 1 ? "" : "s")."
+        return "\(captures.count) item\(captures.count == 1 ? "" : "s") waiting for review."
     }
 
     private var emptyDetail: String {
         if (state.review?.stats.memories ?? 0) == 0 {
-            return "Connect a source first. Useful memory lands here before Cortex can use it."
+            return "Connect a source first. New memories will appear here before Cortex uses them."
         }
-        return "All caught up. New source records land here before Cortex can use them."
+        return "All caught up. New source items will appear here before Cortex uses them."
+    }
+}
+
+struct ReviewQueueCaptureCard: View {
+    let capture: CaptureItem
+    let approve: () -> Void
+    let archive: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 12) {
+                    Text(title)
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 12)
+                    Text(reviewSizeLabel)
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                }
+
+                if let summary = cleanedSummary {
+                    Text(summary)
+                        .font(.body)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            ReviewQueuePreviewList(capture: capture)
+
+            ReviewQueueSourceBox(capture: capture)
+
+            HStack(alignment: .center, spacing: 12) {
+                Spacer()
+                Button {
+                    archive()
+                } label: {
+                    Label("Archive", systemImage: "archivebox")
+                }
+                .controlSize(.large)
+                Button {
+                    approve()
+                } label: {
+                    Label("Approve", systemImage: "checkmark.seal")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var title: String {
+        let candidate = capture.title ?? capture.source
+        return candidate.isEmpty ? "Untitled review item" : candidate
+    }
+
+    private var cleanedSummary: String? {
+        guard let summary = capture.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !summary.isEmpty else {
+            return nil
+        }
+        return summary
+    }
+
+    private var reviewSizeLabel: String {
+        let total = (capture.memory_count ?? 0) + (capture.task_count ?? 0)
+        if total <= 0 {
+            return "Ready to review"
+        }
+        return total == 1 ? "1 item" : "\(total) items"
+    }
+}
+
+struct ReviewQueuePreviewList: View {
+    let capture: CaptureItem
+
+    private var memories: [MemoryItem] {
+        Array((capture.preview_memories ?? []).prefix(3))
+    }
+
+    private var tasks: [TaskItem] {
+        Array((capture.preview_tasks ?? []).prefix(2))
+    }
+
+    var body: some View {
+        if memories.isEmpty && tasks.isEmpty {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "hourglass")
+                    .foregroundColor(.secondary)
+                Text("Cortex is preparing this item.")
+            }
+            .font(.callout)
+            .foregroundColor(.secondary)
+        } else {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Cortex would remember")
+                    .font(.callout)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
+
+                ForEach(memories) { memory in
+                    ReviewQueuePlainPreviewRow(text: memory.content)
+                }
+
+                ForEach(tasks) { task in
+                    ReviewQueuePlainPreviewRow(text: task.content)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .textBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+}
+
+struct ReviewQueuePlainPreviewRow: View {
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 9) {
+            Image(systemName: "circle.fill")
+                .font(.system(size: 6))
+                .foregroundColor(.accentColor)
+            Text(text)
+                .font(.body)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+struct ReviewQueueSourceBox: View {
+    let capture: CaptureItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .foregroundColor(.secondary)
+                Text("From \(sourceName)")
+                    .font(.callout)
+                    .fontWeight(.semibold)
+                Spacer(minLength: 0)
+            }
+
+            if let capturedDate = capturedDate {
+                Text("Added \(capturedDate)")
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+            }
+
+            if let citation = citation {
+                Label(citation, systemImage: "link")
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(capture.source_url ?? citation)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .textBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var sourceName: String {
+        let trimmed = capture.source.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let citation = CitationDisplay.cleanSourceURL(trimmed) {
+            return citation
+        }
+        return trimmed.isEmpty ? "source" : trimmed
+    }
+
+    private var capturedDate: String? {
+        guard let capturedAt = capture.captured_at?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !capturedAt.isEmpty else {
+            return nil
+        }
+        return String(capturedAt.prefix(10))
+    }
+
+    private var citation: String? {
+        CitationDisplay.label(sourceURL: capture.source_url)
     }
 }
 
@@ -207,8 +383,8 @@ struct ReviewCaptureCard: View {
         if let date = capture.captured_at {
             parts.append(String(date.prefix(10)))
         }
-        if let url = capture.source_url, !url.isEmpty {
-            parts.append(url)
+        if let citation = CitationDisplay.label(sourceURL: capture.source_url) {
+            parts.append(citation)
         }
         return parts.joined(separator: " · ")
     }
@@ -270,13 +446,13 @@ struct ReviewMemoryPreviewRow: View {
                 Text(memory.content)
                     .font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
-                if let sourceURL = memory.source_url, !sourceURL.isEmpty {
-                    Label(sourceURL, systemImage: "quote.bubble")
+                if let citation = CitationDisplay.label(sourceURL: memory.source_url) {
+                    Label(citation, systemImage: "quote.bubble")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                        .help(sourceURL)
+                        .help(memory.source_url ?? citation)
                 }
             }
             Spacer(minLength: 0)
@@ -349,116 +525,5 @@ struct ReviewCountPill: View {
             .padding(.vertical, 4)
             .background(Color(nsColor: .textBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-struct ReviewContextDisclosure: View {
-    let review: DailyReviewResponse
-    @Binding var isExpanded: Bool
-
-    private var contextCount: Int {
-        review.recommended_actions.count + review.open_tasks.count + review.recent_decisions.count
-    }
-
-    var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: 14) {
-                if !review.recommended_actions.isEmpty {
-                    ReviewGuidanceSection(actions: review.recommended_actions)
-                }
-                if !review.open_tasks.isEmpty {
-                    ReviewOpenLoopsSection(tasks: review.open_tasks)
-                }
-                if !review.recent_decisions.isEmpty {
-                    ReviewDecisionSection(decisions: review.recent_decisions)
-                }
-            }
-            .padding(.top, 8)
-        } label: {
-            HStack(alignment: .firstTextBaseline) {
-                Label("Approved memory", systemImage: "sidebar.right")
-                    .font(.subheadline)
-                Spacer()
-                Text(contextSummary)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-        }
-    }
-
-    private var contextSummary: String {
-        var parts: [String] = []
-        if !review.recent_decisions.isEmpty {
-            parts.append("\(review.recent_decisions.count) decisions")
-        }
-        if !review.open_tasks.isEmpty {
-            parts.append("\(review.open_tasks.count) follow-ups")
-        }
-        if !review.recommended_actions.isEmpty {
-            parts.append("\(review.recommended_actions.count) guidance")
-        }
-        return parts.isEmpty ? "\(contextCount)" : parts.joined(separator: " · ")
-    }
-}
-
-struct ReviewGuidanceSection: View {
-    let actions: [String]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SectionHeader(title: "Review guidance", detail: "Suggested cleanup before approved memory is used elsewhere.")
-            ForEach(actions.prefix(3), id: \.self) { action in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Image(systemName: "checkmark.circle")
-                        .foregroundColor(.accentColor)
-                    Text(action)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .font(.body)
-            }
-        }
-    }
-}
-
-struct ReviewOpenLoopsSection: View {
-    let tasks: [TaskItem]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SectionHeader(title: "Follow-ups", detail: "Unfinished work Cortex keeps visible outside the approval queue.")
-            ForEach(tasks.prefix(4)) { task in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(task.kind.uppercased())
-                        .font(.caption2)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.orange)
-                        .frame(width: 62, alignment: .leading)
-                    Text(task.content)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
-                }
-                .padding(8)
-                .background(Color(nsColor: .controlBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-        }
-    }
-}
-
-struct ReviewDecisionSection: View {
-    let decisions: [MemoryItem]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SectionHeader(title: "Recent decisions", detail: "Approved decisions available while reviewing new source memory.")
-            ForEach(decisions.prefix(3)) { decision in
-                Text(decision.content)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(nsColor: .controlBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-        }
     }
 }

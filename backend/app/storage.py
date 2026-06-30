@@ -1856,7 +1856,17 @@ class CortexStore:
             catalog_primary_beta = bool(item.get("primary_beta"))
             planned_connector = _planned_connector_without_native_sync(item)
             has_completed_sync = any(cursor.get("last_completed_at") for cursor in source_cursors) or any(account.get("last_sync_at") for account in active_accounts)
-            has_synced_data = has_completed_sync or captures or active_memories
+            obsidian_empty_sync = False
+            if source == "obsidian" and has_completed_sync and not captures and not active_memories:
+                sync_states = [cursor.get("state") or {} for cursor in source_cursors]
+                account_states = [account.get("metadata") or {} for account in active_accounts]
+                obsidian_empty_sync = any(
+                    int((state or {}).get("records_returned") or 0) == 0
+                    and not (state or {}).get("truncated")
+                    and not (state or {}).get("scan_errors")
+                    for state in [*sync_states, *account_states]
+                )
+            has_synced_data = (has_completed_sync and not obsidian_empty_sync) or captures or active_memories
             if has_synced_data and catalog_primary_beta:
                 beta_status = "active"
                 primary_beta_path = "connected-source-account"
@@ -1876,6 +1886,9 @@ class CortexStore:
             elif pending:
                 status = "needs_review"
                 next_action = f"Review {pending} pending capture{'s' if pending != 1 else ''}."
+            elif obsidian_empty_sync:
+                status = "empty"
+                next_action = "No Markdown notes were found in this Obsidian vault. Choose a vault with notes before Cortex can build memory."
             elif has_completed_sync:
                 status = "synced"
                 next_action = "Source sync has completed; review new memories as they arrive."
@@ -1944,16 +1957,17 @@ class CortexStore:
 
         status_rank = {
             "needs_attention": 0,
-            "syncing": 1,
-            "needs_review": 2,
-            "import_ready": 3,
-            "connected": 4,
-            "synced": 5,
-            "imported": 6,
-            "planned": 7,
-            "advanced_fallback": 8,
-            "connector_needed": 9,
-            "available": 10,
+            "empty": 1,
+            "syncing": 2,
+            "needs_review": 3,
+            "import_ready": 4,
+            "connected": 5,
+            "synced": 6,
+            "imported": 7,
+            "planned": 8,
+            "advanced_fallback": 9,
+            "connector_needed": 10,
+            "available": 11,
         }
         rows.sort(key=lambda row: (status_rank.get(row["status"], 9), -int(row["active_memories"]), row["name"]))
         summary = {
@@ -1965,8 +1979,13 @@ class CortexStore:
             "planned_connectors": sum(1 for row in rows if row["beta_status"] == "planned"),
             "advanced_fallback_only": sum(1 for row in rows if row["beta_status"] == "advanced-fallback"),
             "connector_needed": sum(1 for row in rows if row["beta_status"] == "needs-connector"),
-            "connected": sum(int(row["accounts"]) for row in rows),
+            "connected": sum(
+                int(row["accounts"])
+                for row in rows
+                if row["status"] in {"connected", "syncing", "needs_review", "synced", "imported"}
+            ),
             "synced": sum(1 for row in rows if row["status"] == "synced"),
+            "empty": sum(1 for row in rows if row["status"] == "empty"),
             "syncing": sum(1 for row in rows if row["status"] == "syncing"),
             "processing": sum(int(row["processing"]) for row in rows),
             "processing_failed": sum(int(row["processing_failed"]) for row in rows),
@@ -1978,6 +1997,8 @@ class CortexStore:
         recommendations: list[str] = []
         if summary["needs_attention"]:
             recommendations.append("Resolve source account or sync errors before relying on those memories.")
+        if summary["empty"]:
+            recommendations.append("Choose an Obsidian vault with Markdown notes before Cortex can build memory from it.")
         if summary["syncing"]:
             recommendations.append("Wait for source processing to finish before judging Review and Ask coverage.")
         if summary["needs_review"]:
@@ -2414,14 +2435,15 @@ class CortexStore:
             "files_seen": scan.files_seen,
             "skipped": scan.skipped,
         }
+        empty_complete_scan = not scan.records and not scan.errors and not scan.truncated
         account = self.upsert_source_account(
             user_id,
             source=OBSIDIAN_SOURCE,
             account_label=label,
             account_identifier=identifier,
             connection_type="local_folder",
-            status="connected",
-            auth_state="healthy",
+            status="empty" if empty_complete_scan else "connected",
+            auth_state="needs_content" if empty_complete_scan else "healthy",
             policy={"review_required": True, "allow_ai_context": True},
             metadata=metadata,
             last_error=scan.errors[0]["error"] if scan.errors else None,
