@@ -1,6 +1,6 @@
 {
   "identity_aliases": ["sarpt@example.com"],
-  "paths": ["chatgpt", "slack", "mail", "docs"],
+  "paths": ["chatgpt", "slack", "mail", "docs", "claude", "notion", "Google Drive", "calendar", "GitHub"],
   "expected": [
     {
       "name": "chatgpt_decision",
@@ -57,6 +57,71 @@
       "kind": "negative",
       "must_include": "ceremonial fixture intros",
       "source_url_contains": ["Voice.md", "line=", "excerpt="]
+    },
+    {
+      "name": "claude_preference",
+      "query": "compact importer summaries evidence phrase decision",
+      "source": "claude",
+      "layer": "preference",
+      "kind": "preference",
+      "must_include": "compact importer summaries",
+      "source_url_contains": ["service=claude", "conversation=Memory%20quality%20tuning", "line=", "message=2", "excerpt="]
+    },
+    {
+      "name": "notion_style",
+      "query": "crisp importer notes concrete source labels",
+      "source": "notion",
+      "layer": "style",
+      "kind": "style",
+      "must_include": "crisp importer notes",
+      "source_url_contains": ["service=notion", "page=Memory%20Quality", "file=Memory%20Quality.md", "line=", "excerpt="]
+    },
+    {
+      "name": "notion_negative",
+      "query": "vague import confidence blurbs",
+      "source": "notion",
+      "layer": "negative",
+      "kind": "negative",
+      "must_include": "vague import confidence blurbs",
+      "source_url_contains": ["service=notion", "page=Memory%20Quality", "line=", "excerpt="]
+    },
+    {
+      "name": "cloud_docs_decision",
+      "query": "Project Beacon acceptance snapshots Google Docs imports",
+      "source": "cloud-docs",
+      "layer": "decision",
+      "kind": "decision",
+      "must_include": "acceptance snapshots",
+      "source_url_contains": ["service=cloud-docs", "provider=google-drive", "document=Design%20Notes", "file=Design%20Notes.md", "line=", "excerpt="]
+    },
+    {
+      "name": "cloud_docs_event_date",
+      "query": "Project Beacon Drive markdown parser review June 30 2026",
+      "source": "cloud-docs",
+      "layer": "episodic",
+      "kind": "event",
+      "must_include": "Drive markdown parser review",
+      "occurred_at": "2026-06-30",
+      "source_url_contains": ["service=cloud-docs", "provider=google-drive", "line=", "excerpt="]
+    },
+    {
+      "name": "calendar_event_date",
+      "query": "Project Horizon calendar review shipped source citations",
+      "source": "calendar",
+      "layer": "episodic",
+      "kind": "event",
+      "must_include": "calendar review shipped",
+      "occurred_at": "2026-07-03",
+      "source_url_contains": ["service=calendar", "file=calendar.ics", "event=1", "line=", "excerpt="]
+    },
+    {
+      "name": "github_decision",
+      "query": "Project Tuning PR review row-level citations",
+      "source": "github",
+      "layer": "decision",
+      "kind": "decision",
+      "must_include": "row-level citations",
+      "source_url_contains": ["service=github", "repository=Project%20Cortex", "file=issues.csv", "row=2", "line=", "excerpt="]
     }
   ],
   "rejected_phrases": [
@@ -64,12 +129,21 @@
     "long onboarding checklists",
     "long stakeholder recap rituals",
     "verbose sales decks",
-    "legalistic and slow"
+    "legalistic and slow",
+    "wall-of-text import summaries",
+    "storybook-only demos",
+    "long public launch testimonials"
   ],
   "boilerplate_phrases": [
     "Source:",
     "Conversation:",
     "Created:",
-    "--- Messages ---"
+    "Source file:",
+    "Path:",
+    "File:",
+    "Structured CSV export:",
+    "--- Messages ---",
+    "--- Rows ---",
+    "--- Events ---"
   ]
 }

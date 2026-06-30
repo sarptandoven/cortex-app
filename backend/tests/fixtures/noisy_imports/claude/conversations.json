@@ -1,0 +1,21 @@
+[
+  {
+    "uuid": "claude-golden-memory-quality",
+    "name": "Memory quality tuning",
+    "created_at": "2026-06-29T15:00:00Z",
+    "chat_messages": [
+      {
+        "sender": "assistant",
+        "text": "I prefer wall-of-text import summaries for your review queue."
+      },
+      {
+        "sender": "human",
+        "text": "I prefer compact importer summaries that keep the evidence phrase next to each decision."
+      },
+      {
+        "sender": "human",
+        "text": "My writing style uses short review notes with explicit tradeoffs."
+      }
+    ]
+  }
+]
