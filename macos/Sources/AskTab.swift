@@ -47,16 +47,20 @@ struct AskQuerySection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
+            HStack(spacing: 12) {
                 TextField("Ask about approved memory, a project, a person, or an exact phrase", text: $state.searchQuery)
                     .textFieldStyle(.roundedBorder)
+                    .font(.title3)
+                    .frame(minHeight: 52)
                     .onSubmit { state.runSearch() }
                 Button {
                     state.runSearch()
                 } label: {
                     Label("Ask", systemImage: "magnifyingglass")
+                        .frame(minWidth: 104, minHeight: 52)
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.large)
             }
 
             if state.hasSearched {
@@ -65,7 +69,7 @@ struct AskQuerySection: View {
                     .foregroundColor(.secondary)
             }
         }
-        .padding(12)
+        .padding(16)
         .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
