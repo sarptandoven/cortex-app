@@ -204,6 +204,45 @@ QUERY_FTS_STOPWORDS = QUERY_TEMPORAL_STOPWORDS | {
     "to",
     "usually",
 }
+QUERY_LEXICAL_FALLBACK_STOPWORDS = QUERY_FTS_STOPWORDS | {
+    "a",
+    "an",
+    "and",
+    "any",
+    "anything",
+    "around",
+    "as",
+    "at",
+    "concerning",
+    "dont",
+    "in",
+    "is",
+    "it",
+    "its",
+    "look",
+    "looking",
+    "mention",
+    "mentioned",
+    "note",
+    "notes",
+    "of",
+    "regarding",
+    "related",
+    "remember",
+    "remind",
+    "said",
+    "say",
+    "something",
+    "stuff",
+    "tell",
+    "thing",
+    "told",
+    "was",
+    "were",
+    "with",
+    "you",
+    "your",
+}
 
 
 DEFAULT_USER_SETTINGS: dict[str, Any] = {
@@ -2557,7 +2596,8 @@ class CortexStore:
                     LIMIT ?
                     """,
                     [fts_query, *params, candidate_limit],
-            ).fetchall()
+                ).fetchall()
+            vector_available = self._vector_ready(conn)
             vector_rows = self._vector_search(conn, user_id, query, candidate_limit, kind, layer, user_settings)
             temporal_rows = self._temporal_search(conn, user_id, query, candidate_limit, kind, layer, user_settings)
             intent_rows = []
@@ -2576,6 +2616,11 @@ class CortexStore:
                     [*params, like, like, like, candidate_limit],
                 ).fetchall()
                 rows = self._rank_rows_with_layer_boosts(query, fallback_rows, limit)
+            if not vector_available and not rows:
+                existing_ids = {row["id"] for row in rows}
+                lexical_rows = self._lexical_fallback_search(conn, user_id, query, candidate_limit, kind, layer, user_settings)
+                rows.extend(row for row in lexical_rows if row["id"] not in existing_ids)
+                rows = rows[:limit]
         return [self._memory_from_row(row) for row in rows]
 
     def answer_query(self, user_id: str, query: str, limit: int = 8) -> dict[str, Any]:
@@ -6197,6 +6242,46 @@ class CortexStore:
             [*params, *intent_layers, limit],
         ).fetchall()
 
+    def _lexical_fallback_search(self, conn, user_id: str, query: str, limit: int, kind: str | None, layer: str | None, user_settings: dict[str, Any]) -> list[Any]:
+        terms = self._lexical_fallback_terms(query)
+        if not terms:
+            return []
+        match_query = " OR ".join(f"{term}*" for term in terms)
+        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer)
+        where = " AND ".join(filters)
+        rows = conn.execute(
+            f"""
+            SELECT m.*, bm25(memory_fts) AS rank
+            FROM memory_fts
+            JOIN memories m ON m.id = memory_fts.memory_id
+            WHERE memory_fts MATCH ? AND {where}
+            ORDER BY rank ASC, m.importance DESC, m.captured_at DESC
+            LIMIT ?
+            """,
+            [match_query, *params, limit],
+        ).fetchall()
+        if not rows:
+            return []
+
+        min_matches = 2 if len(terms) <= 3 else max(3, (len(terms) + 1) // 2)
+        ranked: list[dict[str, Any]] = []
+        layer_boosts = query_layer_boosts(query)
+        temporal_prefixes = query_temporal_prefixes(query)
+        for index, row in enumerate(rows):
+            matched = self._lexical_matched_terms(row, terms)
+            if len(matched) < min_matches:
+                continue
+            ranked.append(
+                {
+                    "row": row,
+                    "score": (len(matched) / len(terms))
+                    + (0.05 / (60 + index))
+                    + self._layer_boost(row, layer_boosts)
+                    + self._temporal_boost(row, temporal_prefixes),
+                }
+            )
+        return [item["row"] for item in sorted(ranked, key=lambda item: item["score"], reverse=True)]
+
     def _fuse_search_rows(
         self,
         query: str,
@@ -6263,6 +6348,44 @@ class CortexStore:
                     return 0.045
                 return TEMPORAL_RETRIEVAL_BOOST + 0.004
         return 0.0
+
+    def _lexical_fallback_terms(self, query: str, *, limit: int = 8) -> list[str]:
+        terms: list[str] = []
+        seen: set[str] = set()
+        for token in re.findall(r"[a-z0-9_]+", str(query or "").lower().replace("'", "")):
+            clean = token.strip("_")
+            if not clean or clean in QUERY_LEXICAL_FALLBACK_STOPWORDS:
+                continue
+            normalized_token = clean
+            if len(clean) > 3 and clean.endswith("s") and not clean.endswith(("ss", "ies")):
+                normalized_token = clean[:-1]
+            if len(normalized_token) < 3 or normalized_token in seen:
+                continue
+            seen.add(normalized_token)
+            terms.append(normalized_token)
+            if len(terms) >= limit:
+                break
+        return terms
+
+    def _lexical_matched_terms(self, row: Any, terms: list[str]) -> set[str]:
+        text = " ".join(
+            str(value or "")
+            for value in (
+                row["content"],
+                row["summary"],
+                row["source"],
+                row["topics_json"],
+            )
+        )
+        row_terms: set[str] = set()
+        for token in re.findall(r"[a-z0-9_]+", text.lower().replace("'", "")):
+            clean = token.strip("_")
+            if not clean:
+                continue
+            if len(clean) > 3 and clean.endswith("s") and not clean.endswith(("ss", "ies")):
+                clean = clean[:-1]
+            row_terms.add(clean)
+        return {term for term in terms if any(candidate.startswith(term) for candidate in row_terms)}
 
     def _enqueue_embed_memory_job(
         self,

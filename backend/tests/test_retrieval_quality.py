@@ -132,6 +132,99 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertEqual({memory["layer"] for memory in memories}, MEMORY_LAYERS)
         self.assertEqual(len(memories), len(MEMORY_LAYERS))
 
+    def test_natural_language_filler_words_match_memory_without_vectors(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+        self.store._vector_ready = lambda conn: False
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Taipei launch positioning seed.",
+            source="lexical-fallback-test",
+            source_url=None,
+            title="Lexical fallback seed",
+            extracted={
+                "_timestamp": "2026-05-01T00:00:00+00:00",
+                "summary": "Lexical fallback seed.",
+                "records": [
+                    {
+                        "id": "nl_taipei_positioning",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "Taipei launch positioning uses the market reliability notes as the standing source.",
+                        "summary": "Taipei launch positioning relies on market reliability notes.",
+                        "confidence": "confirmed",
+                        "importance": 3,
+                        "topics": ["taipei", "launch", "positioning"],
+                        "entity_ids": [],
+                    },
+                    {
+                        "id": "nl_taipei_distractor",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "Taipei dinner recommendations are saved separately from launch planning.",
+                        "summary": "Taipei dinner recommendations.",
+                        "confidence": "confirmed",
+                        "importance": 5,
+                        "topics": ["taipei", "dinner"],
+                        "entity_ids": [],
+                    },
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+
+        query = "can you remember what i said about the taipei launch positioning thing"
+        self.assertIn("remember*", self.store._fts_query(query))
+
+        results = self.store.search(self.user_id, query, limit=1)
+
+        self.assertEqual(results[0]["id"], "nl_taipei_positioning")
+
+    def test_lexical_fallback_does_not_pad_existing_strict_results(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+        self.store._vector_ready = lambda conn: False
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Strict and fallback Taipei seed.",
+            source="lexical-fallback-test",
+            source_url=None,
+            title="Lexical fallback underfill seed",
+            extracted={
+                "_timestamp": "2026-05-01T00:00:00+00:00",
+                "summary": "Lexical fallback underfill seed.",
+                "records": [
+                    {
+                        "id": "strict_taipei_positioning",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "Taipei launch positioning should keep the reliability proof in the first answer.",
+                        "summary": "Taipei launch positioning reliability proof.",
+                        "confidence": "confirmed",
+                        "importance": 1,
+                        "topics": ["taipei", "launch", "positioning"],
+                        "entity_ids": [],
+                    },
+                    {
+                        "id": "fallback_taipei_launch",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "Taipei launch timing depends on partner approval.",
+                        "summary": "Taipei launch timing.",
+                        "confidence": "confirmed",
+                        "importance": 5,
+                        "topics": ["taipei", "launch"],
+                        "entity_ids": [],
+                    },
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+
+        results = self.store.search(self.user_id, "taipei launch positioning", limit=2)
+
+        self.assertEqual([item["id"] for item in results], ["strict_taipei_positioning"])
+
     def test_focused_queries_retrieve_expected_layer_and_content(self) -> None:
         result = evaluate_retrieval(self.store, self.user_id)
 
