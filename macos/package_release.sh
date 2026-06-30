@@ -142,14 +142,27 @@ cat > "$STAGING/README.txt" <<EOF
 Cortex ${VERSION} (${BUILD})
 
 Install:
-1. Drag Cortex.app to Applications.
-2. Open Cortex from Applications.
-3. If macOS warns because this local beta is not notarized yet, Control-click Cortex.app and choose Open.
+1. Before opening the DMG, verify the downloaded file against ${RELEASE_NAME}.checksums.txt from the release directory.
+2. Drag Cortex.app to Applications.
+3. Open Cortex from Applications.
+4. If macOS warns because this local beta is not notarized yet, Control-click Cortex.app and choose Open.
+5. Complete first-run setup, import one selected local source, approve one memory, ask a cited question, and create or intentionally defer a backup.
 
 Update:
 1. Quit Cortex.
 2. Replace the old Cortex.app in Applications with this version.
 3. Your local vault remains in ~/Library/Application Support/Cortex/Cortex.vault.
+
+Rollback:
+1. Quit Cortex.
+2. Replace Cortex.app with the previous beta build.
+3. Do not delete or move ~/Library/Application Support/Cortex/Cortex.vault.
+4. Reopen Cortex, run Trust > Advanced reliability checks, and create a fresh backup.
+
+Known local-beta limits:
+- Manual app replacement is the only update path.
+- Live OAuth/API sync, hosted accounts, cloud backup, and automatic updates are not enabled.
+- Broad public distribution requires Developer ID signing, notarization, hosted HTTPS downloads, and a support process.
 
 Channel: ${CHANNEL}
 Released: ${STAMP}
@@ -229,6 +242,51 @@ payload = {
     "released_at": "$STAMP",
     "mandatory": False,
     "release_notes": notes,
+    "beta_readiness": {
+        "audience": "first-100 local beta",
+        "manual_qa_required": True,
+        "install_steps": [
+            "Verify the downloaded DMG or ZIP against the release checksums.",
+            "Open the DMG and drag Cortex.app to Applications.",
+            "Launch Cortex from Applications.",
+            "If macOS blocks an unnotarized local beta, Control-click Cortex.app and choose Open.",
+            "Complete first-run setup with a local vault, source import, memory review, cited Ask result, and backup decision.",
+        ],
+        "update_steps": [
+            "Quit Cortex before replacing the app.",
+            "Install the new Cortex.app over the old app in Applications.",
+            "Keep the local vault folder unchanged.",
+            "Relaunch, confirm backend health, and run the reliability report.",
+        ],
+        "rollback_steps": [
+            "Keep the user's local vault folder unchanged.",
+            "Quit Cortex.",
+            "Replace Cortex.app in Applications with the previous beta build.",
+            "Relaunch, run the reliability report, and create a fresh backup.",
+        ],
+        "known_limitations": [
+            "Manual app replacement is the only update path for this local beta.",
+            "Live OAuth/API sync, hosted accounts, cloud backup, and remote MCP/OAuth are not enabled.",
+            "Support starts from the sanitized support bundle, not raw vault data.",
+            "Developer ID signing, notarization, hosted HTTPS downloads, and a support process are required before broad public distribution.",
+        ],
+        "manual_qa_checklist": [
+            "Install from the DMG on a clean macOS 13 or newer user profile.",
+            "Launch from Applications and complete first-run setup.",
+            "Import one real user-selected local source through Sources.",
+            "Approve at least one useful memory and archive obvious noise in Review.",
+            "Ask a question that returns cited memory from the approved import.",
+            "Verify Trust shows vault path, backend health, backup, export, support bundle, and update feed controls.",
+            "Create a backup and confirm the support bundle contains no raw memory content.",
+            "Replace the app with this build over a previous build and confirm the vault remains intact.",
+            "Roll back to the previous build and confirm the vault remains intact.",
+        ],
+        "generated_artifact_verification": [
+            "shasum -a 256 -c $RELEASE_NAME.checksums.txt",
+            "python3 scripts/validate_update_manifest.py <release-dir>/latest.json",
+            "python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir <release-dir>",
+        ],
+    },
     "artifacts": [
         {
             "kind": "dmg",
@@ -252,6 +310,9 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
 PY
 
 python3 "$PROJECT_ROOT/scripts/validate_update_manifest.py" "$MANIFEST"
+(cd "$OUT_DIR" && shasum -a 256 -c "$(basename "$CHECKSUMS")")
+hdiutil verify "$DMG" >/dev/null
+unzip -tq "$ZIP" >/dev/null
 
 cat > "$HANDOFF" <<EOF
 # Cortex Local Beta Handoff
@@ -271,7 +332,7 @@ browser automation, hosted accounts, Redis, Docker, or cloud sync.
 - $(basename "$CHECKSUMS"): SHA-256 checksums for the DMG and ZIP
 - latest.json: local update manifest for Trust diagnostics
 
-## Verify Package Integrity
+## Generated Artifact Verification
 
 Run from this release directory:
 
@@ -286,13 +347,22 @@ RELEASE_DIR="/path/to/${RELEASE_NAME}"
 python3 scripts/validate_update_manifest.py "\$RELEASE_DIR/latest.json"
 ~~~
 
+Run the package-artifact readiness check from the repository root:
+
+~~~bash
+python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir "\$RELEASE_DIR"
+~~~
+
 ## Install And Run The Packaged App
 
-1. Open ${DMG_FILE}.
-2. Drag Cortex.app to Applications.
-3. Open Cortex from Applications.
-4. If macOS blocks this local beta because it is not notarized yet,
+1. Verify the downloaded ${DMG_FILE} against $(basename "$CHECKSUMS").
+2. Open ${DMG_FILE}.
+3. Drag Cortex.app to Applications.
+4. Open Cortex from Applications.
+5. If macOS blocks this local beta because it is not notarized yet,
    Control-click Cortex.app and choose Open.
+6. Complete first-run setup with a local vault, source import, memory review,
+   cited Ask result, and backup decision.
 
 The app starts its local backend on:
 
@@ -305,6 +375,26 @@ The local vault remains outside the app bundle at:
 ~~~text
 ~/Library/Application Support/Cortex/Cortex.vault
 ~~~
+
+## Update Or Roll Back
+
+Update:
+
+1. Quit Cortex.
+2. Replace the old Cortex.app in Applications with this build.
+3. Leave the local vault folder unchanged.
+4. Reopen Cortex, confirm backend health in Trust, and run the reliability report.
+5. Create a fresh backup after confirming the app opens.
+
+Rollback:
+
+1. Keep the local vault folder unchanged.
+2. Quit Cortex.
+3. Replace Cortex.app in Applications with the previous beta build.
+4. Reopen Cortex, run the reliability report, and create a fresh backup.
+
+The beta download host should retain at least one previous DMG and ZIP until
+the next build has passed manual QA.
 
 ## Build And Run From Source
 
@@ -350,6 +440,22 @@ python3 scripts/export_support_bundle.py --mode live --token "\$CORTEX_API_KEY"
 python3 scripts/export_support_bundle.py --mode offline
 ~~~
 
+## Required Manual QA
+
+Do not invite the first 100 testers until these checks pass on a clean macOS
+13 or newer user profile:
+
+1. Install from ${DMG_FILE}, launch from Applications, and complete first-run setup.
+2. Confirm Model shows readiness, source health, decisions, and open loops.
+3. Import one real user-selected local source through Sources.
+4. Approve at least one useful memory and archive obvious noise in Review.
+5. Ask a question that returns cited memory from the approved import.
+6. Confirm Trust shows vault path, backend health, backup, export, support bundle, and update feed controls.
+7. Create a backup and export a sanitized support bundle.
+8. Replace a previous beta with this build and confirm the vault remains intact.
+9. Roll back to the previous beta and confirm the vault remains intact.
+10. Validate $(basename "$CHECKSUMS"), latest.json, the DMG, and the ZIP before publishing the update feed.
+
 ## Manual First-User Loop
 
 Use the product flow without browser automation:
@@ -360,13 +466,14 @@ Use the product flow without browser automation:
 4. Ask: ask a question that should return cited memory from the import.
 5. Trust: confirm vault path, backup, export, support bundle, and update feed controls.
 
-## Beta Boundaries
+## Known Limitations
 
 - User data stays in the local vault.
 - Live OAuth/API sync is not enabled for this local beta.
 - Manual app replacement is the update path.
 - Developer ID notarization is required before broad public distribution.
 - Support should ask for the sanitized support bundle before any raw data.
+- Hosted accounts, cloud backup, remote MCP/OAuth, billing, teams, and automatic updates are not first-100 beta capabilities.
 EOF
 
 echo "Release packaged:"

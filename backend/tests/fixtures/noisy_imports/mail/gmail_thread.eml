@@ -1,0 +1,15 @@
+Subject: Gmail-style fixture thread
+From: Sarpt <sarpt@example.com>
+To: Dana Partner <dana@example.com>
+Date: Tue, 30 Jun 2026 09:15:00 +0000
+Message-ID: <gmail-thread-fixture@example.com>
+
+I prefer Gmail thread imports that keep my latest reply as the memory.
+We decided Project Inbox should use the current Gmail reply for source-backed import tests.
+
+On Tue, Jun 30, 2026 at 8:48 AM Dana Partner <dana@example.com> wrote:
+> I prefer unsubscribe-heavy forwarded newsletters.
+> My writing style is maze-like compliance preambles.
+
+--
+Sent from my iPhone

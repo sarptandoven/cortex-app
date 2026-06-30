@@ -149,6 +149,7 @@ This is disabled by default for new local vaults.
 - Markdown exports
 - JSON exports
 - MCP tool responses
+- Ask citations and cited answer excerpts
 
 Current redaction labels include:
 
@@ -159,7 +160,7 @@ Current redaction labels include:
 - `[REDACTED_EMAIL]`
 - `[REDACTED_NUMBER]`
 
-The local vault remains the source of truth. Redaction is a sharing-time control.
+Local absolute file paths are converted into safe citation labels such as `local-file://Notes.md#line=12` before they appear in shared context, exports, Ask answers, or agent payloads, even when sensitive-text masking is disabled. The local vault remains the source of truth. Redaction is a sharing-time control.
 
 ## Audit Trail
 

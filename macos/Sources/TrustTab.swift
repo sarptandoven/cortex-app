@@ -14,7 +14,7 @@ struct TrustTab: View {
                     TrustChecklistSection(state: state, summary: summary)
                     TrustPolicySection(state: state)
                     SettingsPrivacySection(state: state)
-                    DisclosureGroup("Sources and audit trail", isExpanded: $sourcesExpanded) {
+                    DisclosureGroup("Source privacy and audit trail", isExpanded: $sourcesExpanded) {
                         VStack(alignment: .leading, spacing: 14) {
                             TrustSourceSection(state: state, summary: summary)
                             TrustAuditSection(events: state.auditEvents, refresh: {
@@ -23,14 +23,14 @@ struct TrustTab: View {
                         }
                         .padding(.top, 8)
                     }
-                    DisclosureGroup("Connected AI tools", isExpanded: $integrationsExpanded) {
+                    DisclosureGroup("AI tool access", isExpanded: $integrationsExpanded) {
                         VStack(alignment: .leading, spacing: 14) {
                             IntegrationCenterView(state: state, compact: true)
                             IntegrationTokensSection(state: state)
                         }
                         .padding(.top, 8)
                     }
-                    DisclosureGroup("Advanced settings and diagnostics", isExpanded: $advancedExpanded) {
+                    DisclosureGroup("Advanced diagnostics", isExpanded: $advancedExpanded) {
                         VStack(alignment: .leading, spacing: 14) {
                             SettingsDataRecoverySection(state: state)
                             Divider()
@@ -73,7 +73,7 @@ struct TrustTab: View {
                         ProgressView()
                         Text("Preparing trust controls")
                             .font(.headline)
-                        Text("Cortex is reading local policy, source history, and recent audit events.")
+                        Text("Cortex is reading privacy settings, source history, and recent audit events.")
                             .foregroundColor(.secondary)
                     }
                     .frame(maxWidth: .infinity, minHeight: 420)
@@ -143,7 +143,7 @@ struct TrustChecklistSection: View {
         if let latest = backups.latest_backup {
             return TrustChecklistItem(
                 title: "Backup recorded",
-                detail: "Latest local backup \(shortDateTime(latest.created_at)) · \(latest.age_days) day\(latest.age_days == 1 ? "" : "s") old · \(formatBytes(latest.size_bytes)) · \(backups.count) total\n\(latest.backup_path)",
+                detail: "Latest backup: \(shortDateTime(latest.created_at)) · \(latest.age_days) day\(latest.age_days == 1 ? "" : "s") old · \(formatBytes(latest.size_bytes)) · \(backups.count) total\n\(latest.backup_path)",
                 systemImage: "checkmark.seal.fill",
                 color: .green
             )
@@ -174,7 +174,7 @@ struct TrustChecklistSection: View {
         guard !warnings.isEmpty else {
             return TrustChecklistItem(
                 title: "No active warnings",
-                detail: "Trust summary reports no risk flags and no pending captures.",
+                detail: "No risk flags or pending review items.",
                 systemImage: "checkmark.shield.fill",
                 color: .green
             )
@@ -201,9 +201,9 @@ struct TrustChecklistSection: View {
         }
 
         var parts = [
-            "Connected AI tools can search memory, read review queues, and inspect stats",
-            settings.allow_pending_in_context ? "pending saves can appear in AI context" : "pending saves stay out of AI context",
-            "shared context limit: \(settings.context_pack_limit)"
+            "Connected AI tools can search memory and read review queues",
+            settings.allow_pending_in_context ? "pending memory can be shared" : "pending memory stays private",
+            "context limit: \(settings.context_pack_limit)"
         ]
         parts.append(settings.redact_sensitive_context ? "redaction is on" : "redaction is off")
         if privateSourceCount > 0 {
@@ -227,7 +227,7 @@ struct TrustChecklistSection: View {
             enabled.append("save, approve, or archive memory")
         }
         if settings.allow_agent_exports {
-            enabled.append("prepare profile artifacts, adaptation instructions, or exports")
+            enabled.append("prepare profile artifacts, AI instructions, or exports")
         }
         if settings.allow_agent_maintenance {
             enabled.append("create backups or repair indexes")
@@ -239,7 +239,7 @@ struct TrustChecklistSection: View {
         guard !enabled.isEmpty else {
             return TrustChecklistItem(
                 title: "AI changes are off",
-                detail: "Connected AI tools cannot save, export, run maintenance, or delete local data.",
+                detail: "Connected AI tools cannot save memory, export data, run maintenance, or delete local data.",
                 systemImage: "lock.shield.fill",
                 color: .green
             )
@@ -258,10 +258,10 @@ struct TrustChecklistSection: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Safety checklist")
+                    Text("Trust checklist")
                         .font(.title2)
                         .fontWeight(.semibold)
-                    Text("\(summary.mode.capitalized) mode · trust \(summary.trust_score)/100 · \(activeMemories) active memories · \(agentEventsThisWeek) agent events this week")
+                    Text("\(summary.mode.capitalized) mode · trust \(summary.trust_score)/100 · \(activeMemories) approved memories · \(agentEventsThisWeek) AI events this week")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

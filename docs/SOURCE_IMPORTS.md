@@ -11,7 +11,7 @@ These formats have dedicated parsers in `backend/app/source_ingest.py`:
 | ChatGPT | OpenAI export zip or folder with `conversations.json` | Preserves conversation title, timestamps, roles, and message order. |
 | Claude | Claude export `conversations.json` / `chats.json` | Preserves chat title, sender, message text, and created time when present. |
 | Notion | Markdown, CSV, and HTML export folders | Imported as page/file records with Notion source detection. |
-| Email / Gmail / Apple Mail | `.mbox`, `.eml`, `.emlx` | Extracts subject, from/to/date, plain text, and HTML bodies. Gmail Takeout mbox is supported. |
+| Email / Gmail / Apple Mail / Outlook | `.mbox`, `.eml`, `.emlx` | Extracts subject, from/to/date, plain text, and HTML bodies. Gmail Takeout mbox, Apple Mail exports, and Outlook mail files are supported. |
 | Slack | Workspace export folders or zips | Parses channel date JSON files and maps user IDs through `users.json` when present. |
 | Discord | Discord data package `messages.csv` | Parses timestamps, message contents, and attachments. |
 | Telegram | Telegram Desktop `result.json` | Parses chats and ordered messages. |
@@ -21,12 +21,12 @@ These formats have dedicated parsers in `backend/app/source_ingest.py`:
 | Zoom | `.vtt` and `.srt` transcripts | Preserves speaker lines and transcript text from meeting exports. |
 | Messages | User-selected copy of iMessage `chat.db` | Read-only import of recent message text by chat. This is only read when the user explicitly selects the database copy. |
 | WhatsApp | Text chat export | Parses common timestamped text exports as episodic message history. |
-| Browser bookmarks and research | Chrome, Edge, Safari, and Firefox Netscape bookmark HTML exports; Chrome/Edge Bookmarks JSON; Chrome/Firefox history SQLite | Preserves bookmark titles, URLs, and bounded browser history as research/source signals. |
+| Browser bookmarks and history exports | Chrome, Edge, Safari, and Firefox Netscape bookmark HTML exports; Chrome/Edge Bookmarks JSON; Chrome/Firefox history SQLite selected by the user | Preserves bookmark titles, URLs, and bounded browser history as research/source signals. |
 | Calendar | Google Calendar, Apple Calendar, and Outlook `.ics` exports | Parses event summaries, dates, locations, organizers, attendees, and descriptions. |
 | Contacts | Apple Contacts, Google Contacts, and Outlook `.vcf` or CSV exports | Parses names, organizations, titles, emails, phones, URLs, and notes. |
 | Twitter/X | Archive `tweets.js` and `direct-messages.js` files | Parses public tweets and direct-message text from local archive files. |
 | LinkedIn | Data export `Messages.csv` and `Connections.csv` | Parses professional relationship and conversation context. |
-| Docs and writing | `.txt`, `.md`, `.html`, `.csv`, `.json`, `.jsonl`, `.xml`, `.yaml`, `.rtf`, `.docx`, `.pdf` when `pypdf` is installed | Used for writing samples, notes, code, meeting notes, saved docs, and exported research. |
+| Docs, Markdown, and PDFs | `.txt`, `.md`, `.html`, `.csv`, `.json`, `.jsonl`, `.xml`, `.yaml`, `.rtf`, `.docx`, `.pdf` when `pypdf` is installed | Used for writing samples, notes, code, meeting notes, saved docs, PDFs, and exported research. |
 
 ## Generic Import Coverage
 
@@ -34,7 +34,7 @@ These services work through generic Markdown, HTML, CSV, JSON, DOCX, or text exp
 
 - Apple Notes exported as text, HTML, RTF, PDF, or Markdown.
 - Google Docs / Drive Takeout exports as DOCX, HTML, plain text, or PDF.
-- Microsoft 365, OneDrive, Outlook, and Dropbox Paper exports as DOCX, HTML, PDF, CSV, JSON, or text.
+- Microsoft 365, OneDrive, Outlook, and Dropbox Paper exports as DOCX, HTML, PDF, CSV, JSON, email files, calendar ICS, contact CSV, or text.
 - Obsidian, Logseq, Roam, Bear, Craft, Ulysses, iA Writer, and other Markdown vaults.
 - Readwise, Pocket, Instapaper, Raindrop, Zotero, browser history/bookmark exports, and research archives.
 - Linear, Jira, Asana, Trello, GitHub Issues, GitLab, Zendesk, Intercom, Help Scout, and customer support exports when exported as CSV/JSON/Markdown.
@@ -107,9 +107,11 @@ GET /v1/source-accounts/catalog
 GET /v1/sources/readiness
 ```
 
-The catalog lists common services such as ChatGPT, Claude, Gmail, email files, docs, cloud-doc exports, Notion, Google Drive, Google Keep, Microsoft 365, Slack, Google Chat, Teams, Discord, Telegram, Messages, WhatsApp, Calendar, Contacts, GitHub, Linear, Jira, Zoom, Browser Bookmarks, Readwise, LinkedIn, Twitter/X, Apple Notes, and Obsidian. Each entry includes current import readiness, future live-sync status, auth type, scopes, supported export formats, `export_status`, and the canonical `source_ids` that imported captures and memories will use.
+The catalog lists common services such as ChatGPT, Claude, Gmail, Apple Mail, Outlook, email files, docs, PDFs, cloud-doc exports, Notion, Google Drive, Google Docs, Google Keep, Microsoft 365, Slack, Google Chat, Teams, Discord, Telegram, Messages, iMessage exports, WhatsApp, Calendar, Contacts, GitHub, Linear, Jira, Zoom, Browser Bookmarks, browser history exports, Readwise, LinkedIn, Twitter/X, Apple Notes, and Obsidian. Each entry includes current import readiness, future live-sync status, auth type, scopes, supported export formats, `export_status`, and the canonical `source_ids` that imported captures and memories will use.
 
-Branded live connectors can map to canonical import sources. For example, Gmail Takeout imports as `email`, Google Drive exports import as `cloud-docs` or `docs`, and GitHub CSV/JSON/project files import as `github` or `work-tools`. The Sources UI shows that mapping so planned OAuth connectors are not mistaken for already-connected live sync.
+Branded live connectors can map to canonical import sources. For example, Gmail, Apple Mail, and Outlook mail imports map to `email`, Google Drive and Google Docs exports import as `cloud-docs` or `docs`, PDFs import as `docs`, iMessage exports import as `messages`, and GitHub CSV/JSON/project files import as `github` or `work-tools`. The Sources UI shows that mapping so planned OAuth connectors are not mistaken for already-connected live sync.
+
+See `docs/CONNECTOR_COVERAGE_READINESS.md` for the first-100-user beta coverage map and the later live OAuth readiness gates.
 
 Citation URLs are service-aware when the importer can infer useful structure. Native chat/email imports include conversation, channel, subject, or message locators. Service-like file imports add fragments such as `service=notion&page=...`, `service=cloud-docs&provider=...&document=...`, `service=github&repository=...&file=...`, and `service=calendar&first_event=...`. Plain local `docs` imports keep the raw file path as the citation.
 
@@ -179,7 +181,7 @@ The macOS Sources tab accepts files, folders, and export bundles. It first calls
 
 - Cortex does not crawl apps or cloud services automatically.
 - Imports only read files, folders, or exports selected by the user.
-- The iMessage importer only reads a user-selected `chat.db` copy and does not request system database access.
+- The iMessage importer only reads a user-selected `chat.db` copy or legally provided local export and does not request system database access.
 - Browser handoff and connected AI tools remain controlled by trust settings.
 - Large source imports enter the review pipeline before becoming trusted memory when review is enabled.
 - Re-importing the same source skips duplicate content instead of creating duplicate captures.

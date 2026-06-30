@@ -28,7 +28,7 @@ struct SourcesTab: View {
                         SourcesDisclosureLabel(
                             systemImage: "clock.arrow.circlepath",
                             title: "Import history",
-                            detail: "Recent imports and undo controls"
+                            detail: "Recent imports, errors, and undo"
                         )
                     }
                     .padding(12)
@@ -115,7 +115,7 @@ struct SecondaryCaptureToolsSection: View {
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Use these for one-off notes or links after the main source import. They do not replace source exports for onboarding or model coverage.")
+                Text("Use these after your first import for one-off notes or links. Source exports are still the best way to build useful memory.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -127,8 +127,8 @@ struct SecondaryCaptureToolsSection: View {
         } label: {
             SourcesDisclosureLabel(
                 systemImage: "plus.square.dashed",
-                title: "Secondary capture tools",
-                detail: "Quick notes and links for edge cases"
+                title: "Optional capture tools",
+                detail: "Quick notes and links after setup"
             )
         }
         .padding(12)
@@ -145,7 +145,7 @@ struct SourcesInboxImportSection: View {
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Use the inbox when another app needs a stable folder to drop exports into.")
+                Text("Use the inbox when another app needs a stable folder for exports.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -173,7 +173,7 @@ struct SourcesInboxImportSection: View {
             SourcesDisclosureLabel(
                 systemImage: "tray",
                 title: "Inbox import",
-                detail: "Stable folder for external exports"
+                detail: "Folder for exports from other apps"
             )
         }
         .padding(12)
@@ -236,7 +236,7 @@ struct SourceCatalogDisclosureSection: View {
             SourcesDisclosureLabel(
                 systemImage: "list.bullet.rectangle",
                 title: "Supported sources",
-                detail: "Readiness, coverage, and import options"
+                detail: "What imports well today"
             )
         }
         .padding(12)
@@ -257,7 +257,7 @@ struct SourcesImportSection: View {
                     Text("Import sources")
                         .font(.title3)
                         .fontWeight(.semibold)
-                    Text("Pick one readable export or file to start. Cortex scans locally and sends detected memory to Review before it affects the model.")
+                    Text("Choose or drop one readable export or file. Cortex scans locally and sends useful memory to Review before Ask can use it.")
                         .font(.callout)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -311,7 +311,7 @@ struct SourcesDropZone: View {
                 .foregroundColor(state.captureDropTargeted ? .accentColor : .secondary)
             Text(state.captureDropTargeted ? "Drop to import" : "Drop exports or files here")
                 .font(.headline)
-            Text("AI chat exports, notes, docs, messages, and writing samples are good first sources.")
+            Text("AI chats, notes, docs, messages, and writing samples are good first sources.")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -336,7 +336,7 @@ struct SourcesLastImportResult: View {
                 Text("Last import result")
                     .font(.callout)
                     .fontWeight(.medium)
-                Text(summary.isEmpty ? "No import yet. Choose or drop one source to preview it." : summary)
+                Text(summary.isEmpty ? "No import yet. Choose or drop one source to start." : summary)
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -362,9 +362,9 @@ struct SourcesReviewNextAction: View {
             return "\(pendingCount) item\(pendingCount == 1 ? "" : "s") waiting for approval or archive."
         }
         if state.lastFileCaptureSummary.isEmpty {
-            return "After import, Review will show anything that needs approval."
+            return "After import, useful memory appears in Review for approval."
         }
-        return "No review items yet. Try another source or refresh Review if import just finished."
+        return "No review items yet. Try another source with more text, or refresh Review if import just finished."
     }
 
     private var buttonTitle: String {
@@ -388,7 +388,7 @@ struct SourcesReviewNextAction: View {
             Spacer(minLength: 12)
             Button {
                 state.selectedTab = .review
-                state.status = "Review new signals below"
+                state.status = "Review new memory below"
             } label: {
                 Label(buttonTitle, systemImage: "arrow.right")
             }
@@ -488,7 +488,7 @@ struct SupportedSourceGroupsSection: View {
         if groups.isEmpty {
             QuietState(
                 title: isLoading ? "Loading supported sources" : "Supported sources unavailable",
-                detail: isLoading ? "Cortex is checking supported imports and readiness." : "Refresh Sources after the local backend is healthy."
+                detail: isLoading ? "Cortex is checking which imports are ready." : "Refresh Sources after the local backend is healthy."
             )
         } else {
             VStack(alignment: .leading, spacing: 12) {

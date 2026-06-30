@@ -92,6 +92,7 @@ BOILERPLATE_PREFIXES = {
     "date",
     "export",
     "file",
+    "folder",
     "from",
     "path",
     "source",
@@ -554,7 +555,17 @@ def _is_boilerplate_line(line: str) -> bool:
     lowered = stripped.lower()
     if re.fullmatch(r"-{2,}\s*[^-]*\s*-{2,}", stripped):
         return True
+    if re.match(r"^#{1,6}\s+\S", stripped):
+        return True
+    if re.fullmatch(r"!?\[\[[^\]]+\]\]", stripped):
+        return True
     if re.fullmatch(r"row\s+\d+", lowered):
+        return True
+    if lowered in {"table of contents", "synced block placeholder"}:
+        return True
+    if "manage notification preferences" in lowered:
+        return True
+    if lowered.startswith(("[bot] source:", "google docs footer", "last edited by ", "suggested edit:")):
         return True
     if lowered in {"messages", "events", "contacts", "bookmarks", "recent visits", "rows", "tweets", "direct messages"}:
         return True

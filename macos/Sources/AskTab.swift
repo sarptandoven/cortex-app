@@ -28,8 +28,8 @@ struct AskTab: View {
                     )
                 } else {
                     QuietState(
-                        title: "Ask for a cited answer",
-                        detail: "Ask about something you approved in Review. Citations show which source backed the answer."
+                        title: "Ask approved memory",
+                        detail: "Ask about something you approved in Review. Cortex answers with citations when it finds matching memory."
                     )
                 }
 
@@ -65,7 +65,7 @@ struct AskHeaderSection: View {
             Text("Ask Cortex")
                 .font(.title3)
                 .fontWeight(.semibold)
-            Text("Get a natural-language answer from approved context, with citations ready to use.")
+            Text("Ask about approved memory and get an answer with sources you can inspect.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -76,7 +76,7 @@ struct AskQuerySection: View {
     @ObservedObject var state: AppState
     private let starters: [AskStarter] = [
         AskStarter(label: "Decisions", systemImage: "checkmark.seal", query: "What decisions should I remember?"),
-        AskStarter(label: "Preferences", systemImage: "slider.horizontal.3", query: "What preferences have I stated?"),
+        AskStarter(label: "Preferences", systemImage: "slider.horizontal.3", query: "What preferences have I mentioned?"),
         AskStarter(label: "Style", systemImage: "signature", query: "How do I usually write?"),
         AskStarter(label: "Recent", systemImage: "clock.arrow.circlepath", query: "What changed recently?")
     ]
@@ -121,7 +121,7 @@ struct AskQuerySection: View {
 
     private var citationSummary: String {
         if state.askCitations.isEmpty {
-            return state.searchResults.isEmpty ? "No citations found" : "\(state.searchResults.count) source match\(state.searchResults.count == 1 ? "" : "es")"
+            return state.searchResults.isEmpty ? "No citations yet" : "\(state.searchResults.count) source match\(state.searchResults.count == 1 ? "" : "es")"
         }
         return "\(state.askCitations.count) citation\(state.askCitations.count == 1 ? "" : "s")"
     }
@@ -143,12 +143,12 @@ struct AskResponseSection: View {
             } else if state.searchResults.isEmpty {
                 QuietState(
                     title: "No cited answer found",
-                    detail: "Try an exact phrase from a source you approved in Review, or add more context in Sources."
+                    detail: "Try an exact phrase from approved memory, or add and approve more context in Sources and Review."
                 )
             } else {
                 QuietState(
-                    title: "Source result found",
-                    detail: "Cortex found matching context, but no natural-language answer was returned. Open source details below."
+                    title: "Matching source found",
+                    detail: "Cortex found related memory, but no answer was returned. Open source details below."
                 )
             }
 
@@ -173,10 +173,10 @@ struct AskResultsSection: View {
     var body: some View {
         Group {
             if state.searchResults.isEmpty && !state.hasSearched {
-                QuietState(title: "Ask your model", detail: "Ask about approved memory, a project, a person, or an exact phrase from a source.")
+                QuietState(title: "Ask approved memory", detail: "Ask about a project, a person, a decision, or an exact phrase from approved memory.")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if state.searchResults.isEmpty {
-                QuietState(title: "No cited result matched that", detail: "Try an exact phrase from an approved source, or approve more memory in Review.")
+                QuietState(title: "No cited result matched", detail: "Try an exact phrase from approved memory, or approve more memory in Review.")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -198,13 +198,13 @@ struct AskAIHandoffSection: View {
     @Binding var isExpanded: Bool
 
     var body: some View {
-        DisclosureGroup("More export options", isExpanded: $isExpanded) {
+        DisclosureGroup("AI handoff options", isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Use these copy formats when another AI app needs more than the cited answer.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 if !state.canPrepareArtifacts {
-                    Text("Artifact sharing is off in Trust.")
+                    Text("Turn on AI exports in Trust to use these formats.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }

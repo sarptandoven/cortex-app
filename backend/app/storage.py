@@ -12,7 +12,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 
 from .database import connect, sqlite_vec_status
 from .embeddings import VECTOR_DIMENSIONS, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status
@@ -338,11 +338,15 @@ SOURCE_CONNECTOR_CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "poe", "name": "Poe", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Local JSON, JSONL, text, Markdown, or HTML transcript files."},
     {"id": "notebooklm", "name": "NotebookLM", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Local JSON, JSONL, text, Markdown, or HTML transcript files."},
     {"id": "gmail", "name": "Gmail", "category": "Email", "auth": "oauth", "live_status": "planned", "scopes": ["gmail.readonly"], "notes": "Use Gmail Takeout mbox today; OAuth sync later."},
+    {"id": "apple-mail", "name": "Apple Mail", "category": "Email", "auth": "local_file", "live_status": "import_ready", "scopes": [], "notes": "User-exported eml, emlx, or mbox files today; no direct Mail.app crawl."},
+    {"id": "outlook", "name": "Outlook", "category": "Email", "auth": "oauth", "live_status": "planned", "scopes": ["Mail.Read", "Calendars.Read", "Contacts.Read", "Files.Read"], "notes": "Outlook mail, calendar, contacts, and Microsoft 365 exports today; Graph sync later."},
     {"id": "email", "name": "Email files", "category": "Email", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "mbox, eml, and emlx imports."},
     {"id": "docs", "name": "Docs and writing", "category": "Docs", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Markdown, text, HTML, DOCX, RTF, and PDF imports."},
+    {"id": "pdfs", "name": "PDFs", "category": "Docs", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "User-selected PDFs and exported PDFs; backend parsing depends on pypdf or macOS fallback extraction."},
     {"id": "cloud-docs", "name": "Cloud docs exports", "category": "Docs", "auth": "export", "live_status": "import_ready", "scopes": [], "notes": "Google Drive, OneDrive, and Dropbox Paper export files."},
     {"id": "notion", "name": "Notion", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["read_content"], "notes": "Markdown, CSV, and HTML exports today."},
     {"id": "google-drive", "name": "Google Drive", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["drive.readonly"], "notes": "Drive/Docs Takeout exports today."},
+    {"id": "google-docs", "name": "Google Docs", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["drive.readonly", "documents.readonly"], "notes": "Google Docs Takeout exports today; Drive/Docs sync later."},
     {"id": "google-keep", "name": "Google Keep", "category": "Notes", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Google Takeout Keep JSON and HTML exports."},
     {"id": "microsoft-365", "name": "Microsoft 365", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["Files.Read", "Mail.Read", "Calendars.Read"], "notes": "OneDrive, Outlook, and Office exports today."},
     {"id": "slack", "name": "Slack", "category": "Work chat", "auth": "oauth", "live_status": "planned", "scopes": ["channels:history", "groups:history", "im:history"], "notes": "Workspace export folders or zips today."},
@@ -351,6 +355,7 @@ SOURCE_CONNECTOR_CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "discord", "name": "Discord", "category": "Messages", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Discord data package messages.csv."},
     {"id": "telegram", "name": "Telegram", "category": "Messages", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Telegram Desktop result.json."},
     {"id": "messages", "name": "Messages", "category": "Messages", "auth": "local_file", "live_status": "local_only", "scopes": [], "notes": "User-selected copy of iMessage chat.db."},
+    {"id": "imessage", "name": "iMessage exports", "category": "Messages", "auth": "local_file", "live_status": "local_only", "scopes": [], "notes": "User-selected chat.db copy or legally provided local export only."},
     {"id": "whatsapp", "name": "WhatsApp", "category": "Messages", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Text chat exports."},
     {"id": "calendar", "name": "Calendar", "category": "Calendar", "auth": "oauth", "live_status": "planned", "scopes": ["calendar.readonly"], "notes": "ICS exports today."},
     {"id": "contacts", "name": "Contacts", "category": "People", "auth": "oauth", "live_status": "planned", "scopes": ["contacts.readonly"], "notes": "VCF and contacts CSV exports today."},
@@ -361,11 +366,12 @@ SOURCE_CONNECTOR_CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "jira", "name": "Jira", "category": "Work tools", "auth": "oauth", "live_status": "planned", "scopes": ["read:jira-work"], "notes": "CSV exports today."},
     {"id": "zoom", "name": "Zoom", "category": "Meetings", "auth": "oauth", "live_status": "planned", "scopes": ["recording:read"], "notes": "VTT and SRT transcript imports today."},
     {"id": "browser-bookmarks", "name": "Browser bookmarks", "category": "Research", "auth": "local_file", "live_status": "import_ready", "scopes": [], "notes": "Bookmarks HTML/JSON and browser history SQLite."},
+    {"id": "browser-history", "name": "Browser history exports", "category": "Research", "auth": "local_file", "live_status": "import_ready", "scopes": [], "notes": "User-selected Chrome or Firefox history SQLite copies; no background browser collection."},
     {"id": "readwise", "name": "Readwise", "category": "Research", "auth": "api_token", "live_status": "planned", "scopes": ["export"], "notes": "CSV/JSON exports today."},
     {"id": "knowledge-base", "name": "Knowledge base exports", "category": "Research", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Obsidian, Roam, Logseq, Readwise, Pocket, and Instapaper exports."},
     {"id": "twitter-x", "name": "Twitter/X", "category": "Social", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Twitter/X archive tweets and direct messages."},
     {"id": "apple-notes", "name": "Apple Notes", "category": "Notes", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "HTML, RTF, PDF, Markdown, or text exports."},
-    {"id": "obsidian", "name": "Obsidian", "category": "Notes", "auth": "local_folder", "live_status": "planned", "scopes": [], "notes": "Markdown vault imports today."},
+    {"id": "obsidian", "name": "Obsidian", "category": "Notes", "auth": "local_folder", "live_status": "import_ready", "scopes": [], "notes": "Markdown vault imports today; local folder watching is separate from OAuth."},
 )
 
 
@@ -379,11 +385,15 @@ SOURCE_CONNECTOR_IMPORT_METADATA: dict[str, dict[str, Any]] = {
     "poe": {"source_ids": ["poe"], "export_status": "generic", "import_status": "generic", "import_label": "Poe transcript file import"},
     "notebooklm": {"source_ids": ["notebooklm"], "export_status": "generic", "import_status": "generic", "import_label": "NotebookLM transcript file import"},
     "gmail": {"source_ids": ["email"], "source_aliases": ["gmail", "google-mail"], "export_status": "native_via_email", "import_status": "native", "import_label": "Gmail Takeout mbox imports as Email"},
+    "apple-mail": {"source_ids": ["email"], "source_aliases": ["mail", "mail-app"], "export_status": "native_via_email", "import_status": "native", "import_label": "Apple Mail eml, emlx, and mbox exports import as Email"},
+    "outlook": {"source_ids": ["email", "calendar", "contacts", "cloud-docs"], "source_aliases": ["microsoft-outlook", "office-mail"], "export_status": "generic", "import_status": "generic", "import_label": "Outlook exports import as Email, Calendar, Contacts, and Cloud docs"},
     "email": {"source_ids": ["email"], "export_status": "native", "import_label": "Email files import directly"},
     "docs": {"source_ids": ["docs"], "export_status": "native", "import_label": "Docs and writing files import directly"},
+    "pdfs": {"source_ids": ["docs"], "source_aliases": ["pdf", "pdf-documents"], "export_status": "native_via_docs", "import_status": "native", "import_label": "PDF files import as Docs and writing"},
     "cloud-docs": {"source_ids": ["cloud-docs", "docs"], "export_status": "generic", "import_status": "generic", "import_label": "Cloud document exports import as Cloud docs"},
     "notion": {"source_ids": ["notion"], "export_status": "native", "import_label": "Native Notion export import"},
     "google-drive": {"source_ids": ["cloud-docs", "docs"], "export_status": "generic", "import_status": "generic", "import_label": "Google Drive Takeout imports as Cloud docs"},
+    "google-docs": {"source_ids": ["cloud-docs", "docs"], "source_aliases": ["google-documents"], "export_status": "generic", "import_status": "generic", "import_label": "Google Docs Takeout imports as Cloud docs"},
     "google-keep": {"source_ids": ["google-keep"], "export_status": "native", "import_label": "Native Google Keep Takeout import"},
     "microsoft-365": {"source_ids": ["cloud-docs", "email", "calendar", "contacts"], "export_status": "generic", "import_status": "generic", "import_label": "Microsoft exports import as Cloud docs, Email, Calendar, and Contacts"},
     "slack": {"source_ids": ["slack"], "export_status": "native", "import_label": "Native Slack workspace export import"},
@@ -392,6 +402,7 @@ SOURCE_CONNECTOR_IMPORT_METADATA: dict[str, dict[str, Any]] = {
     "discord": {"source_ids": ["discord"], "export_status": "native", "import_label": "Native Discord data package import"},
     "telegram": {"source_ids": ["telegram"], "export_status": "native", "import_label": "Native Telegram Desktop export import"},
     "messages": {"source_ids": ["messages"], "export_status": "native", "import_label": "Messages database import"},
+    "imessage": {"source_ids": ["messages"], "source_aliases": ["ios-messages", "apple-messages"], "export_status": "native_via_messages", "import_status": "native", "import_label": "User-selected iMessage chat.db copies import as Messages"},
     "whatsapp": {"source_ids": ["whatsapp", "messages"], "export_status": "generic", "import_status": "generic", "import_label": "WhatsApp text exports import as Messages"},
     "calendar": {"source_ids": ["calendar"], "export_status": "native", "import_label": "Native ICS calendar import"},
     "contacts": {"source_ids": ["contacts"], "export_status": "native", "import_label": "Native contacts export import"},
@@ -402,6 +413,7 @@ SOURCE_CONNECTOR_IMPORT_METADATA: dict[str, dict[str, Any]] = {
     "jira": {"source_ids": ["jira", "work-tools"], "export_status": "generic", "import_status": "generic", "import_label": "Jira exports import as Work tools"},
     "zoom": {"source_ids": ["zoom"], "export_status": "native", "import_label": "Native Zoom transcript import"},
     "browser-bookmarks": {"source_ids": ["browser-bookmarks", "browser-history"], "export_status": "native", "import_label": "Native bookmarks and browser history import"},
+    "browser-history": {"source_ids": ["browser-bookmarks", "browser-history"], "source_aliases": ["chrome-history", "firefox-history"], "export_status": "native", "import_label": "Native browser history imports from selected SQLite exports"},
     "readwise": {"source_ids": ["readwise", "knowledge-base"], "export_status": "generic", "import_status": "generic", "import_label": "Readwise exports import as Knowledge bases"},
     "knowledge-base": {"source_ids": ["knowledge-base", "obsidian", "logseq", "roam", "readwise", "pocket", "instapaper", "raindrop"], "export_status": "generic", "import_status": "generic", "import_label": "Knowledge base exports import from local files"},
     "twitter-x": {"source_ids": ["twitter-x"], "export_status": "native", "import_label": "Native Twitter/X archive import"},
@@ -422,6 +434,10 @@ SENSITIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
     (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), "[REDACTED_EMAIL]"),
     (re.compile(r"\b(?:\d[ -]*?){13,16}\b"), "[REDACTED_NUMBER]"),
+)
+
+LOCAL_PATH_PATTERN = re.compile(
+    r"(?<![\w:/])(?:file://)?/(?:Applications|Library|Users|Volumes|private|tmp|var|home)/[^\s)>\]\"']+"
 )
 
 SUPPORT_OMITTED_KEYS = {
@@ -445,6 +461,8 @@ SUPPORT_PATH_KEYS = {
     "settings_path",
     "vault_path",
 }
+
+LOCAL_PATH_VALUE_KEYS = SUPPORT_PATH_KEYS | {"paths", "source_url"}
 
 
 def _env_int(name: str, default: int, *, minimum: int = 0, maximum: int = 3650) -> int:
@@ -2728,10 +2746,13 @@ class CortexStore:
     def answer_query(self, user_id: str, query: str, limit: int = 8) -> dict[str, Any]:
         query = query.strip()
         limit = max(1, min(20, int(limit)))
+        redact_sensitive = bool(self.settings(user_id)["redact_sensitive_context"])
         results = self.search(user_id, query, limit=limit)
         citations: list[dict[str, Any]] = []
         for index, item in enumerate(results, start=1):
             result_type = item.get("result_type") or "memory"
+            source_url = item.get("source_url")
+            excerpt = self._shared_text(item.get("content") or item.get("summary") or "", redact_sensitive=redact_sensitive)
             citations.append(
                 {
                     "index": index,
@@ -2741,10 +2762,10 @@ class CortexStore:
                     "layer": item.get("layer") or result_type,
                     "status": item.get("status"),
                     "source": item["source"],
-                    "source_url": item.get("source_url"),
+                    "source_url": self._safe_source_locator(source_url, force_local=True),
                     "captured_at": item.get("captured_at"),
                     "occurred_at": item.get("occurred_at"),
-                    "excerpt": self._answer_excerpt(item.get("content") or item.get("summary") or ""),
+                    "excerpt": self._answer_excerpt(excerpt),
                     "topics": item.get("topics") or [],
                 }
             )
@@ -2774,7 +2795,7 @@ class CortexStore:
             "query": query,
             "answer": answer,
             "citations": citations,
-            "results": results,
+            "results": self._shared_payload(results, redact_sensitive=redact_sensitive),
         }
 
     def _answer_excerpt(self, text: str, limit: int = 220) -> str:
@@ -3513,20 +3534,22 @@ class CortexStore:
                     topics_text = ", ".join(item.get("topics") or [])
                     suffix = f" Topics: {topics_text}." if topics_text else ""
                     citation = self._memory_citation(item)
-                    lines.append(f"- [{item['id']}] ({item['kind']}, {item['source']}, {date}) Source: {citation}. {self._redact_text(item['content'], redact)}{suffix}")
+                    content = self._shared_text(item["content"], redact_sensitive=redact)
+                    lines.append(f"- [{item['id']}] ({item['kind']}, {item['source']}, {date}) Source: {citation}. {content}{suffix}")
                 lines.append("")
         else:
             lines.append("- No active memories matched this focus.")
         lines.extend(["", "## Decisions", ""])
         if decisions:
             for item in decisions:
-                lines.append(f"- [{item['id']}] Source: {self._memory_citation(item)}. {self._redact_text(item['content'], redact)}")
+                content = self._shared_text(item["content"], redact_sensitive=redact)
+                lines.append(f"- [{item['id']}] Source: {self._memory_citation(item)}. {content}")
         else:
             lines.append("- No active decisions yet.")
         lines.extend(["", "## Open Loops", ""])
         if tasks:
             for task in tasks:
-                lines.append(f"- [{task['id']}] ({task['kind']}) {self._redact_text(task['content'], redact)}")
+                lines.append(f"- [{task['id']}] ({task['kind']}) {self._shared_text(task['content'], redact_sensitive=redact)}")
         else:
             lines.append("- No open tasks or questions.")
         lines.extend(["", "## Useful Topics", ""])
@@ -3625,7 +3648,7 @@ class CortexStore:
                 {
                     "id": task["id"],
                     "kind": task["kind"],
-                    "content": self._redact_text(task["content"], redact),
+                    "content": self._shared_text(task["content"], redact_sensitive=redact),
                     "captured_at": task["captured_at"],
                     "topics": task.get("topics") or [],
                 }
@@ -3918,10 +3941,10 @@ class CortexStore:
         topics_text = f" Topics: {', '.join(topics)}." if topics else ""
         return f"- [{item['id']}] ({item['kind']}, {item['source']}, {date}) Source: {self._memory_citation(item)}. {item['content']}{topics_text}"
 
-    def _memory_citation(self, item: dict[str, Any]) -> str:
+    def _memory_citation(self, item: dict[str, Any], *, redact_paths: bool = True) -> str:
         source_url = str(item.get("source_url") or "").strip()
         if source_url:
-            return source_url
+            return self._safe_source_locator(source_url, force_local=True) if redact_paths else source_url
         return str(item.get("source") or "unknown source")
 
     def _profile_memory_item(self, item: dict[str, Any], *, redact: bool) -> dict[str, Any]:
@@ -3929,10 +3952,10 @@ class CortexStore:
             "id": item["id"],
             "kind": item["kind"],
             "layer": item["layer"],
-            "content": self._redact_text(item["content"], redact),
-            "summary": self._redact_text(item.get("summary") or "", redact),
+            "content": self._shared_text(item["content"], redact_sensitive=redact),
+            "summary": self._shared_text(item.get("summary") or "", redact_sensitive=redact),
             "source": item["source"],
-            "source_url": item.get("source_url"),
+            "source_url": self._safe_source_locator(item.get("source_url"), force_local=True),
             "captured_at": item["captured_at"],
             "occurred_at": item.get("occurred_at"),
             "topics": item.get("topics") or [],
@@ -4088,7 +4111,10 @@ class CortexStore:
                 evidence_id = row["evidence_id"]
                 if row["source_id"] in nodes and row["target_id"] in nodes and (not evidence_id or evidence_id in nodes):
                     edges.append(dict(row))
-        return {"nodes": list(nodes.values()), "edges": edges}
+        return self._shared_payload(
+            {"nodes": list(nodes.values()), "edges": edges},
+            redact_sensitive=bool(user_settings["redact_sensitive_context"]),
+        )
 
     def export_json(self, user_id: str) -> dict[str, Any]:
         user_settings = self.settings(user_id)
@@ -4111,9 +4137,7 @@ class CortexStore:
             "edges": edges,
         }
         payload = self._filter_export_by_source_policy(payload, user_settings)
-        if user_settings["redact_sensitive_context"]:
-            return self._redact_payload(payload)
-        return payload
+        return self._shared_payload(payload, redact_sensitive=bool(user_settings["redact_sensitive_context"]))
 
     def _filter_export_by_source_policy(self, payload: dict[str, Any], user_settings: dict[str, Any]) -> dict[str, Any]:
         source_policies = _normalize_source_policies(user_settings.get("source_policies"))
@@ -5365,6 +5389,9 @@ class CortexStore:
             layer = memory_layer(memory.get("kind"), memory.get("layer")).title()
             lines.append(f"### {layer} / {memory['kind'].title()} - {memory['source']} - {memory['captured_at']}")
             lines.append("")
+            if memory.get("source_url"):
+                lines.append(f"Source: {memory['source_url']}")
+                lines.append("")
             lines.append(memory["content"])
             topics = memory.get("topics") or []
             if topics:
@@ -5886,7 +5913,7 @@ class CortexStore:
             raise PermissionError(labels.get(capability, "Agent action is disabled in Cortex Trust controls."))
 
     def agent_payload(self, user_id: str, value: Any) -> Any:
-        return self._redact_payload(value) if self.settings(user_id)["redact_sensitive_context"] else value
+        return self._shared_payload(value, redact_sensitive=bool(self.settings(user_id)["redact_sensitive_context"]))
 
     def record_agent_event(
         self,
@@ -7153,18 +7180,83 @@ class CortexStore:
         redacted = value
         for pattern, replacement in SENSITIVE_PATTERNS:
             redacted = pattern.sub(replacement, redacted)
-        return redacted
+        return self._redact_local_paths(redacted)
 
-    def _redact_payload(self, value: Any) -> Any:
+    def _redact_payload(self, value: Any, key: str = "") -> Any:
         if isinstance(value, str):
-            return self._redact_text(value)
+            redacted = value
+            for pattern, replacement in SENSITIVE_PATTERNS:
+                redacted = pattern.sub(replacement, redacted)
+            return self._redact_local_paths(redacted, force_locator=self._is_local_path_value_key(key))
         if isinstance(value, list):
-            return [self._redact_payload(item) for item in value]
+            return [self._redact_payload(item, key) for item in value]
         if isinstance(value, tuple):
-            return [self._redact_payload(item) for item in value]
+            return [self._redact_payload(item, key) for item in value]
         if isinstance(value, dict):
-            return {key: self._redact_payload(item) for key, item in value.items()}
+            return {child_key: self._redact_payload(item, str(child_key)) for child_key, item in value.items()}
         return value
+
+    def _shared_payload(self, value: Any, *, redact_sensitive: bool) -> Any:
+        if redact_sensitive:
+            return self._redact_payload(value)
+        return self._redact_local_path_payload(value)
+
+    def _redact_local_path_payload(self, value: Any, key: str = "") -> Any:
+        if isinstance(value, str):
+            return self._redact_local_paths(value, force_locator=self._is_local_path_value_key(key))
+        if isinstance(value, list):
+            return [self._redact_local_path_payload(item, key) for item in value]
+        if isinstance(value, tuple):
+            return [self._redact_local_path_payload(item, key) for item in value]
+        if isinstance(value, dict):
+            return {child_key: self._redact_local_path_payload(item, str(child_key)) for child_key, item in value.items()}
+        return value
+
+    def _shared_text(self, value: str, *, redact_sensitive: bool) -> str:
+        if redact_sensitive:
+            return self._redact_text(value)
+        return self._redact_local_paths(value)
+
+    def _is_local_path_value_key(self, key: str) -> bool:
+        normalized = str(key or "").strip().lower()
+        return normalized in LOCAL_PATH_VALUE_KEYS or normalized.endswith("_path")
+
+    def _redact_local_paths(self, value: str, *, force_locator: bool = False) -> str:
+        if not value:
+            return value
+        if self._looks_like_local_locator(value, force_local=force_locator):
+            return self._safe_source_locator(value, force_local=force_locator)
+        return LOCAL_PATH_PATTERN.sub(lambda match: self._safe_source_locator(match.group(0)), value)
+
+    def _looks_like_local_locator(self, value: Any, *, force_local: bool = False) -> bool:
+        text = str(value or "").strip()
+        if text.startswith("file://") or bool(LOCAL_PATH_PATTERN.match(text)):
+            return True
+        return force_local and text.startswith("/")
+
+    def _safe_source_locator(self, value: Any, *, force_local: bool = False) -> str:
+        text = str(value or "").strip()
+        if not text or not self._looks_like_local_locator(text, force_local=force_local):
+            return text
+
+        path_text = text
+        query = ""
+        fragment = ""
+        if text.startswith("file://"):
+            parts = urlsplit(text)
+            path_text = unquote(parts.path or parts.netloc or "")
+            query = parts.query
+            fragment = parts.fragment
+        else:
+            path_text, _, fragment = text.partition("#")
+
+        basename = Path(unquote(path_text)).name or "local-source"
+        safe = f"local-file://{quote(basename)}"
+        if query:
+            safe = f"{safe}?{query}"
+        if fragment:
+            safe = f"{safe}#{fragment}"
+        return safe
 
     def _json_or_empty(self, value: str | None) -> dict[str, Any]:
         try:

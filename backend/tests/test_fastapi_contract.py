@@ -172,7 +172,8 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertIn("cited", payload["answer"])
         self.assertTrue(payload["citations"])
         self.assertTrue(payload["results"])
-        self.assertEqual(payload["citations"][0]["source_url"], "/tmp/ask-source.md")
+        self.assertEqual(payload["citations"][0]["source_url"], "local-file://ask-source.md")
+        self.assertEqual(payload["results"][0]["source_url"], "local-file://ask-source.md")
         self.assertIn("Ask citation contract", payload["citations"][0]["excerpt"])
 
     def test_ask_endpoint_returns_open_task_citation_contract(self) -> None:

@@ -1,0 +1,13 @@
+Title: Import Principles
+Created: 2026-06-27
+Folder: Notes/Work
+
+My writing style uses Apple Notes bullets with a short evidence line.
+I prefer Apple Notes imports that preserve decisive personal preferences.
+We decided Project Orchard note imports should keep local-only citations.
+
+Checklist:
+- Share sheet draft
+- iCloud sync marker
+
+Never use pastel roadmap poems in extracted notes.

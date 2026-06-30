@@ -38,6 +38,12 @@ After packaging the app:
 
 ```bash
 ./macos/package_release.sh
+RELEASE_DIR="outputs/Cortex-0.1.0-1"
+python3 scripts/ops_readiness_check.py \
+  --skip-tests \
+  --skip-build \
+  --require-package-artifacts \
+  --release-dir "$RELEASE_DIR"
 python3 scripts/prepare_distribution_site.py
 python3 scripts/check_distribution_site.py
 python3 scripts/ops_readiness_check.py --skip-build
@@ -66,6 +72,34 @@ CORTEX_NOTARY_PROFILE=cortex-notary \
 
 `--production` refuses to package unless artifacts use HTTPS URLs, the app has a Developer ID signing identity, notarization is configured, and a Python runtime is bundled. Local beta artifacts are useful for QA, but they are not a Gatekeeper-ready public release.
 
+## Generated Artifact Verification
+
+Every first-100 beta package must ship with a release directory containing:
+
+- `Cortex-<version>-<build>.dmg`
+- `Cortex-<version>-<build>.app.zip`
+- `Cortex-<version>-<build>.checksums.txt`
+- `latest.json`
+- `BETA_HANDOFF.md`
+
+Verify the generated artifacts before publishing the static site:
+
+```bash
+(cd "$RELEASE_DIR" && shasum -a 256 -c "Cortex-<version>-<build>.checksums.txt")
+python3 scripts/validate_update_manifest.py "$RELEASE_DIR/latest.json"
+python3 scripts/ops_readiness_check.py \
+  --skip-tests \
+  --skip-build \
+  --require-package-artifacts \
+  --release-dir "$RELEASE_DIR"
+```
+
+The readiness check fails the package gate if the DMG/ZIP are missing or
+hash-mismatched, the checksum file disagrees with the manifest, `BETA_HANDOFF.md`
+is missing required handoff sections, or `latest.json` lacks beta-readiness
+metadata for install, update, rollback, known limitations, manual QA, and
+generated artifact verification.
+
 `scripts/check_distribution_site.py` verifies:
 
 - local HTML links and anchors
@@ -75,7 +109,7 @@ CORTEX_NOTARY_PROFILE=cortex-notary \
 - artifact byte sizes
 - artifact SHA-256 hashes
 
-## Local QA
+## Manual Site QA
 
 ```bash
 cd site
@@ -92,6 +126,9 @@ Then verify:
 - Mobile width has no overlapping text
 - Header links scroll to the correct sections
 - browser console has no JavaScript errors
+
+This is a manual QA pass. Do not use it as a substitute for testing a downloaded
+DMG on a clean macOS user profile.
 
 ## Hosting Options
 
@@ -124,15 +161,39 @@ Recommended beta structure:
 2. Run backend tests and retrieval eval.
 3. Run reliability and battle tests against the packaged app.
 4. Package release artifacts.
-5. Review the generated `BETA_HANDOFF.md` in the release directory.
-6. Prepare site downloads.
-7. Run static site validation.
-8. Run `python3 scripts/ops_readiness_check.py --refresh-site`.
-9. Run static site browser QA locally.
-10. Deploy `site/`.
-11. Download the DMG from the deployed page.
-12. Install on a clean Mac profile.
-13. Verify first-run onboarding, five-tab flow, source readiness, cited Ask results, MCP setup, backup, support bundle export, and update feed.
+5. Verify checksums, `latest.json`, DMG/ZIP presence, and generated handoff sections.
+6. Review the generated `BETA_HANDOFF.md` in the release directory.
+7. Prepare site downloads.
+8. Run static site validation.
+9. Run `python3 scripts/ops_readiness_check.py --refresh-site`.
+10. Run manual static-site QA locally.
+11. Deploy `site/`.
+12. Download the DMG from the deployed page.
+13. Install on a clean Mac profile.
+14. Verify first-run onboarding, five-tab flow, source readiness, cited Ask results, MCP setup, backup, support bundle export, and update feed.
+15. Update over the previous beta and confirm the vault remains intact.
+16. Roll back to the previous beta and confirm the vault remains intact.
+
+## Update And Rollback Notes
+
+For first-100 testers, updates are manual:
+
+1. Download the new DMG.
+2. Verify the DMG checksum.
+3. Quit Cortex.
+4. Replace `Cortex.app` in Applications.
+5. Reopen Cortex and confirm Trust shows backend health and the expected vault path.
+6. Create a fresh backup.
+
+Rollback is also manual:
+
+1. Keep the vault folder unchanged.
+2. Quit Cortex.
+3. Replace `Cortex.app` with the previous beta build.
+4. Reopen Cortex, run the reliability report, and create a fresh backup.
+
+Keep at least one previous beta DMG, ZIP, checksum file, and manifest available
+until the new beta has passed manual QA.
 
 ## Current Beta Copy
 
@@ -177,10 +238,23 @@ Before broad public distribution:
 
 The local static site is enough for a small free beta. The public site should not promise automatic updates, hosted sync, team accounts, or background capture until those systems exist.
 
+## Known First-100 Limitations
+
+Do not describe these as available beta capabilities:
+
+- automatic app updates or in-app rollback
+- hosted accounts, cloud sync, or cloud backup
+- live OAuth/API sync for third-party services
+- remote MCP/OAuth
+- billing, teams, enterprise policy, or hosted analytics
+- production incident response or telemetry
+- notarized external distribution unless the current build completed Developer ID signing and notarization
+
 ## Free Beta Checklist
 
 The beta is ready to share with a small group when:
 
+- generated artifacts pass checksum, manifest, and package-readiness verification
 - a user can download and install in under two minutes
 - the app opens from Applications
 - first-run setup completes without docs
@@ -193,3 +267,4 @@ The beta is ready to share with a small group when:
 - the user can create a backup
 - the user can read the privacy page
 - the team can replace the DMG and update `latest.json` repeatably
+- the team can roll back to the previous DMG without touching the user's vault

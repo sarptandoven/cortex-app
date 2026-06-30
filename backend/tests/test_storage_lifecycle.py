@@ -1588,6 +1588,65 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         unredacted = self.store.context_pack(self.user_id, query="leak", limit=5)
         self.assertIn("supersecret123", unredacted)
 
+    def test_trust_controls_redact_local_paths_from_shared_citations(self) -> None:
+        local_path = "/Users/vamika/Documents/Cortex Private/Project Atlas.md#line=12"
+        capture = self.store.save_capture(
+            user_id=self.user_id,
+            content="Project Atlas should hide local citation paths before agent sharing.",
+            source="docs",
+            source_url=local_path,
+            title=local_path,
+            extracted=extract_context("Project Atlas should hide local citation paths before agent sharing.", "docs"),
+        )
+        self.assertTrue(self.store.approve_capture(self.user_id, capture["capture_id"]))
+
+        search_results = self.store.search(self.user_id, "Project Atlas citation paths", limit=5)
+        self.assertTrue(search_results)
+        self.assertEqual(search_results[0]["source_url"], local_path)
+
+        answer = self.store.answer_query(self.user_id, "Project Atlas citation paths", limit=5)
+        answer_text = json.dumps(answer)
+        self.assertNotIn("/Users/vamika", answer_text)
+        self.assertIn("local-file://Project%20Atlas.md#line=12", answer_text)
+
+        context_pack = self.store.context_pack(self.user_id, query="Project Atlas", limit=5)
+        self.assertNotIn("/Users/vamika", context_pack)
+        self.assertIn("local-file://Project%20Atlas.md#line=12", context_pack)
+
+        profile = self.store.personal_profile(self.user_id, query="Project Atlas", limit=5)
+        profile_text = json.dumps(profile)
+        self.assertNotIn("/Users/vamika", profile_text)
+        self.assertIn("local-file://Project%20Atlas.md#line=12", profile["markdown"])
+
+        adaptation = self.store.agent_adaptation(self.user_id, query="Project Atlas", target="Claude", limit=5)
+        adaptation_text = json.dumps(adaptation)
+        self.assertNotIn("/Users/vamika", adaptation_text)
+        self.assertIn("local-file://Project%20Atlas.md#line=12", adaptation["markdown"])
+
+        exported = self.store.export_json(self.user_id)
+        exported_text = json.dumps(exported)
+        self.assertNotIn("/Users/vamika", exported_text)
+        self.assertIn("local-file://Project%20Atlas.md#line=12", exported_text)
+
+        markdown = self.store.export_markdown(self.user_id)
+        self.assertNotIn("/Users/vamika", markdown)
+        self.assertIn("local-file://Project%20Atlas.md#line=12", markdown)
+
+        mcp_search = call_tool(self.store, self.user_id, "search_memory", {"query": "Project Atlas", "top_k": 5})
+        mcp_search_text = json.dumps(mcp_search)
+        self.assertNotIn("/Users/vamika", mcp_search_text)
+        self.assertIn("local-file://Project%20Atlas.md#line=12", mcp_search_text)
+
+        graph_text = json.dumps(self.store.graph(self.user_id))
+        self.assertNotIn("/Users/vamika", graph_text)
+        self.assertIn("local-file://Project%20Atlas.md#line=12", graph_text)
+
+        self.store.update_settings(self.user_id, {"redact_sensitive_context": False})
+        unredacted_answer = self.store.answer_query(self.user_id, "Project Atlas citation paths", limit=5)
+        unredacted_answer_text = json.dumps(unredacted_answer)
+        self.assertNotIn("/Users/vamika", unredacted_answer_text)
+        self.assertIn("local-file://Project%20Atlas.md#line=12", unredacted_answer_text)
+
     def test_agent_permission_gates_and_audit_summary(self) -> None:
         self.store.update_settings(self.user_id, {"allow_agent_writes": False})
         with self.assertRaises(PermissionError):

@@ -25,8 +25,8 @@ struct ModelTab: View {
                         } label: {
                             ModelDisclosureLabel(
                                 systemImage: "square.stack.3d.up",
-                                title: "Model details",
-                                detail: "Layers, sources, topics, entities, and signal health"
+                                title: "What Cortex knows",
+                                detail: "Memory types, sources, topics, people, and quality"
                             )
                         }
                         .padding(12)
@@ -36,9 +36,9 @@ struct ModelTab: View {
                 } else {
                     VStack(alignment: .center, spacing: 12) {
                         ProgressView()
-                        Text("Loading personal model")
+                        Text("Loading Cortex memory")
                             .font(.headline)
-                        Text("Cortex is starting the local memory engine.")
+                        Text("Cortex is starting the local memory engine on this Mac.")
                             .foregroundColor(.secondary)
                     }
                     .frame(maxWidth: .infinity, minHeight: 420)
@@ -66,10 +66,10 @@ struct ModelEmptySection: View {
                 .frame(width: 64, height: 64)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Start with one source")
+                    Text("Build Cortex from one source")
                         .font(.title2)
                         .fontWeight(.semibold)
-                    Text("Add one readable export or file. Cortex scans it locally, then asks you to review useful memory before it shapes the model.")
+                    Text("Add a readable export or file. Cortex scans it locally, then sends useful memory to Review before it appears in Ask.")
                         .font(.callout)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -90,7 +90,7 @@ struct ModelEmptySection: View {
                     state.selectedTab = .trust
                     state.status = "Review privacy and AI access"
                 } label: {
-                    Label("Set Trust", systemImage: "lock.shield")
+                    Label("Review Trust", systemImage: "lock.shield")
                 }
 
                 Spacer()
@@ -98,19 +98,19 @@ struct ModelEmptySection: View {
 
             DisclosureGroup(isExpanded: $layersExpanded) {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 128), spacing: 8)], spacing: 8) {
-                    EmptyLayerPill(title: "Facts", detail: "what is true", systemImage: "text.book.closed")
+                    EmptyLayerPill(title: "Facts", detail: "stable details", systemImage: "text.book.closed")
                     EmptyLayerPill(title: "Events", detail: "what happened", systemImage: "calendar")
                     EmptyLayerPill(title: "Style", detail: "how you write", systemImage: "signature")
                     EmptyLayerPill(title: "Decisions", detail: "what you chose", systemImage: "checkmark.seal")
-                    EmptyLayerPill(title: "Preferences", detail: "what you like", systemImage: "slider.horizontal.3")
+                    EmptyLayerPill(title: "Preferences", detail: "what you prefer", systemImage: "slider.horizontal.3")
                     EmptyLayerPill(title: "Rejections", detail: "what to avoid", systemImage: "hand.raised")
                 }
                 .padding(.top, 8)
             } label: {
                 ModelDisclosureLabel(
                     systemImage: "square.stack.3d.up",
-                    title: "What Cortex learns",
-                    detail: "Facts, events, style, decisions, preferences, and rejections"
+                    title: "What Cortex looks for",
+                    detail: "Facts, events, style, decisions, preferences, and things to avoid"
                 )
             }
             .padding(12)
@@ -170,7 +170,7 @@ struct ModelOverviewSection: View {
             if let loop = state.productLoop {
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Personal model")
+                        Text("Cortex memory")
                             .font(.title3)
                             .fontWeight(.semibold)
                         Text(modelDetail(loop: loop))
@@ -203,7 +203,7 @@ struct ModelOverviewSection: View {
             } else {
                 HStack {
                     ProgressView()
-                    Text("Loading personal model")
+                    Text("Loading Cortex memory")
                         .foregroundColor(.secondary)
                     Spacer()
                 }
@@ -230,12 +230,12 @@ struct ModelOverviewSection: View {
 
     private func modelDetail(loop: ProductLoopResponse) -> String {
         if review.stats.memories == 0 {
-            return "Add conversations, email, notes, writing, decisions, and messages so Cortex can build an adaptation layer around how you think, decide, write, and work."
+            return "Add conversations, email, notes, writing, decisions, or messages so Cortex can learn useful context from your work."
         }
         if review.stats.pending_captures > 0 {
-            return "Cortex has new data waiting for review before it becomes part of the personal model."
+            return "Cortex found new memory that needs review before it can be used."
         }
-        return "Cortex is organizing your data into semantic, episodic, style, decision, preference, and negative memory layers for in-house agent adaptation."
+        return "Cortex is organizing approved memory so Ask and AI handoffs can cite the right context."
     }
 
     private func primaryActionIcon(_ action: String) -> String {
@@ -269,7 +269,7 @@ struct ModelReadinessRing: View {
                 Text("\(value)")
                     .font(.headline)
                     .fontWeight(.semibold)
-                Text("model")
+                Text("ready")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
@@ -290,7 +290,7 @@ struct ModelProofPointCard: View {
                 .foregroundColor(.accentColor)
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 5) {
-                Text("Proof point")
+                Text("Example memory")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(.secondary)
@@ -315,9 +315,9 @@ struct ModelProofPointCard: View {
                         }
                     }
                 } else {
-                    Text("\(signalCount) approved signals are available for adaptation.")
+                    Text("\(signalCount) approved memories are ready to use.")
                         .font(.callout)
-                    Text("Add richer sources to show a concrete memory here.")
+                    Text("Add richer sources to show a concrete example here.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -400,7 +400,7 @@ struct ModelQualitySection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "Memory quality", detail: "Citation, review, and layer health for the current model.")
+            SectionHeader(title: "Memory quality", detail: "How much approved memory has citations, dates, review state, and useful structure.")
             HStack(alignment: .top, spacing: 12) {
                 ZStack {
                     Circle()
@@ -425,7 +425,7 @@ struct ModelQualitySection: View {
                     if let warning = quality.warnings.first {
                         TrustNotice(systemImage: "exclamationmark.triangle.fill", title: "Needs attention", detail: warning, color: .orange)
                     } else {
-                        TrustNotice(systemImage: "checkmark.seal.fill", title: quality.status.replacingOccurrences(of: "_", with: " ").capitalized, detail: "Imported memory has usable citations, review state, and layer coverage.", color: .green)
+                        TrustNotice(systemImage: "checkmark.seal.fill", title: quality.status.replacingOccurrences(of: "_", with: " ").capitalized, detail: "Approved memory has usable citations, review state, and coverage.", color: .green)
                     }
                 }
             }
@@ -451,7 +451,7 @@ struct ModelCoverageSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "Model coverage", detail: "Memory layers Cortex can use for adaptation.")
+            SectionHeader(title: "Memory coverage", detail: "Types of approved memory available to Ask and AI handoffs.")
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 128), spacing: 8)], spacing: 8) {
                 ForEach(layers, id: \.1) { layer in
                     LayerCoverageTile(title: layer.0, layer: layer.1, systemImage: layer.2, count: count(for: layer.1))
@@ -495,7 +495,7 @@ struct ModelSourceCoverageSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "Sources", detail: "Chats, notes, files, emails, writing, decisions, and messages become structured memory.")
+            SectionHeader(title: "Sources", detail: "Where approved memory is coming from.")
             if let summary = state.trustSummary, !summary.source_counts.isEmpty {
                 HStack(spacing: 8) {
                     ForEach(summary.source_counts.prefix(4)) { source in
@@ -504,7 +504,7 @@ struct ModelSourceCoverageSection: View {
                     Spacer(minLength: 0)
                 }
             } else if review.stats.memories == 0 {
-                QuietState(title: "No personal model yet", detail: "Add one source, then approve useful memory in Review before expecting Ask to answer.")
+                QuietState(title: "No approved memory yet", detail: "Add one source, then approve useful memory in Review before expecting Ask to answer.")
             } else {
                 HStack(spacing: 8) {
                     ModelMetricPill(label: "Topics", value: "\(review.top_topics.count)", systemImage: "number")
@@ -521,10 +521,10 @@ struct ModelSignalSummarySection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "Current signal", detail: "High-level shape of the model without review clutter.")
+            SectionHeader(title: "Current snapshot", detail: "A quick read on approved memory, pending review, topics, people, and decisions.")
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 8)], spacing: 8) {
-                ModelMetricPill(label: "Signals", value: "\(review.stats.memories)", systemImage: "brain.head.profile")
-                ModelMetricPill(label: "Review", value: "\(review.stats.pending_captures)", systemImage: "tray.full")
+                ModelMetricPill(label: "Memories", value: "\(review.stats.memories)", systemImage: "brain.head.profile")
+                ModelMetricPill(label: "Pending review", value: "\(review.stats.pending_captures)", systemImage: "tray.full")
                 ModelMetricPill(label: "Topics", value: "\(review.top_topics.count)", systemImage: "number")
                 ModelMetricPill(label: "People & projects", value: "\(review.top_entities.count)", systemImage: "person.2")
                 ModelMetricPill(label: "Open loops", value: "\(review.open_tasks.count)", systemImage: "circle.dashed")
@@ -592,7 +592,7 @@ struct LayerCoverageTile: View {
                 Text(title)
                     .font(.callout)
                     .fontWeight(.medium)
-                Text(count > 0 ? "\(count) signals" : "Needs data")
+                Text(count > 0 ? "\(count) memories" : "Needs data")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }

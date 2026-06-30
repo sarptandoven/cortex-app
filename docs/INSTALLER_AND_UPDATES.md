@@ -23,7 +23,8 @@ The ZIP is useful for direct download, testing, CI artifacts, and update tooling
 `BETA_HANDOFF.md` is the tester-facing local beta artifact. It gives one
 repeatable source build path, package install path, checksum check, manifest
 validation command, readiness gate, live-backend verification commands, support
-bundle commands, and the five-step manual first-user loop.
+bundle commands, update/rollback notes, known limitations, and the required
+manual QA checklist.
 
 ## Build A Release
 
@@ -49,6 +50,36 @@ The script reads version metadata from `macos/Info.plist`:
 - `CFBundleVersion`
 - `LSMinimumSystemVersion`
 - `CortexReleaseChannel`
+
+## First-100 Ship Gate
+
+For a beta candidate that will go to testers, generate and verify a package in
+one gate:
+
+```bash
+python3 scripts/ops_readiness_check.py --refresh-site --include-package
+```
+
+To verify an already generated release directory without rebuilding:
+
+```bash
+RELEASE_DIR="outputs/Cortex-0.1.0-1"
+python3 scripts/ops_readiness_check.py \
+  --skip-tests \
+  --skip-build \
+  --require-package-artifacts \
+  --release-dir "$RELEASE_DIR"
+```
+
+The package-artifact gate validates:
+
+- `latest.json` with `scripts/validate_update_manifest.py`
+- DMG and ZIP presence, byte sizes, and SHA-256 hashes
+- checksum file entries matching the manifest
+- `BETA_HANDOFF.md` presence and required handoff sections
+- `latest.json` beta-readiness metadata for install, update, rollback, known limitations, manual QA, and artifact verification
+
+Do not publish `latest.json` or invite first-100 testers if this gate fails.
 
 ## Update Manifest
 
@@ -79,6 +110,12 @@ Required shape:
 }
 ```
 
+The generated manifest also includes `beta_readiness` metadata. That field is
+intended for operators and release automation, not the in-app updater. It marks
+manual QA as required and carries the install steps, update steps, rollback
+steps, known limitations, manual QA checklist, and generated artifact
+verification commands for the packaged beta.
+
 Validate a feed:
 
 ```bash
@@ -104,16 +141,32 @@ The static landing page and download directory are covered in `docs/DISTRIBUTION
 
 For the local beta, updates are manual:
 
-1. Download/open the DMG.
-2. Quit Cortex.
-3. Replace `Cortex.app` in `/Applications`.
-4. Reopen Cortex.
+1. Download the DMG from the release site.
+2. Verify the DMG against `Cortex-<version>-<build>.checksums.txt`.
+3. Quit Cortex.
+4. Replace `Cortex.app` in `/Applications`.
+5. Reopen Cortex.
+6. Confirm Trust shows backend health and the expected vault path.
+7. Create a fresh backup after the new build opens.
 
 The user vault remains at:
 
 ```text
 ~/Library/Application Support/Cortex/Cortex.vault
 ```
+
+Rollback is manual too:
+
+1. Keep the local vault folder unchanged.
+2. Download or retain the previous beta DMG and ZIP.
+3. Quit Cortex.
+4. Replace `Cortex.app` in `/Applications` with the previous build.
+5. Reopen Cortex.
+6. Run the reliability report and create a fresh backup.
+
+The download host should keep at least one previous beta DMG, ZIP, checksum
+file, and manifest until the next build has passed package verification and
+manual QA.
 
 ## Why Manual Updates First
 
@@ -143,20 +196,39 @@ Sparkle is the likely production path for background update download/install. Th
 
 - Increment `CFBundleShortVersionString` or `CFBundleVersion`.
 - Run `python3 -m unittest discover backend/tests`.
+- Run `python3 scripts/retrieval_eval.py`.
+- Run `python3 scripts/adaptation_eval.py`.
 - Run `./macos/build.sh`.
 - Run `codesign --verify --deep --strict --verbose=2 macos/build/Cortex.app`.
 - Launch the app and verify the bundled backend starts.
 - Run `python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"` using the local API token from `Trust > Advanced`.
 - Run `./macos/package_release.sh`.
 - Confirm the generated release directory includes `BETA_HANDOFF.md`.
+- Run `(cd <release> && shasum -a 256 -c Cortex-<version>-<build>.checksums.txt)`.
 - Run `python3 scripts/prepare_distribution_site.py`.
 - Run `python3 scripts/check_distribution_site.py`.
 - Run `python3 scripts/ops_readiness_check.py --refresh-site`.
+- Run `python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir <release>`.
 - Run `python3 scripts/validate_update_manifest.py <release>/latest.json`.
 - Test the landing page download buttons against `site/downloads/latest.json`.
 - Test the DMG by opening it and launching a copied app.
 - Test `Trust > Advanced > Installer and updates` with the generated `latest.json`.
 - Export a support bundle with `python3 scripts/export_support_bundle.py --mode live` after launch.
+
+## Required Manual QA
+
+Before first-100 distribution, complete the manual QA loop on a clean macOS 13
+or newer user profile:
+
+- install from the DMG and launch from Applications
+- complete first-run setup without source-code instructions
+- import one real user-selected local source through Sources
+- approve at least one useful memory and archive obvious noise in Review
+- ask a question that returns cited memory from the approved import
+- confirm Trust shows vault path, backend health, backup, export, support bundle, and update feed controls
+- create a backup and confirm the support bundle does not include raw memory content
+- update over a previous beta and confirm the vault remains intact
+- roll back to the previous beta and confirm the vault remains intact
 
 ## Current Boundaries
 
@@ -168,5 +240,6 @@ This system does not yet:
 - run delta updates
 - verify update signatures beyond SHA-256 in the feed
 - provide rollback from inside the app
+- provide hosted accounts, cloud backup, live OAuth/API sync, remote MCP/OAuth, billing, teams, or production telemetry
 
 Those are appropriate for the public-beta release track, not the local-first MVP package.

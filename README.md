@@ -93,6 +93,7 @@ python3 scripts/export_support_bundle.py --mode offline
 - [Capture Surfaces](docs/CAPTURE_SURFACES.md)
 - [Source Imports](docs/SOURCE_IMPORTS.md)
 - [First 100 User Demo Checkpoint](docs/checkpoints/first-100-demo.md)
+- [First 100 User Support and Privacy Runbook](docs/BETA_SUPPORT.md)
 - [Trust Controls](docs/TRUST_CONTROLS.md)
 - [Reliability Hardening](docs/RELIABILITY_HARDENING.md)
 - [Operational Readiness](docs/OPERATIONAL_READINESS.md)

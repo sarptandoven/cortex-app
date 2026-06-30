@@ -32,7 +32,7 @@ struct OnboardingView: View {
                 Text("Cortex")
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text("Private personal model")
+                Text("Private memory on this Mac")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -83,7 +83,7 @@ struct OnboardingView: View {
             Button {
                 state.dismissOnboardingForSession()
             } label: {
-                Label("Open App for Now", systemImage: "xmark")
+                Label("Skip Setup for Now", systemImage: "xmark")
             }
         }
         .padding(22)
@@ -113,7 +113,7 @@ struct OnboardingView: View {
                     state.finishOnboarding()
                 } label: {
                     Label(
-                        state.canCompleteOnboarding ? "Finish Setup" : "Open App for Now",
+                        state.canCompleteOnboarding ? "Finish Setup" : "Skip Setup for Now",
                         systemImage: state.canCompleteOnboarding ? "checkmark.circle" : "arrow.right.circle"
                     )
                 }
@@ -141,7 +141,7 @@ struct OnboardingView: View {
         case .reviewMemory:
             return "Approve One Memory"
         case .askUse:
-            return "Ask with Citations"
+            return "Ask a Question"
         case .trustBackup:
             return "Choose Backup"
         }
@@ -206,7 +206,7 @@ struct OnboardingVaultStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Cortex stores your memory in a readable folder on this Mac. The search index can be rebuilt from those files, so the vault stays portable and backup-friendly.")
+            Text("Cortex keeps its vault in a readable folder on this Mac. The search index can be rebuilt from those files, so your memory stays portable and backup-friendly.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -259,7 +259,7 @@ struct OnboardingFirstSourceStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Start with one source that has real context: an AI chat export, notes, docs, email, messages, or a project file.")
+            Text("Start with one source that has real context: an AI chat export, notes, docs, email, messages, or a project file. One source is enough to continue.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -307,7 +307,7 @@ struct OnboardingFirstSourceStep: View {
 
             OnboardingCheckRow(
                 title: state.onboardingHasSource ? "First source imported" : "Waiting for an imported source",
-                detail: state.onboardingHasSource ? "Continue to review and approve useful memory." : "Choose one supported export or readable file to continue.",
+                detail: state.onboardingHasSource ? "Next, review what Cortex found before it becomes memory." : "Choose one export or readable file to continue.",
                 systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "tray.and.arrow.down",
                 color: state.onboardingHasSource ? .green : .orange
             )
@@ -320,7 +320,7 @@ struct OnboardingReviewMemoryStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Cortex works best when the first memories are reviewed. Approve useful signals and archive anything noisy before the model starts adapting around them.")
+            Text("Approve only what Cortex should remember. Archive anything noisy before it can appear in Ask or AI handoffs.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -357,7 +357,7 @@ struct OnboardingReviewMemoryStep: View {
 
             OnboardingCheckRow(
                 title: state.onboardingHasReviewedMemory ? "Memory reviewed" : "Approve one useful memory",
-                detail: state.onboardingHasReviewedMemory ? "Cortex has at least one approved memory to use." : "Approve a pending item to unlock the first cited Ask.",
+                detail: state.onboardingHasReviewedMemory ? "Cortex has approved memory it can cite." : "Approve one pending item to unlock the first cited Ask.",
                 systemImage: state.onboardingHasReviewedMemory ? "checkmark.seal.fill" : "tray.full",
                 color: state.onboardingHasReviewedMemory ? .green : .orange
             )
@@ -374,9 +374,9 @@ struct OnboardingReviewMemoryStep: View {
             return "You already reviewed memory from your first source."
         }
         if state.onboardingHasSource {
-            return "No reviewable memory is waiting yet. Refresh Review, or add another source with more text."
+            return "No reviewable memory is waiting yet. Refresh Review, or add a source with more text."
         }
-        return "Import a source first. Reviewable memory will appear here before it shapes Cortex."
+        return "Import a source first. Anything useful will appear here before Cortex remembers it."
     }
 }
 
@@ -385,12 +385,12 @@ struct OnboardingAskUseStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Ask Cortex one question against approved context. This is the core use loop: imported sources become cited answers you can trust.")
+            Text("Ask one question against approved memory. This shows the main loop: sources become reviewed memory, then cited answers.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 10) {
-                TextField("Ask about your first source", text: $state.searchQuery)
+                TextField("Ask about an approved memory or exact phrase", text: $state.searchQuery)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { state.runSearch() }
                 HStack {
@@ -409,7 +409,7 @@ struct OnboardingAskUseStep: View {
 
             if !state.onboardingAskSuggestions.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Try one")
+                    Text("Try a question")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     ForEach(state.onboardingAskSuggestions, id: \.self) { suggestion in
@@ -442,7 +442,7 @@ struct OnboardingAskUseStep: View {
 
             OnboardingCheckRow(
                 title: state.onboardingHasUsedCortex ? "Cortex used once" : "Use Cortex once",
-                detail: state.onboardingHasUsedCortex ? "Approved context was used in a cited answer." : "Ask a question that returns cited context.",
+                detail: state.onboardingHasUsedCortex ? "Approved memory was used in a cited answer." : "Ask a question that returns cited memory.",
                 systemImage: state.onboardingHasUsedCortex ? "checkmark.seal.fill" : "sparkle.magnifyingglass",
                 color: state.onboardingHasUsedCortex ? .green : .orange
             )
@@ -455,9 +455,9 @@ struct OnboardingAskUseStep: View {
 
     private var askEmptyDetail: String {
         if state.hasSearched {
-            return "Try an exact phrase from an approved source, or go back to Review and approve one useful memory."
+            return "Try an exact phrase from approved memory, or go back to Review and approve one useful item."
         }
-        return "Ask a question about your imported source. Cortex will answer with citations when approved context matches."
+        return "Ask about your imported source. Cortex answers with citations when approved memory matches."
     }
 }
 
@@ -466,14 +466,14 @@ struct OnboardingTrustBackupStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Finish with a clear default: review new memory first, share only approved memory, redact copied memory, and keep backups local.")
+            Text("Finish with simple defaults: review new memory first, share only approved memory, redact copied memory, and keep backups local.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 10) {
                 OnboardingToggleRow(
                     title: "Review new memories first",
-                    detail: "New imports wait for approval before shaping Cortex.",
+                    detail: "New imports wait for approval before Cortex remembers them.",
                     isOn: $state.appSettings.review_new_captures
                 )
                 OnboardingToggleRow(
@@ -486,7 +486,7 @@ struct OnboardingTrustBackupStep: View {
                 )
                 OnboardingToggleRow(
                     title: "Redact copied memory",
-                    detail: "AI handoffs remove sensitive details when possible.",
+                    detail: "AI handoffs remove sensitive details where possible.",
                     isOn: $state.appSettings.redact_sensitive_context
                 )
                 HStack {
@@ -512,7 +512,7 @@ struct OnboardingTrustBackupStep: View {
                 Text("Backup")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                Text("Backups are zip files stored inside the local Cortex vault. Create one now, or explicitly skip it for this setup.")
+                Text("Backups are local zip files in the Cortex vault. Create one now, or explicitly skip it for this setup.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -541,7 +541,7 @@ struct OnboardingTrustBackupStep: View {
 
             OnboardingCheckRow(
                 title: state.onboardingHasBackupDecision ? "Backup decision recorded" : "Back up or skip explicitly",
-                detail: state.onboardingHasBackupDecision ? "Setup can be completed when the earlier steps are ready." : "Create a first backup, or explicitly skip it for now.",
+                detail: state.onboardingHasBackupDecision ? "Setup can finish once the earlier steps are ready." : "Create a first backup, or explicitly skip it for now.",
                 systemImage: state.onboardingHasBackupDecision ? "checkmark.seal.fill" : "externaldrive",
                 color: state.onboardingHasBackupDecision ? .green : .orange
             )

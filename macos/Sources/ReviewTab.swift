@@ -42,7 +42,7 @@ struct ReviewHeaderSection: View {
                     Text("Review queue")
                         .font(.title3)
                         .fontWeight(.semibold)
-                    Text("Approve useful memory or archive noise. Approved items are what Ask and AI handoffs can cite.")
+                    Text("Approve what Cortex should remember, and archive noise. Ask and AI handoffs can cite only approved items.")
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -137,19 +137,19 @@ struct ReviewInboxSection: View {
 
     private var queueDetail: String {
         if captures.isEmpty {
-            return "No pending items right now."
+            return "Nothing waiting for review right now."
         }
         if captures.count > visibleCount {
-            return "\(captures.count) pending. Showing the first \(visibleCount) for batch actions."
+            return "\(captures.count) pending. Showing the first \(visibleCount)."
         }
         return "\(captures.count) pending item\(captures.count == 1 ? "" : "s")."
     }
 
     private var emptyDetail: String {
         if (state.review?.stats.memories ?? 0) == 0 {
-            return "Add a source first. Imported records land here before they shape your model."
+            return "Add a source first. Useful memory lands here before Cortex can use it."
         }
-        return "All caught up. New imports land here before they shape your model."
+        return "All caught up. New imports land here before Cortex can use them."
     }
 }
 
@@ -176,7 +176,7 @@ struct ReviewCaptureCard: View {
                     .font(.body)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("No summary available.")
+                Text("No summary yet.")
                     .font(.body)
                     .foregroundColor(.secondary)
             }
@@ -209,7 +209,7 @@ struct ReviewCaptureCard: View {
 
     private var title: String {
         let candidate = capture.title ?? capture.source
-        return candidate.isEmpty ? "Untitled source record" : candidate
+        return candidate.isEmpty ? "Untitled review item" : candidate
     }
 
     private var sourceDetail: String {
@@ -264,7 +264,7 @@ struct ReviewContextDisclosure: View {
             .padding(.top, 8)
         } label: {
             HStack(alignment: .firstTextBaseline) {
-                Label("Supporting context", systemImage: "sidebar.right")
+                Label("Approved context", systemImage: "sidebar.right")
                     .font(.subheadline)
                 Spacer()
                 Text(contextSummary)
@@ -280,7 +280,7 @@ struct ReviewContextDisclosure: View {
             parts.append("\(review.recent_decisions.count) decisions")
         }
         if !review.open_tasks.isEmpty {
-            parts.append("\(review.open_tasks.count) open")
+            parts.append("\(review.open_tasks.count) open loops")
         }
         if !review.recommended_actions.isEmpty {
             parts.append("\(review.recommended_actions.count) guidance")
@@ -294,7 +294,7 @@ struct ReviewGuidanceSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            SectionHeader(title: "Review guidance", detail: "Suggested cleanup before memory is used in other apps.")
+            SectionHeader(title: "Review guidance", detail: "Suggested cleanup before approved memory is used elsewhere.")
             ForEach(actions.prefix(3), id: \.self) { action in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Image(systemName: "checkmark.circle")
@@ -313,7 +313,7 @@ struct ReviewOpenLoopsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            SectionHeader(title: "Open loops", detail: "Unfinished work Cortex should keep visible, but not mix into the approval inbox.")
+            SectionHeader(title: "Open loops", detail: "Unfinished work Cortex keeps visible outside the approval queue.")
             ForEach(tasks.prefix(4)) { task in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(task.kind.uppercased())
@@ -338,7 +338,7 @@ struct ReviewDecisionSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            SectionHeader(title: "Recent decisions", detail: "Approved decisions kept for context while reviewing new source data.")
+            SectionHeader(title: "Recent decisions", detail: "Approved decisions available as context while reviewing new imports.")
             ForEach(decisions.prefix(3)) { decision in
                 Text(decision.content)
                     .fixedSize(horizontal: false, vertical: true)

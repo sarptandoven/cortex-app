@@ -39,6 +39,13 @@ class NoisyImportGoldenTests(unittest.TestCase):
         self.assertGreater(result["saved"], 0)
 
         rows = self._memory_rows()
+        counts_by_source: dict[str, int] = {}
+        for row in rows:
+            counts_by_source[row["source"]] = counts_by_source.get(row["source"], 0) + 1
+        for source, minimum in manifest.get("minimum_memories_by_source", {}).items():
+            with self.subTest(minimum_memories_by_source=source):
+                self.assertGreaterEqual(counts_by_source.get(source, 0), minimum)
+
         joined_content = "\n".join(row["content"] for row in rows)
         joined_excerpt = "\n".join(row["raw_excerpt"] or "" for row in rows)
         for phrase in manifest["rejected_phrases"]:
@@ -53,7 +60,11 @@ class NoisyImportGoldenTests(unittest.TestCase):
         try:
             for rejected in manifest.get("rejected_queries", []):
                 with self.subTest(rejected_query=rejected["query"]):
-                    self.assertEqual([], self.store.search("test-user", rejected["query"], limit=3))
+                    rejected_hits = self.store.search("test-user", rejected["query"], limit=3)
+                    self.assertEqual([], rejected_hits)
+                    must_not_include = rejected.get("must_not_include")
+                    if must_not_include:
+                        self.assertNotIn(must_not_include, "\n".join(hit["content"] for hit in rejected_hits))
         finally:
             self.store._vector_ready = original_vector_ready
 
