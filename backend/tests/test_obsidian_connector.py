@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.app.connectors.obsidian import parse_note, scan_vault, stable_external_id
+from backend.app.connectors.obsidian import parse_note, scan_vault, stable_external_id, stable_section_external_id
 from backend.app.database import connect, init_db
 from backend.app.storage import CortexStore
 
@@ -72,8 +72,7 @@ I prefer #cortex notes that preserve citations.
         self.assertEqual(scan.to_summary()["records_found"], 1)
         self.assertEqual(scan.to_summary()["records_returned"], 1)
         record = scan.records[0].to_source_account_record()
-        self.assertEqual(record["external_id"], "Projects/Atlas.md")
-        self.assertEqual(record["external_id"], stable_external_id(self.vault, note))
+        self.assertEqual(record["external_id"], stable_section_external_id(self.vault, note, "project-atlas"))
         self.assertTrue(record["source_url"].startswith("file://"))
         self.assertEqual(record["title"], "Project Atlas")
         self.assertIn("Dana", record["content"])
@@ -81,6 +80,8 @@ I prefer #cortex notes that preserve citations.
         for leaked in ("[[", "]]", "dataview", "TABLE file.mtime", "Template block", "#cortex"):
             self.assertNotIn(leaked, record["content"])
         self.assertEqual(record["metadata"]["tags"], ["cortex", "people/dana"])
+        self.assertEqual(record["metadata"]["record_scope"], "section")
+        self.assertEqual(record["metadata"]["note_external_id"], stable_external_id(self.vault, note))
         self.assertTrue(any(link["target"] == "Project Atlas" and link["display"] == "Atlas" for link in record["metadata"]["wikilinks"]))
         self.assertEqual(record["metadata"]["callouts"], [{"type": "note", "title": "Template block"}])
         self.assertEqual(record["metadata"]["removed_blocks"]["code_languages"], ["dataview"])
@@ -161,15 +162,103 @@ Procedure: Before using long Obsidian notes, Cortex should prioritize explicit p
         )
 
         synced = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
-        self.assertEqual(synced["saved"], 1)
-        capture_id = synced["records"][0]["capture_id"]
-        self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+        self.assertEqual(synced["saved"], 3)
+        for record in synced["records"]:
+            self.assertTrue(self.store.approve_capture(self.user_id, record["capture_id"]))
 
         decision_hits = self.store.search(self.user_id, "late explicit decisions searchable", limit=5)
         procedure_hits = self.store.search(self.user_id, "prioritize explicit procedures during extraction", limit=5)
 
         self.assertTrue(any(hit["kind"] == "decision" and "late explicit decisions" in hit["content"] for hit in decision_hits))
         self.assertTrue(any(hit["kind"] == "procedure" and "prioritize explicit procedures" in hit["content"] for hit in procedure_hits))
+
+    def test_scan_vault_splits_multi_heading_note_into_stable_section_records(self) -> None:
+        note = self.write_note(
+            "Projects/Sections.md",
+            """# Decision
+Decision: Cortex should sync Obsidian headings as stable memory sections.
+
+## Procedure
+Procedure: When an Obsidian heading changes, only that section should update.
+""",
+        )
+
+        scan = scan_vault(self.vault, max_records=20)
+
+        self.assertEqual(scan.records_found, 1)
+        self.assertEqual(scan.records_returned, 2)
+        records = [record.to_source_account_record() for record in scan.records]
+        self.assertEqual(records[0]["external_id"], stable_section_external_id(self.vault, note, "decision"))
+        self.assertEqual(records[1]["external_id"], stable_section_external_id(self.vault, note, "procedure"))
+        self.assertEqual(records[0]["metadata"]["record_scope"], "section")
+        self.assertEqual(records[0]["metadata"]["line_start"], 1)
+        self.assertEqual(records[1]["metadata"]["line_start"], 4)
+        self.assertEqual(records[1]["metadata"]["section_title"], "Procedure")
+        self.assertIn("only that section should update", records[1]["content"])
+
+    def test_sync_vault_updates_only_changed_section(self) -> None:
+        note = self.write_note(
+            "Projects/Section Updates.md",
+            """# Decision
+Decision: Cortex should keep stable section records for Obsidian sync.
+
+## Procedure
+Procedure: Cortex should resync only changed Obsidian sections.
+""",
+        )
+
+        first = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+        self.assertEqual(first["saved"], 2)
+        by_external_id = {record["title"].rsplit(" / ", 1)[-1]: record["capture_id"] for record in first["records"]}
+
+        note.write_text(
+            """# Decision
+Decision: Cortex should keep stable section records for Obsidian sync.
+
+## Procedure
+Procedure: Cortex should update one changed Obsidian section without rewriting the rest.
+""",
+            encoding="utf-8",
+        )
+        changed = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+
+        self.assertEqual(changed["saved"], 1)
+        self.assertEqual(changed["skipped"], 1)
+        statuses = {record["title"].rsplit(" / ", 1)[-1]: record for record in changed["records"]}
+        self.assertEqual(statuses["Decision"]["status"], "duplicate")
+        self.assertEqual(statuses["Decision"]["capture_id"], by_external_id["Decision"])
+        self.assertEqual(statuses["Procedure"]["status"], "updated")
+        self.assertEqual(statuses["Procedure"]["capture_id"], by_external_id["Procedure"])
+
+    def test_sync_vault_archives_removed_section(self) -> None:
+        note = self.write_note(
+            "Projects/Removed Section.md",
+            """# Keep
+Decision: Cortex should keep this Obsidian section searchable.
+
+## Remove
+Decision: Cortex should archive the zinnia-retire marker when an Obsidian section is removed.
+""",
+        )
+        first = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+        self.assertEqual(first["saved"], 2)
+        for record in first["records"]:
+            self.assertTrue(self.store.approve_capture(self.user_id, record["capture_id"]))
+        self.assertTrue(self.store.search(self.user_id, "zinnia-retire marker", limit=5))
+
+        note.write_text(
+            """# Keep
+Decision: Cortex should keep this Obsidian section searchable.
+""",
+            encoding="utf-8",
+        )
+        second = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+
+        self.assertEqual(second["saved"], 0)
+        self.assertEqual(second["skipped"], 1)
+        self.assertEqual(second["archived_missing"], 1)
+        self.assertTrue(self.store.search(self.user_id, "keep this Obsidian section searchable", limit=5))
+        self.assertEqual(self.store.search(self.user_id, "zinnia-retire marker", limit=5), [])
 
     def test_scan_vault_reports_partial_coverage_when_limited(self) -> None:
         for index in range(5):

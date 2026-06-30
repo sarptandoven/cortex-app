@@ -851,13 +851,24 @@ def _apply_source_record_metadata(extracted: dict[str, Any], metadata: dict[str,
     if not metadata:
         return extracted
     source_topics = _source_record_metadata_topics(metadata)
+    line_offset = _source_record_line_offset(metadata)
     for record in extracted.get("records", []) or []:
         existing_metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
         record["metadata"] = {**metadata, **existing_metadata}
+        if line_offset:
+            record["source_line_offset"] = line_offset
         if source_topics:
             existing_topics = [str(topic) for topic in (record.get("topics") or []) if str(topic).strip()]
             record["topics"] = _unique_preserving_order([*existing_topics, *source_topics])[:12]
     return extracted
+
+
+def _source_record_line_offset(metadata: dict[str, Any]) -> int:
+    try:
+        line_start = int(metadata.get("line_start") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, line_start - 1)
 
 
 def _source_record_metadata_topics(metadata: dict[str, Any]) -> list[str]:
@@ -907,12 +918,14 @@ def _memory_duplicate_key(value: str) -> str:
     return " ".join(words)
 
 
-def _granular_memory_source_url(source_url: str | None, raw_text: str, excerpt: str, *, enabled: bool) -> str | None:
+def _granular_memory_source_url(source_url: str | None, raw_text: str, excerpt: str, *, enabled: bool, line_offset: int = 0) -> str | None:
     if not enabled or not source_url:
         return source_url
     locator = _source_locator_for_excerpt(raw_text, excerpt)
     if not locator:
         return source_url
+    if line_offset and str(locator.get("line") or "").isdigit():
+        locator["line"] = str(int(locator["line"]) + max(0, line_offset))
     return _append_source_locator(source_url, locator)
 
 
@@ -2040,6 +2053,7 @@ class CortexStore:
         high_water_mark: str | None = None,
         state: dict[str, Any] | None = None,
         processing: str = "async",
+        archive_missing: bool = False,
     ) -> dict[str, Any]:
         account_id = (account_id or "").strip()
         if not account_id:
@@ -2070,6 +2084,7 @@ class CortexStore:
         capture_ids: list[str] = []
         record_results: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
+        active_external_ids = {str(record.get("external_id") or "").strip()[:240] for record in records if str(record.get("external_id") or "").strip()}
         base_identity_aliases = self.settings(user_id).get("identity_aliases")
         source_accounts = self.list_source_accounts(user_id)
 
@@ -2099,7 +2114,7 @@ class CortexStore:
                     if external_id:
                         existing_record = conn.execute(
                             """
-                            SELECT id, raw_hash
+                            SELECT id, raw_hash, review_status
                             FROM captures
                             WHERE user_id = ?
                               AND source_account_id = ?
@@ -2110,7 +2125,7 @@ class CortexStore:
                             (user_id, account_id, external_id),
                         ).fetchone()
                         if existing_record:
-                            if existing_record["raw_hash"] == content_hash:
+                            if existing_record["raw_hash"] == content_hash and existing_record["review_status"] != "archived":
                                 duplicate = existing_record
                             else:
                                 updated_existing_record = True
@@ -2209,6 +2224,10 @@ class CortexStore:
             "last_batch_skipped": skipped,
             "last_batch_failed": failed,
         })
+        archived_missing = 0
+        if archive_missing:
+            archived_missing = self._archive_missing_source_account_records(user_id, account_id, active_external_ids)
+            cursor_state["last_batch_archived_missing"] = archived_missing
         cursor = self.upsert_sync_cursor(
             user_id,
             source=source,
@@ -2257,11 +2276,34 @@ class CortexStore:
             "saved": saved,
             "skipped": skipped,
             "failed": failed,
+            "archived_missing": archived_missing,
             "capture_ids": capture_ids,
             "records": record_results,
             "errors": errors,
             "cursor": cursor,
         }
+
+    def _archive_missing_source_account_records(self, user_id: str, account_id: str, active_external_ids: set[str]) -> int:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, external_id
+                FROM captures
+                WHERE user_id = ?
+                  AND source_account_id = ?
+                  AND external_id IS NOT NULL
+                  AND review_status != 'archived'
+                """,
+                (user_id, account_id),
+            ).fetchall()
+        archived = 0
+        for row in rows:
+            external_id = str(row["external_id"] or "").strip()
+            if external_id in active_external_ids:
+                continue
+            if self.archive_capture(user_id, row["id"]):
+                archived += 1
+        return archived
 
     def sync_obsidian_vault(
         self,
@@ -2325,7 +2367,12 @@ class CortexStore:
             "manifest_hash": scan.manifest_hash,
             "scan_errors": scan.errors,
         }
+        complete_record_set = not scan.truncated and not scan.errors and scan.records_returned == scan.records_found
         if not scan.records:
+            archived_missing = 0
+            if complete_record_set and scan.files_seen == 0:
+                archived_missing = self._archive_missing_source_account_records(user_id, account["id"], set())
+                state["last_batch_archived_missing"] = archived_missing
             cursor = self.upsert_sync_cursor(
                 user_id,
                 source=OBSIDIAN_SOURCE,
@@ -2348,6 +2395,7 @@ class CortexStore:
                 "saved": 0,
                 "skipped": 0,
                 "failed": len(scan.errors),
+                "archived_missing": archived_missing,
                 "capture_ids": [],
                 "records": [],
                 "errors": scan.errors,
@@ -2365,6 +2413,7 @@ class CortexStore:
             high_water_mark=scan.high_water_mark,
             state=state,
             processing=processing,
+            archive_missing=complete_record_set,
         )
         if scan.errors:
             result["errors"] = [*(result.get("errors") or []), *scan.errors]
@@ -7289,7 +7338,17 @@ class CortexStore:
         topics = record.get("topics", [])
         entity_ids = record.get("entity_ids", [])
         raw_excerpt = _memory_raw_excerpt(record, raw_text)
-        memory_source_url = _granular_memory_source_url(source_url, raw_text, raw_excerpt, enabled=granular_source_url)
+        try:
+            line_offset = int(record.get("source_line_offset") or 0)
+        except (TypeError, ValueError):
+            line_offset = 0
+        memory_source_url = _granular_memory_source_url(
+            source_url,
+            raw_text,
+            raw_excerpt,
+            enabled=granular_source_url,
+            line_offset=max(0, line_offset),
+        )
         sector = _memory_sector(record, memory_source_url, source_account)
         source_type = str(record.get("source_type") or _memory_source_type(source, memory_source_url)).strip()[:80]
         provenance = _memory_provenance(

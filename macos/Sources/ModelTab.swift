@@ -32,7 +32,7 @@ struct ModelTab: View {
                     .background(Color(nsColor: .controlBackgroundColor).opacity(0.65))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 } else {
-                    HomeFirstRunNotes()
+                    HomeFirstRunNotes(state: state)
                 }
             }
             .padding(16)
@@ -225,12 +225,17 @@ struct HomeActionSection: View {
     }
 
     private var actionDisabled: Bool {
-        !state.isLocalServiceReady
+        state.isBusy
     }
 
     private func runNextAction() {
         if !state.isLocalServiceReady {
-            state.status = state.displayBackendStatus
+            Task {
+                await state.ensureBackend()
+                await state.loadDiagnostics()
+                await state.loadReview()
+                await state.loadStats()
+            }
         } else if state.activeSourceAccounts.isEmpty && state.connectedAIIntegrationCount == 0 {
             state.openConnectionsPrivacy(statusMessage: "Connect MCP tools or Obsidian")
         } else if pendingCount > 0 {
@@ -282,14 +287,35 @@ struct HomePrimaryActionButton: View {
 }
 
 struct HomeFirstRunNotes: View {
+    @ObservedObject var state: AppState
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Connect once", systemImage: "link.circle")
-                .font(.headline)
-            Text("Connect local AI tools or an Obsidian vault. Cortex syncs quietly, sends useful memory to Review, then answers with citations.")
-                .font(.callout)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "link.circle")
+                    .font(.title2)
+                    .foregroundColor(.accentColor)
+                    .frame(width: 36, height: 36)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Connect once")
+                        .font(.headline)
+                    Text("Connect local AI tools or an Obsidian vault. Cortex syncs quietly, sends useful memory to Review, then answers with citations.")
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                if !state.onboardingComplete {
+                    Button {
+                        state.showOnboardingAgain()
+                    } label: {
+                        Label("Guided Setup", systemImage: "sparkles")
+                            .frame(minHeight: 44)
+                    }
+                    .controlSize(.large)
+                    .buttonStyle(.bordered)
+                }
+            }
         }
         .padding(16)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.72))

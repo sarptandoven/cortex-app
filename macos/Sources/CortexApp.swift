@@ -3886,6 +3886,9 @@ struct IntegrationCenterView: View {
                 },
                 refresh: {
                     state.refreshIntegrationStates()
+                },
+                manualSetup: {
+                    state.copyMCPConfig()
                 }
             )
             if !compactIntegrations.isEmpty {
@@ -4000,9 +4003,14 @@ struct IntegrationCompactHero: View {
     let detectedCount: Int
     let connectDetected: () -> Void
     let refresh: () -> Void
+    let manualSetup: () -> Void
 
     private var needsConnection: Bool {
         detectedCount > connectedCount
+    }
+
+    private var needsManualFallback: Bool {
+        connectedCount == 0 && detectedCount == 0
     }
 
     var body: some View {
@@ -4035,6 +4043,23 @@ struct IntegrationCompactHero: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
+            } else if needsManualFallback {
+                VStack(alignment: .trailing, spacing: 8) {
+                    Button {
+                        manualSetup()
+                    } label: {
+                        Label("Copy MCP Settings", systemImage: "doc.on.doc")
+                            .frame(minWidth: 150, minHeight: 46)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    Button {
+                        refresh()
+                    } label: {
+                        Label("Check Again", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderless)
+                }
             } else {
                 Button {
                     refresh()
@@ -4068,7 +4093,7 @@ struct IntegrationCompactHero: View {
         if connectedCount > 0 {
             return "Approved memory and source-sync tools are available through MCP."
         }
-        return "Install Claude Desktop, Cursor, or Windsurf, then check again."
+        return "If your AI app is not detected, copy the local MCP settings and paste them into that app's MCP configuration."
     }
 }
 

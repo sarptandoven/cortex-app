@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from backend.app.connectors.obsidian import stable_section_external_id
 from backend.app.database import connect, init_db
 from backend.app.mcp_tools import TOOLS, call_tool, tool_required_capabilities
 from backend.app.storage import CortexStore
@@ -126,7 +127,13 @@ I prefer Cortex answers that cite the edited Obsidian note when memory changes.
         self.assertTrue(all(item["source"] == "obsidian" for item in search_results))
         self.assertTrue(all((item["source_url"] or "").startswith("local-file://Memory%20Loop.md#") for item in search_results))
         self.assertTrue(all("line=" in (item["source_url"] or "") and "excerpt=" in (item["source_url"] or "") for item in search_results))
-        self.assertTrue(any(item["provenance"]["external_id"] == "Loops/Memory Loop.md" for item in search_results))
+        self.assertTrue(
+            any(
+                item["provenance"]["external_id"]
+                == stable_section_external_id(self.vault, note, "first-100-memory-loop")
+                for item in search_results
+            )
+        )
 
         cited_answer = self.store.answer_query(self.user_id, "approved cited memory from edited Obsidian note", limit=5)
         self.assertTrue(cited_answer["citations"])

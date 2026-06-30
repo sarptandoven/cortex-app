@@ -93,6 +93,16 @@ class ParsedObsidianNote:
     removed_blocks: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class _MarkdownSection:
+    title: str
+    slug: str
+    ordinal: int
+    line_start: int
+    line_end: int
+    raw: str
+
+
 def scan_obsidian_vault(vault_path: str | Path, *, limit: int = 200) -> ObsidianVaultScan:
     root = Path(vault_path).expanduser().resolve()
     if not root.exists() or not root.is_dir():
@@ -142,35 +152,12 @@ def scan_obsidian_vault(vault_path: str | Path, *, limit: int = 200) -> Obsidian
             errors.append({"path": _safe_relative(root, path), "error": str(exc)})
             skipped += 1
             continue
-        cleaned, frontmatter, tags, wikilinks, callouts, removed_blocks = _parse_obsidian_markdown(raw)
-        if not cleaned:
+        note_records = _records_for_note(root, path, raw, modified=modified, size=size)
+        if not note_records:
             skipped += 1
             continue
         high_water = max(high_water or modified, modified)
-        relative_id = _relative_external_id(root, path)
-        records.append(
-            ObsidianVaultRecord(
-                content=cleaned[:MAX_RECORD_CHARS],
-                title=_note_title(path, cleaned, frontmatter),
-                external_id=stable_external_id(root, path),
-                source_url=path.resolve().as_uri()[:500],
-                captured_at=_iso_from_timestamp(modified),
-                metadata={
-                    "connector": "obsidian",
-                    "connector_version": CONNECTOR_VERSION,
-                    "vault_name": root.name,
-                    "vault_id": _stable_scan_id(str(root)),
-                    "relative_path": relative_id,
-                    "extension": path.suffix.lower().lstrip("."),
-                    "size_bytes": size,
-                    "tags": sorted(tags),
-                    "frontmatter": frontmatter,
-                    "wikilinks": wikilinks,
-                    "callouts": callouts,
-                    "removed_blocks": removed_blocks,
-                },
-            )
-        )
+        records.extend(note_records)
 
     high_water_mark = _iso_from_timestamp(high_water) if high_water is not None else None
     cursor_value = f"{len(records)}:{high_water_mark or 'none'}"
@@ -220,6 +207,147 @@ def stable_external_id(root: str | Path, path: str | Path) -> str:
 def clean_obsidian_markdown(raw: str) -> tuple[str, dict[str, Any], set[str]]:
     cleaned, frontmatter, tags, _wikilinks, _callouts, _removed_blocks = _parse_obsidian_markdown(raw)
     return cleaned, frontmatter, tags
+
+
+def _records_for_note(root: Path, path: Path, raw: str, *, modified: float, size: int) -> list[ObsidianVaultRecord]:
+    cleaned, frontmatter, tags, wikilinks, callouts, removed_blocks = _parse_obsidian_markdown(raw)
+    if not cleaned:
+        return []
+
+    relative_id = _relative_external_id(root, path)
+    note_title = _note_title(path, cleaned, frontmatter)
+    base_metadata = {
+        "connector": "obsidian",
+        "connector_version": CONNECTOR_VERSION,
+        "vault_name": root.name,
+        "vault_id": _stable_scan_id(str(root)),
+        "relative_path": relative_id,
+        "extension": path.suffix.lower().lstrip("."),
+        "size_bytes": size,
+        "tags": sorted(tags),
+        "frontmatter": frontmatter,
+        "wikilinks": wikilinks,
+        "callouts": callouts,
+        "removed_blocks": removed_blocks,
+    }
+    captured_at = _iso_from_timestamp(modified)
+    source_url = path.resolve().as_uri()[:500]
+
+    sections = _markdown_sections(raw)
+    if not sections:
+        return [
+            ObsidianVaultRecord(
+                content=cleaned[:MAX_RECORD_CHARS],
+                title=note_title,
+                external_id=stable_external_id(root, path),
+                source_url=source_url,
+                captured_at=captured_at,
+                metadata={**base_metadata, "record_scope": "note", "line_start": 1, "line_end": _line_count(raw)},
+            )
+        ]
+
+    records: list[ObsidianVaultRecord] = []
+    for section in sections:
+        section_cleaned, _section_frontmatter, section_tags, section_wikilinks, section_callouts, section_removed = _parse_obsidian_markdown(section.raw)
+        if not section_cleaned:
+            continue
+        record_title = note_title if section.title.casefold() == note_title.casefold() else f"{note_title} / {section.title}"[:200]
+        records.append(
+            ObsidianVaultRecord(
+                content=section_cleaned[:MAX_RECORD_CHARS],
+                title=record_title,
+                external_id=stable_section_external_id(root, path, section.slug, section.ordinal),
+                source_url=source_url,
+                captured_at=captured_at,
+                metadata={
+                    **base_metadata,
+                    "record_scope": "section",
+                    "note_external_id": stable_external_id(root, path),
+                    "section_title": section.title,
+                    "section_slug": section.slug,
+                    "section_index": section.ordinal,
+                    "line_start": section.line_start,
+                    "line_end": section.line_end,
+                    "section_tags": sorted(section_tags),
+                    "section_wikilinks": section_wikilinks,
+                    "section_callouts": section_callouts,
+                    "section_removed_blocks": section_removed,
+                },
+            )
+        )
+    if not records:
+        return [
+            ObsidianVaultRecord(
+                content=cleaned[:MAX_RECORD_CHARS],
+                title=note_title,
+                external_id=stable_external_id(root, path),
+                source_url=source_url,
+                captured_at=captured_at,
+                metadata={**base_metadata, "record_scope": "note", "line_start": 1, "line_end": _line_count(raw)},
+            )
+        ]
+    return records
+
+
+def _markdown_sections(raw: str) -> list[_MarkdownSection]:
+    text = raw.replace("\r\n", "\n").replace("\r", "\n")
+    match = _FRONTMATTER_RE.match(text)
+    frontmatter_lines = 0
+    if match:
+        frontmatter_lines = _line_count(text[:match.end()])
+        text = text[match.end():]
+
+    lines = text.split("\n")
+    headings: list[tuple[int, str, str]] = []
+    in_fence = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        match = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", line)
+        if not match:
+            continue
+        title = _clean_heading_title(match.group(2))
+        if title:
+            headings.append((index, title, _slugify(title)))
+    if not headings:
+        return []
+
+    slug_counts: dict[str, int] = {}
+    sections: list[_MarkdownSection] = []
+    for position, (start_index, title, slug) in enumerate(headings):
+        end_index = headings[position + 1][0] if position + 1 < len(headings) else len(lines)
+        raw_section = "\n".join(lines[start_index:end_index]).strip()
+        if not raw_section:
+            continue
+        ordinal = slug_counts.get(slug, 0) + 1
+        slug_counts[slug] = ordinal
+        sections.append(
+            _MarkdownSection(
+                title=title,
+                slug=slug,
+                ordinal=ordinal,
+                line_start=frontmatter_lines + start_index + 1,
+                line_end=frontmatter_lines + end_index,
+                raw=raw_section,
+            )
+        )
+    return sections
+
+
+def stable_section_external_id(root: str | Path, path: str | Path, section_slug: str, section_ordinal: int = 1) -> str:
+    note_id = stable_external_id(root, path)
+    suffix = f"#heading={section_slug}"
+    if section_ordinal > 1:
+        suffix = f"{suffix}~{section_ordinal}"
+    external_id = f"{note_id}{suffix}"
+    if len(external_id) <= 240:
+        return external_id
+    digest = _stable_scan_id(external_id).removeprefix("obs_")[:16]
+    return f"{note_id[: max(1, 240 - len(suffix) - 17)]}#{digest}{suffix}"[:240]
 
 
 def _parse_obsidian_markdown(raw: str) -> tuple[str, dict[str, Any], set[str], list[dict[str, str]], list[dict[str, str]], dict[str, Any]]:
@@ -389,6 +517,24 @@ def _note_title(path: Path, cleaned: str, frontmatter: dict[str, Any]) -> str:
             if title:
                 return title[:200]
     return path.stem[:200]
+
+
+def _clean_heading_title(value: str) -> str:
+    title = _WIKILINK_RE.sub(_replace_wikilink, value)
+    title = _MARKDOWN_LINK_RE.sub(r"\1", title)
+    title = _TAG_RE.sub("", title)
+    return re.sub(r"\s+", " ", title).strip()[:200]
+
+
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug[:80] or "section"
+
+
+def _line_count(value: str) -> int:
+    if not value:
+        return 0
+    return value.replace("\r\n", "\n").replace("\r", "\n").count("\n") + 1
 
 
 def _read_text(path: Path) -> str:
