@@ -131,14 +131,85 @@ struct AskResultsSection: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         ForEach(state.searchResults) { item in
-                            MemoryCard(item: item) {
-                                state.deleteMemory(item)
-                            }
+                            AskSourceDetailRow(item: item)
                         }
                     }
                 }
             }
         }
+    }
+}
+
+struct AskSourceDetailRow: View {
+    let item: MemoryItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: "quote.bubble")
+                    .font(.callout)
+                    .foregroundColor(.accentColor)
+                    .frame(width: 28, height: 28)
+                    .background(Color.accentColor.opacity(0.11))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(sourceTitle)
+                        .font(.callout)
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
+                    Text(detailLine)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            Text(item.content)
+                .font(.body)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            if let citation = citationLabel {
+                HStack(spacing: 6) {
+                    Image(systemName: "link")
+                        .font(.caption2)
+                    Text(citation)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }
+                .foregroundColor(.secondary)
+                .help(item.source_url ?? citation)
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .textBackgroundColor))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.32)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var sourceTitle: String {
+        item.source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Cited source" : item.source
+    }
+
+    private var detailLine: String {
+        let layer = (item.layer ?? item.kind).trimmingCharacters(in: .whitespacesAndNewlines)
+        let kind = item.kind.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !layer.isEmpty, layer != kind {
+            return "\(layer.capitalized) memory"
+        }
+        return kind.isEmpty ? "Approved memory" : "\(kind.capitalized) memory"
+    }
+
+    private var citationLabel: String? {
+        guard let sourceURL = item.source_url?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sourceURL.isEmpty else {
+            return nil
+        }
+        if sourceURL.hasPrefix("file://"), let url = URL(string: sourceURL) {
+            return url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
+        }
+        return sourceURL
     }
 }
 

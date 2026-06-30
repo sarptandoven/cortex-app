@@ -305,16 +305,6 @@ struct HomeFirstRunNotes: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
-                if !state.onboardingComplete {
-                    Button {
-                        state.showOnboardingAgain()
-                    } label: {
-                        Label("Guided Setup", systemImage: "sparkles")
-                            .frame(minHeight: 44)
-                    }
-                    .controlSize(.large)
-                    .buttonStyle(.bordered)
-                }
             }
         }
         .padding(16)

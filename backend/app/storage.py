@@ -3380,6 +3380,8 @@ class CortexStore:
                 memories.append(memory)
                 edges.append(self._edge(conn, user_id, capture_id, memory["id"], "contains", memory["id"], captured_at))
 
+            self._save_memory_relations_for_capture(conn, user_id, capture_id, memories, captured_at)
+
             if stable_source_record and memories:
                 self._link_superseded_capture_memories_in_conn(
                     conn,
@@ -3508,7 +3510,16 @@ class CortexStore:
             ).fetchall()
         return [self._memory_from_row(row) for row in rows]
 
-    def search(self, user_id: str, query: str, limit: int = 10, kind: str | None = None, layer: str | None = None) -> list[dict[str, Any]]:
+    def search(
+        self,
+        user_id: str,
+        query: str,
+        limit: int = 10,
+        kind: str | None = None,
+        layer: str | None = None,
+        *,
+        include_related: bool = False,
+    ) -> list[dict[str, Any]]:
         query = query.strip()
         if not query:
             return self.recent(user_id, limit)
@@ -3564,6 +3575,32 @@ class CortexStore:
                 task_rows = self._task_search_rows(conn, user_id, query, candidate_limit, kind, user_settings)
 
         memory_results = [self._memory_from_row(row) for row in rows]
+        if include_related and memory_results and len(memory_results) < limit:
+            with connect(self.db_path) as conn:
+                user_settings = self._settings(conn, user_id)
+                related_rows = self._related_memory_rows(
+                    conn,
+                    user_id,
+                    memory_results,
+                    max(0, limit - len(memory_results)),
+                    kind=kind,
+                    layer=layer,
+                    user_settings=user_settings,
+                )
+            seen_memory_ids = {item["id"] for item in memory_results}
+            for row in related_rows:
+                item = self._memory_from_row(row)
+                item["relationship"] = {
+                    "kind": row["relation_kind"],
+                    "weight": row["relation_weight"],
+                    "related_to_id": row["related_to_id"],
+                }
+                if item["id"] in seen_memory_ids:
+                    continue
+                memory_results.append(item)
+                seen_memory_ids.add(item["id"])
+                if len(memory_results) >= limit:
+                    break
         task_results = [self._task_search_result_from_row(row) for row in task_rows]
         if task_intent:
             task_ids = {item["id"] for item in task_results}
@@ -3576,7 +3613,7 @@ class CortexStore:
         query = query.strip()
         limit = max(1, min(20, int(limit)))
         redact_sensitive = bool(self.settings(user_id)["redact_sensitive_context"])
-        results = self.search(user_id, query, limit=limit)
+        results = self.search(user_id, query, limit=limit, include_related=True)
         citations: list[dict[str, Any]] = []
         for index, item in enumerate(results, start=1):
             result_type = item.get("result_type") or "memory"
@@ -3596,6 +3633,7 @@ class CortexStore:
                     "occurred_at": item.get("occurred_at"),
                     "excerpt": self._answer_excerpt(excerpt),
                     "topics": item.get("topics") or [],
+                    "relationship": item.get("relationship"),
                 }
             )
         if citations:
@@ -3725,6 +3763,10 @@ class CortexStore:
                 return False
             conn.execute("UPDATE memories SET status = 'archived', updated_at = ? WHERE user_id = ? AND id = ?", (timestamp, user_id, memory_id))
             conn.execute("DELETE FROM memory_fts WHERE memory_id = ?", (memory_id,))
+            conn.execute(
+                "DELETE FROM memory_relations WHERE user_id = ? AND (source_memory_id = ? OR target_memory_id = ?)",
+                (user_id, memory_id, memory_id),
+            )
             self._delete_memory_vector(conn, memory_id)
             conn.execute(
                 "DELETE FROM memory_jobs WHERE user_id = ? AND object_type = 'memory' AND object_id = ?",
@@ -3881,6 +3923,10 @@ class CortexStore:
                 f"UPDATE memories SET status = 'archived', updated_at = ? WHERE user_id = ? AND id IN ({placeholders})",
                 [timestamp, user_id, *memory_ids],
             )
+            conn.execute(
+                f"DELETE FROM memory_relations WHERE user_id = ? AND (source_memory_id IN ({placeholders}) OR target_memory_id IN ({placeholders}))",
+                [user_id, *memory_ids, *memory_ids],
+            )
             conn.execute(f"DELETE FROM memory_fts WHERE memory_id IN ({placeholders})", memory_ids)
             conn.execute(
                 f"DELETE FROM memory_jobs WHERE user_id = ? AND object_type = 'memory' AND object_id IN ({placeholders})",
@@ -4001,6 +4047,12 @@ class CortexStore:
             for memory_id in memory_ids:
                 conn.execute("DELETE FROM memory_fts WHERE memory_id = ?", (memory_id,))
                 self._delete_memory_vector(conn, memory_id)
+            if memory_ids:
+                placeholders = ",".join("?" for _ in memory_ids)
+                conn.execute(
+                    f"DELETE FROM memory_relations WHERE user_id = ? AND (source_memory_id IN ({placeholders}) OR target_memory_id IN ({placeholders}))",
+                    [user_id, *memory_ids, *memory_ids],
+                )
             self._event(conn, user_id, capture_id, "capture", "archived", {"memory_count": len(memory_ids)})
             self.vault.patch_capture(capture_id, {"review_status": "archived", "archived_at": timestamp})
             for memory_id in memory_ids:
@@ -5310,7 +5362,20 @@ class CortexStore:
                   (SELECT COUNT(*) FROM memory_entities me LEFT JOIN memories m ON m.id = me.memory_id WHERE m.id IS NULL) +
                   (SELECT COUNT(*) FROM memory_topics mt LEFT JOIN memories m ON m.id = mt.memory_id WHERE m.id IS NULL) +
                   (SELECT COUNT(*) FROM task_entities te LEFT JOIN tasks t ON t.id = te.task_id WHERE t.id IS NULL) +
-                  (SELECT COUNT(*) FROM task_topics tt LEFT JOIN tasks t ON t.id = tt.task_id WHERE t.id IS NULL)
+                  (SELECT COUNT(*) FROM task_topics tt LEFT JOIN tasks t ON t.id = tt.task_id WHERE t.id IS NULL) +
+                  (
+                    SELECT COUNT(*)
+                    FROM memory_relations mr
+                    LEFT JOIN memories source_memory
+                      ON source_memory.id = mr.source_memory_id
+                     AND source_memory.user_id = mr.user_id
+                     AND source_memory.status = 'active'
+                    LEFT JOIN memories target_memory
+                      ON target_memory.id = mr.target_memory_id
+                     AND target_memory.user_id = mr.user_id
+                     AND target_memory.status = 'active'
+                    WHERE source_memory.id IS NULL OR target_memory.id IS NULL
+                  )
                 """
             ).fetchone()[0]
             last_event_at = conn.execute("SELECT MAX(created_at) FROM memory_events WHERE user_id = ?", (user_id,)).fetchone()[0]
@@ -5599,6 +5664,18 @@ class CortexStore:
                     WHERE user_id = ? AND task_id NOT IN (SELECT id FROM tasks)
                     """,
                     (user_id,),
+                ),
+                (
+                    "remove_memory_relation_orphans",
+                    """
+                    DELETE FROM memory_relations
+                    WHERE user_id = ?
+                      AND (
+                        source_memory_id NOT IN (SELECT id FROM memories WHERE user_id = ? AND status = 'active')
+                        OR target_memory_id NOT IN (SELECT id FROM memories WHERE user_id = ? AND status = 'active')
+                      )
+                    """,
+                    (user_id, user_id, user_id),
                 ),
                 (
                     "remove_graph_edge_orphans",
@@ -7578,6 +7655,80 @@ class CortexStore:
             "raw_excerpt": raw_excerpt,
         }
 
+    def _save_memory_relations_for_capture(
+        self,
+        conn,
+        user_id: str,
+        capture_id: str,
+        memories: list[dict[str, Any]],
+        captured_at: str,
+    ) -> list[dict[str, Any]]:
+        active = [memory for memory in memories if memory.get("id") and memory.get("status", "active") == "active"]
+        if len(active) < 2:
+            return []
+        memory_ids = [memory["id"] for memory in active]
+        placeholders = ",".join("?" for _ in memory_ids)
+        conn.execute(
+            f"""
+            DELETE FROM memory_relations
+            WHERE user_id = ?
+              AND source_memory_id IN ({placeholders})
+              AND target_memory_id IN ({placeholders})
+            """,
+            [user_id, *memory_ids, *memory_ids],
+        )
+
+        relations: list[dict[str, Any]] = []
+        for left_index, left in enumerate(active):
+            left_entities = {str(value) for value in left.get("entity_ids") or [] if str(value)}
+            left_topics = {str(value).lower() for value in left.get("topics") or [] if str(value).strip()}
+            for right in active[left_index + 1 :]:
+                right_entities = {str(value) for value in right.get("entity_ids") or [] if str(value)}
+                right_topics = {str(value).lower() for value in right.get("topics") or [] if str(value).strip()}
+                shared_entities = sorted(left_entities & right_entities)
+                shared_topics = sorted(left_topics & right_topics)
+                if not shared_entities and not shared_topics:
+                    continue
+                relation_kind = "shared_entity" if shared_entities else "shared_topic"
+                weight = min(1.0, 0.55 + (0.25 * len(shared_entities)) + (0.08 * len(shared_topics)))
+                source_id, target_id = sorted([left["id"], right["id"]])
+                metadata = {
+                    "capture_id": capture_id,
+                    "shared_entities": shared_entities[:12],
+                    "shared_topics": shared_topics[:12],
+                    "source": left.get("source") or right.get("source"),
+                }
+                relation_id = stable_id("rel_", f"{user_id}:{source_id}:{target_id}:{relation_kind}:{','.join(shared_entities)}:{','.join(shared_topics)}")
+                relation = {
+                    "id": relation_id,
+                    "user_id": user_id,
+                    "source_memory_id": source_id,
+                    "target_memory_id": target_id,
+                    "kind": relation_kind,
+                    "weight": round(weight, 3),
+                    "metadata": metadata,
+                    "created_at": captured_at,
+                }
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO memory_relations
+                    (id, user_id, source_memory_id, target_memory_id, kind, weight, metadata_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        relation["id"],
+                        user_id,
+                        source_id,
+                        target_id,
+                        relation_kind,
+                        relation["weight"],
+                        json.dumps(metadata),
+                        captured_at,
+                    ),
+                )
+                relations.append(relation)
+        return relations
+
     def _vector_ready(self, conn) -> bool:
         if embedding_status()["dimensions"] != VECTOR_DIMENSIONS:
             return False
@@ -7764,6 +7915,60 @@ class CortexStore:
             for index, row in enumerate(rows)
         ]
         return [item["row"] for item in sorted(ranked, key=lambda item: item["score"], reverse=True)[:limit]]
+
+    def _related_memory_rows(
+        self,
+        conn,
+        user_id: str,
+        primary_results: list[dict[str, Any]],
+        limit: int,
+        *,
+        kind: str | None,
+        layer: str | None,
+        user_settings: dict[str, Any],
+    ) -> list[Any]:
+        primary_ids = [str(item.get("id") or "") for item in primary_results if item.get("result_type", "memory") == "memory"]
+        primary_ids = [value for value in dict.fromkeys(primary_ids) if value]
+        if not primary_ids or limit <= 0:
+            return []
+        primary_placeholders = ",".join("?" for _ in primary_ids)
+        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer)
+        filters.append(f"m.id NOT IN ({primary_placeholders})")
+        where = " AND ".join(filters)
+        return conn.execute(
+            f"""
+            SELECT
+              m.*,
+              r.kind AS relation_kind,
+              r.weight AS relation_weight,
+              CASE
+                WHEN r.source_memory_id IN ({primary_placeholders}) THEN r.source_memory_id
+                ELSE r.target_memory_id
+              END AS related_to_id
+            FROM memory_relations r
+            JOIN memories m
+              ON m.user_id = r.user_id
+             AND m.id = CASE
+               WHEN r.source_memory_id IN ({primary_placeholders}) THEN r.target_memory_id
+               ELSE r.source_memory_id
+             END
+            WHERE r.user_id = ?
+              AND (r.source_memory_id IN ({primary_placeholders}) OR r.target_memory_id IN ({primary_placeholders}))
+              AND {where}
+            ORDER BY r.weight DESC, m.importance DESC, COALESCE(m.occurred_at, m.captured_at) DESC, m.captured_at DESC
+            LIMIT ?
+            """,
+            [
+                *primary_ids,
+                *primary_ids,
+                user_id,
+                *primary_ids,
+                *primary_ids,
+                *params,
+                *primary_ids,
+                limit,
+            ],
+        ).fetchall()
 
     def _layer_boost(self, row: Any, layer_boosts: dict[str, float]) -> float:
         if not layer_boosts:

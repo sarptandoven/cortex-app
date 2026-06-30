@@ -58,6 +58,12 @@ jobs:
       - name: Check beta docs currency
         run: python scripts/check_docs_current.py
 
+      - name: Run backend beta smoke
+        run: python scripts/backend_beta_smoke.py
+
+      - name: Run lightweight ops readiness
+        run: python scripts/ops_readiness_check.py --skip-tests --skip-build --output-root "$RUNNER_TEMP/cortex-empty-outputs"
+
   distribution:
     name: Distribution site and update manifest
     runs-on: ubuntu-latest

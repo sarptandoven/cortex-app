@@ -113,6 +113,73 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertTrue(hits)
         self.assertTrue(any("source-backed answers" in hit["content"] for hit in hits))
 
+    def test_ask_includes_bounded_related_memory_and_archives_relations(self) -> None:
+        extracted = {
+            "_timestamp": "2026-06-30T10:00:00+00:00",
+            "summary": "Project Atlas beta release memory.",
+            "records": [
+                {
+                    "id": "mem_atlas_beta_decision",
+                    "kind": "decision",
+                    "layer": "decision",
+                    "content": "Project Atlas decision: pick the local-first beta path because the risk budget is tight.",
+                    "summary": "Project Atlas chose the local-first beta path.",
+                    "confidence": "confirmed",
+                    "importance": 4,
+                    "topics": ["Project Atlas", "beta"],
+                    "entity_ids": ["project_atlas"],
+                },
+                {
+                    "id": "mem_atlas_release_procedure",
+                    "kind": "procedure",
+                    "layer": "procedural",
+                    "content": "Before the Project Atlas beta release, run backend smoke, build the app, and verify codesign.",
+                    "summary": "Project Atlas beta release checks.",
+                    "confidence": "confirmed",
+                    "importance": 3,
+                    "topics": ["Project Atlas", "beta"],
+                    "entity_ids": ["project_atlas"],
+                },
+            ],
+            "tasks": [],
+            "entities": [
+                {"id": "project_atlas", "kind": "project", "name": "Project Atlas", "aliases": ["Atlas"], "context": ""}
+            ],
+        }
+        result = self.store.save_capture(
+            user_id=self.user_id,
+            content="Project Atlas beta release memory.",
+            source="obsidian",
+            source_url="file:///tmp/Project%20Atlas.md",
+            title="Project Atlas",
+            extracted=extracted,
+        )
+
+        with connect(self.db_path) as conn:
+            relation_count = conn.execute(
+                "SELECT COUNT(*) FROM memory_relations WHERE user_id = ?",
+                (self.user_id,),
+            ).fetchone()[0]
+        self.assertEqual(relation_count, 1)
+
+        answer = self.store.answer_query(self.user_id, "risk budget local-first path", limit=2)
+        citation_ids = [citation["id"] for citation in answer["citations"]]
+
+        self.assertEqual(citation_ids[0], "mem_atlas_beta_decision")
+        self.assertIn("mem_atlas_release_procedure", citation_ids)
+        related = next(citation for citation in answer["citations"] if citation["id"] == "mem_atlas_release_procedure")
+        self.assertEqual(related["relationship"]["kind"], "shared_entity")
+        self.assertEqual(related["relationship"]["related_to_id"], "mem_atlas_beta_decision")
+
+        self.assertTrue(self.store.archive_capture(self.user_id, result["capture_id"]))
+        with connect(self.db_path) as conn:
+            relation_count_after_archive = conn.execute(
+                "SELECT COUNT(*) FROM memory_relations WHERE user_id = ?",
+                (self.user_id,),
+            ).fetchone()[0]
+        self.assertEqual(relation_count_after_archive, 0)
+        self.assertEqual(self.store.answer_query(self.user_id, "risk budget local-first path", limit=2)["citations"], [])
+
     def test_entities_allow_same_id_across_users(self) -> None:
         for index, user_id in enumerate(("entity-user-a", "entity-user-b")):
             result = self.store.save_capture(
@@ -1728,6 +1795,23 @@ Never use [[Templates/Marketing]] boilerplate in memory.
                 "INSERT OR REPLACE INTO memory_entities(memory_id, entity_id, user_id, created_at) VALUES (?, ?, ?, ?)",
                 ("missing-memory", "missing-entity", self.user_id, "2026-01-01T00:00:00Z"),
             )
+            conn.execute(
+                """
+                INSERT INTO memory_relations
+                (id, user_id, source_memory_id, target_memory_id, kind, weight, metadata_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "rel_missing_target",
+                    self.user_id,
+                    memory_id,
+                    "missing-memory",
+                    "shared_entity",
+                    1.0,
+                    "{}",
+                    "2026-01-01T00:00:00Z",
+                ),
+            )
             conn.execute("UPDATE memories SET status = 'archived' WHERE id = ?", (memory_id,))
             conn.commit()
         finally:
@@ -1746,6 +1830,7 @@ Never use [[Templates/Marketing]] boilerplate in memory.
         self.assertEqual(repaired["after"]["fts_orphans"], 0)
         self.assertEqual(repaired["after"]["inactive_fts_rows"], 0)
         self.assertEqual(repaired["after"]["relation_orphans"], 0)
+        self.assertTrue(any(action["name"] == "remove_memory_relation_orphans" and action["rows"] >= 1 for action in repaired["actions"]))
         self.assertTrue(any(action["name"] == "rebuild_search_index" for action in repaired["actions"]))
 
         report_after = self.store.reliability_report(self.user_id)
