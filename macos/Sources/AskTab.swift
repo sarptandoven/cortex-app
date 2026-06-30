@@ -22,7 +22,7 @@ struct AskTab: View {
             }
 
             AskResultsSection(state: state)
-            AskUseElsewhereSection(state: state, isExpanded: $useElsewhereExpanded)
+            AskAIHandoffSection(state: state, isExpanded: $useElsewhereExpanded)
         }
         .padding(16)
     }
@@ -115,14 +115,14 @@ struct AskResultsSection: View {
     }
 }
 
-struct AskUseElsewhereSection: View {
+struct AskAIHandoffSection: View {
     @ObservedObject var state: AppState
     @Binding var isExpanded: Bool
 
     var body: some View {
-        DisclosureGroup("Use Elsewhere", isExpanded: $isExpanded) {
+        DisclosureGroup("AI Handoff", isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Copy scoped memory only when another AI app cannot connect to Cortex directly.")
+                Text("Use these only when another AI app cannot connect to Cortex directly.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 HStack {
@@ -135,7 +135,7 @@ struct AskUseElsewhereSection: View {
                         state.contextQuery = state.searchQuery
                         state.copyContextPack()
                     } label: {
-                        Label("Evidence", systemImage: "text.quote")
+                        Label("Cited Evidence", systemImage: "text.quote")
                     }
                     Button {
                         state.copyDailyContextPack()

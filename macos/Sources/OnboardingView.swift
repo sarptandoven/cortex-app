@@ -110,12 +110,14 @@ struct OnboardingView: View {
 
             if state.onboardingStep == .trustBackup {
                 Button {
-                    state.completeOnboarding()
+                    state.finishOnboarding()
                 } label: {
-                    Label("Start Using Cortex", systemImage: "checkmark.circle")
+                    Label(
+                        state.canCompleteOnboarding ? "Finish Setup" : "Open Cortex",
+                        systemImage: state.canCompleteOnboarding ? "checkmark.circle" : "arrow.right.circle"
+                    )
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!state.canCompleteOnboarding)
             } else {
                 Button {
                     state.nextOnboardingStep()
@@ -123,7 +125,6 @@ struct OnboardingView: View {
                     Label("Continue", systemImage: "chevron.right")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!state.canAdvanceOnboarding)
             }
         }
         .padding(18)
@@ -259,7 +260,7 @@ struct OnboardingFirstSourceStep: View {
 
             OnboardingCheckRow(
                 title: state.onboardingHasSource ? "First source imported" : "Waiting for an imported source",
-                detail: state.onboardingHasSource ? "Continue to review and approve useful memory." : "Choose sources, drop files, or import the inbox.",
+                detail: state.onboardingHasSource ? "Continue to review and approve useful memory." : "Choose sources, drop files, or continue and add one from Sources later.",
                 systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "tray.and.arrow.down",
                 color: state.onboardingHasSource ? .green : .orange
             )
@@ -309,7 +310,7 @@ struct OnboardingReviewMemoryStep: View {
 
             OnboardingCheckRow(
                 title: state.onboardingHasReviewedMemory ? "Memory reviewed" : "Approve one useful memory",
-                detail: state.onboardingHasReviewedMemory ? "Cortex has at least one approved memory to use." : "Approve a pending item, or add another source if the current source was noisy.",
+                detail: state.onboardingHasReviewedMemory ? "Cortex has at least one approved memory to use." : "Approve a pending item here, or keep moving and finish review from the main app.",
                 systemImage: state.onboardingHasReviewedMemory ? "checkmark.seal.fill" : "tray.full",
                 color: state.onboardingHasReviewedMemory ? .green : .orange
             )
@@ -327,7 +328,7 @@ struct OnboardingAskUseStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Use the memory you approved once. Ask Cortex here, or copy a context pack for another AI app.")
+            Text("Ask Cortex one question against approved memory. This is the core use loop: imported sources become cited answers you can trust.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -342,12 +343,6 @@ struct OnboardingAskUseStep: View {
                         Label("Ask Cortex", systemImage: "magnifyingglass")
                     }
                     .buttonStyle(.borderedProminent)
-                    Button {
-                        state.contextQuery = state.searchQuery
-                        state.copyContextPack()
-                    } label: {
-                        Label("Copy Context Pack", systemImage: "text.quote")
-                    }
                     Spacer()
                 }
             }
@@ -366,12 +361,12 @@ struct OnboardingAskUseStep: View {
                     }
                 }
             } else {
-                QuietState(title: "Use approved memory once", detail: "Ask a question, or copy a context pack that another AI app can use.")
+                QuietState(title: "Use approved memory once", detail: "Ask a question about your imported source. Cortex will answer with citations when approved memory matches.")
             }
 
             OnboardingCheckRow(
                 title: state.onboardingHasUsedCortex ? "Cortex used once" : "Use Cortex once",
-                detail: state.onboardingHasUsedCortex ? "Approved memory was used through Ask or a copied context pack." : "Ask a question with cited memory, or copy a context pack.",
+                detail: state.onboardingHasUsedCortex ? "Approved memory was used in a cited answer." : "Ask a question that returns cited memory.",
                 systemImage: state.onboardingHasUsedCortex ? "checkmark.seal.fill" : "sparkle.magnifyingglass",
                 color: state.onboardingHasUsedCortex ? .green : .orange
             )
@@ -404,7 +399,7 @@ struct OnboardingTrustBackupStep: View {
                 )
                 OnboardingToggleRow(
                     title: "Redact copied context",
-                    detail: "Context packs remove sensitive details when possible.",
+                    detail: "AI handoffs remove sensitive details when possible.",
                     isOn: $state.appSettings.redact_sensitive_context
                 )
                 HStack {
@@ -459,7 +454,7 @@ struct OnboardingTrustBackupStep: View {
 
             OnboardingCheckRow(
                 title: state.onboardingHasBackupDecision ? "Backup decision recorded" : "Back up or skip explicitly",
-                detail: state.onboardingHasBackupDecision ? "Setup can be completed." : "Create a first backup, or explicitly skip it for now.",
+                detail: state.onboardingHasBackupDecision ? "Setup can be completed when the earlier steps are ready." : "Create a first backup, or explicitly skip it for now.",
                 systemImage: state.onboardingHasBackupDecision ? "checkmark.seal.fill" : "externaldrive",
                 color: state.onboardingHasBackupDecision ? .green : .orange
             )

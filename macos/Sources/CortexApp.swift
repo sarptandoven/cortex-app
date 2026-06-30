@@ -1710,6 +1710,10 @@ final class AppState: ObservableObject {
             && onboardingHasBackupDecision
     }
 
+    var incompleteOnboardingStepTitles: [String] {
+        OnboardingStep.allCases.filter { !onboardingStepIsComplete($0) }.map(\.title)
+    }
+
     func onboardingStepIsComplete(_ step: OnboardingStep) -> Bool {
         switch step {
         case .privateVault:
@@ -2352,7 +2356,6 @@ final class AppState: ObservableObject {
             } else {
                 await loadProductLoop()
             }
-            markCortexUsed()
             await loadReview()
             await loadTrust()
         } catch {
@@ -2880,6 +2883,16 @@ final class AppState: ObservableObject {
         NotificationCenter.default.post(name: .cortexOnboardingCompleted, object: nil)
     }
 
+    func finishOnboarding() {
+        guard canCompleteOnboarding else {
+            dismissOnboardingForSession()
+            let remaining = incompleteOnboardingStepTitles.prefix(2).joined(separator: ", ")
+            status = remaining.isEmpty ? "Setup can be completed from Trust" : "Setup still needs: \(remaining)"
+            return
+        }
+        completeOnboarding()
+    }
+
     func dismissOnboardingForSession() {
         showOnboarding = false
         status = "Setup can be reopened from Trust"
@@ -2914,11 +2927,10 @@ final class AppState: ObservableObject {
     }
 
     func nextOnboardingStep() {
-        guard canAdvanceOnboarding else {
-            status = "Finish this setup step first"
-            return
-        }
         let steps = OnboardingStep.allCases
+        if !canAdvanceOnboarding {
+            status = "You can finish this step from the main app later"
+        }
         let nextIndex = min(steps.count - 1, onboardingStep.rawValue + 1)
         setOnboardingStep(steps[nextIndex])
     }
