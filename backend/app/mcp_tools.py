@@ -489,14 +489,18 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         query = str(args.get("query") or "").strip()
         combined_query = " ".join(value for value in [name_arg, query] if value).strip()
         limit = int(args.get("limit", 8))
-        sector = str(args.get("sector") or name_arg).strip() or None
+        sector = str(args.get("sector") or "").strip() or None
         if sector:
-            memories = store.search(user_id, query, limit=limit, sector=sector)
+            memories = store.search(user_id, combined_query or query or name_arg, limit=limit, sector=sector, include_related=True)
         else:
-            memories = store.about_entity(user_id, combined_query or name_arg, limit=limit)
-        if not sector and len(memories) < limit and combined_query:
+            memories = []
+            if name_arg:
+                memories = store.search(user_id, combined_query or name_arg, limit=limit, sector=name_arg, include_related=True)
+            if not memories:
+                memories = store.search(user_id, combined_query or name_arg, limit=limit, include_related=True) if (combined_query or name_arg) else []
+        if not sector and name_arg and len(memories) < limit:
             seen = {item["id"] for item in memories}
-            memories.extend(item for item in store.search(user_id, combined_query, limit=limit) if item["id"] not in seen)
+            memories.extend(item for item in store.about_entity(user_id, name_arg, limit=limit) if item["id"] not in seen)
             memories = memories[:limit]
         result = {"name": name_arg, "query": query, "memories": memories}
         store.record_context_reuse(user_id, surface="mcp", query=combined_query, target="project-context")

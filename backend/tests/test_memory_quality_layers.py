@@ -209,6 +209,106 @@ class MemoryQualityLayerTests(unittest.TestCase):
         default_procedure = call_tool(self.store, self.user_id, "get_procedure", {"query": "", "limit": 5})
         self.assertEqual([item["id"] for item in default_procedure["procedures"]], ["mem_project_atlas_procedure"])
 
+    def test_mcp_project_context_falls_back_to_entity_search_and_includes_related_citations(self) -> None:
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Project Atlas decision fixture",
+            source="obsidian",
+            source_url="file:///Users/example/Demo%20Vault/Atlas%20Decision.md",
+            title="Atlas Decision",
+            extracted={
+                "_timestamp": "2026-06-30T10:00:00+00:00",
+                "summary": "Project context decision fixture",
+                "records": [
+                    {
+                        "id": "mem_mcp_atlas_budget_decision",
+                        "kind": "decision",
+                        "layer": "decision",
+                        "content": "Project Atlas decision: keep the local-first beta because the risk budget is strict.",
+                        "importance": 4,
+                        "topics": ["Project Atlas", "beta"],
+                        "entity_ids": ["project_atlas"],
+                    }
+                ],
+                "tasks": [],
+                "entities": [{"id": "project_atlas", "kind": "project", "name": "Project Atlas", "aliases": [], "context": ""}],
+            },
+        )
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Project Atlas procedure fixture",
+            source="obsidian",
+            source_url="file:///Users/example/Demo%20Vault/Atlas%20Procedure.md",
+            title="Atlas Procedure",
+            extracted={
+                "_timestamp": "2026-06-30T10:05:00+00:00",
+                "summary": "Project context procedure fixture",
+                "records": [
+                    {
+                        "id": "mem_mcp_atlas_release_procedure",
+                        "kind": "procedure",
+                        "layer": "procedural",
+                        "content": "Procedure: before beta release, run backend smoke, build the app, and verify source citations.",
+                        "importance": 3,
+                        "topics": ["release"],
+                        "entity_ids": ["project_atlas"],
+                    }
+                ],
+                "tasks": [],
+                "entities": [{"id": "project_atlas", "kind": "project", "name": "Project Atlas", "aliases": [], "context": ""}],
+            },
+        )
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Riley context fixture",
+            source="notes",
+            source_url="file:///Users/example/Demo%20Vault/People/Riley.md",
+            title="Riley",
+            extracted={
+                "_timestamp": "2026-06-30T10:10:00+00:00",
+                "summary": "Person context fixture",
+                "records": [
+                    {
+                        "id": "mem_mcp_riley_launch_copy",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "Riley owns launch copy and prefers a direct approval checklist before release.",
+                        "importance": 3,
+                        "topics": ["launch"],
+                        "entity_ids": ["person_riley"],
+                    }
+                ],
+                "tasks": [],
+                "entities": [{"id": "person_riley", "kind": "person", "name": "Riley", "aliases": [], "context": ""}],
+            },
+        )
+
+        project = call_tool(
+            self.store,
+            self.user_id,
+            "get_project_context",
+            {"name": "Project Atlas", "query": "risk budget", "limit": 4},
+        )
+        project_ids = [item["id"] for item in project["memories"]]
+        self.assertEqual(project_ids[0], "mem_mcp_atlas_budget_decision")
+        self.assertIn("mem_mcp_atlas_release_procedure", project_ids)
+        related = next(item for item in project["memories"] if item["id"] == "mem_mcp_atlas_release_procedure")
+        self.assertEqual(related["relationship"]["kind"], "shared_entity")
+        self.assertEqual(related["relationship"]["related_to_id"], "mem_mcp_atlas_budget_decision")
+        self.assertTrue(all(item["source_url"].startswith("local-file://") for item in project["memories"]))
+
+        person = call_tool(
+            self.store,
+            self.user_id,
+            "get_project_context",
+            {"name": "Riley", "query": "launch copy", "limit": 3},
+        )
+        person_ids = [item["id"] for item in person["memories"]]
+        self.assertIn("mem_mcp_riley_launch_copy", person_ids)
+        person_memory = next(item for item in person["memories"] if item["id"] == "mem_mcp_riley_launch_copy")
+        self.assertNotEqual(person_memory.get("sector"), "Riley")
+        self.assertTrue(person_memory["source_url"].startswith("local-file://"))
+
     def test_sector_scoped_retrieval_keeps_project_memory_separate(self) -> None:
         extracted = {
             "_timestamp": "2026-06-30T10:00:00+00:00",
