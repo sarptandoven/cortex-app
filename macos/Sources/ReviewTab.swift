@@ -96,19 +96,6 @@ struct ReviewInboxSection: View {
                         .foregroundColor(.secondary)
                 }
                 Spacer()
-                if !captures.isEmpty {
-                    Button {
-                        state.archiveCaptures(visibleCaptures)
-                    } label: {
-                        Label("Archive \(visibleCount)", systemImage: "archivebox")
-                    }
-                    Button {
-                        state.approveCaptures(visibleCaptures)
-                    } label: {
-                        Label("Approve \(visibleCount)", systemImage: "checkmark.seal")
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
             }
 
             if captures.isEmpty {
