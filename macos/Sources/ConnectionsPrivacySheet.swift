@@ -558,7 +558,7 @@ private struct ConnectionsAIToolsSection: View {
             return "Approved memory is available to connected tools."
         }
         if !detectedConnectable.isEmpty {
-            return "Connect detected tools once. Cortex handles the local setup."
+            return "Connect detected tools once. Cortex handles the local connection."
         }
         return "Open Claude, ChatGPT, or another supported local tool, then check again."
     }

@@ -27,7 +27,7 @@ struct OnboardingView: View {
                     HStack(spacing: 7) {
                         Image(systemName: "brain.head.profile")
                             .foregroundColor(.accentColor)
-                        Text("Cortex setup")
+                        Text("Cortex first run")
                             .font(.caption)
                             .fontWeight(.semibold)
                             .foregroundColor(.secondary)
@@ -46,7 +46,7 @@ struct OnboardingView: View {
                     Image(systemName: "xmark")
                 }
                 .buttonStyle(.borderless)
-                .help("Finish setup later")
+                .help("Finish later")
             }
 
             HStack(spacing: 6) {
@@ -95,7 +95,7 @@ struct OnboardingView: View {
                     state.finishOnboarding()
                 } label: {
                     Label(
-                        state.canCompleteOnboarding ? "Finish Setup" : "Finish Later",
+                        state.canCompleteOnboarding ? "Finish" : "Finish Later",
                         systemImage: state.canCompleteOnboarding ? "checkmark.circle" : "arrow.right.circle"
                     )
                 }
@@ -245,7 +245,7 @@ struct OnboardingFirstSourceStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Choose a notes folder once. Cortex syncs Markdown locally, sends useful memory to Review, and keeps syncing after setup.")
+            Text("Choose a notes folder once. Cortex syncs Markdown locally, sends useful memory to Review, and keeps syncing after first run.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -536,7 +536,7 @@ struct OnboardingAskUseStep: View {
         if state.hasSearched {
             return "Try an exact phrase from approved memory, or go back to Review and approve one useful item."
         }
-        return "Ask about approved memory from notes. Setup finishes after Cortex returns a cited answer."
+        return "Ask about approved memory from notes. First run finishes after Cortex returns a cited answer."
     }
 
     private var askPathTitle: String {
@@ -554,7 +554,7 @@ struct OnboardingAskUseStep: View {
             return "Approved memory was used in a cited answer."
         }
         if state.onboardingHasReviewedMemory {
-            return "Run Ask once. Setup finishes after Cortex returns a cited answer."
+            return "Run Ask once. First run finishes after Cortex returns a cited answer."
         }
         if state.onboardingHasSource {
             return "Ask becomes useful after one memory is approved in Review."

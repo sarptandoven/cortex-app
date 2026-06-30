@@ -2201,7 +2201,7 @@ final class AppState: ObservableObject {
     var setupIncompleteDetail: String {
         let remaining = incompleteOnboardingStepTitles.prefix(2).joined(separator: ", ")
         if remaining.isEmpty {
-            return "Setup is ready to finish."
+            return "First memory loop is ready to finish."
         }
         return "Next: \(remaining)."
     }
@@ -2948,7 +2948,7 @@ final class AppState: ObservableObject {
         await loadIntegrationTokens()
         refreshIntegrationStates()
         if registered {
-            status = "Tool access token reset. Reconnect or update setup for connected AI tools."
+            status = "Tool access token reset. Reconnect or update connection details for connected AI tools."
         }
     }
 
@@ -2961,7 +2961,7 @@ final class AppState: ObservableObject {
         let text = mcpConfigJSON()
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-        status = integration.map { "\($0.name) setup details copied" } ?? "Setup details copied"
+        status = integration.map { "\($0.name) connection details copied" } ?? "Connection details copied"
     }
 
     func copyIntegrationGuide(_ integration: AIIntegration) {
@@ -2973,7 +2973,7 @@ final class AppState: ObservableObject {
     func installIntegration(_ integration: AIIntegration) {
         if DistributionMode.isAppStore {
             copyIntegrationGuide(integration)
-            status = "Copied \(integration.name) setup guide"
+            status = "Copied \(integration.name) connection guide"
             return
         }
         guard integration.supportsInstall else {
@@ -2993,7 +2993,7 @@ final class AppState: ObservableObject {
 
     func installDetectedIntegrations() {
         if DistributionMode.isAppStore {
-            status = "App Store builds require advanced AI tool setup"
+            status = "App Store builds require advanced tool connection details"
             return
         }
         let detected = integrations.filter { integration in
@@ -3095,7 +3095,7 @@ final class AppState: ObservableObject {
     func openIntegrationConfig(_ integration: AIIntegration) {
         if DistributionMode.isAppStore {
             copyIntegrationGuide(integration)
-            status = "Copied \(integration.name) setup guide"
+            status = "Copied \(integration.name) connection guide"
             return
         }
         guard let target = integration.configTargets.first else {
@@ -3293,7 +3293,7 @@ final class AppState: ObservableObject {
     func completeOnboarding() {
         guard canCompleteOnboarding else {
             let remaining = incompleteOnboardingStepTitles.prefix(2).joined(separator: ", ")
-            status = remaining.isEmpty ? "Finish the first memory loop before completing setup." : "Finish setup steps: \(remaining)."
+            status = remaining.isEmpty ? "Finish the first memory loop before completing." : "Finish: \(remaining)."
             return
         }
         saveMemorySettings()
@@ -3301,14 +3301,14 @@ final class AppState: ObservableObject {
         UserDefaults.standard.set(true, forKey: "onboardingComplete.v1")
         showOnboarding = false
         setOnboardingStep(.privateVault)
-        status = "Setup complete"
+        status = "First memory loop complete"
         NotificationCenter.default.post(name: .cortexOnboardingCompleted, object: nil)
     }
 
     func finishOnboarding() {
         guard canCompleteOnboarding else {
             dismissOnboardingForSession()
-            status = "Setup closed. Continue the first memory loop from Home."
+            status = "First run closed. Continue the memory loop from Home."
             return
         }
         completeOnboarding()
@@ -3316,7 +3316,7 @@ final class AppState: ObservableObject {
 
     func dismissOnboardingForSession() {
         showOnboarding = false
-        status = "Setup closed. Continue from Home anytime."
+        status = "First run closed. Continue from Home anytime."
     }
 
     func showOnboardingAgain() {
@@ -3358,7 +3358,7 @@ final class AppState: ObservableObject {
             case .reviewMemory:
                 status = "Approve one review item before asking Cortex"
             case .askUse:
-                status = "Ask once with citations before finishing setup"
+                status = "Ask once with citations before finishing first run"
             }
             return
         }
@@ -5692,13 +5692,13 @@ struct SettingsOnboardingSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Setup")
+            Text("First run")
                 .font(.headline)
             HStack {
                 Button {
                     state.showOnboardingAgain()
                 } label: {
-                    Label("Open Setup", systemImage: "sparkles")
+                    Label("Open First Run", systemImage: "sparkles")
                 }
                 Button {
                     state.openVaultFolder()
