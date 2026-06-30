@@ -2,9 +2,40 @@
 
 ## Current Goal
 
-This repo is now a local-first production candidate: useful enough for daily dogfooding on macOS, hardened enough to protect local user memory, and shaped so a hosted backend can replace local SQLite without changing the client contract.
+This repo is now a local-first beta candidate: useful enough for daily dogfooding on macOS, hardened enough to protect local user memory during a controlled beta, and shaped so a hosted backend can replace local SQLite later without changing the client contract.
 
-It is not yet a millions-of-users hosted system. That requires hosted auth, a managed multi-tenant database, remote MCP/OAuth, billing/quotas, observability, incident response, and notarized distribution.
+It is not yet a broad public launch or millions-of-users hosted system. That requires hosted auth, a managed multi-tenant database, remote MCP/OAuth, billing/quotas, observability, incident response, and notarized distribution.
+
+## Productization Status
+
+Cortex is currently a local-first five-tab macOS app:
+
+```text
+Model -> Sources -> Review -> Ask -> Trust
+```
+
+The product loop is import, review, ask, then verify trust:
+
+- Sources imports user-selected exports, folders, and files. Live OAuth/API sync is planned, but not enabled.
+- Review is the quality gate. New memory candidates can be approved or archived before they become trusted memory.
+- Ask is the primary use surface. It returns cited memory search results in-app, while context packs and AI-tool handoffs remain secondary paths.
+- Trust keeps privacy posture, agent access, redaction, backups, support bundles, and maintenance controls visible but out of the main workflow.
+
+Memory quality is intentionally gated before expansion:
+
+- imported records become candidate captures first;
+- noisy or duplicate batches can be previewed, skipped, or undone;
+- author identity for Slack/email style and preferences is conservative unless aliases are configured;
+- archived or excluded sources stay out of active search and AI context;
+- citation coverage, source readiness, review backlog, decisions, and open loops are product signals, not launch claims.
+
+The remaining roadmap should stay non-overengineered:
+
+- prove daily value with real local imports, approvals, and cited Ask results;
+- keep improving importer quality, chunking, reranking, citation paths, and review ergonomics before adding automation;
+- package and support a controlled macOS beta with repeatable checks, backups, and sanitized support bundles;
+- add notarization, hosted downloads, update-feed policy, and formal support before external distribution;
+- defer hosted accounts, live sync, remote MCP/OAuth, teams, billing, and enterprise controls until the local loop is consistently useful.
 
 ## Local Production Guarantees
 
