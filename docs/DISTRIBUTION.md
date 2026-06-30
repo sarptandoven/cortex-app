@@ -170,7 +170,7 @@ Recommended beta structure:
 11. Deploy `site/`.
 12. Download the DMG from the deployed page.
 13. Install on a clean Mac profile.
-14. Verify first-run onboarding, five-tab flow, source readiness, cited Ask results, MCP setup, backup, support bundle export, and update feed.
+14. Verify first-run onboarding, Home/Review/Ask flow, Connections & Privacy, source readiness, cited Ask results, MCP setup, backup, support bundle export, and update feed.
 15. Update over the previous beta and confirm the vault remains intact.
 16. Roll back to the previous beta and confirm the vault remains intact.
 
@@ -182,7 +182,7 @@ For first-100 testers, updates are manual:
 2. Verify the DMG checksum.
 3. Quit Cortex.
 4. Replace `Cortex.app` in Applications.
-5. Reopen Cortex and confirm Trust shows backend health and the expected vault path.
+5. Reopen Cortex and confirm Connections & Privacy shows backend health and the expected vault path.
 6. Create a fresh backup.
 
 Rollback is also manual:
@@ -258,11 +258,11 @@ The beta is ready to share with a small group when:
 - a user can download and install in under two minutes
 - the app opens from Applications
 - first-run setup completes without docs
-- Model explains readiness and the next useful action
-- Sources can preview, import, show readiness, and undo one batch
+- Home explains readiness and the next useful action
+- Connections & Privacy can connect MCP or Obsidian and show sync health
 - Review can approve or archive pending memory
-- Ask returns cited memory from a real import
-- context handoffs into ChatGPT or Claude remain available as a fallback
+- Ask returns cited memory from a connected source
+- fallback import/export tools stay available in Advanced for migration and support
 - the user can see where data is stored
 - the user can create a backup
 - the user can read the privacy page

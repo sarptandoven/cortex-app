@@ -146,7 +146,7 @@ Install:
 2. Drag Cortex.app to Applications.
 3. Open Cortex from Applications.
 4. If macOS warns because this local beta is not notarized yet, Control-click Cortex.app and choose Open.
-5. Complete first-run setup, import one selected local source, approve one memory, ask a cited question, and create or intentionally defer a backup.
+5. Complete first-run setup, connect MCP or Obsidian, approve one memory, ask a cited question, and create or intentionally defer a backup.
 
 Update:
 1. Quit Cortex.
@@ -157,7 +157,7 @@ Rollback:
 1. Quit Cortex.
 2. Replace Cortex.app with the previous beta build.
 3. Do not delete or move ~/Library/Application Support/Cortex/Cortex.vault.
-4. Reopen Cortex, run Trust > Advanced reliability checks, and create a fresh backup.
+4. Reopen Cortex, run Connections & Privacy reliability checks, and create a fresh backup.
 
 Known local-beta limits:
 - Manual app replacement is the only update path.
@@ -250,7 +250,7 @@ payload = {
             "Open the DMG and drag Cortex.app to Applications.",
             "Launch Cortex from Applications.",
             "If macOS blocks an unnotarized local beta, Control-click Cortex.app and choose Open.",
-            "Complete first-run setup with a local vault, source import, memory review, cited Ask result, and backup decision.",
+            "Complete first-run setup with a local vault, MCP or Obsidian connection, memory review, cited Ask result, and backup decision.",
         ],
         "update_steps": [
             "Quit Cortex before replacing the app.",
@@ -273,10 +273,10 @@ payload = {
         "manual_qa_checklist": [
             "Install from the DMG on a clean macOS 13 or newer user profile.",
             "Launch from Applications and complete first-run setup.",
-            "Import one real user-selected local source through Sources.",
+            "Connect MCP or an Obsidian/local notes vault through Connections & Privacy.",
             "Approve at least one useful memory and archive obvious noise in Review.",
-            "Ask a question that returns cited memory from the approved import.",
-            "Verify Trust shows vault path, backend health, backup, export, support bundle, and update feed controls.",
+            "Ask a question that returns cited memory from the approved connected source.",
+            "Verify Connections & Privacy shows vault path, backend health, backup, export, support bundle, and update feed controls.",
             "Create a backup and confirm the support bundle contains no raw memory content.",
             "Replace the app with this build over a previous build and confirm the vault remains intact.",
             "Roll back to the previous build and confirm the vault remains intact.",
@@ -330,7 +330,7 @@ browser automation, hosted accounts, Redis, Docker, or cloud sync.
 - ${DMG_FILE}: tester-facing installer DMG
 - ${ZIP_FILE}: zipped app bundle for direct QA or update tooling
 - $(basename "$CHECKSUMS"): SHA-256 checksums for the DMG and ZIP
-- latest.json: local update manifest for Trust diagnostics
+- latest.json: local update manifest for Connections & Privacy diagnostics
 
 ## Generated Artifact Verification
 
@@ -361,8 +361,8 @@ python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-packa
 4. Open Cortex from Applications.
 5. If macOS blocks this local beta because it is not notarized yet,
    Control-click Cortex.app and choose Open.
-6. Complete first-run setup with a local vault, source import, memory review,
-   cited Ask result, and backup decision.
+6. Complete first-run setup with a local vault, MCP or Obsidian connection,
+   memory review, cited Ask result, and backup decision.
 
 The app starts its local backend on:
 
@@ -383,7 +383,7 @@ Update:
 1. Quit Cortex.
 2. Replace the old Cortex.app in Applications with this build.
 3. Leave the local vault folder unchanged.
-4. Reopen Cortex, confirm backend health in Trust, and run the reliability report.
+4. Reopen Cortex, confirm backend health in Connections & Privacy, and run the reliability report.
 5. Create a fresh backup after confirming the app opens.
 
 Rollback:
@@ -431,11 +431,11 @@ python3 scripts/ops_readiness_check.py --refresh-site --include-package
 ~~~
 
 With the packaged app running, copy the local API token from
-Trust > Advanced and run:
+Connections & Privacy > Advanced and run:
 
 ~~~bash
 python3 scripts/reliability_check.py --base-url http://127.0.0.1:8766 --token "\$CORTEX_API_KEY"
-python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "\$CORTEX_API_KEY"
+python3 scripts/first100_live_smoke.py --base-url http://127.0.0.1:8766 --token "\$CORTEX_API_KEY"
 python3 scripts/export_support_bundle.py --mode live --token "\$CORTEX_API_KEY"
 python3 scripts/export_support_bundle.py --mode offline
 ~~~
@@ -446,11 +446,11 @@ Do not invite the first 100 testers until these checks pass on a clean macOS
 13 or newer user profile:
 
 1. Install from ${DMG_FILE}, launch from Applications, and complete first-run setup.
-2. Confirm Model shows readiness, source health, decisions, and open loops.
-3. Import one real user-selected local source through Sources.
+2. Confirm Home shows readiness, connection health, decisions, and next action.
+3. Connect MCP or an Obsidian/local notes vault through Connections & Privacy.
 4. Approve at least one useful memory and archive obvious noise in Review.
-5. Ask a question that returns cited memory from the approved import.
-6. Confirm Trust shows vault path, backend health, backup, export, support bundle, and update feed controls.
+5. Ask a question that returns cited memory from the approved connected source.
+6. Confirm Connections & Privacy shows vault path, backend health, backup, export, support bundle, and update feed controls.
 7. Create a backup and export a sanitized support bundle.
 8. Replace a previous beta with this build and confirm the vault remains intact.
 9. Roll back to the previous beta and confirm the vault remains intact.
@@ -460,11 +460,11 @@ Do not invite the first 100 testers until these checks pass on a clean macOS
 
 Use the product flow without browser automation:
 
-1. Model: confirm readiness, source health, decisions, and open loops.
-2. Sources: import one real user-selected export, folder, or file.
+1. Home: confirm readiness, connection health, decisions, and next action.
+2. Connections & Privacy: connect MCP or an Obsidian/local notes vault.
 3. Review: approve at least one useful memory and archive obvious noise.
-4. Ask: ask a question that should return cited memory from the import.
-5. Trust: confirm vault path, backup, export, support bundle, and update feed controls.
+4. Ask: ask a question that should return cited memory from the connected source.
+5. Connections & Privacy: confirm vault path, backup, export, support bundle, and update feed controls.
 
 ## Known Limitations
 

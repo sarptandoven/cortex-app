@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .config import load_settings
 from .extractor import extract_context
+from .hosted_readiness import hosted_readiness_contract
 from .mcp_tools import TOOLS, call_tool, tool_result_text
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
@@ -93,30 +94,7 @@ def _require_api_token_trust(user_id: str, required_scope: str) -> None:
 
 
 def _hosted_readiness_contract() -> dict:
-    shard_mode = (settings.shard_mode or "local").strip().lower()
-    hosted_mode = shard_mode != "local"
-    requires_scoped_tokens = bool(settings.require_scoped_api_tokens)
-    global_token_user_switching = "blocked" if hosted_mode or requires_scoped_tokens else "allowed_local_compatibility"
-    scoped_token_check = {
-        "name": "scoped_api_tokens_required",
-        "status": "ok",
-        "detail": "Hosted shard modes require per-user scoped REST tokens before readiness passes.",
-    }
-    if hosted_mode and not requires_scoped_tokens:
-        scoped_token_check = {
-            "name": "scoped_api_tokens_required",
-            "status": "blocked",
-            "detail": "Set CORTEX_REQUIRE_SCOPED_API_TOKENS=1 before marking hosted shard mode ready.",
-        }
-    checks = [scoped_token_check]
-    return {
-        "status": "ok" if all(check["status"] == "ok" for check in checks) else "blocked",
-        "hosted_mode": hosted_mode,
-        "shard_mode": shard_mode,
-        "require_scoped_api_tokens": requires_scoped_tokens,
-        "global_token_user_switching": global_token_user_switching,
-        "checks": checks,
-    }
+    return hosted_readiness_contract(settings)
 
 
 ROOT_HTML = """
@@ -428,6 +406,42 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     self._send_json({"detail": "Source account not found"}, status=HTTPStatus.NOT_FOUND)
                 else:
                     self._send_json(disconnected)
+                return
+            if method == "POST" and path.startswith("/v1/source-accounts/") and path.endswith("/sync"):
+                account_id = unquote(path.removeprefix("/v1/source-accounts/").removesuffix("/sync").strip("/"))
+                body = self._json_body()
+                records = body.get("records") if isinstance(body.get("records"), list) else []
+                try:
+                    self._send_json(store.sync_source_account_records(
+                        user_id,
+                        account_id,
+                        records=records,
+                        cursor_name=str(body.get("cursor_name") or "default"),
+                        cursor_value=str(body.get("cursor_value") or "") or None,
+                        high_water_mark=str(body.get("high_water_mark") or "") or None,
+                        state=body.get("state") if isinstance(body.get("state"), dict) else None,
+                        processing=str(body.get("processing") or "async"),
+                    ))
+                except ValueError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path == "/v1/connectors/obsidian/sync":
+                body = self._json_body()
+                try:
+                    self._send_json(store.sync_obsidian_vault(
+                        user_id,
+                        vault_path=str(body.get("vault_path") or ""),
+                        source_account_id=str(body.get("source_account_id") or "") or None,
+                        account_label=str(body.get("account_label") or "") or None,
+                        account_identifier=str(body.get("account_identifier") or "") or None,
+                        processing=str(body.get("processing") or "sync"),
+                        max_records=int(body.get("max_records") or 200),
+                        cursor_name=str(body.get("cursor_name") or "local-folder"),
+                    ))
+                except FileNotFoundError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.NOT_FOUND)
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
             if method == "GET" and path == "/v1/sync-cursors":
                 source_account_id = (params.get("source_account_id") or [None])[0]

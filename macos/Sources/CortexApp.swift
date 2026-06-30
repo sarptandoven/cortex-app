@@ -3,10 +3,7 @@ import Foundation
 import SwiftUI
 import Carbon
 import UserNotifications
-import Security
 import Darwin
-import PDFKit
-import UniformTypeIdentifiers
 
 struct CaptureResponse: Codable {
     let capture_id: String
@@ -76,6 +73,10 @@ struct SourceConnectorCatalogItem: Codable, Identifiable, Hashable {
     let import_label: String?
     let supports_import: Bool?
     let formats: [String]?
+    let primary_beta: Bool?
+    let beta_status: String?
+    let primary_beta_path: String?
+    let show_in_primary_ui: Bool?
 
     var isImportReady: Bool {
         if supports_import == true {
@@ -103,6 +104,14 @@ struct SourceConnectorCatalogItem: Codable, Identifiable, Hashable {
         }
         return "export-only"
     }
+
+    var authKind: String {
+        (auth ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    var isAccountSignInPlanned: Bool {
+        ["oauth", "api_token"].contains(authKind) || connectorReadinessStatus == "live-planned"
+    }
 }
 
 struct SourceReadinessResponse: Codable, Hashable {
@@ -122,6 +131,11 @@ struct SourceReadinessSummary: Codable, Hashable {
     let needs_review: Int
     let needs_attention: Int
     let active_memories: Int
+    let primary_beta_ready: Int?
+    let primary_beta_active: Int?
+    let planned_connectors: Int?
+    let advanced_fallback_only: Int?
+    let connector_needed: Int?
 }
 
 struct SourceReadinessItem: Codable, Identifiable, Hashable {
@@ -141,6 +155,10 @@ struct SourceReadinessItem: Codable, Identifiable, Hashable {
     let readiness_status: String?
     let permissions_required: [String]?
     let first_100_note: String?
+    let primary_beta: Bool?
+    let beta_status: String?
+    let primary_beta_path: String?
+    let show_in_primary_ui: Bool?
     let auth: String?
     let scopes: [String]?
     let formats: [String]
@@ -165,9 +183,11 @@ struct SourceReadinessItem: Codable, Identifiable, Hashable {
         case "needs_review": return "Review"
         case "synced": return "Synced"
         case "connected": return "Connected"
-        case "imported": return "Imported"
-        case "import_ready": return "Ready"
+        case "imported": return "Synced"
+        case "import_ready": return "Local connector"
         case "planned": return "Planned"
+        case "advanced_fallback": return "Advanced only"
+        case "connector_needed": return "Connector needed"
         default: return "Available"
         }
     }
@@ -178,8 +198,8 @@ struct SourceReadinessItem: Codable, Identifiable, Hashable {
         case "needs_review": return "tray.full.fill"
         case "synced": return "checkmark.seal.fill"
         case "connected": return "link.circle.fill"
-        case "imported": return "tray.and.arrow.down.fill"
-        case "import_ready": return "square.and.arrow.down.fill"
+        case "imported": return "checkmark.seal.fill"
+        case "import_ready": return "link.badge.plus"
         case "planned": return "calendar.badge.clock"
         default: return "circle"
         }
@@ -203,6 +223,42 @@ struct SourceAccountListResponse: Codable {
     let results: [SourceAccountItem]
 }
 
+struct SourceAccountSyncResponse: Codable, Hashable {
+    let source_account_id: String
+    let source: String
+    let status: String
+    let processing: String
+    let received: Int
+    let queued: Int
+    let saved: Int
+    let skipped: Int
+    let failed: Int
+}
+
+struct ObsidianConnectorSyncResponse: Codable, Hashable {
+    let source_account: SourceAccountItem
+    let scan: ObsidianConnectorScanSummary
+    let source_account_id: String
+    let source: String
+    let status: String
+    let processing: String
+    let received: Int
+    let queued: Int
+    let saved: Int
+    let skipped: Int
+    let failed: Int
+}
+
+struct ObsidianConnectorScanSummary: Codable, Hashable {
+    let vault_name: String
+    let records_found: Int
+    let records_returned: Int
+    let truncated: Bool?
+    let high_water_mark: String?
+    let cursor_value: String
+    let extensions: [String]
+}
+
 struct SourceAccountItem: Codable, Identifiable, Hashable {
     let id: String
     let user_id: String
@@ -223,6 +279,70 @@ struct SourceAccountItem: Codable, Identifiable, Hashable {
     }
 }
 
+enum JSONValue: Codable, Hashable {
+    case string(String)
+    case int(Int)
+    case double(Double)
+    case bool(Bool)
+    case object([String: JSONValue])
+    case array([JSONValue])
+    case null
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Int.self) {
+            self = .int(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .double(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([String: JSONValue].self) {
+            self = .object(value)
+        } else if let value = try? container.decode([JSONValue].self) {
+            self = .array(value)
+        } else {
+            self = .null
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value):
+            try container.encode(value)
+        case .int(let value):
+            try container.encode(value)
+        case .double(let value):
+            try container.encode(value)
+        case .bool(let value):
+            try container.encode(value)
+        case .object(let value):
+            try container.encode(value)
+        case .array(let value):
+            try container.encode(value)
+        case .null:
+            try container.encodeNil()
+        }
+    }
+
+    var intValue: Int? {
+        switch self {
+        case .int(let value):
+            return value
+        case .double(let value):
+            return Int(value)
+        case .string(let value):
+            return Int(value)
+        default:
+            return nil
+        }
+    }
+}
+
 struct SyncCursorListResponse: Codable {
     let results: [SyncCursorItem]
 }
@@ -235,6 +355,7 @@ struct SyncCursorItem: Codable, Identifiable, Hashable {
     let cursor_name: String
     let cursor_value: String?
     let high_water_mark: String?
+    let state: [String: JSONValue]?
     let last_started_at: String?
     let last_completed_at: String?
     let last_error: String?
@@ -402,6 +523,8 @@ struct CaptureItem: Codable, Identifiable, Hashable {
     let captured_at: String?
     let memory_count: Int?
     let task_count: Int?
+    let preview_memories: [MemoryItem]?
+    let preview_tasks: [TaskItem]?
 }
 
 struct StatsResponse: Codable {
@@ -558,7 +681,7 @@ struct AppSettingsResponse: Codable, Equatable {
         allow_pending_in_context: false,
         context_pack_limit: 12,
         allow_agent_reads: true,
-        allow_agent_writes: false,
+        allow_agent_writes: true,
         allow_agent_exports: false,
         allow_agent_maintenance: false,
         allow_agent_destructive_actions: false,
@@ -622,7 +745,7 @@ enum TrustPreset: String, CaseIterable, Identifiable, Hashable {
         case .readOnly:
             return "Connected AI tools can read memory, but cannot save, maintain, or delete memory."
         case .canSave:
-            return "Connected AI tools can read memory, save useful memory, and prepare redacted handoffs. Deletion and maintenance stay off."
+            return "Connected AI tools can read memory and save useful memories for review. Export, maintenance, and deletion stay off."
         case .advanced:
             return "Tune individual permissions when a connected AI workflow needs a narrower policy."
         }
@@ -646,10 +769,9 @@ enum TrustPreset: String, CaseIterable, Identifiable, Hashable {
             && settings.redact_sensitive_context {
             return .readOnly
         }
-        if !settings.allow_pending_in_context
-            && settings.allow_agent_reads
+        if settings.allow_agent_reads
             && settings.allow_agent_writes
-            && settings.allow_agent_exports
+            && !settings.allow_agent_exports
             && !settings.allow_agent_maintenance
             && !settings.allow_agent_destructive_actions
             && settings.redact_sensitive_context {
@@ -677,10 +799,10 @@ enum TrustPreset: String, CaseIterable, Identifiable, Hashable {
             settings.allow_agent_destructive_actions = false
             settings.redact_sensitive_context = true
         case .canSave:
-            settings.allow_pending_in_context = false
+            settings.allow_pending_in_context = true
             settings.allow_agent_reads = true
             settings.allow_agent_writes = true
-            settings.allow_agent_exports = true
+            settings.allow_agent_exports = false
             settings.allow_agent_maintenance = false
             settings.allow_agent_destructive_actions = false
             settings.redact_sensitive_context = true
@@ -956,8 +1078,35 @@ struct AIIntegration: Identifiable, Hashable {
     let restartHint: String
     let bundleIdentifiers: [String]
     let configTargets: [IntegrationConfigTarget]
+    let requiresExistingConfigTarget: Bool
     let setupHint: String
     let browserURL: String?
+
+    init(
+        id: String,
+        name: String,
+        category: IntegrationCategory,
+        systemImage: String,
+        summary: String,
+        restartHint: String,
+        bundleIdentifiers: [String],
+        configTargets: [IntegrationConfigTarget],
+        requiresExistingConfigTarget: Bool = false,
+        setupHint: String,
+        browserURL: String?
+    ) {
+        self.id = id
+        self.name = name
+        self.category = category
+        self.systemImage = systemImage
+        self.summary = summary
+        self.restartHint = restartHint
+        self.bundleIdentifiers = bundleIdentifiers
+        self.configTargets = configTargets
+        self.requiresExistingConfigTarget = requiresExistingConfigTarget
+        self.setupHint = setupHint
+        self.browserURL = browserURL
+    }
 
     var supportsInstall: Bool {
         !configTargets.isEmpty
@@ -985,7 +1134,7 @@ enum AIIntegrationCatalog {
             configTargets: [
                 IntegrationConfigTarget(label: "Claude Desktop", root: .applicationSupport, relativePath: "Claude/claude_desktop_config.json")
             ],
-            setupHint: "Use Claude Desktop for direct MCP access to Cortex search, review, approved memory, and source capture.",
+            setupHint: "Use Claude Desktop for direct MCP access to Cortex search, review, approved memory, and source sync.",
             browserURL: "https://claude.ai"
         ),
         AIIntegration(
@@ -1027,6 +1176,7 @@ enum AIIntegrationCatalog {
             configTargets: [
                 IntegrationConfigTarget(label: "Cline MCP settings", root: .applicationSupport, relativePath: "Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json")
             ],
+            requiresExistingConfigTarget: true,
             setupHint: "Use Cline with Cortex to search memory before asking the user to repeat project context.",
             browserURL: "https://cline.bot"
         ),
@@ -1041,6 +1191,7 @@ enum AIIntegrationCatalog {
             configTargets: [
                 IntegrationConfigTarget(label: "Roo Code MCP settings", root: .applicationSupport, relativePath: "Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json")
             ],
+            requiresExistingConfigTarget: true,
             setupHint: "Use Roo Code with Cortex to retrieve saved decisions, source context, and open questions.",
             browserURL: nil
         ),
@@ -1049,11 +1200,11 @@ enum AIIntegrationCatalog {
             name: "VS Code Copilot",
             category: .developer,
             systemImage: "rectangle.connected.to.line.below",
-            summary: "Copy a Cortex MCP server definition for VS Code user or workspace MCP setup.",
+            summary: "Connect Cortex to VS Code user or workspace MCP setup.",
             restartHint: "Add the copied MCP server to VS Code's MCP configuration, then reload the window.",
             bundleIdentifiers: ["com.microsoft.VSCode"],
             configTargets: [],
-            setupHint: "Paste the copied MCP server into VS Code's user or workspace MCP configuration.",
+            setupHint: "Add the Cortex MCP server to VS Code's user or workspace MCP configuration.",
             browserURL: "https://code.visualstudio.com"
         ),
         AIIntegration(
@@ -1061,11 +1212,11 @@ enum AIIntegrationCatalog {
             name: "Claude Code",
             category: .developer,
             systemImage: "terminal",
-            summary: "Copy a ready command/config snippet for Claude Code MCP setup.",
+            summary: "Add Cortex as a local MCP server for Claude Code.",
             restartHint: "Run the copied setup from a terminal, then restart the Claude Code session.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Use the copied command to add Cortex as a local MCP server for Claude Code.",
+            setupHint: "Use the setup command to add Cortex as a local MCP server for Claude Code.",
             browserURL: "https://docs.anthropic.com"
         ),
         AIIntegration(
@@ -1073,11 +1224,11 @@ enum AIIntegrationCatalog {
             name: "ChatGPT",
             category: .browser,
             systemImage: "message.badge",
-            summary: "Prepare approved Cortex memory for ChatGPT when direct tools are unavailable.",
-            restartHint: "Paste into a new or existing ChatGPT conversation.",
+            summary: "Browser reference while direct tool connections mature.",
+            restartHint: "Open ChatGPT when you want to work alongside Cortex.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Paste approved Cortex memory into ChatGPT when you want continuity from your local model.",
+            setupHint: "Use direct MCP or local API access where available; browser chat is not the primary memory path.",
             browserURL: "https://chatgpt.com"
         ),
         AIIntegration(
@@ -1085,11 +1236,11 @@ enum AIIntegrationCatalog {
             name: "Claude Web",
             category: .browser,
             systemImage: "sparkle.magnifyingglass",
-            summary: "Copy Cortex memory into Claude web chats without configuring local files.",
-            restartHint: "Paste approved Cortex memory into Claude.",
+            summary: "Browser reference while MCP access remains the primary path.",
+            restartHint: "Open Claude when you want to work alongside Cortex.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Paste approved Cortex memory when Claude needs project, person, or decision memory.",
+            setupHint: "Use Claude Desktop or another MCP client for connected Cortex memory.",
             browserURL: "https://claude.ai"
         ),
         AIIntegration(
@@ -1097,11 +1248,11 @@ enum AIIntegrationCatalog {
             name: "Gemini",
             category: .browser,
             systemImage: "diamond",
-            summary: "Copy local Cortex context for Gemini and Google AI Studio sessions.",
-            restartHint: "Paste into Gemini or AI Studio.",
+            summary: "Browser reference while direct connectors are planned.",
+            restartHint: "Open Gemini or AI Studio when you want to work alongside Cortex.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Paste Cortex context into Gemini before research, writing, or planning tasks.",
+            setupHint: "Use direct connectors when available; browser chat is not the primary memory path.",
             browserURL: "https://gemini.google.com"
         ),
         AIIntegration(
@@ -1109,11 +1260,11 @@ enum AIIntegrationCatalog {
             name: "Perplexity",
             category: .browser,
             systemImage: "magnifyingglass.circle",
-            summary: "Prepare relevant Cortex memory for Perplexity research threads.",
-            restartHint: "Paste into Perplexity.",
+            summary: "Browser reference for research workflows.",
+            restartHint: "Open Perplexity when you want to work alongside Cortex.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Use Cortex context to ground research questions in your existing decisions and constraints.",
+            setupHint: "Use direct connectors when available; Cortex memory remains local and review-first.",
             browserURL: "https://www.perplexity.ai"
         ),
         AIIntegration(
@@ -1121,11 +1272,11 @@ enum AIIntegrationCatalog {
             name: "Microsoft Copilot",
             category: .browser,
             systemImage: "square.stack.3d.up",
-            summary: "Copy Cortex context into Copilot chats and Microsoft 365 work.",
-            restartHint: "Paste into Copilot.",
+            summary: "Browser reference while direct connectors are planned.",
+            restartHint: "Open Copilot when you want to work alongside Cortex.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Paste Cortex context before asking Copilot to draft, summarize, or plan from your memory.",
+            setupHint: "Use direct connectors when available; browser chat is not the primary memory path.",
             browserURL: "https://copilot.microsoft.com"
         ),
         AIIntegration(
@@ -1133,11 +1284,11 @@ enum AIIntegrationCatalog {
             name: "Grok",
             category: .browser,
             systemImage: "xmark.circle",
-            summary: "Prepare approved Cortex memory for Grok conversations.",
-            restartHint: "Paste into Grok.",
+            summary: "Browser reference while direct connectors are planned.",
+            restartHint: "Open Grok when you want to work alongside Cortex.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Paste Cortex context into Grok when you need continuity from previous work.",
+            setupHint: "Use direct connectors when available; browser chat is not the primary memory path.",
             browserURL: "https://grok.com"
         ),
         AIIntegration(
@@ -1145,11 +1296,11 @@ enum AIIntegrationCatalog {
             name: "Poe",
             category: .browser,
             systemImage: "bubble.left.and.bubble.right",
-            summary: "Copy reusable Cortex context into any Poe bot.",
-            restartHint: "Paste into the target Poe bot.",
+            summary: "Browser reference for bot workflows.",
+            restartHint: "Open Poe when you want to work alongside Cortex.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Paste approved Cortex memory into Poe bots that need personal/project memory.",
+            setupHint: "Use direct connectors when available; browser bots are not the primary memory path.",
             browserURL: "https://poe.com"
         ),
         AIIntegration(
@@ -1157,11 +1308,11 @@ enum AIIntegrationCatalog {
             name: "NotebookLM",
             category: .browser,
             systemImage: "book.pages",
-            summary: "Export or copy Cortex memory as source material for NotebookLM.",
-            restartHint: "Paste the copied Markdown into a NotebookLM source.",
+            summary: "Browser reference while direct source connectors are planned.",
+            restartHint: "Open NotebookLM when you want to work alongside Cortex.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Use approved Cortex memory as a NotebookLM source for grounded Q&A.",
+            setupHint: "Use connected Cortex sources as the system of record; NotebookLM is not the primary memory path.",
             browserURL: "https://notebooklm.google.com"
         ),
         AIIntegration(
@@ -1169,8 +1320,8 @@ enum AIIntegrationCatalog {
             name: "LM Studio",
             category: .local,
             systemImage: "cpu",
-            summary: "Copy Cortex MCP/API settings for local model workflows.",
-            restartHint: "Paste the MCP config where your LM Studio workflow accepts local tools.",
+            summary: "Use Cortex MCP/API settings for local model workflows.",
+            restartHint: "Configure MCP where your LM Studio workflow accepts local tools.",
             bundleIdentifiers: ["com.lmstudio.lmstudio"],
             configTargets: [],
             setupHint: "Use Cortex's local API or MCP bridge with local model agents that support tools.",
@@ -1181,11 +1332,11 @@ enum AIIntegrationCatalog {
             name: "Open WebUI",
             category: .local,
             systemImage: "server.rack",
-            summary: "Copy Cortex API and context instructions for self-hosted Open WebUI setups.",
-            restartHint: "Paste into your tool/server configuration.",
+            summary: "Connect self-hosted Open WebUI through Cortex API or MCP.",
+            restartHint: "Update your tool/server configuration, then restart Open WebUI.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Configure Open WebUI or its pipelines to call Cortex on localhost, or paste approved memory manually.",
+            setupHint: "Configure Open WebUI or its pipelines to call Cortex on localhost.",
             browserURL: "https://openwebui.com"
         ),
         AIIntegration(
@@ -1193,8 +1344,8 @@ enum AIIntegrationCatalog {
             name: "LibreChat",
             category: .local,
             systemImage: "globe.desk",
-            summary: "Copy Cortex MCP/API settings for team chat deployments.",
-            restartHint: "Paste into your LibreChat MCP/tool configuration and restart the service.",
+            summary: "Connect team chat deployments through Cortex MCP/API settings.",
+            restartHint: "Update your LibreChat MCP/tool configuration and restart the service.",
             bundleIdentifiers: [],
             configTargets: [],
             setupHint: "Use Cortex as a local memory source for LibreChat where MCP or custom tools are enabled.",
@@ -1205,11 +1356,11 @@ enum AIIntegrationCatalog {
             name: "AnythingLLM",
             category: .local,
             systemImage: "tray.and.arrow.down",
-            summary: "Bring approved Cortex memory into AnythingLLM workspaces.",
-            restartHint: "Paste or import the Markdown/JSON export into the workspace.",
+            summary: "Connect AnythingLLM workflows through Cortex local API where available.",
+            restartHint: "Configure local API or MCP support in the workspace.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Use Cortex exports as local knowledge documents, or wire the local API into agent workflows.",
+            setupHint: "Wire the local API into agent workflows instead of treating files as the primary memory path.",
             browserURL: "https://anythingllm.com"
         ),
     ]
@@ -1234,37 +1385,6 @@ struct GraphEdge: Codable, Identifiable, Hashable {
     let target_id: String
     let kind: String
     let weight: Double?
-}
-
-final class KeychainStore {
-    private let service = "com.cortex.doppl"
-
-    func save(_ value: String, account: String) {
-        let data = Data(value.utf8)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-        SecItemDelete(query as CFDictionary)
-        var add = query
-        add[kSecValueData as String] = data
-        SecItemAdd(add as CFDictionary, nil)
-    }
-
-    func load(account: String) -> String {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return "" }
-        return String(data: data, encoding: .utf8) ?? ""
-    }
 }
 
 enum DistributionMode {
@@ -1381,7 +1501,7 @@ enum CortexRecoveryText {
             return "Cortex is finishing another change. Wait a moment, then try again."
         }
         if lowered.contains("http 413") || lowered.contains("request entity too large") || lowered.contains("payload too large") {
-            return "That source is too large. Try a smaller export or import fewer files."
+            return "That source is too large. Sync a narrower source or fewer notes."
         }
         if lowered.contains("http 429") || lowered.contains("too many requests") {
             return "Cortex is busy. Wait a moment, then try again."
@@ -1405,16 +1525,16 @@ enum CortexRecoveryText {
             return "The backend endpoint is invalid. Check the endpoint, then reconnect."
         }
         if lowered.contains("existing config") || lowered.contains("config is not a json") {
-            return "That app config could not be updated automatically. Copy the setup guide and update it manually."
+            return "That app config could not be updated automatically. Use Advanced Setup to update it manually."
         }
         if lowered.contains("data couldn") || lowered.contains("correct format") || lowered.contains("decoding") {
             return "Cortex received an unexpected response. Click Reconnect, then try again."
         }
         if lowered.contains("operation not permitted") || lowered.contains("permission denied") || lowered.contains("not authorized") || lowered.contains("sandbox") {
-            return "Cortex needs permission for that file or folder. Choose it again or use the capture inbox."
+            return "Cortex needs permission for that source. Choose it again from Connections & Privacy."
         }
         if lowered.contains("no such file") || lowered.contains("file doesn") || lowered.contains("file not found") {
-            return "That file is no longer available. Choose it again or refresh Sources."
+            return "That file is no longer available. Choose it again or refresh Connections & Privacy."
         }
         return "Refresh and try again. If it repeats, click Reconnect."
     }
@@ -1428,7 +1548,7 @@ enum CortexRecoveryText {
         case 409:
             return "Cortex is finishing another change. Wait a moment, then try again."
         case 413:
-            return "That source is too large. Try a smaller export or import fewer files."
+            return "That source is too large. Sync a narrower source or fewer notes."
         case 429:
             return "Cortex is busy. Wait a moment, then try again."
         case 500...599:
@@ -1460,9 +1580,9 @@ enum CortexRecoveryText {
     private static func cocoaRecoveryText(_ code: Int) -> String {
         switch code {
         case NSFileReadNoPermissionError, NSFileWriteNoPermissionError:
-            return "Cortex needs permission for that file or folder. Choose it again or use the capture inbox."
+            return "Cortex needs permission for that source. Choose it again from Connections & Privacy."
         case NSFileNoSuchFileError:
-            return "That file is no longer available. Choose it again or refresh Sources."
+            return "That file is no longer available. Choose it again or refresh Connections & Privacy."
         default:
             return "Refresh and try again. If it repeats, click Reconnect."
         }
@@ -1529,17 +1649,26 @@ final class BackendSupervisor {
         if initialHealth == .healthy {
             return "Backend connected"
         }
+        if let process, process.isRunning {
+            for _ in 0..<90 {
+                if await healthCheck(endpoint: normalizedEndpoint, apiKey: apiKey, expectedVaultPath: vaultPath) == .healthy {
+                    return "Local backend started"
+                }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+            return "Backend is still starting"
+        }
         do {
             if initialHealth == .incompatible {
                 terminateLocalPortListener(endpoint: normalizedEndpoint)
             }
             terminate()
             try startBundledBackend(apiKey: apiKey, mcpAPIKey: mcpAPIKey, vaultPath: vaultPath)
-            for _ in 0..<30 {
+            for _ in 0..<90 {
                 if await healthCheck(endpoint: normalizedEndpoint, apiKey: apiKey, expectedVaultPath: vaultPath) == .healthy {
                     return "Local backend started"
                 }
-                try await Task.sleep(nanoseconds: 250_000_000)
+                try await Task.sleep(nanoseconds: 500_000_000)
             }
             return "Backend did not become ready"
         } catch {
@@ -1600,9 +1729,9 @@ final class BackendSupervisor {
         writeLog("Python executable: \(pythonURL.path)")
         launched.executableURL = pythonURL
         if pythonURL.lastPathComponent == "env" {
-            launched.arguments = ["python3", "-m", "app.standalone_server", "--host", "127.0.0.1", "--port", "8766"]
+            launched.arguments = ["python3", "-S", "-m", "app.standalone_server", "--host", "127.0.0.1", "--port", "8766"]
         } else {
-            launched.arguments = ["-m", "app.standalone_server", "--host", "127.0.0.1", "--port", "8766"]
+            launched.arguments = ["-S", "-m", "app.standalone_server", "--host", "127.0.0.1", "--port", "8766"]
         }
         launched.currentDirectoryURL = backendURL
         var environment = ProcessInfo.processInfo.environment
@@ -1758,29 +1887,31 @@ final class BackendSupervisor {
             writeLog("Could not inspect local backend listener: \(error.localizedDescription)")
         }
     }
-}
+    }
 
 @MainActor
 final class AppState: ObservableObject {
+    private static let apiKeyDefaultsKey = "localBetaAPIKey.v1"
+    private static let mcpAPIKeyDefaultsKey = "localBetaMCPAPIKey.v1"
+    private static let obsidianVaultPathDefaultsKey = "connectedObsidianVaultPath.v1"
+
     private static func loadOrCreateAPIKey() -> String {
-        let store = KeychainStore()
-        let existing = store.load(account: "apiKey").trimmingCharacters(in: .whitespacesAndNewlines)
+        let existing = UserDefaults.standard.string(forKey: apiKeyDefaultsKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !existing.isEmpty && existing != "dev-local-key" {
             return existing
         }
         let generated = generateAPIKey()
-        store.save(generated, account: "apiKey")
+        UserDefaults.standard.set(generated, forKey: apiKeyDefaultsKey)
         return generated
     }
 
     private static func loadOrCreateMCPAPIKey() -> String {
-        let store = KeychainStore()
-        let existing = store.load(account: "mcpAPIKey").trimmingCharacters(in: .whitespacesAndNewlines)
+        let existing = UserDefaults.standard.string(forKey: mcpAPIKeyDefaultsKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if existing.hasPrefix("cxm_") {
             return existing
         }
         let generated = generateMCPAPIKey()
-        store.save(generated, account: "mcpAPIKey")
+        UserDefaults.standard.set(generated, forKey: mcpAPIKeyDefaultsKey)
         return generated
     }
 
@@ -1793,30 +1924,14 @@ final class AppState: ObservableObject {
     }
 
     private static func generateSecret(prefix: String) -> String {
-        var bytes = [UInt8](repeating: 0, count: 32)
-        let count = bytes.count
-        let status = bytes.withUnsafeMutableBytes { buffer in
-            SecRandomCopyBytes(kSecRandomDefault, count, buffer.baseAddress!)
-        }
-        if status == errSecSuccess {
-            return prefix + bytes.map { String(format: "%02x", $0) }.joined()
-        }
-        return prefix + UUID().uuidString.replacingOccurrences(of: "-", with: "") + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        var generator = SystemRandomNumberGenerator()
+        let bytes = (0..<32).map { _ in UInt8.random(in: UInt8.min...UInt8.max, using: &generator) }
+        return prefix + bytes.map { String(format: "%02x", $0) }.joined()
     }
 
     @Published var endpoint: String = UserDefaults.standard.string(forKey: "endpoint") ?? "http://127.0.0.1:8766"
     @Published var apiKey: String = AppState.loadOrCreateAPIKey()
     @Published var mcpAPIKey: String = AppState.loadOrCreateMCPAPIKey()
-    @Published var quickNote: String = ""
-    @Published var captureURLString: String = ""
-    @Published var captureTitle: String = ""
-    @Published var captureNotes: String = ""
-    @Published var captureDropTargeted: Bool = false
-    @Published var lastFileCaptureSummary: String = ""
-    @Published var importPreview: SourceAnalyzeResponse?
-    @Published var importPreviewURLs: [URL] = []
-    @Published var importPreviewMoveImportedFromInbox: Bool = false
-    @Published var showImportPreview: Bool = false
     @Published var importHistory: [SourceImportHistoryItem] = []
     @Published var sourceConnectorCatalog: [SourceConnectorCatalogItem] = []
     @Published var sourceReadinessReport: SourceReadinessResponse?
@@ -1824,6 +1939,7 @@ final class AppState: ObservableObject {
     @Published var syncCursors: [SyncCursorItem] = []
     @Published var syncDevices: [SyncDeviceItem] = []
     @Published var syncReceiptsByDevice: [String: [SyncReceiptItem]] = [:]
+    @Published var obsidianVaultPath: String = UserDefaults.standard.string(forKey: obsidianVaultPathDefaultsKey) ?? ""
     @Published var searchQuery: String = ""
     @Published var status: String = "Ready"
     @Published var inbox: [CaptureItem] = []
@@ -1855,33 +1971,26 @@ final class AppState: ObservableObject {
         ?? (Bundle.main.object(forInfoDictionaryKey: "CortexUpdateFeedURL") as? String ?? "")
     @Published var updateStatus: String = "Not checked"
     @Published var updateManifest: UpdateManifestResponse?
-    @Published var contextQuery: String = ""
     @Published var selectedTab: AppTab = .model
     @Published var vaultPath: String = UserDefaults.standard.string(forKey: "vaultPath") ?? BackendSupervisor.defaultVaultURL.path
     @Published var globalClipboardHotkeyEnabled: Bool = UserDefaults.standard.bool(forKey: "globalClipboardHotkeyEnabled.v1")
     @Published var onboardingComplete: Bool = UserDefaults.standard.bool(forKey: "onboardingComplete.v1")
-    @Published var showOnboarding: Bool = !UserDefaults.standard.bool(forKey: "onboardingComplete.v1")
+    @Published var showOnboarding: Bool = false
+    @Published var showConnectionsPrivacy: Bool = false
     @Published var onboardingStep: OnboardingStep = OnboardingStep(rawValue: UserDefaults.standard.integer(forKey: "onboardingStep.v2")) ?? .privateVault
     @Published var firstSourceAdded: Bool = UserDefaults.standard.bool(forKey: "onboardingFirstSourceImported.v1")
     @Published var firstMemoryReviewed: Bool = UserDefaults.standard.bool(forKey: "onboardingFirstMemoryReviewed.v1")
     @Published var cortexUsed: Bool = UserDefaults.standard.bool(forKey: "onboardingCortexUsed.v1")
-    @Published var onboardingFirstImportID: String = UserDefaults.standard.string(forKey: "onboardingFirstImportID.v1") ?? ""
     @Published var onboardingFirstSourceNames: [String] = UserDefaults.standard.stringArray(forKey: "onboardingFirstSourceNames.v1") ?? []
     @Published var onboardingBackupDecision: String = UserDefaults.standard.string(forKey: "onboardingBackupDecision.v1") ?? ""
     @Published var integrationStates: [String: AIIntegrationState] = [:]
     @Published var isBusy: Bool = false
 
-    private let keychain = KeychainStore()
     private let backend = BackendSupervisor.shared
+    private var obsidianAutoSyncTask: Task<Void, Never>?
 
     var integrations: [AIIntegration] {
         AIIntegrationCatalog.all
-    }
-
-    var captureInboxURL: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("Cortex", isDirectory: true).appendingPathComponent("Capture Inbox", isDirectory: true)
     }
 
     var displayStatus: String {
@@ -1926,14 +2035,30 @@ final class AppState: ObservableObject {
 
     var onboardingHasSource: Bool {
         hasConnectedSourceAccount
-            || onboardingFirstImport != nil
-            || (onboardingFirstImportID.isEmpty && firstSourceAdded && !onboardingFirstSourceNames.isEmpty && (hasConnectedSourceAccount || latestUsableImport != nil || !inbox.isEmpty || !recent.isEmpty || (stats?.captures ?? 0) > 0))
+            || connectedAIIntegrationCount > 0
+            || (firstSourceAdded && !onboardingFirstSourceNames.isEmpty)
     }
 
     var hasConnectedSourceAccount: Bool {
         sourceAccounts.contains { account in
             account.disconnected_at == nil
         }
+    }
+
+    var activeSourceAccounts: [SourceAccountItem] {
+        sourceAccounts.filter { $0.disconnected_at == nil }
+    }
+
+    var hasConnectedObsidianVault: Bool {
+        !resolvedObsidianVaultPath().isEmpty
+    }
+
+    var detectedAIIntegrationCount: Int {
+        integrations.filter { $0.supportsInstall && integrationState(for: $0).appInstalled }.count
+    }
+
+    var connectedAIIntegrationCount: Int {
+        integrations.filter { integrationState(for: $0).configured }.count
     }
 
     var onboardingHasReviewedMemory: Bool {
@@ -1949,27 +2074,9 @@ final class AppState: ObservableObject {
         !onboardingBackupDecision.isEmpty || lastBackupPath != nil
     }
 
-    var onboardingFirstImport: SourceImportHistoryItem? {
-        guard !onboardingFirstImportID.isEmpty else { return nil }
-        return importHistory.first { item in
-            item.import_id == onboardingFirstImportID && isUsableImport(item)
-        }
-    }
-
-    private var latestUsableImport: SourceImportHistoryItem? {
-        importHistory.first(where: isUsableImport)
-    }
-
-    private func isUsableImport(_ item: SourceImportHistoryItem) -> Bool {
-        item.deleted_at == nil && item.records_found > 0 && (item.queued + item.saved + item.remaining_captures) > 0
-    }
-
     var canCompleteOnboarding: Bool {
         isLocalServiceReady
             && onboardingHasSource
-            && onboardingHasReviewedMemory
-            && onboardingHasUsedCortex
-            && onboardingHasBackupDecision
     }
 
     var incompleteOnboardingStepTitles: [String] {
@@ -1988,10 +2095,6 @@ final class AppState: ObservableObject {
         return "Still needs: \(remaining)."
     }
 
-    var canPrepareArtifacts: Bool {
-        appSettings.allow_agent_exports
-    }
-
     func onboardingStepIsComplete(_ step: OnboardingStep) -> Bool {
         switch step {
         case .privateVault:
@@ -1999,11 +2102,9 @@ final class AppState: ObservableObject {
         case .firstSource:
             return onboardingHasSource
         case .reviewMemory:
-            return onboardingHasReviewedMemory
+            return onboardingHasReviewedMemory || onboardingHasSource
         case .askUse:
-            return onboardingHasUsedCortex
-        case .trustBackup:
-            return onboardingHasBackupDecision
+            return onboardingHasUsedCortex || onboardingHasSource
         }
     }
 
@@ -2037,8 +2138,8 @@ final class AppState: ObservableObject {
         ensureUsableMCPAPIKey()
         UserDefaults.standard.set(endpoint, forKey: "endpoint")
         UserDefaults.standard.set(vaultPath, forKey: "vaultPath")
-        keychain.save(apiKey, account: "apiKey")
-        keychain.save(mcpAPIKey, account: "mcpAPIKey")
+        UserDefaults.standard.set(apiKey, forKey: Self.apiKeyDefaultsKey)
+        UserDefaults.standard.set(mcpAPIKey, forKey: Self.mcpAPIKeyDefaultsKey)
         status = "Settings saved"
     }
 
@@ -2078,6 +2179,7 @@ final class AppState: ObservableObject {
         await loadDiagnostics()
         await loadReliability()
         refreshIntegrationStates()
+        startConnectedSourceAutoSync()
     }
 
     func ensureBackend() async {
@@ -2112,10 +2214,10 @@ final class AppState: ObservableObject {
         let normalized = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if normalized.isEmpty || normalized == "dev-local-key" {
             apiKey = AppState.generateAPIKey()
-            keychain.save(apiKey, account: "apiKey")
+            UserDefaults.standard.set(apiKey, forKey: Self.apiKeyDefaultsKey)
         } else if normalized != apiKey {
             apiKey = normalized
-            keychain.save(apiKey, account: "apiKey")
+            UserDefaults.standard.set(apiKey, forKey: Self.apiKeyDefaultsKey)
         }
     }
 
@@ -2123,10 +2225,10 @@ final class AppState: ObservableObject {
         let normalized = mcpAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if !normalized.hasPrefix("cxm_") || normalized == apiKey {
             mcpAPIKey = AppState.generateMCPAPIKey()
-            keychain.save(mcpAPIKey, account: "mcpAPIKey")
+            UserDefaults.standard.set(mcpAPIKey, forKey: Self.mcpAPIKeyDefaultsKey)
         } else if normalized != mcpAPIKey {
             mcpAPIKey = normalized
-            keychain.save(mcpAPIKey, account: "mcpAPIKey")
+            UserDefaults.standard.set(mcpAPIKey, forKey: Self.mcpAPIKeyDefaultsKey)
         }
     }
 
@@ -2178,119 +2280,9 @@ final class AppState: ObservableObject {
             return
         }
         Task {
-            if await capture(text: text, source: "macos-clipboard", title: "Clipboard capture") {
-                status = "Clipboard saved. Import a source to finish setup."
+            if await capture(text: text, source: "macos-clipboard", title: "Clipboard note") {
+                status = "Clipboard note saved to Review"
             }
-        }
-    }
-
-    func captureQuickNote() {
-        let text = quickNote.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.isEmpty {
-            status = "Quick note is empty"
-            return
-        }
-        Task {
-            if await capture(text: text, source: "macos-quick-note", title: "Quick note") {
-                quickNote = ""
-                status = "Quick memory saved. Import a source to finish setup."
-            }
-        }
-    }
-
-    func captureURLSurface() {
-        let urlText = captureURLString.trimmingCharacters(in: .whitespacesAndNewlines)
-        let notes = captureNotes.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !urlText.isEmpty || !notes.isEmpty else {
-            status = "URL capture is empty"
-            return
-        }
-        var content: [String] = []
-        if !urlText.isEmpty {
-            content.append("URL: \(urlText)")
-        }
-        if !captureTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            content.append("Title: \(captureTitle.trimmingCharacters(in: .whitespacesAndNewlines))")
-        }
-        if !notes.isEmpty {
-            content.append("\nNotes:\n\(notes)")
-        }
-        let title = captureTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? (URL(string: urlText)?.host ?? "Web capture")
-            : captureTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        Task {
-            if await capture(text: content.joined(separator: "\n"), source: "web-url", title: title, sourceURL: urlText.isEmpty ? nil : urlText) {
-                captureURLString = ""
-                captureTitle = ""
-                captureNotes = ""
-                status = "Web memory saved. Import a source to finish setup."
-            }
-        }
-    }
-
-    func chooseFilesForCapture() {
-        let panel = NSOpenPanel()
-        panel.title = "Choose Sources to Add to Cortex"
-        panel.prompt = "Add Recovery Items"
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = true
-        if panel.runModal() == .OK {
-            captureFiles(panel.urls)
-        }
-    }
-
-    func captureFiles(_ urls: [URL]) {
-        let unique = Array(Set(urls)).sorted { $0.path < $1.path }
-        guard !unique.isEmpty else {
-            status = "No files selected"
-            return
-        }
-        Task { await prepareImportPreview(unique, moveImportedFromInbox: false) }
-    }
-
-    func openCaptureInbox() {
-        try? FileManager.default.createDirectory(at: captureInboxURL, withIntermediateDirectories: true)
-        NSWorkspace.shared.open(captureInboxURL)
-    }
-
-    func copyCaptureInboxPath() {
-        try? FileManager.default.createDirectory(at: captureInboxURL, withIntermediateDirectories: true)
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(captureInboxURL.path, forType: .string)
-        status = "Capture Inbox path copied"
-    }
-
-    func importCaptureInbox() {
-        try? FileManager.default.createDirectory(at: captureInboxURL, withIntermediateDirectories: true)
-        let manager = FileManager.default
-        let urls = (try? manager.contentsOfDirectory(at: captureInboxURL, includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
-        let files = urls.filter { url in
-            guard url.lastPathComponent != "Imported" else { return false }
-            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
-            return values?.isRegularFile == true || values?.isDirectory == true
-        }
-        guard !files.isEmpty else {
-            status = "Capture Inbox is empty"
-            return
-        }
-        Task { await prepareImportPreview(files, moveImportedFromInbox: true) }
-    }
-
-    func copyBrowserBookmarklet() {
-        let action = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/capture"
-        let js = """
-        javascript:(()=>{const u=new URL(\(jsString(action)));u.searchParams.set('title',document.title||location.href);u.searchParams.set('url',location.href);window.open(u.toString(),'_blank','noopener')})()
-        """
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(js.replacingOccurrences(of: "\n", with: ""), forType: .string)
-        status = "Browser capture bookmarklet copied without API token"
-    }
-
-    func openBrowserCapturePage() {
-        let urlString = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/capture"
-        if let url = URL(string: urlString) {
-            NSWorkspace.shared.open(url)
         }
     }
 
@@ -2324,131 +2316,6 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func prepareImportPreview(_ urls: [URL], moveImportedFromInbox: Bool) async {
-        isBusy = true
-        status = "Scanning \(urls.count) source\(urls.count == 1 ? "" : "s")..."
-        defer { isBusy = false }
-        do {
-            let body: [String: Any] = [
-                "paths": urls.map { $0.path },
-                "max_records": 500
-            ]
-            let data = try await request(path: "/v1/imports/analyze", method: "POST", body: body)
-            let preview = try JSONDecoder().decode(SourceAnalyzeResponse.self, from: data)
-            if preview.records_found > 0 {
-                importPreview = preview
-                importPreviewURLs = urls
-                importPreviewMoveImportedFromInbox = moveImportedFromInbox
-                showImportPreview = true
-                let sourceSummary = preview.sources.prefix(3).map { "\($0.source): \($0.count)" }.joined(separator: ", ")
-                lastFileCaptureSummary = "Detected \(preview.records_found) record\(preview.records_found == 1 ? "" : "s")" + (sourceSummary.isEmpty ? "" : " (\(sourceSummary))")
-                status = lastFileCaptureSummary
-            } else {
-                lastFileCaptureSummary = "No structured records found; checking for readable files"
-                status = lastFileCaptureSummary
-                await fallbackCaptureFilesAsync(urls, moveImportedFromInbox: moveImportedFromInbox)
-            }
-        } catch {
-            status = "Importer fallback for \(urls.count) file\(urls.count == 1 ? "" : "s")"
-            await fallbackCaptureFilesAsync(urls, moveImportedFromInbox: moveImportedFromInbox)
-        }
-    }
-
-    func confirmImportPreview() {
-        let urls = importPreviewURLs
-        let moveImported = importPreviewMoveImportedFromInbox
-        cancelImportPreview()
-        guard !urls.isEmpty else {
-            status = "No sources selected"
-            return
-        }
-        Task { await captureFilesAsync(urls, moveImportedFromInbox: moveImported) }
-    }
-
-    func cancelImportPreview() {
-        showImportPreview = false
-        importPreview = nil
-        importPreviewURLs = []
-        importPreviewMoveImportedFromInbox = false
-    }
-
-    private func captureFilesAsync(_ urls: [URL], moveImportedFromInbox: Bool) async {
-        isBusy = true
-        status = "Importing \(urls.count) source\(urls.count == 1 ? "" : "s")..."
-        defer { isBusy = false }
-        do {
-            let body: [String: Any] = [
-                "paths": urls.map { $0.path },
-                "processing": "async",
-                "max_records": 1000
-            ]
-            let data = try await request(path: "/v1/imports", method: "POST", body: body)
-            let response = try JSONDecoder().decode(SourceImportResponse.self, from: data)
-            if response.records_found > 0 {
-                let jobData = try? await request(path: "/v1/maintenance/jobs/run?limit=50", method: "POST")
-                var processed = 0
-                if let jobData, let run = try? JSONDecoder().decode(JobRunResponse.self, from: jobData) {
-                    processed = run.processed
-                }
-                let sourceSummary = response.sources.prefix(3).map { "\($0.source): \($0.count)" }.joined(separator: ", ")
-                let skippedCount = response.skipped ?? 0
-                let queueSummary = response.queued > 0 ? "Queued \(response.queued)" : "Saved \(response.saved)"
-                let failureSummary = response.failed > 0 ? ", \(response.failed) failed" : ""
-                let skippedSummary = skippedCount > 0 ? ", skipped \(skippedCount) duplicate\(skippedCount == 1 ? "" : "s")" : ""
-                let processedSummary = processed > 0 ? ", started \(processed)" : ""
-                lastFileCaptureSummary = "Detected \(response.records_found) source record\(response.records_found == 1 ? "" : "s"). \(queueSummary)\(processedSummary)\(failureSummary)\(skippedSummary)" + (sourceSummary.isEmpty ? "" : " (\(sourceSummary))")
-                status = lastFileCaptureSummary
-                markFirstSourceAdded(importID: response.import_id, sources: response.sources.map(\.source))
-                if moveImportedFromInbox {
-                    for url in urls {
-                        moveToImportedFolder(url)
-                    }
-                }
-                await refreshAfterCapture()
-                return
-            }
-        } catch {
-            status = "Importer fallback for \(urls.count) file\(urls.count == 1 ? "" : "s")"
-        }
-        await fallbackCaptureFilesAsync(urls, moveImportedFromInbox: moveImportedFromInbox)
-    }
-
-    private func fallbackCaptureFilesAsync(_ urls: [URL], moveImportedFromInbox: Bool) async {
-        var saved = 0
-        var usableSaved = 0
-        var failed = 0
-        var savedSources: [String] = []
-        for url in urls {
-            do {
-                let payload = try fileCapturePayload(for: url)
-                if await capture(text: payload.content, source: payload.source, title: payload.title, sourceURL: payload.sourceURL) {
-                    saved += 1
-                    if payload.readable {
-                        usableSaved += 1
-                    }
-                    if payload.readable && !savedSources.contains(payload.source) {
-                        savedSources.append(payload.source)
-                    }
-                    if moveImportedFromInbox {
-                        moveToImportedFolder(url)
-                    }
-                } else {
-                    failed += 1
-                }
-            } catch {
-                failed += 1
-            }
-        }
-        lastFileCaptureSummary = failed == 0 ? "Saved \(saved) file\(saved == 1 ? "" : "s")" : "Saved \(saved), failed \(failed)"
-        status = lastFileCaptureSummary
-        if usableSaved > 0 {
-            markFirstSourceAdded(importID: "", sources: savedSources)
-        } else if saved > 0 {
-            status = "Saved file reference. Choose a supported export or readable file to continue setup."
-        }
-        await refreshAfterCapture()
-    }
-
     private func refreshAfterCapture() async {
         await loadInbox()
         await loadRecent()
@@ -2462,86 +2329,12 @@ final class AppState: ObservableObject {
         await loadTrust()
     }
 
-    private func fileCapturePayload(for url: URL) throws -> (content: String, source: String, title: String, sourceURL: String, readable: Bool) {
-        let access = url.startAccessingSecurityScopedResource()
-        defer {
-            if access { url.stopAccessingSecurityScopedResource() }
-        }
-        let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .localizedTypeDescriptionKey])
-        let size = values.fileSize ?? 0
-        let modified = values.contentModificationDate.map { ISO8601DateFormatter().string(from: $0) } ?? "unknown"
-        var content = """
-        File: \(url.lastPathComponent)
-        Path: \(url.path)
-        Type: \(values.localizedTypeDescription ?? url.pathExtension.uppercased())
-        Size: \(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
-        Modified: \(modified)
-        """
-        var readable = false
-        if let extracted = extractText(from: url, size: size), !extracted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            content += "\n\n--- Extracted content ---\n\(extracted)"
-            readable = true
-        } else {
-            content += "\n\nCortex saved this file reference. This file type is not text-readable in this local build yet."
-        }
-        if content.count > 190_000 {
-            content = String(content.prefix(190_000)) + "\n\n[Truncated by Cortex before capture.]"
-        }
-        return (content, "file", url.lastPathComponent, url.absoluteString, readable)
-    }
-
-    private func extractText(from url: URL, size: Int) -> String? {
-        let ext = url.pathExtension.lowercased()
-        if ext == "pdf" {
-            guard size <= 25_000_000, let document = PDFDocument(url: url) else { return nil }
-            return (0..<document.pageCount).compactMap { document.page(at: $0)?.string }.joined(separator: "\n\n")
-        }
-        if ext == "rtf" || ext == "rtfd" {
-            guard let attributed = try? NSAttributedString(url: url, options: [:], documentAttributes: nil) else { return nil }
-            return attributed.string
-        }
-        let textExtensions: Set<String> = [
-            "txt", "md", "markdown", "json", "jsonl", "csv", "tsv", "log", "xml", "yaml", "yml",
-            "py", "js", "ts", "tsx", "jsx", "swift", "go", "rs", "java", "c", "h", "cpp", "hpp",
-            "rb", "php", "sh", "zsh", "bash", "sql", "html", "css", "scss", "toml", "ini", "env"
-        ]
-        guard textExtensions.contains(ext) || size <= 1_000_000 else { return nil }
-        if let text = try? String(contentsOf: url, encoding: .utf8) {
-            return text
-        }
-        if let text = try? String(contentsOf: url, encoding: .isoLatin1) {
-            return text
-        }
-        return nil
-    }
-
-    private func moveToImportedFolder(_ url: URL) {
-        let manager = FileManager.default
-        let imported = captureInboxURL.appendingPathComponent("Imported", isDirectory: true)
-        try? manager.createDirectory(at: imported, withIntermediateDirectories: true)
-        var target = imported.appendingPathComponent(url.lastPathComponent)
-        if manager.fileExists(atPath: target.path) {
-            let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
-            target = imported.appendingPathComponent("\(stamp)-\(url.lastPathComponent)")
-        }
-        try? manager.moveItem(at: url, to: target)
-    }
-
-    private func jsString(_ value: String) -> String {
-        let escaped = value
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-            .replacingOccurrences(of: "\n", with: "\\n")
-            .replacingOccurrences(of: "\r", with: "")
-        return "'\(escaped)'"
-    }
-
     func loadInbox() async {
         do {
             let data = try await request(path: "/v1/inbox?limit=30", method: "GET")
             inbox = try JSONDecoder().decode(InboxResponse.self, from: data).results
         } catch {
-            status = CortexRecoveryText.failureStatus("Inbox", error: error)
+            status = CortexRecoveryText.failureStatus("Review queue", error: error)
         }
     }
 
@@ -2559,7 +2352,7 @@ final class AppState: ObservableObject {
             let data = try await request(path: "/v1/imports?limit=12&include_deleted=false", method: "GET")
             importHistory = try JSONDecoder().decode(SourceImportHistoryResponse.self, from: data).results
         } catch {
-            status = CortexRecoveryText.failureStatus("Import history", error: error)
+            status = CortexRecoveryText.failureStatus("Source sync history", error: error)
         }
     }
 
@@ -2648,29 +2441,10 @@ final class AppState: ObservableObject {
         }
     }
 
-    func recordContextReuse(surface: String, query: String = "", target: String = "") async {
-        do {
-            let body: [String: Any] = ["surface": surface, "query": query, "target": target]
-            let data = try await request(path: "/v1/loop/reuse", method: "POST", body: body)
-            let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            if let loopObject = payload?["product_loop"] as? [String: Any],
-               let loopData = try? JSONSerialization.data(withJSONObject: loopObject) {
-                productLoop = try? JSONDecoder().decode(ProductLoopResponse.self, from: loopData)
-            } else {
-                await loadProductLoop()
-            }
-            await loadReview()
-            await loadTrust()
-        } catch {
-            await loadProductLoop()
-        }
-    }
-
     func performProductLoopAction(_ action: ProductLoopAction) {
         switch action.action {
         case "capture":
-            selectedTab = .sources
-            status = "Add data sources to build your model"
+            openConnectionsPrivacy(statusMessage: "Connect MCP tools or local notes to start memory sync")
         case "review":
             selectedTab = .review
             status = "Review new signals below"
@@ -2685,6 +2459,11 @@ final class AppState: ObservableObject {
         default:
             status = "Loop complete"
         }
+    }
+
+    func openConnectionsPrivacy(statusMessage: String = "Connections and privacy") {
+        showConnectionsPrivacy = true
+        status = statusMessage
     }
 
     func loadSettings() async {
@@ -2843,6 +2622,134 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func startConnectedSourceAutoSync(initialSync: Bool = true) {
+        obsidianAutoSyncTask?.cancel()
+        guard storedObsidianVaultURL() != nil else { return }
+        obsidianAutoSyncTask = Task { [weak self] in
+            if initialSync {
+                await self?.syncSavedObsidianVaultIfAvailable(automatic: true)
+            }
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 30 * 60 * 1_000_000_000)
+                } catch {
+                    return
+                }
+                await self?.syncSavedObsidianVaultIfAvailable(automatic: true)
+            }
+        }
+    }
+
+    private func syncSavedObsidianVaultIfAvailable(automatic: Bool) async {
+        guard let folderURL = storedObsidianVaultURL(),
+              let connector = sourceConnectorCatalog.first(where: { $0.id == "obsidian" }) else {
+            return
+        }
+        await syncLocalNotesFolder(connector, folderURL: folderURL, rememberPath: false, automatic: automatic)
+    }
+
+    func connectLocalNotesFolder(_ connector: SourceConnectorCatalogItem, chooseNew: Bool = false) {
+        guard connector.id == "obsidian" else {
+            status = "\(connector.name) native sync is not wired yet"
+            return
+        }
+
+        if !chooseNew, let storedURL = storedObsidianVaultURL() {
+            Task { await syncLocalNotesFolder(connector, folderURL: storedURL, rememberPath: false) }
+            return
+        }
+
+        let panel = NSOpenPanel()
+        panel.title = "Connect Obsidian Vault"
+        panel.message = "Choose the Obsidian vault folder Cortex should sync into Review."
+        panel.prompt = "Connect Vault"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        if panel.runModal() == .OK, let url = panel.url {
+            Task { await syncLocalNotesFolder(connector, folderURL: url, rememberPath: true) }
+        }
+    }
+
+    private func resolvedObsidianVaultPath() -> String {
+        let trimmed = obsidianVaultPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: trimmed, isDirectory: &isDirectory), isDirectory.boolValue {
+            return trimmed
+        }
+        return ""
+    }
+
+    private func storedObsidianVaultURL() -> URL? {
+        let path = resolvedObsidianVaultPath()
+        guard !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
+
+    private func rememberObsidianVaultPath(_ url: URL) {
+        let path = url.standardizedFileURL.path
+        obsidianVaultPath = path
+        UserDefaults.standard.set(path, forKey: Self.obsidianVaultPathDefaultsKey)
+    }
+
+    private func syncLocalNotesFolder(_ connector: SourceConnectorCatalogItem, folderURL: URL, rememberPath: Bool, automatic: Bool = false) async {
+        isBusy = true
+        defer { isBusy = false }
+
+        do {
+            if !automatic {
+                status = "Syncing \(connector.name)..."
+            }
+            let syncData = try await request(
+                path: "/v1/connectors/obsidian/sync",
+                method: "POST",
+                body: [
+                    "vault_path": folderURL.standardizedFileURL.path,
+                    "max_records": 5000,
+                    "processing": "sync"
+                ]
+            )
+            let synced = try JSONDecoder().decode(ObsidianConnectorSyncResponse.self, from: syncData)
+            guard synced.scan.records_found > 0 else {
+                if !automatic {
+                    status = "No Markdown or text notes found in \(synced.scan.vault_name)"
+                }
+                return
+            }
+
+            if rememberPath {
+                rememberObsidianVaultPath(folderURL)
+                startConnectedSourceAutoSync(initialSync: false)
+            }
+            firstSourceAdded = true
+            onboardingFirstSourceNames = Array(Set(onboardingFirstSourceNames + [connector.name])).sorted()
+            UserDefaults.standard.set(true, forKey: "onboardingFirstSourceImported.v1")
+            UserDefaults.standard.set(onboardingFirstSourceNames, forKey: "onboardingFirstSourceNames.v1")
+            await loadSourceConnectivity()
+            await loadTrust()
+            await refreshAfterCapture()
+
+            if synced.scan.truncated == true {
+                status = "\(connector.name) synced \(synced.scan.records_returned) of \(synced.scan.records_found) notes. Larger-vault sync is partial."
+            } else if synced.saved > 0 || synced.queued > 0 {
+                let count = synced.saved + synced.queued
+                status = "\(connector.name) synced \(count) note\(count == 1 ? "" : "s") into Review"
+            } else if synced.skipped > 0, !automatic {
+                status = "\(connector.name) already up to date"
+            } else if !automatic {
+                status = "\(connector.name) sync finished"
+            }
+        } catch {
+            if automatic {
+                status = CortexRecoveryText.failureStatus("\(connector.name) background sync", error: error)
+            } else {
+                status = CortexRecoveryText.failureStatus("\(connector.name) sync", error: error)
+            }
+        }
+    }
+
     private func loadSyncReceipts(for devices: [SyncDeviceItem]) async -> [String: [SyncReceiptItem]] {
         var receiptsByDevice: [String: [SyncReceiptItem]] = [:]
         for device in devices.prefix(8) {
@@ -2894,12 +2801,12 @@ final class AppState: ObservableObject {
 
     func resetMCPIntegrationToken() async {
         mcpAPIKey = AppState.generateMCPAPIKey()
-        keychain.save(mcpAPIKey, account: "mcpAPIKey")
+        UserDefaults.standard.set(mcpAPIKey, forKey: Self.mcpAPIKeyDefaultsKey)
         let registered = await registerMCPToken()
         await loadIntegrationTokens()
         refreshIntegrationStates()
         if registered {
-            status = "MCP token reset. Reinstall or copy setup for connected AI tools."
+            status = "MCP token reset. Reconnect or update setup for connected AI tools."
         }
     }
 
@@ -2919,14 +2826,6 @@ final class AppState: ObservableObject {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(integrationGuide(for: integration), forType: .string)
         status = "\(integration.name) guide copied"
-    }
-
-    func copyIntegrationContext(_ integration: AIIntegration) {
-        guard canPrepareArtifacts else {
-            status = "Enable Trust > AI access > prepare artifacts before copying memory"
-            return
-        }
-        copyPersonalProfile(query: "", surface: "integration", target: integration.name, label: "\(integration.name) memory prepared")
     }
 
     func installIntegration(_ integration: AIIntegration) {
@@ -2952,7 +2851,7 @@ final class AppState: ObservableObject {
 
     func installDetectedIntegrations() {
         if DistributionMode.isAppStore {
-            status = "App Store builds use copy setup instead of editing other apps"
+            status = "App Store builds require manual MCP setup"
             return
         }
         let detected = integrations.filter { integration in
@@ -2982,9 +2881,7 @@ final class AppState: ObservableObject {
         var next: [String: AIIntegrationState] = [:]
         for integration in integrations {
             let paths = integration.configTargets.map { $0.url.path }
-            let installed = integration.bundleIdentifiers.contains { bundleID in
-                NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil
-            }
+            let installed = integrationAppearsInstalled(integration)
             if DistributionMode.isAppStore {
                 next[integration.id] = AIIntegrationState(
                     appInstalled: installed,
@@ -3015,7 +2912,7 @@ final class AppState: ObservableObject {
     func integrationState(for integration: AIIntegration) -> AIIntegrationState {
         if DistributionMode.isAppStore {
             return AIIntegrationState(
-                appInstalled: integration.bundleIdentifiers.contains { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil },
+                appInstalled: integrationAppearsInstalled(integration),
                 configured: false,
                 configExists: false,
                 configuredPaths: [],
@@ -3023,12 +2920,25 @@ final class AppState: ObservableObject {
             )
         }
         return integrationStates[integration.id] ?? AIIntegrationState(
-            appInstalled: integration.bundleIdentifiers.contains { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil },
+            appInstalled: integrationAppearsInstalled(integration),
             configured: integration.configTargets.contains { configContainsCortex(at: $0.url) },
             configExists: integration.configTargets.contains { FileManager.default.fileExists(atPath: $0.url.path) },
             configuredPaths: integration.configTargets.filter { configContainsCortex(at: $0.url) }.map { $0.url.path },
             availablePaths: integration.configTargets.map { $0.url.path }
         )
+    }
+
+    private func integrationAppearsInstalled(_ integration: AIIntegration) -> Bool {
+        let hostAppInstalled = integration.bundleIdentifiers.contains { bundleID in
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil
+        }
+        guard integration.requiresExistingConfigTarget else {
+            return hostAppInstalled
+        }
+        let hasExtensionConfig = integration.configTargets.contains { target in
+            FileManager.default.fileExists(atPath: target.url.path) || configContainsCortex(at: target.url)
+        }
+        return hostAppInstalled && hasExtensionConfig
     }
 
     func openIntegrationConfig(_ integration: AIIntegration) {
@@ -3159,19 +3069,14 @@ final class AppState: ObservableObject {
         status = "Local settings copied"
     }
 
-    func markFirstSourceAdded(importID: String, sources: [String]) {
+    func markFirstSourceAdded(sources: [String]) {
         firstSourceAdded = true
-        onboardingFirstImportID = importID
         onboardingFirstSourceNames = sources
         UserDefaults.standard.set(true, forKey: "onboardingFirstSourceImported.v1")
-        UserDefaults.standard.set(importID, forKey: "onboardingFirstImportID.v1")
         UserDefaults.standard.set(sources, forKey: "onboardingFirstSourceNames.v1")
     }
 
     func markFirstMemoryReviewed(capture: CaptureItem) {
-        if !onboardingFirstImportID.isEmpty, capture.import_id != onboardingFirstImportID {
-            return
-        }
         firstMemoryReviewed = true
         UserDefaults.standard.set(true, forKey: "onboardingFirstMemoryReviewed.v1")
     }
@@ -3230,7 +3135,7 @@ final class AppState: ObservableObject {
         guard canCompleteOnboarding else {
             dismissOnboardingForSession()
             let remaining = incompleteOnboardingStepTitles.prefix(2).joined(separator: ", ")
-            status = remaining.isEmpty ? "Setup can be completed from Trust" : "Setup will reopen until finished: \(remaining)"
+            status = remaining.isEmpty ? "Setup can be completed from Privacy" : "Setup will reopen until finished: \(remaining)"
             return
         }
         completeOnboarding()
@@ -3238,7 +3143,7 @@ final class AppState: ObservableObject {
 
     func dismissOnboardingForSession() {
         showOnboarding = false
-        status = "Setup will reopen until finished; reopen it from Trust anytime"
+        status = "Setup will reopen until finished; reopen it from Connections & Privacy anytime"
     }
 
     func showOnboardingAgain() {
@@ -3251,10 +3156,9 @@ final class AppState: ObservableObject {
         firstSourceAdded = false
         firstMemoryReviewed = false
         cortexUsed = false
-        onboardingFirstImportID = ""
         onboardingFirstSourceNames = []
         onboardingBackupDecision = ""
-        showOnboarding = true
+        showOnboarding = false
         setOnboardingStep(.privateVault)
         for key in [
             "onboardingComplete.v1",
@@ -3294,90 +3198,6 @@ final class AppState: ObservableObject {
     func skipFirstBackup() {
         markBackupDecision("skipped")
         status = "First backup skipped"
-    }
-
-    func copyDailyContextPack() {
-        guard canPrepareArtifacts else {
-            status = "Enable Trust > AI access > prepare artifacts before copying memory"
-            return
-        }
-        copyPersonalProfile(query: "", surface: "model", target: "clipboard", label: "Personal profile prepared")
-    }
-
-    func copyContextPack() {
-        guard canPrepareArtifacts else {
-            status = "Enable Trust > AI access > prepare artifacts before copying memory"
-            return
-        }
-        let query = contextQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        copyPersonalProfile(
-            query: query,
-            surface: "focused-context",
-            target: "clipboard",
-            label: query.isEmpty ? "Personal profile prepared" : "Profile for \(query) prepared"
-        )
-    }
-
-    func copyAgentAdaptation() {
-        guard canPrepareArtifacts else {
-            status = "Enable Trust > AI access > prepare artifacts before copying memory"
-            return
-        }
-        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        copyAgentAdaptation(
-            query: query,
-            surface: "agent-adaptation",
-            target: "assistant",
-            label: query.isEmpty ? "Agent adaptation layer prepared" : "Agent adaptation layer for \(query) prepared"
-        )
-    }
-
-    private func copyAgentAdaptation(query: String, surface: String, target: String, label: String) {
-        Task {
-            do {
-                var allowed = CharacterSet.urlQueryAllowed
-                allowed.remove(charactersIn: "&+=")
-                let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: allowed) ?? query
-                let encodedTarget = target.addingPercentEncoding(withAllowedCharacters: allowed) ?? target
-                let limit = max(1, min(20, appSettings.context_pack_limit))
-                let data = try await request(path: "/v1/agent-adaptation?format=markdown&target=\(encodedTarget)&query=\(encodedQuery)&limit=\(limit)", method: "GET")
-                let adaptation = String(data: data, encoding: .utf8) ?? ""
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(adaptation, forType: .string)
-                status = label
-                await recordContextReuse(surface: surface, query: query, target: target)
-            } catch {
-                status = CortexRecoveryText.failureStatus("Agent adaptation layer", error: error)
-            }
-        }
-    }
-
-    private func copyPersonalProfile(query: String, surface: String, target: String, label: String) {
-        Task {
-            do {
-                var allowed = CharacterSet.urlQueryAllowed
-                allowed.remove(charactersIn: "&+=")
-                let encoded = query.addingPercentEncoding(withAllowedCharacters: allowed) ?? query
-                let limit = max(1, min(20, appSettings.context_pack_limit))
-                let data = try await request(path: "/v1/personal-profile?format=markdown&query=\(encoded)&limit=\(limit)", method: "GET")
-                let profile = String(data: data, encoding: .utf8) ?? ""
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(profile, forType: .string)
-                status = label
-                await recordContextReuse(surface: surface, query: query, target: target)
-            } catch {
-                if !query.isEmpty {
-                    status = CortexRecoveryText.failureStatus("Profile", error: error)
-                } else if let review {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(review.context_pack, forType: .string)
-                    status = "Memory view prepared"
-                    await recordContextReuse(surface: surface, query: query, target: target)
-                } else {
-                    status = CortexRecoveryText.failureStatus("Profile", error: error)
-                }
-            }
-        }
     }
 
     func loadDiagnostics() async {
@@ -3485,7 +3305,7 @@ final class AppState: ObservableObject {
         Task {
             do {
                 _ = try await request(path: "/v1/captures/\(capture.id)/approve", method: "POST")
-                status = "Approved capture"
+                status = "Approved review item"
                 markFirstMemoryReviewed(capture: capture)
                 await loadInbox()
                 await loadRecent()
@@ -3506,7 +3326,7 @@ final class AppState: ObservableObject {
         Task {
             do {
                 _ = try await request(path: "/v1/captures/\(capture.id)/archive", method: "POST")
-                status = "Archived capture"
+                status = "Archived review item"
                 await loadInbox()
                 await loadRecent()
                 await loadStats()
@@ -3531,7 +3351,7 @@ final class AppState: ObservableObject {
                     _ = try await request(path: "/v1/captures/\(capture.id)/approve", method: "POST")
                     markFirstMemoryReviewed(capture: capture)
                 }
-                status = "Approved \(visibleCaptures.count) visible capture\(visibleCaptures.count == 1 ? "" : "s")"
+                status = "Approved \(visibleCaptures.count) visible review item\(visibleCaptures.count == 1 ? "" : "s")"
                 await loadInbox()
                 await loadRecent()
                 await loadStats()
@@ -3555,7 +3375,7 @@ final class AppState: ObservableObject {
                 for capture in visibleCaptures {
                     _ = try await request(path: "/v1/captures/\(capture.id)/archive", method: "POST")
                 }
-                status = "Archived \(visibleCaptures.count) visible capture\(visibleCaptures.count == 1 ? "" : "s")"
+                status = "Archived \(visibleCaptures.count) visible review item\(visibleCaptures.count == 1 ? "" : "s")"
                 await loadInbox()
                 await loadRecent()
                 await loadStats()
@@ -3597,13 +3417,13 @@ final class AppState: ObservableObject {
                 let data = try await request(path: "/v1/imports/\(item.import_id)", method: "DELETE")
                 let response = try JSONDecoder().decode(SourceImportDeleteResponse.self, from: data)
                 if response.deleted {
-                    status = "Removed \(response.deleted_captures) imported capture\(response.deleted_captures == 1 ? "" : "s")"
+                    status = "Removed \(response.deleted_captures) review item\(response.deleted_captures == 1 ? "" : "s") from source sync"
                 } else {
-                    status = "Import already removed"
+                    status = "Source sync already removed"
                 }
                 await refreshAfterCapture()
             } catch {
-                status = CortexRecoveryText.failureStatus("Remove import", error: error)
+                status = CortexRecoveryText.failureStatus("Remove source sync", error: error)
             }
         }
     }
@@ -3881,6 +3701,10 @@ final class AppState: ObservableObject {
             }
         }
     }
+
+    deinit {
+        obsidianAutoSyncTask?.cancel()
+    }
 }
 
 struct CortexView: View {
@@ -3891,80 +3715,51 @@ struct CortexView: View {
             header
             TabView(selection: $state.selectedTab) {
                 ModelTab(state: state)
-                    .tabItem { Label("Model", systemImage: "brain.head.profile") }
+                    .tabItem { Label("Home", systemImage: "circle.grid.cross") }
                     .tag(AppTab.model)
-                SourcesTab(state: state)
-                    .tabItem { Label("Sources", systemImage: "tray.and.arrow.down") }
-                    .tag(AppTab.sources)
                 ReviewTab(state: state)
                     .tabItem { Label("Review", systemImage: "checklist") }
                     .tag(AppTab.review)
                 AskTab(state: state)
                     .tabItem { Label("Ask", systemImage: "magnifyingglass") }
                     .tag(AppTab.ask)
-                TrustTab(state: state)
-                    .tabItem { Label("Trust", systemImage: "lock.shield") }
-                    .tag(AppTab.trust)
             }
             footer
         }
-        .frame(minWidth: 520, minHeight: 620)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(minWidth: 560, minHeight: 640)
         .sheet(isPresented: $state.showOnboarding) {
             OnboardingView(state: state)
                 .frame(width: 760, height: 660)
         }
-        .sheet(isPresented: $state.showImportPreview) {
-            ImportPreviewSheet(state: state)
-                .frame(width: 680, height: 560)
+        .sheet(isPresented: $state.showConnectionsPrivacy) {
+            ConnectionsPrivacySheet(state: state)
+                .frame(width: 840, height: 720)
         }
     }
 
     private var header: some View {
         VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 12) {
+                HStack(spacing: 8) {
+                    Image(systemName: "brain.head.profile")
+                        .foregroundColor(.accentColor)
                     Text("Cortex")
-                        .font(.title2)
+                        .font(.headline)
                         .fontWeight(.semibold)
-                    Text("Private adaptation layer for your work, memory, and style.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
                 }
                 Spacer()
                 Button {
-                    state.selectedTab = .sources
-                    state.status = "Review connection coverage and source health"
+                    state.openConnectionsPrivacy(statusMessage: "Manage Cortex connections and privacy")
                 } label: {
-                    Label("Sources", systemImage: "rectangle.connected.to.line.below")
+                    Label("Connections & Privacy", systemImage: "lock.shield")
+                        .frame(minHeight: 40)
                 }
+                .controlSize(.large)
+                CortexLayerStatusPill(state: state)
             }
-            .padding(16)
-
-            if state.setupIncomplete && !state.showOnboarding {
-                HStack(spacing: 10) {
-                    Image(systemName: "checklist.unchecked")
-                        .foregroundColor(.orange)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Setup incomplete")
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                        Text(state.setupIncompleteDetail)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
-                    Spacer()
-                    Button {
-                        state.showOnboardingAgain()
-                    } label: {
-                        Label("Resume Setup", systemImage: "arrow.right.circle")
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(Color.orange.opacity(0.08))
-            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
         .background(Color(nsColor: .windowBackgroundColor))
     }
@@ -3994,6 +3789,59 @@ struct CortexView: View {
     }
 }
 
+struct CortexLayerStatusPill: View {
+    @ObservedObject var state: AppState
+
+    private var activeAccounts: Int {
+        state.sourceAccounts.filter { $0.disconnected_at == nil }.count
+    }
+
+    private var pending: Int {
+        state.review?.stats.pending_captures ?? state.inbox.count
+    }
+
+    private var label: String {
+        if activeAccounts > 0 {
+            return "\(activeAccounts) connected"
+        }
+        if pending > 0 {
+            return "\(pending) pending"
+        }
+        if (state.stats?.memories ?? 0) > 0 {
+            return "Memory ready"
+        }
+        return "Setup"
+    }
+
+    private var icon: String {
+        if activeAccounts > 0 { return "checkmark.seal.fill" }
+        if pending > 0 { return "tray.full.fill" }
+        if (state.stats?.memories ?? 0) > 0 { return "sparkle.magnifyingglass" }
+        return "circle.dashed"
+    }
+
+    private var color: Color {
+        if activeAccounts > 0 { return .green }
+        if pending > 0 { return .orange }
+        if (state.stats?.memories ?? 0) > 0 { return .accentColor }
+        return .secondary
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .foregroundColor(color)
+            Text(label)
+                .font(.caption)
+                .fontWeight(.medium)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(Capsule())
+    }
+}
+
 struct IntegrationCenterView: View {
     @ObservedObject var state: AppState
     let compact: Bool
@@ -4006,12 +3854,62 @@ struct IntegrationCenterView: View {
         state.integrations.filter { $0.supportsInstall && state.integrationState(for: $0).appInstalled }.count
     }
 
+    private var compactIntegrations: [AIIntegration] {
+        state.integrations.filter { integration in
+            guard integration.supportsInstall else { return false }
+            let integrationState = state.integrationState(for: integration)
+            return integrationState.configured || integrationState.appInstalled
+        }
+    }
+
     var body: some View {
+        Group {
+            if compact {
+                compactBody
+            } else {
+                fullBody
+            }
+        }
+        .onAppear {
+            state.refreshIntegrationStates()
+        }
+    }
+
+    private var compactBody: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            header
+            IntegrationCompactHero(
+                connectedCount: connectedCount,
+                detectedCount: detectedCount,
+                connectDetected: {
+                    state.installDetectedIntegrations()
+                },
+                refresh: {
+                    state.refreshIntegrationStates()
+                }
+            )
+            if !compactIntegrations.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Detected tools")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.secondary)
+                    ForEach(compactIntegrations.prefix(4)) { integration in
+                        IntegrationCompactRow(state: state, integration: integration)
+                    }
+                }
+            }
+        }
+    }
+
+    private var fullBody: some View {
         VStack(alignment: .leading, spacing: compact ? 12 : 16) {
             header
             summary
             quickActions
-            manualHandoffActions
+            if !compact {
+                manualMCPSetupActions
+            }
             ForEach(IntegrationCategory.allCases, id: \.self) { category in
                 let categoryIntegrations = integrations(in: category)
                 if !categoryIntegrations.isEmpty {
@@ -4027,17 +3925,14 @@ struct IntegrationCenterView: View {
                 }
             }
         }
-        .onAppear {
-            state.refreshIntegrationStates()
-        }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text("AI access")
+            Text(compact ? "AI tools" : "AI access")
                 .font(compact ? .headline : .title3)
                 .fontWeight(.semibold)
-            Text("Let trusted local tools read approved memory directly. Copy-based handoff stays in Advanced for tools that cannot connect yet.")
+            Text(compact ? "Connect local tools through MCP so approved memory is available where you already work." : "Let trusted local tools read approved memory directly. Browser tools are listed as references until direct connectors exist.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -4074,29 +3969,18 @@ struct IntegrationCenterView: View {
         }
     }
 
-    private var manualHandoffActions: some View {
-        DisclosureGroup("Advanced local setup") {
+    private var manualMCPSetupActions: some View {
+        DisclosureGroup("Advanced MCP setup") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Use these only when a supported tool cannot connect to Cortex directly yet.")
+                Text("Use this when a supported local tool needs a hand-configured MCP server.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 HStack {
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy Advanced Setup", systemImage: "doc.on.doc")
+                        Label("Copy MCP Settings", systemImage: "doc.on.doc")
                     }
-
-                    Button {
-                        if let chatGPT = state.integrations.first(where: { $0.id == "chatgpt" }) {
-                            state.copyIntegrationContext(chatGPT)
-                        } else {
-                            state.copyDailyContextPack()
-                        }
-                    } label: {
-                        Label("Copy Chat Fallback", systemImage: "text.quote")
-                    }
-                    .disabled(!state.canPrepareArtifacts)
                     Spacer()
                 }
             }
@@ -4108,6 +3992,131 @@ struct IntegrationCenterView: View {
         state.integrations.filter { integration in
             integration.category == category && (!compact || integration.supportsInstall)
         }
+    }
+}
+
+struct IntegrationCompactHero: View {
+    let connectedCount: Int
+    let detectedCount: Int
+    let connectDetected: () -> Void
+    let refresh: () -> Void
+
+    private var needsConnection: Bool {
+        detectedCount > connectedCount
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill((needsConnection ? Color.accentColor : Color.green).opacity(0.14))
+                Image(systemName: needsConnection ? "wand.and.stars" : (connectedCount > 0 ? "checkmark.seal.fill" : "app.badge"))
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundColor(needsConnection ? .accentColor : (connectedCount > 0 ? .green : .secondary))
+            }
+            .frame(width: 56, height: 56)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                Text(detail)
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            if needsConnection {
+                Button {
+                    connectDetected()
+                } label: {
+                    Label("Connect", systemImage: "link.circle")
+                        .frame(minWidth: 110, minHeight: 46)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            } else {
+                Button {
+                    refresh()
+                } label: {
+                    Label("Check", systemImage: "arrow.clockwise")
+                        .frame(minWidth: 110, minHeight: 46)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+            }
+        }
+        .padding(14)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var title: String {
+        if needsConnection {
+            return "\(detectedCount - connectedCount) tool\(detectedCount - connectedCount == 1 ? "" : "s") ready"
+        }
+        if connectedCount > 0 {
+            return "\(connectedCount) tool\(connectedCount == 1 ? "" : "s") connected"
+        }
+        return "No local AI tool detected"
+    }
+
+    private var detail: String {
+        if needsConnection {
+            return "Cortex can install the local MCP connection for detected tools."
+        }
+        if connectedCount > 0 {
+            return "Approved memory and source-sync tools are available through MCP."
+        }
+        return "Install Claude Desktop, Cursor, or Windsurf, then check again."
+    }
+}
+
+struct IntegrationCompactRow: View {
+    @ObservedObject var state: AppState
+    let integration: AIIntegration
+
+    private var integrationState: AIIntegrationState {
+        state.integrationState(for: integration)
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: integrationState.configured ? "checkmark.circle.fill" : integration.systemImage)
+                .foregroundColor(integrationState.configured ? .green : .accentColor)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(integration.name)
+                    .font(.callout)
+                    .fontWeight(.medium)
+                Text(integrationState.configured ? "Connected through MCP" : "Installed and ready to connect")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer(minLength: 8)
+            if integrationState.configured {
+                Text("Connected")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.green)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(Color.green.opacity(0.12))
+                    .clipShape(Capsule())
+            } else {
+                Button {
+                    state.installIntegration(integration)
+                } label: {
+                    Label("Connect", systemImage: "link.circle")
+                        .frame(minHeight: 38)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.70))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -4200,20 +4209,31 @@ struct IntegrationCard: View {
     @ViewBuilder
     private var compactAction: some View {
         if integrationState.configured {
-            Label("Connected", systemImage: "checkmark.circle.fill")
-                .font(.caption)
-                .foregroundColor(.green)
+            HStack {
+                Label("Connected", systemImage: "checkmark.circle.fill")
+                    .font(.callout)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.green)
+                Spacer()
+            }
+            .frame(minHeight: 36)
         } else if integration.supportsInstall && integrationState.appInstalled {
             Button {
                 state.installIntegration(integration)
             } label: {
                 Label("Connect", systemImage: "link.circle")
+                    .frame(maxWidth: .infinity, minHeight: 38)
             }
             .buttonStyle(.borderedProminent)
+            .controlSize(.large)
         } else if integration.supportsInstall {
-            Label("Install the app to connect it", systemImage: "app.badge")
-                .font(.caption)
-                .foregroundColor(.secondary)
+            HStack {
+                Label("Install app to connect", systemImage: "app.badge")
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+                Spacer()
+            }
+            .frame(minHeight: 38)
         } else {
             EmptyView()
         }
@@ -4226,28 +4246,37 @@ struct IntegrationCard: View {
                     state.installIntegration(integration)
                 } label: {
                     Label(integrationState.configured ? "Repair" : "Connect", systemImage: integrationState.configured ? "wrench.and.screwdriver" : "link.circle")
+                        .frame(minHeight: 40)
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.large)
 
-                Button {
-                    state.copyMCPConfig(for: integration)
+                Menu {
+                    Button {
+                        state.copyMCPConfig(for: integration)
+                    } label: {
+                        Label("Copy MCP Settings", systemImage: "doc.on.doc")
+                    }
+                    Button {
+                        state.openIntegrationConfig(integration)
+                    } label: {
+                        Label("Open Config", systemImage: "folder")
+                    }
                 } label: {
-                    Label("Advanced Setup", systemImage: "doc.on.doc")
+                    Label("More", systemImage: "ellipsis.circle")
+                        .frame(minHeight: 40)
                 }
-
+                .menuStyle(.borderlessButton)
+                .controlSize(.large)
+            } else {
                 Button {
                     state.openIntegrationConfig(integration)
                 } label: {
-                    Label("Open Config", systemImage: "folder")
-                }
-            } else {
-                Button {
-                    state.copyIntegrationContext(integration)
-                } label: {
-                    Label("Copy Chat Fallback", systemImage: "text.quote")
+                    Label("Open", systemImage: "arrow.up.right.square")
+                        .frame(minHeight: 40)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!state.canPrepareArtifacts)
+                .controlSize(.large)
             }
 
             Spacer(minLength: 0)
@@ -4266,6 +4295,9 @@ struct IntegrationCard: View {
             if integration.supportsInstall {
                 return "Cortex will show a Connect action after the app is installed."
             }
+        }
+        if !integration.supportsInstall {
+            return "Direct MCP/local connectors are the primary path."
         }
         return integration.restartHint
     }
@@ -4290,7 +4322,7 @@ struct IntegrationStatusBadge: View {
         if state.configured { return "Connected" }
         if supportsInstall && state.appInstalled { return "Detected" }
         if supportsInstall && state.configExists { return "Config" }
-        return supportsInstall ? "Ready" : "Fallback"
+        return supportsInstall ? "Ready" : "Reference"
     }
 
     private var color: Color {
@@ -4623,7 +4655,7 @@ struct SourceAccountHealthRow: View {
                 Text(detail)
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
             }
             Spacer(minLength: 0)
         }
@@ -4634,12 +4666,43 @@ struct SourceAccountHealthRow: View {
 
     private var detail: String {
         if let error = account.last_error ?? cursor?.last_error {
-            return CortexRecoveryText.inlineError(error, fallback: "Refresh Sources. If it repeats, reconnect this source.")
+            return CortexRecoveryText.inlineError(error, fallback: "Refresh Connections. If it repeats, reconnect this source.")
         }
         if let synced = account.last_sync_at ?? cursor?.last_completed_at {
+            if let summary = latestBatchSummary {
+                return "\(account.source) · \(summary) · \(shortDate(synced))"
+            }
             return "\(account.source) · \(account.status) · synced \(shortDate(synced))"
         }
         return "\(account.source) · \(account.status) · \(account.auth_state)"
+    }
+
+    private var latestBatchSummary: String? {
+        guard let state = cursor?.state else { return nil }
+        let received = state["last_batch_received"]?.intValue ?? 0
+        guard received > 0 else { return nil }
+        let saved = state["last_batch_saved"]?.intValue ?? 0
+        let queued = state["last_batch_queued"]?.intValue ?? 0
+        let skipped = state["last_batch_skipped"]?.intValue ?? 0
+        let failed = state["last_batch_failed"]?.intValue ?? 0
+
+        var parts: [String] = []
+        if saved > 0 {
+            parts.append("\(saved) saved")
+        }
+        if queued > 0 {
+            parts.append("\(queued) queued")
+        }
+        if skipped > 0 {
+            parts.append("\(skipped) unchanged")
+        }
+        if failed > 0 {
+            parts.append("\(failed) failed")
+        }
+        if parts.isEmpty {
+            return "\(received) checked"
+        }
+        return parts.joined(separator: ", ")
     }
 
     private func shortDate(_ value: String) -> String {
@@ -4671,326 +4734,6 @@ struct SourceHealthTile: View {
         .background(Color(nsColor: .controlBackgroundColor))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-struct CaptureQuickNoteSection: View {
-    @ObservedObject var state: AppState
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Quick signal")
-                .font(.headline)
-            TextEditor(text: $state.quickNote)
-                .font(.body)
-                .frame(minHeight: 110)
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2)))
-            HStack {
-                Button {
-                    state.captureQuickNote()
-                } label: {
-                    Label("Add to Model", systemImage: "square.and.arrow.down")
-                }
-                .buttonStyle(.borderedProminent)
-                Button {
-                    state.captureClipboard()
-                } label: {
-                    Label("Add Clipboard", systemImage: "doc.on.clipboard")
-                }
-                Spacer()
-            }
-        }
-    }
-}
-
-struct CaptureWebSection: View {
-    @ObservedObject var state: AppState
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            TextField("URL", text: $state.captureURLString)
-                .textFieldStyle(.roundedBorder)
-            TextField("Title or source name", text: $state.captureTitle)
-                .textFieldStyle(.roundedBorder)
-            TextEditor(text: $state.captureNotes)
-                .font(.body)
-                .frame(minHeight: 80)
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2)))
-            HStack {
-                Button {
-                    state.captureURLSurface()
-                } label: {
-                    Label("Add Link", systemImage: "link.badge.plus")
-                }
-                .buttonStyle(.borderedProminent)
-                Button {
-                    state.copyBrowserBookmarklet()
-                } label: {
-                    Label("Copy Capture Bookmarklet", systemImage: "bookmark")
-                }
-                Button {
-                    state.openBrowserCapturePage()
-                } label: {
-                    Label("Open Capture Page", systemImage: "safari")
-                }
-                Spacer()
-            }
-            Text("Use the bookmarklet to send selected pages or research notes to the local importer. Cortex does not place your API token in browser URLs or page scripts.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
-        .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-struct ImportPreviewSheet: View {
-    @ObservedObject var state: AppState
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Review Source Import")
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                    Text("\(state.importPreviewURLs.count) selected source\(state.importPreviewURLs.count == 1 ? "" : "s")")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-                Button {
-                    state.cancelImportPreview()
-                } label: {
-                    Label("Close", systemImage: "xmark")
-                }
-                .labelStyle(.iconOnly)
-                .help("Close")
-            }
-
-            if let preview = state.importPreview {
-                HStack(spacing: 8) {
-                    ImportMetric(label: "Records", value: preview.records_found)
-                    ImportMetric(label: "Sources", value: preview.sources.count)
-                    ImportMetric(label: "Samples", value: preview.sample.count)
-                }
-
-                if !preview.sources.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Detected Types")
-                            .font(.headline)
-                        FlowWrap(items: preview.sources.map { "\($0.source) \($0.count)" })
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Sample Records")
-                        .font(.headline)
-                    if preview.sample.isEmpty {
-                        QuietState(title: "No sample records", detail: "Cortex did not find structured records in the selected sources.")
-                    } else {
-                        ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 8) {
-                                ForEach(preview.sample, id: \.self) { sample in
-                                    HStack(alignment: .top, spacing: 10) {
-                                        Image(systemName: "doc.text.magnifyingglass")
-                                            .foregroundColor(.accentColor)
-                                            .frame(width: 18)
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(sample.title.isEmpty ? "Untitled record" : sample.title)
-                                                .font(.headline)
-                                                .lineLimit(2)
-                                            Text("\(sample.source) · \(ByteCountFormatter.string(fromByteCount: Int64(sample.chars), countStyle: .file))")
-                                                .font(.caption)
-                                                .foregroundColor(.secondary)
-                                        }
-                                        Spacer()
-                                    }
-                                    .padding(9)
-                                    .background(Color(nsColor: .controlBackgroundColor))
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                QuietState(title: "Preview unavailable", detail: "Choose sources again to scan them before import.")
-            }
-
-            Spacer(minLength: 0)
-            HStack {
-                Button {
-                    state.cancelImportPreview()
-                } label: {
-                    Label("Cancel", systemImage: "xmark")
-                }
-                Spacer()
-                Button {
-                    state.confirmImportPreview()
-                } label: {
-                    Label("Import to Model", systemImage: "tray.and.arrow.down.fill")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(state.importPreview?.records_found ?? 0 == 0)
-            }
-        }
-        .padding(18)
-    }
-}
-
-struct ImportMetric: View {
-    let label: String
-    let value: Int
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("\(value)")
-                .font(.title3)
-                .fontWeight(.semibold)
-            Text(label)
-                .font(.caption2)
-                .foregroundColor(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-struct FlowWrap: View {
-    let items: [String]
-
-    var body: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], alignment: .leading, spacing: 8) {
-            ForEach(items, id: \.self) { item in
-                Text(item)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.accentColor.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-        }
-    }
-}
-
-struct ImportHistorySection: View {
-    @ObservedObject var state: AppState
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Import History")
-                    .font(.headline)
-                Spacer()
-                Button {
-                    Task { await state.loadImportHistory() }
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-                .labelStyle(.iconOnly)
-                .help("Refresh")
-            }
-            if state.importHistory.isEmpty {
-                QuietState(title: "No imports yet", detail: "Confirmed source imports appear here as removable batches.")
-            } else {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(state.importHistory) { item in
-                        ImportHistoryRow(item: item) {
-                            state.deleteImport(item)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-struct ImportHistoryRow: View {
-    let item: SourceImportHistoryItem
-    let undoImport: () -> Void
-    @State private var confirmUndo = false
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: iconName)
-                .foregroundColor(iconColor)
-                .frame(width: 20)
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(title)
-                        .font(.headline)
-                        .lineLimit(1)
-                    Spacer()
-                    Text(String(item.created_at.prefix(10)))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                Text(summary)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(2)
-                HStack(spacing: 10) {
-                    Text("\(item.remaining_memories) memories")
-                    Text("\(item.remaining_tasks) tasks")
-                    if (item.skipped ?? 0) > 0 {
-                        Text("\(item.skipped ?? 0) skipped")
-                    }
-                    if item.failed > 0 {
-                        Text("\(item.failed) failed")
-                    }
-                    Spacer()
-                    Button {
-                        confirmUndo = true
-                    } label: {
-                        Label("Undo Import", systemImage: "arrow.uturn.backward")
-                    }
-                    .font(.caption)
-                    .disabled(!item.can_delete)
-                    .confirmationDialog("Undo this import?", isPresented: $confirmUndo) {
-                        Button("Remove Imported Data", role: .destructive) {
-                            undoImport()
-                        }
-                        Button("Cancel", role: .cancel) {}
-                    } message: {
-                        Text("Cortex will remove captures and derived memory created by this import batch.")
-                    }
-                }
-                .font(.caption)
-                .foregroundColor(.secondary)
-            }
-        }
-        .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    private var title: String {
-        if let first = item.sources.first?.source, !first.isEmpty {
-            return item.sources.count > 1 ? "\(first) + \(item.sources.count - 1) more" : first
-        }
-        return item.source_hint.isEmpty ? "Source import" : item.source_hint
-    }
-
-    private var summary: String {
-        let sourceSummary = item.sources.prefix(3).map { "\($0.source): \($0.count)" }.joined(separator: ", ")
-        let skipped = item.skipped ?? 0
-        let skippedText = skipped > 0 ? ", \(skipped) skipped" : ""
-        let base = "\(item.records_found) record\(item.records_found == 1 ? "" : "s"), \(item.queued) queued, \(item.saved) saved\(skippedText)"
-        return sourceSummary.isEmpty ? base : "\(base) · \(sourceSummary)"
-    }
-
-    private var iconName: String {
-        item.status == "partial" ? "exclamationmark.triangle.fill" : "tray.full.fill"
-    }
-
-    private var iconColor: Color {
-        item.status == "partial" ? .orange : .accentColor
     }
 }
 
@@ -5173,14 +4916,10 @@ struct TrustPolicySection: View {
                 Text("AI access")
                     .font(.headline)
                 Spacer()
-                Button {
-                    Task { await state.loadTrust() }
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
+                TrustAccessBadge(text: selectedPreset.title, systemImage: "shield.lefthalf.filled", color: selectedPreset == .privateMode ? .green : .accentColor)
             }
 
-            Text("Choose how much approved memory connected AI tools may read or change.")
+            Text("Pick the default level of memory access for connected AI tools.")
                 .font(.body)
                 .foregroundColor(.secondary)
 
@@ -5192,7 +4931,7 @@ struct TrustPolicySection: View {
             .pickerStyle(.segmented)
             .onAppear {
                 selectedPreset = state.currentTrustPreset()
-                advancedExpanded = selectedPreset == .advanced
+                advancedExpanded = false
             }
             .onChange(of: selectedPreset) { preset in
                 if preset == .advanced {
@@ -5205,29 +4944,26 @@ struct TrustPolicySection: View {
             .onChange(of: state.appSettings) { settings in
                 let preset = TrustPreset.matching(settings)
                 selectedPreset = preset
-                if preset == .advanced {
-                    advancedExpanded = true
-                }
             }
 
             TrustNotice(systemImage: "shield.lefthalf.filled", title: selectedPreset.title, detail: selectedPreset.detail, color: selectedPreset == .privateMode ? .green : .accentColor)
 
-            DisclosureGroup("Permissions", isExpanded: $advancedExpanded) {
+            DisclosureGroup("Fine-tune access", isExpanded: $advancedExpanded) {
                 VStack(alignment: .leading, spacing: 14) {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Review and memory sharing")
+                        Text("Review")
                             .font(.caption)
                             .fontWeight(.semibold)
                             .foregroundColor(.secondary)
                         TrustToggleRow(
                             title: "Review new saves",
-                            detail: "New captures enter the inbox before you treat them as trusted.",
+                            detail: "New source memories wait in Review before you treat them as trusted.",
                             systemImage: "tray.full",
                             isOn: $state.appSettings.review_new_captures
                         )
                         TrustToggleRow(
                             title: "Let AI use pending saves",
-                            detail: "Turn this off when only approved captures should appear in search and AI access.",
+                            detail: "Turn this off when only approved memory should appear in search and AI access.",
                             systemImage: "lock.open",
                             isOn: $state.appSettings.allow_pending_in_context
                         )
@@ -5242,7 +4978,7 @@ struct TrustPolicySection: View {
                     Divider()
 
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Connected AI actions")
+                        Text("AI actions")
                             .font(.caption)
                             .fontWeight(.semibold)
                             .foregroundColor(.secondary)
@@ -5260,7 +4996,7 @@ struct TrustPolicySection: View {
                         )
                         TrustToggleRow(
                             title: "Let connected AI prepare artifacts",
-                            detail: "Connected AI tools can prepare redacted profile artifacts, adaptation instructions, or exports.",
+                            detail: "Connected AI tools can prepare redacted profile artifacts or adaptation instructions.",
                             systemImage: "square.and.arrow.up",
                             isOn: $state.appSettings.allow_agent_exports
                         )
@@ -5276,7 +5012,7 @@ struct TrustPolicySection: View {
                             )
                             TrustToggleRow(
                                 title: "Let connected AI delete data",
-                                detail: "Connected AI tools can delete memories, captures, backups, or all local user data.",
+                                detail: "Connected AI tools can delete memories, review items, backups, or all local user data.",
                                 systemImage: "trash",
                                 isOn: $state.appSettings.allow_agent_destructive_actions
                             )
@@ -5287,14 +5023,14 @@ struct TrustPolicySection: View {
                     Divider()
 
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Identity and context size")
+                        Text("Identity")
                             .font(.caption)
                             .fontWeight(.semibold)
                             .foregroundColor(.secondary)
                         Label("Your source aliases", systemImage: "person.text.rectangle")
                             .font(.callout)
                             .fontWeight(.medium)
-                        Text("Names, handles, or email addresses that mark Slack and email imports as written by you.")
+                        Text("Names, handles, or email addresses that mark connected source records as written by you.")
                             .font(.caption)
                             .foregroundColor(.secondary)
                         TextField("sarpt, @sarpt, sarpt@example.com", text: Binding(
@@ -5314,7 +5050,7 @@ struct TrustPolicySection: View {
                     }
 
                     Stepper(value: $state.appSettings.context_pack_limit, in: 4...50, step: 2) {
-                        Text("Shared memory limit: \(state.appSettings.context_pack_limit)")
+                        Text("Ask memory depth: \(state.appSettings.context_pack_limit)")
                     }
                 }
                 .padding(.top, 8)
@@ -5325,7 +5061,7 @@ struct TrustPolicySection: View {
                     Button {
                         state.saveMemorySettings()
                     } label: {
-                        Label("Save Settings", systemImage: "checkmark.circle")
+                        Label("Save", systemImage: "checkmark.circle")
                     }
                     .buttonStyle(.borderedProminent)
                     Button {
@@ -5340,6 +5076,27 @@ struct TrustPolicySection: View {
                 }
             }
         }
+    }
+}
+
+struct TrustAccessBadge: View {
+    let text: String
+    let systemImage: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage)
+            Text(text)
+                .lineLimit(1)
+        }
+        .font(.caption)
+        .fontWeight(.medium)
+        .foregroundColor(color)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(color.opacity(0.1))
+        .clipShape(Capsule())
     }
 }
 
@@ -5372,10 +5129,10 @@ struct TrustSourceSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Sources")
+            Text("Source privacy")
                 .font(.headline)
             if summary.source_counts.isEmpty {
-                QuietState(title: "No sources yet", detail: "Captured memory sources will appear here.")
+                QuietState(title: "No sources yet", detail: "Connected source activity will appear here.")
             } else {
                 ForEach(summary.source_counts.prefix(8)) { source in
                     HStack(spacing: 10) {
@@ -5438,7 +5195,7 @@ struct TrustAuditSection: View {
                 }
             }
             if events.isEmpty {
-                QuietState(title: "No audit events yet", detail: "Captures, approvals, backups, settings, and agent tool calls will appear here.")
+                QuietState(title: "No audit events yet", detail: "Source saves, approvals, backups, settings, and agent tool calls will appear here.")
             } else {
                 ForEach(events.prefix(12)) { event in
                     HStack(alignment: .top, spacing: 10) {
@@ -5480,29 +5237,6 @@ struct TrustAuditSection: View {
         if event.object_type == "agent" { return .purple }
         if event.event_type.contains("archive") { return .orange }
         return .accentColor
-    }
-}
-
-struct TrustActionsSection: View {
-    @ObservedObject var state: AppState
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Privacy posture")
-                .font(.headline)
-            TrustNotice(systemImage: "lock.doc", title: "Local-first", detail: "Trust controls apply to the local backend, connected AI tools, safe sharing artifacts, and exports. The vault remains on this Mac.", color: .accentColor)
-            DisclosureGroup("Export fallback") {
-                HStack {
-                    Button {
-                        state.copyDailyContextPack()
-                    } label: {
-                        Label("Copy Redacted Profile", systemImage: "doc.on.doc")
-                    }
-                    Spacer()
-                }
-                .padding(.top, 4)
-            }
-        }
     }
 }
 
@@ -5682,13 +5416,15 @@ struct SettingsOnboardingSection: View {
                 } label: {
                     Label("Open Vault", systemImage: "folder")
                 }
-            Button {
-                state.copyMCPConfig()
-            } label: {
-                Label("Copy MCP Setup", systemImage: "doc.on.doc")
-            }
-                Spacer()
-            }
+                    Button {
+                        state.copyMCPConfig()
+                    } label: {
+                        Label("Copy MCP Settings", systemImage: "doc.on.doc")
+                            .frame(minHeight: 40)
+                    }
+                    .controlSize(.large)
+                    Spacer()
+                }
             Text("Vault: \(state.vaultPath)")
                 .font(.caption)
                 .foregroundColor(.secondary)
@@ -6161,13 +5897,16 @@ struct SettingsPrivacySection: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Privacy")
                 .font(.headline)
-            Text("Cortex only reads the clipboard when you click Save or enable the optional keyboard shortcut. No screen recording, no ambient capture, and no background upload.")
+            Text("Cortex does not monitor the clipboard, record the screen, capture ambient activity, or upload background data.")
                 .font(.body)
                 .foregroundColor(.secondary)
-            Toggle("Keyboard shortcut: Cmd Shift V saves the clipboard", isOn: $state.globalClipboardHotkeyEnabled)
-                .onChange(of: state.globalClipboardHotkeyEnabled) { _ in
-                    state.saveHotkeyPreference()
-                }
+            DisclosureGroup("Keyboard shortcut") {
+                Toggle("Send selected clipboard text to Review with Cmd Shift V", isOn: $state.globalClipboardHotkeyEnabled)
+                    .onChange(of: state.globalClipboardHotkeyEnabled) { _ in
+                        state.saveHotkeyPreference()
+                    }
+                    .padding(.top, 6)
+            }
         }
     }
 }
@@ -6246,7 +5985,7 @@ struct SettingsDataRecoverySection: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes current captures, memories, tasks, graph data, settings, events, attachments, and backup archives from this vault.")
+            Text("This removes current review items, memories, tasks, graph data, settings, events, attachments, and backup archives from this vault.")
         }
     }
 }
@@ -6258,7 +5997,7 @@ struct StatsGrid: View {
         VStack(alignment: .leading, spacing: 8) {
             if let stats {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 86), spacing: 8)], spacing: 8) {
-                    StatBox(label: "Captures", value: stats.captures)
+                    StatBox(label: "Review Items", value: stats.captures)
                     StatBox(label: "Pending", value: stats.pending_captures)
                     StatBox(label: "Memories", value: stats.memories)
                     StatBox(label: "Decisions", value: stats.decisions)
@@ -6328,7 +6067,7 @@ struct CaptureCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text((capture.title ?? capture.source).isEmpty ? "Untitled capture" : (capture.title ?? capture.source))
+                Text((capture.title ?? capture.source).isEmpty ? "Untitled review item" : (capture.title ?? capture.source))
                     .font(.headline)
                     .lineLimit(1)
                 Spacer()
@@ -6350,8 +6089,8 @@ struct CaptureCard: View {
             .font(.caption)
             .foregroundColor(.secondary)
             HStack {
-                Button("Keep") { approve() }
-                Button("Ignore") { archive() }
+                Button("Approve") { approve() }
+                Button("Archive") { archive() }
                 Spacer()
             }
         }
@@ -6629,8 +6368,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.center()
         window.isReleasedWhenClosed = false
         window.hidesOnDeactivate = false
-        window.collectionBehavior = state.showOnboarding ? [.canJoinAllSpaces, .fullScreenAuxiliary] : [.moveToActiveSpace, .fullScreenAuxiliary]
-        window.level = state.showOnboarding ? .screenSaver : .normal
+        window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        window.level = .normal
         window.delegate = self
         window.contentViewController = NSHostingController(rootView: CortexView(state: state))
         window.setFrameAutosaveName("CortexMainWindow")
@@ -6671,8 +6410,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             setupMainWindow()
         }
         ensureMainWindowIsVisible()
-        mainWindow.collectionBehavior = state.showOnboarding ? [.canJoinAllSpaces, .fullScreenAuxiliary] : [.moveToActiveSpace, .fullScreenAuxiliary]
-        mainWindow.level = state.showOnboarding ? .screenSaver : .normal
+        mainWindow.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        mainWindow.level = .normal
         NSApp.unhide(nil)
         mainWindow.deminiaturize(nil)
         mainWindowController.showWindow(nil)
@@ -6685,12 +6424,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func ensureMainWindowIsVisible() {
         guard let window = mainWindow else { return }
-        if state.showOnboarding {
-            center(window, in: defaultLaunchVisibleFrame())
-            logWindowState("after ensureMainWindowIsVisible onboarding center")
-            return
-        }
-
         let frame = window.frame
         let visibleFrames = NSScreen.screens.map(\.visibleFrame)
         let preferredScreenFrame = preferredVisibleFrame()

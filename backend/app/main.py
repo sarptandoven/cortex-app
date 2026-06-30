@@ -12,8 +12,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import load_settings
 from .extractor import extract_context
+from .hosted_readiness import hosted_readiness_contract
 from .mcp_tools import TOOLS, call_tool, tool_result_text
-from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GraphResponse, JobRunResponse, ListResponse, MaintenanceResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, ProductLoopResponse, QueuedCaptureResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse
+from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GraphResponse, JobRunResponse, ListResponse, MaintenanceResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, ProductLoopResponse, QueuedCaptureResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
 
@@ -126,30 +127,7 @@ def _global_token_user_id(x_cortex_user: str | None) -> str:
 
 
 def _hosted_readiness_contract() -> dict[str, Any]:
-    shard_mode = (settings.shard_mode or "local").strip().lower()
-    hosted_mode = shard_mode != "local"
-    requires_scoped_tokens = bool(settings.require_scoped_api_tokens)
-    global_token_user_switching = "blocked" if hosted_mode or requires_scoped_tokens else "allowed_local_compatibility"
-    scoped_token_check = {
-        "name": "scoped_api_tokens_required",
-        "status": "ok",
-        "detail": "Hosted shard modes require per-user scoped REST tokens before readiness passes.",
-    }
-    if hosted_mode and not requires_scoped_tokens:
-        scoped_token_check = {
-            "name": "scoped_api_tokens_required",
-            "status": "blocked",
-            "detail": "Set CORTEX_REQUIRE_SCOPED_API_TOKENS=1 before marking hosted shard mode ready.",
-        }
-    checks = [scoped_token_check]
-    return {
-        "status": "ok" if all(check["status"] == "ok" for check in checks) else "blocked",
-        "hosted_mode": hosted_mode,
-        "shard_mode": shard_mode,
-        "require_scoped_api_tokens": requires_scoped_tokens,
-        "global_token_user_switching": global_token_user_switching,
-        "checks": checks,
-    }
+    return hosted_readiness_contract(settings)
 
 
 def auth(request: Request, authorization: str | None = Header(default=None), x_cortex_user: str | None = Header(default=None)) -> str:
@@ -470,6 +448,42 @@ def disconnect_source_account(account_id: str, user_id: str = Depends(auth)) -> 
     if not disconnected:
         raise HTTPException(status_code=404, detail="Source account not found")
     return disconnected
+
+
+@app.post("/v1/source-accounts/{account_id}/sync", response_model=SourceAccountSyncResponse)
+def sync_source_account(account_id: str, request: SourceAccountSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    try:
+        return store.sync_source_account_records(
+            user_id,
+            account_id,
+            records=[record.model_dump() for record in request.records],
+            cursor_name=request.cursor_name,
+            cursor_value=request.cursor_value,
+            high_water_mark=request.high_water_mark,
+            state=request.state,
+            processing=request.processing,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/v1/connectors/obsidian/sync", response_model=ObsidianVaultSyncResponse)
+def sync_obsidian_vault(request: ObsidianVaultSyncRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    try:
+        return store.sync_obsidian_vault(
+            user_id,
+            vault_path=request.vault_path,
+            source_account_id=request.source_account_id,
+            account_label=request.account_label,
+            account_identifier=request.account_identifier,
+            processing=request.processing,
+            max_records=request.max_records,
+            cursor_name=request.cursor_name,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/v1/sync-cursors", response_model=SyncCursorListResponse)

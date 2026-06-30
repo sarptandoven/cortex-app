@@ -6,42 +6,33 @@ struct ModelTab: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                if let review = state.review {
-                    if review.stats.memories == 0 && review.pending.isEmpty {
-                        ModelEmptySection(state: state)
-                    } else {
-                        ModelOverviewSection(state: state, review: review)
-                        DisclosureGroup(isExpanded: $modelDetailsExpanded) {
-                            VStack(alignment: .leading, spacing: 14) {
-                                if let quality = state.memoryQuality {
-                                    ModelQualitySection(quality: quality)
-                                }
-                                ModelCoverageSection(review: review)
-                                ModelSourceCoverageSection(state: state, review: review)
-                                ModelSignalSummarySection(review: review)
+            VStack(alignment: .leading, spacing: 16) {
+                HomeHeroSection(state: state, review: state.review)
+                HomeActionSection(state: state, review: state.review)
+
+                if let review = state.review, review.stats.memories > 0 || !review.pending.isEmpty {
+                    DisclosureGroup(isExpanded: $modelDetailsExpanded) {
+                        VStack(alignment: .leading, spacing: 14) {
+                            if let quality = state.memoryQuality {
+                                ModelQualitySection(quality: quality)
                             }
-                            .padding(.top, 8)
-                        } label: {
-                            ModelDisclosureLabel(
-                                systemImage: "square.stack.3d.up",
-                                title: "What Cortex knows",
-                                detail: "Memory types, sources, topics, people, and quality"
-                            )
+                            ModelCoverageSection(review: review)
+                            ModelSourceCoverageSection(state: state, review: review)
+                            ModelSignalSummarySection(review: review)
                         }
-                        .padding(12)
-                        .background(Color(nsColor: .controlBackgroundColor).opacity(0.65))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .padding(.top, 8)
+                    } label: {
+                        ModelDisclosureLabel(
+                            systemImage: "square.stack.3d.up",
+                            title: "Memory details",
+                            detail: "Coverage, citations, topics, people, and quality"
+                        )
                     }
+                    .padding(12)
+                    .background(Color(nsColor: .controlBackgroundColor).opacity(0.65))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                 } else {
-                    VStack(alignment: .center, spacing: 12) {
-                        ProgressView()
-                        Text("Loading Cortex memory")
-                            .font(.headline)
-                        Text(loadingDetail)
-                            .foregroundColor(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 420)
+                    HomeFirstRunNotes()
                 }
             }
             .padding(16)
@@ -55,9 +46,41 @@ struct ModelTab: View {
     }
 }
 
-struct ModelEmptySection: View {
+struct HomeHeroSection: View {
     @ObservedObject var state: AppState
-    @State private var layersExpanded = false
+    let review: DailyReviewResponse?
+
+    private var activeSources: Int {
+        state.activeSourceAccounts.count
+    }
+
+    private var memoryCount: Int {
+        review?.stats.memories ?? state.stats?.memories ?? 0
+    }
+
+    private var pendingCount: Int {
+        review?.stats.pending_captures ?? state.inbox.count
+    }
+
+    private var title: String {
+        if memoryCount > 0 {
+            return "Cortex is ready"
+        }
+        if activeSources > 0 || state.connectedAIIntegrationCount > 0 {
+            return "Cortex is connected"
+        }
+        return "Connect Cortex once"
+    }
+
+    private var detail: String {
+        if pendingCount > 0 {
+            return "New memories are waiting for review before they shape answers."
+        }
+        if memoryCount > 0 {
+            return "Ask questions, inspect citations, and let connected AI tools use approved memory."
+        }
+        return "Cortex runs locally, connects to your tools, and builds memory quietly in the background."
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -65,305 +88,212 @@ struct ModelEmptySection: View {
                 ZStack {
                     RoundedRectangle(cornerRadius: 8)
                         .fill(Color.accentColor.opacity(0.14))
-                    Image(systemName: "brain.head.profile")
+                    Image(systemName: "circle.grid.cross.fill")
                         .font(.system(size: 30, weight: .semibold))
                         .foregroundColor(.accentColor)
                 }
                 .frame(width: 64, height: 64)
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Connect your first source")
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                    Text("Connect a service or app integration. Cortex turns useful source context into reviewable memory before it appears in Ask.")
-                        .font(.callout)
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(title)
+                        .font(.system(size: 28, weight: .semibold))
+                    Text(detail)
+                        .font(.title3)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
             }
 
-            HStack(spacing: 8) {
-                Button {
-                    state.selectedTab = .sources
-                    state.status = "Connect your first source"
-                } label: {
-                    Label("Connect Source", systemImage: "link.circle")
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button {
-                    state.selectedTab = .trust
-                    state.status = "Review privacy and AI access"
-                } label: {
-                    Label("Review Trust", systemImage: "lock.shield")
-                }
-
-                Spacer()
-            }
-
-            DisclosureGroup(isExpanded: $layersExpanded) {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 128), spacing: 8)], spacing: 8) {
-                    EmptyLayerPill(title: "Facts", detail: "stable details", systemImage: "text.book.closed")
-                    EmptyLayerPill(title: "Events", detail: "what happened", systemImage: "calendar")
-                    EmptyLayerPill(title: "Style", detail: "how you write", systemImage: "signature")
-                    EmptyLayerPill(title: "Decisions", detail: "what you chose", systemImage: "checkmark.seal")
-                    EmptyLayerPill(title: "Preferences", detail: "what you prefer", systemImage: "slider.horizontal.3")
-                    EmptyLayerPill(title: "Rejections", detail: "what to avoid", systemImage: "hand.raised")
-                }
-                .padding(.top, 8)
-            } label: {
-                ModelDisclosureLabel(
-                    systemImage: "square.stack.3d.up",
-                    title: "What Cortex looks for",
-                    detail: "Facts, events, style, decisions, preferences, and things to avoid"
+            VStack(spacing: 10) {
+                HomeStatusRow(
+                    title: activeSources > 0 || state.connectedAIIntegrationCount > 0 ? "Connected sources" : "No source connected yet",
+                    detail: sourceDetail(activeSources: activeSources),
+                    systemImage: activeSources > 0 || state.connectedAIIntegrationCount > 0 ? "checkmark.seal.fill" : "link.circle",
+                    color: activeSources > 0 || state.connectedAIIntegrationCount > 0 ? .green : .accentColor
+                )
+                HomeStatusRow(
+                    title: pendingCount > 0 ? "Memory waiting for review" : (memoryCount > 0 ? "Approved memory ready" : "Memory will appear after sync"),
+                    detail: memoryDetail(memoryCount: memoryCount, pendingCount: pendingCount),
+                    systemImage: pendingCount > 0 ? "tray.full.fill" : (memoryCount > 0 ? "brain.head.profile.fill" : "brain.head.profile"),
+                    color: pendingCount > 0 ? .orange : (memoryCount > 0 ? .accentColor : .secondary)
                 )
             }
-            .padding(12)
-            .background(Color(nsColor: .windowBackgroundColor).opacity(0.54))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, minHeight: 420, alignment: .topLeading)
-        .background(
-            LinearGradient(
-                colors: [
-                    Color(nsColor: .controlBackgroundColor),
-                    Color.accentColor.opacity(0.08)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
+
+    private func sourceDetail(activeSources: Int) -> String {
+        if activeSources > 0 {
+            return "\(activeSources) source\(activeSources == 1 ? "" : "s") syncing automatically"
+        }
+        if state.connectedAIIntegrationCount > 0 {
+            return "\(state.connectedAIIntegrationCount) AI tool\(state.connectedAIIntegrationCount == 1 ? "" : "s") can use approved memory"
+        }
+        return "Connect MCP tools or Obsidian once from Connections & Privacy"
+    }
+
+    private func memoryDetail(memoryCount: Int, pendingCount: Int) -> String {
+        if pendingCount > 0 {
+            return "\(pendingCount) item\(pendingCount == 1 ? "" : "s") need approval before Ask uses them"
+        }
+        if memoryCount > 0 {
+            return "\(memoryCount) approved memor\(memoryCount == 1 ? "y" : "ies") available with citations"
+        }
+        return "Cortex keeps new signals in Review before they shape answers"
+    }
 }
 
-struct EmptyLayerPill: View {
+struct HomeStatusRow: View {
     let title: String
     let detail: String
     let systemImage: String
+    let color: Color
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 12) {
             Image(systemName: systemImage)
-                .foregroundColor(.accentColor)
-                .frame(width: 18)
+                .font(.title3)
+                .foregroundColor(color)
+                .frame(width: 32, height: 32)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
-                    .font(.caption)
+                    .font(.callout)
                     .fontWeight(.semibold)
                 Text(detail)
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundColor(.secondary)
+                    .lineLimit(2)
             }
             Spacer(minLength: 0)
         }
-        .padding(9)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.64))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+        .padding(12)
+        .background(Color(nsColor: .windowBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
-struct ModelOverviewSection: View {
+struct HomeActionSection: View {
     @ObservedObject var state: AppState
-    let review: DailyReviewResponse
+    let review: DailyReviewResponse?
+
+    private var pendingCount: Int {
+        review?.stats.pending_captures ?? state.inbox.count
+    }
+
+    private var hasMemory: Bool {
+        (review?.stats.memories ?? state.stats?.memories ?? 0) > 0
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            if let loop = state.productLoop {
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Cortex memory")
-                            .font(.title3)
-                            .fontWeight(.semibold)
-                        Text(modelDetail(loop: loop))
-                            .font(.callout)
-                            .foregroundColor(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer()
-                    ModelReadinessRing(value: readinessScore)
+        HomePrimaryActionButton(
+            title: actionTitle,
+            detail: actionDetail,
+            systemImage: actionIcon,
+            isDisabled: actionDisabled
+        ) {
+            runNextAction()
+        }
+    }
+
+    private var actionTitle: String {
+        if !state.isLocalServiceReady { return "Start private vault" }
+        if state.activeSourceAccounts.isEmpty && state.connectedAIIntegrationCount == 0 { return "Connect Cortex" }
+        if pendingCount > 0 { return "Review memory" }
+        if hasMemory { return "Ask Cortex" }
+        return "Check connections"
+    }
+
+    private var actionDetail: String {
+        if !state.isLocalServiceReady { return state.displayBackendStatus }
+        if state.activeSourceAccounts.isEmpty && state.connectedAIIntegrationCount == 0 { return "Connect MCP tools or Obsidian once. Cortex handles sync after that." }
+        if pendingCount > 0 { return "\(pendingCount) new item\(pendingCount == 1 ? "" : "s") waiting for approval" }
+        if hasMemory { return "Search approved memory with citations" }
+        return "Confirm source health and privacy controls"
+    }
+
+    private var actionIcon: String {
+        if !state.isLocalServiceReady { return "externaldrive.badge.checkmark" }
+        if state.activeSourceAccounts.isEmpty && state.connectedAIIntegrationCount == 0 { return "link.circle" }
+        if pendingCount > 0 { return "checklist" }
+        if hasMemory { return "magnifyingglass" }
+        return "lock.shield"
+    }
+
+    private var actionDisabled: Bool {
+        !state.isLocalServiceReady
+    }
+
+    private func runNextAction() {
+        if !state.isLocalServiceReady {
+            state.status = state.displayBackendStatus
+        } else if state.activeSourceAccounts.isEmpty && state.connectedAIIntegrationCount == 0 {
+            state.openConnectionsPrivacy(statusMessage: "Connect MCP tools or Obsidian")
+        } else if pendingCount > 0 {
+            state.selectedTab = .review
+            state.status = "Review memory"
+        } else if hasMemory {
+            state.selectedTab = .ask
+            state.status = "Ask Cortex"
+        } else {
+            state.openConnectionsPrivacy(statusMessage: "Check source health and privacy")
+        }
+    }
+}
+
+struct HomePrimaryActionButton: View {
+    let title: String
+    let detail: String
+    let systemImage: String
+    let isDisabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .font(.title2)
+                    .frame(width: 34, height: 34)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                    Text(detail)
+                        .font(.callout)
+                        .foregroundColor(.white.opacity(0.86))
+                        .lineLimit(2)
                 }
-
-                HStack(alignment: .center, spacing: 10) {
-                    Button {
-                        state.performProductLoopAction(loop.primary_action)
-                    } label: {
-                        Label(loop.primary_action.label, systemImage: primaryActionIcon(loop.primary_action.action))
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(loop.primary_action.action == "done")
-
-                    Text(loop.primary_action.detail)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer()
-                }
-
-                ModelProofPointCard(state: state, memory: review.recent_memories.first, signalCount: review.stats.memories)
-
-            } else {
-                HStack {
-                    ProgressView()
-                    Text("Loading Cortex memory")
-                        .foregroundColor(.secondary)
-                    Spacer()
-                }
+                Spacer(minLength: 0)
             }
+            .padding(18)
+            .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(.white)
+        .background(Color.accentColor)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.55 : 1)
+    }
+}
+
+struct HomeFirstRunNotes: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Connect once", systemImage: "link.circle")
+                .font(.headline)
+            Text("Connect local AI tools or an Obsidian vault. Cortex syncs quietly, sends useful memory to Review, then answers with citations.")
+                .font(.callout)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
-        .background(
-            LinearGradient(
-                colors: [
-                    Color(nsColor: .controlBackgroundColor),
-                    Color.accentColor.opacity(0.10)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.72))
         .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    private var readinessScore: Int {
-        min(100, max(0, review.stats.memories * 4 + review.recent_decisions.count * 6 + review.stats.entities * 2))
-    }
-
-    private func modelDetail(loop: ProductLoopResponse) -> String {
-        if review.stats.memories == 0 {
-            return "Connect services for conversations, email, notes, writing, decisions, or messages so Cortex can learn useful context from your work."
-        }
-        if review.stats.pending_captures > 0 {
-            return "Cortex found new memory that needs review before it can be used."
-        }
-        return "Cortex is organizing approved memory so Ask and AI handoffs can cite the right context."
-    }
-
-    private func primaryActionIcon(_ action: String) -> String {
-        switch action {
-        case "capture":
-            return "link.circle"
-        case "review":
-            return "checklist"
-        case "reuse":
-            return "magnifyingglass"
-        case "done":
-            return "checkmark.seal"
-        default:
-            return "arrow.right.circle"
-        }
-    }
-}
-
-struct ModelReadinessRing: View {
-    let value: Int
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(Color.secondary.opacity(0.18), lineWidth: 8)
-            Circle()
-                .trim(from: 0, to: CGFloat(value) / 100)
-                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 8, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-            VStack(spacing: 0) {
-                Text("\(value)")
-                    .font(.headline)
-                    .fontWeight(.semibold)
-                Text("ready")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-            }
-        }
-        .frame(width: 70, height: 70)
-        .accessibilityLabel("Model readiness \(value) percent")
-    }
-}
-
-struct ModelProofPointCard: View {
-    @ObservedObject var state: AppState
-    let memory: MemoryItem?
-    let signalCount: Int
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: icon)
-                .foregroundColor(.accentColor)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Example memory")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.secondary)
-                if let memory {
-                    Text(memory.content)
-                        .font(.callout)
-                        .lineLimit(3)
-                        .fixedSize(horizontal: false, vertical: true)
-                    HStack(spacing: 8) {
-                        Text(sourceDetail(for: memory))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer(minLength: 0)
-                        Button {
-                            state.searchQuery = String(memory.content.prefix(140))
-                            state.selectedTab = .ask
-                            state.runSearch()
-                        } label: {
-                            Label("Ask", systemImage: "magnifyingglass")
-                        }
-                    }
-                } else {
-                    Text("\(signalCount) approved memories are ready to use.")
-                        .font(.callout)
-                    Text("Connect richer sources to show a concrete example here.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-        }
-        .padding(12)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.64))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    private var icon: String {
-        guard let memory else {
-            return "brain.head.profile"
-        }
-        switch memory.layer ?? memory.kind {
-        case "decision":
-            return "checkmark.seal"
-        case "episodic", "event":
-            return "calendar"
-        case "style":
-            return "signature"
-        case "preference":
-            return "slider.horizontal.3"
-        case "negative":
-            return "hand.raised"
-        default:
-            return "brain.head.profile"
-        }
-    }
-
-    private func sourceDetail(for memory: MemoryItem) -> String {
-        var parts = [memory.source]
-        if let date = memory.captured_at {
-            parts.append(String(date.prefix(10)))
-        }
-        if let url = memory.source_url, !url.isEmpty {
-            parts.append(url)
-        }
-        return parts.joined(separator: " · ")
     }
 }
 
@@ -457,7 +387,7 @@ struct ModelCoverageSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "Memory coverage", detail: "Types of approved memory available to Ask and AI handoffs.")
+            SectionHeader(title: "Memory coverage", detail: "Types of approved memory available to Ask and connected AI tools.")
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 128), spacing: 8)], spacing: 8) {
                 ForEach(layers, id: \.1) { layer in
                     LayerCoverageTile(title: layer.0, layer: layer.1, systemImage: layer.2, count: count(for: layer.1))

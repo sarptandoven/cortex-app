@@ -1,0 +1,188 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from backend.app.database import init_db
+from backend.app.mcp_tools import TOOLS, call_tool
+from backend.app.storage import CortexStore
+
+
+class MemoryQualityLayerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "memory-quality.sqlite"
+        init_db(self.db_path)
+        self.store = CortexStore(self.db_path)
+        self.user_id = "memory-quality-user"
+        self.store.update_settings(self.user_id, {"allow_pending_in_context": True})
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_connector_sync_extracts_procedural_memory_with_sector_and_provenance(self) -> None:
+        account = self.store.upsert_source_account(
+            self.user_id,
+            source="obsidian",
+            account_label="Obsidian: Demo Vault",
+            account_identifier="demo-vault",
+            connection_type="local_folder",
+            status="connected",
+            auth_state="healthy",
+            metadata={"vault_name": "Demo Vault"},
+        )
+        synced = self.store.sync_source_account_records(
+            self.user_id,
+            account["id"],
+            records=[
+                {
+                    "content": "Procedure: Before deploying Cortex, run the backend suite, run ./macos/build.sh, then verify codesign.",
+                    "title": "Deployment Runbook",
+                    "source_url": "file:///Users/example/Demo%20Vault/Deployment%20Runbook.md",
+                    "external_id": "Deployment Runbook.md",
+                }
+            ],
+            processing="sync",
+        )
+
+        self.assertEqual(synced["saved"], 1)
+        found = self.store.search(self.user_id, "how deploy Cortex run backend suite codesign", limit=3)
+
+        self.assertTrue(found)
+        self.assertEqual(found[0]["kind"], "procedure")
+        self.assertEqual(found[0]["layer"], "procedural")
+        self.assertEqual(found[0]["sector"], "Demo Vault")
+        self.assertEqual(found[0]["source_type"], "local_file")
+        self.assertEqual(found[0]["provenance"]["source_account_id"], account["id"])
+        self.assertEqual(found[0]["provenance"]["external_id"], "Deployment Runbook.md")
+
+        profile = self.store.personal_profile(self.user_id, query="deploy Cortex", include_pending=True)
+        procedural = next(section for section in profile["sections"] if section["layer"] == "procedural")
+        self.assertEqual(procedural["count"], 1)
+        adaptation = self.store.agent_adaptation(self.user_id, query="deploy Cortex", include_pending=True)
+        self.assertTrue(any(rule["layer"] == "procedural" for rule in adaptation["rules"]))
+
+    def test_retrieval_filters_expired_future_and_superseded_memories(self) -> None:
+        extracted = {
+            "_timestamp": "2026-06-30T10:00:00+00:00",
+            "summary": "Validity filter fixture",
+            "records": [
+                {
+                    "id": "mem_current_process",
+                    "kind": "procedure",
+                    "layer": "procedural",
+                    "content": "Current deployment process uses backend tests and codesign verification.",
+                    "importance": 4,
+                    "valid_from": "2020-01-01T00:00:00+00:00",
+                },
+                {
+                    "id": "mem_expired_process",
+                    "kind": "procedure",
+                    "layer": "procedural",
+                    "content": "Expired deployment process uses the old Fabric script.",
+                    "importance": 5,
+                    "valid_to": "2020-01-01T00:00:00+00:00",
+                },
+                {
+                    "id": "mem_future_process",
+                    "kind": "procedure",
+                    "layer": "procedural",
+                    "content": "Future deployment process uses hosted workers.",
+                    "importance": 5,
+                    "valid_from": "2999-01-01T00:00:00+00:00",
+                },
+                {
+                    "id": "mem_superseded_process",
+                    "kind": "procedure",
+                    "layer": "procedural",
+                    "content": "Superseded deployment process skips codesign.",
+                    "importance": 5,
+                    "superseded_by": "mem_current_process",
+                },
+            ],
+            "tasks": [],
+            "entities": [],
+        }
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Validity filter fixture",
+            source="unit-test",
+            source_url="unit-test://validity",
+            title="Validity fixture",
+            extracted=extracted,
+        )
+
+        results = self.store.search(self.user_id, "deployment process", limit=10, layer="procedural")
+        contents = "\n".join(item["content"] for item in results)
+
+        self.assertIn("Current deployment process", contents)
+        self.assertNotIn("Expired deployment process", contents)
+        self.assertNotIn("Future deployment process", contents)
+        self.assertNotIn("Superseded deployment process", contents)
+        self.assertTrue(all(item["layer"] == "procedural" for item in results))
+
+    def test_mcp_high_value_tools_return_style_project_and_procedure_context(self) -> None:
+        extracted = {
+            "_timestamp": "2026-06-30T10:00:00+00:00",
+            "summary": "MCP focused tool fixture",
+            "records": [
+                {
+                    "id": "mem_style_direct",
+                    "kind": "style",
+                    "layer": "style",
+                    "content": "Writing style: answer Project Atlas questions with direct tradeoffs and concise paragraphs.",
+                    "importance": 4,
+                    "topics": ["Project Atlas", "style"],
+                },
+                {
+                    "id": "mem_project_atlas_fact",
+                    "kind": "claim",
+                    "layer": "semantic",
+                    "content": "Project Atlas uses Cortex as the cited memory layer for first-100 users.",
+                    "importance": 4,
+                    "topics": ["Project Atlas"],
+                    "sector": "Project Atlas",
+                },
+                {
+                    "id": "mem_project_atlas_procedure",
+                    "kind": "procedure",
+                    "layer": "procedural",
+                    "content": "Procedure: for Project Atlas releases, run backend tests, build the app, and verify health.",
+                    "importance": 4,
+                    "topics": ["Project Atlas", "release"],
+                    "sector": "Project Atlas",
+                },
+            ],
+            "tasks": [],
+            "entities": [{"id": "project_project-atlas", "kind": "project", "name": "Project Atlas", "aliases": [], "context": ""}],
+        }
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="MCP focused tool fixture",
+            source="unit-test",
+            source_url="unit-test://mcp-tools",
+            title="MCP focused tool fixture",
+            extracted=extracted,
+        )
+
+        tool_names = {tool["name"] for tool in TOOLS}
+        self.assertIn("get_style_profile", tool_names)
+        self.assertIn("get_project_context", tool_names)
+        self.assertIn("get_procedure", tool_names)
+
+        style = call_tool(self.store, self.user_id, "get_style_profile", {"query": "Project Atlas questions"})
+        self.assertTrue(style["style"])
+        self.assertEqual(style["style"][0]["layer"], "style")
+
+        project = call_tool(self.store, self.user_id, "get_project_context", {"name": "Project Atlas"})
+        self.assertTrue(project["memories"])
+        self.assertTrue(any(memory["sector"] == "Project Atlas" for memory in project["memories"]))
+
+        procedure = call_tool(self.store, self.user_id, "get_procedure", {"query": "Project Atlas release health"})
+        self.assertTrue(procedure["procedures"])
+        self.assertEqual(procedure["procedures"][0]["layer"], "procedural")
+
+
+if __name__ == "__main__":
+    unittest.main()

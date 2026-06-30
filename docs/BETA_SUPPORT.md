@@ -12,8 +12,8 @@ Good first-100 candidates:
 
 - use macOS 13 or newer;
 - are comfortable installing a local beta app from a direct build;
-- can spend 30 to 45 minutes on first-run setup, import, review, Ask, Trust, backup, and support-bundle checks;
-- have at least one user-controlled source export, folder, or file they are willing to import;
+- can spend 30 to 45 minutes on first-run setup, sync, review, Ask, Connections & Privacy, backup, and support-bundle checks;
+- can connect MCP AI tools or an Obsidian/local notes vault;
 - can explain expected behavior when filing a bug;
 - agree to keep sensitive, regulated, or third-party-confidential material out of early testing unless they intentionally choose to manage that risk locally;
 - understand that Cortex is local-first beta software, not a hosted account service or managed enterprise product.
@@ -22,7 +22,7 @@ Do not invite, or defer until later, users who need:
 
 - Windows, Linux, iOS, Android, or browser-extension-only support;
 - team administration, SSO, compliance review, DPA, SOC 2 evidence, or enterprise retention controls;
-- live OAuth/API sync as the primary workflow;
+- broad live OAuth/API sync beyond MCP and Obsidian as the primary workflow;
 - cloud backup, hosted recovery, or remote support access;
 - legal, medical, financial, HR, child-safety, or regulated-record workflows;
 - guaranteed extraction quality for every large, noisy, or proprietary export format.
@@ -35,7 +35,7 @@ Before sending a build to any new batch:
 
 1. Run the beta ship gate from `docs/OPERATIONAL_READINESS.md`.
 2. Confirm the packaged release includes `BETA_HANDOFF.md`.
-3. Confirm the app shows the five-tab product flow: Model, Sources, Review, Ask, Trust.
+3. Confirm the app shows Home, Review, Ask, and Connections & Privacy.
 4. Confirm support-bundle export works in live and offline modes, and fails closed if the bundle is not content-free.
 5. Confirm delete-all and export flows are available from the current build.
 6. Confirm delete-all with the default backup-including path removes current backup archives and leaves restore unavailable.
@@ -49,9 +49,9 @@ Do not expand the batch if any current tester has an unresolved SEV 0 possible-d
 Read or send this before the user installs the beta. Keep the wording intact unless the product behavior changes.
 
 ```text
-Cortex is a local-first beta for personal memory. Your imported sources and approved memory are stored on your Mac in your Cortex vault. Cortex does not create a hosted account for this beta, and operators cannot remotely inspect your vault.
+Cortex is a local-first beta for personal memory. Your synced sources and approved memory are stored on your Mac in your Cortex vault. Cortex does not create a hosted account for this beta, and operators cannot remotely inspect your vault.
 
-You choose what to import. For early testing, avoid sensitive, regulated, employer-confidential, or third-party private data unless you have decided that storing it locally in Cortex is appropriate.
+You choose what to connect or sync. For early testing, avoid sensitive, regulated, employer-confidential, or third-party private data unless you have decided that storing it locally in Cortex is appropriate.
 
 Support may ask for a sanitized support bundle. The support bundle is designed to omit raw capture text, memory content, task content, exported user files, context packs, and raw MCP query values. You should review the bundle before sending it.
 
@@ -223,9 +223,9 @@ Privacy incident handling:
 Use this list in handoff notes and support replies:
 
 - Cortex is local-first beta software for macOS, not a hosted account service.
-- Users choose exports, folders, and files to import; live OAuth/API sync is not the first-100 workflow.
+- The first-100 workflow is MCP AI tools or Obsidian/local notes sync. Advanced fallback imports are only for unsupported sources, migration, or support recovery.
 - The app does not provide cloud backup or remote vault recovery.
-- Importers may miss, duplicate, or misclassify content from large or unusual exports.
+- Source sync and fallback importers may miss, duplicate, or misclassify content from large or unusual sources.
 - Review is the trust boundary; unreviewed or archived content may not appear in Ask results depending on settings.
 - Citations should be checked by the user before relying on an answer.
 - Optional embeddings and connected AI tools may introduce their own privacy boundaries.

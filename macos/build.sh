@@ -95,7 +95,6 @@ swiftc \
   -framework SwiftUI \
   -framework Carbon \
   -framework UserNotifications \
-  -framework Security \
   "$ROOT"/Sources/*.swift \
   -o "$MACOS/Cortex"
 

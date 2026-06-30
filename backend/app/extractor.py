@@ -18,7 +18,7 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-MEMORY_LAYERS = {"semantic", "episodic", "style", "decision", "preference", "negative"}
+MEMORY_LAYERS = {"semantic", "episodic", "style", "decision", "preference", "negative", "procedural"}
 USER_AUTHORED_ROLES = {"user", "human", "me", "self"}
 ASSISTANT_ROLES = {"assistant", "model", "bot", "tool", "system", "chatgpt", "claude"}
 NAMED_SPEAKER_ROLE = "speaker"
@@ -84,22 +84,29 @@ STRICT_UNATTRIBUTED_PERSONAL_SOURCES = CONVERSATION_SOURCES | {
     "work-tools",
 }
 BOILERPLATE_PREFIXES = {
+    "aliases",
     "archive file",
     "channel",
     "chat",
     "conversation",
     "created",
+    "created at",
+    "cssclasses",
     "date",
     "export",
     "file",
     "folder",
     "from",
+    "last updated",
+    "modified",
+    "modified at",
     "path",
     "source",
     "source file",
     "structured csv export",
     "structured contacts export",
     "subject",
+    "tags",
     "title",
     "to",
     "updated",
@@ -174,10 +181,10 @@ def _extract_with_claude(raw_text: str, source: str, author_aliases: Iterable[st
     aliases = ", ".join(sorted(_identity_alias_tokens(author_aliases))[:12])
     alias_instruction = f"\nUser-authored aliases in speaker-based imports: {aliases}. Only treat preference, style, and negative records as user memory when authored by those aliases or an explicit user/human/me role." if aliases else ""
     prompt = """Extract Cortex memory as strict JSON with keys records, tasks, entities, summary.
-records: list of {id, kind, layer, content, confidence, importance, entity_ids, topics, occurred_at}
+records: list of {id, kind, layer, content, confidence, importance, entity_ids, topics, occurred_at, valid_from, valid_to, sector}
 tasks: list of {id, kind, content, status, importance, entity_ids, topics}
 entities: list of {id, kind, name, aliases, context}
-Kinds: claim, decision, event, preference, observation, style, negative. Layers: semantic, episodic, style, decision, preference, negative. Task kinds: action, question, decision-pending.
+Kinds: claim, decision, event, preference, observation, style, negative, procedure. Layers: semantic, episodic, style, decision, preference, negative, procedural. Task kinds: action, question, decision-pending.
 Use stable IDs and keep each memory atomic. Return JSON only.""" + alias_instruction
     response = client.messages.create(
         model=os.environ.get("CORTEX_EXTRACTION_MODEL", "claude-opus-4-5"),
@@ -210,7 +217,7 @@ def _extract_locally(raw_text: str, source: str, author_aliases: Iterable[str] |
     records: list[dict[str, Any]] = []
     tasks: list[dict[str, Any]] = []
 
-    for candidate in memory_candidates[:24]:
+    for candidate in _prioritized_extraction_candidates(memory_candidates, limit=40):
         sentence = candidate["text"]
         lower = sentence.lower()
         personal_allowed = _allows_user_authored_memory(candidate, has_known_turns, allow_unattributed_personal_memory)
@@ -220,6 +227,8 @@ def _extract_locally(raw_text: str, source: str, author_aliases: Iterable[str] |
             if not personal_allowed:
                 continue
             records.append(_record("negative", sentence, importance=4, occurred_at=candidate.get("occurred_at")))
+        elif _looks_like_procedure(lower):
+            records.append(_record("procedure", sentence, importance=4, occurred_at=candidate.get("occurred_at")))
         elif _looks_like_decision(lower):
             records.append(_record("decision", sentence, importance=4, occurred_at=candidate.get("occurred_at")))
         elif _looks_like_style(lower):
@@ -273,6 +282,9 @@ def _normalize_extraction(data: dict[str, Any], raw_text: str, source: str) -> d
         record["content"] = content
         record["raw_excerpt"] = str(record.get("raw_excerpt") or content).strip()[:500]
         record["occurred_at"] = record.get("occurred_at") or _extract_absolute_date(content)
+        record["valid_from"] = record.get("valid_from") or None
+        record["valid_to"] = record.get("valid_to") or None
+        record["sector"] = str(record.get("sector") or "").strip()[:120]
     for task in data["tasks"]:
         content = str(task.get("content", "")).strip()
         task["id"] = task.get("id") or stable_id("task_", content)
@@ -347,8 +359,30 @@ def _sentence_candidates(text: str, source: str = "unknown", author_aliases: Ite
     saw_email_from = False
     email_from_is_user = False
     current_date: str | None = None
+    frontmatter_possible = True
+    in_frontmatter = False
+    in_fenced_block = False
     for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        line = raw_line.strip(" -•\t")
+        raw_stripped = raw_line.strip()
+        if in_frontmatter:
+            if raw_stripped in {"---", "..."}:
+                in_frontmatter = False
+            continue
+        if frontmatter_possible:
+            if not raw_stripped:
+                continue
+            if raw_stripped == "---":
+                in_frontmatter = True
+                frontmatter_possible = False
+                continue
+            frontmatter_possible = False
+        if re.match(r"^(```|~~~)", raw_stripped):
+            in_fenced_block = not in_fenced_block
+            continue
+        if in_fenced_block:
+            continue
+
+        line = _clean_import_line(raw_line).strip(" -•\t")
         if not line:
             if email_source and saw_email_header and saw_email_from:
                 current_role = "user" if email_from_is_user else NAMED_SPEAKER_ROLE
@@ -392,6 +426,36 @@ def _sentence_candidates(text: str, source: str = "unknown", author_aliases: Ite
     return candidates
 
 
+def _clean_import_line(raw_line: str) -> str:
+    line = str(raw_line or "").strip()
+    if not line:
+        return ""
+    if re.match(r"^>\s*\[![A-Za-z0-9_-]+\]", line):
+        return ""
+    line = re.sub(r"^>\s?", "", line)
+    line = re.sub(r"<!--.*?-->", "", line)
+    line = re.sub(r"!\[\[[^\]]+\]\]", "", line)
+    line = re.sub(r"!\[[^\]]*\]\([^)]+\)", "", line)
+    line = re.sub(r"\[\[([^\]|]+)\|([^\]]+)\]\]", lambda match: match.group(2).strip(), line)
+    line = re.sub(r"\[\[([^\]]+)\]\]", lambda match: _clean_wikilink_target(match.group(1)), line)
+    line = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line)
+    line = re.sub(r"(?<!\w)#([A-Za-z][A-Za-z0-9_/-]*)", lambda match: _clean_tag_token(match.group(1)), line)
+    line = re.sub(r"^\s*[-*+]\s+\[[ xX]\]\s+", "", line)
+    line = re.sub(r"^\s*[-*+]\s+", "", line)
+    return re.sub(r"\s+", " ", line).strip()
+
+
+def _clean_wikilink_target(value: str) -> str:
+    target = str(value or "").split("#", 1)[0].strip()
+    target = target.rsplit("/", 1)[-1].strip()
+    return target
+
+
+def _clean_tag_token(value: str) -> str:
+    token = str(value or "").rsplit("/", 1)[-1].replace("_", " ").strip()
+    return token
+
+
 def _dedupe_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()
     unique: list[dict[str, Any]] = []
@@ -402,6 +466,32 @@ def _dedupe_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]
         seen.add(key)
         unique.append(candidate)
     return unique
+
+
+def _prioritized_extraction_candidates(candidates: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    if len(candidates) <= limit:
+        return candidates
+
+    scored: list[tuple[int, int, dict[str, Any]]] = []
+    for index, candidate in enumerate(candidates):
+        scored.append((_candidate_memory_priority(candidate), index, candidate))
+    selected = sorted(scored, key=lambda item: (item[0], item[1]))[:limit]
+    return [candidate for _priority, _index, candidate in sorted(selected, key=lambda item: item[1])]
+
+
+def _candidate_memory_priority(candidate: dict[str, Any]) -> int:
+    lower = str(candidate.get("text") or "").lower()
+    if _looks_like_decision(lower):
+        return 0
+    if _looks_like_procedure(lower):
+        return 1
+    if _looks_like_task(str(candidate.get("text") or "")):
+        return 2
+    if _looks_like_negative(lower) or _looks_like_style(lower) or _looks_like_preference(lower):
+        return 3
+    if _looks_like_event(lower):
+        return 4
+    return 5
 
 
 def _parse_role_line(
@@ -617,7 +707,7 @@ def _summarize(sentences: list[str], text: str) -> str:
 
 
 def _looks_like_decision(lower: str) -> bool:
-    signals = ["decided", "we will", "we'll", "going with", "chose", "choice is", "let's use", "agreed"]
+    signals = ["decision:", "decided", "we will", "we'll", "going with", "chose", "choice is", "let's use", "agreed"]
     return any(signal in lower for signal in signals)
 
 
@@ -690,6 +780,30 @@ def _looks_like_event(lower: str) -> bool:
     return any(signal in lower for signal in signals) or _extract_absolute_date(lower) is not None
 
 
+def _looks_like_procedure(lower: str) -> bool:
+    signals = [
+        "process:",
+        "procedure:",
+        "runbook",
+        "workflow",
+        "when i ",
+        "when we ",
+        "the way i ",
+        "the way we ",
+        "always start by",
+        "start by",
+        "before shipping",
+        "before deploying",
+        "to deploy",
+        "to release",
+        "steps:",
+        "step 1",
+        "first,",
+        "then,",
+    ]
+    return any(signal in lower for signal in signals)
+
+
 def _looks_like_task(sentence: str) -> bool:
     lower = sentence.lower()
     return sentence.endswith("?") or any(signal in lower for signal in ["todo", "to do", "need to", "follow up", "we should", "i should", "next step", "open question"])
@@ -725,6 +839,8 @@ def _normalize_layer(value: Any, kind: str, content: str = "") -> str:
         return "style"
     if kind in {"negative"}:
         return "negative"
+    if kind in {"procedure"}:
+        return "procedural"
     lower = content.lower()
     if _looks_like_negative(lower):
         return "negative"
@@ -732,6 +848,8 @@ def _normalize_layer(value: Any, kind: str, content: str = "") -> str:
         return "style"
     if _looks_like_event(lower):
         return "episodic"
+    if _looks_like_procedure(lower):
+        return "procedural"
     return "semantic"
 
 

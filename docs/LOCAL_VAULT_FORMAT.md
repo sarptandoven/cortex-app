@@ -92,7 +92,7 @@ Cortex.vault/
 These files are canonical:
 
 - `manifest.json`: vault format, version, index role, and directory contract
-- `settings.json`: user behavior settings such as review flow and context-pack size
+- `settings.json`: user behavior settings such as review flow and Ask memory depth
 - `events.jsonl`: append-only audit log for capture, approval, archive, deletion, settings, backup, and maintenance actions
 - `imports/**/*.json`: import session history, selected path summaries, source counts, bounded record previews, linked capture IDs, status, errors, and delete markers
 - `source_accounts/**/*.json`: connector account metadata, health state, policy metadata, last sync time, last error, and disconnect state

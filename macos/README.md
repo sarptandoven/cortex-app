@@ -8,19 +8,15 @@ The app bundles the dependency-light local backend and starts it automatically o
 
 - Opens as a normal macOS window from the Dock/app icon
 - Menu bar item opens the same window for quick access
-- Five-step first-run setup for private vault, first source import, first memory review, first Ask/use action, and backup/trust decision
+- Simple first-run setup for private vault, connection, review, and first Ask
 - Optional global `Cmd+Shift+V` capture, disabled by default
-- Model screen for readiness, memory coverage, active source health, and model signal quality
-- Sources screen for imports, preview, duplicate-safe history, undo import, and source health
-- Review screen for approvals, archives, recommended actions, open loops, and decisions
-- Ask screen for cited answers, cited memory search, and focused/model context packs
-- Trust screen for privacy, AI access, backup, connected tools, audit, and advanced diagnostics
-- Memory behavior settings for review flow, pending-context visibility, and context-pack size
-- Save clipboard text
-- Quick note capture
-- Review pending captures from the Review screen
+- Home screen for connection state, memory readiness, and the next action
+- Connections & Privacy sheet for MCP tools, Obsidian/local notes, sync health, privacy, backup, support, and diagnostics
+- Review screen for approving or archiving candidate memory
+- Ask screen for natural-language memory search with source citations
+- AI access settings for read, save, export, maintenance, and destructive permissions
+- Advanced fallback capture and import tools for migration, support, and unsupported sources
 - Approve/archive capture lifecycle
-- Recent memories
 - Search
 - Advanced graph, health, stats, exports, updates, and backend settings behind Trust diagnostics
 - Authenticated markdown/JSON export
@@ -31,9 +27,9 @@ The app bundles the dependency-light local backend and starts it automatically o
 - Copy/save sanitized support bundle
 - Search index rebuild
 - Installer/update feed controls
-- Backend endpoint and token settings
-- Reopenable setup flow under Trust diagnostics
-- Separate Keychain tokens for app REST access and scoped MCP integrations
+- Backend endpoint and token settings behind Advanced diagnostics
+- Reopenable setup flow
+- Separate local tokens for app REST access and scoped MCP integrations
 
 ## Build
 
@@ -58,13 +54,13 @@ http://127.0.0.1:8766
 Default app token:
 
 ```text
-Generated per install, stored in Keychain, and used by the macOS app for REST calls.
+Generated per install, stored in local app defaults, and used by the macOS app for REST calls.
 ```
 
 Default MCP token:
 
 ```text
-Generated per install, stored in Keychain, registered with the local backend, and copied into MCP configs instead of the app token.
+Generated per install, stored in local app defaults, registered with the local backend, and copied into MCP configs instead of the app token.
 ```
 
 Default local vault:

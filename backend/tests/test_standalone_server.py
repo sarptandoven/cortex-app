@@ -38,6 +38,7 @@ class FakeStore:
         self.delete_import_calls: list[tuple[str, str]] = []
         self.revoke_token_calls: list[tuple[str, str]] = []
         self.source_account_calls: list[tuple[str, str]] = []
+        self.source_account_sync_calls: list[tuple[str, str, int, str]] = []
         self.sync_cursor_calls: list[tuple[str, str, str | None]] = []
         self.sync_device_calls: list[tuple[str, str]] = []
         self.sync_receipt_calls: list[tuple[str, str, str, str]] = []
@@ -176,7 +177,7 @@ class FakeStore:
                 }
             ],
             "warnings": ["Some active memories are missing source citations."],
-            "recommendations": ["Prefer source imports and URL/file captures so retrieved memory has citations."],
+            "recommendations": ["Prefer connected-source sync and cited captures so retrieved memory has citations."],
         }
 
     def sync_change_feed(
@@ -359,6 +360,50 @@ class FakeStore:
             return None
         self.source_account_disconnected = True
         return self.list_source_accounts(user_id, include_disconnected=True)[0]
+
+    def sync_source_account_records(
+        self,
+        user_id: str,
+        account_id: str,
+        *,
+        records: list[dict],
+        cursor_name: str = "default",
+        cursor_value: str | None = None,
+        high_water_mark: str | None = None,
+        state: dict | None = None,
+        processing: str = "async",
+    ) -> dict:
+        if account_id == "sacct_missing":
+            raise ValueError("source account not found")
+        self.source_account_sync_calls.append((user_id, account_id, len(records), processing))
+        return {
+            "source_account_id": account_id,
+            "source": "gmail",
+            "status": "complete",
+            "processing": processing,
+            "received": len(records),
+            "queued": 0 if processing == "sync" else len(records),
+            "saved": len(records) if processing == "sync" else 0,
+            "skipped": 0,
+            "failed": 0,
+            "capture_ids": ["cap_sync_test"] if records else [],
+            "records": [
+                {
+                    "capture_id": "cap_sync_test",
+                    "status": "saved" if processing == "sync" else "queued",
+                    "source": "gmail",
+                    "source_url": f"source-account://gmail/{account_id}/{records[0].get('external_id') or 'record-1'}",
+                    "title": records[0].get("title"),
+                }
+            ] if records else [],
+            "errors": [],
+            "cursor": self.list_sync_cursors(user_id, source_account_id=account_id)[0] | {
+                "cursor_name": cursor_name,
+                "cursor_value": cursor_value,
+                "high_water_mark": high_water_mark,
+                "state": state or {},
+            },
+        }
 
     def list_sync_cursors(self, user_id: str, *, source_account_id: str | None = None) -> list[dict]:
         return [
@@ -920,6 +965,34 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(cursor["state"]["batch"], 1)
         self.assertEqual(self.fake_store.sync_cursor_calls, [("local", "messages", "sacct_test")])
 
+        with self.post_json(
+            "/v1/source-accounts/sacct_test/sync",
+            {
+                "processing": "sync",
+                "cursor_name": "messages",
+                "cursor_value": "cursor-2",
+                "high_water_mark": "2026-01-01T00:30:00Z",
+                "state": {"batch": 2},
+                "records": [
+                    {
+                        "content": "I decided Gmail sync should feed Cortex directly.",
+                        "title": "Standalone Gmail sync",
+                        "external_id": "msg-standalone-1",
+                        "captured_at": "2026-01-01T00:30:00Z",
+                    }
+                ],
+            },
+        ) as response:
+            synced = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(synced["source_account_id"], "sacct_test")
+        self.assertEqual(synced["processing"], "sync")
+        self.assertEqual(synced["saved"], 1)
+        self.assertTrue(synced["records"][0]["source_url"].startswith("source-account://gmail/sacct_test/msg-standalone-1"))
+        self.assertEqual(synced["cursor"]["cursor_value"], "cursor-2")
+        self.assertEqual(self.fake_store.source_account_sync_calls, [("local", "sacct_test", 1, "sync")])
+
         with self.get("/v1/source-accounts") as response:
             accounts = json.loads(response.read().decode("utf-8"))
         self.assertEqual(accounts["results"][0]["id"], "sacct_test")
@@ -973,6 +1046,10 @@ class StandaloneServerTests(unittest.TestCase):
 
         with self.assertRaises(error.HTTPError) as context:
             self.post_json("/v1/sync-cursors", {"source": "gmail", "source_account_id": "sacct_missing", "cursor_name": "messages"})
+        self.assertEqual(context.exception.code, 422)
+
+        with self.assertRaises(error.HTTPError) as context:
+            self.post_json("/v1/source-accounts/sacct_missing/sync", {"records": [{"content": "Missing account"}]})
         self.assertEqual(context.exception.code, 422)
 
         with self.delete("/v1/source-accounts/sacct_test") as response:

@@ -28,6 +28,16 @@ class FastAPIContractTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.client = TestClient(app)
 
+    def setUp(self) -> None:
+        self._allow_pending_context()
+
+    def _allow_pending_context(self, user: str | None = None) -> None:
+        headers = {"Authorization": "Bearer test-token"}
+        if user:
+            headers["X-Cortex-User"] = user
+        response = self.client.put("/v1/settings", json={"allow_pending_in_context": True}, headers=headers)
+        self.assertEqual(response.status_code, 200)
+
     def test_capture_get_invalid_token_returns_unauthorized_page(self) -> None:
         response = self.client.get("/capture", params={"token": "wrong-token", "content": "Remember this."})
 
@@ -356,6 +366,7 @@ class FastAPIContractTests(unittest.TestCase):
             )
             self.assertEqual(response.status_code, 200)
 
+        self.client.put("/v1/settings", json={"allow_agent_writes": False}, headers=headers)
         write_blocked = self.client.post(
             "/v1/captures",
             json={"content": "rest write trust gate memory.", "source": "fastapi-test"},
@@ -449,6 +460,8 @@ class FastAPIContractTests(unittest.TestCase):
             headers=headers,
         )
         self.assertEqual(registered.status_code, 200)
+        disabled = self.client.put("/v1/settings", json={"allow_agent_writes": False}, headers=headers)
+        self.assertEqual(disabled.status_code, 200)
 
         original_settings = main_module.settings
         main_module.settings = replace(original_settings, require_scoped_api_tokens=True)
@@ -603,12 +616,64 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(cursor["source_account_id"], account["id"])
         self.assertEqual(cursor["state"]["batch"], 1)
 
+        sync_payload = {
+            "processing": "sync",
+            "cursor_name": "messages",
+            "cursor_value": "cursor-2",
+            "high_water_mark": "2026-06-29T13:00:00Z",
+            "state": {"batch": 2},
+            "records": [
+                {
+                    "content": "I decided Project Atlas uses connected source sync for Gmail records.",
+                    "title": "Atlas Gmail",
+                    "external_id": "gmail-msg-1",
+                    "captured_at": "2026-06-29T13:00:00Z",
+                }
+            ],
+        }
+        sync_response = self.client.post(
+            f"/v1/source-accounts/{account['id']}/sync",
+            json=sync_payload,
+            headers=headers,
+        )
+        self.assertEqual(sync_response.status_code, 200)
+        synced = sync_response.json()
+        self.assertEqual(synced["source"], "gmail")
+        self.assertEqual(synced["status"], "complete")
+        self.assertEqual(synced["processing"], "sync")
+        self.assertEqual(synced["received"], 1)
+        self.assertEqual(synced["saved"], 1)
+        self.assertEqual(synced["queued"], 0)
+        self.assertEqual(synced["skipped"], 0)
+        self.assertTrue(synced["records"][0]["source_url"].startswith(f"source-account://gmail/{account['id']}/gmail-msg-1"))
+        self.assertEqual(synced["cursor"]["cursor_value"], "cursor-2")
+        self.assertEqual(synced["cursor"]["state"]["last_batch_saved"], 1)
+
+        duplicate_sync = self.client.post(
+            f"/v1/source-accounts/{account['id']}/sync",
+            json=sync_payload,
+            headers=headers,
+        )
+        self.assertEqual(duplicate_sync.status_code, 200)
+        duplicate_payload = duplicate_sync.json()
+        self.assertEqual(duplicate_payload["status"], "complete")
+        self.assertEqual(duplicate_payload["saved"], 0)
+        self.assertEqual(duplicate_payload["skipped"], 1)
+        self.assertEqual(duplicate_payload["records"][0]["status"], "duplicate")
+
         missing_account = self.client.post(
             "/v1/sync-cursors",
             json={"source": "gmail", "source_account_id": "sacct_missing", "cursor_name": "messages"},
             headers=headers,
         )
         self.assertEqual(missing_account.status_code, 422)
+
+        missing_sync_account = self.client.post(
+            "/v1/source-accounts/sacct_missing/sync",
+            json=sync_payload,
+            headers=headers,
+        )
+        self.assertEqual(missing_sync_account.status_code, 422)
 
         listed_accounts = self.client.get("/v1/source-accounts", headers=headers)
         self.assertEqual(listed_accounts.status_code, 200)
@@ -653,6 +718,42 @@ class FastAPIContractTests(unittest.TestCase):
 
         missing_delete = self.client.delete("/v1/source-accounts/sacct_missing", headers=headers)
         self.assertEqual(missing_delete.status_code, 404)
+
+    def test_obsidian_connector_endpoint_scans_vault_and_skips_duplicates(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "obsidian-endpoint-contract"}
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp) / "Endpoint Vault"
+            vault.mkdir()
+            (vault / "Project Atlas.md").write_text(
+                "# Project Atlas\n\nI decided the FastAPI Obsidian connector should scan local vault notes.",
+                encoding="utf-8",
+            )
+
+            response = self.client.post(
+                "/v1/connectors/obsidian/sync",
+                json={"vault_path": str(vault), "processing": "sync", "max_records": 10},
+                headers=headers,
+            )
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["source"], "obsidian")
+            self.assertEqual(payload["status"], "complete")
+            self.assertEqual(payload["saved"], 1)
+            self.assertEqual(payload["scan"]["records_found"], 1)
+            self.assertEqual(payload["source_account"]["source"], "obsidian")
+            self.assertTrue(payload["records"][0]["source_url"].startswith("file://"))
+            self.assertEqual(payload["records"][0]["title"], "Project Atlas")
+
+            duplicate = self.client.post(
+                "/v1/connectors/obsidian/sync",
+                json={"vault_path": str(vault), "processing": "sync", "max_records": 10},
+                headers=headers,
+            )
+            self.assertEqual(duplicate.status_code, 200)
+            duplicate_payload = duplicate.json()
+            self.assertEqual(duplicate_payload["saved"], 0)
+            self.assertEqual(duplicate_payload["skipped"], 1)
+            self.assertEqual(duplicate_payload["records"][0]["status"], "duplicate")
 
     def test_rebuild_vectors_endpoint_exposes_queue_contract(self) -> None:
         response = self.client.post("/v1/maintenance/rebuild-vectors", headers={"Authorization": "Bearer test-token"})
@@ -815,10 +916,18 @@ class FastAPIContractTests(unittest.TestCase):
             self.assertIsInstance(entry["permissions_required"], list)
             self.assertTrue(entry["permissions_required"])
             self.assertIn(first_100_note, entry["first_100_note"])
+            self.assertIn(entry["beta_status"], {"ready", "planned", "advanced-fallback", "needs-connector"})
+            self.assertIn(entry["primary_beta_path"], {"native-local-connector", "account-sign-in-planned", "advanced-fallback-only", "direct-connector-needed"})
 
         self.assertTrue(any("account sign-in planned" in item for item in catalog["gmail"]["permissions_required"]))
         self.assertTrue(any("account consent for gmail.readonly" in item for item in catalog["gmail"]["permissions_required"]))
         self.assertTrue(any("local app access" in item for item in catalog["obsidian"]["permissions_required"]))
+        self.assertFalse(catalog["gmail"]["primary_beta"])
+        self.assertEqual(catalog["gmail"]["beta_status"], "planned")
+        self.assertFalse(catalog["gmail"]["show_in_primary_ui"])
+        self.assertTrue(catalog["obsidian"]["primary_beta"])
+        self.assertEqual(catalog["obsidian"]["beta_status"], "ready")
+        self.assertTrue(catalog["obsidian"]["show_in_primary_ui"])
         display_text = "\n".join(
             str(value)
             for entry in catalog.values()
@@ -907,7 +1016,121 @@ class FastAPIContractTests(unittest.TestCase):
         )
         self.assertTrue(still_present.json()["results"])
 
+    def test_scoped_mcp_token_can_register_and_sync_connected_source_records(self) -> None:
+        user = "mcp-connected-source-contract"
+        self._allow_pending_context(user)
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+        read_token = "cxm_fastapi_source_read_123456789"
+        write_token = "cxm_fastapi_source_write_123456789"
+
+        read_registered = self.client.post(
+            "/v1/integrations/mcp-token",
+            json={"token": read_token, "label": "Read MCP", "scopes": ["read"]},
+            headers=headers,
+        )
+        self.assertEqual(read_registered.status_code, 200)
+
+        tools = self.client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": "tools", "method": "tools/list", "params": {}},
+            headers={"Authorization": f"Bearer {read_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(tools.status_code, 200)
+        tool_names = {tool["name"] for tool in tools.json()["result"]["tools"]}
+        self.assertIn("list_source_connectors", tool_names)
+        self.assertIn("connect_source_account", tool_names)
+        self.assertIn("sync_source_records", tool_names)
+
+        blocked = self.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": "blocked-source-sync",
+                "method": "tools/call",
+                "params": {
+                    "name": "connect_source_account",
+                    "arguments": {"source": "slack", "account_label": "Read-only Slack"},
+                },
+            },
+            headers={"Authorization": f"Bearer {read_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(blocked.status_code, 200)
+        self.assertIn("not scoped", blocked.json()["error"]["message"])
+
+        write_registered = self.client.post(
+            "/v1/integrations/mcp-token",
+            json={"token": write_token, "label": "Write MCP", "scopes": ["read", "write"]},
+            headers=headers,
+        )
+        self.assertEqual(write_registered.status_code, 200)
+
+        connected = self.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": "connect-source",
+                "method": "tools/call",
+                "params": {
+                    "name": "connect_source_account",
+                    "arguments": {
+                        "source": "slack",
+                        "account_label": "Demo Slack",
+                        "account_identifier": "workspace-demo",
+                        "connection_type": "mcp",
+                    },
+                },
+            },
+            headers={"Authorization": f"Bearer {write_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(connected.status_code, 200)
+        connected_payload = json.loads(connected.json()["result"]["content"][0]["text"])
+        account = connected_payload["account"]
+        self.assertEqual(account["source"], "slack")
+
+        synced = self.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": "sync-source",
+                "method": "tools/call",
+                "params": {
+                    "name": "sync_source_records",
+                    "arguments": {
+                        "source_account_id": account["id"],
+                        "records": [
+                            {
+                                "content": "I decided Slack should feed Cortex with cited product decisions for Project Orion.",
+                                "title": "Project Orion decision",
+                                "external_id": "thread-123",
+                                "captured_at": "2026-06-30T10:15:00Z",
+                            }
+                        ],
+                        "cursor_name": "threads",
+                        "cursor_value": "cursor-2",
+                        "processing": "sync",
+                    },
+                },
+            },
+            headers={"Authorization": f"Bearer {write_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(synced.status_code, 200)
+        synced_payload = json.loads(synced.json()["result"]["content"][0]["text"])
+        self.assertEqual(synced_payload["saved"], 1)
+        self.assertTrue(synced_payload["records"][0]["source_url"].startswith(f"source-account://slack/{account['id']}/thread-123"))
+
+        found = self.client.get(
+            "/v1/search",
+            params={"query": "Project Orion cited product decisions"},
+            headers=headers,
+        )
+        self.assertEqual(found.status_code, 200)
+        results = found.json()["results"]
+        self.assertTrue(results)
+        self.assertEqual(results[0]["source"], "slack")
+        self.assertTrue(results[0]["source_url"].startswith(f"source-account://slack/{account['id']}/thread-123"))
+
     def test_source_policies_round_trip_and_filter_search(self) -> None:
+        self._allow_pending_context("source-policy-contract")
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "source-policy-contract"}
         created = self.client.post(
             "/v1/captures",
@@ -960,6 +1183,7 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(fetched.json()["identity_aliases"], ["sarpt", "sarpt@example.com"])
 
     def test_sync_capture_uses_identity_aliases_for_personal_memory_gating(self) -> None:
+        self._allow_pending_context("identity-capture-contract")
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "identity-capture-contract"}
         updated = self.client.put(
             "/v1/settings",

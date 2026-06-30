@@ -21,6 +21,7 @@ class NoisyImportGoldenTests(unittest.TestCase):
         self.vault_path = self.root / "Cortex.vault"
         init_db(self.db_path)
         self.store = CortexStore(self.db_path, self.vault_path)
+        self.store.update_settings("test-user", {"allow_pending_in_context": True})
 
     def tearDown(self) -> None:
         self.tmp.cleanup()

@@ -1,6 +1,6 @@
 # First 100 User Demo Checkpoint
 
-This checkpoint defines the practical demo bar for inviting the first 100 local-first Cortex users. It is not a broad launch checklist. The goal is to prove that a nontechnical macOS user can connect services or direct app integrations, review useful signals into cited personal memory, ask with citations, and understand the trust boundaries.
+This checkpoint defines the practical demo bar for inviting the first 100 local-first Cortex users. It is not a broad launch checklist. The goal is to prove that a nontechnical macOS user can connect MCP AI tools or an Obsidian/local notes vault, review useful signals into cited personal memory, ask with citations, and understand the trust boundaries.
 
 For the short operator checklist, start with [First 100 Beta Operator Quickstart](../BETA_OPERATOR_QUICKSTART.md).
 
@@ -9,39 +9,59 @@ For the short operator checklist, start with [First 100 Beta Operator Quickstart
 The demo should follow the real product loop:
 
 ```text
-Model -> Sources -> Review -> Ask -> Trust
+Home -> Review -> Ask -> Connections & Privacy
 ```
 
 By the end of the run, the tester should have:
 
 - chosen or confirmed a local memory folder;
-- connected at least one real supported service or direct app integration;
+- connected MCP AI tools or an Obsidian/local notes vault;
 - approved at least one useful memory candidate;
 - asked Cortex a question and received cited results;
-- checked trust, backup, export, and recovery controls.
+- checked privacy, backup, export, and recovery controls.
 - installed from the packaged DMG and understood the beta update and rollback path.
+
+## Current Readiness Snapshot - 2026-06-30
+
+Implemented in the repo now:
+
+- Home, Review, Ask, and Connections & Privacy are the intended local-beta product shell.
+- MCP AI-tool setup and local source-account sync are implemented through the backend/MCP contract.
+- Obsidian/local notes sync is the first real native source path; other service cards must remain planned, connector-needed, or advanced/fallback until they sync actual records.
+- Review-first memory, cited Ask, local backups, JSON/Markdown export, delete controls, support bundle generation, diagnostics, and packaging/update scripts exist.
+
+Still required before inviting the first 100 users:
+
+- run the clean macOS profile DMG install, first-run setup, MCP or Obsidian sync, Review, Ask, backup/export/support, update, and rollback walkthrough;
+- run the full release and ops readiness gates against the generated release directory and checksum/update manifest artifacts;
+- verify the support bundle is content-free and the user can explain where data lives and how to back it up;
+- keep connector breadth honest in the UI and handoff docs.
+
+Deferred to first-10k planning:
+
+- hosted accounts, hosted MCP/OAuth, Postgres/pgvector, workers, cloud object storage, hosted deletion/export receipts, observability, billing/quotas, teams, and broad live OAuth/API connectors.
 
 ## Product Surfaces
 
-### Model
+### Home
 
-Show that Cortex starts from a local model-readiness view rather than an empty chat box.
+Show that Cortex starts from a simple readiness view rather than an empty chat box or settings dashboard.
 
-- readiness, memory coverage, source health, decisions, and follow-ups are visible;
+- connection state, memory readiness, source health, and next action are visible;
 - there is one obvious next action;
 - source readiness and citation coverage are product signals, not launch claims.
 
-### Sources
+### Connections & Privacy
 
-Connect real services or direct app integrations through the Sources tab.
+Connect real inputs and verify controls from the secondary sheet.
 
-- connect a supported service, account, or local AI tool;
-- show status, permissions, and coverage before memory is used;
-- confirm duplicate-safe source history;
-- show undo for a bad sync or capture batch;
-- show the source readiness report after connection.
+- connect local AI tools through MCP or connect an Obsidian/local notes vault;
+- show status, permissions, sync health, and coverage before memory is used;
+- confirm duplicate-safe source identity and sync history;
+- keep planned Gmail, Notion, Slack, Drive, Calendar, GitHub, Mail, Messages, and browser connectors non-primary until they truly sync;
+- keep Advanced/Fallback import available only for unsupported services, migrations, legal exports, and support recovery.
 
-Good first-demo sources are connected ChatGPT, Claude, Slack, Gmail/email, Notion, docs, notes, meeting transcripts, browser bookmarks, calendars, or contacts. If no supported connector exists for the tester's source, use Advanced/Fallback import for a selected export, folder, or file, and call out that it is not the primary first-100 path.
+The first-demo inputs are MCP AI tools and Obsidian/local notes. Do not make manual export/file import or copy-memory-brief flows the success path.
 
 ### Review
 
@@ -58,12 +78,13 @@ Ask a question that the connected source can answer.
 
 - results include citations back to the reviewed source;
 - cited memory is the primary success condition;
-- direct AI tool connections, ChatGPT, Claude, Cursor, and browser handoffs are secondary actions after cited Ask results are clear;
+- connected AI tool retrieval is secondary after cited Ask results are clear;
+- copy handoffs and context packs are Advanced/Fallback, not the primary Ask model;
 - an empty or weak answer should lead back to connected-source coverage or Review, not to hidden automation.
 
-### Trust
+### Privacy
 
-End in Trust so the user sees control before continued use.
+End in Connections & Privacy so the user sees control before continued use.
 
 - local memory folder path and service health are visible;
 - review settings, pending-memory visibility, source policies, identity aliases, and connected AI tool permissions are understandable;
@@ -76,11 +97,11 @@ End in Trust so the user sees control before continued use.
 A fresh install should guide the tester through:
 
 1. private memory folder confirmation;
-2. first real source connection;
+2. first MCP or Obsidian connection;
 3. first memory review;
 4. first Ask with citations;
 5. backup or explicit backup-later decision;
-6. landing in the five-tab product flow.
+6. landing in Home, with Review, Ask, and Connections & Privacy available.
 
 Quick memories, clipboard captures, web captures, and Advanced/Fallback import are useful secondary paths, but they should not replace the first-source connection gate for this demo.
 
@@ -108,14 +129,19 @@ Run backend tests and retrieval checks:
 ```bash
 python3 -m unittest discover backend/tests
 python3 scripts/retrieval_eval.py
+python3 scripts/backend_beta_smoke.py
 ```
+
+The beta smoke uses a temporary Obsidian vault and validates MCP tools, Review approval, cited Ask, backup, support bundle safety, queue health, and Trust gates without network sockets.
 
 With the packaged app backend running on `127.0.0.1:8766`, run:
 
 ```bash
+python3 scripts/first100_live_smoke.py
 python3 scripts/reliability_check.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
-python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
 ```
+
+`first100_live_smoke.py` reads the app token from macOS defaults when `--token` is omitted, writes only under an isolated smoke user, and deletes that smoke user by default.
 
 Run the operational ship gate before inviting testers:
 
@@ -180,11 +206,11 @@ The demo is ready for the first 100 users when:
 
 - generated DMG, ZIP, checksum file, `latest.json`, and `BETA_HANDOFF.md` pass package-artifact verification;
 - onboarding works on a clean user profile;
-- Sources can connect a real supported service or direct app integration, show status/history, and undo a bad sync or capture batch;
-- Advanced/Fallback can preview and import a selected source when no supported connector exists;
+- Connections & Privacy can connect MCP tools or Obsidian/local notes and show status/history;
+- Advanced/Fallback can preview and import a selected source when no supported connector exists, but is not the primary path;
 - Review can approve and archive connected-source candidates;
 - Ask returns at least one useful cited result from approved memory;
-- Trust clearly shows local storage, permissions, redaction, backup, export, and support controls;
+- Connections & Privacy clearly shows local storage, permissions, redaction, backup, export, and support controls;
 - the reliability report has no critical issue;
 - the support bundle is content-free;
 - the user can explain where their data lives and how to back it up.
@@ -196,6 +222,7 @@ Do not present these as first-100-user capabilities:
 
 - hosted accounts or multi-user organizations;
 - broad public launch readiness;
+- hosted 10k-user platform readiness;
 - broad live OAuth/API sync for every Gmail, Notion, Slack, Google Drive, Microsoft 365, Teams, Linear, Jira, GitHub, LinkedIn, Twitter/X, Zoom, or browser-history source;
 - remote MCP/OAuth;
 - billing, quotas, teams, enterprise policy, or hosted analytics;

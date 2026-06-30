@@ -136,7 +136,7 @@ Channel: launch
 --- Messages ---
 2026-06-29T13:00:00+00:00 Alex: Rejected splashy launch pages as a bad fit.
 2026-06-29T13:01:00+00:00 Alex: The animated onboarding prototype was not helpful.
-2026-06-29T13:02:00+00:00 Sarpt: We decided Project Atlas should keep the five-tab app structure.
+2026-06-29T13:02:00+00:00 Sarpt: We decided Project Atlas should keep Home, Review, Ask, and Connections & Privacy.
 """,
             "slack",
         )
@@ -145,7 +145,7 @@ Channel: launch
         for leaked in ("splashy launch", "bad fit", "animated onboarding", "not helpful"):
             self.assertNotIn(leaked, joined_content)
             self.assertNotIn(leaked, data["summary"])
-        self.assertTrue(any(record["kind"] == "decision" and "five-tab app" in record["content"] for record in data["records"]))
+        self.assertTrue(any(record["kind"] == "decision" and "Home, Review, Ask" in record["content"] for record in data["records"]))
 
     def test_identity_aliases_allow_self_authored_slack_preferences(self) -> None:
         data = extract_local(
@@ -200,6 +200,41 @@ Never use ceremonial launch intros.
         self.assertTrue(any(record["kind"] == "style" and "terse project notes" in record["content"] for record in records))
         self.assertTrue(any(record["kind"] == "preference" and "source-backed answers" in record["content"] for record in records))
         self.assertTrue(any(record["kind"] == "negative" and "ceremonial launch intros" in record["content"] for record in records))
+
+    def test_obsidian_markdown_cleanup_keeps_memory_without_markup(self) -> None:
+        data = extract_local(
+            """---
+title: Project Atlas
+tags: #cortex #todo
+created: 2026-06-29
+---
+# Project Atlas
+
+> [!NOTE] Template block
+
+```dataview
+TABLE file.mtime
+FROM #cortex
+```
+
+- [ ] Follow up with Dana about [[Project Atlas|Atlas]] review.
+I decided [[Project Atlas|Atlas]] should use [source-backed retrieval](https://example.com) for MCP memory.
+I prefer #cortex notes that keep [[People/Dana|Dana]] citations clean.
+Never use [[Templates/Marketing]] boilerplate in memory.
+""",
+            "obsidian",
+        )
+        records = data["records"]
+        tasks = data["tasks"]
+        joined_content = "\n".join([*(record["content"] for record in records), *(task["content"] for task in tasks), data["summary"]])
+
+        for leaked in ("tags:", "#todo", "[[", "]]", "](https://example.com)", "dataview", "Template block", "TABLE file.mtime"):
+            self.assertNotIn(leaked, joined_content)
+        self.assertFalse(any(task["content"].startswith("tags:") for task in tasks))
+        self.assertTrue(any(task["content"] == "Follow up with Dana about Atlas review." for task in tasks))
+        self.assertTrue(any(record["kind"] == "decision" and "Atlas should use source-backed retrieval" in record["content"] for record in records))
+        self.assertTrue(any(record["kind"] == "preference" and "cortex notes" in record["content"] and "Dana citations" in record["content"] for record in records))
+        self.assertTrue(any(record["kind"] == "negative" and "Marketing boilerplate" in record["content"] for record in records))
 
     def test_model_extraction_post_filter_drops_disallowed_personal_records(self) -> None:
         raw_text = (
@@ -300,14 +335,14 @@ We decided Project Atlas should keep source dates for email decisions.
     def test_repeated_sentences_do_not_duplicate_records_or_summary(self) -> None:
         data = extract_local(
             "Ada likes coffee. Ada likes coffee. "
-            "We decided Project Atlas uses five tabs. We decided Project Atlas uses five tabs.",
+            "We decided Project Atlas uses Home, Review, and Ask. We decided Project Atlas uses Home, Review, and Ask.",
             "notes",
         )
         contents = [record["content"] for record in data["records"]]
 
-        self.assertEqual(contents.count("We decided Project Atlas uses five tabs."), 1)
+        self.assertEqual(contents.count("We decided Project Atlas uses Home, Review, and Ask."), 1)
         self.assertEqual(data["summary"].count("Ada likes coffee."), 1)
-        self.assertEqual(data["summary"].count("We decided Project Atlas uses five tabs."), 1)
+        self.assertEqual(data["summary"].count("We decided Project Atlas uses Home, Review, and Ask."), 1)
 
 
 if __name__ == "__main__":

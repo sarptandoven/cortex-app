@@ -42,7 +42,7 @@ struct ReviewHeaderSection: View {
                     Text("Review queue")
                         .font(.title3)
                         .fontWeight(.semibold)
-                    Text("Approve what Cortex should remember, and archive noise. Ask and AI handoffs can cite only approved items.")
+                    Text("Approve what Cortex should remember, and archive noise. Ask and connected AI tools can cite only approved items.")
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -149,7 +149,7 @@ struct ReviewInboxSection: View {
         if (state.review?.stats.memories ?? 0) == 0 {
             return "Add a source first. Useful memory lands here before Cortex can use it."
         }
-        return "All caught up. New imports land here before Cortex can use them."
+        return "All caught up. New source records land here before Cortex can use them."
     }
 }
 
@@ -181,12 +181,15 @@ struct ReviewCaptureCard: View {
                     .foregroundColor(.secondary)
             }
 
-            HStack(spacing: 10) {
-                Text(sourceDetail)
+            ReviewPreviewList(capture: capture)
+
+            HStack(alignment: .center, spacing: 10) {
+                Label(sourceDetail, systemImage: capture.source_url?.isEmpty == false ? "quote.bubble" : "link")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .help(sourceDetail)
                 Spacer()
                 Button {
                     archive()
@@ -221,6 +224,128 @@ struct ReviewCaptureCard: View {
             parts.append(url)
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+struct ReviewPreviewList: View {
+    let capture: CaptureItem
+
+    private var memories: [MemoryItem] {
+        Array((capture.preview_memories ?? []).prefix(5))
+    }
+
+    private var tasks: [TaskItem] {
+        Array((capture.preview_tasks ?? []).prefix(3))
+    }
+
+    var body: some View {
+        if memories.isEmpty && tasks.isEmpty {
+            HStack(spacing: 6) {
+                Image(systemName: "hourglass")
+                Text("Cortex is still preparing proposed memory for this item.")
+            }
+            .font(.caption)
+            .foregroundColor(.secondary)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "brain.head.profile")
+                    Text("What Cortex will remember")
+                        .fontWeight(.semibold)
+                    Spacer()
+                }
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+                ForEach(memories) { memory in
+                    ReviewMemoryPreviewRow(memory: memory)
+                }
+
+                if !tasks.isEmpty {
+                    Divider()
+                    ForEach(tasks) { task in
+                        ReviewTaskPreviewRow(task: task)
+                    }
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+}
+
+struct ReviewMemoryPreviewRow: View {
+    let memory: MemoryItem
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            ReviewPreviewKindPill(label: memoryLabel, color: color(for: memory.kind))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(memory.content)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let sourceURL = memory.source_url, !sourceURL.isEmpty {
+                    Label(sourceURL, systemImage: "quote.bubble")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(sourceURL)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var memoryLabel: String {
+        if let layer = memory.layer, !layer.isEmpty, layer != memory.kind {
+            return "\(memory.kind) · \(layer)"
+        }
+        return memory.kind
+    }
+
+    private func color(for kind: String) -> Color {
+        switch kind {
+        case "decision": return .red
+        case "preference": return .purple
+        case "style": return .teal
+        case "negative": return .orange
+        case "procedure": return .indigo
+        case "action": return .green
+        default: return .accentColor
+        }
+    }
+}
+
+struct ReviewTaskPreviewRow: View {
+    let task: TaskItem
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            ReviewPreviewKindPill(label: "task", color: .green)
+            Text(task.content)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+struct ReviewPreviewKindPill: View {
+    let label: String
+    let color: Color
+
+    var body: some View {
+        Text(label.uppercased())
+            .font(.caption2)
+            .fontWeight(.semibold)
+            .foregroundColor(color)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.10))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .frame(width: 92, alignment: .leading)
     }
 }
 
@@ -338,7 +463,7 @@ struct ReviewDecisionSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            SectionHeader(title: "Recent decisions", detail: "Approved decisions available as context while reviewing new imports.")
+            SectionHeader(title: "Recent decisions", detail: "Approved decisions available as context while reviewing new source memory.")
             ForEach(decisions.prefix(3)) { decision in
                 Text(decision.content)
                     .fixedSize(horizontal: false, vertical: true)

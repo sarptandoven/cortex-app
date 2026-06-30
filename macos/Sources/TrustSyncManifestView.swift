@@ -17,7 +17,7 @@ struct TrustSyncManifestSection: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Sync manifests")
                         .font(.headline)
-                    Text("Local device manifests and upload receipts for future hosted sync materialization.")
+                    Text("Local device manifests and sync receipts for future hosted sync.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

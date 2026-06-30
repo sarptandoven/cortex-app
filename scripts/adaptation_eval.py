@@ -77,13 +77,13 @@ ADAPTATION_SEEDS: tuple[AdaptationSeed, ...] = (
         topics=("style", "writing", "answers"),
     ),
     AdaptationSeed(
-        id="aq_decision_five_tabs",
+        id="aq_decision_simple_surfaces",
         kind="decision",
         layer="decision",
-        content="Decision: Cortex should use the five-tab Model, Sources, Review, Ask, Trust flow.",
-        phrase="five-tab Model, Sources, Review, Ask, Trust flow",
-        source_url="cortex-eval://adaptation/decision#five-tabs",
-        topics=("decision", "ui", "tabs"),
+        content="Decision: Cortex should use Home, Review, Ask, and a secondary Connections & Privacy sheet.",
+        phrase="Home, Review, Ask",
+        source_url="cortex-eval://adaptation/decision#simple-surfaces",
+        topics=("decision", "ui", "product-loop"),
     ),
     AdaptationSeed(
         id="aq_episodic_onboarding",
@@ -102,6 +102,15 @@ ADAPTATION_SEEDS: tuple[AdaptationSeed, ...] = (
         phrase="local-first personal memory system",
         source_url="cortex-eval://adaptation/semantic#local-first",
         topics=("semantic", "local-first", "memory"),
+    ),
+    AdaptationSeed(
+        id="aq_procedural_release_check",
+        kind="procedure",
+        layer="procedural",
+        content="Procedure: before shipping Cortex, run backend tests, build the macOS app, verify codesign, and check the local health endpoint.",
+        phrase="run backend tests",
+        source_url="cortex-eval://adaptation/procedural#release-check",
+        topics=("procedural", "release", "verification"),
     ),
 )
 
@@ -354,7 +363,7 @@ def evaluate_adaptation(store: CortexStore, user_id: str = USER_ID) -> dict[str,
     local_file_citation = assert_adaptation_local_file_citations_sanitized(store, user_id)
     artifact = store.agent_adaptation(
         user_id,
-        query="five tab product work tradeoffs local-first adaptation",
+        query="Home Review Ask product work tradeoffs local-first adaptation",
         target="Claude",
         limit=8,
         include_pending=False,
@@ -406,7 +415,7 @@ def evaluate_adaptation(store: CortexStore, user_id: str = USER_ID) -> dict[str,
         checks,
         "rules_cover_all_memory_layers",
         expected_layers.issubset(actual_layers),
-        "Adaptation rules include semantic, episodic, style, decision, preference, and negative layers.",
+        "Adaptation rules include semantic, episodic, style, decision, preference, negative, and procedural layers.",
         {"expected": sorted(expected_layers), "actual": sorted(actual_layers)},
     )
 
@@ -444,7 +453,7 @@ def evaluate_adaptation(store: CortexStore, user_id: str = USER_ID) -> dict[str,
     policy_expectations = {
         "style_guide": ("style", "direct tradeoffs"),
         "preference_policy": ("preference", "clearest user path"),
-        "decision_policy": ("decision", "five-tab Model"),
+        "decision_policy": ("decision", "Home, Review, Ask"),
         "negative_constraints": ("negative", "copy-only memory brief"),
     }
     for field, (layer, phrase) in policy_expectations.items():

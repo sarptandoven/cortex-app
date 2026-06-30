@@ -4,7 +4,7 @@
 
 Cortex is a local-first beta foundation. The local product now has a user-owned vault, rebuildable SQLite index, scoped MCP tokens, optional scoped REST user tokens, restore-safe tombstones, backup retention, durable source-account/sync-cursor records, a content-free local sync change feed, and a durable local job queue.
 
-It is not yet a millions-user hosted product. Hosted scale needs account identity, shard routing, object storage, background workers, observability, billing, deletion guarantees, support operations, and public distribution hardening.
+It is not yet a hosted 10k-user platform. The next hosted direction is FastAPI plus Postgres/pgvector, account identity, background workers, object storage for vault/export artifacts, observability, deletion guarantees, support operations, and public distribution hardening.
 
 ## Milestone 1: Hosted Control Plane
 
@@ -32,8 +32,16 @@ Implemented local primitive:
 - `POST /v1/integrations/api-token` stores hashed `cxa_` REST tokens with user ownership, audience, scopes, and last-used metadata.
 - `GET /v1/integrations/tokens` and `DELETE /v1/integrations/tokens/{token_id}` provide token metadata and revocation without exposing token secrets.
 - `CORTEX_REQUIRE_SCOPED_API_TOKENS=1` prevents the global app token from selecting arbitrary users with `X-Cortex-User`.
-- FastAPI `GET /health` exposes a `hosted_readiness` contract documenting whether the process is in hosted-style shard mode, whether scoped API tokens are required, and whether global-token user switching is allowed only for local compatibility.
-- FastAPI `GET /ready` now fails closed with HTTP 503 in hosted-style shard modes (`CORTEX_SHARD_MODE=user` or `bucket`) unless `CORTEX_REQUIRE_SCOPED_API_TOKENS=1` is enabled.
+- FastAPI `GET /health` and the packaged standalone backend both expose a `hosted_readiness` contract documenting whether the process is in hosted-style shard mode, whether scoped API tokens are required, and whether global-token user switching is allowed only for local compatibility.
+- FastAPI `GET /ready` and standalone `GET /ready` fail closed with HTTP 503 in hosted-style shard modes (`CORTEX_SHARD_MODE=user` or `bucket`) until the production gates pass.
+- Hosted readiness now blocks on:
+  - `CORTEX_REQUIRE_SCOPED_API_TOKENS=1`
+  - hosted HTTPS `CORTEX_PUBLIC_BASE_URL`
+  - `CORTEX_SYNC_SIGNING_KEY`
+  - non-hash `CORTEX_EMBEDDING_PROVIDER`
+  - `CORTEX_HOSTED_VECTOR_BACKEND=pgvector`
+  - `CORTEX_WORKER_MODE=external`
+  - `CORTEX_OBSERVABILITY_ENABLED=1`
 - FastAPI and the packaged standalone backend both authenticate scoped REST tokens before routing user-scoped memory calls.
 - REST token scopes are enforced across read, write, export, maintenance, and destructive endpoint classes.
 - `source_accounts` and `sync_cursors` are implemented locally as vault-backed records plus SQLite indexes. They preserve connector health, policies, high-water marks, and last errors across backups and rebuilds, but they do not yet store OAuth secrets or run live cloud sync.
@@ -46,20 +54,20 @@ Current multi-user/token assumptions:
 - The global app token cannot select a different `X-Cortex-User` when scoped API tokens are required or when shard mode is not `local`.
 - Scoped REST tokens are user-owned, hashed at rest, revocable, and must carry the scope class required by each endpoint.
 - In `user` and `bucket` shard modes, hosted callers should send a resolved user identity with the scoped token. Without a control-plane token index, token lookup can only search the default store and stores already opened by the process.
-- Standalone server readiness still needs parity with the FastAPI hosted readiness contract.
+- Standalone server readiness uses the same hosted readiness contract as FastAPI.
 
-## Milestone 2: Shard Runtime
+## Milestone 2: Postgres/pgvector Runtime
 
-Turn `CortexStore` into a shard-backed service.
+Turn the local store contract into a hosted relational service while keeping local SQLite/vault behavior intact.
 
 Initial hosted shape:
 
-- one SQLite/libSQL database per user or small shard;
-- shard migrations based on `backend/app/database.py`;
+- Postgres as the hosted source of truth for accounts, source records, captures, memories, review state, audit rows, and jobs;
+- `pgvector` for hosted semantic retrieval, paired with Postgres keyword search and deterministic reranking;
 - `ShardRouter` for user/workspace to shard lookup;
 - `StoreRegistry` for request-time `CortexStore` construction and lazy shard initialization;
-- shard health checks, backups, and repair reports;
-- no global vector database until per-user shard search is proven insufficient.
+- shard or tenant health checks, backups, and repair reports;
+- no separate vector database until Postgres/pgvector fails measured latency or recall targets.
 
 Implemented local primitive:
 
@@ -80,6 +88,8 @@ The local app now has the first durable queue primitives:
 - `GET /v1/captures/{capture_id}/status`
 - `GET /v1/jobs/{job_id}`
 - `POST /v1/maintenance/jobs/run`
+- `backend/app/worker.py`
+- `scripts/run_memory_worker.py`
 
 Hosted ingestion should extend this model:
 
@@ -91,6 +101,18 @@ Hosted ingestion should extend this model:
 6. Expose queue lag, failure counts, and index freshness in diagnostics.
 
 Workers should claim jobs with a short SQLite/libSQL lease, release the database while doing model work, and complete/fail idempotently.
+
+Implemented local worker runner:
+
+- `run_worker_tick(...)` wraps the existing queue primitives without introducing a second queue system.
+- `scripts/run_memory_worker.py` runs one or more worker ticks for selected users and prints JSON summaries with processed, pending, failed, per-user, and recent failed-job data.
+- Example local run:
+
+```bash
+python3 scripts/run_memory_worker.py --user-id local --limit 25 --fail-on-failed
+```
+
+Hosted deployments should run this as an external worker process with `CORTEX_WORKER_MODE=external`, shard-aware user assignment, process supervision, and alerting on nonzero failed-job counts. The macOS first-100 app does not expose this as a primary user control.
 
 ## Milestone 4: Vault Sync And Object Storage
 

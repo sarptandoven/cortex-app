@@ -48,10 +48,10 @@ REQUIRED_BETA_READINESS_KEYS = (
 REQUIRED_MANUAL_QA_TERMS = (
     "clean macos",
     "first-run",
-    "sources",
+    "connections",
+    "privacy",
     "review",
     "ask",
-    "trust",
     "backup",
     "support bundle",
     "roll back",
@@ -83,12 +83,18 @@ def add_check(checks: list[dict], name: str, ok: bool, detail: str, payload: dic
 
 def ast_syntax_check(root: Path) -> dict:
     errors: list[dict] = []
-    for path in sorted([*root.glob("backend/app/*.py"), *root.glob("backend/tests/*.py"), *root.glob("scripts/*.py")]):
+    files = [
+        path
+        for pattern in ("backend/app/**/*.py", "backend/tests/**/*.py", "scripts/**/*.py")
+        for path in root.glob(pattern)
+        if "__pycache__" not in path.parts
+    ]
+    for path in sorted(files):
         try:
             ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except SyntaxError as exc:
             errors.append({"path": str(path.relative_to(root)), "line": exc.lineno, "message": exc.msg})
-    return {"ok": not errors, "errors": errors, "files_checked": len([*root.glob("backend/app/*.py"), *root.glob("backend/tests/*.py"), *root.glob("scripts/*.py")])}
+    return {"ok": not errors, "errors": errors, "files_checked": len(files)}
 
 
 def latest_release_dir(output_root: Path) -> Path | None:
@@ -232,6 +238,83 @@ def verify_release_artifacts(release_dir: Path, strict_beta_metadata: bool) -> d
     }
 
 
+def verify_site_matches_release(root: Path, release_dir: Path) -> dict:
+    errors: list[str] = []
+    site_downloads = root / "site" / "downloads"
+    site_manifest_path = site_downloads / "latest.json"
+    release_manifest_path = release_dir / "latest.json"
+
+    if not site_manifest_path.exists():
+        return {"ok": False, "errors": ["site/downloads/latest.json is missing."]}
+    if not release_manifest_path.exists():
+        return {"ok": False, "errors": [f"{release_manifest_path} is missing."]}
+
+    try:
+        site_manifest = json.loads(site_manifest_path.read_text(encoding="utf-8"))
+        release_manifest = json.loads(release_manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "errors": [f"Invalid release/site manifest JSON: {exc}"]}
+
+    for key in ("version", "build", "channel"):
+        if site_manifest.get(key) != release_manifest.get(key):
+            errors.append(f"Site {key} does not match packaged release: site={site_manifest.get(key)} release={release_manifest.get(key)}")
+
+    release_artifacts = {
+        str(artifact.get("filename")): artifact
+        for artifact in release_manifest.get("artifacts", [])
+        if isinstance(artifact, dict)
+    }
+    site_artifacts = {
+        str(artifact.get("filename")): artifact
+        for artifact in site_manifest.get("artifacts", [])
+        if isinstance(artifact, dict)
+    }
+    if set(site_artifacts) != set(release_artifacts):
+        errors.append(f"Site artifacts do not match packaged release: site={sorted(site_artifacts)} release={sorted(release_artifacts)}")
+
+    artifact_summaries: list[dict] = []
+    for filename, release_artifact in release_artifacts.items():
+        site_artifact = site_artifacts.get(filename)
+        if not site_artifact:
+            continue
+        for field in ("kind", "size_bytes", "sha256"):
+            if site_artifact.get(field) != release_artifact.get(field):
+                errors.append(f"Site artifact {filename} {field} does not match packaged release.")
+        site_file = site_downloads / filename
+        if not site_file.exists():
+            errors.append(f"Site artifact file is missing: {filename}")
+            continue
+        actual_size = site_file.stat().st_size
+        expected_size = int(release_artifact.get("size_bytes") or -1)
+        actual_hash = sha256(site_file)
+        expected_hash = str(release_artifact.get("sha256", "")).lower()
+        if actual_size != expected_size:
+            errors.append(f"Site file size mismatch for {filename}: manifest={expected_size} actual={actual_size}")
+        if actual_hash != expected_hash:
+            errors.append(f"Site file sha256 mismatch for {filename}: manifest={expected_hash} actual={actual_hash}")
+        artifact_summaries.append({"filename": filename, "size_bytes": actual_size, "sha256": actual_hash})
+
+    version = str(release_manifest.get("version", ""))
+    build = str(release_manifest.get("build", ""))
+    checksums_name = f"Cortex-{version}-{build}.checksums.txt"
+    site_checksums = site_downloads / checksums_name
+    release_checksums = release_dir / checksums_name
+    if not site_checksums.exists():
+        errors.append(f"Site checksum file is missing: {checksums_name}")
+    elif not release_checksums.exists():
+        errors.append(f"Packaged checksum file is missing: {checksums_name}")
+    elif site_checksums.read_text(encoding="utf-8") != release_checksums.read_text(encoding="utf-8"):
+        errors.append(f"Site checksum file does not match packaged release: {checksums_name}")
+
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "site_manifest": str(site_manifest_path),
+        "release_manifest": str(release_manifest_path),
+        "artifacts": artifact_summaries,
+    }
+
+
 def live_get(base_url: str, token: str, path: str) -> dict:
     request = urllib.request.Request(base_url.rstrip("/") + path, headers={"Authorization": f"Bearer {token}"}, method="GET")
     with urllib.request.urlopen(request, timeout=10) as response:
@@ -305,7 +388,7 @@ def main() -> None:
     missing_docs = [path for path in REQUIRED_DOCS if not (root / path).exists()]
     add_check(checks, "operator_docs", not missing_docs, "Required operator docs exist.", {"missing": missing_docs})
     docs_current_result = run_command(root, [sys.executable, "scripts/check_docs_current.py"], timeout=60)
-    add_check(checks, "docs_current", docs_current_result["ok"], "Beta docs match the current five-tab local-first app and release manifest.", docs_current_result)
+    add_check(checks, "docs_current", docs_current_result["ok"], "Beta docs match the current Home/Review/Ask local-first app and release manifest.", docs_current_result)
     smoke_result = run_command(root, [sys.executable, "scripts/backend_beta_smoke.py"], timeout=120)
     add_check(checks, "backend_beta_smoke", smoke_result["ok"], "Backend beta smoke passes with temp data and blocked network sockets.", smoke_result)
 
@@ -325,7 +408,7 @@ def main() -> None:
         package_result = run_command(root, ["./macos/package_release.sh", "--output", str(output_root)], timeout=240)
         add_check(checks, "macos_package", package_result["ok"], "macOS DMG/ZIP package is generated.", package_result)
 
-    if args.refresh_site:
+    if args.refresh_site or args.include_package:
         prepare_result = run_command(root, [sys.executable, "scripts/prepare_distribution_site.py"], timeout=60)
         add_check(checks, "prepare_distribution_site", prepare_result["ok"], "Static site downloads refreshed from latest package.", prepare_result)
 
@@ -346,9 +429,12 @@ def main() -> None:
         else:
             release_detail = "Packaged DMG, ZIP, checksums, and latest.json verify. Beta handoff/readiness metadata warnings are nonblocking unless --require-package-artifacts or --include-package is used."
         add_check(checks, "release_artifacts", release_artifacts["ok"], release_detail, release_artifacts)
+        site_match = verify_site_matches_release(root, release_dir)
+        add_check(checks, "site_matches_release", site_match["ok"], "Static site downloads match the latest packaged release.", site_match)
     elif args.include_package or args.refresh_site or args.require_package_artifacts:
         add_check(checks, "release_update_manifest", False, f"No packaged Cortex release found under {output_root}.")
         add_check(checks, "release_artifacts", False, f"No packaged Cortex release found under {output_root}.")
+        add_check(checks, "site_matches_release", False, f"No packaged Cortex release found under {output_root}.")
     else:
         add_check(checks, "release_update_manifest", True, f"No packaged Cortex release found under {output_root}; release manifest validation skipped for local readiness.")
         add_check(checks, "release_artifacts", True, f"No packaged Cortex release found under {output_root}; package artifact verification skipped for local readiness.")
@@ -380,6 +466,29 @@ def main() -> None:
             add_check(checks, "live_backend_optional", live_ok, "Running backend exposes health, reliability, and support-bundle contracts.", live_payload)
     except (urllib.error.URLError, TimeoutError) as exc:
         add_check(checks, "live_backend_optional", not args.require_live, "Running backend was not reachable." if not args.require_live else "Running backend is required but unreachable.", {"error": str(exc), "required": args.require_live})
+
+    if args.require_live:
+        live_smoke_result = run_command(
+            root,
+            [
+                sys.executable,
+                "scripts/first100_live_smoke.py",
+                "--base-url",
+                args.base_url,
+                "--token",
+                args.token,
+            ],
+            timeout=120,
+        )
+        if args.token:
+            live_smoke_result["command"] = live_smoke_result["command"].replace(args.token, "[redacted-token]")
+        add_check(
+            checks,
+            "first100_live_smoke",
+            live_smoke_result["ok"],
+            "Running packaged app passes isolated MCP/Obsidian -> Review -> Ask smoke and cleans up the smoke user.",
+            live_smoke_result,
+        )
 
     failures = [check for check in checks if check["status"] != "ok"]
     payload = {

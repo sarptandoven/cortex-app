@@ -5,20 +5,17 @@ struct OnboardingView: View {
     private let steps = OnboardingStep.allCases
 
     var body: some View {
-        HStack(spacing: 0) {
-            sidebar
+        VStack(spacing: 0) {
+            header
             Divider()
-            VStack(spacing: 0) {
-                header
-                Divider()
-                ScrollView {
-                    stepContent
-                        .padding(22)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                Divider()
-                footer
+            ScrollView {
+                stepContent
+                    .padding(24)
+                    .frame(maxWidth: 620, alignment: .leading)
+                    .frame(maxWidth: .infinity)
             }
+            Divider()
+            footer
         }
         .background(Color(nsColor: .windowBackgroundColor))
     }
@@ -67,6 +64,56 @@ struct OnboardingView: View {
     }
 
     private var header: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 7) {
+                        Image(systemName: "brain.head.profile")
+                            .foregroundColor(.accentColor)
+                        Text("Cortex setup")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.secondary)
+                    }
+                    Text(state.onboardingStep.title)
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                    Text(state.onboardingStep.subtitle)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Button {
+                    state.dismissOnboardingForSession()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .help("Finish setup later")
+            }
+
+            HStack(spacing: 6) {
+                ForEach(steps) { step in
+                    Capsule()
+                        .fill(progressColor(for: step))
+                        .frame(height: 4)
+                }
+            }
+        }
+        .padding(22)
+    }
+
+    private func progressColor(for step: OnboardingStep) -> Color {
+        if state.onboardingStepIsComplete(step) {
+            return .accentColor
+        }
+        if state.onboardingStep == step {
+            return .accentColor.opacity(0.55)
+        }
+        return Color(nsColor: .separatorColor).opacity(0.55)
+    }
+
+    private var legacyHeader: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 5) {
                 Text("Step \(state.onboardingStepIndex + 1) of \(steps.count)")
@@ -97,6 +144,7 @@ struct OnboardingView: View {
                 Label("Back", systemImage: "chevron.left")
             }
             .disabled(state.onboardingStep == .privateVault)
+            .controlSize(.large)
 
             Spacer()
 
@@ -108,16 +156,17 @@ struct OnboardingView: View {
 
             Spacer()
 
-            if state.onboardingStep == .trustBackup {
+            if state.onboardingStep == steps.last {
                 Button {
                     state.finishOnboarding()
                 } label: {
                     Label(
-                        state.canCompleteOnboarding ? "Finish Setup" : "Skip Setup for Now",
+                        state.canCompleteOnboarding ? "Start Cortex" : "Finish Later",
                         systemImage: state.canCompleteOnboarding ? "checkmark.circle" : "arrow.right.circle"
                     )
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.large)
             } else {
                 Button {
                     state.nextOnboardingStep()
@@ -125,6 +174,7 @@ struct OnboardingView: View {
                     Label(continueButtonTitle, systemImage: state.canAdvanceOnboarding ? "chevron.right" : continueButtonIcon)
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.large)
                 .disabled(!state.canAdvanceOnboarding)
             }
         }
@@ -134,17 +184,15 @@ struct OnboardingView: View {
     private var continueButtonTitle: String {
         guard !state.canAdvanceOnboarding else { return "Continue" }
         switch state.onboardingStep {
-        case .privateVault:
-            return "Waiting for Service"
-        case .firstSource:
-            return "Connect Accounts or Apps"
-        case .reviewMemory:
-            return "Approve One Memory"
-        case .askUse:
-            return "Ask a Question"
-        case .trustBackup:
-            return "Choose Backup"
-        }
+            case .privateVault:
+                return "Waiting for Service"
+            case .firstSource:
+                return "Connect Cortex"
+            case .reviewMemory:
+                return "Continue"
+            case .askUse:
+                return "Continue"
+            }
     }
 
     private var continueButtonIcon: String {
@@ -157,8 +205,6 @@ struct OnboardingView: View {
             return "checkmark.circle"
         case .askUse:
             return "sparkle.magnifyingglass"
-        case .trustBackup:
-            return "externaldrive"
         }
     }
 
@@ -173,8 +219,6 @@ struct OnboardingView: View {
             OnboardingReviewMemoryStep(state: state)
         case .askUse:
             OnboardingAskUseStep(state: state)
-        case .trustBackup:
-            OnboardingTrustBackupStep(state: state)
         }
     }
 }
@@ -261,29 +305,51 @@ struct OnboardingVaultStep: View {
 struct OnboardingFirstSourceStep: View {
     @ObservedObject var state: AppState
 
+    private var obsidianConnector: SourceConnectorCatalogItem? {
+        state.sourceConnectorCatalog.first { $0.id == "obsidian" }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Connect one account, app integration, or direct AI tool with real context from email, calendar, notes, chat, docs, or direct AI memory saves.")
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Connect one real source path. For this beta, the useful paths are local AI tools through MCP and an Obsidian vault that syncs notes into Review.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Button {
-                        state.selectedTab = .sources
-                        state.dismissOnboardingForSession()
-                        state.status = "Connect accounts, apps, or direct AI tools to build your model"
-                    } label: {
-                        Label("Connect Accounts or Apps", systemImage: "link.circle")
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 240), spacing: 12)], spacing: 12) {
+                OnboardingConnectionCard(
+                    title: "Connect AI tools",
+                    detail: "Claude Desktop, Cursor, Windsurf, and MCP clients can read approved memory and write new source records into Review.",
+                    systemImage: "wand.and.stars",
+                    isPrimary: true,
+                    status: state.connectedAIIntegrationCount > 0 ? "\(state.connectedAIIntegrationCount) connected" : "MCP",
+                    buttonTitle: state.connectedAIIntegrationCount > 0 ? "Manage" : "Connect"
+                ) {
+                    state.openConnectionsPrivacy(statusMessage: "Connect local AI tools")
+                    state.dismissOnboardingForSession()
+                }
+
+                OnboardingConnectionCard(
+                    title: state.hasConnectedObsidianVault ? "Obsidian connected" : "Connect Obsidian",
+                    detail: state.hasConnectedObsidianVault ? "Cortex syncs the saved vault automatically on launch and periodically." : "Choose an Obsidian vault once. Cortex reads notes locally, cleans Markdown, and preserves citations.",
+                    systemImage: state.hasConnectedObsidianVault ? "checkmark.seal.fill" : "folder.badge.plus",
+                    isPrimary: false,
+                    status: state.hasConnectedObsidianVault ? "Connected" : "Local",
+                    buttonTitle: state.hasConnectedObsidianVault ? "Connected" : "Connect vault"
+                ) {
+                    if state.hasConnectedObsidianVault {
+                        state.status = "Obsidian will sync automatically"
+                    } else if let connector = obsidianConnector {
+                        state.connectLocalNotesFolder(connector)
+                    } else {
+                        Task { await state.loadSourceConnectivity() }
+                        state.status = "Checking Obsidian connector"
                     }
-                    .buttonStyle(.borderedProminent)
-                    Spacer()
                 }
             }
 
             if !state.onboardingFirstSourceNames.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Connected account, app, or tool")
+                    Text("Connected path")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Text(state.onboardingFirstSourceNames.joined(separator: ", "))
@@ -294,11 +360,80 @@ struct OnboardingFirstSourceStep: View {
             }
 
             OnboardingCheckRow(
-                title: state.onboardingHasSource ? "First connection ready" : "Waiting for a connection",
-                detail: state.onboardingHasSource ? "Next, review what Cortex found before it becomes memory." : "Connect an account, app, or direct AI tool to continue.",
+                title: state.onboardingHasSource ? "Connection ready" : "Waiting for one connection",
+                detail: state.onboardingHasSource ? "Setup can continue. New memory will appear in Review when a connected source or tool saves context." : "Connect one AI tool or Obsidian vault to continue.",
                 systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "link.circle",
                 color: state.onboardingHasSource ? .green : .orange
             )
+        }
+        .task {
+            await state.loadTrust()
+            if state.sourceConnectorCatalog.isEmpty {
+                await state.loadSourceConnectivity()
+            }
+        }
+    }
+}
+
+struct OnboardingConnectionCard: View {
+    let title: String
+    let detail: String
+    let systemImage: String
+    let isPrimary: Bool
+    let status: String?
+    let buttonTitle: String
+    let action: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: systemImage)
+                    .font(.title2)
+                Spacer()
+                if let status {
+                    Text(status)
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background((isPrimary ? Color.white : Color.accentColor).opacity(0.16))
+                        .clipShape(Capsule())
+                }
+            }
+            Text(title)
+                .font(.headline)
+                .fontWeight(.semibold)
+            Text(detail)
+                .font(.callout)
+                .foregroundColor(isPrimary ? .white.opacity(0.86) : .secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            actionButton
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 186, alignment: .topLeading)
+        .foregroundColor(isPrimary ? .white : .primary)
+        .background(isPrimary ? Color.accentColor : Color(nsColor: .controlBackgroundColor))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(isPrimary ? Color.clear : Color(nsColor: .separatorColor).opacity(0.35)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
+    private var actionButton: some View {
+        if isPrimary {
+            Button(action: action) {
+                Label(buttonTitle, systemImage: "link.circle")
+                    .frame(maxWidth: .infinity, minHeight: 42)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+        } else {
+            Button(action: action) {
+                Label(buttonTitle, systemImage: "folder.badge.plus")
+                    .frame(maxWidth: .infinity, minHeight: 42)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
         }
     }
 }
@@ -308,7 +443,7 @@ struct OnboardingReviewMemoryStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Approve only what Cortex should remember. Archive anything noisy before it can appear in Ask or AI handoffs.")
+            Text("Review is the safety layer. When connected sources or tools produce memory candidates, approve only what Cortex should remember.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -316,7 +451,7 @@ struct OnboardingReviewMemoryStep: View {
                 QuietState(title: "No pending memory", detail: emptyReviewDetail)
             } else {
                 ForEach(state.inbox.prefix(2)) { capture in
-                    CaptureCard(
+                    ReviewCaptureCard(
                         capture: capture,
                         approve: { state.approveCapture(capture) },
                         archive: { state.archiveCapture(capture) }
@@ -344,10 +479,10 @@ struct OnboardingReviewMemoryStep: View {
             }
 
             OnboardingCheckRow(
-                title: state.onboardingHasReviewedMemory ? "Memory reviewed" : "Approve one useful memory",
-                detail: state.onboardingHasReviewedMemory ? "Cortex has approved memory it can cite." : "Approve one pending item to unlock the first cited Ask.",
+                title: reviewPathTitle,
+                detail: reviewPathDetail,
                 systemImage: state.onboardingHasReviewedMemory ? "checkmark.seal.fill" : "tray.full",
-                color: state.onboardingHasReviewedMemory ? .green : .orange
+                color: state.onboardingHasReviewedMemory || state.onboardingHasSource ? .green : .orange
             )
         }
         .task {
@@ -362,9 +497,26 @@ struct OnboardingReviewMemoryStep: View {
             return "You already reviewed memory from your first connection."
         }
         if state.onboardingHasSource {
-            return "No reviewable memory is waiting yet. Refresh Review, or connect another account, app, or direct AI tool with more context."
+            return "No reviewable memory is waiting yet. New source or tool memory will land here first."
         }
-        return "Connect an account, app, or direct AI tool first. Anything useful will appear here before Cortex remembers it."
+        return "Connect an AI tool or Obsidian vault first. Anything useful will appear here before Cortex remembers it."
+    }
+
+    private var reviewPathTitle: String {
+        if state.onboardingHasReviewedMemory {
+            return "Memory reviewed"
+        }
+        return state.onboardingHasSource ? "Review path ready" : "Connect Cortex first"
+    }
+
+    private var reviewPathDetail: String {
+        if state.onboardingHasReviewedMemory {
+            return "Cortex has approved memory it can cite."
+        }
+        if state.onboardingHasSource {
+            return "Review becomes active as soon as connected context creates memory candidates."
+        }
+        return "Connect an AI tool or beta source before Review can receive memory."
     }
 }
 
@@ -373,7 +525,7 @@ struct OnboardingAskUseStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Ask one question against approved memory. This shows the main loop: connected context becomes reviewed memory, then cited answers.")
+            Text("Ask is where approved memory becomes useful. It answers with citations once Review has accepted memory.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -429,10 +581,10 @@ struct OnboardingAskUseStep: View {
             }
 
             OnboardingCheckRow(
-                title: state.onboardingHasUsedCortex ? "Cortex used once" : "Use Cortex once",
-                detail: state.onboardingHasUsedCortex ? "Approved memory was used in a cited answer." : "Ask a question that returns cited memory.",
+                title: askPathTitle,
+                detail: askPathDetail,
                 systemImage: state.onboardingHasUsedCortex ? "checkmark.seal.fill" : "sparkle.magnifyingglass",
-                color: state.onboardingHasUsedCortex ? .green : .orange
+                color: state.onboardingHasUsedCortex || state.onboardingHasSource ? .green : .orange
             )
         }
     }
@@ -445,113 +597,24 @@ struct OnboardingAskUseStep: View {
         if state.hasSearched {
             return "Try an exact phrase from approved memory, or go back to Review and approve one useful item."
         }
-        return "Ask about a connected account, app, or tool. Cortex answers with citations when approved memory matches."
+        return "Ask about connected memory. Cortex answers with citations when approved memory matches."
     }
-}
 
-struct OnboardingTrustBackupStep: View {
-    @ObservedObject var state: AppState
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Finish with simple defaults: review new memory first, share only approved memory, redact copied memory, and keep backups local.")
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 10) {
-                OnboardingToggleRow(
-                    title: "Review new memories first",
-                    detail: "New connected context waits for approval before Cortex remembers it.",
-                    isOn: $state.appSettings.review_new_captures
-                )
-                OnboardingToggleRow(
-                    title: "Only approved memory leaves Cortex",
-                    detail: "Connected tools do not receive pending memory.",
-                    isOn: Binding(
-                        get: { !state.appSettings.allow_pending_in_context },
-                        set: { state.appSettings.allow_pending_in_context = !$0 }
-                    )
-                )
-                OnboardingToggleRow(
-                    title: "Redact copied memory",
-                    detail: "AI handoffs remove sensitive details where possible.",
-                    isOn: $state.appSettings.redact_sensitive_context
-                )
-                HStack {
-                    Button {
-                        state.saveMemorySettings()
-                    } label: {
-                        Label("Save Trust Settings", systemImage: "checkmark.circle")
-                    }
-                    Button {
-                        state.selectedTab = .trust
-                        state.dismissOnboardingForSession()
-                    } label: {
-                        Label("Open Trust", systemImage: "lock.shield")
-                    }
-                    Spacer()
-                }
-            }
-            .padding(12)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Backup")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Text("Backups stay local in the Cortex vault. Create one now, or explicitly skip it for this setup.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                HStack {
-                    Button {
-                        state.createBackup()
-                    } label: {
-                        Label("Back Up Now", systemImage: "archivebox")
-                    }
-                    Button {
-                        state.skipFirstBackup()
-                    } label: {
-                        Label("Skip for Now", systemImage: "forward")
-                    }
-                    Spacer()
-                }
-            }
-
-            if let backup = state.lastBackupPath {
-                Text("Latest backup: \(backup)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
-            }
-
-            OnboardingCheckRow(
-                title: state.onboardingHasBackupDecision ? "Backup decision recorded" : "Back up or skip explicitly",
-                detail: state.onboardingHasBackupDecision ? "Setup can finish once the earlier steps are ready." : "Create a first backup, or explicitly skip it for now.",
-                systemImage: state.onboardingHasBackupDecision ? "checkmark.seal.fill" : "externaldrive",
-                color: state.onboardingHasBackupDecision ? .green : .orange
-            )
+    private var askPathTitle: String {
+        if state.onboardingHasUsedCortex {
+            return "Cortex used once"
         }
+        return state.onboardingHasSource ? "Ask path ready" : "Connect Cortex first"
     }
-}
 
-struct OnboardingToggleRow: View {
-    let title: String
-    let detail: String
-    @Binding var isOn: Bool
-
-    var body: some View {
-        Toggle(isOn: $isOn) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                Text(detail)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+    private var askPathDetail: String {
+        if state.onboardingHasUsedCortex {
+            return "Approved memory was used in a cited answer."
         }
+        if state.onboardingHasSource {
+            return "Ask becomes useful as soon as approved memory exists."
+        }
+        return "Connect an AI tool or Obsidian vault before Ask can cite memory."
     }
 }
 

@@ -17,10 +17,12 @@ The MVP adds a backend service and a native macOS client while preserving the ex
 
 ```
 macOS app
-  global hotkey
-  clipboard capture
-  quick note
-  recent/search/graph
+  Home
+  Review
+  Ask
+  Connections & Privacy
+  MCP AI-tool setup
+  Obsidian/local notes sync
       |
       v
 FastAPI backend
@@ -35,6 +37,7 @@ FastAPI backend
   /v1/source-accounts/catalog
   /v1/sources/readiness
   /v1/source-accounts
+  /v1/source-accounts/{id}/sync
   /v1/sync-cursors
   /v1/sync/devices
   /v1/sync/devices/{id}/receipts
@@ -116,14 +119,14 @@ The local SQLite storage is intentionally swappable.
 
 | Local Beta | Hosted Beta |
 |---|---|
-| User-owned local vault + SQLite index | synced vault events + SQLite WAL on persistent storage |
-| FTS5 keyword search | FTS5 + sqlite-vec hybrid search |
+| User-owned local vault + SQLite index | FastAPI service with Postgres |
+| FTS5 keyword search | Postgres full-text search + pgvector |
 | local review status | hosted review workflow |
-| API token in env | OAuth/login + scoped API tokens |
-| Local vault files | backed-up user vaults or shard DB files |
-| localhost API | HTTPS API |
+| local install tokens | OAuth/login + scoped API tokens |
+| local vault files | durable object storage exports/backups plus relational memory rows |
+| localhost API and local MCP | HTTPS API and hosted MCP |
 
-See `docs/SQLITE_VEC_BACKEND_PLAN.md` for the full hosted backend direction.
+Local beta remains SQLite/vault-first. For the 10k-user hosted path, FastAPI plus Postgres/pgvector is the default unless benchmarks prove a separate vector store is needed.
 
 See `docs/MEMORY_BACKEND_BLUEPRINT.md` for the layered memory model and scale path across SQLite, sqlite-vec, libSQL/Turso, Postgres/pgvector, Qdrant, and LanceDB.
 
@@ -133,7 +136,7 @@ See `docs/DISTRIBUTION.md` for the landing page, static download directory, priv
 
 See `docs/RELIABILITY_HARDENING.md` for the backend health contract, repair flow, and packaged-app reliability checks.
 
-See `docs/SIMPLE_PRODUCT_LOOP.md` for the activation and retention loop: Capture, Review, Reuse, Return.
+See `docs/SIMPLE_PRODUCT_LOOP.md` for the activation and retention loop: connect, review, ask, and reuse approved memory.
 
 See `docs/OPERATIONAL_READINESS.md` for support bundles, ship gates, incident playbooks, rollback flow, and local-beta support operations.
 
@@ -150,9 +153,9 @@ Lifecycle:
 - `archived`: removed from active memory and search
 - `deleted`: permanently removed from the current SQLite index and current vault JSON records; previous backup ZIPs still require retention pruning
 
-### Import Session
+### Fallback Import Session
 
-A user-confirmed source batch created from selected local files, folders, or exports. The macOS app previews imports with `/v1/imports/analyze`; confirmed imports create an import session and link captures through `import_id`.
+A user-confirmed fallback batch created from selected local files, folders, or exports. It supports unsupported services, migration, tests, and support recovery. The primary MVP source path is MCP/Obsidian source-account sync, not manual import.
 
 Lifecycle:
 
@@ -218,7 +221,7 @@ An audit record for user-visible lifecycle actions such as capture creation, app
 
 ### Product Loop
 
-The simple product loop is backend-owned so the app and MCP agents agree on the same next step. `GET /v1/loop` returns the current source/import, review, memory-use, and return state, and `POST /v1/loop/reuse` records when approved memory is used through Ask, a context handoff, or an AI session.
+The simple product loop is backend-owned so the app and MCP agents agree on the same next step. `GET /v1/loop` returns connection, review, memory-use, and return state, and `POST /v1/loop/reuse` records when approved memory is used through Ask, a fallback context handoff, or an AI session.
 
 ### Sync Change Feed
 
@@ -278,12 +281,12 @@ The backend exposes an MCP-style JSON-RPC endpoint with these tools:
 - `delete_memory_capture`
 - `rebuild_index_from_vault`
 
-The local endpoint is enough for beta testing and a stdio proxy. Production ChatGPT/Claude connectors should add the full remote MCP transport and OAuth flow.
+The local source-account sync endpoint is enough for beta local app integrations, MCP bridges, and connector processes. Production ChatGPT/Claude and cloud-service connectors should add full remote MCP/OAuth flows on top of the same account, cursor, citation, and review contracts.
 
 ## Privacy Model
 
-- No background capture in the MVP
-- User-triggered capture only
+- No background app crawling in the MVP
+- User-approved MCP and Obsidian sync only
 - Source retained on every memory
 - Review inbox for new captures
 - Archive endpoint for full captures, hard-delete endpoints for individual memories/full captures/backups/all local user data, and latest-backup restore

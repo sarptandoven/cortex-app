@@ -1,0 +1,150 @@
+from __future__ import annotations
+
+from urllib.parse import urlparse
+
+from .config import Settings
+
+
+HOSTED_VECTOR_BACKENDS = {"pgvector", "postgres-pgvector"}
+HOSTED_WORKER_MODES = {"external", "hosted", "worker"}
+
+
+def hosted_readiness_contract(settings: Settings) -> dict:
+    shard_mode = (settings.shard_mode or "local").strip().lower()
+    hosted_mode = shard_mode != "local"
+    requires_scoped_tokens = bool(settings.require_scoped_api_tokens)
+    global_token_user_switching = "blocked" if hosted_mode or requires_scoped_tokens else "allowed_local_compatibility"
+
+    checks = [
+        _scoped_token_check(hosted_mode, requires_scoped_tokens),
+        _public_base_url_check(hosted_mode, settings.public_base_url),
+        _sync_signing_key_check(hosted_mode, settings.sync_signing_key),
+        _embedding_provider_check(hosted_mode, settings.embedding_provider),
+        _vector_backend_check(hosted_mode, settings.hosted_vector_backend),
+        _worker_check(hosted_mode, settings.worker_mode),
+        _observability_check(hosted_mode, settings.observability_enabled),
+    ]
+
+    return {
+        "status": "ok" if all(check["status"] == "ok" for check in checks) else "blocked",
+        "hosted_mode": hosted_mode,
+        "shard_mode": shard_mode,
+        "require_scoped_api_tokens": requires_scoped_tokens,
+        "global_token_user_switching": global_token_user_switching,
+        "checks": checks,
+    }
+
+
+def _scoped_token_check(hosted_mode: bool, requires_scoped_tokens: bool) -> dict:
+    if hosted_mode and not requires_scoped_tokens:
+        return {
+            "name": "scoped_api_tokens_required",
+            "status": "blocked",
+            "detail": "Set CORTEX_REQUIRE_SCOPED_API_TOKENS=1 before marking hosted shard mode ready.",
+        }
+    return {
+        "name": "scoped_api_tokens_required",
+        "status": "ok",
+        "detail": "Hosted shard modes require per-user scoped REST tokens before readiness passes.",
+    }
+
+
+def _public_base_url_check(hosted_mode: bool, public_base_url: str) -> dict:
+    if not hosted_mode:
+        return {
+            "name": "public_base_url",
+            "status": "ok",
+            "detail": "Local mode can use the default loopback URL.",
+        }
+    parsed = urlparse(public_base_url or "")
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme == "https" and host not in {"127.0.0.1", "localhost", ""}:
+        return {
+            "name": "public_base_url",
+            "status": "ok",
+            "detail": "Hosted mode has an HTTPS public base URL.",
+        }
+    return {
+        "name": "public_base_url",
+        "status": "blocked",
+        "detail": "Set CORTEX_PUBLIC_BASE_URL to the hosted HTTPS API origin.",
+    }
+
+
+def _sync_signing_key_check(hosted_mode: bool, sync_signing_key: str) -> dict:
+    if not hosted_mode or sync_signing_key.strip():
+        return {
+            "name": "sync_signing_key",
+            "status": "ok",
+            "detail": "Sync/device receipts can be signed for the current deployment mode.",
+        }
+    return {
+        "name": "sync_signing_key",
+        "status": "blocked",
+        "detail": "Set CORTEX_SYNC_SIGNING_KEY before enabling hosted sync or multi-device receipts.",
+    }
+
+
+def _embedding_provider_check(hosted_mode: bool, embedding_provider: str) -> dict:
+    provider = (embedding_provider or "hash").strip().lower()
+    if not hosted_mode or provider != "hash":
+        return {
+            "name": "embedding_provider",
+            "status": "ok",
+            "detail": f"Embedding provider: {provider or 'hash'}.",
+        }
+    return {
+        "name": "embedding_provider",
+        "status": "blocked",
+        "detail": "Hosted retrieval needs a real embedding provider; set CORTEX_EMBEDDING_PROVIDER=openai or another production provider.",
+    }
+
+
+def _vector_backend_check(hosted_mode: bool, hosted_vector_backend: str) -> dict:
+    backend = (hosted_vector_backend or "").strip().lower()
+    if not hosted_mode:
+        return {
+            "name": "hosted_vector_backend",
+            "status": "ok",
+            "detail": "Local mode uses SQLite/FTS and optional sqlite-vec.",
+        }
+    if backend in HOSTED_VECTOR_BACKENDS:
+        return {
+            "name": "hosted_vector_backend",
+            "status": "ok",
+            "detail": f"Hosted vector backend configured as {backend}.",
+        }
+    return {
+        "name": "hosted_vector_backend",
+        "status": "blocked",
+        "detail": "Set CORTEX_HOSTED_VECTOR_BACKEND=pgvector before treating hosted retrieval as 10k-user ready.",
+    }
+
+
+def _worker_check(hosted_mode: bool, worker_mode: str) -> dict:
+    mode = (worker_mode or "inline").strip().lower()
+    if not hosted_mode or mode in HOSTED_WORKER_MODES:
+        return {
+            "name": "background_workers",
+            "status": "ok",
+            "detail": f"Worker mode: {mode or 'inline'}.",
+        }
+    return {
+        "name": "background_workers",
+        "status": "blocked",
+        "detail": "Set CORTEX_WORKER_MODE=external and run background workers before hosted rollout.",
+    }
+
+
+def _observability_check(hosted_mode: bool, observability_enabled: bool) -> dict:
+    if not hosted_mode or observability_enabled:
+        return {
+            "name": "observability",
+            "status": "ok",
+            "detail": "Operational health can be monitored for the current deployment mode.",
+        }
+    return {
+        "name": "observability",
+        "status": "blocked",
+        "detail": "Set CORTEX_OBSERVABILITY_ENABLED=1 after wiring logs, metrics, and job-failure alerts.",
+    }

@@ -7,16 +7,12 @@
       {
         kind: "dmg",
         filename: "Cortex-0.1.0-1.dmg",
-        url: "downloads/Cortex-0.1.0-1.dmg",
-        size_bytes: 1518633,
-        sha256: "bdd4d38813143ca3af0fada361576ea973bf65e80ecbe7c2e47cffb5cb1d9f80"
+        url: "downloads/Cortex-0.1.0-1.dmg"
       },
       {
         kind: "zip",
         filename: "Cortex-0.1.0-1.app.zip",
-        url: "downloads/Cortex-0.1.0-1.app.zip",
-        size_bytes: 1075926,
-        sha256: "5748d6714f467dbd6dd39ea705474f1b9f6e299de0a9f03b525f3c5a9f405c9d"
+        url: "downloads/Cortex-0.1.0-1.app.zip"
       }
     ]
   };

@@ -34,6 +34,8 @@ BACKEND_FEATURES = (
     "operational-readiness",
     "source-imports",
     "source-account-registry",
+    "source-account-sync",
+    "obsidian-connector",
     "sync-device-manifests",
     "sync-receipts",
 )
@@ -43,11 +45,12 @@ DEFAULT_BACKUP_RETENTION_DAYS = 0
 DEFAULT_MCP_TOKEN_SCOPES = ("read", "write", "export", "maintenance")
 MCP_TOKEN_SCOPES = {"read", "write", "export", "maintenance", "destructive"}
 
-MEMORY_LAYERS = {"semantic", "episodic", "style", "decision", "preference", "negative"}
+MEMORY_LAYERS = {"semantic", "episodic", "style", "decision", "preference", "negative", "procedural"}
 MEMORY_LAYER_BY_KIND = {
     "claim": "semantic",
     "observation": "semantic",
     "summary": "semantic",
+    "procedure": "procedural",
     "event": "episodic",
     "decision": "decision",
     "preference": "preference",
@@ -178,6 +181,22 @@ LAYER_QUERY_INTENTS: tuple[tuple[set[str], set[str]], ...] = (
             "changed",
             "recent",
             "recently",
+        },
+    ),
+    (
+        {"procedural"},
+        {
+            "checklist",
+            "deploy",
+            "do",
+            "how",
+            "process",
+            "procedure",
+            "runbook",
+            "setup",
+            "step",
+            "steps",
+            "workflow",
         },
     ),
 )
@@ -315,10 +334,10 @@ TASK_QUERY_TERMS = {
 
 DEFAULT_USER_SETTINGS: dict[str, Any] = {
     "review_new_captures": True,
-    "allow_pending_in_context": True,
+    "allow_pending_in_context": False,
     "context_pack_limit": 12,
     "allow_agent_reads": True,
-    "allow_agent_writes": False,
+    "allow_agent_writes": True,
     "allow_agent_exports": False,
     "allow_agent_maintenance": False,
     "allow_agent_destructive_actions": False,
@@ -420,6 +439,8 @@ SOURCE_CONNECTOR_IMPORT_METADATA: dict[str, dict[str, Any]] = {
     "apple-notes": {"source_ids": ["apple-notes", "docs"], "export_status": "generic", "import_status": "generic", "import_label": "Apple Notes local records map to Notes and writing"},
     "obsidian": {"source_ids": ["obsidian", "knowledge-base"], "export_status": "generic", "import_status": "generic", "import_label": "Obsidian vault local records map to Knowledge bases"},
 }
+
+PRIMARY_BETA_CONNECTOR_IDS: frozenset[str] = frozenset({"obsidian"})
 
 
 SENSITIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -606,6 +627,32 @@ def _connector_first_100_note(item: dict[str, Any]) -> str:
     return f"{prefix} {note}".strip()
 
 
+def _connector_primary_beta(item: dict[str, Any]) -> bool:
+    return str(item.get("id") or "").strip().lower() in PRIMARY_BETA_CONNECTOR_IDS
+
+
+def _connector_primary_beta_path(item: dict[str, Any]) -> str:
+    if _connector_primary_beta(item):
+        return "native-local-connector"
+    readiness_status = _connector_readiness_status(item)
+    if readiness_status == "live-planned":
+        return "account-sign-in-planned"
+    if readiness_status == "import-ready":
+        return "advanced-fallback-only"
+    return "direct-connector-needed"
+
+
+def _connector_beta_status(item: dict[str, Any]) -> str:
+    if _connector_primary_beta(item):
+        return "ready"
+    readiness_status = _connector_readiness_status(item)
+    if readiness_status == "live-planned":
+        return "planned"
+    if readiness_status == "import-ready":
+        return "advanced-fallback"
+    return "needs-connector"
+
+
 def _normalize_identity_aliases(value: Any) -> list[str]:
     raw_values: list[Any]
     if isinstance(value, dict):
@@ -730,6 +777,124 @@ def _memory_raw_excerpt(record: dict[str, Any], raw_text: str) -> str:
         line = _matching_source_line(raw_text, content)
         return (line or content)[:500]
     return raw_text[:500]
+
+
+def _memory_sector(record: dict[str, Any], source_url: str | None, source_account: dict[str, Any] | None = None) -> str:
+    explicit = str(record.get("sector") or record.get("workspace") or "").strip()
+    if explicit:
+        return explicit[:120]
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    for key in ("sector", "workspace", "project", "vault_name"):
+        value = str(metadata.get(key) or "").strip()
+        if value:
+            return value[:120]
+    if source_account:
+        account_metadata = source_account.get("metadata") if isinstance(source_account.get("metadata"), dict) else {}
+        for key in ("workspace", "project", "vault_name"):
+            value = str(account_metadata.get(key) or "").strip()
+            if value:
+                return value[:120]
+        label = str(source_account.get("account_label") or "").strip()
+        if label and label.lower() not in {"obsidian", "gmail", "slack", "notion"}:
+            return label[:120]
+    if source_url:
+        split = urlsplit(source_url)
+        query = split.query or ""
+        for key in ("workspace", "project", "vault", "team"):
+            match = re.search(rf"(?:^|&){key}=([^&]+)", query)
+            if match:
+                return unquote(match.group(1))[:120]
+        if split.scheme == "file":
+            parts = [part for part in unquote(split.path).split("/") if part]
+            if len(parts) >= 2:
+                return parts[-2][:120]
+    return ""
+
+
+def _memory_source_type(source: str, source_url: str | None) -> str:
+    if source_url:
+        scheme = urlsplit(source_url).scheme.lower()
+        if scheme == "file":
+            return "local_file"
+        if scheme:
+            return "service"
+    normalized = _normalize_source_key(source)
+    if normalized in {"obsidian", "apple-notes", "browser-bookmarks", "browser-history"}:
+        return "local_file"
+    if normalized in {"gmail", "notion", "slack", "google-drive", "github"}:
+        return "service"
+    return "manual" if normalized in {"macos", "unit-test"} else "connector"
+
+
+def _memory_provenance(
+    record: dict[str, Any],
+    *,
+    source: str,
+    source_url: str | None,
+    capture_id: str,
+    source_account: dict[str, Any] | None,
+    external_id: str | None,
+) -> dict[str, Any]:
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    provenance = {
+        "source": source,
+        "source_url": source_url,
+        "capture_id": capture_id,
+        "source_account_id": (source_account or {}).get("id"),
+        "external_id": external_id,
+        "record_metadata": metadata,
+    }
+    return {key: value for key, value in provenance.items() if value not in (None, "", {}, [])}
+
+
+def _apply_source_record_metadata(extracted: dict[str, Any], metadata: dict[str, Any] | None) -> dict[str, Any]:
+    if not metadata:
+        return extracted
+    source_topics = _source_record_metadata_topics(metadata)
+    for record in extracted.get("records", []) or []:
+        existing_metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+        record["metadata"] = {**metadata, **existing_metadata}
+        if source_topics:
+            existing_topics = [str(topic) for topic in (record.get("topics") or []) if str(topic).strip()]
+            record["topics"] = _unique_preserving_order([*existing_topics, *source_topics])[:12]
+    return extracted
+
+
+def _source_record_metadata_topics(metadata: dict[str, Any]) -> list[str]:
+    topics: list[str] = []
+    for tag in metadata.get("tags") or []:
+        topics.append(str(tag).replace("/", " ").replace("-", " ").strip())
+    relative_path = str(metadata.get("relative_path") or "").strip()
+    if relative_path:
+        topics.append(Path(relative_path).stem)
+        parent = str(Path(relative_path).parent)
+        if parent and parent != ".":
+            topics.append(parent.replace("/", " "))
+    for link in metadata.get("wikilinks") or []:
+        if not isinstance(link, dict):
+            continue
+        for key in ("display", "target"):
+            value = str(link.get(key) or "").strip()
+            if value:
+                topics.append(value.rsplit("/", 1)[-1])
+    for key in ("workspace", "project", "vault_name", "team"):
+        value = str(metadata.get(key) or "").strip()
+        if value:
+            topics.append(value)
+    return _unique_preserving_order(topic for topic in topics if topic)[:12]
+
+
+def _unique_preserving_order(values: Iterable[Any]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        text = re.sub(r"\s+", " ", str(value or "").strip())
+        key = text.casefold()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        unique.append(text)
+    return unique
 
 
 def _memory_duplicate_key(value: str) -> str:
@@ -1009,6 +1174,8 @@ class CortexStore:
                         "import_id": row["import_id"] if "import_id" in row.keys() else None,
                         "source": row["source"],
                         "source_url": row["source_url"],
+                        "source_account_id": row["source_account_id"] if "source_account_id" in row.keys() else None,
+                        "external_id": row["external_id"] if "external_id" in row.keys() else None,
                         "title": row["title"],
                         "raw_text": row["raw_text"],
                         "raw_hash": row["raw_hash"],
@@ -1270,26 +1437,31 @@ class CortexStore:
             "revoked": True,
         }
 
-    def authenticate_api_token(self, token: str) -> dict[str, Any] | None:
-        return self._authenticate_token(token, audience="api")
+    def authenticate_api_token(self, token: str, user_id: str | None = None) -> dict[str, Any] | None:
+        return self._authenticate_token(token, audience="api", user_id=user_id)
 
-    def authenticate_mcp_token(self, token: str) -> dict[str, Any] | None:
-        return self._authenticate_token(token, audience="mcp")
+    def authenticate_mcp_token(self, token: str, user_id: str | None = None) -> dict[str, Any] | None:
+        return self._authenticate_token(token, audience="mcp", user_id=user_id)
 
-    def _authenticate_token(self, token: str, *, audience: str) -> dict[str, Any] | None:
+    def _authenticate_token(self, token: str, *, audience: str, user_id: str | None = None) -> dict[str, Any] | None:
         normalized = token.strip()
         if not normalized:
             return None
         timestamp = now_iso()
+        filters = ["audience = ?", "revoked_at IS NULL"]
+        values: list[Any] = [audience]
+        if user_id:
+            filters.append("user_id = ?")
+            values.append(user_id)
         with connect(self.db_path) as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT token_id, user_id, label, audience, token_salt, token_hash, scopes_json, created_at, last_used_at
                 FROM api_tokens
-                WHERE audience = ? AND revoked_at IS NULL
+                WHERE {" AND ".join(filters)}
                 ORDER BY created_at DESC
                 """,
-                (audience,),
+                tuple(values),
             ).fetchall()
             for row in rows:
                 candidate = self._token_hash(normalized, row["token_salt"])
@@ -1317,31 +1489,63 @@ class CortexStore:
         source_url: str | None,
         title: str | None,
         import_id: str | None = None,
+        captured_at: str | None = None,
+        source_account_id: str | None = None,
+        external_id: str | None = None,
+        record_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         content = content.strip()
         if not content:
             raise ValueError("content is required")
         if len(content) > 200_000:
             raise ValueError("content is too large")
-        captured_at = now_iso()
+        captured_at = (captured_at or "").strip() or now_iso()
         normalized_source = (source or "macos")[:80]
-        capture_id = stable_id("cap_", user_id + normalized_source + captured_at + content[:120])
+        normalized_source_account_id = (source_account_id or "").strip() or None
+        normalized_external_id = (external_id or "").strip()[:240] or None
+        if normalized_source_account_id and normalized_external_id:
+            capture_id = stable_id("cap_", f"{user_id}:{normalized_source_account_id}:{normalized_external_id}")
+        else:
+            capture_id = stable_id("cap_", user_id + normalized_source + captured_at + content[:120])
         raw_hash = stable_id("", content)
         summary = "Queued for memory extraction."
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
             review_status = "pending" if user_settings["review_new_captures"] else "approved"
             approved_at = None if review_status == "pending" else captured_at
+            existing_capture = conn.execute(
+                "SELECT id, raw_hash FROM captures WHERE user_id = ? AND id = ?",
+                (user_id, capture_id),
+            ).fetchone()
+            if existing_capture and existing_capture["raw_hash"] != raw_hash:
+                purged = self._purge_capture_derivatives_in_conn(conn, user_id, capture_id)
+                self._event(
+                    conn,
+                    user_id,
+                    capture_id,
+                    "capture",
+                    "replaced",
+                    {
+                        "source": normalized_source,
+                        "source_account_id": normalized_source_account_id,
+                        "external_id": normalized_external_id,
+                        "memory_count": purged["memory_count"],
+                        "task_count": purged["task_count"],
+                        "edge_count": purged["edge_count"],
+                    },
+                )
             conn.execute(
                 """
                 INSERT INTO captures
-                (id, user_id, import_id, source, source_url, title, raw_text, raw_hash, summary, review_status, approved_at, captured_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, user_id, import_id, source, source_url, source_account_id, external_id, title, raw_text, raw_hash, summary, review_status, approved_at, captured_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                   user_id = excluded.user_id,
                   import_id = COALESCE(captures.import_id, excluded.import_id),
                   source = excluded.source,
                   source_url = excluded.source_url,
+                  source_account_id = excluded.source_account_id,
+                  external_id = excluded.external_id,
                   title = excluded.title,
                   raw_text = excluded.raw_text,
                   raw_hash = excluded.raw_hash,
@@ -1350,7 +1554,22 @@ class CortexStore:
                   approved_at = excluded.approved_at,
                   captured_at = excluded.captured_at
                 """,
-                (capture_id, user_id, import_id, normalized_source, source_url, title, content, raw_hash, summary, review_status, approved_at, captured_at),
+                (
+                    capture_id,
+                    user_id,
+                    import_id,
+                    normalized_source,
+                    source_url,
+                    normalized_source_account_id,
+                    normalized_external_id,
+                    title,
+                    content,
+                    raw_hash,
+                    summary,
+                    review_status,
+                    approved_at,
+                    captured_at,
+                ),
             )
             job = self._enqueue_job(
                 conn,
@@ -1363,6 +1582,9 @@ class CortexStore:
                     "capture_id": capture_id,
                     "source": normalized_source,
                     "source_url": source_url,
+                    "source_account_id": normalized_source_account_id,
+                    "external_id": normalized_external_id,
+                    "record_metadata": record_metadata if isinstance(record_metadata, dict) else {},
                     "title": title,
                     "captured_at": captured_at,
                     "raw_hash": raw_hash,
@@ -1386,6 +1608,8 @@ class CortexStore:
                     "import_id": import_id,
                     "source": normalized_source,
                     "source_url": source_url,
+                    "source_account_id": normalized_source_account_id,
+                    "external_id": normalized_external_id,
                     "title": title,
                     "raw_text": content,
                     "raw_hash": raw_hash,
@@ -1483,6 +1707,10 @@ class CortexStore:
                     "readiness_status": _connector_readiness_status(item),
                     "permissions_required": _connector_permission_requirements(item),
                     "first_100_note": _connector_first_100_note(item),
+                    "primary_beta": _connector_primary_beta(item),
+                    "beta_status": _connector_beta_status(item),
+                    "primary_beta_path": _connector_primary_beta_path(item),
+                    "show_in_primary_ui": _connector_primary_beta(item),
                     "import_status": import_status,
                     "export_status": export_status,
                     "source_ids": source_ids,
@@ -1529,7 +1757,7 @@ class CortexStore:
         rows: list[dict[str, Any]] = []
         catalog_ids = {item["id"] for item in catalog}
         extra_sources = sorted(set(captures_by_source) - catalog_ids)
-        for item in [*catalog, *({"id": source, "name": source, "category": "Connected source", "auth": "direct", "live_status": "imported", "scopes": [], "notes": "", "import_status": "native", "export_status": "imported", "source_ids": [source], "source_aliases": [], "import_label": "Connected source data", "supports_import": True, "formats": []} for source in extra_sources)]:
+        for item in [*catalog, *({"id": source, "name": source, "category": "Connected source", "auth": "direct", "live_status": "imported", "scopes": [], "notes": "", "readiness_status": "import-ready", "primary_beta": True, "beta_status": "active", "primary_beta_path": "connected-source-account", "show_in_primary_ui": True, "import_status": "native", "export_status": "imported", "source_ids": [source], "source_aliases": [], "import_label": "Connected source data", "supports_import": True, "formats": []} for source in extra_sources)]:
             source = item["id"]
             source_accounts = accounts_by_source.get(source, [])
             active_accounts = [account for account in source_accounts if not account.get("disconnected_at")]
@@ -1561,7 +1789,20 @@ class CortexStore:
             import_status = str(item.get("import_status") or "")
             supports_import = bool(item.get("supports_import")) or import_status in {"native", "generic", "import_ready"} or bool(item.get("formats"))
             live_status = str(item.get("live_status") or "")
+            readiness_status = str(item.get("readiness_status") or _connector_readiness_status(item))
+            catalog_primary_beta = bool(item.get("primary_beta"))
             has_completed_sync = any(cursor.get("last_completed_at") for cursor in source_cursors) or any(account.get("last_sync_at") for account in active_accounts)
+            has_synced_data = has_completed_sync or captures or active_memories
+            if has_synced_data:
+                beta_status = "active"
+                primary_beta_path = "connected-source-account"
+                primary_beta = True
+                show_in_primary_ui = True
+            else:
+                beta_status = str(item.get("beta_status") or _connector_beta_status(item))
+                primary_beta_path = str(item.get("primary_beta_path") or _connector_primary_beta_path(item))
+                primary_beta = catalog_primary_beta
+                show_in_primary_ui = bool(item.get("show_in_primary_ui"))
             if has_attention:
                 status = "needs_attention"
                 next_action = (account_errors + cursor_errors)[0] if account_errors or cursor_errors else "Reconnect or review this source account."
@@ -1573,18 +1814,22 @@ class CortexStore:
                 next_action = "Source sync has completed; review new memories as they arrive."
             elif active_accounts:
                 status = "connected"
-                next_action = "Account is registered; run or wait for the next sync."
+                next_action = "Connection is registered; waiting for the first completed sync."
             elif captures or active_memories:
                 status = "imported"
                 next_action = "Connected source data is available for retrieval."
-            elif supports_import:
+            elif catalog_primary_beta:
                 status = "import_ready"
-                next_action = "Connect this source through account sign-in or a direct local integration."
-                if live_status == "planned":
-                    next_action = "Account sign-in sync is planned for this source."
+                next_action = "Connect this source through the native beta connector."
             elif live_status == "planned":
                 status = "planned"
                 next_action = "Account sign-in sync is planned for this source."
+            elif readiness_status == "export-only":
+                status = "connector_needed"
+                next_action = "Needs a direct connector before becoming a primary source."
+            elif readiness_status == "import-ready" or supports_import:
+                status = "advanced_fallback"
+                next_action = "Available only through Advanced/Fallback support tooling until a direct connector exists."
             else:
                 status = "available"
                 next_action = "Add this source when it contains useful personal context."
@@ -1604,9 +1849,13 @@ class CortexStore:
                     "import_label": item.get("import_label") or "",
                     "supports_import": supports_import,
                     "live_status": live_status,
-                    "readiness_status": item.get("readiness_status") or _connector_readiness_status(item),
+                    "readiness_status": readiness_status,
                     "permissions_required": item.get("permissions_required") or _connector_permission_requirements(item),
                     "first_100_note": item.get("first_100_note") or _connector_first_100_note(item),
+                    "primary_beta": primary_beta,
+                    "beta_status": beta_status,
+                    "primary_beta_path": primary_beta_path,
+                    "show_in_primary_ui": show_in_primary_ui,
                     "auth": item.get("auth"),
                     "scopes": item.get("scopes") or [],
                     "formats": item.get("formats") or [],
@@ -1632,13 +1881,20 @@ class CortexStore:
             "synced": 4,
             "imported": 5,
             "planned": 6,
-            "available": 7,
+            "advanced_fallback": 7,
+            "connector_needed": 8,
+            "available": 9,
         }
         rows.sort(key=lambda row: (status_rank.get(row["status"], 9), -int(row["active_memories"]), row["name"]))
         summary = {
             "sources_total": len(rows),
             "import_ready": sum(1 for row in rows if row["status"] == "import_ready"),
             "planned_live": sum(1 for row in rows if row["live_status"] == "planned"),
+            "primary_beta_ready": sum(1 for row in rows if row["beta_status"] == "ready"),
+            "primary_beta_active": sum(1 for row in rows if row["beta_status"] == "active"),
+            "planned_connectors": sum(1 for row in rows if row["beta_status"] == "planned"),
+            "advanced_fallback_only": sum(1 for row in rows if row["beta_status"] == "advanced-fallback"),
+            "connector_needed": sum(1 for row in rows if row["beta_status"] == "needs-connector"),
             "connected": sum(int(row["accounts"]) for row in rows),
             "synced": sum(1 for row in rows if row["status"] == "synced"),
             "sources_with_data": sum(1 for row in rows if row["captures"] or row["active_memories"]),
@@ -1652,7 +1908,7 @@ class CortexStore:
         if summary["needs_review"]:
             recommendations.append("Review pending source captures so they can become trusted model memory.")
         if not summary["sources_with_data"]:
-            recommendations.append("Connect one high-signal source such as ChatGPT, Claude, Gmail, Notion, Slack, or notes.")
+            recommendations.append("Connect MCP AI tools or an Obsidian vault before adding planned service connectors.")
         if not recommendations:
             recommendations.append("Source readiness is healthy for local beta use.")
         return {
@@ -1773,6 +2029,362 @@ class CortexStore:
         self.vault.write_source_account(account)
         return account
 
+    def sync_source_account_records(
+        self,
+        user_id: str,
+        account_id: str,
+        *,
+        records: list[dict[str, Any]],
+        cursor_name: str = "default",
+        cursor_value: str | None = None,
+        high_water_mark: str | None = None,
+        state: dict[str, Any] | None = None,
+        processing: str = "async",
+    ) -> dict[str, Any]:
+        account_id = (account_id or "").strip()
+        if not account_id:
+            raise ValueError("source account is required")
+        if processing not in {"sync", "async"}:
+            raise ValueError("processing must be sync or async")
+        if not records:
+            raise ValueError("records are required")
+        if len(records) > 500:
+            raise ValueError("too many records")
+
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM source_accounts WHERE user_id = ? AND id = ?",
+                (user_id, account_id),
+            ).fetchone()
+        if not row:
+            raise ValueError("source account not found")
+        account = self._source_account_from_row(row)
+        if account.get("disconnected_at"):
+            raise ValueError("source account is disconnected")
+
+        source = account["source"]
+        queued = 0
+        saved = 0
+        skipped = 0
+        failed = 0
+        capture_ids: list[str] = []
+        record_results: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        base_identity_aliases = self.settings(user_id).get("identity_aliases")
+        source_accounts = self.list_source_accounts(user_id)
+
+        for ordinal, raw_record in enumerate(records):
+            content = str(raw_record.get("content") or "").strip()
+            title = str(raw_record.get("title") or "").strip()[:200] or None
+            external_id = str(raw_record.get("external_id") or "").strip()[:240] or None
+            captured_at = str(raw_record.get("captured_at") or "").strip()[:80] or None
+            record_metadata = raw_record.get("metadata") if isinstance(raw_record.get("metadata"), dict) else {}
+            source_url = self._source_account_record_url(
+                source=source,
+                account_id=account_id,
+                explicit_url=raw_record.get("source_url"),
+                external_id=external_id,
+                ordinal=ordinal,
+            )
+            if not content:
+                skipped += 1
+                record_results.append({"status": "skipped", "source": source, "source_url": source_url, "title": title, "reason": "empty_content"})
+                continue
+
+            try:
+                content_hash = stable_id("", content)
+                duplicate = None
+                updated_existing_record = False
+                with connect(self.db_path) as conn:
+                    if external_id:
+                        existing_record = conn.execute(
+                            """
+                            SELECT id, raw_hash
+                            FROM captures
+                            WHERE user_id = ?
+                              AND source_account_id = ?
+                              AND external_id = ?
+                            ORDER BY captured_at DESC
+                            LIMIT 1
+                            """,
+                            (user_id, account_id, external_id),
+                        ).fetchone()
+                        if existing_record:
+                            if existing_record["raw_hash"] == content_hash:
+                                duplicate = existing_record
+                            else:
+                                updated_existing_record = True
+                    else:
+                        duplicate = conn.execute(
+                            """
+                            SELECT id
+                            FROM captures
+                            WHERE user_id = ?
+                              AND raw_hash = ?
+                              AND source = ?
+                            ORDER BY captured_at DESC
+                            LIMIT 1
+                            """,
+                            (user_id, content_hash, source),
+                        ).fetchone()
+                if duplicate:
+                    skipped += 1
+                    record_results.append({
+                        "capture_id": duplicate["id"],
+                        "status": "duplicate",
+                        "source": source,
+                        "source_url": source_url,
+                        "title": title,
+                    })
+                    continue
+
+                if processing == "sync":
+                    identity_aliases = self._identity_aliases_for_source(
+                        user_id,
+                        source,
+                        base_aliases=base_identity_aliases,
+                        accounts=source_accounts,
+                    )
+                    extracted = extract_context(
+                        content,
+                        source,
+                        author_aliases=identity_aliases,
+                        extraction_mode="connector",
+                    )
+                    extracted = _apply_source_record_metadata(extracted, record_metadata)
+                    if captured_at:
+                        extracted["_timestamp"] = captured_at
+                    result = self.save_capture(
+                        user_id=user_id,
+                        content=content,
+                        source=source,
+                        source_url=source_url,
+                        title=title,
+                        extracted=extracted,
+                        source_account_id=account_id,
+                        external_id=external_id,
+                    )
+                    saved += 1
+                    record_results.append({
+                        "capture_id": result["capture_id"],
+                        "status": "updated" if updated_existing_record else "saved",
+                        "source": source,
+                        "source_url": source_url,
+                        "title": title,
+                        "memories": len(result.get("memories") or []),
+                    })
+                else:
+                    result = self.enqueue_capture(
+                        user_id=user_id,
+                        content=content,
+                        source=source,
+                        source_url=source_url,
+                        title=title,
+                        captured_at=captured_at,
+                        source_account_id=account_id,
+                        external_id=external_id,
+                        record_metadata=record_metadata,
+                    )
+                    queued += 1
+                    record_results.append({
+                        "capture_id": result["capture_id"],
+                        "status": "updated" if updated_existing_record else "queued",
+                        "source": source,
+                        "source_url": source_url,
+                        "title": title,
+                        "jobs": result.get("jobs") or [],
+                    })
+                capture_ids.append(result["capture_id"])
+            except Exception as exc:
+                failed += 1
+                error = {"source": source, "source_url": source_url, "title": title, "error": str(exc)}
+                errors.append(error)
+                record_results.append({**error, "status": "failed"})
+
+        cursor_state = dict(state or {})
+        cursor_state.update({
+            "last_batch_received": len(records),
+            "last_batch_saved": saved,
+            "last_batch_queued": queued,
+            "last_batch_skipped": skipped,
+            "last_batch_failed": failed,
+        })
+        cursor = self.upsert_sync_cursor(
+            user_id,
+            source=source,
+            source_account_id=account_id,
+            cursor_name=cursor_name,
+            cursor_value=cursor_value,
+            high_water_mark=high_water_mark,
+            state=cursor_state,
+            last_error=errors[0]["error"] if errors else None,
+            completed=failed == 0,
+        )
+        timestamp = now_iso()
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE source_accounts
+                SET status = ?,
+                    auth_state = ?,
+                    updated_at = ?,
+                    last_error = ?
+                WHERE user_id = ? AND id = ?
+                """,
+                (
+                    "needs_attention" if failed else "connected",
+                    "error" if failed else ("healthy" if account.get("auth_state") in {"", "not_configured", "available"} else account.get("auth_state")),
+                    timestamp,
+                    errors[0]["error"] if errors else None,
+                    user_id,
+                    account_id,
+                ),
+            )
+            updated = conn.execute("SELECT * FROM source_accounts WHERE user_id = ? AND id = ?", (user_id, account_id)).fetchone()
+        if updated:
+            self.vault.write_source_account(self._source_account_from_row(updated))
+
+        status = "complete" if failed == 0 else "partial"
+        if queued == 0 and saved == 0 and skipped == 0 and failed == 0:
+            status = "empty"
+        return {
+            "source_account_id": account_id,
+            "source": source,
+            "status": status,
+            "processing": processing,
+            "received": len(records),
+            "queued": queued,
+            "saved": saved,
+            "skipped": skipped,
+            "failed": failed,
+            "capture_ids": capture_ids,
+            "records": record_results,
+            "errors": errors,
+            "cursor": cursor,
+        }
+
+    def sync_obsidian_vault(
+        self,
+        user_id: str,
+        *,
+        vault_path: str,
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        processing: str = "sync",
+        max_records: int = 200,
+        cursor_name: str = "local-folder",
+    ) -> dict[str, Any]:
+        from .connectors.obsidian import OBSIDIAN_SOURCE, scan_vault
+
+        if processing not in {"sync", "async"}:
+            raise ValueError("processing must be sync or async")
+        scan = scan_vault(vault_path, max_records=max_records)
+        label = (account_label or f"Obsidian: {scan.vault_name}").strip()[:160]
+        identifier = (account_identifier or scan.vault_id).strip()[:240]
+        metadata = {
+            "connector": OBSIDIAN_SOURCE,
+            "connector_version": scan.to_summary()["connector_version"],
+            "vault_name": scan.vault_name,
+            "vault_path": scan.vault_path,
+            "vault_id": scan.vault_id,
+            "extensions": scan.extensions,
+            "manifest_hash": scan.manifest_hash,
+            "records_found": scan.records_found,
+            "records_returned": scan.records_returned,
+            "truncated": scan.truncated,
+            "files_seen": scan.files_seen,
+            "skipped": scan.skipped,
+        }
+        account = self.upsert_source_account(
+            user_id,
+            source=OBSIDIAN_SOURCE,
+            account_label=label,
+            account_identifier=identifier,
+            connection_type="local_folder",
+            status="connected",
+            auth_state="healthy",
+            policy={"review_required": True, "allow_ai_context": True},
+            metadata=metadata,
+            last_error=scan.errors[0]["error"] if scan.errors else None,
+            account_id=(source_account_id or "").strip() or None,
+        )
+        scan_summary = scan.to_summary()
+        state = {
+            "connector": OBSIDIAN_SOURCE,
+            "connector_version": scan_summary["connector_version"],
+            "vault_name": scan.vault_name,
+            "vault_id": scan.vault_id,
+            "vault_path": scan.vault_path,
+            "records_found": scan.records_found,
+            "records_returned": scan.records_returned,
+            "truncated": scan.truncated,
+            "files_seen": scan.files_seen,
+            "skipped": scan.skipped,
+            "extensions": scan.extensions,
+            "manifest_hash": scan.manifest_hash,
+            "scan_errors": scan.errors,
+        }
+        if not scan.records:
+            cursor = self.upsert_sync_cursor(
+                user_id,
+                source=OBSIDIAN_SOURCE,
+                source_account_id=account["id"],
+                cursor_name=cursor_name,
+                cursor_value=scan.cursor_value,
+                high_water_mark=scan.high_water_mark,
+                state=state,
+                last_error=scan.errors[0]["error"] if scan.errors else None,
+                completed=not scan.errors,
+            )
+            updated_account = self._source_account_by_id(user_id, account["id"]) or account
+            return {
+                "source_account_id": account["id"],
+                "source": OBSIDIAN_SOURCE,
+                "status": "partial" if scan.errors or scan.truncated else "empty",
+                "processing": processing,
+                "received": 0,
+                "queued": 0,
+                "saved": 0,
+                "skipped": 0,
+                "failed": len(scan.errors),
+                "capture_ids": [],
+                "records": [],
+                "errors": scan.errors,
+                "cursor": cursor,
+                "source_account": updated_account,
+                "scan": scan_summary,
+            }
+
+        result = self.sync_source_account_records(
+            user_id,
+            account["id"],
+            records=[record.to_source_account_record() for record in scan.records],
+            cursor_name=cursor_name,
+            cursor_value=scan.cursor_value,
+            high_water_mark=scan.high_water_mark,
+            state=state,
+            processing=processing,
+        )
+        if scan.errors:
+            result["errors"] = [*(result.get("errors") or []), *scan.errors]
+            result["failed"] = int(result.get("failed") or 0) + len(scan.errors)
+            if result.get("status") == "complete":
+                result["status"] = "partial"
+        if scan.truncated and result.get("status") == "complete":
+            result["status"] = "partial"
+        result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
+        result["scan"] = scan_summary
+        return result
+
+    def _source_account_by_id(self, user_id: str, account_id: str) -> dict[str, Any] | None:
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM source_accounts WHERE user_id = ? AND id = ?",
+                (user_id, account_id),
+            ).fetchone()
+        return self._source_account_from_row(row) if row else None
+
     def disconnect_source_account(self, user_id: str, account_id: str) -> dict[str, Any] | None:
         timestamp = now_iso()
         with connect(self.db_path) as conn:
@@ -1890,6 +2502,21 @@ class CortexStore:
         if account_row:
             self.vault.write_source_account(self._source_account_from_row(account_row))
         return cursor
+
+    def _source_account_record_url(
+        self,
+        *,
+        source: str,
+        account_id: str,
+        explicit_url: Any,
+        external_id: str | None,
+        ordinal: int,
+    ) -> str:
+        explicit = str(explicit_url or "").strip()
+        if explicit:
+            return explicit[:500]
+        record_id = external_id or f"record-{ordinal + 1}"
+        return f"source-account://{quote(source)}/{quote(account_id)}/{quote(record_id)}"
 
     def register_sync_device(
         self,
@@ -2580,9 +3207,16 @@ class CortexStore:
         title: str | None,
         extracted: dict[str, Any],
         import_id: str | None = None,
+        source_account_id: str | None = None,
+        external_id: str | None = None,
     ) -> dict[str, Any]:
         captured_at = extracted.get("_timestamp") or now_iso()
-        capture_id = stable_id("cap_", user_id + source + captured_at + content[:120])
+        normalized_source_account_id = (source_account_id or "").strip() or None
+        normalized_external_id = (external_id or "").strip()[:240] or None
+        if normalized_source_account_id and normalized_external_id:
+            capture_id = stable_id("cap_", f"{user_id}:{normalized_source_account_id}:{normalized_external_id}")
+        else:
+            capture_id = stable_id("cap_", user_id + source + captured_at + content[:120])
         raw_hash = stable_id("", content)
         summary = extracted.get("summary", "")
         user_settings_snapshot: dict[str, Any] = {}
@@ -2598,16 +3232,51 @@ class CortexStore:
             user_settings_snapshot = dict(user_settings)
             review_status = "pending" if user_settings["review_new_captures"] else "approved"
             approved_at = None if review_status == "pending" else captured_at
+            source_account_snapshot = None
+            if normalized_source_account_id:
+                source_account_row = conn.execute(
+                    "SELECT * FROM source_accounts WHERE user_id = ? AND id = ?",
+                    (user_id, normalized_source_account_id),
+                ).fetchone()
+                if source_account_row:
+                    source_account_snapshot = self._source_account_from_row(source_account_row)
+            source_account_policy = source_account_snapshot.get("policy") if source_account_snapshot else {}
+            if isinstance(source_account_policy, dict) and source_account_policy.get("review_required"):
+                review_status = "pending"
+                approved_at = None
+            existing_capture = conn.execute(
+                "SELECT id, raw_hash FROM captures WHERE user_id = ? AND id = ?",
+                (user_id, capture_id),
+            ).fetchone()
+            if existing_capture and existing_capture["raw_hash"] != raw_hash:
+                purged = self._purge_capture_derivatives_in_conn(conn, user_id, capture_id)
+                self._event(
+                    conn,
+                    user_id,
+                    capture_id,
+                    "capture",
+                    "replaced",
+                    {
+                        "source": source,
+                        "source_account_id": normalized_source_account_id,
+                        "external_id": normalized_external_id,
+                        "memory_count": purged["memory_count"],
+                        "task_count": purged["task_count"],
+                        "edge_count": purged["edge_count"],
+                    },
+                )
             conn.execute(
                 """
                 INSERT INTO captures
-                (id, user_id, import_id, source, source_url, title, raw_text, raw_hash, summary, review_status, approved_at, captured_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, user_id, import_id, source, source_url, source_account_id, external_id, title, raw_text, raw_hash, summary, review_status, approved_at, captured_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                   user_id = excluded.user_id,
                   import_id = COALESCE(captures.import_id, excluded.import_id),
                   source = excluded.source,
                   source_url = excluded.source_url,
+                  source_account_id = excluded.source_account_id,
+                  external_id = excluded.external_id,
                   title = excluded.title,
                   raw_text = excluded.raw_text,
                   raw_hash = excluded.raw_hash,
@@ -2616,7 +3285,22 @@ class CortexStore:
                   approved_at = excluded.approved_at,
                   captured_at = excluded.captured_at
                 """,
-                (capture_id, user_id, import_id, source, source_url, title, content, raw_hash, summary, review_status, approved_at, captured_at),
+                (
+                    capture_id,
+                    user_id,
+                    import_id,
+                    source,
+                    source_url,
+                    normalized_source_account_id,
+                    normalized_external_id,
+                    title,
+                    content,
+                    raw_hash,
+                    summary,
+                    review_status,
+                    approved_at,
+                    captured_at,
+                ),
             )
             self._event(conn, user_id, capture_id, "capture", "created", {"source": source, "title": title})
 
@@ -2630,7 +3314,9 @@ class CortexStore:
                     source_url,
                     captured_at,
                     content,
-                    granular_source_url=import_id is not None,
+                    granular_source_url=import_id is not None or source_account_snapshot is not None,
+                    source_account=source_account_snapshot,
+                    external_id=normalized_external_id,
                 )
                 memories.append(memory)
                 edges.append(self._edge(conn, user_id, capture_id, memory["id"], "contains", memory["id"], captured_at))
@@ -2659,9 +3345,21 @@ class CortexStore:
             embedding_state = self._capture_embedding_status(conn, user_id, capture_id)
             conn.execute(
                 """
-                INSERT OR IGNORE INTO capture_processing_state
+                INSERT INTO capture_processing_state
                 (capture_id, user_id, ingest_status, extraction_status, embedding_status, memory_count, task_count, entity_count, last_job_id, last_error, queued_at, started_at, completed_at, updated_at)
                 VALUES (?, ?, 'materialized', 'succeeded', ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)
+                ON CONFLICT(capture_id) DO UPDATE SET
+                  ingest_status = 'materialized',
+                  extraction_status = 'succeeded',
+                  embedding_status = excluded.embedding_status,
+                  memory_count = excluded.memory_count,
+                  task_count = excluded.task_count,
+                  entity_count = excluded.entity_count,
+                  last_job_id = NULL,
+                  last_error = NULL,
+                  started_at = excluded.started_at,
+                  completed_at = excluded.completed_at,
+                  updated_at = excluded.updated_at
                 """,
                 (
                     capture_id,
@@ -2685,6 +3383,8 @@ class CortexStore:
                     "import_id": import_id,
                     "source": source,
                     "source_url": source_url,
+                    "source_account_id": normalized_source_account_id,
+                    "external_id": normalized_external_id,
                     "title": title,
                     "raw_text": content,
                     "raw_hash": raw_hash,
@@ -2727,7 +3427,7 @@ class CortexStore:
                 """,
                 (user_id, limit),
             ).fetchall()
-        return [self._capture_from_row(row) for row in rows]
+            return [self._capture_from_row(row, conn=conn, include_review_preview=True) for row in rows]
 
     def recent(self, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
@@ -3052,6 +3752,37 @@ class CortexStore:
             "edge_count": len(edge_ids),
         }
 
+    def _purge_capture_derivatives_in_conn(self, conn, user_id: str, capture_id: str) -> dict[str, Any]:
+        memory_ids = [
+            row["id"]
+            for row in conn.execute("SELECT id FROM memories WHERE user_id = ? AND capture_id = ?", (user_id, capture_id)).fetchall()
+        ]
+        task_ids = [
+            row["id"]
+            for row in conn.execute("SELECT id FROM tasks WHERE user_id = ? AND capture_id = ?", (user_id, capture_id)).fetchall()
+        ]
+        edge_ids = self._purge_edges_for_objects(conn, user_id, [capture_id, *memory_ids, *task_ids])
+        self._purge_memory_rows(conn, user_id, memory_ids)
+        self._purge_task_rows(conn, user_id, task_ids)
+        conn.execute(
+            "DELETE FROM memory_jobs WHERE user_id = ? AND object_type = 'capture' AND object_id = ?",
+            (user_id, capture_id),
+        )
+        for memory_id in memory_ids:
+            self.vault.delete_memory(memory_id)
+        for task_id in task_ids:
+            self.vault.delete_task(task_id)
+        for edge_id in edge_ids:
+            self.vault.delete_edge(edge_id)
+        return {
+            "memory_ids": memory_ids,
+            "task_ids": task_ids,
+            "edge_ids": edge_ids,
+            "memory_count": len(memory_ids),
+            "task_count": len(task_ids),
+            "edge_count": len(edge_ids),
+        }
+
     def delete_capture(self, user_id: str, capture_id: str) -> bool:
         timestamp = now_iso()
         with connect(self.db_path) as conn:
@@ -3180,7 +3911,7 @@ class CortexStore:
         return {**counts, "by_kind": by_kind, "by_layer": by_layer, "top_topics": top_topics, "top_entities": top_entities}
 
     def memory_quality_report(self, user_id: str) -> dict[str, Any]:
-        expected_layers = {"semantic", "episodic", "style", "decision", "preference", "negative"}
+        expected_layers = {"semantic", "episodic", "style", "decision", "preference", "negative", "procedural"}
         with connect(self.db_path) as conn:
             totals = {
                 "captures": conn.execute("SELECT COUNT(*) FROM captures WHERE user_id = ?", (user_id,)).fetchone()[0],
@@ -3255,13 +3986,13 @@ class CortexStore:
         recommendations: list[str] = []
         if totals["active_memories"] == 0:
             warnings.append("No active memories are available yet.")
-            recommendations.append("Import a real source and approve useful memory before relying on Ask.")
+            recommendations.append("Connect MCP or Obsidian and approve useful memory before relying on Ask.")
         if totals["active_memories"] > 0 and citation_coverage < 0.8:
             warnings.append("Some active memories are missing source citations.")
-            recommendations.append("Prefer source imports and URL/file captures so retrieved memory has citations.")
+            recommendations.append("Prefer connected-source sync and cited captures so retrieved memory has citations.")
         if totals["temporal_memories"] > 0 and date_coverage < 0.6:
             warnings.append("Many decision and event memories are missing dates.")
-            recommendations.append("Import source exports with timestamps or include dates in decisions and events.")
+            recommendations.append("Sync sources with timestamps or include dates in decisions and events.")
         if totals["pending_captures"] > 0 and _ratio(totals["pending_captures"], totals["captures"]) > 0.25:
             warnings.append("A large share of captured data is still pending review.")
             recommendations.append("Review or archive pending captures to improve model reliability.")
@@ -3410,30 +4141,30 @@ class CortexStore:
         if not capture_done:
             primary = {
                 "action": "capture",
-                "label": "Add First Source",
-                "title": "Start your personal model",
-                "detail": "Add a decision, preference, writing sample, project detail, or open loop.",
+                "label": "Connect Source",
+                "title": "Start memory sync",
+                "detail": "Connect MCP AI tools or an Obsidian vault so Cortex can sync memory into Review.",
             }
         elif stats["pending_captures"] > 0:
             primary = {
                 "action": "review",
-                "label": "Review Inbox",
+                "label": "Review Memory",
                 "title": "Review new signals",
-                "detail": f"{stats['pending_captures']} capture{'s' if stats['pending_captures'] != 1 else ''} need approval before they strengthen the model.",
+                "detail": f"{stats['pending_captures']} synced signal{'s' if stats['pending_captures'] != 1 else ''} need approval before they strengthen the model.",
             }
         elif not reuse_done:
             primary = {
                 "action": "reuse",
                 "label": "Ask Cortex",
                 "title": "Use your personal model",
-                "detail": "Ask a cited question or prepare approved memory for another AI tool.",
+                "detail": "Ask a cited question or let connected AI tools read approved memory.",
             }
         else:
             primary = {
                 "action": "done",
                 "label": "Loop Complete",
                 "title": "Loop complete today",
-                "detail": "You added or reviewed signals and used cited memory. Keep Cortex nearby as work changes.",
+                "detail": "You connected, reviewed, and used cited memory. Keep Cortex nearby as work changes.",
             }
 
         def step(key: str, title: str, done: bool, detail: str) -> dict[str, Any]:
@@ -3441,8 +4172,8 @@ class CortexStore:
             return {"key": key, "title": title, "status": status, "detail": detail}
 
         steps = [
-            step("capture", "Signal", capture_done, f"{captured_today} added today, {stats['captures']} total."),
-            step("review", "Review", review_done, f"{stats['pending_captures']} waiting in the inbox."),
+            step("capture", "Sync", capture_done, f"{captured_today} synced today, {stats['captures']} total."),
+            step("review", "Review", review_done, f"{stats['pending_captures']} waiting for review."),
             step("reuse", "Use", reuse_done, f"{used_today} cited Cortex use{'s' if used_today != 1 else ''} today."),
             step("done", "Return", return_done, f"{streak_days} day streak."),
         ]
@@ -3581,10 +4312,11 @@ class CortexStore:
                 "preference": "Preference Memory",
                 "style": "Style Memory",
                 "negative": "Negative Memory",
+                "procedural": "Procedural Memory",
                 "episodic": "Episodic Memory",
                 "semantic": "Semantic Memory",
             }
-            layer_order = ["decision", "preference", "style", "negative", "episodic", "semantic"]
+            layer_order = ["decision", "preference", "style", "negative", "procedural", "episodic", "semantic"]
             for layer in layer_order:
                 grouped = [item for item in memories if memory_layer(item.get("kind"), item.get("layer")) == layer]
                 if not grouped:
@@ -3634,6 +4366,7 @@ class CortexStore:
             ("negative", "Negative memory", "Rejected approaches, disliked outputs, and constraints to avoid."),
             ("style", "Style memory", "Writing voice, phrasing, structure, and communication patterns."),
             ("decision", "Decision memory", "Past choices, reasons, constraints, and settled direction."),
+            ("procedural", "Procedural memory", "How the user performs recurring workflows, checks, and operational steps."),
             ("episodic", "Episodic memory", "Specific conversations, events, project moments, and recent context."),
             ("semantic", "Semantic memory", "Facts about people, projects, goals, systems, and durable context."),
         ]
@@ -3793,13 +4526,14 @@ class CortexStore:
     def agent_adaptation(self, user_id: str, query: str = "", target: str = "assistant", limit: int = 8, include_pending: bool = False) -> dict[str, Any]:
         target = (target or "assistant").strip()[:80] or "assistant"
         profile = self.personal_profile(user_id, query=query, limit=limit, include_pending=include_pending)
-        layer_priority = ["preference", "negative", "style", "decision", "episodic", "semantic"]
+        layer_priority = ["preference", "negative", "style", "decision", "procedural", "episodic", "semantic"]
         section_by_layer = {section["layer"]: section for section in profile["sections"]}
         rule_templates = {
             "preference": "Honor this user preference",
             "negative": "Avoid this rejected or disliked pattern",
             "style": "Match this communication style signal",
             "decision": "Respect this prior decision and its constraints",
+            "procedural": "Follow this known workflow when relevant",
             "episodic": "Use this past event as situational context",
             "semantic": "Use this durable fact as background context",
         }
@@ -4017,8 +4751,12 @@ class CortexStore:
             "summary": self._shared_text(item.get("summary") or "", redact_sensitive=redact),
             "source": item["source"],
             "source_url": self._safe_source_locator(item.get("source_url"), force_local=True),
+            "sector": item.get("sector") or "",
+            "source_type": item.get("source_type") or "",
             "captured_at": item["captured_at"],
             "occurred_at": item.get("occurred_at"),
+            "valid_from": item.get("valid_from"),
+            "valid_to": item.get("valid_to"),
             "topics": item.get("topics") or [],
             "entity_ids": item.get("entity_ids") or [],
         }
@@ -4823,6 +5561,7 @@ class CortexStore:
             conn.execute("DELETE FROM memory_fts WHERE memory_id IN (SELECT id FROM memories WHERE user_id = ?)", (user_id,))
             conn.execute("DELETE FROM memory_entities WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM memory_topics WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM memory_relations WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM task_entities WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM task_topics WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM graph_edges WHERE user_id = ?", (user_id,))
@@ -5201,8 +5940,8 @@ class CortexStore:
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO captures
-                    (id, user_id, import_id, source, source_url, title, raw_text, raw_hash, summary, review_status, approved_at, archived_at, captured_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, user_id, import_id, source, source_url, source_account_id, external_id, title, raw_text, raw_hash, summary, review_status, approved_at, archived_at, captured_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         capture["id"],
@@ -5210,6 +5949,8 @@ class CortexStore:
                         capture.get("import_id"),
                         capture.get("source", "vault"),
                         capture.get("source_url"),
+                        capture.get("source_account_id"),
+                        capture.get("external_id"),
                         capture.get("title"),
                         capture.get("raw_text", ""),
                         capture.get("raw_hash"),
@@ -5280,11 +6021,12 @@ class CortexStore:
                 topics = memory.get("topics", [])
                 entity_ids = memory.get("entity_ids", [])
                 captured_at = memory.get("captured_at") or timestamp
+                provenance = memory.get("provenance") if isinstance(memory.get("provenance"), dict) else {}
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO memories
-                    (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, topics_json, entity_ids_json, occurred_at, captured_at, updated_at, raw_excerpt)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, captured_at, updated_at, raw_excerpt)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         memory["id"],
@@ -5299,9 +6041,15 @@ class CortexStore:
                         memory.get("confidence", "confirmed"),
                         int(memory.get("importance", 3)),
                         memory.get("status", "active"),
+                        memory.get("sector", ""),
+                        memory.get("source_type", ""),
+                        json.dumps(provenance),
                         json.dumps(topics),
                         json.dumps(entity_ids),
                         memory.get("occurred_at"),
+                        memory.get("valid_from"),
+                        memory.get("valid_to"),
+                        memory.get("superseded_by"),
                         captured_at,
                         memory.get("updated_at") or captured_at,
                         memory.get("raw_excerpt"),
@@ -6132,12 +6880,18 @@ class CortexStore:
         content = capture["raw_text"]
         source = capture["source"]
         import_id = capture["import_id"] if "import_id" in capture.keys() else None
-        extraction_mode = "local" if import_id else None
+        source_account_id = capture["source_account_id"] if "source_account_id" in capture.keys() else None
+        external_id = capture["external_id"] if "external_id" in capture.keys() else None
+        extraction_mode = "connector" if source_account_id else ("local" if import_id else None)
         extracted = extract_context(
             content,
             source,
             author_aliases=self._identity_aliases_for_source(user_id, source),
             extraction_mode=extraction_mode,
+        )
+        extracted = _apply_source_record_metadata(
+            extracted,
+            payload.get("record_metadata") if isinstance(payload.get("record_metadata"), dict) else {},
         )
         extracted["_timestamp"] = capture["captured_at"] or payload.get("captured_at") or started_at
         saved = self.save_capture(
@@ -6148,6 +6902,8 @@ class CortexStore:
             title=capture["title"],
             extracted=extracted,
             import_id=import_id,
+            source_account_id=source_account_id,
+            external_id=external_id,
         )
         completed_at = now_iso()
         memory_count = len(saved.get("memories", []))
@@ -6524,6 +7280,8 @@ class CortexStore:
         raw_text: str,
         *,
         granular_source_url: bool = False,
+        source_account: dict[str, Any] | None = None,
+        external_id: str | None = None,
     ) -> dict[str, Any]:
         memory_id = record["id"]
         kind = record.get("kind", "observation")
@@ -6532,14 +7290,28 @@ class CortexStore:
         entity_ids = record.get("entity_ids", [])
         raw_excerpt = _memory_raw_excerpt(record, raw_text)
         memory_source_url = _granular_memory_source_url(source_url, raw_text, raw_excerpt, enabled=granular_source_url)
+        sector = _memory_sector(record, memory_source_url, source_account)
+        source_type = str(record.get("source_type") or _memory_source_type(source, memory_source_url)).strip()[:80]
+        provenance = _memory_provenance(
+            record,
+            source=source,
+            source_url=memory_source_url,
+            capture_id=capture_id,
+            source_account=source_account,
+            external_id=external_id,
+        )
+        occurred_at = record.get("occurred_at")
+        valid_from = record.get("valid_from")
+        valid_to = record.get("valid_to")
+        superseded_by = str(record.get("superseded_by") or "").strip()[:80] or None
         duplicate = self._find_duplicate_memory(conn, user_id, capture_id, memory_id, kind, layer, record.get("content", ""))
         if duplicate:
             return self._memory_from_row(duplicate)
         conn.execute(
             """
             INSERT OR REPLACE INTO memories
-            (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, topics_json, entity_ids_json, occurred_at, captured_at, updated_at, raw_excerpt)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
+            (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, captured_at, updated_at, raw_excerpt)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 memory_id,
@@ -6553,9 +7325,15 @@ class CortexStore:
                 memory_source_url,
                 record.get("confidence", "confirmed"),
                 int(record.get("importance", 3)),
+                sector,
+                source_type,
+                json.dumps(provenance),
                 json.dumps(topics),
                 json.dumps(entity_ids),
-                record.get("occurred_at"),
+                occurred_at,
+                valid_from,
+                valid_to,
+                superseded_by,
                 captured_at,
                 captured_at,
                 raw_excerpt,
@@ -6603,9 +7381,15 @@ class CortexStore:
             "confidence": record.get("confidence", "confirmed"),
             "importance": int(record.get("importance", 3)),
             "status": "active",
+            "sector": sector,
+            "source_type": source_type,
+            "provenance": provenance,
             "topics": topics,
             "entity_ids": entity_ids,
-            "occurred_at": record.get("occurred_at"),
+            "occurred_at": occurred_at,
+            "valid_from": valid_from,
+            "valid_to": valid_to,
+            "superseded_by": superseded_by,
             "captured_at": captured_at,
             "updated_at": captured_at,
             "raw_excerpt": raw_excerpt,
@@ -7173,6 +7957,10 @@ class CortexStore:
         conn.execute(f"DELETE FROM memory_fts WHERE memory_id IN ({placeholders})", ids)
         conn.execute(f"DELETE FROM memory_entities WHERE user_id = ? AND memory_id IN ({placeholders})", [user_id, *ids])
         conn.execute(f"DELETE FROM memory_topics WHERE user_id = ? AND memory_id IN ({placeholders})", [user_id, *ids])
+        conn.execute(
+            f"DELETE FROM memory_relations WHERE user_id = ? AND (source_memory_id IN ({placeholders}) OR target_memory_id IN ({placeholders}))",
+            [user_id, *ids, *ids],
+        )
         conn.execute(f"DELETE FROM memories WHERE user_id = ? AND id IN ({placeholders})", [user_id, *ids])
 
     def _purge_task_rows(self, conn, user_id: str, task_ids: list[str]) -> None:
@@ -7411,6 +8199,34 @@ class CortexStore:
         if layer:
             filters.append(f"{alias}.layer = ?")
             params.append(memory_layer(None, layer))
+        now = now_iso()
+        filters.append(f"({alias}.valid_from IS NULL OR {alias}.valid_from = '' OR {alias}.valid_from <= ?)")
+        params.append(now)
+        filters.append(f"({alias}.valid_to IS NULL OR {alias}.valid_to = '' OR {alias}.valid_to > ?)")
+        params.append(now)
+        filters.append(f"({alias}.superseded_by IS NULL OR {alias}.superseded_by = '')")
+        filters.append(
+            f"""(
+              {alias}.capture_id IS NULL
+              OR NOT EXISTS (
+                SELECT 1
+                FROM captures c_review_required
+                JOIN source_accounts sa_review_required
+                  ON sa_review_required.id = c_review_required.source_account_id
+                 AND sa_review_required.user_id = c_review_required.user_id
+                WHERE c_review_required.id = {alias}.capture_id
+                  AND c_review_required.user_id = {alias}.user_id
+                  AND sa_review_required.policy_json LIKE '%"review_required": true%'
+              )
+              OR EXISTS (
+                SELECT 1
+                FROM captures c_review_approved
+                WHERE c_review_approved.id = {alias}.capture_id
+                  AND c_review_approved.user_id = {alias}.user_id
+                  AND c_review_approved.review_status = 'approved'
+              )
+            )"""
+        )
         if not user_settings["allow_pending_in_context"]:
             filters.append(
                 f"({alias}.capture_id IS NULL OR EXISTS (SELECT 1 FROM captures c WHERE c.id = {alias}.capture_id AND c.user_id = {alias}.user_id AND c.review_status = 'approved'))"
@@ -7447,6 +8263,19 @@ class CortexStore:
             filters.append(f"{alias}.kind = ?")
             params.append(kind)
         capture_missing = f"({alias}.capture_id IS NULL OR {capture_alias}.id IS NULL)"
+        filters.append(
+            f"""(
+              {capture_missing}
+              OR NOT EXISTS (
+                SELECT 1
+                FROM source_accounts sa_review_required
+                WHERE sa_review_required.id = {capture_alias}.source_account_id
+                  AND sa_review_required.user_id = {capture_alias}.user_id
+                  AND sa_review_required.policy_json LIKE '%"review_required": true%'
+              )
+              OR {capture_alias}.review_status = 'approved'
+            )"""
+        )
         if not user_settings["allow_pending_in_context"]:
             filters.append(f"({capture_missing} OR {capture_alias}.review_status = 'approved')")
         source_policies = _normalize_source_policies(user_settings.get("source_policies"))
@@ -7554,11 +8383,13 @@ class CortexStore:
         self.vault.append_event(event)
         return event
 
-    def _capture_from_row(self, row) -> dict[str, Any]:
+    def _capture_from_row(self, row, conn=None, *, include_review_preview: bool = False) -> dict[str, Any]:
         keys = set(row.keys())
-        return {
+        capture = {
             "id": row["id"],
             "import_id": row["import_id"] if "import_id" in keys else None,
+            "source_account_id": row["source_account_id"] if "source_account_id" in keys else None,
+            "external_id": row["external_id"] if "external_id" in keys else None,
             "source": row["source"],
             "source_url": row["source_url"],
             "title": row["title"],
@@ -7570,6 +8401,63 @@ class CortexStore:
             "memory_count": row["memory_count"] if "memory_count" in keys else None,
             "task_count": row["task_count"] if "task_count" in keys else None,
         }
+        if include_review_preview and conn is not None:
+            capture["preview_memories"] = self._review_memory_preview(conn, row["user_id"], row["id"])
+            capture["preview_tasks"] = self._review_task_preview(conn, row["user_id"], row["id"])
+        return capture
+
+    def _review_memory_preview(self, conn, user_id: str, capture_id: str, limit: int = 5) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            """
+            SELECT id, kind, layer, content, source, source_url, confidence, importance, status, topics_json, entity_ids_json, captured_at
+            FROM memories
+            WHERE user_id = ? AND capture_id = ? AND status = 'active'
+            ORDER BY importance DESC, captured_at DESC, id ASC
+            LIMIT ?
+            """,
+            (user_id, capture_id, limit),
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "capture_id": capture_id,
+                "result_type": "memory",
+                "kind": row["kind"],
+                "layer": memory_layer(row["kind"], row["layer"]),
+                "content": row["content"],
+                "source": row["source"],
+                "source_url": row["source_url"],
+                "confidence": row["confidence"],
+                "importance": row["importance"],
+                "status": row["status"],
+                "topics": json.loads(row["topics_json"] or "[]"),
+                "entity_ids": json.loads(row["entity_ids_json"] or "[]"),
+                "captured_at": row["captured_at"],
+            }
+            for row in rows
+        ]
+
+    def _review_task_preview(self, conn, user_id: str, capture_id: str, limit: int = 3) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            """
+            SELECT id, kind, content, status, importance
+            FROM tasks
+            WHERE user_id = ? AND capture_id = ? AND status = 'open'
+            ORDER BY importance DESC, captured_at DESC, id ASC
+            LIMIT ?
+            """,
+            (user_id, capture_id, limit),
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "kind": row["kind"],
+                "content": row["content"],
+                "status": row["status"],
+                "importance": row["importance"],
+            }
+            for row in rows
+        ]
 
     def _import_session_from_row(self, row) -> dict[str, Any]:
         keys = set(row.keys())
@@ -7792,9 +8680,15 @@ class CortexStore:
             "confidence": row["confidence"],
             "importance": row["importance"],
             "status": row["status"],
+            "sector": row["sector"] if "sector" in keys else "",
+            "source_type": row["source_type"] if "source_type" in keys else "",
+            "provenance": self._json_or_empty(row["provenance_json"] if "provenance_json" in keys else "{}"),
             "topics": json.loads(row["topics_json"] or "[]"),
             "entity_ids": json.loads(row["entity_ids_json"] or "[]"),
             "occurred_at": row["occurred_at"],
+            "valid_from": row["valid_from"] if "valid_from" in keys else None,
+            "valid_to": row["valid_to"] if "valid_to" in keys else None,
+            "superseded_by": row["superseded_by"] if "superseded_by" in keys else None,
             "captured_at": row["captured_at"],
             "updated_at": row["updated_at"] if "updated_at" in keys else row["captured_at"],
             "raw_excerpt": row["raw_excerpt"],

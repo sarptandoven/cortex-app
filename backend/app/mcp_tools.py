@@ -31,7 +31,7 @@ TOOLS = [
                 "query": {"type": "string"},
                 "top_k": {"type": "integer", "default": 8},
                 "kind": {"type": "string"},
-                "layer": {"type": "string", "enum": ["semantic", "episodic", "style", "decision", "preference", "negative"]},
+                "layer": {"type": "string", "enum": ["semantic", "episodic", "style", "decision", "preference", "negative", "procedural"]},
             },
             "required": ["query"],
         },
@@ -84,9 +84,108 @@ TOOLS = [
         },
     },
     {
+        "name": "get_style_profile",
+        "description": "Return focused writing style, preference, and negative guidance with citations for matching the user's communication.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "default": "writing style"},
+                "limit": {"type": "integer", "default": 6},
+                "format": {"type": "string", "default": "json", "enum": ["json", "markdown"]},
+            },
+        },
+    },
+    {
+        "name": "get_project_context",
+        "description": "Return cited Cortex memory for a project, workspace, person, or topic.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "query": {"type": "string", "default": ""},
+                "limit": {"type": "integer", "default": 8},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "get_procedure",
+        "description": "Return cited procedural memory for how the user performs a workflow, setup, release, or recurring task.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "default": 6},
+                "format": {"type": "string", "default": "json", "enum": ["json", "markdown"]},
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "list_supported_import_sources",
         "description": "List source exports Cortex can import, including chat, email, notes, docs, work tools, and knowledge-base formats.",
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "list_source_connectors",
+        "description": "List Cortex source connectors, account health, and sync state so connected tools can feed the user's memory layer.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "include_accounts": {"type": "boolean", "default": True},
+                "include_readiness": {"type": "boolean", "default": True},
+            },
+        },
+    },
+    {
+        "name": "connect_source_account",
+        "description": "Register or refresh a connected source account that Cortex should model, such as Gmail, Notion, Slack, Drive, GitHub, local notes, or an AI chat tool.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string"},
+                "account_label": {"type": "string"},
+                "account_identifier": {"type": "string"},
+                "connection_type": {"type": "string", "default": "mcp"},
+                "status": {"type": "string", "default": "connected"},
+                "auth_state": {"type": "string", "default": "healthy"},
+                "policy": {"type": "object"},
+                "metadata": {"type": "object"},
+                "last_error": {"type": "string"},
+                "account_id": {"type": "string"},
+            },
+            "required": ["source"],
+        },
+    },
+    {
+        "name": "sync_source_records",
+        "description": "Send records from a connected source account into Cortex with durable citations and cursor state.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source_account_id": {"type": "string"},
+                "records": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "content": {"type": "string"},
+                            "title": {"type": "string"},
+                            "external_id": {"type": "string"},
+                            "source_url": {"type": "string"},
+                            "captured_at": {"type": "string"},
+                        },
+                        "required": ["content"],
+                    },
+                },
+                "cursor_name": {"type": "string", "default": "default"},
+                "cursor_value": {"type": "string"},
+                "high_water_mark": {"type": "string"},
+                "state": {"type": "object"},
+                "processing": {"type": "string", "default": "sync", "enum": ["sync", "async"]},
+            },
+            "required": ["source_account_id", "records"],
+        },
     },
     {
         "name": "build_context_pack",
@@ -227,7 +326,11 @@ READ_TOOLS = {
     "get_memory_graph",
     "get_daily_review",
     "get_product_loop",
+    "get_style_profile",
+    "get_project_context",
+    "get_procedure",
     "list_supported_import_sources",
+    "list_source_connectors",
     "get_decisions",
     "get_open_questions",
     "list_memory_topics",
@@ -240,7 +343,15 @@ READ_TOOLS = {
     "get_trust_summary",
     "get_audit_log",
 }
-WRITE_TOOLS = {"remember_this", "approve_memory_capture", "archive_memory_capture", "forget_memory", "delete_memory_capture"}
+WRITE_TOOLS = {
+    "remember_this",
+    "connect_source_account",
+    "sync_source_records",
+    "approve_memory_capture",
+    "archive_memory_capture",
+    "forget_memory",
+    "delete_memory_capture",
+}
 EXPORT_TOOLS = {"build_context_pack", "get_personal_profile", "get_agent_adaptation", "export_memory"}
 MAINTENANCE_TOOLS = {
     "create_memory_backup",
@@ -282,6 +393,18 @@ def _bool_arg(args: dict[str, Any], key: str, default: bool = False) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def _markdown_memory_list(title: str, items: list[dict[str, Any]]) -> str:
+    lines = [f"# {title}", ""]
+    if not items:
+        lines.append("- No matching approved memory found.")
+        return "\n".join(lines)
+    for item in items:
+        citation = item.get("source_url") or item.get("source") or "unknown source"
+        sector = f" Sector: {item['sector']}." if item.get("sector") else ""
+        lines.append(f"- [{item['id']}] ({item.get('layer')}/{item.get('kind')}) Source: {citation}.{sector} {item.get('content')}")
+    return "\n".join(lines)
 
 
 def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any], token_scopes: list[str] | None = None) -> Any:
@@ -331,8 +454,84 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         if args.get("format", "json") == "markdown":
             return adaptation["markdown"]
         return store.agent_payload(user_id, adaptation)
+    if name == "get_style_profile":
+        query = args.get("query", "writing style")
+        limit = int(args.get("limit", 6))
+        style = store.search(user_id, query, limit=limit, layer="style")
+        preferences = store.search(user_id, query, limit=max(2, limit // 2), layer="preference")
+        negatives = store.search(user_id, query, limit=max(2, limit // 2), layer="negative")
+        result = {
+            "query": query,
+            "style": style,
+            "preferences": preferences,
+            "negative_constraints": negatives,
+        }
+        store.record_context_reuse(user_id, surface="mcp", query=query, target="style-profile")
+        if args.get("format", "json") == "markdown":
+            return "\n\n".join([
+                _markdown_memory_list("Cortex Style Profile", style),
+                _markdown_memory_list("Relevant Preferences", preferences),
+                _markdown_memory_list("Constraints To Avoid", negatives),
+            ])
+        return store.agent_payload(user_id, result)
+    if name == "get_project_context":
+        name_arg = str(args.get("name") or "").strip()
+        query = str(args.get("query") or "").strip()
+        combined_query = " ".join(value for value in [name_arg, query] if value).strip()
+        limit = int(args.get("limit", 8))
+        memories = store.about_entity(user_id, combined_query or name_arg, limit=limit)
+        if len(memories) < limit and combined_query:
+            seen = {item["id"] for item in memories}
+            memories.extend(item for item in store.search(user_id, combined_query, limit=limit) if item["id"] not in seen)
+            memories = memories[:limit]
+        result = {"name": name_arg, "query": query, "memories": memories}
+        store.record_context_reuse(user_id, surface="mcp", query=combined_query, target="project-context")
+        return store.agent_payload(user_id, result)
+    if name == "get_procedure":
+        query = args.get("query", "")
+        procedures = store.search(user_id, query, limit=int(args.get("limit", 6)), layer="procedural")
+        result = {"query": query, "procedures": procedures}
+        store.record_context_reuse(user_id, surface="mcp", query=query, target="procedure")
+        if args.get("format", "json") == "markdown":
+            return _markdown_memory_list("Cortex Procedure", procedures)
+        return store.agent_payload(user_id, result)
     if name == "list_supported_import_sources":
         return {"results": store.supported_import_sources()}
+    if name == "list_source_connectors":
+        result: dict[str, Any] = {"results": store.source_connector_catalog()}
+        if _bool_arg(args, "include_accounts", True):
+            result["accounts"] = store.list_source_accounts(user_id)
+            result["sync_cursors"] = store.list_sync_cursors(user_id)
+        if _bool_arg(args, "include_readiness", True):
+            result["readiness"] = store.source_readiness_report(user_id)
+        return store.agent_payload(user_id, result)
+    if name == "connect_source_account":
+        account = store.upsert_source_account(
+            user_id,
+            source=args.get("source", ""),
+            account_label=args.get("account_label", ""),
+            account_identifier=args.get("account_identifier"),
+            connection_type=args.get("connection_type", "mcp"),
+            status=args.get("status", "connected"),
+            auth_state=args.get("auth_state", "healthy"),
+            policy=args.get("policy") if isinstance(args.get("policy"), dict) else None,
+            metadata=args.get("metadata") if isinstance(args.get("metadata"), dict) else None,
+            last_error=args.get("last_error"),
+            account_id=args.get("account_id"),
+        )
+        return store.agent_payload(user_id, {"account": account})
+    if name == "sync_source_records":
+        result = store.sync_source_account_records(
+            user_id,
+            args.get("source_account_id", ""),
+            records=args.get("records") or [],
+            cursor_name=args.get("cursor_name", "default"),
+            cursor_value=args.get("cursor_value"),
+            high_water_mark=args.get("high_water_mark"),
+            state=args.get("state") if isinstance(args.get("state"), dict) else None,
+            processing=args.get("processing", "sync"),
+        )
+        return store.agent_payload(user_id, result)
     if name == "build_context_pack":
         query = args.get("query", "")
         value = store.context_pack(user_id, query, int(args.get("limit", 12)))

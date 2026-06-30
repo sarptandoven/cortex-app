@@ -1,17 +1,7 @@
-import AppKit
 import SwiftUI
-
-private struct AskStarter: Identifiable {
-    let label: String
-    let systemImage: String
-    let query: String
-
-    var id: String { label }
-}
 
 struct AskTab: View {
     @ObservedObject var state: AppState
-    @State private var exportOptionsExpanded = false
     @State private var citedMemoriesExpanded = false
 
     var body: some View {
@@ -23,39 +13,19 @@ struct AskTab: View {
                 if state.hasSearched {
                     AskResponseSection(
                         state: state,
-                        citedMemoriesExpanded: $citedMemoriesExpanded,
-                        copyForAIApp: copyAnswerForAIApp
+                        citedMemoriesExpanded: $citedMemoriesExpanded
                     )
                 } else {
                     QuietState(
                         title: "Ask approved memory",
-                        detail: "Ask about something you approved in Review. Cortex answers with citations when it finds matching memory."
+                        detail: "Ask about a source, project, person, decision, or exact phrase. Cortex answers only from approved memory and shows citations."
                     )
                 }
-
-                AskAIHandoffSection(state: state, isExpanded: $exportOptionsExpanded)
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .padding(16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    private func copyAnswerForAIApp() {
-        let payload = askAIHandoffPayload(
-            question: state.searchQuery,
-            answer: state.askAnswer,
-            citations: state.askCitations
-        )
-        guard !payload.isEmpty else { return }
-
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(payload, forType: .string)
-        if state.askCitations.isEmpty {
-            state.status = "Answer copied for AI app"
-        } else {
-            state.status = "Answer with \(state.askCitations.count) citation\(state.askCitations.count == 1 ? "" : "s") copied for AI app"
-        }
     }
 }
 
@@ -74,12 +44,6 @@ struct AskHeaderSection: View {
 
 struct AskQuerySection: View {
     @ObservedObject var state: AppState
-    private let starters: [AskStarter] = [
-        AskStarter(label: "Decisions", systemImage: "checkmark.seal", query: "What decisions should I remember?"),
-        AskStarter(label: "Preferences", systemImage: "slider.horizontal.3", query: "What preferences have I mentioned?"),
-        AskStarter(label: "Style", systemImage: "signature", query: "How do I usually write?"),
-        AskStarter(label: "Recent", systemImage: "clock.arrow.circlepath", query: "What changed recently?")
-    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -93,19 +57,6 @@ struct AskQuerySection: View {
                     Label("Ask", systemImage: "magnifyingglass")
                 }
                 .buttonStyle(.borderedProminent)
-            }
-
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 122), spacing: 8)], spacing: 8) {
-                ForEach(starters) { starter in
-                    Button {
-                        state.searchQuery = starter.query
-                        state.runSearch()
-                    } label: {
-                        Label(starter.label, systemImage: starter.systemImage)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .buttonStyle(.bordered)
-                }
             }
 
             if state.hasSearched {
@@ -130,20 +81,18 @@ struct AskQuerySection: View {
 struct AskResponseSection: View {
     @ObservedObject var state: AppState
     @Binding var citedMemoriesExpanded: Bool
-    let copyForAIApp: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if !state.askAnswer.isEmpty {
                 AskAnswerPanel(
                     answer: state.askAnswer,
-                    citations: state.askCitations,
-                    copyForAIApp: copyForAIApp
+                    citations: state.askCitations
                 )
             } else if state.searchResults.isEmpty {
                 QuietState(
                     title: "No cited answer found",
-                    detail: "Try an exact phrase from approved memory, or add and approve more context in Sources and Review."
+                    detail: "Try an exact phrase from approved memory, or connect a source from Connections & Privacy and approve it in Review."
                 )
             } else {
                 QuietState(
@@ -193,51 +142,9 @@ struct AskResultsSection: View {
     }
 }
 
-struct AskAIHandoffSection: View {
-    @ObservedObject var state: AppState
-    @Binding var isExpanded: Bool
-
-    var body: some View {
-        DisclosureGroup("AI handoff options", isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Use these copy formats when another AI app needs more than the cited answer.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                if !state.canPrepareArtifacts {
-                    Text("Turn on AI exports in Trust to use these formats.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                HStack {
-                    Button {
-                        state.copyAgentAdaptation()
-                    } label: {
-                        Label("Copy Instructions", systemImage: "wand.and.stars")
-                    }
-                    Button {
-                        state.contextQuery = state.searchQuery
-                        state.copyContextPack()
-                    } label: {
-                        Label("Copy Matching Context", systemImage: "text.quote")
-                    }
-                    Button {
-                        state.copyDailyContextPack()
-                    } label: {
-                        Label("Copy My Profile", systemImage: "brain.head.profile")
-                    }
-                    Spacer()
-                }
-                .disabled(!state.canPrepareArtifacts)
-            }
-            .padding(.top, 4)
-        }
-    }
-}
-
 struct AskAnswerPanel: View {
     let answer: String
     let citations: [AskCitationItem]
-    var copyForAIApp: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -245,16 +152,6 @@ struct AskAnswerPanel: View {
                 Label("Answer", systemImage: "quote.bubble")
                     .font(.headline)
                 Spacer()
-                if let copyForAIApp {
-                    Button {
-                        copyForAIApp()
-                    } label: {
-                        Label("Copy for AI app", systemImage: "square.and.arrow.up")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .help("Copies the answer with citation excerpts and source links.")
-                }
             }
             Text(answer)
                 .font(.body)
@@ -316,47 +213,4 @@ struct AskCitationRow: View {
     private var excerpt: String {
         citation.excerpt.trimmingCharacters(in: .whitespacesAndNewlines)
     }
-}
-
-private func askAIHandoffPayload(question: String, answer: String, citations: [AskCitationItem]) -> String {
-    var sections: [String] = []
-
-    let trimmedQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
-    if !trimmedQuestion.isEmpty {
-        sections.append("Question:\n\(trimmedQuestion)")
-    }
-
-    let trimmedAnswer = answer.trimmingCharacters(in: .whitespacesAndNewlines)
-    if !trimmedAnswer.isEmpty {
-        sections.append("Answer:\n\(trimmedAnswer)")
-    }
-
-    if !citations.isEmpty {
-        let citationText = citations.map { citation -> String in
-            var lines = ["[\(citation.index)] \(askCitationSourceLabel(citation))"]
-            if let date = askCitationDate(citation) {
-                lines.append("Date: \(date)")
-            }
-            let excerpt = citation.excerpt.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !excerpt.isEmpty {
-                lines.append("Excerpt: \(excerpt)")
-            }
-            return lines.joined(separator: "\n")
-        }
-        .joined(separator: "\n\n")
-        sections.append("Citations:\n\(citationText)")
-    }
-
-    return sections.joined(separator: "\n\n")
-}
-
-private func askCitationSourceLabel(_ citation: AskCitationItem) -> String {
-    let sourceURL = citation.source_url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return sourceURL.isEmpty ? citation.source : sourceURL
-}
-
-private func askCitationDate(_ citation: AskCitationItem) -> String? {
-    let rawDate = (citation.occurred_at ?? citation.captured_at)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    guard !rawDate.isEmpty else { return nil }
-    return String(rawDate.prefix(10))
 }

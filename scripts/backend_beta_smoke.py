@@ -79,16 +79,21 @@ def block_network() -> Any:
         socket.create_connection = original_create_connection  # type: ignore[assignment]
 
 
-def write_import_fixture(tmp: Path, marker: str) -> Path:
-    source_dir = tmp / "source-import" / "docs"
-    source_dir.mkdir(parents=True)
-    (source_dir / "Beta Smoke Notes.md").write_text(
+def write_obsidian_fixture(tmp: Path, marker: str) -> Path:
+    vault_dir = tmp / "Obsidian Beta Vault"
+    notes_dir = vault_dir / "Projects"
+    notes_dir.mkdir(parents=True)
+    (notes_dir / "Beta Smoke Notes.md").write_text(
         "\n".join(
             [
+                "---",
+                "title: Beta Smoke Notes",
+                "tags: [cortex, beta]",
+                "---",
                 "# Beta Smoke Notes",
                 "",
                 (
-                    f"Decision: Project Taipei backend smoke marker {marker} verifies source import, "
+                    f"Decision: Project Taipei backend smoke marker {marker} verifies Obsidian sync, "
                     "review approval, cited Ask answers, markdown export, and Trust controls before beta invites."
                 ),
                 "I prefer concise technical answers when debugging Cortex beta issues.",
@@ -98,7 +103,7 @@ def write_import_fixture(tmp: Path, marker: str) -> Path:
         ),
         encoding="utf-8",
     )
-    return source_dir
+    return vault_dir
 
 
 class SmokeRunner:
@@ -109,8 +114,8 @@ class SmokeRunner:
         self.marker = marker
         self.headers = {"Authorization": f"Bearer {API_TOKEN}"}
         self.checks: list[dict[str, Any]] = []
-        self.import_id = ""
         self.capture_ids: list[str] = []
+        self.source_account_id = ""
         self.export_token = "cxa_beta_smoke_export_1234567890"
         self.write_token = "cxa_beta_smoke_write_1234567890"
 
@@ -184,7 +189,7 @@ class SmokeRunner:
         ).json()
         self.ensure(settings["review_new_captures"] is True, "Review gate is not enabled", settings)
         self.ensure(settings["allow_pending_in_context"] is False, "Pending context gate is not enabled", settings)
-        self.ensure(settings["allow_agent_writes"] is False, "Agent writes should start disabled", settings)
+        self.ensure(settings["allow_agent_writes"] is False, "Baseline Trust write gate did not apply", settings)
         self.ensure(settings["allow_agent_exports"] is False, "Agent exports should start disabled", settings)
         return {
             "detail": "Guarded beta Trust settings applied.",
@@ -196,33 +201,55 @@ class SmokeRunner:
             },
         }
 
-    def import_review_and_approve(self) -> dict[str, Any]:
-        source_dir = write_import_fixture(self.tmp, self.marker)
-        analyzed = self.request(
+    def mcp_tool_surface(self) -> dict[str, Any]:
+        listed = self.request(
             "POST",
-            "/v1/imports/analyze",
-            json={"paths": [str(source_dir)], "source_hint": "docs", "max_records": 10},
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
         ).json()
-        self.ensure(analyzed["records_found"] >= 1, "Import analysis found no records", analyzed)
+        tools = {tool["name"] for tool in listed["result"]["tools"]}
+        expected = {
+            "search_memory",
+            "get_memory_inbox",
+            "approve_memory_capture",
+            "get_product_loop",
+            "list_source_connectors",
+            "connect_source_account",
+            "sync_source_records",
+            "get_style_profile",
+            "get_project_context",
+            "get_procedure",
+        }
+        missing = sorted(expected - tools)
+        self.ensure(not missing, "MCP tool list is missing first-100 tools", {"missing": missing, "tools": sorted(tools)})
+        return {
+            "detail": "MCP exposes the high-value first-100 memory and connector tools.",
+            "payload": {"tool_count": len(tools), "checked": sorted(expected)},
+        }
 
-        imported = self.request(
+    def sync_review_and_approve(self) -> dict[str, Any]:
+        vault_dir = write_obsidian_fixture(self.tmp, self.marker)
+        synced = self.request(
             "POST",
-            "/v1/imports",
-            json={"paths": [str(source_dir)], "source_hint": "docs", "processing": "sync", "max_records": 10},
+            "/v1/connectors/obsidian/sync",
+            json={"vault_path": str(vault_dir), "processing": "sync", "max_records": 10},
         ).json()
-        self.import_id = imported["import_id"]
-        self.capture_ids = [record["capture_id"] for record in imported["records"] if record.get("capture_id")]
-        self.ensure(imported["status"] == "complete", "Import did not complete", imported)
-        self.ensure(imported["saved"] >= 1, "Import did not save any captures", imported)
-        self.ensure(imported["failed"] == 0, "Import had failures", imported)
-        self.ensure(bool(self.capture_ids), "Import returned no capture IDs", imported)
+        self.source_account_id = synced["source_account_id"]
+        self.capture_ids = [record["capture_id"] for record in synced["records"] if record.get("capture_id")]
+        self.ensure(synced["status"] == "complete", "Obsidian sync did not complete", synced)
+        self.ensure(synced["source"] == "obsidian", "Obsidian sync returned the wrong source", synced)
+        self.ensure(synced["saved"] >= 1, "Obsidian sync did not save any captures", synced)
+        self.ensure(synced["failed"] == 0, "Obsidian sync had failures", synced)
+        self.ensure(synced["scan"]["records_found"] >= 1, "Obsidian scan found no records", synced)
+        self.ensure(synced["source_account"]["connection_type"] == "local-folder", "Obsidian account was not local-folder", synced)
+        self.ensure(bool(self.capture_ids), "Obsidian sync returned no capture IDs", synced)
 
         search_pending = self.request("GET", "/v1/search", params={"query": self.marker, "limit": 5}).json()
-        self.ensure(search_pending["results"] == [], "Pending import leaked into search", search_pending)
+        self.ensure(search_pending["results"] == [], "Pending Obsidian sync leaked into search", search_pending)
 
         review = self.request("GET", "/v1/review/today").json()
         pending_ids = {item["id"] for item in review["pending"]}
-        self.ensure(any(capture_id in pending_ids for capture_id in self.capture_ids), "Imported capture was not pending review", review)
+        self.ensure(any(capture_id in pending_ids for capture_id in self.capture_ids), "Synced capture was not pending review", review)
         self.ensure(review["recommended_actions"], "Daily review did not include recommended actions", review)
 
         for capture_id in self.capture_ids:
@@ -230,12 +257,17 @@ class SmokeRunner:
             self.ensure(approved["approved"] is True, f"Capture {capture_id} was not approved", approved)
 
         search_approved = self.request("GET", "/v1/search", params={"query": self.marker, "limit": 5}).json()
-        self.ensure(search_approved["results"], "Approved import was not searchable", search_approved)
+        self.ensure(search_approved["results"], "Approved Obsidian memory was not searchable", search_approved)
+        self.ensure(
+            all(result["source"] == "obsidian" for result in search_approved["results"]),
+            "Approved search returned non-Obsidian source records for the marker",
+            search_approved,
+        )
         return {
-            "detail": "Generated docs import analyzed, saved, held for review, approved, and became searchable.",
+            "detail": "Generated Obsidian vault synced, held for review, approved, and became searchable.",
             "payload": {
-                "import_id": self.import_id,
-                "records_found": analyzed["records_found"],
+                "source_account_id": self.source_account_id,
+                "records_found": synced["scan"]["records_found"],
                 "capture_ids": self.capture_ids,
                 "approved_results": len(search_approved["results"]),
             },
@@ -251,7 +283,6 @@ class SmokeRunner:
         )
 
         exported = self.request("GET", "/v1/export.json").json()
-        self.ensure(any(item["id"] == self.import_id for item in exported["imports"]), "JSON export omitted import session", exported)
         self.ensure(exported["stats"]["memories"] >= 1, "JSON export did not include memory stats", exported.get("stats"))
 
         markdown = self.request("GET", "/v1/export.md").text
@@ -265,6 +296,28 @@ class SmokeRunner:
             "payload": {
                 "citations": len(asked["citations"]),
                 "export_memories": exported["stats"]["memories"],
+            },
+        }
+
+    def backup_support_and_queue_health(self) -> dict[str, Any]:
+        backup = self.request("POST", "/v1/backups").json()
+        self.ensure(int(backup.get("size_bytes") or 0) > 0, "Backup did not write data", backup)
+        self.ensure(Path(backup["backup_path"]).exists(), "Backup path does not exist", backup)
+
+        support = self.request("GET", "/v1/support/bundle").json()
+        encoded = json.dumps(support)
+        self.ensure(self.marker not in encoded, "Support bundle included raw smoke memory content", support)
+        self.ensure("supersecret123" not in encoded and DUMMY_OPENAI_KEY not in encoded, "Support bundle leaked secret fixture", support)
+
+        jobs = self.request("POST", "/v1/jobs/run", params={"limit": 25}).json()
+        diagnostics = self.request("GET", "/v1/diagnostics").json()
+        self.ensure(jobs["failed"] == 0, "Worker run reported failed jobs", jobs)
+        self.ensure(diagnostics["counts"]["failed_jobs"] == 0, "Diagnostics reported failed jobs", diagnostics)
+        return {
+            "detail": "Backup, content-free support bundle, and queue health checks passed.",
+            "payload": {
+                "backup_path": backup["backup_path"],
+                "worker": {"processed": jobs["processed"], "pending": jobs["pending"], "failed": jobs["failed"]},
             },
         }
 
@@ -327,8 +380,10 @@ class SmokeRunner:
     def run(self) -> dict[str, Any]:
         self.run_step("startup_health", self.startup_health)
         self.run_step("baseline_trust_settings", self.baseline_trust_settings)
-        self.run_step("import_review_approve", self.import_review_and_approve)
+        self.run_step("mcp_tool_surface", self.mcp_tool_surface)
+        self.run_step("obsidian_sync_review_approve", self.sync_review_and_approve)
         self.run_step("ask_export", self.ask_and_export)
+        self.run_step("backup_support_queue_health", self.backup_support_and_queue_health)
         self.run_step("scoped_trust_controls", self.scoped_trust_controls)
         return {
             "status": "ok",
@@ -368,7 +423,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run the Cortex backend beta smoke lane against temp data with network sockets blocked."
     )
-    parser.add_argument("--keep-temp", action="store_true", help="Keep the temp vault and import fixture for debugging.")
+    parser.add_argument("--keep-temp", action="store_true", help="Keep the temp vault and Obsidian fixture for debugging.")
     args = parser.parse_args()
 
     tmp_root = Path(tempfile.mkdtemp(prefix="cortex-backend-beta-smoke-"))

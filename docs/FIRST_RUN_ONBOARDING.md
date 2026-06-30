@@ -2,23 +2,24 @@
 
 ## Goal
 
-The first launch should make Cortex usable without docs:
+The first launch should make Cortex understandable without docs:
 
-1. Confirm local vault storage.
-2. Import a real first source.
-3. Approve one useful memory.
-4. Ask Cortex and get cited memory back.
-5. Make a backup decision.
-6. Leave the user in the five-tab product flow.
+1. Confirm the private local vault.
+2. Connect one real memory path: MCP AI tools or Obsidian.
+3. Show that new source memory goes through Review.
+4. Let the user Ask Cortex with citations once approved memory exists.
+5. Confirm trust defaults and make a backup decision.
+6. Leave the user in Home, with Review, Ask, and Connections & Privacy available.
 
 ## Product Principles
 
 - Local-first by default.
-- No account required.
+- No account required for the local beta.
+- No manual data dump as the primary setup path.
 - No background capture.
-- The user can open the vault folder at any time.
-- The local SQLite index is not the source of truth.
-- Setup can be reopened from Trust.
+- Review-first memory.
+- Setup can be dismissed without marking onboarding complete.
+- Setup can be reopened from Connections & Privacy.
 
 ## Steps
 
@@ -28,37 +29,41 @@ Shows the active vault path, local service state, and backend-reported vault dia
 
 - use the default vault
 - choose another folder
-- open the current vault folder
+- reveal the current vault folder
 
 Changing the vault path restarts the bundled local backend and verifies that `/health` reports the same vault path.
 
-### 2. Add First Source
+### 2. Connect Cortex
 
-Prompts the user to import real source material through preview/import:
+Prompts the user to connect one working path:
 
-- ChatGPT, Claude, Slack, email, notes, docs, or other supported exports
-- selected files and folders only
-- no live OAuth/API sync in the local beta
+- local AI tools through MCP
+- an Obsidian vault through the native local connector
 
-This exercises import detection, extraction, duplicate checks, import history, and undo state.
+The Obsidian connector chooses a vault folder once, scans Markdown/text notes locally, registers a source account, syncs records through `/v1/source-accounts/{account_id}/sync`, and preserves file citations.
 
-Quick memories, clipboard captures, and web captures are still available as secondary actions, but they do not complete this gate. The goal is to prove Cortex can ingest a real user source before it asks for review and retrieval.
+Future account sign-ins for Gmail, Notion, Slack, Drive, Calendar, GitHub, Mail, Messages, and browser history should use the same source-account sync contract. Unsupported service exports remain Advanced/Fallback, not onboarding.
 
-### 3. Review Memory
+### 3. Review Path
 
-Prompts the user to approve at least one useful pending memory. This is the trust boundary before Cortex treats memory as ready.
+Explains that Review is the trust boundary. Connected source records and MCP-written memory candidates wait here before becoming approved memory.
 
-### 4. Ask / Use Cortex
+The step can continue once a real connection path exists, because MCP/source sync may create reviewable items asynchronously. If pending items already exist, onboarding lets the user approve or archive them directly.
 
-Prompts the user to ask Cortex a real question about the approved source. The step completes when Ask returns cited memory.
+### 4. Ask Path
 
-Copyable chat context and direct MCP setup are secondary handoff options rather than the main onboarding goal, and they do not complete the core Ask step.
+Shows the Ask box and cited answer surface. Ask becomes useful once approved memory exists.
 
-### 5. Trust & Backup
+The product goal is cited retrieval from approved memory. Copyable handoff formats are secondary advanced tools and do not define onboarding success.
 
-Summarizes the chosen vault, AI access posture, redaction state, backend health, and backup decision. Users can create a first backup or explicitly finish later.
+### 5. Privacy & Backup
 
-Advanced Trust also includes optional identity aliases, such as Slack handles or email addresses, so future Slack and email imports can distinguish the user's own preferences from other speakers.
+Confirms privacy defaults:
+
+- review new memories first
+- keep pending memory private from AI tools
+- redact exported/handoff memory where possible
+- create a local backup or explicitly skip the first backup
 
 ## Persistence
 
@@ -71,10 +76,11 @@ UserDefaults.onboardingFirstSourceImported.v1
 UserDefaults.onboardingFirstMemoryReviewed.v1
 UserDefaults.onboardingCortexUsed.v1
 UserDefaults.onboardingBackupDecision.v1
+UserDefaults.connectedObsidianVaultPath.v1
 UserDefaults.vaultPath
 ```
 
-The backend stores user memory behavior in:
+The backend stores memory behavior in:
 
 ```text
 Cortex.vault/settings.json
@@ -84,12 +90,12 @@ index.sqlite:user_settings
 ## Verification Checklist
 
 - Fresh install shows onboarding automatically.
-- `Finish Later` dismisses setup without marking onboarding complete.
-- `Trust > Advanced > Setup` reopens the flow.
+- Finish later dismisses setup without marking onboarding complete.
+- Connections & Privacy can reopen setup.
 - Choosing a vault folder restarts the backend and `/health` returns the chosen path.
-- Importing the first real source writes an import session and source-linked captures or jobs.
-- Quick memories and clipboard captures do not complete the first-source gate.
-- Approving a pending source capture completes the review gate.
-- Ask with cited results completes the use gate.
-- Copy MCP config uses the bundled script path.
-- Creating a backup writes `backups/cortex-vault-*.zip`.
+- Connecting MCP tools or Obsidian satisfies the first source gate.
+- Obsidian sync creates a source account, sync cursor, cited captures, and reviewable memory.
+- Review remains the approval boundary before memory is trusted.
+- Ask with cited results marks Cortex as used.
+- Creating a backup writes `backups/cortex-vault-*.zip`; skipping backup records an explicit decision.
+- Removed manual import labels stay absent from the app binary.

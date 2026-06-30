@@ -46,7 +46,8 @@ MCP tools:
 Operator scripts:
 
 - `python3 scripts/reliability_check.py`
-- `python3 scripts/backend_beta_smoke.py`
+- `python3 scripts/backend_beta_smoke.py` verifies the first-100 loop with a temp Obsidian vault, MCP tool discovery, Review approval, cited Ask, backup, support bundle, queue health, and Trust gates
+- `python3 scripts/first100_live_smoke.py` verifies the same connection-first loop against the running packaged app with an isolated smoke user
 - `python3 scripts/battle_test_http.py`
 - `python3 scripts/export_support_bundle.py`
 - `python3 scripts/ops_readiness_check.py`
@@ -72,6 +73,7 @@ python3 scripts/ops_readiness_check.py --refresh-site --include-package
 For a live installed app:
 
 ```bash
+python3 scripts/first100_live_smoke.py
 python3 scripts/ops_readiness_check.py --require-live --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
 ```
 

@@ -19,17 +19,18 @@ New local vaults start in a guarded mode:
 - new saves enter review by default,
 - pending saves can appear in app search/context until the user switches to strict mode,
 - MCP agent read tools are enabled for retrieval,
-- MCP agent write, export, maintenance, and destructive tools are disabled until the user opts in,
+- MCP agent write tools are enabled so connected tools can save useful memories into review,
+- MCP export, maintenance, and destructive tools are disabled until the user opts in,
 - shared context redaction is enabled.
 
-This keeps the core retrieval loop useful while avoiding silent agent mutation or bulk export on first launch.
+This keeps the core retrieval loop useful for a first demo while still requiring review for new saves and avoiding bulk export, maintenance, or deletion on first launch.
 
 ## Token Boundary
 
 The packaged app now keeps two local secrets:
 
-- the admin app token, stored in Keychain and used by the macOS app for REST API calls;
-- a scoped `cxm_` MCP token, also stored in Keychain and copied into local AI-tool MCP configs.
+- the admin app token, generated per install and kept in local app defaults for REST API calls;
+- a scoped `cxm_` MCP token, also generated per install, registered with the local backend, and copied into local AI-tool MCP configs.
 
 REST endpoints require the admin app token. `/mcp` accepts the admin token for backward compatibility, but new copied or installed MCP configs use the scoped MCP token. MCP tool calls must pass both checks: the token must include the needed scope and the user's Trust toggle for that capability must be enabled.
 
@@ -50,14 +51,14 @@ When enabled, new captures enter the inbox as `pending`.
 
 - Pending captures are visible to the user.
 - Pending captures can be approved or archived.
-- Pending memory can be hidden from search/context by turning off `allow_pending_in_context`.
+- Pending memory is hidden from assistant search/context by default.
 
 ### Pending Context
 
 `allow_pending_in_context` controls whether assistants can use memory that has not been approved.
 
 - On: faster, more convenient, useful during active work.
-- Off: stricter, only approved captures appear in search, daily review context, and context packs.
+- Off: the default. Only approved captures appear in search, daily review context, and context packs.
 
 ### Identity Aliases
 
@@ -94,12 +95,14 @@ When disabled, connected agents cannot inspect memory through MCP.
 `allow_agent_writes` controls MCP write tools:
 
 - `remember_this`
+- `connect_source_account`
+- `sync_source_records`
 - `approve_memory_capture`
 - `archive_memory_capture`
 
 When disabled, connected agents cannot mutate memory or review state.
 
-This is disabled by default for new local vaults.
+This is enabled by default for new local vaults so connected tools can save memories into the review queue. Users can disable it from Trust.
 
 ### Agent Maintenance Access
 
@@ -254,14 +257,14 @@ The bundle privacy contract is:
 
 ## macOS Surface
 
-The Trust tab exposes:
+Connections & Privacy exposes:
 
 - trust score and warnings
 - review and pending-context toggles
 - agent read/write/export toggles
 - agent maintenance/destructive toggles
 - shared-context redaction toggle
-- context pack size
+- advanced copied-context settings
 - integration token list, revoke action, and local MCP token reset
 - capture source breakdown
 - audit trail

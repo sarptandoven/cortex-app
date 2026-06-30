@@ -27,6 +27,8 @@ FORBIDDEN_PHRASES: dict[str, tuple[str, ...]] = {
         "More ->",
         "context/adaptation handoff",
         "focused context, model context, or agent adaptation completes",
+        "Import a real first source",
+        "Quick memories and clipboard captures",
     ),
     "docs/MCP_INTEGRATIONS.md": (
         "Connect tab",
@@ -37,9 +39,30 @@ FORBIDDEN_PHRASES: dict[str, tuple[str, ...]] = {
     "docs/INSTALLER_AND_UPDATES.md": (
         "More ->",
         "Cortex Settings",
+        "import one real user-selected local source",
     ),
     "PUBLISH_MANIFEST.md": (
         "uploaded through Transporter",
+    ),
+    "macos/Sources/CortexApp.swift": (
+        "Review Source Import",
+        "Import to Model",
+        "Choose Sources to Add to Cortex",
+        "Add Recovery Items",
+        "Add Clipboard",
+        "Add Link",
+        "Copy Capture Bookmarklet",
+        "Open Capture Page",
+        "Quick signal",
+        "Capture Inbox",
+    ),
+    "macos/Sources/SourcesTab.swift": (
+        "Soon",
+        "Cloud accounts",
+    ),
+    "macos/Sources/OnboardingView.swift": (
+        "See source layer",
+        "View source connection layer",
     ),
 }
 

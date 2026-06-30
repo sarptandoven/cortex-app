@@ -1,70 +1,56 @@
 # Cortex Capture Surfaces
 
-Capture is the front door of Cortex. The product rule is simple: if a user can see context somewhere, they should have a low-friction way to save it into local memory.
+Cortex capture is now a connected-source layer, not a manual data-entry product. The consumer app should guide users toward connections that can keep memory current, preserve citations, and send new signals through Review.
 
-## Built Surfaces
+## Consumer Surfaces
 
-### Global Clipboard
+### MCP AI Tools
 
-- The secondary capture tools in `Sources` can save the current clipboard.
-- Users can opt into the global `Cmd+Shift+V` clipboard hotkey from `Trust > Advanced`.
-- Empty clipboards are rejected before hitting the backend.
+- Claude Desktop, Cursor, Windsurf, and compatible MCP clients connect to Cortex through the local MCP bridge.
+- Connected tools can search approved memory and, when writes are allowed, save source records into Review.
+- The app installs or repairs supported local MCP configs from `Trust > AI access`.
+- Copy-based handoff is an advanced fallback, not the primary product model.
 
-### Quick Note
+### Obsidian Vault Sync
 
-- `Sources > Secondary capture tools` includes a focused note box for decisions, preferences, open loops, and project facts.
-- Quick notes are saved as `macos-quick-note` captures.
+- The macOS app exposes the first native local source connector for Obsidian.
+- The user chooses a vault folder once.
+- Cortex scans Markdown/text notes locally, cleans common Markdown and Obsidian markup, registers a source account, and streams cited records through `/v1/source-accounts/{account_id}/sync`.
+- New source memory waits in Review before it becomes trusted memory.
 
-### Web And Link Capture
+### Review And Ask
 
-- Users can save a URL, title/source name, and notes from the app.
-- Cortex stores the URL as source metadata and includes the URL/title inside the captured content.
-- The app also opens the local `/capture` page for manual browser-to-Cortex saving.
+- Review is the approval boundary for connected data.
+- Ask only uses approved memory by default and returns cited answers.
+- Source health and sync outcomes are visible in Sources and Trust.
 
-### Browser Bookmarklet
+## Backend Ingestion Infrastructure
 
-- The app can copy a JavaScript bookmarklet.
-- The bookmarklet opens the local capture page with page title and URL prefilled.
-- It does not include the Cortex API token in browser URLs, page DOM, or bookmarklet code.
-- The user submits content through the local capture form or the native app.
+The backend still includes local import and capture APIs for tests, migrations, support recovery, and future connector workers:
 
-### Files
+- `POST /v1/captures`
+- `POST /v1/captures/queue`
+- `GET /v1/captures/{capture_id}/status`
+- `POST /v1/imports/analyze`
+- `POST /v1/imports`
+- `GET /v1/imports`
+- `DELETE /v1/imports/{import_id}`
+- `POST /v1/source-accounts/{account_id}/sync`
 
-- Users can choose files or drag files onto `Sources`.
-- Cortex extracts text locally from:
-  - `.txt`, `.md`, `.json`, `.jsonl`, `.csv`, `.tsv`, `.log`
-  - common source-code and config files
-  - `.rtf` / `.rtfd`
-  - `.pdf`
-- Unknown binary files are captured as source references with file path, type, size, and modified time.
-- Large extracted content is truncated before capture to stay under the API limit.
-
-### Capture Inbox Folder
-
-- Cortex creates `~/Library/Application Support/Cortex/Capture Inbox`.
-- Users can drop files into that folder from automations, downloads, scripts, or Finder.
-- `Sources` can import the folder and then moves successfully imported files into `Capture Inbox/Imported`.
-
-## Backend Endpoints
-
-- `POST /v1/captures`: authenticated JSON capture API used by the app and MCP tools.
-- `POST /v1/captures/queue`: authenticated async capture API that stores raw capture immediately and queues extraction for a worker.
-- `GET /v1/captures/{capture_id}/status`: capture processing status, derived counts, and related jobs.
-- `POST /v1/maintenance/jobs/run`: local/admin worker drain endpoint for queued extraction jobs.
-- `GET /capture`: local browser capture form and query-string capture target.
-- `POST /capture`: form-post target for bookmarklets and manual browser capture.
+These APIs are not the first-100-user front door in the macOS app. New product surfaces should prefer connected accounts, local app connectors, MCP bridges, or connector processes that register source accounts and sync records.
 
 ## Privacy Model
 
-- Capture is user-initiated.
-- There is no ambient screen recording.
-- Files are read locally.
-- Browser capture opens a local form; automatic token-bearing browser capture is intentionally avoided until scoped one-time capture grants exist.
-- The local capture endpoint requires the Cortex API token when auth is enabled.
+- No ambient screen recording.
+- No background browser history collection.
+- No private app database scraping without explicit user action and a source-account record.
+- New connected records are review-first.
+- Source citations must be preserved or generated as stable `source-account://...` locators.
+- Unsupported service exports belong under Advanced/Fallback or support tooling, not onboarding.
 
 ## Reliability Rules
 
-- Every surface flows through the same backend extraction, review, vault, search, and graph pipeline.
-- Unsupported file types are still represented as sources rather than silently failing.
-- Capture Inbox import leaves failed files in place.
-- Imported files are moved only after a successful capture.
+- Every source path flows through extraction, review, vault, search, and graph indexing.
+- Duplicate records are skipped by content hash and source.
+- Sync cursors and batch outcomes should be visible in source health.
+- Partial failures should be inspectable without exposing private raw content in support bundles.

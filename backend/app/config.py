@@ -24,6 +24,10 @@ class Settings:
     shard_count: int = 16
     require_scoped_api_tokens: bool = False
     sync_signing_key: str = ""
+    hosted_vector_backend: str = ""
+    worker_mode: str = "inline"
+    observability_enabled: bool = False
+    embedding_provider: str = "hash"
 
 
 def _truthy_env(name: str) -> bool:
@@ -61,4 +65,8 @@ def load_settings() -> Settings:
         shard_count=max(1, int(os.environ.get("CORTEX_SHARD_COUNT", "16"))),
         require_scoped_api_tokens=require_scoped_api_tokens,
         sync_signing_key=os.environ.get("CORTEX_SYNC_SIGNING_KEY", ""),
+        hosted_vector_backend=os.environ.get("CORTEX_HOSTED_VECTOR_BACKEND", "").strip().lower(),
+        worker_mode=os.environ.get("CORTEX_WORKER_MODE", "inline").strip().lower() or "inline",
+        observability_enabled=_truthy_env("CORTEX_OBSERVABILITY_ENABLED"),
+        embedding_provider=os.environ.get("CORTEX_EMBEDDING_PROVIDER", "hash").strip().lower() or "hash",
     )

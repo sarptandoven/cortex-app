@@ -10,9 +10,10 @@ Run from the repo root:
 python3 -W error::ResourceWarning -m unittest discover backend/tests
 python3 scripts/retrieval_eval.py
 python3 scripts/adaptation_eval.py
+python3 scripts/run_memory_worker.py --user-id local --limit 25
 ./macos/build.sh
 codesign --verify --deep --strict --verbose=2 macos/build/Cortex.app
-python3 scripts/ops_readiness_check.py --skip-tests --include-package --require-package-artifacts
+python3 scripts/ops_readiness_check.py --skip-tests --refresh-site --include-package --require-package-artifacts
 git diff --check
 ```
 
@@ -26,14 +27,24 @@ The package command must produce and verify:
 
 Do not invite users from a build that fails the ship gate.
 
+The worker command should return a JSON object with `failed: 0`. If it reports failed jobs, inspect the `failed_jobs` array before inviting users from that build.
+
+After launching the packaged app, run the live first-100 smoke once:
+
+```bash
+python3 scripts/first100_live_smoke.py
+```
+
+It uses the local app token from macOS defaults, syncs a temporary Obsidian vault under an isolated smoke user, verifies Review/Ask/MCP, and deletes the smoke user rows. It does not create a backup unless `--include-backup` is passed.
+
 ## 2. Invite The Right Testers
 
 Good first-100 users:
 
 - run macOS 13 or newer;
 - can install a direct beta DMG;
-- have one user-controlled source export, folder, or file to import;
-- can spend 30 to 45 minutes on setup, import, review, Ask, Trust, backup, export, and support bundle checks;
+- can connect MCP AI tools or an Obsidian/local notes vault;
+- can spend 30 to 45 minutes on setup, sync, review, Ask, Connections & Privacy, backup, export, and support bundle checks;
 - understand this is local-first beta software with no hosted account or cloud recovery.
 
 Defer users who need SSO, compliance review, live OAuth sync, mobile support, enterprise retention, regulated workflows, or hosted backup.
@@ -43,19 +54,19 @@ Defer users who need SSO, compliance review, live OAuth sync, mobile support, en
 Ask each tester to complete this exact loop:
 
 ```text
-Model -> Sources -> Review -> Ask -> Trust
+Home -> Review -> Ask -> Connections & Privacy
 ```
 
 Acceptance for a tester session:
 
 - local vault is visible and understandable;
-- one real source imports through Sources;
+- MCP AI tools or Obsidian/local notes connect and sync;
 - at least one memory is approved in Review;
 - Ask returns a useful cited answer;
-- Trust shows redaction, agent permissions, backup, export, delete, and support bundle controls;
+- Connections & Privacy shows redaction, agent permissions, backup, export, delete, and support bundle controls;
 - the tester can explain where data lives and how to back it up.
 
-Context packs and MCP handoffs are secondary. Do not treat a copied memory brief as the core success metric.
+Manual imports, context packs, and copy handoffs are secondary. Do not treat a copied memory brief or imported data dump as the core success metric.
 
 ## 4. Privacy Rules
 

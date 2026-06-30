@@ -26,6 +26,7 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         init_db(self.db_path)
         self.store = CortexStore(self.db_path)
         self.user_id = "test-user"
+        self.store.update_settings(self.user_id, {"allow_pending_in_context": True})
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -49,7 +50,13 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         capture_id = result["capture_id"]
 
         self.assertGreaterEqual(len(result["memories"]), 2)
-        self.assertEqual(self.store.inbox(self.user_id)[0]["id"], capture_id)
+        inbox_item = self.store.inbox(self.user_id)[0]
+        self.assertEqual(inbox_item["id"], capture_id)
+        self.assertTrue(inbox_item["preview_memories"])
+        self.assertTrue(any("SQLite locally" in item["content"] for item in inbox_item["preview_memories"]))
+        self.assertTrue(inbox_item["preview_tasks"])
+        self.assertTrue(any("backup and export" in item["content"] for item in inbox_item["preview_tasks"]))
+        self.assertNotIn("raw_text", inbox_item)
         self.assertTrue(self.store.search(self.user_id, "Supabase later?!"))
 
         stats = self.store.stats(self.user_id)
@@ -352,6 +359,8 @@ class CortexStorageLifecycleTests(unittest.TestCase):
             self.assertEqual(catalog[source_id]["source_ids"], [source_id])
             self.assertTrue(catalog[source_id]["supports_import"])
             self.assertEqual(catalog[source_id]["import_status"], "generic")
+            self.assertFalse(catalog[source_id]["primary_beta"])
+            self.assertEqual(catalog[source_id]["beta_status"], "needs-connector")
 
         advertised_source_ids = {source_id for item in catalog.values() for source_id in item["source_ids"]}
         for source_id in (
@@ -375,6 +384,14 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(catalog["gmail"]["source_ids"], ["email"])
         self.assertEqual(catalog["gmail"]["export_status"], "native_via_email")
         self.assertTrue(catalog["gmail"]["supports_import"])
+        self.assertFalse(catalog["gmail"]["primary_beta"])
+        self.assertEqual(catalog["gmail"]["beta_status"], "planned")
+        self.assertEqual(catalog["gmail"]["primary_beta_path"], "account-sign-in-planned")
+        self.assertFalse(catalog["gmail"]["show_in_primary_ui"])
+        self.assertTrue(catalog["obsidian"]["primary_beta"])
+        self.assertEqual(catalog["obsidian"]["beta_status"], "ready")
+        self.assertEqual(catalog["obsidian"]["primary_beta_path"], "native-local-connector")
+        self.assertTrue(catalog["obsidian"]["show_in_primary_ui"])
         self.assertIn("Gmail account records", catalog["gmail"]["import_label"])
         self.assertIn("cloud-docs", catalog["google-drive"]["source_ids"])
         self.assertIn("docs", catalog["google-drive"]["source_ids"])
@@ -408,16 +425,30 @@ class CortexStorageLifecycleTests(unittest.TestCase):
             self.assertNotIn(manual_intake_term, catalog_display_text)
 
         readiness = self.store.source_readiness_report(self.user_id)
+        self.assertGreaterEqual(readiness["summary"]["primary_beta_ready"], 1)
+        self.assertGreaterEqual(readiness["summary"]["planned_connectors"], 1)
+        self.assertGreaterEqual(readiness["summary"]["advanced_fallback_only"], 1)
+        self.assertGreaterEqual(readiness["summary"]["connector_needed"], 1)
         gmail_readiness = next(item for item in readiness["sources"] if item["source"] == "gmail")
-        self.assertEqual(gmail_readiness["status"], "import_ready")
+        self.assertEqual(gmail_readiness["status"], "planned")
+        self.assertEqual(gmail_readiness["beta_status"], "planned")
+        self.assertFalse(gmail_readiness["primary_beta"])
+        self.assertFalse(gmail_readiness["show_in_primary_ui"])
         self.assertEqual(gmail_readiness["source_ids"], ["email"])
         self.assertEqual(gmail_readiness["export_status"], "native_via_email")
         self.assertIn("Account sign-in sync is planned", gmail_readiness["next_action"])
         for source_id in ("gemini", "perplexity", "copilot", "grok", "poe", "notebooklm"):
             ai_readiness = next(item for item in readiness["sources"] if item["source"] == source_id)
-            self.assertEqual(ai_readiness["status"], "import_ready")
+            self.assertEqual(ai_readiness["status"], "connector_needed")
+            self.assertEqual(ai_readiness["beta_status"], "needs-connector")
+            self.assertFalse(ai_readiness["primary_beta"])
             self.assertEqual(ai_readiness["source_ids"], [source_id])
-            self.assertIn("direct local integration", ai_readiness["next_action"].lower())
+            self.assertIn("direct connector", ai_readiness["next_action"].lower())
+        obsidian_readiness = next(item for item in readiness["sources"] if item["source"] == "obsidian")
+        self.assertEqual(obsidian_readiness["status"], "import_ready")
+        self.assertEqual(obsidian_readiness["beta_status"], "ready")
+        self.assertTrue(obsidian_readiness["primary_beta"])
+        self.assertTrue(obsidian_readiness["show_in_primary_ui"])
         readiness_display_text = "\n".join(
             str(value)
             for item in readiness["sources"]
@@ -454,6 +485,12 @@ class CortexStorageLifecycleTests(unittest.TestCase):
             policy={"sync": "metadata_and_content", "include_attachments": False},
             metadata={"workspace": "doppl"},
         )
+        connected_readiness = self.store.source_readiness_report(self.user_id)
+        connected_gmail = next(item for item in connected_readiness["sources"] if item["source"] == "gmail")
+        self.assertEqual(connected_gmail["status"], "connected")
+        self.assertEqual(connected_gmail["beta_status"], "planned")
+        self.assertFalse(connected_gmail["primary_beta"])
+        self.assertFalse(connected_gmail["show_in_primary_ui"])
 
         self.assertTrue(account["id"].startswith("sacct_"))
         self.assertEqual(account["source"], "gmail")
@@ -482,6 +519,12 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         synced_account = self.store.list_source_accounts(self.user_id)[0]
         self.assertIsNotNone(synced_account["last_sync_at"])
         self.assertIsNone(synced_account["last_error"])
+        synced_readiness = self.store.source_readiness_report(self.user_id)
+        synced_gmail = next(item for item in synced_readiness["sources"] if item["source"] == "gmail")
+        self.assertEqual(synced_gmail["status"], "synced")
+        self.assertEqual(synced_gmail["beta_status"], "active")
+        self.assertTrue(synced_gmail["primary_beta"])
+        self.assertTrue(synced_gmail["show_in_primary_ui"])
 
         failed = self.store.upsert_sync_cursor(
             self.user_id,
@@ -496,6 +539,107 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(failed["last_error"], "rate limited")
         self.assertIsNone(failed["last_completed_at"])
         self.assertEqual(self.store.list_source_accounts(self.user_id)[0]["last_error"], "rate limited")
+
+        sync_result = self.store.sync_source_account_records(
+            self.user_id,
+            account["id"],
+            records=[
+                {
+                    "content": "I decided connected Gmail sync should feed Cortex without manual file import.",
+                    "title": "Gmail decision",
+                    "external_id": "msg-001",
+                    "captured_at": "2026-06-29T12:30:00Z",
+                }
+            ],
+            cursor_name="messages",
+            cursor_value="page-token-2",
+            high_water_mark="2026-06-29T12:30:00Z",
+            state={"page": 2},
+            processing="sync",
+        )
+        self.assertEqual(sync_result["status"], "complete")
+        self.assertEqual(sync_result["saved"], 1)
+        self.assertEqual(sync_result["queued"], 0)
+        self.assertEqual(sync_result["skipped"], 0)
+        self.assertTrue(sync_result["records"][0]["source_url"].startswith(f"source-account://gmail/{account['id']}/msg-001"))
+        self.assertEqual(sync_result["cursor"]["cursor_value"], "page-token-2")
+        self.assertEqual(sync_result["cursor"]["state"]["last_batch_saved"], 1)
+        recovered_account = self.store.list_source_accounts(self.user_id)[0]
+        self.assertEqual(recovered_account["status"], "connected")
+        self.assertIsNone(recovered_account["last_error"])
+
+        duplicate_result = self.store.sync_source_account_records(
+            self.user_id,
+            account["id"],
+            records=[
+                {
+                    "content": "I decided connected Gmail sync should feed Cortex without manual file import.",
+                    "title": "Gmail decision",
+                    "external_id": "msg-001",
+                    "captured_at": "2026-06-29T12:30:00Z",
+                }
+            ],
+            cursor_name="messages",
+            processing="sync",
+        )
+        self.assertEqual(duplicate_result["status"], "complete")
+        self.assertEqual(duplicate_result["saved"], 0)
+        self.assertEqual(duplicate_result["skipped"], 1)
+        self.assertEqual(duplicate_result["records"][0]["status"], "duplicate")
+
+        updated_result = self.store.sync_source_account_records(
+            self.user_id,
+            account["id"],
+            records=[
+                {
+                    "content": "I decided connected Gmail sync should update the same Cortex record when remote content changes.",
+                    "title": "Gmail decision updated",
+                    "external_id": "msg-001",
+                    "captured_at": "2026-06-29T12:45:00Z",
+                }
+            ],
+            cursor_name="messages",
+            processing="sync",
+        )
+        self.assertEqual(updated_result["status"], "complete")
+        self.assertEqual(updated_result["saved"], 1)
+        self.assertEqual(updated_result["records"][0]["status"], "updated")
+        self.assertEqual(updated_result["records"][0]["capture_id"], sync_result["records"][0]["capture_id"])
+        self.assertEqual(self.store.search(self.user_id, "manual file import"), [])
+        self.assertTrue(self.store.search(self.user_id, "remote content changes", limit=5))
+        with connect(self.db_path) as conn:
+            capture_rows = conn.execute(
+                """
+                SELECT id, source_account_id, external_id, raw_hash
+                FROM captures
+                WHERE user_id = ? AND source = ? AND external_id = ?
+                """,
+                (self.user_id, "gmail", "msg-001"),
+            ).fetchall()
+        self.assertEqual(len(capture_rows), 1)
+        self.assertEqual(capture_rows[0]["source_account_id"], account["id"])
+
+        repeated_text_result = self.store.sync_source_account_records(
+            self.user_id,
+            account["id"],
+            records=[
+                {
+                    "content": "Repeated boilerplate can appear in two separate service records.",
+                    "title": "Repeated A",
+                    "external_id": "msg-repeat-a",
+                },
+                {
+                    "content": "Repeated boilerplate can appear in two separate service records.",
+                    "title": "Repeated B",
+                    "external_id": "msg-repeat-b",
+                },
+            ],
+            cursor_name="messages",
+            processing="sync",
+        )
+        self.assertEqual(repeated_text_result["saved"], 2)
+        self.assertEqual([record["status"] for record in repeated_text_result["records"]], ["saved", "saved"])
+        self.assertNotEqual(repeated_text_result["records"][0]["capture_id"], repeated_text_result["records"][1]["capture_id"])
         self.assertEqual([item["id"] for item in self.store.list_sync_cursors(self.user_id, source_account_id=account["id"])], [cursor["id"]])
         with self.assertRaises(ValueError):
             self.store.upsert_sync_cursor(
@@ -521,6 +665,18 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(restored["rebuild"]["sync_cursors"], 1)
         self.assertEqual(self.store.list_source_accounts(self.user_id)[0]["id"], account["id"])
         self.assertEqual(self.store.list_sync_cursors(self.user_id)[0]["id"], cursor["id"])
+        with connect(self.db_path) as conn:
+            restored_capture = conn.execute(
+                """
+                SELECT source_account_id, external_id
+                FROM captures
+                WHERE user_id = ? AND source = ? AND external_id = ?
+                """,
+                (self.user_id, "gmail", "msg-001"),
+            ).fetchone()
+        self.assertIsNotNone(restored_capture)
+        self.assertEqual(restored_capture["source_account_id"], account["id"])
+        self.assertEqual(restored_capture["external_id"], "msg-001")
 
         disconnected = self.store.disconnect_source_account(self.user_id, account["id"])
         self.assertEqual(disconnected["status"], "disconnected")
@@ -533,11 +689,174 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(rebuilt["sync_cursors"], 1)
         self.assertEqual(self.store.list_source_accounts(self.user_id), [])
         self.assertEqual(self.store.list_source_accounts(self.user_id, include_disconnected=True)[0]["status"], "disconnected")
+        with connect(self.db_path) as conn:
+            rebuilt_capture = conn.execute(
+                """
+                SELECT source_account_id, external_id
+                FROM captures
+                WHERE user_id = ? AND source = ? AND external_id = ?
+                """,
+                (self.user_id, "gmail", "msg-001"),
+            ).fetchone()
+        self.assertIsNotNone(rebuilt_capture)
+        self.assertEqual(rebuilt_capture["source_account_id"], account["id"])
+        self.assertEqual(rebuilt_capture["external_id"], "msg-001")
 
         events = self.store.audit_log(self.user_id, limit=20)
         event_pairs = {(event["object_type"], event["event_type"]) for event in events}
         self.assertIn(("source_account", "upserted"), event_pairs)
         self.assertIn(("sync_cursor", "updated"), event_pairs)
+
+    def test_mcp_connected_source_tools_register_and_sync_cited_records(self) -> None:
+        connectors = call_tool(self.store, self.user_id, "list_source_connectors", {"include_accounts": False})
+        connector_ids = {item["id"] for item in connectors["results"]}
+        self.assertIn("notion", connector_ids)
+
+        account_payload = call_tool(
+            self.store,
+            self.user_id,
+            "connect_source_account",
+            {
+                "source": "notion",
+                "account_label": "Demo Notion",
+                "account_identifier": "workspace-demo",
+                "connection_type": "mcp",
+                "policy": {"sync": "pages_and_comments"},
+                "metadata": {"workspace": "first-100"},
+            },
+            token_scopes=["write"],
+        )
+        account = account_payload["account"]
+        self.assertEqual(account["source"], "notion")
+        self.assertEqual(account["status"], "connected")
+
+        with self.assertRaises(PermissionError):
+            call_tool(
+                self.store,
+                self.user_id,
+                "sync_source_records",
+                {"source_account_id": account["id"], "records": [{"content": "Read-only MCP tokens cannot sync records."}]},
+                token_scopes=["read"],
+            )
+
+        synced = call_tool(
+            self.store,
+            self.user_id,
+            "sync_source_records",
+            {
+                "source_account_id": account["id"],
+                "records": [
+                    {
+                        "content": "I decided Notion should become the canonical project memory source for Project Helix.",
+                        "title": "Project Helix memory decision",
+                        "external_id": "page-helix",
+                        "captured_at": "2026-06-30T09:30:00Z",
+                        "metadata": {
+                            "workspace": "first-100",
+                            "page_id": "page-helix",
+                            "tags": ["project-helix", "memory-source"],
+                            "wikilinks": [{"target": "Project Helix", "display": "Project Helix"}],
+                        },
+                    }
+                ],
+                "cursor_name": "pages",
+                "cursor_value": "cursor-2",
+                "high_water_mark": "2026-06-30T09:30:00Z",
+                "processing": "sync",
+            },
+            token_scopes=["write"],
+        )
+
+        self.assertEqual(synced["status"], "complete")
+        self.assertEqual(synced["saved"], 1)
+        self.assertTrue(synced["records"][0]["source_url"].startswith(f"source-account://notion/{account['id']}/page-helix"))
+        self.assertEqual(synced["cursor"]["cursor_name"], "pages")
+
+        found = self.store.search(self.user_id, "canonical project memory source", limit=5)
+        self.assertTrue(found)
+        self.assertEqual(found[0]["source"], "notion")
+        self.assertTrue(found[0]["source_url"].startswith(f"source-account://notion/{account['id']}/page-helix"))
+        self.assertEqual(found[0]["sector"], "first-100")
+        self.assertEqual(found[0]["provenance"]["record_metadata"]["page_id"], "page-helix")
+        self.assertIn("project helix", [topic.casefold() for topic in found[0]["topics"]])
+        self.assertIn("memory source", [topic.casefold() for topic in found[0]["topics"]])
+
+        inbox = self.store.inbox(self.user_id)
+        self.assertEqual(len(inbox), 1)
+        self.assertEqual(inbox[0]["source"], "notion")
+        self.assertTrue(inbox[0]["preview_memories"])
+        self.assertTrue(any("canonical project memory source" in item["content"] for item in inbox[0]["preview_memories"]))
+
+    def test_obsidian_source_sync_cleans_markdown_and_preserves_file_citation(self) -> None:
+        account = self.store.upsert_source_account(
+            self.user_id,
+            source="obsidian",
+            account_label="Demo Vault",
+            account_identifier="demo-vault",
+            connection_type="local_folder",
+            status="connected",
+            auth_state="healthy",
+        )
+        synced = self.store.sync_source_account_records(
+            self.user_id,
+            account["id"],
+            records=[
+                {
+                    "content": """---
+title: Project Atlas
+tags: #cortex #todo
+---
+# Project Atlas
+
+> [!NOTE] Template block
+
+```dataview
+TABLE file.mtime
+FROM #cortex
+```
+
+- [ ] Follow up with Dana about [[Project Atlas|Atlas]] review.
+I decided [[Project Atlas|Atlas]] should use [source-backed retrieval](https://example.com) for MCP memory.
+I prefer #cortex notes that keep [[People/Dana|Dana]] citations clean.
+Never use [[Templates/Marketing]] boilerplate in memory.
+""",
+                    "title": "Project Atlas.md",
+                    "source_url": "file:///Users/example/Obsidian/Project%20Atlas.md",
+                    "external_id": "Project Atlas.md",
+                }
+            ],
+            cursor_name="vault",
+            cursor_value="1",
+            processing="sync",
+        )
+
+        self.assertEqual(synced["status"], "complete")
+        self.assertEqual(synced["saved"], 1)
+
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT kind, layer, content, raw_excerpt, source_url
+                FROM memories
+                WHERE user_id = ? AND source = ?
+                ORDER BY kind, content
+                """,
+                (self.user_id, "obsidian"),
+            ).fetchall()
+
+        self.assertTrue(rows)
+        joined = "\n".join((row["content"] or "") + "\n" + (row["raw_excerpt"] or "") for row in rows)
+        for leaked in ("tags:", "#todo", "[[", "]]", "dataview", "Template block", "TABLE file.mtime"):
+            self.assertNotIn(leaked, joined)
+        self.assertTrue(all((row["source_url"] or "").startswith("file:///Users/example/Obsidian/Project%20Atlas.md") for row in rows))
+        self.assertTrue(any(row["kind"] == "decision" and "Atlas should use source-backed retrieval" in row["content"] for row in rows))
+        self.assertTrue(any(row["kind"] == "preference" and "cortex notes" in row["content"] for row in rows))
+        self.assertTrue(any(row["kind"] == "negative" and "Marketing boilerplate" in row["content"] for row in rows))
+
+        found = self.store.search(self.user_id, "source-backed retrieval MCP memory", limit=3)
+        self.assertTrue(found)
+        self.assertEqual(found[0]["source"], "obsidian")
+        self.assertIn("source-backed retrieval", found[0]["content"])
 
     def test_source_readiness_report_combines_import_review_and_sync_health(self) -> None:
         capture = self.store.save_capture(
@@ -852,6 +1171,69 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         else:
             self.assertEqual(status["processing"]["embedding_status"], "not_available")
 
+    def test_async_source_record_update_replaces_stale_memory(self) -> None:
+        account = self.store.upsert_source_account(
+            self.user_id,
+            source="gmail",
+            account_label="Demo Gmail",
+            account_identifier="demo@example.com",
+            connection_type="mcp",
+            status="connected",
+            auth_state="authorized",
+        )
+        first = self.store.sync_source_account_records(
+            self.user_id,
+            account["id"],
+            records=[
+                {
+                    "content": "I decided async connector sync should clear the stale draft policy.",
+                    "title": "Async update",
+                    "external_id": "msg-async-update",
+                }
+            ],
+            processing="async",
+        )
+        self.assertEqual(first["queued"], 1)
+        self.assertEqual(first["records"][0]["status"], "queued")
+        first_capture_id = first["records"][0]["capture_id"]
+
+        ran_first = self.store.run_due_jobs(self.user_id, limit=10)
+        self.assertGreaterEqual(ran_first["processed"], 1)
+        self.assertTrue(self.store.search(self.user_id, "stale draft policy", limit=5))
+
+        updated = self.store.sync_source_account_records(
+            self.user_id,
+            account["id"],
+            records=[
+                {
+                    "content": "I decided async connector sync should preserve only the current remote policy.",
+                    "title": "Async update changed",
+                    "external_id": "msg-async-update",
+                }
+            ],
+            processing="async",
+        )
+        self.assertEqual(updated["queued"], 1)
+        self.assertEqual(updated["records"][0]["status"], "updated")
+        self.assertEqual(updated["records"][0]["capture_id"], first_capture_id)
+        self.assertEqual(self.store.search(self.user_id, "stale draft policy", limit=5), [])
+
+        ran_updated = self.store.run_due_jobs(self.user_id, limit=10)
+        self.assertGreaterEqual(ran_updated["processed"], 1)
+        self.assertTrue(self.store.search(self.user_id, "current remote policy", limit=5))
+        with connect(self.db_path) as conn:
+            memory_count = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE user_id = ? AND capture_id = ?",
+                (self.user_id, first_capture_id),
+            ).fetchone()[0]
+            capture = conn.execute(
+                "SELECT source_account_id, external_id FROM captures WHERE user_id = ? AND id = ?",
+                (self.user_id, first_capture_id),
+            ).fetchone()
+        self.assertGreaterEqual(memory_count, 1)
+        self.assertEqual(capture["source_account_id"], account["id"])
+        self.assertEqual(capture["external_id"], "msg-async-update")
+
     def test_strict_embedding_failure_keeps_keyword_search_usable(self) -> None:
         previous_provider = os.environ.get("CORTEX_EMBEDDING_PROVIDER")
         previous_strict = os.environ.get("CORTEX_EMBEDDING_STRICT")
@@ -894,7 +1276,7 @@ class CortexStorageLifecycleTests(unittest.TestCase):
     def test_search_uses_occurred_at_for_temporal_queries(self) -> None:
         self.store.save_capture(
             user_id=self.user_id,
-            content="Project Atlas launch decision kept the five tab model for beta onboarding.",
+            content="Project Atlas launch decision kept Home, Review, Ask, and Connections & Privacy for beta onboarding.",
             source="notion",
             source_url="notion://page/atlas-2026",
             title="Project Atlas launch decision",
@@ -906,8 +1288,8 @@ class CortexStorageLifecycleTests(unittest.TestCase):
                         "id": "mem_atlas_2026",
                         "kind": "decision",
                         "layer": "decision",
-                        "content": "Project Atlas launch decision kept the five tab model for beta onboarding.",
-                        "summary": "Project Atlas kept the five tab model.",
+                        "content": "Project Atlas launch decision kept Home, Review, Ask, and Connections & Privacy for beta onboarding.",
+                        "summary": "Project Atlas kept the simple product loop.",
                         "topics": ["project-atlas", "launch"],
                         "entity_ids": [],
                         "confidence": "confirmed",
@@ -1480,40 +1862,64 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(mcp_loop["primary_action"]["action"], "done")
 
     def test_settings_control_pending_context_visibility(self) -> None:
-        defaults = self.store.settings(self.user_id)
+        strict_user = "strict-default-user"
+        defaults = self.store.settings(strict_user)
         self.assertTrue(defaults["review_new_captures"])
-        self.assertTrue(defaults["allow_pending_in_context"])
+        self.assertFalse(defaults["allow_pending_in_context"])
         self.assertTrue(defaults["allow_agent_reads"])
-        self.assertFalse(defaults["allow_agent_writes"])
+        self.assertTrue(defaults["allow_agent_writes"])
         self.assertFalse(defaults["allow_agent_exports"])
         self.assertFalse(defaults["allow_agent_maintenance"])
         self.assertFalse(defaults["allow_agent_destructive_actions"])
         self.assertTrue(defaults["redact_sensitive_context"])
 
-        result = self.capture(
-            "Vamika decided strict mode should hide pending Cortex captures from assistants. "
-            "Cortex needs approval before this memory appears in strict search."
+        result = self.store.save_capture(
+            user_id=strict_user,
+            content=(
+                "Vamika decided strict mode should hide pending Cortex captures from assistants. "
+                "Cortex needs approval before this memory appears in strict search."
+            ),
+            source="unit-test",
+            source_url=None,
+            title="Unit test capture",
+            extracted=extract_context(
+                "Vamika decided strict mode should hide pending Cortex captures from assistants. "
+                "Cortex needs approval before this memory appears in strict search.",
+                "unit-test",
+            ),
         )
         capture_id = result["capture_id"]
 
-        self.assertTrue(self.store.search(self.user_id, "strict mode pending"))
-        self.assertIn("strict mode should hide", self.store.context_pack(self.user_id, query="strict mode"))
+        self.assertEqual(self.store.search(strict_user, "strict mode pending"), [])
+        self.assertNotIn("strict mode should hide", self.store.context_pack(strict_user, query="strict mode"))
 
-        updated = self.store.update_settings(self.user_id, {"allow_pending_in_context": False, "context_pack_limit": 6})
-        self.assertFalse(updated["allow_pending_in_context"])
+        updated = self.store.update_settings(strict_user, {"allow_pending_in_context": True, "context_pack_limit": 6})
+        self.assertTrue(updated["allow_pending_in_context"])
         self.assertEqual(updated["context_pack_limit"], 6)
-        self.assertEqual(self.store.search(self.user_id, "strict mode pending"), [])
-        self.assertNotIn("strict mode should hide", self.store.context_pack(self.user_id, query="strict mode"))
+        self.assertTrue(self.store.search(strict_user, "strict mode pending"))
+        self.assertIn("strict mode should hide", self.store.context_pack(strict_user, query="strict mode"))
 
-        self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
-        self.assertTrue(self.store.search(self.user_id, "strict mode pending"))
-        self.assertIn("strict mode should hide", self.store.context_pack(self.user_id, query="strict mode"))
+        updated = self.store.update_settings(strict_user, {"allow_pending_in_context": False})
+        self.assertFalse(updated["allow_pending_in_context"])
+        self.assertEqual(self.store.search(strict_user, "strict mode pending"), [])
 
-        self.store.update_settings(self.user_id, {"review_new_captures": False})
-        auto = self.capture("Cortex should auto approve captures when review is turned off.")
-        self.assertEqual(self.store.inbox(self.user_id), [])
-        self.assertTrue(self.store.search(self.user_id, "auto approve captures"))
-        self.assertTrue(self.store.archive_capture(self.user_id, auto["capture_id"]))
+        self.assertTrue(self.store.approve_capture(strict_user, capture_id))
+        self.assertTrue(self.store.search(strict_user, "strict mode pending"))
+        self.assertIn("strict mode should hide", self.store.context_pack(strict_user, query="strict mode"))
+
+        self.store.update_settings(strict_user, {"review_new_captures": False})
+        auto_text = "Cortex should auto approve captures when review is turned off."
+        auto = self.store.save_capture(
+            user_id=strict_user,
+            content=auto_text,
+            source="unit-test",
+            source_url=None,
+            title="Unit test capture",
+            extracted=extract_context(auto_text, "unit-test"),
+        )
+        self.assertEqual(self.store.inbox(strict_user), [])
+        self.assertTrue(self.store.search(strict_user, "auto approve captures"))
+        self.assertTrue(self.store.archive_capture(strict_user, auto["capture_id"]))
 
     def test_source_policies_control_retrieval_visibility(self) -> None:
         result = self.store.save_capture(
@@ -1888,7 +2294,27 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(self.store.settings(self.user_id)["context_pack_limit"], 9)
 
     def test_legacy_index_backfills_empty_vault(self) -> None:
-        self.capture("Existing local SQLite users should get vault JSON files after upgrade.")
+        account = self.store.upsert_source_account(
+            self.user_id,
+            source="gmail",
+            account_label="Legacy Gmail",
+            account_identifier="legacy@example.com",
+            connection_type="mcp",
+            status="connected",
+            auth_state="authorized",
+        )
+        self.store.sync_source_account_records(
+            self.user_id,
+            account["id"],
+            records=[
+                {
+                    "content": "Existing local SQLite connector records should keep source identity after upgrade.",
+                    "title": "Legacy source identity",
+                    "external_id": "legacy-msg-001",
+                }
+            ],
+            processing="sync",
+        )
 
         for directory in ("captures", "memories", "tasks", "entities", "graph_edges"):
             shutil.rmtree(self.store.vault.root / directory)
@@ -1901,6 +2327,9 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertTrue(list((self.store.vault.root / "captures").rglob("*.json")))
         self.assertTrue(list((self.store.vault.root / "memories").rglob("*.json")))
         self.assertTrue(self.store.vault.events_path.exists())
+        capture_payload = json.loads(next((self.store.vault.root / "captures").rglob("*.json")).read_text())
+        self.assertEqual(capture_payload["source_account_id"], account["id"])
+        self.assertEqual(capture_payload["external_id"], "legacy-msg-001")
 
 
 if __name__ == "__main__":

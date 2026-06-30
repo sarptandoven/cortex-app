@@ -14,7 +14,8 @@ struct TrustTab: View {
                     TrustChecklistSection(state: state, summary: summary)
                     TrustPolicySection(state: state)
                     SettingsPrivacySection(state: state)
-                    DisclosureGroup("Connection privacy and audit trail", isExpanded: $sourcesExpanded) {
+                    TrustCompactAccessSection(state: state, summary: summary)
+                    DisclosureGroup("Source privacy and audit trail", isExpanded: $sourcesExpanded) {
                         VStack(alignment: .leading, spacing: 14) {
                             TrustSourceSection(state: state, summary: summary)
                             TrustAuditSection(events: state.auditEvents, refresh: {
@@ -23,9 +24,8 @@ struct TrustTab: View {
                         }
                         .padding(.top, 8)
                     }
-                    DisclosureGroup("AI tool access", isExpanded: $integrationsExpanded) {
+                    DisclosureGroup("Connection details", isExpanded: $integrationsExpanded) {
                         VStack(alignment: .leading, spacing: 14) {
-                            IntegrationCenterView(state: state, compact: true)
                             IntegrationTokensSection(state: state)
                         }
                         .padding(.top, 8)
@@ -174,7 +174,7 @@ struct TrustChecklistSection: View {
     private var warningStatus: TrustChecklistItem {
         var warnings = summary.risk_flags
         if pendingCaptures > 0 {
-            warnings.append("\(pendingCaptures) pending capture\(pendingCaptures == 1 ? "" : "s") need review")
+            warnings.append("\(pendingCaptures) pending review item\(pendingCaptures == 1 ? "" : "s") need review")
         }
 
         guard !warnings.isEmpty else {
@@ -209,7 +209,7 @@ struct TrustChecklistSection: View {
         var parts = [
             "Connected AI tools can search memory and read review queues",
             settings.allow_pending_in_context ? "pending memory can be shared" : "pending memory stays private",
-            "context limit: \(settings.context_pack_limit)"
+            "Ask memory depth: \(settings.context_pack_limit)"
         ]
         parts.append(settings.redact_sensitive_context ? "redaction is on" : "redaction is off")
         if privateSourceCount > 0 {
@@ -233,19 +233,19 @@ struct TrustChecklistSection: View {
             enabled.append("save, approve, or archive memory")
         }
         if settings.allow_agent_exports {
-            enabled.append("prepare AI handoff packages or profile artifacts")
+            enabled.append("prepare redacted profile artifacts")
         }
         if settings.allow_agent_maintenance {
             enabled.append("create backups or repair indexes")
         }
         if settings.allow_agent_destructive_actions {
-            enabled.append("delete memories, captures, backups, or all local data")
+            enabled.append("delete memories, review items, backups, or all local data")
         }
 
         guard !enabled.isEmpty else {
             return TrustChecklistItem(
                 title: "AI changes are off",
-                detail: "Connected AI tools cannot save memory, prepare handoffs, run maintenance, or delete local data.",
+                detail: "Connected AI tools cannot save memory, prepare artifacts, run maintenance, or delete local data.",
                 systemImage: "lock.shield.fill",
                 color: .green
             )
@@ -311,6 +311,71 @@ struct TrustChecklistSection: View {
         formatter.allowedUnits = [.useKB, .useMB, .useGB]
         formatter.countStyle = .file
         return formatter.string(fromByteCount: Int64(bytes))
+    }
+}
+
+struct TrustCompactAccessSection: View {
+    @ObservedObject var state: AppState
+    let summary: TrustSummaryResponse
+
+    private var settings: AppSettingsResponse {
+        summary.settings
+    }
+
+    private var backupCount: Int {
+        state.dataLifecycleReport?.backups.count ?? 0
+    }
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 8)], spacing: 8) {
+            TrustCompactAccessPill(
+                title: settings.review_new_captures ? "Review first" : "Auto-approve",
+                detail: settings.review_new_captures ? "new memory waits" : "new memory can activate",
+                systemImage: settings.review_new_captures ? "checklist" : "bolt.fill",
+                color: settings.review_new_captures ? .green : .orange
+            )
+            TrustCompactAccessPill(
+                title: settings.allow_agent_reads ? "AI read access" : "AI reads off",
+                detail: settings.allow_agent_reads ? (settings.allow_pending_in_context ? "pending can be shared" : "approved only") : "tools cannot read",
+                systemImage: settings.allow_agent_reads ? "eye.fill" : "eye.slash.fill",
+                color: settings.allow_agent_reads ? .accentColor : .secondary
+            )
+            TrustCompactAccessPill(
+                title: backupCount > 0 ? "Backup ready" : "No backup yet",
+                detail: backupCount > 0 ? "\(backupCount) local archive\(backupCount == 1 ? "" : "s")" : "create one before beta",
+                systemImage: backupCount > 0 ? "externaldrive.fill" : "externaldrive.badge.exclamationmark",
+                color: backupCount > 0 ? .green : .orange
+            )
+        }
+    }
+}
+
+struct TrustCompactAccessPill: View {
+    let title: String
+    let detail: String
+    let systemImage: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .foregroundColor(color)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.callout)
+                    .fontWeight(.medium)
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.72))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 

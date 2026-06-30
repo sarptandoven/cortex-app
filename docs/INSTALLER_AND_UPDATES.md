@@ -126,7 +126,7 @@ The validator confirms required keys, artifact existence, byte size, and SHA-256
 
 ## In-App Update Check
 
-The macOS app keeps update controls under `Trust > Advanced > Installer and updates`.
+The macOS app keeps update controls under Connections & Privacy.
 
 Users can:
 
@@ -201,7 +201,8 @@ Sparkle is the likely production path for background update download/install. Th
 - Run `./macos/build.sh`.
 - Run `codesign --verify --deep --strict --verbose=2 macos/build/Cortex.app`.
 - Launch the app and verify the bundled backend starts.
-- Run `python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"` using the local API token from `Trust > Advanced`.
+- Run `python3 scripts/first100_live_smoke.py` after launching the packaged app. It reads the local API token from macOS defaults, uses an isolated smoke user, and cleans up after itself.
+- Keep `python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"` for deeper backend lifecycle QA because it writes broader test data into the target vault.
 - Run `./macos/package_release.sh`.
 - Confirm the generated release directory includes `BETA_HANDOFF.md`.
 - Run `(cd <release> && shasum -a 256 -c Cortex-<version>-<build>.checksums.txt)`.
@@ -212,7 +213,7 @@ Sparkle is the likely production path for background update download/install. Th
 - Run `python3 scripts/validate_update_manifest.py <release>/latest.json`.
 - Test the landing page download buttons against `site/downloads/latest.json`.
 - Test the DMG by opening it and launching a copied app.
-- Test `Trust > Advanced > Installer and updates` with the generated `latest.json`.
+- Test the Connections & Privacy update controls with the generated `latest.json`.
 - Export a support bundle with `python3 scripts/export_support_bundle.py --mode live` after launch.
 
 ## Required Manual QA
@@ -222,10 +223,10 @@ or newer user profile:
 
 - install from the DMG and launch from Applications
 - complete first-run setup without source-code instructions
-- import one real user-selected local source through Sources
+- connect MCP AI tools or an Obsidian vault from Connections & Privacy
 - approve at least one useful memory and archive obvious noise in Review
-- ask a question that returns cited memory from the approved import
-- confirm Trust shows vault path, backend health, backup, export, support bundle, and update feed controls
+- ask a question that returns cited memory from the approved source
+- confirm Connections & Privacy shows vault path, backend health, backup, export, support bundle, and update feed controls
 - create a backup and confirm the support bundle does not include raw memory content
 - update over a previous beta and confirm the vault remains intact
 - roll back to the previous beta and confirm the vault remains intact

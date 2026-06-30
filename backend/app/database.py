@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS captures (
   import_id TEXT,
   source TEXT NOT NULL,
   source_url TEXT,
+  source_account_id TEXT,
+  external_id TEXT,
   title TEXT,
   raw_text TEXT NOT NULL,
   raw_hash TEXT,
@@ -88,9 +90,15 @@ CREATE TABLE IF NOT EXISTS memories (
   confidence TEXT NOT NULL DEFAULT 'confirmed',
   importance INTEGER NOT NULL DEFAULT 3,
   status TEXT NOT NULL DEFAULT 'active',
+  sector TEXT NOT NULL DEFAULT '',
+  source_type TEXT NOT NULL DEFAULT '',
+  provenance_json TEXT NOT NULL DEFAULT '{}',
   topics_json TEXT NOT NULL DEFAULT '[]',
   entity_ids_json TEXT NOT NULL DEFAULT '[]',
   occurred_at TEXT,
+  valid_from TEXT,
+  valid_to TEXT,
+  superseded_by TEXT,
   captured_at TEXT NOT NULL,
   updated_at TEXT,
   raw_excerpt TEXT,
@@ -150,6 +158,19 @@ CREATE TABLE IF NOT EXISTS memory_topics (
   created_at TEXT NOT NULL,
   PRIMARY KEY(memory_id, topic),
   FOREIGN KEY(memory_id) REFERENCES memories(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS memory_relations (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  source_memory_id TEXT NOT NULL,
+  target_memory_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  weight REAL NOT NULL DEFAULT 1.0,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(source_memory_id) REFERENCES memories(id) ON DELETE CASCADE,
+  FOREIGN KEY(target_memory_id) REFERENCES memories(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS task_entities (
@@ -351,8 +372,16 @@ MIGRATIONS = [
     "ALTER TABLE captures ADD COLUMN approved_at TEXT",
     "ALTER TABLE captures ADD COLUMN archived_at TEXT",
     "ALTER TABLE captures ADD COLUMN import_id TEXT",
+    "ALTER TABLE captures ADD COLUMN source_account_id TEXT",
+    "ALTER TABLE captures ADD COLUMN external_id TEXT",
     "ALTER TABLE memories ADD COLUMN updated_at TEXT",
     "ALTER TABLE memories ADD COLUMN layer TEXT NOT NULL DEFAULT 'semantic'",
+    "ALTER TABLE memories ADD COLUMN sector TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE memories ADD COLUMN source_type TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE memories ADD COLUMN provenance_json TEXT NOT NULL DEFAULT '{}'",
+    "ALTER TABLE memories ADD COLUMN valid_from TEXT",
+    "ALTER TABLE memories ADD COLUMN valid_to TEXT",
+    "ALTER TABLE memories ADD COLUMN superseded_by TEXT",
     "ALTER TABLE import_sessions ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0",
 ]
 
@@ -361,10 +390,15 @@ CREATE INDEX IF NOT EXISTS idx_memories_layer ON memories(user_id, layer);
 CREATE INDEX IF NOT EXISTS idx_memories_active_recent ON memories(user_id, status, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_active_kind_rank ON memories(user_id, status, kind, importance DESC, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_active_layer_rank ON memories(user_id, status, layer, importance DESC, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memories_active_sector_rank ON memories(user_id, status, sector, importance DESC, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memories_validity ON memories(user_id, status, valid_from, valid_to, superseded_by);
 CREATE INDEX IF NOT EXISTS idx_memories_capture_status ON memories(user_id, capture_id, status);
+CREATE INDEX IF NOT EXISTS idx_memory_relations_source ON memory_relations(user_id, source_memory_id, kind);
+CREATE INDEX IF NOT EXISTS idx_memory_relations_target ON memory_relations(user_id, target_memory_id, kind);
 CREATE INDEX IF NOT EXISTS idx_captures_import ON captures(user_id, import_id, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_captures_review ON captures(user_id, review_status, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_captures_hash ON captures(user_id, raw_hash);
+CREATE INDEX IF NOT EXISTS idx_captures_source_record ON captures(user_id, source_account_id, external_id);
 CREATE INDEX IF NOT EXISTS idx_import_sessions_user_created ON import_sessions(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_import_sessions_user_status ON import_sessions(user_id, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_import_records_import ON import_records(user_id, import_id, ordinal);

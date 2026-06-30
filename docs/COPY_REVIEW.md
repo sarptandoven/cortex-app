@@ -41,7 +41,7 @@ Surface: `site/index.html`, plus the landing-page copy mirrored in `docs/DISTRIB
 | `Cortex turns scattered decisions, notes, project context, people, and open loops into a reusable memory layer. Save once, review what matters, then paste or expose the right context to the AI tool you already use.` | `Cortex connects to the services and AI tools you use, turns reviewed decisions, notes, project details, people, and follow-ups into memory, then lets approved tools retrieve cited context.` |
 | `Import selected exports, folders, and files from chats, email, notes, messages, docs, writing, bookmarks, calendars, contacts, and work tools.` | `Connect supported services and local apps for chats, email, notes, messages, docs, writing, bookmarks, calendars, contacts, and work tools.` |
 | `Copy a context pack or connect an MCP tool before starting work in an assistant.` | `Connect a supported service or direct AI tool before starting work.` |
-| `Cortex starts with copy-ready context packs and local MCP setup for tools that can connect directly. That keeps the first version useful before a hosted backend exists.` | `Cortex starts with connected services and direct local setup for tools that support it. Advanced/Fallback import is available only when a source cannot connect yet.` |
+| old copy/context-pack-first launch framing | `Cortex starts with connected services and direct local setup for tools that support it. Advanced/Fallback import is available only when a source cannot connect yet.` |
 | `Cortex stores memory on the user's Mac, exposes local diagnostics, and lets users choose what agents can read, write, export, or repair.` | `Cortex stores memory on your Mac, shows storage and backup status, and lets you choose what connected AI tools can read, change, or export.` |
 | `Local vault` | `On your Mac` |
 | `Readable JSON records and a rebuildable SQLite index live on disk.` | `Readable files and a rebuildable search index stay on your Mac.` |
@@ -103,7 +103,7 @@ Surface: integration center and setup cards.
 | `Developer tools` | `Coding tools` |
 | `Local and team stacks` | `Local and team tools` |
 | `Connect Cortex everywhere` | `Connect your AI tools` |
-| `Install direct MCP tools where safe, and use copy-ready context packs everywhere else.` | `Set up supported services and local tools directly; use copy handoff only when direct connection is not available.` |
+| old copy-handoff-first integration framing | `Set up supported services and local tools directly; use copy handoff only when direct connection is not available.` |
 | `Local API` | `Local service` |
 | `Copy MCP` | `Copy Advanced Setup` |
 | `Copy MCP Config` | `Copy Advanced Setup` |
@@ -161,9 +161,9 @@ Backend-provided strings that surface in Today should be cleaned up in a later s
 | `Clear or update N open loop(s).` | `Close or update N follow-up(s).` |
 | `Copy a context pack for #topic before your next AI session.` | `Copy context for #topic before your next AI session.` |
 
-## macOS Trust Controls
+## macOS Connections & Privacy
 
-Surface: Trust tab and Trust section under Settings.
+Surface: Connections & Privacy sheet.
 
 | Current string | Proposed string |
 | --- | --- |
@@ -216,13 +216,13 @@ Recommended README rewrites:
 | Current string | Proposed string |
 | --- | --- |
 | `Cortex is a local-first memory layer for AI agents.` | `Cortex is private memory for the AI tools you already use.` |
-| `Stage 1 source import with preview, duplicate-safe history, and batch undo for user-selected exports, folders, and files` | `Connected-source setup for supported services and direct app integrations, with Advanced/Fallback import only when a source cannot connect yet` |
-| `first source import` | `first connected source` |
+| old Stage 1 import-first feature wording | `Connected-source setup for supported services and direct app integrations, with Advanced/Fallback import only when a source cannot connect yet` |
+| old first-import setup wording | `first connected source` |
 | `MCP-compatible tools` | `tools that support direct local connections` |
 | `open loops` | `follow-ups` |
 | `Bundled local backend on 127.0.0.1:8766` | `Bundled local service on 127.0.0.1:8766` |
 | `User-owned local vault at path` | `User-owned memory folder at path` |
-| `Copy-ready context packs` | `Copy-ready chat context` |
+| old copy-pack feature wording | `Copy-ready chat context` |
 | `Local MCP bridge and one-click config helpers` | `Advanced local connection and one-click setup helpers` |
 | `Trust controls for agent reads, writes, exports, redaction, and maintenance` | `Trust controls for connected AI tools, exports, redaction, and repair actions` |
 | `The packaged app starts the local backend automatically.` | `The packaged app starts the local service automatically.` |

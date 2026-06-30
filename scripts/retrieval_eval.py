@@ -122,6 +122,14 @@ SEED_MEMORIES: tuple[SeedMemory, ...] = (
         summary="Avoid fluffy launch copy and marketing prose in engineering summaries.",
         topics=("negative", "writing", "avoid"),
     ),
+    SeedMemory(
+        id="rq_procedural_release_check",
+        kind="procedure",
+        layer="procedural",
+        content="Procedure: before releasing Cortex, run the backend unittest suite, run ./macos/build.sh, then verify codesign.",
+        summary="Release procedure requires backend tests, macOS build, and codesign verification.",
+        topics=("procedure", "release", "build"),
+    ),
 )
 
 DISTRACTOR_MEMORIES: tuple[SeedMemory, ...] = (
@@ -175,6 +183,14 @@ DISTRACTOR_MEMORIES: tuple[SeedMemory, ...] = (
         summary="Avoid cartoon mascot jokes in migration summaries.",
         topics=("negative", "writing", "avoid"),
     ),
+    SeedMemory(
+        id="rq_distractor_release_briefing",
+        kind="claim",
+        layer="semantic",
+        content="The release briefing mentions backend tests, macOS builds, and codesign, but it is not the operating procedure.",
+        summary="Release briefing is descriptive rather than procedural.",
+        topics=("release", "build"),
+    ),
 )
 
 
@@ -222,6 +238,14 @@ RETRIEVAL_CASES: tuple[RetrievalCase, ...] = (
         expected_layer="negative",
         expected_phrase="Do not use",
         category="negative_recall",
+    ),
+    RetrievalCase(
+        name="procedural_release_check",
+        query="how release Cortex backend unittest macos build codesign",
+        expected_id="rq_procedural_release_check",
+        expected_layer="procedural",
+        expected_phrase="before releasing Cortex",
+        category="procedural_recall",
     ),
     RetrievalCase(
         name="semantic_paraphrase_vault_source",
@@ -629,7 +653,7 @@ def _write_eval_chatgpt_export(folder: Path) -> None:
                     "message": {
                         "author": {"role": "user"},
                         "create_time": 1_782_739_202,
-                        "content": {"parts": ["We decided Project Atlas should keep the memory UI to five tabs: Model, Sources, Review, Ask, Trust."]},
+                        "content": {"parts": ["We decided Project Atlas should keep the memory UI to Home, Review, Ask, and Connections & Privacy."]},
                     }
                 },
                 "event": {
@@ -840,11 +864,11 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
 
     noisy_cases = (
         RetrievalCase(
-            name="noisy_import_decision_tabs",
-            query="Project Atlas five tabs Review Trust",
-            expected_id=noisy_id("five tabs", layer="decision"),
+            name="noisy_import_decision_surfaces",
+            query="Project Atlas Home Review Ask Connections Privacy",
+            expected_id=noisy_id("Home, Review, Ask", layer="decision"),
             expected_layer="decision",
-            expected_phrase="five tabs",
+            expected_phrase="Home, Review, Ask",
             category="noisy_import",
             source_url_contains=("service=chatgpt", "conversation=Project%20Atlas%20memory%20UI", "line=", "message=", "excerpt="),
         ),

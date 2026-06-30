@@ -4,71 +4,82 @@ This map is the product-facing source coverage plan for the first-100-user beta 
 
 ## Phase Definitions
 
-First-100 beta means local-first import from user-selected exports, files, folders, or legally provided local database copies. Cortex should preview what it can read, import into review, preserve citations when possible, skip duplicates, and allow batch undo. It does not silently crawl apps, browser profiles, cloud accounts, or message databases.
+First-100 beta means local-first connected-source setup first. A supported service, local app integration, MCP bridge, or connector process should get explicit user consent/sign-in, register a source account, and stream records into Cortex through the local sync API. Cortex should preserve citations, skip duplicates, move new signals into Review, and show source health without asking the user to manage files.
 
-Live OAuth means later direct cloud sync for services that expose appropriate APIs. That phase needs explicit user consent, least-privilege scopes, durable source account health, reconnect states, sync cursors, rate-limit handling, deletion semantics, and product copy that distinguishes sync from one-time import.
+Advanced/Fallback import remains only for unsupported services, migrations, legal exports, and support recovery. It is not the primary product loop and should not be presented as the normal setup path.
+
+Live OAuth means direct cloud sync for services that expose appropriate APIs. Cortex now has the local source-account sync ingestion contract, but source-specific OAuth/sign-in flows still need explicit user consent, least-privilege scopes, durable source account health, reconnect states, sync cursors, rate-limit handling, deletion semantics, and product copy that distinguishes account sync from fallback import.
 
 ## Readiness Legend
 
 | Status | Product meaning |
 | --- | --- |
-| Beta ready | Supported in the first-100 beta through a native or generic local import path. |
-| Beta conditional | Supported only when the user provides a legal export/local copy or an optional parser dependency is available. |
-| OAuth planned | Candidate for the later live OAuth/API sync phase. Not a beta promise. |
-| Local/import only | Should remain user-selected local import unless a safer platform API becomes available. |
+| Beta ready | Supported today through a connected source, local app integration, MCP bridge, or direct connector sync path. |
+| Beta conditional | Supported only when the user can grant a safe local integration, use an MCP bridge, or provide an export as Advanced/Fallback. |
+| OAuth planned | Candidate for a source-specific OAuth/API sign-in flow. The generic sync ingestion contract exists, but the branded OAuth flow is not yet a beta promise. |
+| Local/import only | Should remain Advanced/Fallback import unless a safer platform API becomes available. |
 
 ## Catalog Metadata Contract
 
 `GET /v1/source-accounts/catalog` is the source of truth for connector readiness copy in product surfaces. It does not mean OAuth is implemented. Each catalog item should expose:
 
 - `readiness_status`: one of `export-only`, `import-ready`, or `live-planned`.
+- `primary_beta`: true only when the connector is a real first-100 primary path in the app, not merely a parser or fallback.
+- `beta_status`: one of `ready`, `active`, `planned`, `advanced-fallback`, or `needs-connector`.
+- `primary_beta_path`: one of `native-local-connector`, `connected-source-account`, `account-sign-in-planned`, `advanced-fallback-only`, or `direct-connector-needed`.
+- `show_in_primary_ui`: true only for real primary beta connectors or user-connected accounts with completed sync/data evidence.
 - `scopes`: future live OAuth/API scopes only. Export-only and local import connectors use an empty list.
 - `permissions_required`: the first-100 import permission requirement, plus future live consent scope requirements when `readiness_status` is `live-planned`.
-- `first_100_note`: the beta-safe setup note. This should describe exports, selected files/folders, or legal local copies, not live account sync.
+- `first_100_note`: the beta-safe setup note. This should describe the account/direct-integration path when one exists, and only mention Advanced/Fallback import when no supported connector exists.
 
 Representative catalog expectations:
 
 | Connector | `readiness_status` | First-100 permission | Live scopes |
 | --- | --- | --- | --- |
-| ChatGPT | `export-only` | User-selected OpenAI data export. | None. |
-| Apple Mail | `import-ready` | User-selected `.eml`, `.emlx`, or `.mbox` export files. | None. |
-| Gmail | `live-planned` | User-selected Gmail Takeout or mail export files; no OAuth token. | `gmail.readonly`. |
-| Notion | `live-planned` | User-selected Markdown, CSV, or HTML export. | `read_content`. |
-| Slack | `live-planned` | User-selected workspace export folder or zip. | `channels:history`, `groups:history`, `im:history`. |
-| GitHub | `live-planned` | User-selected issue, PR, project, CSV, JSON, Markdown, or text exports. | `repo:read`, `read:org`. |
-| Obsidian | `import-ready` | User-selected Markdown vault folder. | None. |
+| ChatGPT | `export-only` | MCP/direct AI-tool bridge where available; fallback export stays Advanced/Fallback. | None. |
+| Claude | `export-only` | MCP/direct AI-tool bridge where available; fallback export stays Advanced/Fallback. | None. |
+| Apple Mail | `import-ready` | Planned permissioned local mail integration; fallback `.eml`, `.emlx`, or `.mbox` stays Advanced/Fallback. | None. |
+| Gmail | `live-planned` | Planned Gmail connector backed by source-account sync; fallback Takeout/mail export stays Advanced/Fallback. | `gmail.readonly`. |
+| Notion | `live-planned` | Planned Notion connector backed by source-account sync; fallback Markdown/CSV/HTML export stays Advanced/Fallback. | `read_content`. |
+| Slack | `live-planned` | Planned Slack workspace connector backed by source-account sync; fallback workspace export stays Advanced/Fallback. | `channels:history`, `groups:history`, `im:history`. |
+| GitHub | `live-planned` | Planned GitHub connector backed by source-account sync; fallback issue, PR, project, CSV, JSON, Markdown, or text export stays Advanced/Fallback. | `repo:read`, `read:org`. |
+| Obsidian | `import-ready` | Permissioned local vault connector in the macOS app; Markdown/text notes sync through source-account sync. | None. |
+
+First-100 primary UI rule: MCP AI tools and Obsidian/local notes are allowed in the default path today. Gmail, Notion, Slack, Drive, Calendar, GitHub, Mail, Messages, browser data, and similar services should become primary only after they can register a source account and complete a real sync without asking the user to manage files. Export/file parser coverage, or a stale account metadata row without synced records/cursors, must not make a connector look beta-ready in the primary UI.
 
 ## Coverage Map
 
 | Source | First-100 beta path | Beta readiness | Later live OAuth/API posture | Catalog mapping |
 | --- | --- | --- | --- | --- |
-| Gmail | Google Takeout `.mbox`, `.eml`, or `.emlx` files selected by the user. | Beta ready | OAuth planned with read-only mail scopes, incremental cursors, reconnect, and label/thread preservation. | `gmail` maps to canonical `email`. |
-| Apple Mail | User-exported `.eml`, `.emlx`, or `.mbox` files. | Beta ready | Local/import only. Do not read Mail.app storage directly without explicit user selection and permissions. | `apple-mail` maps to canonical `email`. |
-| Outlook | Outlook/Microsoft export mail files, `.eml`, `.mbox`, `.ics`, contacts CSV/VCF, or Microsoft 365 exported docs. | Beta ready | OAuth planned through Microsoft Graph for mail, calendar, contacts, and files. | `outlook` maps to `email`, `calendar`, `contacts`, and `cloud-docs`. |
-| Notion | Markdown, CSV, or HTML export folders. | Beta ready | OAuth planned after export quality is proven. Start read-only and preserve page/database IDs. | `notion`. |
-| Google Drive/Docs | Google Takeout Drive/Docs exports as DOCX, HTML, Markdown, text, CSV, or PDF. | Beta ready through cloud-doc and document import. | OAuth planned through Drive/Docs read-only scopes with file cursors and revision safety. | `google-drive` and `google-docs` map to `cloud-docs` and `docs`. |
-| Slack | Workspace export folder or zip, with `users.json` when available. | Beta ready | OAuth planned for channels, private channels, and DMs where granted. Requires workspace policy clarity. | `slack`. |
-| Discord | Discord data package `messages.csv`. | Beta ready | Local/import only until an official user-consented history export or API path is product-safe. | `discord`. |
-| Calendar | Google, Apple, or Outlook `.ics` exports. | Beta ready | OAuth planned for Google Calendar and Microsoft Graph calendars; Apple Calendar should stay local/import only unless permissioned local APIs are added. | `calendar`. |
-| GitHub | Issue, pull request, project, CSV, JSON, Markdown, or text exports. | Beta ready through generic work-tool import. | OAuth planned for issues, PRs, discussions, and projects with repo/org read scopes. | `github` maps to `github` and `work-tools`. |
-| Linear | CSV or JSON exports. | Beta ready through generic work-tool import. | OAuth/API planned for issues, comments, projects, and teams with read-only scopes. | `linear` maps to `linear` and `work-tools`. |
-| Jira | CSV, JSON, or project exports. | Beta ready through generic work-tool import. | OAuth/API planned for issues, comments, projects, and changelogs with read-only scopes. | `jira` maps to `jira` and `work-tools`. |
-| Obsidian/Markdown | User-selected Markdown vaults, folders, or files. | Beta ready through local folder and docs import. | Local/import only at first. A later local folder watcher is separate from OAuth. | `obsidian`, `knowledge-base`, and `docs`. |
-| Apple Notes exports | User-exported HTML, RTF, PDF, Markdown, or text files. | Beta ready through generic notes/docs import. | Local/import only. Do not parse private Notes databases. | `apple-notes` maps to `apple-notes` and `docs`. |
-| PDFs | User-selected PDFs or exported PDFs from another service. | Beta conditional on `pypdf` in backend or macOS fallback extraction. | Local/import only unless PDFs arrive through a live source such as Drive, Notion, or Outlook. | `pdfs` maps to canonical `docs`. |
-| Browser bookmarks/history exports | Safari/Chrome/Edge/Firefox bookmark HTML or JSON exports; Chrome/Firefox history SQLite selected by the user. | Beta ready for explicit exports/copies. | Local/import only. No background browser history collection. | `browser-bookmarks` and `browser-history`. |
-| iMessage exports | User-selected copy of `chat.db` or legally provided local export. | Beta conditional on explicit local-user provision. | Local/import only. No iCloud scraping, no system database access without user selection. | `imessage` maps to canonical `messages`. |
+| ChatGPT / Claude / MCP tools | Connect local AI tools through MCP so assistants can read approved memory and write source records into Review. | Beta ready through MCP bridge. | Direct account import can stay planned; MCP output is the first useful integration surface. | `chatgpt`, `claude`, `mcp`, and canonical AI-tool sources. |
+| Obsidian/Markdown | In-app Obsidian vault connector for Markdown/text notes, with review-first source-account sync. | Beta ready for explicit local vault connection. | Local folder connector first; a background watcher can build on the same cursor contract later. | `obsidian`, `knowledge-base`, and `docs`. |
+| Gmail | Planned Gmail connector backed by source-account sync. | OAuth planned; export is Advanced/Fallback only. | OAuth planned with read-only mail scopes, incremental cursors, reconnect, and label/thread preservation. | `gmail` maps to canonical `email`. |
+| Apple Mail | Planned permissioned local mail connector; fallback export stays Advanced/Fallback. | Beta conditional. | Local/import only unless a safe permissioned local integration is added. | `apple-mail` maps to canonical `email`. |
+| Outlook | Planned Microsoft connector for mail, calendar, contacts, and files. | OAuth planned; export is Advanced/Fallback only. | OAuth planned through Microsoft Graph for mail, calendar, contacts, and files. | `outlook` maps to `email`, `calendar`, `contacts`, and `cloud-docs`. |
+| Notion | Planned Notion connector backed by source-account sync. | OAuth planned; export is Advanced/Fallback only. | OAuth planned after connector quality is proven. Start read-only and preserve page/database IDs. | `notion`. |
+| Google Drive/Docs | Planned Drive/Docs connector backed by source-account sync. | OAuth planned; export is Advanced/Fallback only. | OAuth planned through Drive/Docs read-only scopes with file cursors and revision safety. | `google-drive` and `google-docs` map to `cloud-docs` and `docs`. |
+| Slack | Planned workspace connector backed by source-account sync. | OAuth planned; export is Advanced/Fallback only. | OAuth planned for channels, private channels, and DMs where granted. Requires workspace policy clarity. | `slack`. |
+| Discord | Planned only if a user-consented history API or connector path becomes product-safe. | Local/import only. | Local/import only until an official user-consented history export or API path is product-safe. | `discord`. |
+| Calendar | Planned Google/Microsoft calendar connectors; Apple Calendar needs a safe local permissioned path. | OAuth planned; export is Advanced/Fallback only. | OAuth planned for Google Calendar and Microsoft Graph calendars. | `calendar`. |
+| GitHub | Planned GitHub connector backed by source-account sync. | OAuth planned; export is Advanced/Fallback only. | OAuth planned for issues, PRs, discussions, and projects with repo/org read scopes. | `github` maps to `github` and `work-tools`. |
+| Linear | Planned Linear connector backed by source-account sync. | OAuth/API planned; export is Advanced/Fallback only. | OAuth/API planned for issues, comments, projects, and teams with read-only scopes. | `linear` maps to `linear` and `work-tools`. |
+| Jira | Planned Jira connector backed by source-account sync. | OAuth/API planned; export is Advanced/Fallback only. | OAuth/API planned for issues, comments, projects, and changelogs with read-only scopes. | `jira` maps to `jira` and `work-tools`. |
+| Apple Notes | Planned local connector or supported export only under Advanced/Fallback. | Local/import only today. | Local/import only. Do not parse private Notes databases. | `apple-notes` maps to `apple-notes` and `docs`. |
+| PDFs | PDFs arriving through a connected notes/docs source; standalone PDF import remains Advanced/Fallback. | Beta conditional. | Local/import only unless PDFs arrive through a live source such as Drive, Notion, or Outlook. | `pdfs` maps to canonical `docs`. |
+| Browser bookmarks/history | Planned browser connector or MCP/browser bridge only. | Local/import only today; no background browser history collection. | Local/import only unless a user-consented browser extension or local browser connector is built. | `browser-bookmarks` and `browser-history`. |
+| iMessage | Legal local export or explicit database copy only under Advanced/Fallback. | Beta conditional. | Local/import only. No iCloud scraping, no system database access without explicit local permission and a product-safe connector. | `imessage` maps to canonical `messages`. |
 
 ## First-100 Beta Readiness Bar
 
-A source is ready for the first-100 beta when:
+A source is ready for the first-100 beta when its primary path can:
 
-- The user can select an export, folder, file, or legal local copy without account credentials.
-- `POST /v1/imports/analyze` can show a bounded preview before import.
-- `POST /v1/imports` creates candidate captures with source labels and citation paths where possible.
-- Review-first mode, source exclusion, duplicate skipping, and batch undo work for that import.
-- Product copy states that Cortex is importing a user-provided export, not connecting live sync.
-- Email, Slack, and message imports stay conservative about user authorship unless identity aliases are configured.
+- Register or confirm a source account after explicit user consent/sign-in.
+- Stream records through `POST /v1/source-accounts/{account_id}/sync`.
+- Preserve original service citations or generate stable `source-account://...` citations.
+- Advance incremental sync cursors and surface partial failures in source readiness.
+- Put new source records into Review before they become trusted memory when review is enabled.
+- Skip duplicates by content hash and source.
+- Stay conservative about user authorship for email, Slack, and message data unless identity aliases are configured.
 
 ## Live OAuth Phase Gates
 
@@ -84,6 +95,6 @@ A connector should not move from planned to live until it has:
 
 ## Product Guidance
 
-For the first 100 users, the recommended setup prompt should ask for two or three high-signal sources first: email, work chat, notes/docs, or project tools. The product should describe every beta connector as "Import an export" or "Choose local files" unless a live account sync is actually implemented.
+For the first 100 users, the recommended setup prompt should start with MCP AI tools or Obsidian/local notes. Broader email, work chat, docs, calendar, and project-tool connectors should appear as planned or advanced until they can register an account and sync records into Cortex without asking the user to manage files.
 
-Live OAuth should be introduced source by source only after the local import loop proves useful, noisy-source review is understandable, and support can diagnose source health without seeing raw private content.
+Live OAuth should be introduced source by source only after the direct sync loop proves useful, noisy-source review is understandable, and support can diagnose source health without seeing raw private content.

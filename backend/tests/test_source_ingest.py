@@ -24,6 +24,11 @@ class SourceIngestTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
+    def _store(self, db_path: Path, vault_path: Path) -> CortexStore:
+        store = CortexStore(db_path, vault_path)
+        store.update_settings("test-user", {"allow_pending_in_context": True})
+        return store
+
     def test_detects_common_service_exports(self) -> None:
         self._write_chatgpt_export()
         self._write_claude_export()
@@ -258,7 +263,7 @@ class SourceIngestTests(unittest.TestCase):
         self._write_chatgpt_export()
         db_path = self.root / "index.sqlite"
         init_db(db_path)
-        store = CortexStore(db_path, self.root / "vault")
+        store = self._store(db_path, self.root / "vault")
 
         result = store.import_sources(
             user_id="test-user",
@@ -308,7 +313,7 @@ class SourceIngestTests(unittest.TestCase):
 
         db_path = self.root / "longtail.sqlite"
         init_db(db_path)
-        store = CortexStore(db_path, self.root / "longtail-vault")
+        store = self._store(db_path, self.root / "longtail-vault")
         result = store.import_sources(
             user_id="test-user",
             paths=[str(self.root / "chatgpt-long")],
@@ -327,7 +332,7 @@ class SourceIngestTests(unittest.TestCase):
         self._write_dated_service_exports()
         db_path = self.root / "service-dates.sqlite"
         init_db(db_path)
-        store = CortexStore(db_path, self.root / "service-dates-vault")
+        store = self._store(db_path, self.root / "service-dates-vault")
 
         result = store.import_sources(
             user_id="test-user",
@@ -365,7 +370,7 @@ class SourceIngestTests(unittest.TestCase):
         self._write_chatgpt_export()
         db_path = self.root / "index.sqlite"
         init_db(db_path)
-        store = CortexStore(db_path, self.root / "vault")
+        store = self._store(db_path, self.root / "vault")
 
         first = store.import_sources(
             user_id="test-user",
@@ -405,7 +410,7 @@ class SourceIngestTests(unittest.TestCase):
     def test_near_duplicate_active_memories_reuse_existing_memory(self) -> None:
         db_path = self.root / "memory-dedupe.sqlite"
         init_db(db_path)
-        store = CortexStore(db_path, self.root / "vault")
+        store = self._store(db_path, self.root / "vault")
         store.update_settings("test-user", {"review_new_captures": False})
 
         first = store.save_capture(
@@ -624,7 +629,7 @@ class SourceIngestTests(unittest.TestCase):
         self._write_email_export()
         db_path = self.root / "index.sqlite"
         init_db(db_path)
-        store = CortexStore(db_path, self.root / "vault")
+        store = self._store(db_path, self.root / "vault")
 
         result = store.import_sources(
             user_id="test-user",
@@ -654,7 +659,7 @@ class SourceIngestTests(unittest.TestCase):
 
         db_path = self.root / "index.sqlite"
         init_db(db_path)
-        store = CortexStore(db_path, self.root / "vault")
+        store = self._store(db_path, self.root / "vault")
         result = store.import_sources(
             user_id="test-user",
             paths=[str(folder)],
@@ -712,7 +717,7 @@ class SourceIngestTests(unittest.TestCase):
 
         db_path = self.root / "quoted.sqlite"
         init_db(db_path)
-        store = CortexStore(db_path, self.root / "quoted-vault")
+        store = self._store(db_path, self.root / "quoted-vault")
         store.update_settings("test-user", {"identity_aliases": ["Sarpt", "sarpt@example.com"]})
         result = store.import_sources(
             user_id="test-user",
@@ -777,7 +782,7 @@ class SourceIngestTests(unittest.TestCase):
 
         db_path = self.root / "index.sqlite"
         init_db(db_path)
-        store = CortexStore(db_path, self.root / "vault")
+        store = self._store(db_path, self.root / "vault")
         settings = store.update_settings("test-user", {"identity_aliases": ["sarpt", "sarpt@example.com"]})
         self.assertEqual(settings["identity_aliases"], ["sarpt", "sarpt@example.com"])
 
@@ -829,7 +834,7 @@ class SourceIngestTests(unittest.TestCase):
 
         db_path = self.root / "discord-identity.sqlite"
         init_db(db_path)
-        store = CortexStore(db_path, self.root / "discord-identity-vault")
+        store = self._store(db_path, self.root / "discord-identity-vault")
         store.update_settings("test-user", {"identity_aliases": ["Sarpt"]})
 
         result = store.import_sources(
@@ -891,7 +896,7 @@ class SourceIngestTests(unittest.TestCase):
 
         db_path = self.root / "source-account-identity.sqlite"
         init_db(db_path)
-        store = CortexStore(db_path, self.root / "source-account-identity-vault")
+        store = self._store(db_path, self.root / "source-account-identity-vault")
         store.upsert_source_account(
             "test-user",
             source="gmail",
@@ -945,7 +950,7 @@ class SourceIngestTests(unittest.TestCase):
 
         db_path = self.root / "async-source-account-identity.sqlite"
         init_db(db_path)
-        store = CortexStore(db_path, self.root / "async-source-account-identity-vault")
+        store = self._store(db_path, self.root / "async-source-account-identity-vault")
         store.upsert_source_account(
             "test-user",
             source="gmail",
@@ -1012,7 +1017,7 @@ class SourceIngestTests(unittest.TestCase):
 
         db_path = self.root / "profile-slack.sqlite"
         init_db(db_path)
-        store = CortexStore(db_path, self.root / "profile-slack-vault")
+        store = self._store(db_path, self.root / "profile-slack-vault")
         store.update_settings("test-user", {"identity_aliases": ["sarpt@example.com"]})
         result = store.import_sources(
             user_id="test-user",
@@ -1061,7 +1066,7 @@ class SourceIngestTests(unittest.TestCase):
 
         db_path = self.root / "index.sqlite"
         init_db(db_path)
-        store = CortexStore(db_path, self.root / "vault")
+        store = self._store(db_path, self.root / "vault")
         paths = [
             self.root / "chatgpt",
             self.root / "claude",
@@ -1175,7 +1180,7 @@ class SourceIngestTests(unittest.TestCase):
 
         db_path = self.root / "granular-citations.sqlite"
         init_db(db_path)
-        store = CortexStore(db_path, self.root / "granular-vault")
+        store = self._store(db_path, self.root / "granular-vault")
         result = store.import_sources(
             user_id="test-user",
             paths=[str(self.root / "granular-slack"), str(github), str(calendar)],
@@ -1222,7 +1227,7 @@ class SourceIngestTests(unittest.TestCase):
 
         db_path = self.root / "chat-email-granular.sqlite"
         init_db(db_path)
-        store = CortexStore(db_path, self.root / "chat-email-granular-vault")
+        store = self._store(db_path, self.root / "chat-email-granular-vault")
         result = store.import_sources(
             user_id="test-user",
             paths=[
@@ -1271,7 +1276,7 @@ class SourceIngestTests(unittest.TestCase):
 
         db_path = self.root / "index.sqlite"
         init_db(db_path)
-        store = CortexStore(db_path, self.root / "vault")
+        store = self._store(db_path, self.root / "vault")
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), patch(
             "backend.app.extractor._extract_with_claude",
             side_effect=BaseException("model extraction should not run for source imports"),
@@ -1299,7 +1304,7 @@ class SourceIngestTests(unittest.TestCase):
 
         db_path = self.root / "index.sqlite"
         init_db(db_path)
-        store = CortexStore(db_path, self.root / "vault")
+        store = self._store(db_path, self.root / "vault")
         result = store.import_sources(
             user_id="test-user",
             paths=[str(note)],
@@ -1335,7 +1340,7 @@ class SourceIngestTests(unittest.TestCase):
 
         db_path = self.root / "index.sqlite"
         init_db(db_path)
-        store = CortexStore(db_path, self.root / "vault")
+        store = self._store(db_path, self.root / "vault")
         result = store.import_sources(
             user_id="test-user",
             paths=[str(note)],
@@ -1386,7 +1391,7 @@ class SourceIngestTests(unittest.TestCase):
 
         db_path = self.root / "personal-gating.sqlite"
         init_db(db_path)
-        store = CortexStore(db_path, self.root / "personal-gating-vault")
+        store = self._store(db_path, self.root / "personal-gating-vault")
         result = store.import_sources(
             user_id="test-user",
             paths=[str(docs), str(github)],

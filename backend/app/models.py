@@ -4,8 +4,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-MemoryKind = Literal["claim", "decision", "event", "preference", "observation", "action", "question", "summary", "style", "negative"]
-MemoryLayer = Literal["semantic", "episodic", "style", "decision", "preference", "negative"]
+MemoryKind = Literal["claim", "decision", "event", "preference", "observation", "action", "question", "summary", "style", "negative", "procedure"]
+MemoryLayer = Literal["semantic", "episodic", "style", "decision", "preference", "negative", "procedural"]
 
 
 class CaptureRequest(BaseModel):
@@ -101,6 +101,55 @@ class SourceAccountResponse(BaseModel):
 
 class SourceAccountListResponse(BaseModel):
     results: list[SourceAccountResponse]
+
+
+class SourceAccountSyncRecord(BaseModel):
+    content: str = Field(..., min_length=1, max_length=200_000)
+    title: str | None = Field(default=None, max_length=200)
+    source_url: str | None = Field(default=None, max_length=500)
+    external_id: str | None = Field(default=None, max_length=240)
+    captured_at: str | None = Field(default=None, max_length=80)
+    metadata: dict[str, Any] | None = None
+
+
+class SourceAccountSyncRequest(BaseModel):
+    records: list[SourceAccountSyncRecord] = Field(..., min_length=1, max_length=500)
+    cursor_name: str = Field(default="default", min_length=1, max_length=120)
+    cursor_value: str | None = Field(default=None, max_length=2000)
+    high_water_mark: str | None = Field(default=None, max_length=500)
+    state: dict[str, Any] | None = None
+    processing: Literal["sync", "async"] = "async"
+
+
+class SourceAccountSyncResponse(BaseModel):
+    source_account_id: str
+    source: str
+    status: str
+    processing: str
+    received: int
+    queued: int
+    saved: int
+    skipped: int
+    failed: int
+    capture_ids: list[str]
+    records: list[dict[str, Any]]
+    errors: list[dict[str, Any]]
+    cursor: dict[str, Any]
+
+
+class ObsidianVaultSyncRequest(BaseModel):
+    vault_path: str = Field(..., min_length=1, max_length=2000)
+    source_account_id: str | None = Field(default=None, max_length=80)
+    account_label: str | None = Field(default=None, max_length=160)
+    account_identifier: str | None = Field(default=None, max_length=240)
+    processing: Literal["sync", "async"] = "sync"
+    max_records: int = Field(default=1000, ge=1, le=5000)
+    cursor_name: str = Field(default="local-folder", min_length=1, max_length=120)
+
+
+class ObsidianVaultSyncResponse(SourceAccountSyncResponse):
+    source_account: SourceAccountResponse
+    scan: dict[str, Any]
 
 
 class SourceReadinessResponse(BaseModel):

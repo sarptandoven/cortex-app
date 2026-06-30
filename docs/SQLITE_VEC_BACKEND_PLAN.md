@@ -4,7 +4,9 @@
 
 Cortex should use SQLite as the product storage layer and `sqlite-vec` as the first vector retrieval layer. This keeps the product local-first, cheap to operate, easy to back up, and credible for privacy-sensitive personal memory.
 
-The hosted backend should be a full service around SQLite, not a quick Postgres rewrite:
+Current direction: SQLite and `sqlite-vec` are the local-first beta path. The verified 10k-user hosted direction is FastAPI with Postgres plus `pgvector`; keep the SQLite-hosting notes below as historical/low-cost fallback context, not the primary hosted plan.
+
+The earlier hosted backend option was a full service around SQLite:
 
 - FastAPI service
 - SQLite WAL database
@@ -144,7 +146,7 @@ Scale path:
 - one metadata/control database
 - queued writes per shard
 - read replicas or cache for hot users
-- eventual move to Turso/libSQL or Postgres only if SQLite becomes the bottleneck
+- historical fallback: Turso/libSQL if a SQLite-hosted path is revived; current 10k plan uses Postgres/pgvector first
 
 ## Integration Plan
 

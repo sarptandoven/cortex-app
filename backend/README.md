@@ -5,8 +5,9 @@ FastAPI backend for the Cortex MVP.
 It provides:
 
 - capture ingestion
-- source import preview, duplicate-safe history, and batch undo for user-selected exports, folders, and files
-- source account registry and sync cursor state for future live connectors
+- source-account sync for connected local/MCP connectors
+- fallback import preview, duplicate-safe history, and batch undo for unsupported exports, folders, and files
+- source account registry and sync cursor state for live connectors
 - content-free sync change feed for hosted-sync materialization work
 - structured memory extraction
 - layered memory metadata for semantic, episodic, style, decision, preference, and negative memory

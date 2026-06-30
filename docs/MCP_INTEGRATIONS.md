@@ -11,7 +11,7 @@ The macOS app starts the local backend automatically. Once Cortex is running, lo
 
 ## Authentication
 
-The macOS app uses a Keychain admin token for Cortex REST API calls. Local AI-tool integrations should not use that admin token. New copied or installed MCP configs use a separate scoped `cxm_` MCP token.
+The macOS app uses a local per-install admin token for Cortex REST API calls. Local AI-tool integrations should not use that admin token. New copied or installed MCP configs use a separate scoped `cxm_` MCP token.
 
 `/mcp` accepts:
 
@@ -20,16 +20,24 @@ The macOS app uses a Keychain admin token for Cortex REST API calls. Local AI-to
 
 Scoped MCP tokens are checked before Trust controls. A tool call succeeds only when the token has the needed scope and the matching Trust toggle is enabled. Newly generated local MCP tokens include `read`, `write`, `export`, and `maintenance`; they do not include `destructive`.
 
+Write-scoped MCP tools can now register connected source accounts and sync cited source records:
+
+- `list_source_connectors`
+- `connect_source_account`
+- `sync_source_records`
+
+This is the preferred beta path for connected tools and local connector processes. Direct account/OAuth connectors should feed this same account, cursor, citation, and review contract. When `sync_source_records` includes a stable `external_id`, Cortex treats the record as the same source item on future syncs: unchanged content is skipped, changed content replaces the existing capture's derived memory, and citations stay attached to the source account.
+
 ## One-Click Integrations
 
-The macOS app exposes integrations from `Trust > Connected AI tools`. It supports two integration modes:
+The macOS app exposes integrations from `Connections & Privacy > AI tools`. It supports two integration modes:
 
 - **One-click MCP install** for clients with stable local JSON config files.
-- **Copy-ready context** for browser assistants and hosted tools that should not be edited locally by Cortex.
+- **Advanced fallback handoff** for tools that cannot connect through MCP yet.
 
 For direct installs, Cortex creates the parent config directory if needed, backs up an existing config next to the original file, then merges a single `mcpServers.cortex` entry without removing other servers.
 
-Direct install targets:
+Primary local install targets:
 
 - Claude Desktop: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - Cursor: `~/.cursor/mcp.json`
@@ -37,7 +45,7 @@ Direct install targets:
 - Cline: `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
 - Roo Code: `~/Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json`
 
-Copy/manual targets:
+Fallback targets that still need direct MCP or account sync before they should be treated as primary:
 
 - VS Code Copilot
 - Claude Code
@@ -96,7 +104,7 @@ Development repo shape:
 }
 ```
 
-## Browser Assistant Context
+## Advanced Browser Assistant Context
 
 Browser assistants do not all expose a stable local MCP config. For those, Cortex copies scoped chat context with instructions:
 
@@ -108,7 +116,7 @@ Browser assistants do not all expose a stable local MCP config. For those, Corte
 ## Tool Surface
 
 - `remember_this`: save text into Cortex memory
-- `search_memory`: search active memories, optionally filtered by `kind` or memory `layer` (`semantic`, `episodic`, `style`, `decision`, `preference`, `negative`)
+- `search_memory`: search active memories, optionally filtered by `kind` or memory `layer` (`semantic`, `episodic`, `style`, `decision`, `preference`, `negative`, `procedural`)
 - `get_recent_context`: retrieve recent active memories
 - `get_memory_graph`: retrieve the active graph
 - `get_daily_review`: retrieve today's pending captures, open loops, decisions, topics, and recommended actions

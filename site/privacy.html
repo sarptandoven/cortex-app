@@ -34,7 +34,7 @@
       <section>
         <h2>What Cortex stores</h2>
         <ul>
-          <li>Memories the user approves from connected services, direct local integrations, quick notes, browser captures, or AI-tool workflows.</li>
+          <li>Memories the user approves from MCP AI tools, Obsidian/local notes, and explicitly enabled local workflows.</li>
           <li>Extracted memories, tasks, entities, topics, graph edges, settings, audit events, and backups.</li>
           <li>A readable local memory folder plus a rebuildable search index for search and map views.</li>
         </ul>
@@ -53,8 +53,8 @@
         <h2>What Cortex reads</h2>
         <ul>
           <li>Cortex reads clipboard content only when the user clicks a capture action or uses the capture hotkey.</li>
-          <li>Cortex reads connected account data only after the user signs in or grants an explicit local integration permission.</li>
-          <li>Cortex does not crawl cloud apps, email accounts, browser history, or Messages without a connected account or approved local integration.</li>
+          <li>Cortex reads an Obsidian/local notes folder only after the user chooses that folder.</li>
+          <li>Cortex does not crawl cloud apps, email accounts, browser history, or Messages in the first local beta.</li>
           <li>Cortex does not record the screen, listen through the microphone, or capture ambient activity in this beta.</li>
         </ul>
       </section>
@@ -62,7 +62,7 @@
       <section>
         <h2>AI tool sharing</h2>
         <ul>
-          <li>Context is shared when the user copies chat context or enables a direct local AI integration.</li>
+          <li>Context is shared when the user enables a direct local AI integration or MCP tool.</li>
           <li>New local memory folders start with review enabled, connected AI tool reads enabled for retrieval, and redaction enabled.</li>
           <li>Connected AI tool writes, exports, maintenance, and destructive actions are disabled until the user opts in.</li>
           <li>Redaction can mask common tokens, secrets, emails, and long account-like numbers before context is shared.</li>
@@ -74,7 +74,7 @@
         <h2>Current beta boundaries</h2>
         <ul>
           <li>No account system, billing, hosted sync, or team workspace is included in the local beta.</li>
-          <li>Account connectors are staged by service readiness; Advanced/Fallback recovery intake is support-only and not the normal product path.</li>
+          <li>Account connectors are staged by service readiness; broad cloud-service sync is not the normal first beta path.</li>
           <li>No analytics service is required by the static landing page.</li>
           <li>Public distribution still needs Developer ID signing, notarization, hosted HTTPS downloads, and a formal privacy policy review.</li>
         </ul>
