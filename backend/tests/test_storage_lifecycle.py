@@ -1472,6 +1472,64 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         cleared = self.store.update_settings(self.user_id, {"source_policies": {"gmail": {"mode": "default"}}})
         self.assertEqual(cleared["source_policies"], {})
 
+    def test_source_policy_exclusion_filters_exports_and_mcp_export(self) -> None:
+        private = self.store.save_capture(
+            user_id=self.user_id,
+            content="Private Export Alpha should never leave through full memory export.",
+            source="gmail",
+            source_url="gmail://message/private-export-alpha",
+            title="Private export source policy",
+            extracted=extract_context("Private Export Alpha should never leave through full memory export.", "gmail"),
+        )
+        public = self.store.save_capture(
+            user_id=self.user_id,
+            content="Public Export Beta should remain available in full memory export.",
+            source="docs",
+            source_url="file:///PublicExportBeta.md",
+            title="Public export source policy",
+            extracted=extract_context("Public Export Beta should remain available in full memory export.", "docs"),
+        )
+        self.assertTrue(private["memories"])
+        self.assertTrue(public["memories"])
+        self.assertTrue(self.store.approve_capture(self.user_id, private["capture_id"]))
+        self.assertTrue(self.store.approve_capture(self.user_id, public["capture_id"]))
+
+        self.store.update_settings(
+            self.user_id,
+            {
+                "allow_agent_exports": True,
+                "source_policies": {"gmail": {"mode": "excluded"}},
+            },
+        )
+
+        exported = self.store.export_json(self.user_id)
+        exported_text = json.dumps(exported)
+        self.assertNotIn("Private Export Alpha", exported_text)
+        self.assertNotIn("gmail://message/private-export-alpha", exported_text)
+        self.assertIn("Public Export Beta", exported_text)
+        self.assertTrue(all(capture["source"] != "gmail" for capture in exported["captures"]))
+        self.assertTrue(all(memory["source"] != "gmail" for memory in exported["memories"]))
+
+        markdown = self.store.export_markdown(self.user_id)
+        self.assertNotIn("Private Export Alpha", markdown)
+        self.assertIn("Public Export Beta", markdown)
+
+        mcp_json = call_tool(self.store, self.user_id, "export_memory", {"format": "json"})
+        self.assertNotIn("Private Export Alpha", json.dumps(mcp_json))
+        self.assertIn("Public Export Beta", json.dumps(mcp_json))
+        mcp_markdown = call_tool(self.store, self.user_id, "export_memory", {"format": "markdown"})
+        self.assertNotIn("Private Export Alpha", mcp_markdown)
+        self.assertIn("Public Export Beta", mcp_markdown)
+
+        profile = self.store.personal_profile(self.user_id, query="Export", limit=5)
+        self.assertNotIn("Private Export Alpha", json.dumps(profile))
+        self.assertNotIn("gmail", json.dumps(profile["coverage"]))
+        self.assertIn("Public Export Beta", json.dumps(profile))
+        adaptation = self.store.agent_adaptation(self.user_id, query="Export", target="Claude", limit=5)
+        self.assertNotIn("Private Export Alpha", json.dumps(adaptation))
+        self.assertNotIn("gmail", json.dumps(adaptation["coverage"]))
+        self.assertIn("Public Export Beta", json.dumps(adaptation))
+
     def test_trust_controls_redact_shared_context_and_exports(self) -> None:
         self.capture(
             f"Cortex should never leak password=supersecret123 or {DUMMY_OPENAI_KEY} "

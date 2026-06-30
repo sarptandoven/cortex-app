@@ -2759,9 +2759,11 @@ class CortexStore:
             return cleaned
         return cleaned[: max(0, limit - 1)].rstrip() + "..."
 
-    def open_tasks(self, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    def open_tasks(self, user_id: str, limit: int = 20, *, include_pending: bool | None = None) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
+            if include_pending is False:
+                user_settings = {**user_settings, "allow_pending_in_context": False}
             filters, params = self._task_filters(user_id, user_settings, alias="t", capture_alias="c")
             where = " AND ".join(filters)
             rows = conn.execute(
@@ -2781,9 +2783,11 @@ class CortexStore:
             ).fetchall()
         return [self._task_from_row(row) for row in rows]
 
-    def list_topics(self, user_id: str, limit: int = 30) -> list[dict[str, Any]]:
+    def list_topics(self, user_id: str, limit: int = 30, *, include_pending: bool | None = None) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
+            if include_pending is False:
+                user_settings = {**user_settings, "allow_pending_in_context": False}
             filters, params = self._memory_filters(user_id, user_settings, alias="m")
             where = " AND ".join(filters)
             rows = conn.execute(
@@ -2800,9 +2804,11 @@ class CortexStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def list_entities(self, user_id: str, limit: int = 30) -> list[dict[str, Any]]:
+    def list_entities(self, user_id: str, limit: int = 30, *, include_pending: bool | None = None) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
+            if include_pending is False:
+                user_settings = {**user_settings, "allow_pending_in_context": False}
             filters, params = self._memory_filters(user_id, user_settings, alias="m")
             memory_filter = " AND ".join(filters)
             rows = conn.execute(
@@ -3507,8 +3513,11 @@ class CortexStore:
         query = query.strip()
         limit = max(1, min(20, int(limit)))
         user_settings = self.settings(user_id)
+        profile_settings = {**user_settings}
+        if not include_pending:
+            profile_settings["allow_pending_in_context"] = False
         redact = bool(user_settings["redact_sensitive_context"])
-        stats = self.stats(user_id)
+        stats = self._profile_stats(user_id, profile_settings)
         layer_counts = {item["layer"]: int(item["count"]) for item in stats["by_layer"]}
         layer_order = [
             ("preference", "Preference memory", "Durable likes, dislikes, defaults, and working preferences."),
@@ -3533,10 +3542,10 @@ class CortexStore:
 
         focus_memories = self.search(user_id, query, limit=limit) if query else []
         focus_memories = self._approved_profile_memories(user_id, focus_memories, include_pending=include_pending)
-        open_loops = self.open_tasks(user_id, limit=limit)
-        topics = self.list_topics(user_id, limit=8)
-        entities = self.list_entities(user_id, limit=8)
-        sources = self._source_freshness(user_id, limit=8)
+        open_loops = self.open_tasks(user_id, limit=limit, include_pending=include_pending)
+        topics = self.list_topics(user_id, limit=8, include_pending=include_pending)
+        entities = self.list_entities(user_id, limit=8, include_pending=include_pending)
+        sources = self._source_freshness(user_id, limit=8, user_settings=profile_settings)
         covered_layers = sum(1 for item in layer_order if layer_counts.get(item[0], 0) > 0)
         readiness = min(
             100,
@@ -3602,6 +3611,74 @@ class CortexStore:
         }
         profile["markdown"] = self._personal_profile_markdown(profile)
         return profile
+
+    def _profile_stats(self, user_id: str, user_settings: dict[str, Any]) -> dict[str, Any]:
+        with connect(self.db_path) as conn:
+            memory_filters, memory_params = self._memory_filters(user_id, user_settings, alias="m")
+            memory_where = " AND ".join(memory_filters)
+            task_filters, task_params = self._task_filters(user_id, user_settings, alias="t", capture_alias="c")
+            task_where = " AND ".join(task_filters)
+            memory_totals = conn.execute(
+                f"""
+                SELECT
+                  COUNT(*) AS memories,
+                  SUM(CASE WHEN m.kind = 'decision' THEN 1 ELSE 0 END) AS decisions
+                FROM memories m
+                WHERE {memory_where}
+                """,
+                memory_params,
+            ).fetchone()
+            by_layer = [
+                {"layer": row["layer"], "count": row["count"]}
+                for row in conn.execute(
+                    f"""
+                    SELECT m.layer, COUNT(*) AS count
+                    FROM memories m
+                    WHERE {memory_where}
+                    GROUP BY m.layer
+                    ORDER BY count DESC
+                    """,
+                    memory_params,
+                ).fetchall()
+            ]
+            task_count = conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM tasks t
+                LEFT JOIN captures c ON c.id = t.capture_id AND c.user_id = t.user_id
+                WHERE {task_where}
+                """,
+                task_params,
+            ).fetchone()[0]
+            entity_count = conn.execute(
+                f"""
+                SELECT COUNT(DISTINCT e.id)
+                FROM entities e
+                JOIN memory_entities me ON me.entity_id = e.id AND me.user_id = e.user_id
+                JOIN memories m ON m.id = me.memory_id AND m.user_id = me.user_id
+                WHERE e.user_id = ? AND {memory_where}
+                """,
+                [user_id, *memory_params],
+            ).fetchone()[0]
+            source_policies = _normalize_source_policies(user_settings.get("source_policies"))
+            excluded_sources = [source for source, policy in source_policies.items() if not policy.get("allow_ai_context", True)]
+            capture_filters = ["user_id = ?", "review_status = 'pending'"]
+            capture_params: list[Any] = [user_id]
+            if excluded_sources:
+                capture_filters.append(f"source NOT IN ({','.join('?' for _ in excluded_sources)})")
+                capture_params.extend(excluded_sources)
+            pending_count = conn.execute(
+                f"SELECT COUNT(*) FROM captures WHERE {' AND '.join(capture_filters)}",
+                capture_params,
+            ).fetchone()[0]
+        return {
+            "memories": int(memory_totals["memories"] or 0),
+            "decisions": int(memory_totals["decisions"] or 0),
+            "tasks": int(task_count or 0),
+            "entities": int(entity_count or 0),
+            "pending_captures": int(pending_count or 0),
+            "by_layer": by_layer,
+        }
 
     def agent_adaptation(self, user_id: str, query: str = "", target: str = "assistant", limit: int = 8, include_pending: bool = False) -> dict[str, Any]:
         target = (target or "assistant").strip()[:80] or "assistant"
@@ -3836,10 +3913,19 @@ class CortexStore:
             "entity_ids": item.get("entity_ids") or [],
         }
 
-    def _source_freshness(self, user_id: str, limit: int = 8) -> list[dict[str, Any]]:
+    def _source_freshness(self, user_id: str, limit: int = 8, *, user_settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        source_policies = _normalize_source_policies((user_settings or {}).get("source_policies"))
+        excluded_sources = [source for source, policy in source_policies.items() if not policy.get("allow_ai_context", True)]
+        filters = ["user_id = ?"]
+        params: list[Any] = [user_id]
+        if user_settings and not user_settings.get("allow_pending_in_context", True):
+            filters.append("review_status = 'approved'")
+        if excluded_sources:
+            filters.append(f"source NOT IN ({','.join('?' for _ in excluded_sources)})")
+            params.extend(excluded_sources)
         with connect(self.db_path) as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT
                   source,
                   COUNT(*) AS total,
@@ -3847,12 +3933,12 @@ class CortexStore:
                   SUM(CASE WHEN review_status = 'pending' THEN 1 ELSE 0 END) AS pending,
                   MAX(captured_at) AS last_seen
                 FROM captures
-                WHERE user_id = ?
+                WHERE {' AND '.join(filters)}
                 GROUP BY source
                 ORDER BY total DESC, last_seen DESC
                 LIMIT ?
                 """,
-                (user_id, limit),
+                [*params, limit],
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -3954,6 +4040,7 @@ class CortexStore:
         return {"nodes": list(nodes.values()), "edges": edges}
 
     def export_json(self, user_id: str) -> dict[str, Any]:
+        user_settings = self.settings(user_id)
         with connect(self.db_path) as conn:
             captures = [self._capture_from_row(row) for row in conn.execute("SELECT * FROM captures WHERE user_id = ? ORDER BY captured_at DESC", (user_id,)).fetchall()]
             imports = self.list_imports(user_id, limit=100)
@@ -3972,9 +4059,159 @@ class CortexStore:
             "entities": entities,
             "edges": edges,
         }
-        if self.settings(user_id)["redact_sensitive_context"]:
+        payload = self._filter_export_by_source_policy(payload, user_settings)
+        if user_settings["redact_sensitive_context"]:
             return self._redact_payload(payload)
         return payload
+
+    def _filter_export_by_source_policy(self, payload: dict[str, Any], user_settings: dict[str, Any]) -> dict[str, Any]:
+        source_policies = _normalize_source_policies(user_settings.get("source_policies"))
+        excluded_sources = {source for source, policy in source_policies.items() if not policy.get("allow_ai_context", True)}
+        if not excluded_sources:
+            return payload
+
+        captures = list(payload.get("captures") or [])
+        all_capture_sources = {capture.get("id"): capture.get("source") for capture in captures}
+        filtered_captures = [capture for capture in captures if capture.get("source") not in excluded_sources]
+        allowed_capture_ids = {capture.get("id") for capture in filtered_captures if capture.get("id")}
+
+        def memory_allowed(memory: dict[str, Any]) -> bool:
+            if memory.get("source") in excluded_sources:
+                return False
+            capture_id = memory.get("capture_id")
+            return not capture_id or all_capture_sources.get(capture_id) not in excluded_sources
+
+        filtered_memories = [memory for memory in payload.get("memories") or [] if memory_allowed(memory)]
+        allowed_memory_ids = {memory.get("id") for memory in filtered_memories if memory.get("id")}
+
+        def task_allowed(task: dict[str, Any]) -> bool:
+            capture_id = task.get("capture_id")
+            return not capture_id or all_capture_sources.get(capture_id) not in excluded_sources
+
+        filtered_tasks = [task for task in payload.get("tasks") or [] if task_allowed(task)]
+        allowed_task_ids = {task.get("id") for task in filtered_tasks if task.get("id")}
+
+        allowed_entity_ids = {
+            entity_id
+            for item in [*filtered_memories, *filtered_tasks]
+            for entity_id in item.get("entity_ids") or []
+        }
+        filtered_entities = [entity for entity in payload.get("entities") or [] if entity.get("id") in allowed_entity_ids]
+        allowed_node_ids = allowed_capture_ids | allowed_memory_ids | allowed_task_ids | allowed_entity_ids
+        filtered_edges = [
+            edge
+            for edge in payload.get("edges") or []
+            if edge.get("source_id") in allowed_node_ids
+            and edge.get("target_id") in allowed_node_ids
+            and (not edge.get("evidence_id") or edge.get("evidence_id") in allowed_node_ids)
+        ]
+
+        filtered_imports: list[dict[str, Any]] = []
+        for item in payload.get("imports") or []:
+            filtered = self._filter_export_import_by_source_policy(item, excluded_sources, allowed_capture_ids)
+            if filtered is not None:
+                filtered_imports.append(filtered)
+
+        return {
+            **payload,
+            "stats": self._export_stats_from_payload(filtered_captures, filtered_memories, filtered_tasks, filtered_entities, filtered_edges),
+            "imports": filtered_imports,
+            "captures": filtered_captures,
+            "memories": filtered_memories,
+            "tasks": filtered_tasks,
+            "entities": filtered_entities,
+            "edges": filtered_edges,
+        }
+
+    def _export_stats_from_payload(
+        self,
+        captures: list[dict[str, Any]],
+        memories: list[dict[str, Any]],
+        tasks: list[dict[str, Any]],
+        entities: list[dict[str, Any]],
+        edges: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        active_memories = [memory for memory in memories if memory.get("status") == "active"]
+        open_tasks = [task for task in tasks if task.get("status") == "open"]
+
+        def counts_by(items: list[dict[str, Any]], key: str, label: str) -> list[dict[str, Any]]:
+            counts: dict[str, int] = {}
+            for item in items:
+                value = str(item.get(key) or "").strip()
+                if value:
+                    counts[value] = counts.get(value, 0) + 1
+            return [
+                {label: value, "count": count}
+                for value, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+            ]
+
+        topic_counts: dict[str, int] = {}
+        entity_counts: dict[str, int] = {}
+        for memory in active_memories:
+            for topic in memory.get("topics") or []:
+                topic = str(topic or "").strip()
+                if topic:
+                    topic_counts[topic] = topic_counts.get(topic, 0) + 1
+            for entity_id in memory.get("entity_ids") or []:
+                entity_id = str(entity_id or "").strip()
+                if entity_id:
+                    entity_counts[entity_id] = entity_counts.get(entity_id, 0) + 1
+
+        entities_by_id = {entity.get("id"): entity for entity in entities}
+        top_entities = []
+        for entity_id, count in sorted(entity_counts.items(), key=lambda item: (-item[1], item[0]))[:12]:
+            entity = entities_by_id.get(entity_id)
+            if not entity:
+                continue
+            top_entities.append(
+                {
+                    "id": entity.get("id"),
+                    "name": entity.get("name"),
+                    "kind": entity.get("kind"),
+                    "count": count,
+                }
+            )
+
+        return {
+            "captures": len(captures),
+            "pending_captures": sum(1 for capture in captures if capture.get("review_status") == "pending"),
+            "memories": len(active_memories),
+            "decisions": sum(1 for memory in active_memories if memory.get("kind") == "decision"),
+            "tasks": len(open_tasks),
+            "entities": len(entities),
+            "edges": len(edges),
+            "by_kind": counts_by(active_memories, "kind", "kind"),
+            "by_layer": counts_by(active_memories, "layer", "layer"),
+            "top_topics": [
+                {"topic": topic, "count": count}
+                for topic, count in sorted(topic_counts.items(), key=lambda item: (-item[1], item[0]))[:12]
+            ],
+            "top_entities": top_entities,
+        }
+
+    def _filter_export_import_by_source_policy(
+        self,
+        item: dict[str, Any],
+        excluded_sources: set[str],
+        allowed_capture_ids: set[str],
+    ) -> dict[str, Any] | None:
+        def source_id(entry: Any) -> str:
+            if isinstance(entry, dict):
+                return str(entry.get("source") or "")
+            return str(entry or "")
+
+        sources = list(item.get("sources") or [])
+        filtered_sources = [source for source in sources if source_id(source) not in excluded_sources]
+        capture_ids = [capture_id for capture_id in item.get("capture_ids") or [] if capture_id in allowed_capture_ids]
+        if sources and not filtered_sources:
+            return None
+        if item.get("capture_ids") and not capture_ids and any(source_id(source) in excluded_sources for source in sources):
+            return None
+        filtered = {**item, "sources": filtered_sources, "capture_ids": capture_ids}
+        if len(filtered_sources) != len(sources):
+            filtered["paths"] = []
+            filtered["errors"] = [error for error in item.get("errors") or [] if source_id(error) not in excluded_sources]
+        return filtered
 
     def diagnostics(self, user_id: str) -> dict[str, Any]:
         db_size = self.db_path.stat().st_size if self.db_path.exists() else 0
