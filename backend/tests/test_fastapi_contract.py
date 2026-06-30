@@ -648,6 +648,16 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertTrue(synced["records"][0]["source_url"].startswith(f"source-account://gmail/{account['id']}/gmail-msg-1"))
         self.assertEqual(synced["cursor"]["cursor_value"], "cursor-2")
         self.assertEqual(synced["cursor"]["state"]["last_batch_saved"], 1)
+        self.assertEqual(synced["archived_missing"], 0)
+        capture_id = synced["capture_ids"][0]
+        approved = self.client.post(f"/v1/captures/{capture_id}/approve", headers=headers)
+        self.assertEqual(approved.status_code, 200)
+        found = self.client.get(
+            "/v1/search",
+            params={"query": "Project Atlas connected source sync"},
+            headers=headers,
+        )
+        self.assertTrue(found.json()["results"])
 
         duplicate_sync = self.client.post(
             f"/v1/source-accounts/{account['id']}/sync",
@@ -660,6 +670,35 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(duplicate_payload["saved"], 0)
         self.assertEqual(duplicate_payload["skipped"], 1)
         self.assertEqual(duplicate_payload["records"][0]["status"], "duplicate")
+
+        full_snapshot = self.client.post(
+            f"/v1/source-accounts/{account['id']}/sync",
+            json={
+                "processing": "sync",
+                "cursor_name": "messages",
+                "cursor_value": "cursor-3",
+                "archive_missing": True,
+                "records": [
+                    {
+                        "content": "I decided Project Atlas now keeps only the current Gmail source snapshot.",
+                        "title": "Atlas Gmail current",
+                        "external_id": "gmail-msg-2",
+                        "captured_at": "2026-06-29T13:05:00Z",
+                    }
+                ],
+            },
+            headers=headers,
+        )
+        self.assertEqual(full_snapshot.status_code, 200)
+        full_snapshot_payload = full_snapshot.json()
+        self.assertEqual(full_snapshot_payload["archived_missing"], 1)
+        self.assertEqual(full_snapshot_payload["cursor"]["state"]["last_batch_archived_missing"], 1)
+        found_after_archive = self.client.get(
+            "/v1/search",
+            params={"query": "Project Atlas connected source sync"},
+            headers=headers,
+        )
+        self.assertEqual(found_after_archive.json()["results"], [])
 
         missing_account = self.client.post(
             "/v1/sync-cursors",
@@ -1140,6 +1179,43 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertTrue(results)
         self.assertEqual(results[0]["source"], "slack")
         self.assertTrue(results[0]["source_url"].startswith(f"source-account://slack/{account['id']}/thread-123"))
+
+        full_snapshot = self.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": "sync-source-full-snapshot",
+                "method": "tools/call",
+                "params": {
+                    "name": "sync_source_records",
+                    "arguments": {
+                        "source_account_id": account["id"],
+                        "records": [
+                            {
+                                "content": "I decided Slack now keeps only the latest Project Orion source snapshot.",
+                                "title": "Project Orion latest",
+                                "external_id": "thread-456",
+                                "captured_at": "2026-06-30T10:30:00Z",
+                            }
+                        ],
+                        "cursor_name": "threads",
+                        "cursor_value": "cursor-3",
+                        "processing": "sync",
+                        "archive_missing": True,
+                    },
+                },
+            },
+            headers={"Authorization": f"Bearer {write_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(full_snapshot.status_code, 200)
+        full_snapshot_payload = json.loads(full_snapshot.json()["result"]["content"][0]["text"])
+        self.assertEqual(full_snapshot_payload["archived_missing"], 1)
+        found_after_archive = self.client.get(
+            "/v1/search",
+            params={"query": "Project Orion cited product decisions"},
+            headers=headers,
+        )
+        self.assertEqual(found_after_archive.json()["results"], [])
 
     def test_source_policies_round_trip_and_filter_search(self) -> None:
         self._allow_pending_context("source-policy-contract")

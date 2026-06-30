@@ -421,6 +421,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         high_water_mark=str(body.get("high_water_mark") or "") or None,
                         state=body.get("state") if isinstance(body.get("state"), dict) else None,
                         processing=str(body.get("processing") or "async"),
+                        archive_missing=_bool_value(body.get("archive_missing"), default=False),
                     ))
                 except ValueError as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)

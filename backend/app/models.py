@@ -119,6 +119,7 @@ class SourceAccountSyncRequest(BaseModel):
     high_water_mark: str | None = Field(default=None, max_length=500)
     state: dict[str, Any] | None = None
     processing: Literal["sync", "async"] = "async"
+    archive_missing: bool = False
 
 
 class SourceAccountSyncResponse(BaseModel):
@@ -131,6 +132,7 @@ class SourceAccountSyncResponse(BaseModel):
     saved: int
     skipped: int
     failed: int
+    archived_missing: int = 0
     capture_ids: list[str]
     records: list[dict[str, Any]]
     errors: list[dict[str, Any]]

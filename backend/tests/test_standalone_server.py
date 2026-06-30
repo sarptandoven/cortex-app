@@ -38,7 +38,7 @@ class FakeStore:
         self.delete_import_calls: list[tuple[str, str]] = []
         self.revoke_token_calls: list[tuple[str, str]] = []
         self.source_account_calls: list[tuple[str, str]] = []
-        self.source_account_sync_calls: list[tuple[str, str, int, str]] = []
+        self.source_account_sync_calls: list[tuple[str, str, int, str, bool]] = []
         self.sync_cursor_calls: list[tuple[str, str, str | None]] = []
         self.sync_device_calls: list[tuple[str, str]] = []
         self.sync_receipt_calls: list[tuple[str, str, str, str]] = []
@@ -372,10 +372,11 @@ class FakeStore:
         high_water_mark: str | None = None,
         state: dict | None = None,
         processing: str = "async",
+        archive_missing: bool = False,
     ) -> dict:
         if account_id == "sacct_missing":
             raise ValueError("source account not found")
-        self.source_account_sync_calls.append((user_id, account_id, len(records), processing))
+        self.source_account_sync_calls.append((user_id, account_id, len(records), processing, archive_missing))
         return {
             "source_account_id": account_id,
             "source": "gmail",
@@ -386,6 +387,7 @@ class FakeStore:
             "saved": len(records) if processing == "sync" else 0,
             "skipped": 0,
             "failed": 0,
+            "archived_missing": 1 if archive_missing else 0,
             "capture_ids": ["cap_sync_test"] if records else [],
             "records": [
                 {
@@ -991,7 +993,7 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(synced["saved"], 1)
         self.assertTrue(synced["records"][0]["source_url"].startswith("source-account://gmail/sacct_test/msg-standalone-1"))
         self.assertEqual(synced["cursor"]["cursor_value"], "cursor-2")
-        self.assertEqual(self.fake_store.source_account_sync_calls, [("local", "sacct_test", 1, "sync")])
+        self.assertEqual(self.fake_store.source_account_sync_calls, [("local", "sacct_test", 1, "sync", False)])
 
         with self.get("/v1/source-accounts") as response:
             accounts = json.loads(response.read().decode("utf-8"))

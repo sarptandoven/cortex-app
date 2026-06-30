@@ -462,6 +462,7 @@ def sync_source_account(account_id: str, request: SourceAccountSyncRequest, user
             high_water_mark=request.high_water_mark,
             state=request.state,
             processing=request.processing,
+            archive_missing=request.archive_missing,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

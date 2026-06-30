@@ -183,6 +183,7 @@ TOOLS = [
                 "high_water_mark": {"type": "string"},
                 "state": {"type": "object"},
                 "processing": {"type": "string", "default": "sync", "enum": ["sync", "async"]},
+                "archive_missing": {"type": "boolean", "default": False},
             },
             "required": ["source_account_id", "records"],
         },
@@ -530,6 +531,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             high_water_mark=args.get("high_water_mark"),
             state=args.get("state") if isinstance(args.get("state"), dict) else None,
             processing=args.get("processing", "sync"),
+            archive_missing=_bool_arg(args, "archive_missing"),
         )
         return store.agent_payload(user_id, result)
     if name == "build_context_pack":
