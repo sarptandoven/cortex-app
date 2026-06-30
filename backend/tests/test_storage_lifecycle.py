@@ -591,6 +591,73 @@ class CortexStorageLifecycleTests(unittest.TestCase):
             else:
                 os.environ["OPENAI_API_KEY"] = previous_key
 
+    def test_search_uses_occurred_at_for_temporal_queries(self) -> None:
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Project Atlas launch decision kept the five tab model for beta onboarding.",
+            source="notion",
+            source_url="notion://page/atlas-2026",
+            title="Project Atlas launch decision",
+            extracted={
+                "_timestamp": "2026-06-30T09:00:00Z",
+                "summary": "Project Atlas launch decision.",
+                "records": [
+                    {
+                        "id": "mem_atlas_2026",
+                        "kind": "decision",
+                        "layer": "decision",
+                        "content": "Project Atlas launch decision kept the five tab model for beta onboarding.",
+                        "summary": "Project Atlas kept the five tab model.",
+                        "topics": ["project-atlas", "launch"],
+                        "entity_ids": [],
+                        "confidence": "confirmed",
+                        "importance": 4,
+                        "occurred_at": "2026-06-29",
+                    }
+                ],
+            },
+        )
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Project Atlas launch decision used the archive flow for the internal prototype.",
+            source="notion",
+            source_url="notion://page/atlas-2025",
+            title="Project Atlas launch decision archive",
+            extracted={
+                "_timestamp": "2026-07-01T09:00:00Z",
+                "summary": "Project Atlas launch decision archive.",
+                "records": [
+                    {
+                        "id": "mem_atlas_2025",
+                        "kind": "decision",
+                        "layer": "decision",
+                        "content": "Project Atlas launch decision used the archive flow for the internal prototype.",
+                        "summary": "Project Atlas used the archive flow.",
+                        "topics": ["project-atlas", "launch"],
+                        "entity_ids": [],
+                        "confidence": "confirmed",
+                        "importance": 4,
+                        "occurred_at": "2025-06-29",
+                    }
+                ],
+            },
+        )
+
+        by_year = self.store.search(self.user_id, "Project Atlas launch 2026", limit=2)
+        self.assertEqual(by_year[0]["id"], "mem_atlas_2026")
+        self.assertEqual(by_year[0]["occurred_at"], "2026-06-29")
+
+        date_only = self.store.search(self.user_id, "what happened in 2026", limit=5)
+        self.assertIn("mem_atlas_2026", [memory["id"] for memory in date_only])
+
+        by_month = self.store.search(self.user_id, "Project Atlas June 2026", limit=1)
+        self.assertEqual(by_month[0]["id"], "mem_atlas_2026")
+
+        answer = self.store.answer_query(self.user_id, "Project Atlas launch 2026", limit=1)
+        self.assertEqual(answer["citations"][0]["id"], "mem_atlas_2026")
+        self.assertEqual(answer["citations"][0]["occurred_at"], "2026-06-29")
+        self.assertEqual(answer["citations"][0]["source_url"], "notion://page/atlas-2026")
+
     def test_deleting_queued_capture_removes_pending_job(self) -> None:
         queued = self.store.enqueue_capture(
             user_id=self.user_id,

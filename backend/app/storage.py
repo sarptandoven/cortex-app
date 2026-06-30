@@ -54,6 +54,69 @@ MEMORY_LAYER_BY_KIND = {
     "negative": "negative",
 }
 LAYER_RETRIEVAL_BOOST = 0.02
+TEMPORAL_RETRIEVAL_BOOST = 0.025
+QUERY_MONTHS = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+}
+QUERY_MONTH_PATTERN = (
+    r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|"
+    r"aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
+)
+QUERY_TEMPORAL_STOPWORDS = {
+    "about",
+    "after",
+    "before",
+    "during",
+    "event",
+    "events",
+    "find",
+    "for",
+    "from",
+    "happen",
+    "happened",
+    "history",
+    "memory",
+    "memories",
+    "month",
+    "on",
+    "past",
+    "record",
+    "records",
+    "show",
+    "that",
+    "the",
+    "then",
+    "this",
+    "timeline",
+    "what",
+    "when",
+    "where",
+    "which",
+    "year",
+}
 LAYER_QUERY_INTENTS: tuple[tuple[set[str], set[str]], ...] = (
     (
         {"style", "negative"},
@@ -369,6 +432,70 @@ def query_layer_boosts(query: str) -> dict[str, float]:
     if "what happened" in query.lower():
         boosts["episodic"] = max(boosts.get("episodic", 0.0), LAYER_RETRIEVAL_BOOST)
     return boosts
+
+
+def query_temporal_prefixes(query: str) -> list[str]:
+    lowered = str(query or "").lower()
+    prefixes: list[str] = []
+    seen: set[str] = set()
+
+    def add(year: str | int, month: str | int | None = None, day: str | int | None = None) -> None:
+        try:
+            year_value = int(year)
+        except (TypeError, ValueError):
+            return
+        if year_value < 1900 or year_value > 2099:
+            return
+        try:
+            month_value = int(month) if month is not None else None
+            day_value = int(day) if day is not None else None
+        except (TypeError, ValueError):
+            return
+        if month_value is None:
+            prefix = f"{year_value:04d}"
+        elif day_value is None:
+            if month_value < 1 or month_value > 12:
+                return
+            prefix = f"{year_value:04d}-{month_value:02d}"
+        else:
+            try:
+                datetime(year_value, month_value, day_value)
+            except ValueError:
+                return
+            prefix = f"{year_value:04d}-{month_value:02d}-{day_value:02d}"
+        if prefix not in seen:
+            prefixes.append(prefix)
+            seen.add(prefix)
+
+    for match in re.finditer(r"\b((?:19|20)\d{2})[-/](0?[1-9]|1[0-2])(?:[-/](0?[1-9]|[12]\d|3[01]))?\b", lowered):
+        add(match.group(1), match.group(2), match.group(3))
+    for match in re.finditer(rf"\b({QUERY_MONTH_PATTERN})\.?\s+([0-3]?\d)(?:st|nd|rd|th)?[,]?\s+((?:19|20)\d{{2}})\b", lowered):
+        add(match.group(3), QUERY_MONTHS.get(match.group(1)), match.group(2))
+    for match in re.finditer(rf"\b([0-3]?\d)(?:st|nd|rd|th)?\s+({QUERY_MONTH_PATTERN})\.?[,]?\s+((?:19|20)\d{{2}})\b", lowered):
+        add(match.group(3), QUERY_MONTHS.get(match.group(2)), match.group(1))
+    for match in re.finditer(rf"\b({QUERY_MONTH_PATTERN})\.?\s+((?:19|20)\d{{2}})\b", lowered):
+        add(match.group(2), QUERY_MONTHS.get(match.group(1)))
+    for match in re.finditer(r"\b((?:19|20)\d{2})\b", lowered):
+        add(match.group(1))
+    return sorted(prefixes, key=lambda value: (-len(value), value))
+
+
+def query_non_temporal_terms(query: str, *, limit: int = 6) -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+    for token in re.findall(r"[a-z0-9_]+", str(query or "").lower()):
+        if token in QUERY_TEMPORAL_STOPWORDS or token in QUERY_MONTHS:
+            continue
+        if re.fullmatch(r"(?:19|20)\d{2}", token):
+            continue
+        if len(token) < 3:
+            continue
+        if token not in seen:
+            terms.append(token)
+            seen.add(token)
+        if len(terms) >= limit:
+            break
+    return terms
 
 
 def _path_event_summary(path: str) -> dict[str, Any]:
@@ -2138,7 +2265,8 @@ class CortexStore:
                     [fts_query, *params, candidate_limit],
                 ).fetchall()
             vector_rows = self._vector_search(conn, user_id, query, candidate_limit, kind, layer, user_settings)
-            rows = self._fuse_search_rows(query, fts_rows, vector_rows, limit)
+            temporal_rows = self._temporal_search(conn, user_id, query, candidate_limit, kind, layer, user_settings)
+            rows = self._fuse_search_rows(query, fts_rows, vector_rows, temporal_rows, limit)
             if not rows:
                 like = f"%{query}%"
                 fallback_rows = conn.execute(
@@ -5688,7 +5816,49 @@ class CortexStore:
         except sqlite3.Error:
             return []
 
-    def _fuse_search_rows(self, query: str, fts_rows: list[Any], vector_rows: list[Any], limit: int) -> list[Any]:
+    def _temporal_search(self, conn, user_id: str, query: str, limit: int, kind: str | None, layer: str | None, user_settings: dict[str, Any]) -> list[Any]:
+        prefixes = query_temporal_prefixes(query)
+        if not prefixes:
+            return []
+        most_specific_length = len(prefixes[0])
+        effective_prefixes = [prefix for prefix in prefixes if len(prefix) == most_specific_length]
+        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer)
+        date_filters = []
+        date_params: list[Any] = []
+        for prefix in effective_prefixes:
+            date_filters.append("m.occurred_at LIKE ?")
+            date_params.append(f"{prefix}%")
+        filters.append(f"({' OR '.join(date_filters)})")
+
+        term_filters = []
+        term_params: list[Any] = []
+        for term in query_non_temporal_terms(query):
+            like = f"%{term}%"
+            term_filters.append(
+                "("
+                "lower(COALESCE(m.content, '')) LIKE ? OR "
+                "lower(COALESCE(m.summary, '')) LIKE ? OR "
+                "lower(COALESCE(m.source, '')) LIKE ? OR "
+                "lower(COALESCE(m.topics_json, '')) LIKE ?"
+                ")"
+            )
+            term_params.extend([like, like, like, like])
+        if term_filters:
+            filters.append(f"({' OR '.join(term_filters)})")
+
+        where = " AND ".join(filters)
+        return conn.execute(
+            f"""
+            SELECT m.*
+            FROM memories m
+            WHERE {where}
+            ORDER BY m.importance DESC, m.occurred_at DESC, m.captured_at DESC
+            LIMIT ?
+            """,
+            [*params, *date_params, *term_params, limit],
+        ).fetchall()
+
+    def _fuse_search_rows(self, query: str, fts_rows: list[Any], vector_rows: list[Any], temporal_rows: list[Any], limit: int) -> list[Any]:
         ranked: dict[str, dict[str, Any]] = {}
         for index, row in enumerate(fts_rows):
             entry = ranked.setdefault(row["id"], {"row": row, "score": 0.0})
@@ -5696,15 +5866,26 @@ class CortexStore:
         for index, row in enumerate(vector_rows):
             entry = ranked.setdefault(row["id"], {"row": row, "score": 0.0})
             entry["score"] += 0.4 / (60 + index)
+        for index, row in enumerate(temporal_rows):
+            entry = ranked.setdefault(row["id"], {"row": row, "score": 0.0})
+            entry["score"] += 0.5 / (60 + index)
         layer_boosts = query_layer_boosts(query)
+        temporal_prefixes = query_temporal_prefixes(query)
         for entry in ranked.values():
             entry["score"] += self._layer_boost(entry["row"], layer_boosts)
+            entry["score"] += self._temporal_boost(entry["row"], temporal_prefixes)
         return [item["row"] for item in sorted(ranked.values(), key=lambda item: item["score"], reverse=True)[:limit]]
 
     def _rank_rows_with_layer_boosts(self, query: str, rows: list[Any], limit: int) -> list[Any]:
         layer_boosts = query_layer_boosts(query)
+        temporal_prefixes = query_temporal_prefixes(query)
         ranked = [
-            {"row": row, "score": (0.2 / (60 + index)) + self._layer_boost(row, layer_boosts)}
+            {
+                "row": row,
+                "score": (0.2 / (60 + index))
+                + self._layer_boost(row, layer_boosts)
+                + self._temporal_boost(row, temporal_prefixes),
+            }
             for index, row in enumerate(rows)
         ]
         return [item["row"] for item in sorted(ranked, key=lambda item: item["score"], reverse=True)[:limit]]
@@ -5715,6 +5896,23 @@ class CortexStore:
         keys = set(row.keys())
         layer = memory_layer(row["kind"], row["layer"] if "layer" in keys else None)
         return layer_boosts.get(layer, 0.0)
+
+    def _temporal_boost(self, row: Any, prefixes: list[str]) -> float:
+        if not prefixes:
+            return 0.0
+        keys = set(row.keys())
+        occurred_at = str(row["occurred_at"] or "") if "occurred_at" in keys else ""
+        if not occurred_at:
+            return 0.0
+        most_specific_length = len(prefixes[0])
+        for prefix in (value for value in prefixes if len(value) == most_specific_length):
+            if occurred_at.startswith(prefix):
+                if len(prefix) >= 10:
+                    return 0.055
+                if len(prefix) >= 7:
+                    return 0.045
+                return TEMPORAL_RETRIEVAL_BOOST + 0.004
+        return 0.0
 
     def _enqueue_embed_memory_job(
         self,

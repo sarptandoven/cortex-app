@@ -31,6 +31,7 @@ class SeedMemory:
     content: str
     summary: str
     topics: tuple[str, ...]
+    occurred_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ SEED_MEMORIES: tuple[SeedMemory, ...] = (
         content="On 2026-04-18, Vamika met Riley to debug the Taipei importer retry path.",
         summary="Taipei importer retry debug session with Vamika and Riley.",
         topics=("taipei", "importer", "meeting"),
+        occurred_at="2026-04-18",
     ),
     SeedMemory(
         id="rq_style_short_notes",
@@ -75,6 +77,7 @@ SEED_MEMORIES: tuple[SeedMemory, ...] = (
         content="Decision: keep retrieval evaluation in Python standard library unittest so CI stays dependency-light and lightweight.",
         summary="Retrieval evaluation should stay lightweight in stdlib unittest.",
         topics=("retrieval", "testing", "ci"),
+        occurred_at="2026-06-29",
     ),
     SeedMemory(
         id="rq_preference_tradeoffs",
@@ -110,6 +113,7 @@ DISTRACTOR_MEMORIES: tuple[SeedMemory, ...] = (
         content="On 2026-04-18, Vamika met Riley to discuss Taipei catering and travel logistics.",
         summary="Taipei logistics discussion with Vamika and Riley.",
         topics=("taipei", "meeting", "logistics"),
+        occurred_at="2026-04-18",
     ),
     SeedMemory(
         id="rq_distractor_verbose_style",
@@ -126,6 +130,7 @@ DISTRACTOR_MEMORIES: tuple[SeedMemory, ...] = (
         content="Decision: keep retrieval demos in a JavaScript web harness for UI smoke tests, separate from the production evaluation suite.",
         summary="Retrieval demos can use a JavaScript UI harness.",
         topics=("retrieval", "testing", "demo"),
+        occurred_at="2025-06-29",
     ),
     SeedMemory(
         id="rq_distractor_risk_first",
@@ -216,6 +221,22 @@ RETRIEVAL_CASES: tuple[RetrievalCase, ...] = (
         category="paraphrase",
     ),
     RetrievalCase(
+        name="temporal_month_decision",
+        query="retrieval evaluation June 2026 decision",
+        expected_id="rq_decision_stdlib_eval",
+        expected_layer="decision",
+        expected_phrase="standard library unittest",
+        category="temporal_recall",
+    ),
+    RetrievalCase(
+        name="temporal_day_decision",
+        query="what happened on June 29 2026 retrieval evaluation",
+        expected_id="rq_decision_stdlib_eval",
+        expected_layer="decision",
+        expected_phrase="dependency-light",
+        category="temporal_recall",
+    ),
+    RetrievalCase(
         name="preference_paraphrase_caveats",
         query="recommendation first caveats tradeoffs risks",
         expected_id="rq_preference_tradeoffs",
@@ -273,6 +294,7 @@ def seed_representative_memories(store: CortexStore, user_id: str = USER_ID) -> 
                     "importance": 5,
                     "topics": list(memory.topics),
                     "entity_ids": [],
+                    "occurred_at": memory.occurred_at,
                 }
                 for memory in SEED_MEMORIES
             ],
@@ -306,6 +328,7 @@ def seed_distractor_memories(store: CortexStore, user_id: str = USER_ID) -> list
                     "importance": 2,
                     "topics": list(memory.topics),
                     "entity_ids": [],
+                    "occurred_at": memory.occurred_at,
                 }
                 for memory in DISTRACTOR_MEMORIES
             ],
