@@ -131,6 +131,18 @@ class FakeStore:
             "vault": {"record_counts": {}},
         }
 
+    def health_payload(self, *, mode: str, auth: bool) -> dict:
+        return {
+            "status": "ok",
+            "backend_version": "test",
+            "mode": mode,
+            "auth": auth,
+            "sharding": {
+                "mode": "local",
+                "default": {"shard_id": "local", "db_path": "/tmp/index.sqlite", "vault_path": "/tmp/Cortex.vault"},
+            },
+        }
+
     def memory_quality_report(self, user_id: str) -> dict:
         return {
             "generated_at": "2026-01-01T00:00:00Z",
@@ -689,6 +701,59 @@ class StandaloneServerTests(unittest.TestCase):
 
         self.assertEqual(headers.get("Access-Control-Allow-Origin"), "http://localhost:8766")
         self.assertEqual(headers.get("Vary"), "Origin")
+
+    def test_health_and_ready_expose_hosted_readiness_contract(self) -> None:
+        with self.get("/health") as response:
+            health = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(health["mode"], "standalone")
+        hosted_readiness = health["hosted_readiness"]
+        self.assertEqual(hosted_readiness["status"], "ok")
+        self.assertFalse(hosted_readiness["hosted_mode"])
+        self.assertEqual(hosted_readiness["shard_mode"], "local")
+        self.assertFalse(hosted_readiness["require_scoped_api_tokens"])
+        self.assertEqual(hosted_readiness["global_token_user_switching"], "allowed_local_compatibility")
+        self.assertEqual(hosted_readiness["checks"][0]["name"], "scoped_api_tokens_required")
+
+        with self.get("/ready") as response:
+            ready = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(ready["status"], "ok")
+        self.assertEqual(ready["hosted_readiness"]["status"], "ok")
+        self.assertEqual(ready["diagnostics"]["status"], "ok")
+
+    def test_ready_requires_scoped_api_tokens_for_hosted_shard_modes(self) -> None:
+        standalone_server.settings = Settings(
+            vault_path=Path(self.tmp.name) / "vault",
+            db_path=Path(self.tmp.name) / "index.sqlite",
+            api_key="test-token",
+            public_base_url="http://127.0.0.1:8766",
+            shard_mode="bucket",
+            require_scoped_api_tokens=False,
+        )
+
+        with self.get("/health") as response:
+            health = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        hosted_readiness = health["hosted_readiness"]
+        self.assertEqual(hosted_readiness["status"], "blocked")
+        self.assertTrue(hosted_readiness["hosted_mode"])
+        self.assertEqual(hosted_readiness["shard_mode"], "bucket")
+        self.assertFalse(hosted_readiness["require_scoped_api_tokens"])
+        self.assertEqual(hosted_readiness["global_token_user_switching"], "blocked")
+
+        with self.assertRaises(error.HTTPError) as context:
+            self.get("/ready")
+        self.assertEqual(context.exception.code, 503)
+        detail = json.loads(context.exception.read().decode("utf-8"))["detail"]
+        self.assertEqual(detail["status"], "needs_configuration")
+        hosted_readiness = detail["hosted_readiness"]
+        self.assertEqual(hosted_readiness["status"], "blocked")
+        self.assertEqual(hosted_readiness["checks"][0]["status"], "blocked")
+        self.assertIn("CORTEX_REQUIRE_SCOPED_API_TOKENS=1", hosted_readiness["checks"][0]["detail"])
 
     def test_delete_capture_forwards_to_store(self) -> None:
         with self.delete("/v1/captures/capture-1") as response:

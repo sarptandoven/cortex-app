@@ -1,44 +1,34 @@
 import Foundation
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct SourcesTab: View {
     @ObservedObject var state: AppState
-    @State private var isSupportedSourcesExpanded = false
-    @State private var isSecondaryCaptureExpanded = false
-    @State private var isImportHistoryExpanded = false
-    @State private var isInboxExpanded = false
+    @State private var isCoverageExpanded = false
+
+    private var supportedGroups: [SupportedSourceGroup] {
+        supportedSourceGroups(from: state)
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                SourcesImportSection(
-                    state: state,
-                    handleDrop: handleDrop
-                )
-
-                VStack(alignment: .leading, spacing: 8) {
-                    SourcesInboxImportSection(state: state, isExpanded: $isInboxExpanded)
-                    SourceCatalogDisclosureSection(state: state, isExpanded: $isSupportedSourcesExpanded)
-
-                    DisclosureGroup(isExpanded: $isImportHistoryExpanded) {
-                        ImportHistorySection(state: state)
-                            .padding(.top, 8)
-                    } label: {
-                        SourcesDisclosureLabel(
-                            systemImage: "clock.arrow.circlepath",
-                            title: "Import history",
-                            detail: "Recent imports, errors, and undo"
-                        )
-                    }
-                    .padding(12)
-                    .background(Color(nsColor: .windowBackgroundColor))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                    SecondaryCaptureToolsSection(state: state, isExpanded: $isSecondaryCaptureExpanded)
+                SourcesInteractionLayerSection(state: state)
+                SourceHealthSummarySection(state: state)
+                ConnectedSourceAccountsSection(state: state)
+                DisclosureGroup(isExpanded: $isCoverageExpanded) {
+                    SupportedSourceGroupsSection(groups: supportedGroups, isLoading: state.sourceConnectorCatalog.isEmpty)
+                        .padding(.top, 8)
+                } label: {
+                    SourcesDisclosureLabel(
+                        systemImage: "rectangle.connected.to.line.below",
+                        title: "Connection coverage",
+                        detail: "Supported services and sync readiness"
+                    )
                 }
-                .padding(.top, 2)
+                .padding(12)
+                .background(Color(nsColor: .windowBackgroundColor))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
             }
             .padding(16)
         }
@@ -47,42 +37,45 @@ struct SourcesTab: View {
             if state.sourceConnectorCatalog.isEmpty {
                 await state.loadSourceConnectivity()
             }
-            await state.loadImportHistory()
         }
     }
+}
 
-    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-        let group = DispatchGroup()
-        let lock = NSLock()
-        var urls: [URL] = []
-        for provider in providers {
-            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-                group.enter()
-                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                    defer { group.leave() }
-                    var url: URL?
-                    if let itemURL = item as? URL {
-                        url = itemURL
-                    } else if let data = item as? Data,
-                              let string = String(data: data, encoding: .utf8) {
-                        url = URL(string: string)
-                    } else if let string = item as? String {
-                        url = URL(string: string)
-                    }
-                    if let url {
-                        lock.lock()
-                        urls.append(url)
-                        lock.unlock()
-                    }
-                }
-            }
-        }
-        group.notify(queue: .main) {
-            state.captureDropTargeted = false
-            state.captureFiles(urls)
-        }
-        return !providers.isEmpty
+@MainActor private func supportedSourceGroups(from state: AppState) -> [SupportedSourceGroup] {
+    var readinessBySource: [String: SourceReadinessItem] = [:]
+    for source in state.sourceReadinessReport?.sources ?? [] {
+        readinessBySource[source.source] = source
     }
+    let grouped = Dictionary(grouping: state.sourceConnectorCatalog) { item in
+        item.category ?? "Other"
+    }
+    return grouped.map { title, items in
+        SupportedSourceGroup(
+            title: title,
+            items: items
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                .map { SupportedSourceDisplayItem(catalog: $0, readiness: readinessBySource[$0.id]) }
+        )
+    }
+    .sorted { lhs, rhs in
+        sourceCategoryRank(lhs.title) < sourceCategoryRank(rhs.title)
+    }
+}
+
+private func sourceCategoryRank(_ title: String) -> String {
+    let ranks = [
+        "AI chats": "00",
+        "Email": "01",
+        "Docs": "02",
+        "Notes": "03",
+        "Work chat": "04",
+        "Messages": "05",
+        "Calendar": "06",
+        "People": "07",
+        "Work tools": "08",
+        "Research": "09",
+    ]
+    return "\(ranks[title] ?? "99")-\(title)"
 }
 
 struct SourcesDisclosureLabel: View {
@@ -108,156 +101,21 @@ struct SourcesDisclosureLabel: View {
     }
 }
 
-struct SecondaryCaptureToolsSection: View {
+struct SourcesInteractionLayerSection: View {
     @ObservedObject var state: AppState
-    @Binding var isExpanded: Bool
 
-    var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Use these after your first import for one-off notes or links. Source exports are still the best way to build useful memory.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                CaptureQuickNoteSection(state: state)
-                Divider()
-                CaptureWebSection(state: state)
-            }
-            .padding(.top, 8)
-        } label: {
-            SourcesDisclosureLabel(
-                systemImage: "plus.square.dashed",
-                title: "Optional capture tools",
-                detail: "Quick notes and links after setup"
-            )
-        }
-        .padding(12)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+    private var activeAccounts: [SourceAccountItem] {
+        state.sourceAccounts.filter { $0.disconnected_at == nil }
     }
-}
-
-struct SourcesInboxImportSection: View {
-    @ObservedObject var state: AppState
-    @Binding var isExpanded: Bool
-
-    var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Use the inbox when another app needs a stable folder for exports.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                HStack {
-                    Button {
-                        state.importCaptureInbox()
-                    } label: {
-                        Label("Import Inbox", systemImage: "tray.and.arrow.down")
-                    }
-                    Button {
-                        state.openCaptureInbox()
-                    } label: {
-                        Label("Open Folder", systemImage: "tray")
-                    }
-                    Button {
-                        state.copyCaptureInboxPath()
-                    } label: {
-                        Label("Copy Path", systemImage: "doc.on.doc")
-                    }
-                    Spacer()
-                }
-            }
-            .padding(.top, 8)
-        } label: {
-            SourcesDisclosureLabel(
-                systemImage: "tray",
-                title: "Inbox import",
-                detail: "Folder for exports from other apps"
-            )
-        }
-        .padding(12)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-struct SourceCatalogDisclosureSection: View {
-    @ObservedObject var state: AppState
-    @Binding var isExpanded: Bool
-
-    private var supportedGroups: [SupportedSourceGroup] {
-        var readinessBySource: [String: SourceReadinessItem] = [:]
-        for source in state.sourceReadinessReport?.sources ?? [] {
-            readinessBySource[source.source] = source
-        }
-        let grouped = Dictionary(grouping: state.sourceConnectorCatalog) { item in
-            item.category ?? "Other"
-        }
-        return grouped.map { title, items in
-            SupportedSourceGroup(
-                title: title,
-                items: items
-                    .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-                    .map { SupportedSourceDisplayItem(catalog: $0, readiness: readinessBySource[$0.id]) }
-            )
-        }
-        .sorted { lhs, rhs in
-            sourceCategoryRank(lhs.title) < sourceCategoryRank(rhs.title)
-        }
-    }
-
-    private func sourceCategoryRank(_ title: String) -> String {
-        let ranks = [
-            "AI chats": "00",
-            "Email": "01",
-            "Docs": "02",
-            "Notes": "03",
-            "Work chat": "04",
-            "Messages": "05",
-            "Calendar": "06",
-            "People": "07",
-            "Work tools": "08",
-            "Research": "09",
-        ]
-        return "\(ranks[title] ?? "99")-\(title)"
-    }
-
-    var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: 12) {
-                SourceHealthSummarySection(state: state)
-                Divider()
-                SupportedSourceGroupsSection(groups: supportedGroups, isLoading: state.sourceConnectorCatalog.isEmpty)
-            }
-                .padding(.top, 8)
-        } label: {
-            SourcesDisclosureLabel(
-                systemImage: "list.bullet.rectangle",
-                title: "Supported sources",
-                detail: "What imports well today"
-            )
-        }
-        .padding(12)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-struct SourcesImportSection: View {
-    @ObservedObject var state: AppState
-    let handleDrop: ([NSItemProvider]) -> Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Import sources")
+                    Text("Data layer")
                         .font(.title3)
                         .fontWeight(.semibold)
-                    Text("Choose or drop one readable export or file. Cortex scans locally and sends useful memory to Review before Ask can use it.")
+                    Text("Cortex learns from connected accounts and direct AI tools, then sends useful memory to Review.")
                         .font(.callout)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -269,30 +127,46 @@ struct SourcesImportSection: View {
                         if state.sourceConnectorCatalog.isEmpty {
                             await state.loadSourceConnectivity()
                         }
-                        await state.loadImportHistory()
                     }
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(.borderless)
-                .help("Refresh source status")
+                .help("Refresh connection status")
             }
 
-            SourcesDropZone(state: state, handleDrop: handleDrop)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 8)], spacing: 8) {
+                SourceConnectivityMetric(title: "Accounts", value: "\(activeAccounts.count)", systemImage: "person.crop.circle.badge.checkmark", color: activeAccounts.isEmpty ? .secondary : .green)
+                SourceConnectivityMetric(title: "Pending", value: "\(state.review?.stats.pending_captures ?? state.inbox.count)", systemImage: "checklist", color: state.inbox.isEmpty ? .secondary : .orange)
+                SourceConnectivityMetric(title: "Memory", value: "\(state.stats?.memories ?? 0)", systemImage: "brain.head.profile", color: (state.stats?.memories ?? 0) == 0 ? .secondary : .accentColor)
+            }
 
-            HStack {
-                Button {
-                    state.chooseFilesForCapture()
-                } label: {
-                    Label("Choose File or Export", systemImage: "doc.badge.plus")
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: activeAccounts.isEmpty ? "link.badge.plus" : "checkmark.seal.fill")
+                    .foregroundColor(activeAccounts.isEmpty ? .accentColor : .green)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(activeAccounts.isEmpty ? "Connect once, sync automatically" : "Connected sources sync into Review")
+                        .font(.callout)
+                        .fontWeight(.semibold)
+                    Text(activeAccounts.isEmpty ? "The normal path is account sign-in or direct tool setup. Recovery file handling stays out of the main workflow." : "Cortex keeps source health visible and waits for your approval before memory becomes active.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .buttonStyle(.borderedProminent)
-
-                Spacer()
+                Spacer(minLength: 12)
+                Button {
+                    state.selectedTab = .trust
+                    state.status = "Open Trust to manage direct tool access"
+                } label: {
+                    Label("Open Trust", systemImage: "lock.shield")
+                }
+                .buttonStyle(.bordered)
             }
-
-            SourcesLastImportResult(summary: state.lastFileCaptureSummary)
-            SourcesReviewNextAction(state: state)
+            .padding(10)
+            .background(Color.accentColor.opacity(0.08))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.accentColor.opacity(0.2)))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
         }
         .padding(14)
         .background(Color(nsColor: .controlBackgroundColor))
@@ -300,103 +174,32 @@ struct SourcesImportSection: View {
     }
 }
 
-struct SourcesDropZone: View {
+struct ConnectedSourceAccountsSection: View {
     @ObservedObject var state: AppState
-    let handleDrop: ([NSItemProvider]) -> Bool
 
-    var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: state.captureDropTargeted ? "arrow.down.doc.fill" : "arrow.down.doc")
-                .font(.largeTitle)
-                .foregroundColor(state.captureDropTargeted ? .accentColor : .secondary)
-            Text(state.captureDropTargeted ? "Drop to import" : "Drop exports or files here")
-                .font(.headline)
-            Text("AI chats, notes, docs, messages, and writing samples are good first sources.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity, minHeight: 146)
-        .background(Color(nsColor: .textBackgroundColor))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(state.captureDropTargeted ? Color.accentColor : Color.secondary.opacity(0.22), lineWidth: state.captureDropTargeted ? 2 : 1))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .onDrop(of: [UTType.fileURL.identifier], isTargeted: $state.captureDropTargeted, perform: handleDrop)
+    private var activeAccounts: [SourceAccountItem] {
+        state.sourceAccounts.filter { $0.disconnected_at == nil }
     }
-}
-
-struct SourcesLastImportResult: View {
-    let summary: String
 
     var body: some View {
-        HStack(alignment: .top, spacing: 9) {
-            Image(systemName: summary.isEmpty ? "clock" : "checkmark.circle.fill")
-                .foregroundColor(summary.isEmpty ? .secondary : .green)
-                .frame(width: 20)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Last import result")
-                    .font(.callout)
-                    .fontWeight(.medium)
-                Text(summary.isEmpty ? "No import yet. Choose or drop one source to start." : summary)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "Connected accounts", detail: "Sources that can keep memory current without file handling.")
+            if activeAccounts.isEmpty {
+                QuietState(title: "No accounts connected", detail: "Connect services or direct AI tools once; Cortex will sync useful signals into Review.")
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(activeAccounts.prefix(6)) { account in
+                        SourceAccountHealthRow(
+                            account: account,
+                            cursor: state.syncCursors.first(where: { $0.source_account_id == account.id })
+                        )
+                    }
+                }
             }
-            Spacer(minLength: 0)
         }
-        .padding(10)
-        .background(Color(nsColor: .textBackgroundColor))
+        .padding(14)
+        .background(Color(nsColor: .controlBackgroundColor))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-struct SourcesReviewNextAction: View {
-    @ObservedObject var state: AppState
-
-    private var pendingCount: Int {
-        max(state.inbox.count, state.review?.stats.pending_captures ?? 0)
-    }
-
-    private var detail: String {
-        if pendingCount > 0 {
-            return "\(pendingCount) item\(pendingCount == 1 ? "" : "s") waiting for approval or archive."
-        }
-        if state.lastFileCaptureSummary.isEmpty {
-            return "After import, useful memory appears in Review for approval."
-        }
-        return "No review items yet. Try another source with more text, or refresh Review if import just finished."
-    }
-
-    private var buttonTitle: String {
-        pendingCount > 0 ? "Review Pending" : "Open Review"
-    }
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Image(systemName: "checklist")
-                .foregroundColor(.accentColor)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Next: Review")
-                    .font(.callout)
-                    .fontWeight(.semibold)
-                Text(detail)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 12)
-            Button {
-                state.selectedTab = .review
-                state.status = "Review new memory below"
-            } label: {
-                Label(buttonTitle, systemImage: "arrow.right")
-            }
-            .buttonStyle(.borderedProminent)
-        }
-        .padding(10)
-        .background(Color.accentColor.opacity(0.08))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.accentColor.opacity(0.2)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
@@ -412,39 +215,201 @@ struct SupportedSourceDisplayItem: Identifiable {
     let status: String
     let statusTitle: String
     let detail: String
+    let accessDetail: String?
     let sourceIds: [String]
     let formats: [String]
+    let readinessStatus: String
 
     init(catalog: SourceConnectorCatalogItem, readiness: SourceReadinessItem?) {
+        let resolvedReadinessStatus = Self.normalizedReadinessStatus(
+            readiness?.readiness_status ?? catalog.readiness_status,
+            catalog: catalog,
+            readiness: readiness
+        )
+        let permissionsRequired = Self.coalescedList(readiness?.permissions_required, catalog.permissions_required)
+        let liveScopes = Self.coalescedList(readiness?.scopes, catalog.scopes)
+        let fallbackStatus = Self.displayStatus(for: resolvedReadinessStatus)
+        let fallbackStatusTitle = Self.displayTitle(for: resolvedReadinessStatus)
+        let connectionDetail = Self.connectionDetail(
+            readinessStatus: resolvedReadinessStatus,
+            scopes: liveScopes,
+            catalog: catalog
+        )
+
         id = catalog.id
         name = catalog.name
         sourceIds = catalog.source_ids ?? [catalog.id]
         formats = catalog.formats ?? []
-        if let readiness {
+        readinessStatus = resolvedReadinessStatus
+        accessDetail = Self.accessDetail(
+            readinessStatus: resolvedReadinessStatus,
+            permissionsRequired: permissionsRequired,
+            scopes: liveScopes
+        )
+        if let readiness, Self.shouldPreserveReadinessStatus(readiness.status) {
             status = readiness.status
             statusTitle = readiness.statusTitle
-            detail = readiness.next_action
-        } else if catalog.isImportReady && catalog.isLivePlanned {
-            status = "planned_import"
-            statusTitle = "Export now"
-            detail = "\(catalog.import_label ?? "Import exported files today"); live sync is planned."
-        } else if catalog.isImportReady {
-            status = "import_ready"
-            statusTitle = "Import ready"
-            detail = catalog.import_label ?? "Import exported files or folders."
+            detail = Self.sanitizedAction(readiness.next_action, readinessStatus: resolvedReadinessStatus)
+        } else if let readiness {
+            status = fallbackStatus
+            statusTitle = fallbackStatusTitle
+            detail = connectionDetail ?? Self.sanitizedAction(readiness.next_action, readinessStatus: resolvedReadinessStatus)
         } else if catalog.isLivePlanned {
-            status = "planned"
-            statusTitle = "Live planned"
-            detail = catalog.notes ?? "Live connection is planned."
-        } else if (catalog.live_status ?? "").lowercased() == "export_only" {
-            status = "export_only"
-            statusTitle = "Export"
-            detail = catalog.import_label ?? catalog.notes ?? "Use an exported file."
+            status = fallbackStatus
+            statusTitle = fallbackStatusTitle
+            detail = connectionDetail ?? "Direct service connection requires account consent."
+        } else if catalog.isImportReady {
+            status = fallbackStatus
+            statusTitle = fallbackStatusTitle
+            detail = connectionDetail ?? "Local app connector can run without service sign-in."
         } else {
-            status = catalog.live_status ?? "available"
-            statusTitle = "Available"
-            detail = catalog.notes ?? "Add this source when it contains useful memory."
+            status = fallbackStatus
+            statusTitle = fallbackStatusTitle
+            detail = connectionDetail ?? "Needs a direct connector before becoming a primary source."
         }
+    }
+
+    private static func shouldPreserveReadinessStatus(_ status: String) -> Bool {
+        ["needs_attention", "needs_review", "synced", "connected"].contains(status)
+    }
+
+    private static func normalizedReadinessStatus(_ value: String?, catalog: SourceConnectorCatalogItem, readiness: SourceReadinessItem?) -> String {
+        let explicit = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if ["export-only", "import-ready", "live-planned"].contains(explicit) {
+            return explicit
+        }
+        if let readiness {
+            let liveStatus = readiness.live_status.lowercased()
+            if liveStatus == "planned" {
+                return "live-planned"
+            }
+            if readiness.supports_import == true || ["native", "generic", "import_ready"].contains(readiness.import_status.lowercased()) || !readiness.formats.isEmpty {
+                return "import-ready"
+            }
+        }
+        return catalog.connectorReadinessStatus
+    }
+
+    private static func displayStatus(for readinessStatus: String) -> String {
+        switch readinessStatus {
+        case "live-planned": return "planned_connection"
+        case "import-ready": return "connector_ready"
+        case "export-only": return "connector_needed"
+        default: return "available"
+        }
+    }
+
+    private static func displayTitle(for readinessStatus: String) -> String {
+        switch readinessStatus {
+        case "live-planned": return "Sign-in planned"
+        case "import-ready": return "Local connector"
+        case "export-only": return "Connector needed"
+        default: return "Available"
+        }
+    }
+
+    private static func coalescedList(_ preferred: [String]?, _ fallback: [String]?) -> [String] {
+        let preferredList = cleanedList(preferred)
+        if !preferredList.isEmpty {
+            return preferredList
+        }
+        return cleanedList(fallback)
+    }
+
+    private static func cleanedList(_ values: [String]?) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for value in values ?? [] {
+            let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if text.isEmpty || seen.contains(text) {
+                continue
+            }
+            seen.insert(text)
+            result.append(text)
+        }
+        return result
+    }
+
+    private static func compactPermission(_ value: String?) -> String? {
+        guard let text = compactCopy(value, removingPrefixes: ["First-100:", "First 100:", "Live-planned:", "Live planned:"]) else {
+            return nil
+        }
+        let lowercased = text.lowercased()
+        if lowercased.contains("oauth") || lowercased.contains("api consent") {
+            return text.replacingOccurrences(of: "user OAuth/API consent for", with: "account consent:", options: [.caseInsensitive])
+        }
+        if lowercased.contains("local folder") || lowercased.contains("local file") || lowercased.contains("database copy") {
+            return "local app access"
+        }
+        if lowercased.contains("service export") || lowercased.contains("import data") || lowercased.contains("selected") {
+            return nil
+        }
+        return text
+    }
+
+    private static func compactCopy(_ value: String?, removingPrefixes prefixes: [String]) -> String? {
+        var text = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        for prefix in prefixes {
+            if text.lowercased().hasPrefix(prefix.lowercased()) {
+                text = String(text.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                break
+            }
+        }
+        text = text.trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+        return text.isEmpty ? nil : text
+    }
+
+    private static func accessDetail(readinessStatus: String, permissionsRequired: [String], scopes: [String]) -> String? {
+        switch readinessStatus {
+        case "live-planned":
+            if !scopes.isEmpty {
+                return "Needs account consent: \(scopeSummary(scopes))"
+            }
+            return permissionsRequired.compactMap(compactPermission).first
+        case "import-ready":
+            return permissionsRequired.compactMap(compactPermission).first
+        default:
+            return nil
+        }
+    }
+
+    private static func connectionDetail(readinessStatus: String, scopes: [String], catalog: SourceConnectorCatalogItem) -> String? {
+        switch readinessStatus {
+        case "live-planned":
+            if scopes.isEmpty {
+                return "Direct service connection is the intended path."
+            }
+            return "Direct service connection requires account consent."
+        case "import-ready":
+            return "Local app connector can run without cloud sign-in."
+        case "export-only":
+            return "Needs a direct connector before becoming a primary source."
+        default:
+            return catalog.notes
+        }
+    }
+
+    private static func sanitizedAction(_ text: String, readinessStatus: String) -> String {
+        let lowercased = text.lowercased()
+        if lowercased.contains("import") || lowercased.contains("export") || lowercased.contains("file") || lowercased.contains("folder") {
+            switch readinessStatus {
+            case "live-planned":
+                return "Connect this source through account sign-in."
+            case "import-ready":
+                return "Connect this source through a local app integration."
+            default:
+                return "Needs a direct connector before becoming a primary source."
+            }
+        }
+        return text
+    }
+
+    private static func scopeSummary(_ scopes: [String]) -> String {
+        let prefix = scopes.prefix(3).joined(separator: ", ")
+        if scopes.count > 3 {
+            return "\(prefix), +\(scopes.count - 3)"
+        }
+        return prefix
     }
 
     var statusColor: Color {
@@ -452,8 +417,9 @@ struct SupportedSourceDisplayItem: Identifiable {
         case "needs_attention": return .orange
         case "needs_review": return .yellow
         case "synced", "connected": return .green
-        case "imported", "import_ready", "planned_import", "export_only": return .accentColor
-        case "planned": return .secondary
+        case "planned_connection": return .blue
+        case "connector_ready": return .accentColor
+        case "connector_needed": return .secondary
         default: return .secondary
         }
     }
@@ -464,19 +430,11 @@ struct SupportedSourceDisplayItem: Identifiable {
         case "needs_review": return "tray.full.fill"
         case "synced": return "checkmark.seal.fill"
         case "connected": return "link.circle.fill"
-        case "imported": return "tray.and.arrow.down.fill"
-        case "import_ready", "planned_import", "export_only": return "square.and.arrow.down.fill"
-        case "planned": return "calendar.badge.clock"
+        case "connector_ready": return "link.badge.plus"
+        case "planned_connection": return "person.crop.circle.badge.plus"
+        case "connector_needed": return "circle.dashed"
         default: return "circle"
         }
-    }
-
-    var sourceSummary: String {
-        let ids = sourceIds.prefix(3).joined(separator: ", ")
-        if sourceIds.count > 3 {
-            return "\(ids), +\(sourceIds.count - 3)"
-        }
-        return ids
     }
 }
 
@@ -487,8 +445,8 @@ struct SupportedSourceGroupsSection: View {
     var body: some View {
         if groups.isEmpty {
             QuietState(
-                title: isLoading ? "Loading supported sources" : "Supported sources unavailable",
-                detail: isLoading ? "Cortex is checking which imports are ready." : "Refresh Sources after the local backend is healthy."
+                title: isLoading ? "Loading connections" : "Connection coverage unavailable",
+                detail: isLoading ? "Cortex is checking service readiness." : "Refresh Sources after the local service is healthy."
             )
         } else {
             VStack(alignment: .leading, spacing: 12) {
@@ -532,7 +490,13 @@ struct SupportedSourceCatalogRow: View {
                 Text(item.detail)
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                if let accessDetail = item.accessDetail {
+                    Text(accessDetail)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 0)
         }

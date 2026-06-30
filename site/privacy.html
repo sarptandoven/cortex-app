@@ -34,9 +34,9 @@
       <section>
         <h2>What Cortex stores</h2>
         <ul>
-          <li>Captures the user explicitly saves through clipboard, quick note, file import, browser capture, or AI-tool workflows.</li>
+          <li>Memories the user approves from connected services, direct local integrations, quick notes, browser captures, or AI-tool workflows.</li>
           <li>Extracted memories, tasks, entities, topics, graph edges, settings, audit events, and backups.</li>
-          <li>A readable local vault plus a rebuildable SQLite index for search and graph views.</li>
+          <li>A readable local memory folder plus a rebuildable search index for search and map views.</li>
         </ul>
       </section>
 
@@ -44,8 +44,8 @@
         <h2>Where data lives</h2>
         <ul>
           <li>By default: <code>~/Library/Application Support/Cortex/Cortex.vault/</code>.</li>
-          <li>The user can choose a different vault folder during setup.</li>
-          <li>The app does not require a hosted backend for the local beta.</li>
+          <li>The user can choose a different memory folder during setup.</li>
+          <li>The app does not require a cloud service for the local beta.</li>
         </ul>
       </section>
 
@@ -53,8 +53,8 @@
         <h2>What Cortex reads</h2>
         <ul>
           <li>Cortex reads clipboard content only when the user clicks a capture action or uses the capture hotkey.</li>
-          <li>Cortex reads selected files, folders, export bundles, or local database copies only when the user chooses or drops those sources.</li>
-          <li>Cortex does not crawl cloud apps, email accounts, browser history, or Messages automatically in this beta.</li>
+          <li>Cortex reads connected account data only after the user signs in or grants an explicit local integration permission.</li>
+          <li>Cortex does not crawl cloud apps, email accounts, browser history, or Messages without a connected account or approved local integration.</li>
           <li>Cortex does not record the screen, listen through the microphone, or capture ambient activity in this beta.</li>
         </ul>
       </section>
@@ -63,10 +63,10 @@
         <h2>AI tool sharing</h2>
         <ul>
           <li>Context is shared when the user copies chat context or enables a direct local AI integration.</li>
-          <li>New local vaults start with review enabled, connected-tool reads enabled for retrieval, and redaction enabled.</li>
-          <li>Connected-tool writes, exports, maintenance, and destructive actions are disabled until the user opts in.</li>
+          <li>New local memory folders start with review enabled, connected AI tool reads enabled for retrieval, and redaction enabled.</li>
+          <li>Connected AI tool writes, exports, maintenance, and destructive actions are disabled until the user opts in.</li>
           <li>Redaction can mask common tokens, secrets, emails, and long account-like numbers before context is shared.</li>
-          <li>Support bundles omit raw capture text, memory bodies, context packs, and exported user data.</li>
+          <li>Support bundles omit raw capture text, memory bodies, copied chat context, and exported user data.</li>
         </ul>
       </section>
 
@@ -74,7 +74,7 @@
         <h2>Current beta boundaries</h2>
         <ul>
           <li>No account system, billing, hosted sync, or team workspace is included in the local beta.</li>
-          <li>No live OAuth/API connectors are included yet; Stage 1 import is based on user-selected local exports and files.</li>
+          <li>Account connectors are staged by service readiness; Advanced/Fallback recovery intake is support-only and not the normal product path.</li>
           <li>No analytics service is required by the static landing page.</li>
           <li>Public distribution still needs Developer ID signing, notarization, hosted HTTPS downloads, and a formal privacy policy review.</li>
         </ul>

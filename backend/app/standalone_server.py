@@ -92,6 +92,33 @@ def _require_api_token_trust(user_id: str, required_scope: str) -> None:
     store.require_agent_access(user_id, required_scope)
 
 
+def _hosted_readiness_contract() -> dict:
+    shard_mode = (settings.shard_mode or "local").strip().lower()
+    hosted_mode = shard_mode != "local"
+    requires_scoped_tokens = bool(settings.require_scoped_api_tokens)
+    global_token_user_switching = "blocked" if hosted_mode or requires_scoped_tokens else "allowed_local_compatibility"
+    scoped_token_check = {
+        "name": "scoped_api_tokens_required",
+        "status": "ok",
+        "detail": "Hosted shard modes require per-user scoped REST tokens before readiness passes.",
+    }
+    if hosted_mode and not requires_scoped_tokens:
+        scoped_token_check = {
+            "name": "scoped_api_tokens_required",
+            "status": "blocked",
+            "detail": "Set CORTEX_REQUIRE_SCOPED_API_TOKENS=1 before marking hosted shard mode ready.",
+        }
+    checks = [scoped_token_check]
+    return {
+        "status": "ok" if all(check["status"] == "ok" for check in checks) else "blocked",
+        "hosted_mode": hosted_mode,
+        "shard_mode": shard_mode,
+        "require_scoped_api_tokens": requires_scoped_tokens,
+        "global_token_user_switching": global_token_user_switching,
+        "checks": checks,
+    }
+
+
 ROOT_HTML = """
 <!doctype html>
 <html>
@@ -228,14 +255,28 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 self._send_text(ROOT_HTML, media_type="text/html")
                 return
             if method == "GET" and path == "/health":
-                self._send_json(store.health_payload(mode="standalone", auth=bool(settings.api_key)))
+                payload = store.health_payload(mode="standalone", auth=bool(settings.api_key))
+                payload["hosted_readiness"] = _hosted_readiness_contract()
+                self._send_json(payload)
                 return
             if method == "GET" and path == "/ready":
+                hosted_readiness = _hosted_readiness_contract()
+                if hosted_readiness["status"] != "ok":
+                    self._send_json(
+                        {
+                            "detail": {
+                                "status": "needs_configuration",
+                                "hosted_readiness": hosted_readiness,
+                            }
+                        },
+                        status=HTTPStatus.SERVICE_UNAVAILABLE,
+                    )
+                    return
                 diagnostics = store.diagnostics(settings.default_user_id)
                 if diagnostics["status"] != "ok":
                     self._send_json({"detail": diagnostics}, status=HTTPStatus.SERVICE_UNAVAILABLE)
                 else:
-                    self._send_json({"status": "ok", "diagnostics": diagnostics})
+                    self._send_json({"status": "ok", "diagnostics": diagnostics, "hosted_readiness": hosted_readiness})
                 return
             if method == "GET" and path == "/.well-known/cortex.json":
                 self._send_json({

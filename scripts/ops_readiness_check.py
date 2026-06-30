@@ -11,6 +11,11 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+try:
+    from scripts.export_support_bundle import validate_content_free_bundle
+except ModuleNotFoundError:
+    from export_support_bundle import validate_content_free_bundle
+
 
 REQUIRED_DOCS = (
     "docs/ARCHITECTURE.md",
@@ -249,6 +254,25 @@ def offline_support_bundle(root: Path) -> dict:
     return bundle
 
 
+def check_support_bundle_contract(bundle: dict) -> tuple[bool, dict]:
+    validate_content_free_bundle(bundle)
+    privacy = bundle.get("privacy", {}) if isinstance(bundle.get("privacy"), dict) else {}
+    backend = bundle.get("backend", {}) if isinstance(bundle.get("backend"), dict) else {}
+    features = backend.get("features", []) if isinstance(backend.get("features"), list) else []
+    return (
+        bundle.get("bundle_schema") == 1 and "operational-readiness" in features,
+        {
+            "bundle_schema": bundle.get("bundle_schema"),
+            "summary": bundle.get("summary"),
+            "content_free": True,
+            "contains_raw_capture_text": privacy.get("contains_raw_capture_text"),
+            "contains_memory_content": privacy.get("contains_memory_content"),
+            "contains_context_pack": privacy.get("contains_context_pack"),
+            "contains_user_files": privacy.get("contains_user_files"),
+        },
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Cortex local operational readiness checks.")
     parser.add_argument("--base-url", default="http://127.0.0.1:8766")
@@ -331,12 +355,8 @@ def main() -> None:
 
     try:
         bundle = offline_support_bundle(root)
-        bundle_ok = (
-            bundle.get("bundle_schema") == 1
-            and bundle.get("privacy", {}).get("contains_raw_capture_text") is False
-            and "operational-readiness" in bundle.get("backend", {}).get("features", [])
-        )
-        add_check(checks, "offline_support_bundle", bundle_ok, "Offline support bundle can be generated without user content.", {"bundle_schema": bundle.get("bundle_schema"), "summary": bundle.get("summary")})
+        bundle_ok, bundle_payload = check_support_bundle_contract(bundle)
+        add_check(checks, "offline_support_bundle", bundle_ok, "Offline support bundle can be generated without user content.", bundle_payload)
     except Exception as exc:
         add_check(checks, "offline_support_bundle", False, "Offline support bundle failed.", {"error": str(exc)})
 
@@ -344,13 +364,20 @@ def main() -> None:
         health = live_get(args.base_url, args.token, "/health")
         reliability = live_get(args.base_url, args.token, "/v1/reliability/report")
         support = live_get(args.base_url, args.token, "/v1/support/bundle")
-        live_ok = (
-            health.get("status") == "ok"
-            and int(health.get("health_contract") or 0) >= 3
-            and reliability.get("health_contract") >= 3
-            and support.get("bundle_schema") == 1
-        )
-        add_check(checks, "live_backend_optional", live_ok, "Running backend exposes health, reliability, and support-bundle contracts.", {"health": health, "reliability_status": reliability.get("status"), "support_schema": support.get("bundle_schema")})
+        try:
+            support_ok, support_payload = check_support_bundle_contract(support)
+        except ValueError as exc:
+            add_check(checks, "live_backend_optional", False, "Running backend support bundle failed content-free validation.", {"error": str(exc), "required": args.require_live})
+        else:
+            live_ok = (
+                health.get("status") == "ok"
+                and int(health.get("health_contract") or 0) >= 3
+                and reliability.get("health_contract") >= 3
+                and support_ok
+            )
+            live_payload = {"health": health, "reliability_status": reliability.get("status")}
+            live_payload.update(support_payload)
+            add_check(checks, "live_backend_optional", live_ok, "Running backend exposes health, reliability, and support-bundle contracts.", live_payload)
     except (urllib.error.URLError, TimeoutError) as exc:
         add_check(checks, "live_backend_optional", not args.require_live, "Running backend was not reachable." if not args.require_live else "Running backend is required but unreachable.", {"error": str(exc), "required": args.require_live})
 

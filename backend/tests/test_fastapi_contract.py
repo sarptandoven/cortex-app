@@ -798,13 +798,13 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         catalog = {item["id"]: item for item in response.json()["results"]}
         expected = {
-            "chatgpt": ("export-only", [], "OpenAI data export"),
-            "apple-mail": ("import-ready", [], "eml"),
-            "gmail": ("live-planned", ["gmail.readonly"], "Gmail Takeout"),
-            "notion": ("live-planned", ["read_content"], "Markdown, CSV, and HTML exports"),
-            "slack": ("live-planned", ["channels:history", "groups:history", "im:history"], "Workspace export"),
-            "github": ("live-planned", ["repo:read", "read:org"], "Issue/PR exports"),
-            "obsidian": ("import-ready", [], "Markdown vault"),
+            "chatgpt": ("export-only", [], "direct connector"),
+            "apple-mail": ("import-ready", [], "direct local integration"),
+            "gmail": ("live-planned", ["gmail.readonly"], "account sign-in"),
+            "notion": ("live-planned", ["read_content"], "account sign-in"),
+            "slack": ("live-planned", ["channels:history", "groups:history", "im:history"], "account sign-in"),
+            "github": ("live-planned", ["repo:read", "read:org"], "account sign-in"),
+            "obsidian": ("import-ready", [], "direct local integration"),
         }
 
         for source_id, (readiness_status, scopes, first_100_note) in expected.items():
@@ -816,9 +816,34 @@ class FastAPIContractTests(unittest.TestCase):
             self.assertTrue(entry["permissions_required"])
             self.assertIn(first_100_note, entry["first_100_note"])
 
-        self.assertTrue(any("no OAuth token required" in item for item in catalog["gmail"]["permissions_required"]))
-        self.assertTrue(any("OAuth/API consent for gmail.readonly" in item for item in catalog["gmail"]["permissions_required"]))
-        self.assertTrue(any("user-selected local folder" in item for item in catalog["obsidian"]["permissions_required"]))
+        self.assertTrue(any("account sign-in planned" in item for item in catalog["gmail"]["permissions_required"]))
+        self.assertTrue(any("account consent for gmail.readonly" in item for item in catalog["gmail"]["permissions_required"]))
+        self.assertTrue(any("local app access" in item for item in catalog["obsidian"]["permissions_required"]))
+        display_text = "\n".join(
+            str(value)
+            for entry in catalog.values()
+            for value in [
+                entry.get("name"),
+                entry.get("notes"),
+                entry.get("first_100_note"),
+                entry.get("import_label"),
+                *(entry.get("permissions_required") or []),
+            ]
+            if value
+        ).lower()
+        for manual_intake_term in (
+            "takeout",
+            "selected export",
+            "manual import",
+            "file upload",
+            "files or folders",
+            "selected files",
+            "choose file",
+            "choose folder",
+            "upload",
+            "user-selected",
+        ):
+            self.assertNotIn(manual_intake_term, display_text)
 
     def test_scoped_mcp_token_can_use_mcp_but_not_rest(self) -> None:
         scoped_token = "cxm_fastapi_contract_token_123456789"

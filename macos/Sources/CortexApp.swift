@@ -64,7 +64,10 @@ struct SourceConnectorCatalogItem: Codable, Identifiable, Hashable {
     let category: String?
     let auth: String?
     let live_status: String?
+    let readiness_status: String?
     let scopes: [String]?
+    let permissions_required: [String]?
+    let first_100_note: String?
     let notes: String?
     let import_status: String?
     let export_status: String?
@@ -83,7 +86,22 @@ struct SourceConnectorCatalogItem: Codable, Identifiable, Hashable {
     }
 
     var isLivePlanned: Bool {
-        (live_status ?? "").lowercased() == "planned"
+        connectorReadinessStatus == "live-planned" || (live_status ?? "").lowercased() == "planned"
+    }
+
+    var connectorReadinessStatus: String {
+        let explicit = (readiness_status ?? "").lowercased()
+        if ["export-only", "import-ready", "live-planned"].contains(explicit) {
+            return explicit
+        }
+        let status = (live_status ?? "").lowercased()
+        if status == "planned" {
+            return "live-planned"
+        }
+        if ["import_ready", "local_only", "imported"].contains(status) {
+            return "import-ready"
+        }
+        return "export-only"
     }
 }
 
@@ -120,7 +138,11 @@ struct SourceReadinessItem: Codable, Identifiable, Hashable {
     let import_label: String?
     let supports_import: Bool?
     let live_status: String
+    let readiness_status: String?
+    let permissions_required: [String]?
+    let first_100_note: String?
     let auth: String?
+    let scopes: [String]?
     let formats: [String]
     let accounts: Int
     let cursors: Int
@@ -1903,8 +1925,15 @@ final class AppState: ObservableObject {
     }
 
     var onboardingHasSource: Bool {
-        onboardingFirstImport != nil
-            || (onboardingFirstImportID.isEmpty && firstSourceAdded && !onboardingFirstSourceNames.isEmpty && (latestUsableImport != nil || !inbox.isEmpty || !recent.isEmpty || (stats?.captures ?? 0) > 0))
+        hasConnectedSourceAccount
+            || onboardingFirstImport != nil
+            || (onboardingFirstImportID.isEmpty && firstSourceAdded && !onboardingFirstSourceNames.isEmpty && (hasConnectedSourceAccount || latestUsableImport != nil || !inbox.isEmpty || !recent.isEmpty || (stats?.captures ?? 0) > 0))
+    }
+
+    var hasConnectedSourceAccount: Bool {
+        sourceAccounts.contains { account in
+            account.disconnected_at == nil
+        }
     }
 
     var onboardingHasReviewedMemory: Bool {
@@ -2202,7 +2231,7 @@ final class AppState: ObservableObject {
     func chooseFilesForCapture() {
         let panel = NSOpenPanel()
         panel.title = "Choose Sources to Add to Cortex"
-        panel.prompt = "Add Sources"
+        panel.prompt = "Add Recovery Items"
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
@@ -3904,9 +3933,9 @@ struct CortexView: View {
                 Spacer()
                 Button {
                     state.selectedTab = .sources
-                    state.status = "Import sources to build your model"
+                    state.status = "Review connection coverage and source health"
                 } label: {
-                    Label("Add Sources", systemImage: "tray.and.arrow.down")
+                    Label("Sources", systemImage: "rectangle.connected.to.line.below")
                 }
             }
             .padding(16)
@@ -4008,7 +4037,7 @@ struct IntegrationCenterView: View {
             Text("AI access")
                 .font(compact ? .headline : .title3)
                 .fontWeight(.semibold)
-            Text("Give trusted tools direct MCP access to approved memory, with redacted browser handoffs as a fallback.")
+            Text("Let trusted local tools read approved memory directly. Copy-based handoff stays in Advanced for tools that cannot connect yet.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -4024,14 +4053,16 @@ struct IntegrationCenterView: View {
 
     private var quickActions: some View {
         HStack {
-            Button {
-                state.installDetectedIntegrations()
-            } label: {
-                Label("Install Tools", systemImage: "wand.and.stars")
+            if detectedCount > connectedCount {
+                Button {
+                    state.installDetectedIntegrations()
+                } label: {
+                    Label("Connect Detected Tools", systemImage: "wand.and.stars")
+                }
+                .buttonStyle(.borderedProminent)
             }
-            .buttonStyle(.borderedProminent)
 
-            if !compact {
+            if !compact || detectedCount == 0 {
                 Button {
                     state.refreshIntegrationStates()
                 } label: {
@@ -4044,16 +4075,16 @@ struct IntegrationCenterView: View {
     }
 
     private var manualHandoffActions: some View {
-        DisclosureGroup("Manual setup and browser fallback") {
+        DisclosureGroup("Advanced local setup") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Use these only when a tool cannot install or call Cortex directly.")
+                Text("Use these only when a supported tool cannot connect to Cortex directly yet.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 HStack {
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy MCP Setup", systemImage: "doc.on.doc")
+                        Label("Copy Advanced Setup", systemImage: "doc.on.doc")
                     }
 
                     Button {
@@ -4063,7 +4094,7 @@ struct IntegrationCenterView: View {
                             state.copyDailyContextPack()
                         }
                     } label: {
-                        Label("Copy Browser Fallback", systemImage: "text.quote")
+                        Label("Copy Chat Fallback", systemImage: "text.quote")
                     }
                     .disabled(!state.canPrepareArtifacts)
                     Spacer()
@@ -4074,7 +4105,9 @@ struct IntegrationCenterView: View {
     }
 
     private func integrations(in category: IntegrationCategory) -> [AIIntegration] {
-        state.integrations.filter { $0.category == category }
+        state.integrations.filter { integration in
+            integration.category == category && (!compact || integration.supportsInstall)
+        }
     }
 }
 
@@ -4151,59 +4184,90 @@ struct IntegrationCard: View {
                     .truncationMode(.middle)
             }
 
-            HStack(spacing: 8) {
-                if integration.supportsInstall {
-                    Button {
-                        state.installIntegration(integration)
-                    } label: {
-                        Label(integrationState.configured ? "Repair" : "Install", systemImage: integrationState.configured ? "wrench.and.screwdriver" : "plus.circle")
-                    }
-                    .buttonStyle(.borderedProminent)
-
-                    Button {
-                        state.copyMCPConfig(for: integration)
-                    } label: {
-                        Label("Setup", systemImage: "doc.on.doc")
-                    }
-
-                    Button {
-                        state.openIntegrationConfig(integration)
-                    } label: {
-                        Label("Open", systemImage: "folder")
-                    }
-                } else {
-                    Button {
-                        state.copyIntegrationContext(integration)
-                    } label: {
-                        Label("Prepare", systemImage: "text.quote")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!state.canPrepareArtifacts)
-
-                    Button {
-                        state.copyIntegrationGuide(integration)
-                    } label: {
-                        Label("Guide", systemImage: "list.bullet.clipboard")
-                    }
-                }
-
-                if integration.supportsInstall && !compact {
-                    Button {
-                        state.copyIntegrationGuide(integration)
-                    } label: {
-                        Label("Guide", systemImage: "questionmark.circle")
-                    }
-                }
-
-                Spacer(minLength: 0)
+            if compact {
+                compactAction
+            } else {
+                fullActionRow
             }
-            .labelStyle(.titleAndIcon)
 
-            Text(integration.restartHint)
+            Text(footnote)
                 .font(.caption2)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    @ViewBuilder
+    private var compactAction: some View {
+        if integrationState.configured {
+            Label("Connected", systemImage: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundColor(.green)
+        } else if integration.supportsInstall && integrationState.appInstalled {
+            Button {
+                state.installIntegration(integration)
+            } label: {
+                Label("Connect", systemImage: "link.circle")
+            }
+            .buttonStyle(.borderedProminent)
+        } else if integration.supportsInstall {
+            Label("Install the app to connect it", systemImage: "app.badge")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        } else {
+            EmptyView()
+        }
+    }
+
+    private var fullActionRow: some View {
+        HStack(spacing: 8) {
+            if integration.supportsInstall {
+                Button {
+                    state.installIntegration(integration)
+                } label: {
+                    Label(integrationState.configured ? "Repair" : "Connect", systemImage: integrationState.configured ? "wrench.and.screwdriver" : "link.circle")
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    state.copyMCPConfig(for: integration)
+                } label: {
+                    Label("Advanced Setup", systemImage: "doc.on.doc")
+                }
+
+                Button {
+                    state.openIntegrationConfig(integration)
+                } label: {
+                    Label("Open Config", systemImage: "folder")
+                }
+            } else {
+                Button {
+                    state.copyIntegrationContext(integration)
+                } label: {
+                    Label("Copy Chat Fallback", systemImage: "text.quote")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!state.canPrepareArtifacts)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .labelStyle(.titleAndIcon)
+    }
+
+    private var footnote: String {
+        if compact {
+            if integrationState.configured {
+                return integration.restartHint
+            }
+            if integration.supportsInstall && integrationState.appInstalled {
+                return "Connect once, then reopen the tool if it asks."
+            }
+            if integration.supportsInstall {
+                return "Cortex will show a Connect action after the app is installed."
+            }
+        }
+        return integration.restartHint
     }
 }
 
@@ -4226,7 +4290,7 @@ struct IntegrationStatusBadge: View {
         if state.configured { return "Connected" }
         if supportsInstall && state.appInstalled { return "Detected" }
         if supportsInstall && state.configExists { return "Config" }
-        return supportsInstall ? "Ready" : "Paste"
+        return supportsInstall ? "Ready" : "Fallback"
     }
 
     private var color: Color {
@@ -4291,7 +4355,7 @@ struct SourceHealthSummarySection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "Source health", detail: "Imported batches stay removable, and pending source records wait for review.")
+            SectionHeader(title: "Source health", detail: "Connected services, direct integrations, and review backlog.")
             if let report = state.sourceReadinessReport, !report.sources.isEmpty {
                 SourceReadinessPanel(report: report)
             } else if !state.sourceConnectorCatalog.isEmpty || !state.sourceAccounts.isEmpty || !state.syncCursors.isEmpty {
@@ -4304,7 +4368,7 @@ struct SourceHealthSummarySection: View {
                     }
                 }
             } else {
-                QuietState(title: "No sources yet", detail: "Choose sources or drop exports here to start building memory.")
+                QuietState(title: "No sources yet", detail: "Connect a service or app integration to start building memory.")
             }
         }
     }
@@ -4334,7 +4398,7 @@ struct SourceReadinessPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 8) {
-                SourceConnectivityMetric(title: "Import ready", value: "\(report.summary.import_ready)", systemImage: "tray.and.arrow.down.fill", color: .accentColor)
+                SourceConnectivityMetric(title: "Ready", value: "\(report.summary.import_ready)", systemImage: "link.badge.plus", color: .accentColor)
                 SourceConnectivityMetric(title: "Connected", value: "\(report.summary.connected)", systemImage: "link.circle.fill", color: report.summary.connected == 0 ? .secondary : .green)
                 SourceConnectivityMetric(title: "With memory", value: "\(report.summary.sources_with_data)", systemImage: "brain.head.profile", color: report.summary.sources_with_data == 0 ? .secondary : .blue)
                 SourceConnectivityMetric(title: "Attention", value: "\(report.summary.needs_attention + report.summary.needs_review)", systemImage: "exclamationmark.triangle.fill", color: report.summary.needs_attention + report.summary.needs_review == 0 ? .secondary : .orange)
@@ -4345,7 +4409,7 @@ struct SourceReadinessPanel: View {
                     Image(systemName: report.summary.needs_attention == 0 && report.summary.needs_review == 0 ? "checkmark.seal.fill" : "lightbulb.fill")
                         .foregroundColor(report.summary.needs_attention == 0 && report.summary.needs_review == 0 ? .green : .orange)
                         .frame(width: 18)
-                    Text(recommendation)
+                    Text(displayRecommendation(recommendation))
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -4378,6 +4442,16 @@ struct SourceReadinessPanel: View {
         .background(Color(nsColor: .textBackgroundColor))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func displayRecommendation(_ value: String) -> String {
+        if value.lowercased().contains("import one high-signal source") {
+            return "Connect one high-signal service such as ChatGPT, Claude, Gmail, Notion, Slack, or notes."
+        }
+        if value.lowercased().contains("local beta use") {
+            return "Source readiness is healthy for connected and planned sources."
+        }
+        return value
     }
 }
 
@@ -4418,7 +4492,34 @@ struct SourceReadinessRow: View {
         if source.needsAttention, let warning = source.warnings.first {
             return "\(warning) · \(memoryText) · \(reviewText)"
         }
-        return "\(source.next_action) · \(memoryText) · \(reviewText)"
+        return "\(connectionAction) · \(memoryText) · \(reviewText)"
+    }
+
+    private var connectionAction: String {
+        switch readinessStatus {
+        case "live-planned":
+            return "Live service connection planned"
+        case "import-ready":
+            return "Local connector ready"
+        case "export-only":
+            return "Fallback-only connector"
+        default:
+            return source.next_action
+        }
+    }
+
+    private var readinessStatus: String {
+        let explicit = (source.readiness_status ?? "").lowercased()
+        if ["export-only", "import-ready", "live-planned"].contains(explicit) {
+            return explicit
+        }
+        if source.live_status.lowercased() == "planned" {
+            return "live-planned"
+        }
+        if source.supports_import == true || ["native", "generic", "import_ready"].contains(source.import_status.lowercased()) || !source.formats.isEmpty {
+            return "import-ready"
+        }
+        return "export-only"
     }
 }
 
@@ -4444,8 +4545,8 @@ struct SourceConnectivityPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 8) {
-                SourceConnectivityMetric(title: "Import ready", value: "\(importReadyCount)", systemImage: "tray.and.arrow.down.fill", color: .accentColor)
-                SourceConnectivityMetric(title: "Live planned", value: "\(livePlannedCount)", systemImage: "arrow.triangle.2.circlepath", color: .blue)
+                SourceConnectivityMetric(title: "Ready", value: "\(importReadyCount)", systemImage: "link.badge.plus", color: .accentColor)
+                SourceConnectivityMetric(title: "Direct planned", value: "\(livePlannedCount)", systemImage: "arrow.triangle.2.circlepath", color: .blue)
                 SourceConnectivityMetric(title: "Connected", value: "\(state.sourceAccounts.count)", systemImage: "link.circle.fill", color: state.sourceAccounts.isEmpty ? .secondary : .green)
                 SourceConnectivityMetric(title: "Needs attention", value: "\(accountsNeedingAttention.count + cursorErrors)", systemImage: "exclamationmark.triangle.fill", color: accountsNeedingAttention.isEmpty && cursorErrors == 0 ? .secondary : .orange)
             }
@@ -4454,7 +4555,7 @@ struct SourceConnectivityPanel: View {
                 HStack(spacing: 8) {
                     Image(systemName: "point.3.connected.trianglepath.dotted")
                         .foregroundColor(.secondary)
-                    Text("No live source accounts connected")
+                    Text("No service accounts connected yet")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Spacer()

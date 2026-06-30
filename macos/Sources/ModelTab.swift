@@ -72,10 +72,10 @@ struct ModelEmptySection: View {
                 .frame(width: 64, height: 64)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Build Cortex from one source")
+                    Text("Connect your first source")
                         .font(.title2)
                         .fontWeight(.semibold)
-                    Text("Add a readable export or file. Cortex scans it locally, then sends useful memory to Review before it appears in Ask.")
+                    Text("Connect a service or app integration. Cortex turns useful source context into reviewable memory before it appears in Ask.")
                         .font(.callout)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -86,9 +86,9 @@ struct ModelEmptySection: View {
             HStack(spacing: 8) {
                 Button {
                     state.selectedTab = .sources
-                    state.status = "Add your first source"
+                    state.status = "Connect your first source"
                 } label: {
-                    Label("Add Source", systemImage: "tray.and.arrow.down")
+                    Label("Connect Source", systemImage: "link.circle")
                 }
                 .buttonStyle(.borderedProminent)
 
@@ -236,7 +236,7 @@ struct ModelOverviewSection: View {
 
     private func modelDetail(loop: ProductLoopResponse) -> String {
         if review.stats.memories == 0 {
-            return "Add conversations, email, notes, writing, decisions, or messages so Cortex can learn useful context from your work."
+            return "Connect services for conversations, email, notes, writing, decisions, or messages so Cortex can learn useful context from your work."
         }
         if review.stats.pending_captures > 0 {
             return "Cortex found new memory that needs review before it can be used."
@@ -247,7 +247,7 @@ struct ModelOverviewSection: View {
     private func primaryActionIcon(_ action: String) -> String {
         switch action {
         case "capture":
-            return "tray.and.arrow.down"
+            return "link.circle"
         case "review":
             return "checklist"
         case "reuse":
@@ -323,7 +323,7 @@ struct ModelProofPointCard: View {
                 } else {
                     Text("\(signalCount) approved memories are ready to use.")
                         .font(.callout)
-                    Text("Add richer sources to show a concrete example here.")
+                    Text("Connect richer sources to show a concrete example here.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -510,7 +510,7 @@ struct ModelSourceCoverageSection: View {
                     Spacer(minLength: 0)
                 }
             } else if review.stats.memories == 0 {
-                QuietState(title: "No approved memory yet", detail: "Add one source, then approve useful memory in Review before expecting Ask to answer.")
+                QuietState(title: "No approved memory yet", detail: "Connect one source, then approve useful memory in Review before expecting Ask to answer.")
             } else {
                 HStack(spacing: 8) {
                     ModelMetricPill(label: "Topics", value: "\(review.top_topics.count)", systemImage: "number")
@@ -537,7 +537,7 @@ struct ModelSignalSummarySection: View {
                 ModelMetricPill(label: "Decisions", value: "\(review.recent_decisions.count)", systemImage: "checkmark.seal")
             }
             if review.top_topics.isEmpty && review.top_entities.isEmpty {
-                QuietState(title: "Needs more context", detail: "Approve more memory or import a richer source to improve people, project, topic, and style coverage.")
+                QuietState(title: "Needs more context", detail: "Approve more memory or connect a richer source to improve people, project, topic, and style coverage.")
             } else {
                 ModelTopicSection(topics: review.top_topics, entities: review.top_entities)
             }

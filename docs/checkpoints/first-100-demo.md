@@ -1,6 +1,6 @@
 # First 100 User Demo Checkpoint
 
-This checkpoint defines the practical demo bar for inviting the first 100 local-first Cortex users. It is not a broad launch checklist. The goal is to prove that a nontechnical macOS user can create useful, cited personal memory from local source material and understand the trust boundaries.
+This checkpoint defines the practical demo bar for inviting the first 100 local-first Cortex users. It is not a broad launch checklist. The goal is to prove that a nontechnical macOS user can connect services or direct app integrations, review useful signals into cited personal memory, ask with citations, and understand the trust boundaries.
 
 For the short operator checklist, start with [First 100 Beta Operator Quickstart](../BETA_OPERATOR_QUICKSTART.md).
 
@@ -14,12 +14,12 @@ Model -> Sources -> Review -> Ask -> Trust
 
 By the end of the run, the tester should have:
 
-- chosen or confirmed a local vault;
-- imported at least one real user-selected source export, folder, or file;
+- chosen or confirmed a local memory folder;
+- connected at least one real supported service or direct app integration;
 - approved at least one useful memory candidate;
 - asked Cortex a question and received cited results;
 - checked trust, backup, export, and recovery controls.
-- installed from the packaged DMG and understood the manual update and rollback path.
+- installed from the packaged DMG and understood the beta update and rollback path.
 
 ## Product Surfaces
 
@@ -27,47 +27,47 @@ By the end of the run, the tester should have:
 
 Show that Cortex starts from a local model-readiness view rather than an empty chat box.
 
-- readiness, memory coverage, source health, decisions, and open loops are visible;
+- readiness, memory coverage, source health, decisions, and follow-ups are visible;
 - there is one obvious next action;
 - source readiness and citation coverage are product signals, not launch claims.
 
 ### Sources
 
-Import real material through the Sources tab.
+Connect real services or direct app integrations through the Sources tab.
 
-- use user-selected exports, folders, or files;
-- show preview before import;
-- confirm duplicate-safe import history;
-- show undo for a bad import batch;
-- show the source readiness report after import.
+- connect a supported service, account, or local AI tool;
+- show status, permissions, and coverage before memory is used;
+- confirm duplicate-safe source history;
+- show undo for a bad sync or capture batch;
+- show the source readiness report after connection.
 
-Good first-demo sources are ChatGPT export, Claude export, Slack export, Gmail/email mbox, Notion export, docs, notes, meeting transcripts, browser bookmarks, calendars, or contacts.
+Good first-demo sources are connected ChatGPT, Claude, Slack, Gmail/email, Notion, docs, notes, meeting transcripts, browser bookmarks, calendars, or contacts. If no supported connector exists for the tester's source, use Advanced/Fallback import for a selected export, folder, or file, and call out that it is not the primary first-100 path.
 
 ### Review
 
 Use Review as the trust boundary.
 
 - pending source captures can be approved or archived;
-- decisions, recommended actions, and open loops remain visible;
-- noisy imports can stay pending or be archived instead of becoming trusted memory;
+- decisions, recommended actions, and follow-ups remain visible;
+- noisy source captures can stay pending or be archived instead of becoming trusted memory;
 - approved memory becomes available for the next Ask step.
 
 ### Ask
 
-Ask a question that the imported source can answer.
+Ask a question that the connected source can answer.
 
-- results include citations back to the imported source;
+- results include citations back to the reviewed source;
 - cited memory is the primary success condition;
-- context packs, ChatGPT, Claude, Cursor, MCP, and browser handoffs are secondary actions;
-- an empty or weak answer should lead back to Sources or Review, not to hidden automation.
+- direct AI tool connections, ChatGPT, Claude, Cursor, and browser handoffs are secondary actions after cited Ask results are clear;
+- an empty or weak answer should lead back to connected-source coverage or Review, not to hidden automation.
 
 ### Trust
 
 End in Trust so the user sees control before continued use.
 
-- local vault path and backend health are visible;
-- review settings, pending-memory visibility, source policies, identity aliases, and agent permissions are understandable;
-- agent read, write, export, maintenance, and destructive controls remain explicit;
+- local memory folder path and service health are visible;
+- review settings, pending-memory visibility, source policies, identity aliases, and connected AI tool permissions are understandable;
+- connected AI tool read, save, export, maintenance, and destructive controls remain explicit;
 - shared context redaction is enabled by default;
 - backup, export, support bundle, and maintenance actions are discoverable without being part of the core loop.
 
@@ -75,21 +75,21 @@ End in Trust so the user sees control before continued use.
 
 A fresh install should guide the tester through:
 
-1. private vault confirmation;
-2. first real source import;
+1. private memory folder confirmation;
+2. first real source connection;
 3. first memory review;
 4. first Ask with citations;
 5. backup or explicit backup-later decision;
 6. landing in the five-tab product flow.
 
-Quick memories, clipboard captures, and web captures are useful secondary paths, but they should not replace the first-source import gate for this demo.
+Quick memories, clipboard captures, web captures, and Advanced/Fallback import are useful secondary paths, but they should not replace the first-source connection gate for this demo.
 
 ## Backup And Export
 
 Before ending the session, verify that the user can leave with their data.
 
-- create a local vault backup;
-- confirm backups are written under the vault backup area;
+- create a local memory folder backup;
+- confirm backups are written under the memory folder backup area;
 - verify JSON or Markdown export is available;
 - confirm redaction applies to shared context and exports when enabled;
 - confirm support bundle generation does not include raw memory content.
@@ -131,7 +131,7 @@ python3 scripts/ops_readiness_check.py --refresh-site --include-package
 
 The release directory generated by `./macos/package_release.sh` also contains
 `BETA_HANDOFF.md`. Use that file as the tester-facing handoff for build,
-install, checksum, readiness, live-backend, support-bundle, and manual loop
+install, checksum, readiness, live-backend, support-bundle, and hands-on loop
 verification.
 
 Verify the generated release artifacts explicitly:
@@ -166,28 +166,29 @@ source-code instructions:
 
 - install from the DMG on a clean macOS 13 or newer user profile;
 - launch from Applications and complete first-run setup;
-- confirm the local vault is outside the app bundle;
+- confirm the local memory folder is outside the app bundle;
 - update over a previous beta by replacing `Cortex.app`;
-- confirm the vault remains intact after update;
+- confirm the memory folder remains intact after update;
 - roll back to the previous beta by replacing `Cortex.app`;
-- confirm the vault remains intact after rollback;
+- confirm the memory folder remains intact after rollback;
 - run the reliability report and create a backup after update and rollback;
-- keep the previous DMG, ZIP, checksum file, and manifest available until the new package passes manual QA.
+- keep the previous DMG, ZIP, checksum file, and manifest available until the new package passes hands-on QA.
 
-## Manual Acceptance
+## Hands-On Acceptance
 
 The demo is ready for the first 100 users when:
 
 - generated DMG, ZIP, checksum file, `latest.json`, and `BETA_HANDOFF.md` pass package-artifact verification;
 - onboarding works on a clean user profile;
-- Sources can preview, import, show history, and undo a real selected source;
-- Review can approve and archive imported candidates;
+- Sources can connect a real supported service or direct app integration, show status/history, and undo a bad sync or capture batch;
+- Advanced/Fallback can preview and import a selected source when no supported connector exists;
+- Review can approve and archive connected-source candidates;
 - Ask returns at least one useful cited result from approved memory;
 - Trust clearly shows local storage, permissions, redaction, backup, export, and support controls;
 - the reliability report has no critical issue;
 - the support bundle is content-free;
 - the user can explain where their data lives and how to back it up.
-- update and rollback both preserve the local vault.
+- update and rollback both preserve the local memory folder.
 
 ## Known Non-Goals
 
@@ -195,16 +196,16 @@ Do not present these as first-100-user capabilities:
 
 - hosted accounts or multi-user organizations;
 - broad public launch readiness;
-- live OAuth/API sync for Gmail, Notion, Slack, Google Drive, Microsoft 365, Teams, Linear, Jira, GitHub, LinkedIn, Twitter/X, Zoom, or browser history;
+- broad live OAuth/API sync for every Gmail, Notion, Slack, Google Drive, Microsoft 365, Teams, Linear, Jira, GitHub, LinkedIn, Twitter/X, Zoom, or browser-history source;
 - remote MCP/OAuth;
 - billing, quotas, teams, enterprise policy, or hosted analytics;
 - automatic app crawling or background cloud capture;
 - notarized external distribution unless the current release has completed that work;
 - automatic updates or in-app rollback;
 - hosted cloud backup;
-- perfect extraction quality on every large or noisy export;
+- perfect extraction quality for every unsupported-source fallback import;
 - production incident response, telemetry, or cloud backup.
 
 ## Demo Notes
 
-Use real but non-sensitive test data where possible. Avoid promising that Cortex has learned the user's whole life after one import. The honest claim is narrower: selected local sources can become reviewed, cited memory that stays under the user's control.
+Use real but non-sensitive test data where possible. Avoid promising that Cortex has learned the user's whole life after one connection. The honest claim is narrower: connected and reviewed sources can become cited memory that stays under the user's control.

@@ -2,24 +2,24 @@
 
 Your private personal memory model for AI tools.
 
-Cortex is a local-first personal memory and adaptation layer. It turns approved chats, notes, files, writing samples, decisions, people, projects, and open loops into cited memory that AI tools can retrieve instead of guessing or starting from zero.
+Cortex is a local-first personal memory and adaptation layer. It connects to approved services and AI tools, turns reviewed chats, notes, writing samples, decisions, people, projects, and follow-ups into cited memory, and lets AI tools retrieve that memory instead of guessing or starting from zero.
 
 ## What Exists Now
 
 - Native macOS app that opens as a normal window from the Dock
-- Bundled local backend on `127.0.0.1:8766`
-- User-owned local vault at `~/Library/Application Support/Cortex/Cortex.vault/`
+- Bundled local service on `127.0.0.1:8766`
+- User-owned memory folder at `~/Library/Application Support/Cortex/Cortex.vault/`
 - SQLite FTS search with optional `sqlite-vec` and opt-in OpenAI embeddings
-- Capture surfaces for clipboard, quick notes, files, browser capture, and drop-folder import
-- Stage 1 source import with preview, duplicate-safe history, and batch undo for user-selected exports, folders, and files from ChatGPT, Claude, Gemini, Perplexity, Microsoft Copilot, Grok, Poe, NotebookLM, Notion, Gmail/email, Slack, Discord, Telegram, Google Keep, Google Chat, Teams, Zoom, Messages, WhatsApp, bookmarks, calendars, contacts, LinkedIn, Twitter/X, docs, notes, and work-tool exports
+- Connected-source setup for AI tools, notes, email, messaging, calendars, contacts, docs, bookmarks, and work tools
+- Direct local app connection helpers for supported AI tools, with Advanced/Fallback import available only when a service cannot connect directly yet
 - Five-tab product flow: Model, Sources, Review, Ask, Trust
-- Source readiness report covering import-ready services, planned live connectors, connected accounts, review backlog, source errors, active memory, and citation coverage
-- Gated first-run setup for private vault, first source import, first memory review, first Ask/use action, and backup/trust decision
-- Review inbox for approve/archive, decisions, recommended actions, and open loops
-- Ask screen with cited memory search plus secondary handoffs for ChatGPT, Claude, Cursor, MCP tools, and browser-only workflows
-- Local MCP bridge and one-click config helpers
-- Trust controls for agent reads, writes, exports, redaction, and maintenance
-- Reliability report, backup-first repair, and local vault backups
+- Source readiness report covering supported services, planned live connectors, connected accounts, review backlog, source errors, active memory, and citation coverage
+- Gated first-run setup for private memory folder, first connected source, first memory review, first Ask/use action, and backup/trust decision
+- Review inbox for approve/archive, decisions, recommended actions, and follow-ups
+- Ask screen with cited memory search plus secondary handoffs for ChatGPT, Claude, Cursor, direct local tools, and browser-only workflows
+- Advanced local connection bridge and one-click setup helpers
+- Trust controls for connected AI tool reads, saves, exports, redaction, and repair actions
+- Reliability report, backup-first repair, and local memory folder backups
 - Sanitized support bundle for local beta triage
 - Operational readiness gate for tests, build, distribution, manifests, and support checks
 - Repeatable DMG/ZIP packaging and static landing page distribution
@@ -31,7 +31,7 @@ Cortex is a local-first personal memory and adaptation layer. It turns approved 
 open macos/build/Cortex.app
 ```
 
-The packaged app starts the local backend automatically. Backend development can use:
+The packaged app starts the local service automatically. Local service development can use:
 
 ```bash
 ./scripts/dev_backend.sh
@@ -51,7 +51,7 @@ Release artifacts are written to:
 ```
 
 Each packaged release includes `BETA_HANDOFF.md` with the tester build, install,
-checksum, readiness, live-backend, and manual first-user verification steps.
+checksum, readiness, live-backend, and hands-on first-user verification steps.
 
 The static landing page lives in:
 
@@ -91,7 +91,7 @@ python3 scripts/export_support_bundle.py --mode offline
 - [Memory Backend Blueprint](docs/MEMORY_BACKEND_BLUEPRINT.md)
 - [Simple Product Loop](docs/SIMPLE_PRODUCT_LOOP.md)
 - [Capture Surfaces](docs/CAPTURE_SURFACES.md)
-- [Source Imports](docs/SOURCE_IMPORTS.md)
+- [Advanced/Fallback Source Intake](docs/SOURCE_IMPORTS.md)
 - [First 100 Beta Operator Quickstart](docs/BETA_OPERATOR_QUICKSTART.md)
 - [First 100 User Demo Checkpoint](docs/checkpoints/first-100-demo.md)
 - [First 100 User Support and Privacy Runbook](docs/BETA_SUPPORT.md)
@@ -105,4 +105,4 @@ python3 scripts/export_support_bundle.py --mode offline
 
 ## Current Boundaries
 
-Cortex is ready for local-first beta testing, not broad public distribution yet. Current source ingestion uses user-selected exports, folders, and files; live OAuth/API sync is registry-backed but not enabled. Public launch still needs Developer ID signing, notarization, hosted HTTPS downloads, a formal support path, a hosted update-feed decision, and a production privacy review.
+Cortex is ready for local-first beta testing, not broad public distribution yet. The current beta centers on connected-service setup, direct local AI-tool integrations, review, Ask, and Trust. Selected export, folder, or file import remains available only as an Advanced/Fallback path for unsupported services or recovery. Public launch still needs Developer ID signing, notarization, hosted HTTPS downloads, a formal support path, a hosted update-feed decision, and a production privacy review.

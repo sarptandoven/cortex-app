@@ -6,10 +6,10 @@
     <title>Cortex - Private Personal Memory Model</title>
     <meta
       name="description"
-      content="Cortex builds a private personal memory model from approved life and work data, then gives AI tools scoped, cited memory."
+      content="Cortex connects to your services and AI tools, builds reviewed private memory on your Mac, and gives approved tools scoped, cited context."
     />
     <meta property="og:title" content="Cortex - Private Personal Memory Model" />
-    <meta property="og:description" content="The local adaptation layer that gives AI tools scoped, cited memory." />
+    <meta property="og:description" content="Connect services, review memory, ask with citations, and control what AI tools can use." />
     <meta property="og:type" content="website" />
     <meta name="theme-color" content="#f8f7f1" />
     <link rel="icon" href="favicon.svg" type="image/svg+xml" />
@@ -38,7 +38,7 @@
           <h1 id="hero-title">Cortex</h1>
           <p class="hero-line">Your private personal memory model for AI.</p>
           <p class="hero-text">
-            Cortex turns approved chats, email, notes, writing, decisions, and messages into cited memory layers that AI tools can retrieve with user-controlled access.
+            Cortex connects to your services and AI tools, turns reviewed chats, notes, decisions, and messages into cited memory, and lets approved tools retrieve only what you allow.
           </p>
           <div class="hero-actions" aria-label="Download actions">
             <a class="button primary download-link" href="downloads/Cortex-0.1.0-1.dmg">Download macOS beta</a>
@@ -47,10 +47,10 @@
           <dl class="hero-facts" aria-label="Release facts">
             <div>
               <dt>Data</dt>
-              <dd>Local vault</dd>
+              <dd>On your Mac</dd>
             </div>
             <div>
-              <dt>Assistants</dt>
+              <dt>Works with</dt>
               <dd>ChatGPT, Claude, Cursor</dd>
             </div>
             <div>
@@ -68,7 +68,7 @@
             <h2 id="problem-title">Every assistant forgets the work you already did.</h2>
           </div>
           <p>
-            Cortex builds a private adaptation layer from chats, email, notes, writing, decisions, and messages. It shows what the model covers, what still needs signal, and lets approved AI tools retrieve scoped memory instead of guessing.
+            Cortex builds a private adaptation layer from connected services, local app integrations, chats, email, notes, writing, decisions, and messages. It shows what the model covers, what still needs signal, and lets approved AI tools retrieve scoped memory instead of guessing.
           </p>
         </div>
       </section>
@@ -76,16 +76,16 @@
       <section id="loop" class="section" aria-labelledby="loop-title">
         <div class="section-heading">
           <p class="eyebrow">The product loop</p>
-          <h2 id="loop-title">Signal, review, access, return.</h2>
+          <h2 id="loop-title">Connect, review, ask, trust.</h2>
           <p>
-            The first release focuses on the habits that make a personal model trustworthy: add sources, approve useful signals, and let AI tools access only what you allow.
+            The first release focuses on the habits that make a personal model trustworthy: connect sources, approve useful signals, ask with citations, and let AI tools access only what you allow.
           </p>
         </div>
         <div class="loop-grid">
           <article class="loop-step">
             <span>01</span>
-            <h3>Signal</h3>
-            <p>Import selected exports, folders, and files from chats, email, notes, messages, docs, writing, bookmarks, calendars, contacts, and work tools.</p>
+            <h3>Connect</h3>
+            <p>Connect supported services and local apps for chats, email, notes, messages, docs, writing, bookmarks, calendars, contacts, and work tools.</p>
           </article>
           <article class="loop-step">
             <span>02</span>
@@ -94,13 +94,13 @@
           </article>
           <article class="loop-step">
             <span>03</span>
-            <h3>Access</h3>
-            <p>Use a cited adaptation profile or connect a supported local tool before starting work in an assistant.</p>
+            <h3>Ask</h3>
+            <p>Ask Cortex with cited memory, or use a supported local AI tool with the context you approved.</p>
           </article>
           <article class="loop-step">
             <span>04</span>
-            <h3>Return</h3>
-            <p>Open Cortex to see coverage, weak layers, and the next source that would improve the model.</p>
+            <h3>Trust</h3>
+            <p>Keep reads, saves, exports, repair actions, and source permissions visible and under your control.</p>
           </article>
         </div>
       </section>
@@ -108,9 +108,9 @@
       <section id="integrations" class="section split-section" aria-labelledby="integrations-title">
         <div>
           <p class="eyebrow">Works where users already are</p>
-          <h2 id="integrations-title">A personal model for everyday AI tools.</h2>
+          <h2 id="integrations-title">A personal model where work already happens.</h2>
           <p>
-            Cortex starts with local source ingestion, approved-memory browser handoff, and local tool setup for apps that can connect directly. The profile stays cited and coverage-limited, not a fake claim that the model is already you.
+            Cortex starts with connected services and direct local app setup for tools that can connect safely. Browser and copy handoffs stay available for tools that are not ready for direct connection yet.
           </p>
         </div>
         <div class="integration-grid" aria-label="Supported surfaces">
@@ -131,21 +131,21 @@
           <p class="eyebrow">Trust controls</p>
           <h2 id="trust-title">Private by default, useful on purpose.</h2>
           <p>
-            Cortex stores memory on the user's Mac, shows what is covered, and lets users choose what connected tools can read, write, export, or repair.
+            Cortex stores memory on the user's Mac, shows what is covered, and lets users choose what connected AI tools can read, save, export, or repair.
           </p>
         </div>
         <div class="trust-grid">
           <article>
-            <h3>Local vault</h3>
-            <p>Readable JSON records and a rebuildable SQLite index live on disk.</p>
+            <h3>On your Mac</h3>
+            <p>Readable memory records and a rebuildable search index live on disk.</p>
           </article>
           <article>
             <h3>Review first</h3>
             <p>New captures can wait in the inbox until the user approves them.</p>
           </article>
           <article>
-            <h3>Agent permissions</h3>
-            <p>Reads, writes, exports, and maintenance actions are controlled separately.</p>
+            <h3>AI tool permissions</h3>
+            <p>Reading, saving, exporting, and repair actions are controlled separately.</p>
           </article>
           <article>
             <h3>Reliability report</h3>
@@ -175,7 +175,7 @@
             <div class="advanced-downloads">
               <a class="advanced-download zip-link" href="downloads/Cortex-0.1.0-1.app.zip">
                 <span>ZIP archive</span>
-                <small id="zipArtifactMeta">Manual app archive for advanced installs.</small>
+                <small id="zipArtifactMeta">App archive for advanced installs.</small>
               </a>
               <a class="advanced-download" href="downloads/latest.json">
                 <span>Update feed</span>
@@ -195,7 +195,7 @@
         <ol id="install" class="install-list" aria-label="Install steps">
           <li>
             <strong>Download</strong>
-            <span>Open the DMG and drag Cortex into Applications.</span>
+            <span>Open the DMG and move Cortex into Applications.</span>
           </li>
           <li>
             <strong>Open</strong>
@@ -207,16 +207,16 @@
           </li>
           <li>
             <strong>Connect</strong>
-            <span>Prepare an approved-memory handoff or connect a supported local AI tool.</span>
+            <span>Connect a supported service or direct local AI tool, then review the first memories.</span>
           </li>
         </ol>
       </section>
 
       <section class="section final-band" aria-labelledby="final-title">
         <p class="eyebrow">Positioning</p>
-        <h2 id="final-title">Cortex is not just AI memory. It is your personal operating model for agents.</h2>
+        <h2 id="final-title">Cortex is not just AI memory. It is your personal operating model for AI tools.</h2>
         <p>
-          The beta starts local and simple. The long-term product is the memory and action layer that lets agents make progress the way you would.
+          The beta starts local and simple. The long-term product is the memory and action layer that helps AI tools make progress the way you would.
         </p>
       </section>
     </main>

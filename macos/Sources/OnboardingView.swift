@@ -137,7 +137,7 @@ struct OnboardingView: View {
         case .privateVault:
             return "Waiting for Service"
         case .firstSource:
-            return "Import a Source"
+            return "Connect Accounts or Apps"
         case .reviewMemory:
             return "Approve One Memory"
         case .askUse:
@@ -152,7 +152,7 @@ struct OnboardingView: View {
         case .privateVault:
             return "clock"
         case .firstSource:
-            return "tray.and.arrow.down"
+            return "link.circle"
         case .reviewMemory:
             return "checkmark.circle"
         case .askUse:
@@ -203,38 +203,42 @@ struct OnboardingStepRow: View {
 
 struct OnboardingVaultStep: View {
     @ObservedObject var state: AppState
+    @State private var vaultLocationExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Cortex keeps its vault in a readable folder on this Mac. The search index can be rebuilt from those files, so your memory stays portable and backup-friendly.")
+            Text("Cortex starts with a private local vault, then builds memory from connected accounts, apps, and direct AI tools. The vault stays backup-friendly while setup focuses on connected context.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Vault folder")
+                Text("Local vault")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Text(state.vaultPath)
                     .font(.system(.caption, design: .monospaced))
                     .lineLimit(2)
                     .textSelection(.enabled)
-                HStack {
-                    Button {
-                        state.useDefaultVaultFolder()
-                    } label: {
-                        Label("Use Default", systemImage: "house")
+                DisclosureGroup("Advanced vault location", isExpanded: $vaultLocationExpanded) {
+                    HStack {
+                        Button {
+                            state.useDefaultVaultFolder()
+                        } label: {
+                            Label("Use Default Location", systemImage: "house")
+                        }
+                        Button {
+                            state.chooseVaultFolder()
+                        } label: {
+                            Label("Change Location", systemImage: "folder")
+                        }
+                        Button {
+                            state.openVaultFolder()
+                        } label: {
+                            Label("Reveal Location", systemImage: "arrow.up.right.square")
+                        }
+                        Spacer()
                     }
-                    Button {
-                        state.chooseVaultFolder()
-                    } label: {
-                        Label("Choose Folder", systemImage: "folder")
-                    }
-                    Button {
-                        state.openVaultFolder()
-                    } label: {
-                        Label("Open Folder", systemImage: "arrow.up.right.square")
-                    }
-                    Spacer()
+                    .padding(.top, 6)
                 }
             }
             .padding(12)
@@ -259,43 +263,27 @@ struct OnboardingFirstSourceStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Start with one source that has real context: an AI chat export, notes, docs, email, messages, or a project file. One source is enough to continue.")
+            Text("Connect one account, app integration, or direct AI tool with real context from email, calendar, notes, chat, docs, or direct AI memory saves.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Button {
-                        state.chooseFilesForCapture()
+                        state.selectedTab = .sources
+                        state.dismissOnboardingForSession()
+                        state.status = "Connect accounts, apps, or direct AI tools to build your model"
                     } label: {
-                        Label("Choose File or Export", systemImage: "doc.badge.plus")
+                        Label("Connect Accounts or Apps", systemImage: "link.circle")
                     }
                     .buttonStyle(.borderedProminent)
-                    Button {
-                        state.importCaptureInbox()
-                    } label: {
-                        Label("Import Inbox", systemImage: "tray.and.arrow.down")
-                    }
-                    Spacer()
-                }
-                HStack {
-                    Button {
-                        state.openCaptureInbox()
-                    } label: {
-                        Label("Open Inbox", systemImage: "tray")
-                    }
-                    Button {
-                        state.copyCaptureInboxPath()
-                    } label: {
-                        Label("Copy Path", systemImage: "doc.on.doc")
-                    }
                     Spacer()
                 }
             }
 
             if !state.onboardingFirstSourceNames.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("First source")
+                    Text("Connected account, app, or tool")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Text(state.onboardingFirstSourceNames.joined(separator: ", "))
@@ -306,9 +294,9 @@ struct OnboardingFirstSourceStep: View {
             }
 
             OnboardingCheckRow(
-                title: state.onboardingHasSource ? "First source imported" : "Waiting for an imported source",
-                detail: state.onboardingHasSource ? "Next, review what Cortex found before it becomes memory." : "Choose one export or readable file to continue.",
-                systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "tray.and.arrow.down",
+                title: state.onboardingHasSource ? "First connection ready" : "Waiting for a connection",
+                detail: state.onboardingHasSource ? "Next, review what Cortex found before it becomes memory." : "Connect an account, app, or direct AI tool to continue.",
+                systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "link.circle",
                 color: state.onboardingHasSource ? .green : .orange
             )
         }
@@ -371,12 +359,12 @@ struct OnboardingReviewMemoryStep: View {
 
     private var emptyReviewDetail: String {
         if state.onboardingHasReviewedMemory {
-            return "You already reviewed memory from your first source."
+            return "You already reviewed memory from your first connection."
         }
         if state.onboardingHasSource {
-            return "No reviewable memory is waiting yet. Refresh Review, or add a source with more text."
+            return "No reviewable memory is waiting yet. Refresh Review, or connect another account, app, or direct AI tool with more context."
         }
-        return "Import a source first. Anything useful will appear here before Cortex remembers it."
+        return "Connect an account, app, or direct AI tool first. Anything useful will appear here before Cortex remembers it."
     }
 }
 
@@ -385,7 +373,7 @@ struct OnboardingAskUseStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Ask one question against approved memory. This shows the main loop: sources become reviewed memory, then cited answers.")
+            Text("Ask one question against approved memory. This shows the main loop: connected context becomes reviewed memory, then cited answers.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -457,7 +445,7 @@ struct OnboardingAskUseStep: View {
         if state.hasSearched {
             return "Try an exact phrase from approved memory, or go back to Review and approve one useful item."
         }
-        return "Ask about your imported source. Cortex answers with citations when approved memory matches."
+        return "Ask about a connected account, app, or tool. Cortex answers with citations when approved memory matches."
     }
 }
 
@@ -473,7 +461,7 @@ struct OnboardingTrustBackupStep: View {
             VStack(alignment: .leading, spacing: 10) {
                 OnboardingToggleRow(
                     title: "Review new memories first",
-                    detail: "New imports wait for approval before Cortex remembers them.",
+                    detail: "New connected context waits for approval before Cortex remembers it.",
                     isOn: $state.appSettings.review_new_captures
                 )
                 OnboardingToggleRow(
@@ -512,7 +500,7 @@ struct OnboardingTrustBackupStep: View {
                 Text("Backup")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                Text("Backups are local zip files in the Cortex vault. Create one now, or explicitly skip it for this setup.")
+                Text("Backups stay local in the Cortex vault. Create one now, or explicitly skip it for this setup.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

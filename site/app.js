@@ -53,7 +53,7 @@
     if (channel) channel.textContent = release.channel || fallbackRelease.channel;
     if (size) size.textContent = `DMG ${bytes(Number(dmg.size_bytes))}`;
     if (primaryArtifact) primaryArtifact.textContent = `${dmg.filename} for macOS ${release.minimum_macos || "13.0"} or later.`;
-    if (zipArtifact) zipArtifact.textContent = `Manual app archive, ${bytes(Number(zip.size_bytes))}.`;
+    if (zipArtifact) zipArtifact.textContent = `App archive for advanced installs, ${bytes(Number(zip.size_bytes))}.`;
     if (checksum && dmg.sha256) checksum.textContent = `DMG SHA-256: ${dmg.sha256}`;
     if (zipChecksum && zip.sha256) zipChecksum.textContent = `ZIP SHA-256: ${zip.sha256}`;
   }
@@ -67,7 +67,7 @@
   if (!canvas) return;
 
   const ctx = canvas.getContext("2d");
-  const labels = ["Preference", "Decision", "Project", "Open loop", "Claude", "ChatGPT", "Cursor", "MCP", "Today"];
+  const labels = ["Preference", "Decision", "Project", "Follow-up", "Claude", "ChatGPT", "Cursor", "AI tool", "Today"];
   const colors = ["#1f7a5c", "#365d8c", "#bd5d45", "#a77722"];
   let points = [];
   let pointer = { x: 0, y: 0, active: false };
@@ -106,10 +106,10 @@
     ctx.font = "700 18px system-ui, sans-serif";
     ctx.fillText("Today", panelX + 20, panelY + 34);
     const rows = [
-      ["Capture", "#1f7a5c"],
+      ["Connect", "#1f7a5c"],
       ["Review", "#365d8c"],
-      ["Reuse", "#bd5d45"],
-      ["Return", "#a77722"]
+      ["Ask", "#bd5d45"],
+      ["Trust", "#a77722"]
     ];
     rows.forEach((row, index) => {
       const y = panelY + 72 + index * 38;

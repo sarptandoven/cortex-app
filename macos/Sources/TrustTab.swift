@@ -14,7 +14,7 @@ struct TrustTab: View {
                     TrustChecklistSection(state: state, summary: summary)
                     TrustPolicySection(state: state)
                     SettingsPrivacySection(state: state)
-                    DisclosureGroup("Source privacy and audit trail", isExpanded: $sourcesExpanded) {
+                    DisclosureGroup("Connection privacy and audit trail", isExpanded: $sourcesExpanded) {
                         VStack(alignment: .leading, spacing: 14) {
                             TrustSourceSection(state: state, summary: summary)
                             TrustAuditSection(events: state.auditEvents, refresh: {
@@ -104,7 +104,7 @@ struct TrustTab: View {
     private var loadingDetail: String {
         CortexRecoveryText.needsAttention(state.displayStatus)
             ? state.displayStatus
-            : "Cortex is reading privacy settings, source history, and recent audit events."
+            : "Cortex is reading privacy settings, connection history, and recent audit events."
     }
 }
 
@@ -165,7 +165,7 @@ struct TrustChecklistSection: View {
 
         return TrustChecklistItem(
             title: "No backup recorded",
-            detail: "Create a local backup before connecting more tools or importing large source exports.",
+            detail: "Create a local backup before connecting more accounts, apps, or tools.",
             systemImage: "externaldrive.badge.exclamationmark",
             color: .orange
         )
@@ -213,10 +213,10 @@ struct TrustChecklistSection: View {
         ]
         parts.append(settings.redact_sensitive_context ? "redaction is on" : "redaction is off")
         if privateSourceCount > 0 {
-            parts.append("\(privateSourceCount) source\(privateSourceCount == 1 ? "" : "s") kept private")
+            parts.append("\(privateSourceCount) connection\(privateSourceCount == 1 ? "" : "s") kept private")
         }
         if reviewFirstSourceCount > 0 {
-            parts.append("\(reviewFirstSourceCount) source\(reviewFirstSourceCount == 1 ? "" : "s") review first")
+            parts.append("\(reviewFirstSourceCount) connection\(reviewFirstSourceCount == 1 ? "" : "s") review first")
         }
 
         return TrustChecklistItem(
@@ -233,7 +233,7 @@ struct TrustChecklistSection: View {
             enabled.append("save, approve, or archive memory")
         }
         if settings.allow_agent_exports {
-            enabled.append("prepare profile artifacts, AI instructions, or exports")
+            enabled.append("prepare AI handoff packages or profile artifacts")
         }
         if settings.allow_agent_maintenance {
             enabled.append("create backups or repair indexes")
@@ -245,7 +245,7 @@ struct TrustChecklistSection: View {
         guard !enabled.isEmpty else {
             return TrustChecklistItem(
                 title: "AI changes are off",
-                detail: "Connected AI tools cannot save memory, export data, run maintenance, or delete local data.",
+                detail: "Connected AI tools cannot save memory, prepare handoffs, run maintenance, or delete local data.",
                 systemImage: "lock.shield.fill",
                 color: .green
             )

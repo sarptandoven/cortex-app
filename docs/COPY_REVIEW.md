@@ -5,6 +5,7 @@ Scope: docs-only copy review. This file proposes consumer-safe UI language for t
 ## Copy Principles
 
 - Lead with what the user can do, not the implementation detail.
+- Lead source setup with connected services and direct local app integrations. Mention export, file, folder, or drop import only as `Advanced/Fallback`.
 - Keep protocol names such as MCP visible only in advanced setup, generated config, and developer docs.
 - Prefer "AI tool" or "assistant" over "agent" in consumer UI.
 - Prefer "memory folder" or "Cortex data folder" over "vault" unless showing the real `Cortex.vault` path.
@@ -22,6 +23,7 @@ Scope: docs-only copy review. This file proposes consumer-safe UI language for t
 | agent | AI tool, assistant, connected AI tool | Developer docs or model/provider implementation details |
 | backend | local service, local memory engine, Cortex service | Backend docs, API docs, logs, diagnostics for engineers |
 | vault | memory folder, Cortex data folder, saved memory folder | Showing the literal `Cortex.vault` folder or storage format docs |
+| manual import, file drop, selected export | Advanced/Fallback import for unsupported services | Recovery, migration, or a service that has no supported connector yet |
 | MVP | first release, beta, current beta | Engineering roadmap docs only |
 | open loops | follow-ups, open tasks, open questions | Internal extraction labels or technical schema docs |
 
@@ -36,9 +38,10 @@ Surface: `site/index.html`, plus the landing-page copy mirrored in `docs/DISTRIB
 | `Cortex gives ChatGPT, Claude, Cursor, and MCP agents your memory, preferences, decisions, and open loops so they can work with context instead of starting from zero.` | `Cortex saves your preferences, decisions, projects, people, and follow-ups on your Mac, then lets you reuse them in ChatGPT, Claude, Cursor, and other AI tools.` |
 | `Data` / `Local vault` | `Data` / `On your Mac` |
 | `Assistants` / `ChatGPT, Claude, Cursor, MCP` | `Works with` / `ChatGPT, Claude, Cursor` |
-| `Cortex turns scattered decisions, notes, project context, people, and open loops into a reusable memory layer. Save once, review what matters, then paste or expose the right context to the AI tool you already use.` | `Cortex turns scattered decisions, notes, project details, people, and follow-ups into memory you can reuse. Save once, review what matters, then copy the right context into the AI tool you already use.` |
-| `Copy a context pack or connect an MCP tool before starting work in an assistant.` | `Copy the right context or connect a supported AI tool before starting work.` |
-| `Cortex starts with copy-ready context packs and local MCP setup for tools that can connect directly. That keeps the first version useful before a hosted backend exists.` | `Cortex starts with copyable chat context and direct local setup for tools that support it. That keeps the first version useful without a cloud account.` |
+| `Cortex turns scattered decisions, notes, project context, people, and open loops into a reusable memory layer. Save once, review what matters, then paste or expose the right context to the AI tool you already use.` | `Cortex connects to the services and AI tools you use, turns reviewed decisions, notes, project details, people, and follow-ups into memory, then lets approved tools retrieve cited context.` |
+| `Import selected exports, folders, and files from chats, email, notes, messages, docs, writing, bookmarks, calendars, contacts, and work tools.` | `Connect supported services and local apps for chats, email, notes, messages, docs, writing, bookmarks, calendars, contacts, and work tools.` |
+| `Copy a context pack or connect an MCP tool before starting work in an assistant.` | `Connect a supported service or direct AI tool before starting work.` |
+| `Cortex starts with copy-ready context packs and local MCP setup for tools that can connect directly. That keeps the first version useful before a hosted backend exists.` | `Cortex starts with connected services and direct local setup for tools that support it. Advanced/Fallback import is available only when a source cannot connect yet.` |
 | `Cortex stores memory on the user's Mac, exposes local diagnostics, and lets users choose what agents can read, write, export, or repair.` | `Cortex stores memory on your Mac, shows storage and backup status, and lets you choose what connected AI tools can read, change, or export.` |
 | `Local vault` | `On your Mac` |
 | `Readable JSON records and a rebuildable SQLite index live on disk.` | `Readable files and a rebuildable search index stay on your Mac.` |
@@ -46,7 +49,7 @@ Surface: `site/index.html`, plus the landing-page copy mirrored in `docs/DISTRIB
 | `Reads, writes, exports, and maintenance actions are controlled separately.` | `Reading, saving, exporting, and repair actions are controlled separately.` |
 | `Choose vault` | `Choose memory folder` |
 | `Keep the default local vault or choose a folder you already back up.` | `Keep the default folder or choose one you already back up.` |
-| `Copy a context pack or install the local MCP config for an assistant.` | `Copy chat context or install an advanced local connection for a supported tool.` |
+| `Copy a context pack or install the local MCP config for an assistant.` | `Connect a supported tool directly; use copied context only when direct connection is not available.` |
 | `Cortex is not just AI memory. It is your personal operating model for agents.` | `Cortex is not just AI memory. It is your personal operating model for AI tools.` |
 | `The beta starts local and simple. The long-term product is the memory and action layer that lets agents make progress the way you would.` | `The beta starts local and simple. The long-term product is the memory and action layer that helps AI tools make progress the way you would.` |
 
@@ -83,7 +86,7 @@ Surface: first-run setup in `macos/Sources/CortexApp.swift`.
 | `Recoverable` / `Rebuild index` | `Recoverable` / `Rebuild search` |
 | `Context pack size: N` | `Context to include: N items` |
 | `Start with one useful preference, decision, project detail, or open loop. A good first memory makes Cortex useful immediately.` | `Start with one useful preference, decision, project detail, or follow-up. A good first memory makes Cortex useful immediately.` |
-| `Connect the tools you use most. You can finish setup with a paste-ready context pack and add direct MCP tools later from Settings.` | `Connect the tools you use most. You can start by copying chat context and add direct local connections later from Settings.` |
+| `Connect the tools you use most. You can finish setup with a paste-ready context pack and add direct MCP tools later from Settings.` | `Connect the services and tools you use most. Use copied context or Advanced/Fallback import only when direct connection is not available.` |
 | `No local MCP apps detected` | `No supported local apps detected` |
 | `Copy MCP Config` | `Copy Advanced Setup` |
 | `Cortex is ready to save memory locally and reuse it in AI sessions.` | `Cortex is ready to save memory locally and reuse it in your AI tools.` |
@@ -100,7 +103,7 @@ Surface: integration center and setup cards.
 | `Developer tools` | `Coding tools` |
 | `Local and team stacks` | `Local and team tools` |
 | `Connect Cortex everywhere` | `Connect your AI tools` |
-| `Install direct MCP tools where safe, and use copy-ready context packs everywhere else.` | `Set up supported local tools directly, or copy chat context for everything else.` |
+| `Install direct MCP tools where safe, and use copy-ready context packs everywhere else.` | `Set up supported services and local tools directly; use copy handoff only when direct connection is not available.` |
 | `Local API` | `Local service` |
 | `Copy MCP` | `Copy Advanced Setup` |
 | `Copy MCP Config` | `Copy Advanced Setup` |
@@ -128,7 +131,7 @@ Recommended integration-card rewrites:
 | `Copy Cortex MCP/API settings for local model workflows.` | `Copy Cortex local connection settings for local model workflows.` |
 | `Use Cortex's local API or MCP bridge with local model agents that support tools.` | `Use Cortex's local service with local model tools that support direct connections.` |
 | `Copy Cortex MCP/API settings for team chat deployments.` | `Copy Cortex local connection settings for team chat deployments.` |
-| `Copy Cortex exports/context packs into AnythingLLM workspaces.` | `Copy Cortex exports or chat context into AnythingLLM workspaces.` |
+| `Copy Cortex exports/context packs into AnythingLLM workspaces.` | `Use copied Cortex chat context in AnythingLLM workspaces when direct connection is not available.` |
 
 ## macOS Today And Capture
 
@@ -145,9 +148,9 @@ Surface: Today tab, product loop, capture tab, and any backend-provided copy ren
 | `Copy Focus` | `Copy Focused Context` |
 | `N recent [separator] N decisions [separator] N open` | `N recent [separator] N decisions [separator] N follow-ups` |
 | `Active context` | `Active memory` |
-| `Save once from any surface. Cortex structures it, reviews it, and makes it reusable in your AI apps.` | `Save once from clipboard, notes, links, or files. Cortex organizes it and makes it reusable in your AI tools.` |
+| `Save once from any surface. Cortex structures it, reviews it, and makes it reusable in your AI apps.` | `Save once from connected services, app integrations, clipboard, notes, or links. Cortex organizes it and makes it reusable in your AI tools.` |
 | `Use the bookmarklet to capture selected text or page text from ChatGPT, Claude, docs, email, and web research into local Cortex memory.` | `Use the bookmarklet to save selected text or page text from ChatGPT, Claude, docs, email, and web research into Cortex.` |
-| `Capture Inbox: path` | `Import folder: path` |
+| `Capture Inbox: path` | `Advanced/Fallback intake path` |
 
 Backend-provided strings that surface in Today should be cleaned up in a later source pass, without changing endpoint names:
 
@@ -213,6 +216,8 @@ Recommended README rewrites:
 | Current string | Proposed string |
 | --- | --- |
 | `Cortex is a local-first memory layer for AI agents.` | `Cortex is private memory for the AI tools you already use.` |
+| `Stage 1 source import with preview, duplicate-safe history, and batch undo for user-selected exports, folders, and files` | `Connected-source setup for supported services and direct app integrations, with Advanced/Fallback import only when a source cannot connect yet` |
+| `first source import` | `first connected source` |
 | `MCP-compatible tools` | `tools that support direct local connections` |
 | `open loops` | `follow-ups` |
 | `Bundled local backend on 127.0.0.1:8766` | `Bundled local service on 127.0.0.1:8766` |
@@ -231,8 +236,8 @@ Technical docs can keep implementation terms when they are the subject of the do
 
 ## Priority Cleanup Order
 
-1. Public site and distribution copy: remove `MCP`, `agents`, `context packs`, `vault`, `backend`, and `open loops` from first-viewport and install language.
-2. First-run onboarding: replace `Vault`, `Backend`, `MCP Config`, and `context pack size` before beta users see setup.
+1. Public site and distribution copy: remove `MCP`, `agents`, `context packs`, `vault`, `backend`, `open loops`, and manual import/drop as the first-source path from first-viewport and install language.
+2. First-run onboarding: replace `Vault`, `Backend`, `MCP Config`, `context pack size`, and import-first setup before beta users see setup.
 3. Trust controls: replace `Agent read/write/export` with explicit connected-AI-tool permissions.
 4. Today: replace `open loops` and backend-provided `context pack` strings that appear in recommended actions.
 5. Settings diagnostics: keep technical detail behind "Advanced diagnostics", but rename headings and pills to service/folder/search language.

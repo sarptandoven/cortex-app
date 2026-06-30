@@ -329,96 +329,96 @@ DEFAULT_USER_SETTINGS: dict[str, Any] = {
 
 
 SOURCE_CONNECTOR_CATALOG: tuple[dict[str, Any], ...] = (
-    {"id": "chatgpt", "name": "ChatGPT", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "OpenAI data export zip or conversations.json."},
-    {"id": "claude", "name": "Claude", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Claude export conversations.json or chats.json."},
-    {"id": "gemini", "name": "Gemini", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Local JSON, JSONL, text, Markdown, or HTML transcript files."},
-    {"id": "perplexity", "name": "Perplexity", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Local JSON, JSONL, text, Markdown, or HTML transcript files."},
-    {"id": "copilot", "name": "Microsoft Copilot", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Local JSON, JSONL, text, Markdown, or HTML transcript files."},
-    {"id": "grok", "name": "Grok", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Local JSON, JSONL, text, Markdown, or HTML transcript files."},
-    {"id": "poe", "name": "Poe", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Local JSON, JSONL, text, Markdown, or HTML transcript files."},
-    {"id": "notebooklm", "name": "NotebookLM", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Local JSON, JSONL, text, Markdown, or HTML transcript files."},
-    {"id": "gmail", "name": "Gmail", "category": "Email", "auth": "oauth", "live_status": "planned", "scopes": ["gmail.readonly"], "notes": "Use Gmail Takeout mbox today; OAuth sync later."},
-    {"id": "apple-mail", "name": "Apple Mail", "category": "Email", "auth": "local_file", "live_status": "import_ready", "scopes": [], "notes": "User-exported eml, emlx, or mbox files today; no direct Mail.app crawl."},
-    {"id": "outlook", "name": "Outlook", "category": "Email", "auth": "oauth", "live_status": "planned", "scopes": ["Mail.Read", "Calendars.Read", "Contacts.Read", "Files.Read"], "notes": "Outlook mail, calendar, contacts, and Microsoft 365 exports today; Graph sync later."},
-    {"id": "email", "name": "Email files", "category": "Email", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "mbox, eml, and emlx imports."},
-    {"id": "docs", "name": "Docs and writing", "category": "Docs", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Markdown, text, HTML, DOCX, RTF, and PDF imports."},
-    {"id": "pdfs", "name": "PDFs", "category": "Docs", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "User-selected PDFs and exported PDFs; backend parsing depends on pypdf or macOS fallback extraction."},
-    {"id": "cloud-docs", "name": "Cloud docs exports", "category": "Docs", "auth": "export", "live_status": "import_ready", "scopes": [], "notes": "Google Drive, OneDrive, and Dropbox Paper export files."},
-    {"id": "notion", "name": "Notion", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["read_content"], "notes": "Markdown, CSV, and HTML exports today."},
-    {"id": "google-drive", "name": "Google Drive", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["drive.readonly"], "notes": "Drive/Docs Takeout exports today."},
-    {"id": "google-docs", "name": "Google Docs", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["drive.readonly", "documents.readonly"], "notes": "Google Docs Takeout exports today; Drive/Docs sync later."},
-    {"id": "google-keep", "name": "Google Keep", "category": "Notes", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Google Takeout Keep JSON and HTML exports."},
-    {"id": "microsoft-365", "name": "Microsoft 365", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["Files.Read", "Mail.Read", "Calendars.Read"], "notes": "OneDrive, Outlook, and Office exports today."},
-    {"id": "slack", "name": "Slack", "category": "Work chat", "auth": "oauth", "live_status": "planned", "scopes": ["channels:history", "groups:history", "im:history"], "notes": "Workspace export folders or zips today."},
-    {"id": "google-chat", "name": "Google Chat", "category": "Work chat", "auth": "oauth", "live_status": "planned", "scopes": ["chat.messages.readonly"], "notes": "Google Takeout Chat/Hangouts exports today."},
-    {"id": "teams", "name": "Microsoft Teams", "category": "Work chat", "auth": "oauth", "live_status": "planned", "scopes": ["ChannelMessage.Read.All"], "notes": "Teams JSON/CSV exports today."},
-    {"id": "discord", "name": "Discord", "category": "Messages", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Discord data package messages.csv."},
-    {"id": "telegram", "name": "Telegram", "category": "Messages", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Telegram Desktop result.json."},
-    {"id": "messages", "name": "Messages", "category": "Messages", "auth": "local_file", "live_status": "local_only", "scopes": [], "notes": "User-selected copy of iMessage chat.db."},
-    {"id": "imessage", "name": "iMessage exports", "category": "Messages", "auth": "local_file", "live_status": "local_only", "scopes": [], "notes": "User-selected chat.db copy or legally provided local export only."},
-    {"id": "whatsapp", "name": "WhatsApp", "category": "Messages", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Text chat exports."},
-    {"id": "calendar", "name": "Calendar", "category": "Calendar", "auth": "oauth", "live_status": "planned", "scopes": ["calendar.readonly"], "notes": "ICS exports today."},
-    {"id": "contacts", "name": "Contacts", "category": "People", "auth": "oauth", "live_status": "planned", "scopes": ["contacts.readonly"], "notes": "VCF and contacts CSV exports today."},
-    {"id": "work-tools", "name": "Work tool exports", "category": "Work tools", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Issue, PR, task, and project CSV/JSON exports."},
-    {"id": "github", "name": "GitHub", "category": "Work tools", "auth": "oauth", "live_status": "planned", "scopes": ["repo:read", "read:org"], "notes": "Issue/PR exports and project files today."},
-    {"id": "linkedin", "name": "LinkedIn", "category": "Work tools", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "LinkedIn data export messages and connections CSV."},
-    {"id": "linear", "name": "Linear", "category": "Work tools", "auth": "oauth", "live_status": "planned", "scopes": ["read"], "notes": "CSV/JSON exports today."},
-    {"id": "jira", "name": "Jira", "category": "Work tools", "auth": "oauth", "live_status": "planned", "scopes": ["read:jira-work"], "notes": "CSV exports today."},
-    {"id": "zoom", "name": "Zoom", "category": "Meetings", "auth": "oauth", "live_status": "planned", "scopes": ["recording:read"], "notes": "VTT and SRT transcript imports today."},
-    {"id": "browser-bookmarks", "name": "Browser bookmarks", "category": "Research", "auth": "local_file", "live_status": "import_ready", "scopes": [], "notes": "Bookmarks HTML/JSON and browser history SQLite."},
-    {"id": "browser-history", "name": "Browser history exports", "category": "Research", "auth": "local_file", "live_status": "import_ready", "scopes": [], "notes": "User-selected Chrome or Firefox history SQLite copies; no background browser collection."},
-    {"id": "readwise", "name": "Readwise", "category": "Research", "auth": "api_token", "live_status": "planned", "scopes": ["export"], "notes": "CSV/JSON exports today."},
-    {"id": "knowledge-base", "name": "Knowledge base exports", "category": "Research", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Obsidian, Roam, Logseq, Readwise, Pocket, and Instapaper exports."},
-    {"id": "twitter-x", "name": "Twitter/X", "category": "Social", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Twitter/X archive tweets and direct messages."},
-    {"id": "apple-notes", "name": "Apple Notes", "category": "Notes", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "HTML, RTF, PDF, Markdown, or text exports."},
-    {"id": "obsidian", "name": "Obsidian", "category": "Notes", "auth": "local_folder", "live_status": "import_ready", "scopes": [], "notes": "Markdown vault imports today; local folder watching is separate from OAuth."},
+    {"id": "chatgpt", "name": "ChatGPT", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct ChatGPT account connector is required before this can be a primary source."},
+    {"id": "claude", "name": "Claude", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Claude account connector is required before this can be a primary source."},
+    {"id": "gemini", "name": "Gemini", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Gemini account connector is required before this can be a primary source."},
+    {"id": "perplexity", "name": "Perplexity", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Perplexity account connector is required before this can be a primary source."},
+    {"id": "copilot", "name": "Microsoft Copilot", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Copilot account connector is required before this can be a primary source."},
+    {"id": "grok", "name": "Grok", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Grok account connector is required before this can be a primary source."},
+    {"id": "poe", "name": "Poe", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Poe account connector is required before this can be a primary source."},
+    {"id": "notebooklm", "name": "NotebookLM", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct NotebookLM account connector is required before this can be a primary source."},
+    {"id": "gmail", "name": "Gmail", "category": "Email", "auth": "oauth", "live_status": "planned", "scopes": ["gmail.readonly"], "notes": "Read-only Gmail account sync is the intended connector path."},
+    {"id": "apple-mail", "name": "Apple Mail", "category": "Email", "auth": "local_file", "live_status": "import_ready", "scopes": [], "notes": "Local Mail integration requires explicit app data access."},
+    {"id": "outlook", "name": "Outlook", "category": "Email", "auth": "oauth", "live_status": "planned", "scopes": ["Mail.Read", "Calendars.Read", "Contacts.Read", "Files.Read"], "notes": "Microsoft Graph account sync is the intended connector path."},
+    {"id": "email", "name": "Email", "category": "Email", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Email connector coverage for local and account-backed mail sources."},
+    {"id": "docs", "name": "Docs and writing", "category": "Docs", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Document connector coverage for notes, drafts, and writing."},
+    {"id": "pdfs", "name": "PDFs", "category": "Docs", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "PDF connector coverage for readable documents."},
+    {"id": "cloud-docs", "name": "Cloud docs", "category": "Docs", "auth": "export", "live_status": "import_ready", "scopes": [], "notes": "Cloud document connector coverage for Drive, OneDrive, and Dropbox Paper account sources."},
+    {"id": "notion", "name": "Notion", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["read_content"], "notes": "Notion account sync is the intended connector path."},
+    {"id": "google-drive", "name": "Google Drive", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["drive.readonly"], "notes": "Drive account sync is the intended connector path."},
+    {"id": "google-docs", "name": "Google Docs", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["drive.readonly", "documents.readonly"], "notes": "Drive and Docs account sync is the intended connector path."},
+    {"id": "google-keep", "name": "Google Keep", "category": "Notes", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Google Keep account connector is required before this can be a primary source."},
+    {"id": "microsoft-365", "name": "Microsoft 365", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["Files.Read", "Mail.Read", "Calendars.Read"], "notes": "Microsoft 365 account sync is the intended connector path."},
+    {"id": "slack", "name": "Slack", "category": "Work chat", "auth": "oauth", "live_status": "planned", "scopes": ["channels:history", "groups:history", "im:history"], "notes": "Slack account sync is the intended connector path."},
+    {"id": "google-chat", "name": "Google Chat", "category": "Work chat", "auth": "oauth", "live_status": "planned", "scopes": ["chat.messages.readonly"], "notes": "Google Chat account sync is the intended connector path."},
+    {"id": "teams", "name": "Microsoft Teams", "category": "Work chat", "auth": "oauth", "live_status": "planned", "scopes": ["ChannelMessage.Read.All"], "notes": "Teams account sync is the intended connector path."},
+    {"id": "discord", "name": "Discord", "category": "Messages", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Discord account connector is required before this can be a primary source."},
+    {"id": "telegram", "name": "Telegram", "category": "Messages", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Telegram connector is required before this can be a primary source."},
+    {"id": "messages", "name": "Messages", "category": "Messages", "auth": "local_file", "live_status": "local_only", "scopes": [], "notes": "Local Messages integration requires explicit app data access."},
+    {"id": "imessage", "name": "iMessage", "category": "Messages", "auth": "local_file", "live_status": "local_only", "scopes": [], "notes": "Local iMessage integration requires explicit Messages data access."},
+    {"id": "whatsapp", "name": "WhatsApp", "category": "Messages", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct WhatsApp connector is required before this can be a primary source."},
+    {"id": "calendar", "name": "Calendar", "category": "Calendar", "auth": "oauth", "live_status": "planned", "scopes": ["calendar.readonly"], "notes": "Calendar account sync is the intended connector path."},
+    {"id": "contacts", "name": "Contacts", "category": "People", "auth": "oauth", "live_status": "planned", "scopes": ["contacts.readonly"], "notes": "Contacts account sync is the intended connector path."},
+    {"id": "work-tools", "name": "Work tools", "category": "Work tools", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Work tool connector coverage for issues, pull requests, tasks, and projects."},
+    {"id": "github", "name": "GitHub", "category": "Work tools", "auth": "oauth", "live_status": "planned", "scopes": ["repo:read", "read:org"], "notes": "GitHub account sync is the intended connector path."},
+    {"id": "linkedin", "name": "LinkedIn", "category": "Work tools", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct LinkedIn account connector is required before this can be a primary source."},
+    {"id": "linear", "name": "Linear", "category": "Work tools", "auth": "oauth", "live_status": "planned", "scopes": ["read"], "notes": "Linear account sync is the intended connector path."},
+    {"id": "jira", "name": "Jira", "category": "Work tools", "auth": "oauth", "live_status": "planned", "scopes": ["read:jira-work"], "notes": "Jira account sync is the intended connector path."},
+    {"id": "zoom", "name": "Zoom", "category": "Meetings", "auth": "oauth", "live_status": "planned", "scopes": ["recording:read"], "notes": "Zoom account sync is the intended connector path."},
+    {"id": "browser-bookmarks", "name": "Browser bookmarks", "category": "Research", "auth": "local_file", "live_status": "import_ready", "scopes": [], "notes": "Local browser integration covers bookmarks and history with explicit app data access."},
+    {"id": "browser-history", "name": "Browser history", "category": "Research", "auth": "local_file", "live_status": "import_ready", "scopes": [], "notes": "Local browser history integration requires explicit app data access; no background browser collection."},
+    {"id": "readwise", "name": "Readwise", "category": "Research", "auth": "api_token", "live_status": "planned", "scopes": ["read"], "notes": "Readwise account token sync is the intended connector path."},
+    {"id": "knowledge-base", "name": "Knowledge base", "category": "Research", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Knowledge base connector coverage for local notes and read-later services."},
+    {"id": "twitter-x", "name": "Twitter/X", "category": "Social", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Twitter/X account connector is required before this can be a primary source."},
+    {"id": "apple-notes", "name": "Apple Notes", "category": "Notes", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Local Apple Notes integration is the intended source path."},
+    {"id": "obsidian", "name": "Obsidian", "category": "Notes", "auth": "local_folder", "live_status": "import_ready", "scopes": [], "notes": "Local Obsidian vault integration is the intended connector path."},
 )
 
 
 SOURCE_CONNECTOR_IMPORT_METADATA: dict[str, dict[str, Any]] = {
-    "chatgpt": {"source_ids": ["chatgpt"], "export_status": "native", "import_label": "Native OpenAI export import"},
-    "claude": {"source_ids": ["claude"], "export_status": "native", "import_label": "Native Claude export import"},
-    "gemini": {"source_ids": ["gemini"], "export_status": "generic", "import_status": "generic", "import_label": "Gemini transcript file import"},
-    "perplexity": {"source_ids": ["perplexity"], "export_status": "generic", "import_status": "generic", "import_label": "Perplexity transcript file import"},
-    "copilot": {"source_ids": ["copilot"], "export_status": "generic", "import_status": "generic", "import_label": "Microsoft Copilot transcript file import"},
-    "grok": {"source_ids": ["grok"], "export_status": "generic", "import_status": "generic", "import_label": "Grok transcript file import"},
-    "poe": {"source_ids": ["poe"], "export_status": "generic", "import_status": "generic", "import_label": "Poe transcript file import"},
-    "notebooklm": {"source_ids": ["notebooklm"], "export_status": "generic", "import_status": "generic", "import_label": "NotebookLM transcript file import"},
-    "gmail": {"source_ids": ["email"], "source_aliases": ["gmail", "google-mail"], "export_status": "native_via_email", "import_status": "native", "import_label": "Gmail Takeout mbox imports as Email"},
-    "apple-mail": {"source_ids": ["email"], "source_aliases": ["mail", "mail-app"], "export_status": "native_via_email", "import_status": "native", "import_label": "Apple Mail eml, emlx, and mbox exports import as Email"},
-    "outlook": {"source_ids": ["email", "calendar", "contacts", "cloud-docs"], "source_aliases": ["microsoft-outlook", "office-mail"], "export_status": "generic", "import_status": "generic", "import_label": "Outlook exports import as Email, Calendar, Contacts, and Cloud docs"},
-    "email": {"source_ids": ["email"], "export_status": "native", "import_label": "Email files import directly"},
-    "docs": {"source_ids": ["docs"], "export_status": "native", "import_label": "Docs and writing files import directly"},
-    "pdfs": {"source_ids": ["docs"], "source_aliases": ["pdf", "pdf-documents"], "export_status": "native_via_docs", "import_status": "native", "import_label": "PDF files import as Docs and writing"},
-    "cloud-docs": {"source_ids": ["cloud-docs", "docs"], "export_status": "generic", "import_status": "generic", "import_label": "Cloud document exports import as Cloud docs"},
-    "notion": {"source_ids": ["notion"], "export_status": "native", "import_label": "Native Notion export import"},
-    "google-drive": {"source_ids": ["cloud-docs", "docs"], "export_status": "generic", "import_status": "generic", "import_label": "Google Drive Takeout imports as Cloud docs"},
-    "google-docs": {"source_ids": ["cloud-docs", "docs"], "source_aliases": ["google-documents"], "export_status": "generic", "import_status": "generic", "import_label": "Google Docs Takeout imports as Cloud docs"},
-    "google-keep": {"source_ids": ["google-keep"], "export_status": "native", "import_label": "Native Google Keep Takeout import"},
-    "microsoft-365": {"source_ids": ["cloud-docs", "email", "calendar", "contacts"], "export_status": "generic", "import_status": "generic", "import_label": "Microsoft exports import as Cloud docs, Email, Calendar, and Contacts"},
-    "slack": {"source_ids": ["slack"], "export_status": "native", "import_label": "Native Slack workspace export import"},
-    "google-chat": {"source_ids": ["google-chat"], "export_status": "native", "import_label": "Native Google Chat Takeout import"},
-    "teams": {"source_ids": ["teams"], "export_status": "native", "import_label": "Native Teams JSON or CSV import"},
-    "discord": {"source_ids": ["discord"], "export_status": "native", "import_label": "Native Discord data package import"},
-    "telegram": {"source_ids": ["telegram"], "export_status": "native", "import_label": "Native Telegram Desktop export import"},
-    "messages": {"source_ids": ["messages"], "export_status": "native", "import_label": "Messages database import"},
-    "imessage": {"source_ids": ["messages"], "source_aliases": ["ios-messages", "apple-messages"], "export_status": "native_via_messages", "import_status": "native", "import_label": "User-selected iMessage chat.db copies import as Messages"},
-    "whatsapp": {"source_ids": ["whatsapp", "messages"], "export_status": "generic", "import_status": "generic", "import_label": "WhatsApp text exports import as Messages"},
-    "calendar": {"source_ids": ["calendar"], "export_status": "native", "import_label": "Native ICS calendar import"},
-    "contacts": {"source_ids": ["contacts"], "export_status": "native", "import_label": "Native contacts export import"},
-    "work-tools": {"source_ids": ["work-tools", "github", "linear", "jira"], "export_status": "generic", "import_status": "generic", "import_label": "Work tool exports import from CSV, JSON, and project files"},
-    "github": {"source_ids": ["github", "work-tools"], "export_status": "generic", "import_status": "generic", "import_label": "GitHub CSV, JSON, and project files import as Work tools"},
-    "linkedin": {"source_ids": ["linkedin"], "export_status": "native", "import_label": "Native LinkedIn data export import"},
-    "linear": {"source_ids": ["linear", "work-tools"], "export_status": "generic", "import_status": "generic", "import_label": "Linear exports import as Work tools"},
-    "jira": {"source_ids": ["jira", "work-tools"], "export_status": "generic", "import_status": "generic", "import_label": "Jira exports import as Work tools"},
-    "zoom": {"source_ids": ["zoom"], "export_status": "native", "import_label": "Native Zoom transcript import"},
-    "browser-bookmarks": {"source_ids": ["browser-bookmarks", "browser-history"], "export_status": "native", "import_label": "Native bookmarks and browser history import"},
-    "browser-history": {"source_ids": ["browser-bookmarks", "browser-history"], "source_aliases": ["chrome-history", "firefox-history"], "export_status": "native", "import_label": "Native browser history imports from selected SQLite exports"},
-    "readwise": {"source_ids": ["readwise", "knowledge-base"], "export_status": "generic", "import_status": "generic", "import_label": "Readwise exports import as Knowledge bases"},
-    "knowledge-base": {"source_ids": ["knowledge-base", "obsidian", "logseq", "roam", "readwise", "pocket", "instapaper", "raindrop"], "export_status": "generic", "import_status": "generic", "import_label": "Knowledge base exports import from local files"},
-    "twitter-x": {"source_ids": ["twitter-x"], "export_status": "native", "import_label": "Native Twitter/X archive import"},
-    "apple-notes": {"source_ids": ["apple-notes", "docs"], "export_status": "generic", "import_status": "generic", "import_label": "Apple Notes exports import as Notes and writing"},
-    "obsidian": {"source_ids": ["obsidian", "knowledge-base"], "export_status": "generic", "import_status": "generic", "import_label": "Obsidian vault imports as Knowledge bases"},
+    "chatgpt": {"source_ids": ["chatgpt"], "export_status": "native", "import_label": "ChatGPT account connector records"},
+    "claude": {"source_ids": ["claude"], "export_status": "native", "import_label": "Claude account connector records"},
+    "gemini": {"source_ids": ["gemini"], "export_status": "generic", "import_status": "generic", "import_label": "Gemini connector records"},
+    "perplexity": {"source_ids": ["perplexity"], "export_status": "generic", "import_status": "generic", "import_label": "Perplexity connector records"},
+    "copilot": {"source_ids": ["copilot"], "export_status": "generic", "import_status": "generic", "import_label": "Microsoft Copilot connector records"},
+    "grok": {"source_ids": ["grok"], "export_status": "generic", "import_status": "generic", "import_label": "Grok connector records"},
+    "poe": {"source_ids": ["poe"], "export_status": "generic", "import_status": "generic", "import_label": "Poe connector records"},
+    "notebooklm": {"source_ids": ["notebooklm"], "export_status": "generic", "import_status": "generic", "import_label": "NotebookLM connector records"},
+    "gmail": {"source_ids": ["email"], "source_aliases": ["gmail", "google-mail"], "export_status": "native_via_email", "import_status": "native", "import_label": "Gmail account records map to Email"},
+    "apple-mail": {"source_ids": ["email"], "source_aliases": ["mail", "mail-app"], "export_status": "native_via_email", "import_status": "native", "import_label": "Apple Mail local records map to Email"},
+    "outlook": {"source_ids": ["email", "calendar", "contacts", "cloud-docs"], "source_aliases": ["microsoft-outlook", "office-mail"], "export_status": "generic", "import_status": "generic", "import_label": "Outlook account records map to Email, Calendar, Contacts, and Cloud docs"},
+    "email": {"source_ids": ["email"], "export_status": "native", "import_label": "Email connector records map directly"},
+    "docs": {"source_ids": ["docs"], "export_status": "native", "import_label": "Docs and writing connector records map directly"},
+    "pdfs": {"source_ids": ["docs"], "source_aliases": ["pdf", "pdf-documents"], "export_status": "native_via_docs", "import_status": "native", "import_label": "PDF connector records map to Docs and writing"},
+    "cloud-docs": {"source_ids": ["cloud-docs", "docs"], "export_status": "generic", "import_status": "generic", "import_label": "Cloud document account records map to Cloud docs"},
+    "notion": {"source_ids": ["notion"], "export_status": "native", "import_label": "Native Notion account connector records"},
+    "google-drive": {"source_ids": ["cloud-docs", "docs"], "export_status": "generic", "import_status": "generic", "import_label": "Google Drive account records map to Cloud docs"},
+    "google-docs": {"source_ids": ["cloud-docs", "docs"], "source_aliases": ["google-documents"], "export_status": "generic", "import_status": "generic", "import_label": "Google Docs account records map to Cloud docs"},
+    "google-keep": {"source_ids": ["google-keep"], "export_status": "native", "import_label": "Native Google Keep connector records"},
+    "microsoft-365": {"source_ids": ["cloud-docs", "email", "calendar", "contacts"], "export_status": "generic", "import_status": "generic", "import_label": "Microsoft 365 account records map to Cloud docs, Email, Calendar, and Contacts"},
+    "slack": {"source_ids": ["slack"], "export_status": "native", "import_label": "Native Slack account connector records"},
+    "google-chat": {"source_ids": ["google-chat"], "export_status": "native", "import_label": "Native Google Chat connector records"},
+    "teams": {"source_ids": ["teams"], "export_status": "native", "import_label": "Native Teams account connector records"},
+    "discord": {"source_ids": ["discord"], "export_status": "native", "import_label": "Native Discord connector records"},
+    "telegram": {"source_ids": ["telegram"], "export_status": "native", "import_label": "Native Telegram connector records"},
+    "messages": {"source_ids": ["messages"], "export_status": "native", "import_label": "Messages local records"},
+    "imessage": {"source_ids": ["messages"], "source_aliases": ["ios-messages", "apple-messages"], "export_status": "native_via_messages", "import_status": "native", "import_label": "iMessage local records map to Messages"},
+    "whatsapp": {"source_ids": ["whatsapp", "messages"], "export_status": "generic", "import_status": "generic", "import_label": "WhatsApp connector records map to Messages"},
+    "calendar": {"source_ids": ["calendar"], "export_status": "native", "import_label": "Calendar account records"},
+    "contacts": {"source_ids": ["contacts"], "export_status": "native", "import_label": "Contacts account records"},
+    "work-tools": {"source_ids": ["work-tools", "github", "linear", "jira"], "export_status": "generic", "import_status": "generic", "import_label": "Work tool connector records map to Work tools"},
+    "github": {"source_ids": ["github", "work-tools"], "export_status": "generic", "import_status": "generic", "import_label": "GitHub account and project records map to Work tools"},
+    "linkedin": {"source_ids": ["linkedin"], "export_status": "native", "import_label": "Native LinkedIn account connector records"},
+    "linear": {"source_ids": ["linear", "work-tools"], "export_status": "generic", "import_status": "generic", "import_label": "Linear account records map to Work tools"},
+    "jira": {"source_ids": ["jira", "work-tools"], "export_status": "generic", "import_status": "generic", "import_label": "Jira account records map to Work tools"},
+    "zoom": {"source_ids": ["zoom"], "export_status": "native", "import_label": "Native Zoom account records"},
+    "browser-bookmarks": {"source_ids": ["browser-bookmarks", "browser-history"], "export_status": "native", "import_label": "Browser bookmarks and history local records"},
+    "browser-history": {"source_ids": ["browser-bookmarks", "browser-history"], "source_aliases": ["chrome-history", "firefox-history"], "export_status": "native", "import_label": "Browser history local records"},
+    "readwise": {"source_ids": ["readwise", "knowledge-base"], "export_status": "generic", "import_status": "generic", "import_label": "Readwise account records map to Knowledge bases"},
+    "knowledge-base": {"source_ids": ["knowledge-base", "obsidian", "logseq", "roam", "readwise", "pocket", "instapaper", "raindrop"], "export_status": "generic", "import_status": "generic", "import_label": "Knowledge base local records"},
+    "twitter-x": {"source_ids": ["twitter-x"], "export_status": "native", "import_label": "Native Twitter/X account connector records"},
+    "apple-notes": {"source_ids": ["apple-notes", "docs"], "export_status": "generic", "import_status": "generic", "import_label": "Apple Notes local records map to Notes and writing"},
+    "obsidian": {"source_ids": ["obsidian", "knowledge-base"], "export_status": "generic", "import_status": "generic", "import_label": "Obsidian vault local records map to Knowledge bases"},
 }
 
 
@@ -544,12 +544,12 @@ def _unique_catalog_strings(values: Iterable[Any]) -> list[str]:
 def _default_import_label(import_status: str, source_name: str) -> str:
     status = str(import_status or "").lower()
     if status == "native":
-        return f"{source_name} export imports directly"
+        return f"{source_name} connector can process source records directly"
     if status in {"generic", "import_ready"}:
-        return f"{source_name} can be imported from files or folders"
+        return f"{source_name} connector is available for local source records"
     if status == "export_only":
-        return f"{source_name} uses export files today"
-    return "Import exported files when available"
+        return f"{source_name} needs a direct connector before becoming a primary source"
+    return "Connect this source when an account or direct integration is available"
 
 
 def _connector_readiness_status(item: dict[str, Any]) -> str:
@@ -571,22 +571,22 @@ def _connector_permission_requirements(item: dict[str, Any]) -> list[str]:
     live_status = str(item.get("live_status") or "").lower()
     requirements: list[str]
     if auth == "local_folder":
-        requirements = ["First-100: user-selected local folder."]
+        requirements = ["First-100: local app access when explicitly connected."]
     elif auth == "local_file":
-        requirements = ["First-100: user-selected local file or database copy."]
+        requirements = ["First-100: local app data access when explicitly connected."]
     elif auth == "file":
-        requirements = ["First-100: user-selected local file or folder."]
+        requirements = ["First-100: local app connection or recovery intake."]
     elif auth == "export":
-        requirements = ["First-100: user-selected service export."]
+        requirements = ["First-100: direct connector required for the primary path."]
     elif auth == "api_token":
-        requirements = ["First-100: user-selected export files; no API token required."]
+        requirements = ["First-100: account token sign-in planned."]
     elif auth == "oauth":
-        requirements = ["First-100: user-selected export files or folders; no OAuth token required."]
+        requirements = ["First-100: account sign-in planned."]
     else:
-        requirements = ["First-100: user-selected import data."]
+        requirements = ["First-100: connected source data."]
 
     if live_status == "planned" and scopes:
-        requirements.append(f"Live-planned: user OAuth/API consent for {', '.join(scopes)}.")
+        requirements.append(f"Live-planned: account consent for {', '.join(scopes)}.")
     return requirements
 
 
@@ -598,11 +598,11 @@ def _connector_first_100_note(item: dict[str, Any]) -> str:
     note = str(item.get("notes") or "").strip()
     readiness_status = _connector_readiness_status(item)
     if readiness_status == "live-planned":
-        prefix = "First-100: import user-provided exports or selected files; no live OAuth/API sync."
+        prefix = "First-100: account sign-in is the intended source path; recovery intake is not primary."
     elif readiness_status == "import-ready":
-        prefix = "First-100: import selected local files, folders, or legal local copies."
+        prefix = "First-100: connect through a direct local integration when available."
     else:
-        prefix = "First-100: import a user-provided service export."
+        prefix = "First-100: needs a direct connector before becoming a primary source."
     return f"{prefix} {note}".strip()
 
 
@@ -1529,7 +1529,7 @@ class CortexStore:
         rows: list[dict[str, Any]] = []
         catalog_ids = {item["id"] for item in catalog}
         extra_sources = sorted(set(captures_by_source) - catalog_ids)
-        for item in [*catalog, *({"id": source, "name": source, "category": "Imported", "auth": "import", "live_status": "imported", "scopes": [], "notes": "", "import_status": "native", "export_status": "imported", "source_ids": [source], "source_aliases": [], "import_label": "Imported source data", "supports_import": True, "formats": []} for source in extra_sources)]:
+        for item in [*catalog, *({"id": source, "name": source, "category": "Connected source", "auth": "direct", "live_status": "imported", "scopes": [], "notes": "", "import_status": "native", "export_status": "imported", "source_ids": [source], "source_aliases": [], "import_label": "Connected source data", "supports_import": True, "formats": []} for source in extra_sources)]:
             source = item["id"]
             source_accounts = accounts_by_source.get(source, [])
             active_accounts = [account for account in source_accounts if not account.get("disconnected_at")]
@@ -1576,15 +1576,15 @@ class CortexStore:
                 next_action = "Account is registered; run or wait for the next sync."
             elif captures or active_memories:
                 status = "imported"
-                next_action = "Imported data is available for retrieval."
+                next_action = "Connected source data is available for retrieval."
             elif supports_import:
                 status = "import_ready"
-                next_action = str(item.get("import_label") or "Import an export file or folder for this source.")
+                next_action = "Connect this source through account sign-in or a direct local integration."
                 if live_status == "planned":
-                    next_action = f"{next_action}; live OAuth sync is planned."
+                    next_action = "Account sign-in sync is planned for this source."
             elif live_status == "planned":
                 status = "planned"
-                next_action = "Live OAuth is planned; use exports today."
+                next_action = "Account sign-in sync is planned for this source."
             else:
                 status = "available"
                 next_action = "Add this source when it contains useful personal context."
@@ -1652,7 +1652,7 @@ class CortexStore:
         if summary["needs_review"]:
             recommendations.append("Review pending source captures so they can become trusted model memory.")
         if not summary["sources_with_data"]:
-            recommendations.append("Import one high-signal source such as ChatGPT, Claude, Gmail, Notion, Slack, or notes.")
+            recommendations.append("Connect one high-signal source such as ChatGPT, Claude, Gmail, Notion, Slack, or notes.")
         if not recommendations:
             recommendations.append("Source readiness is healthy for local beta use.")
         return {
