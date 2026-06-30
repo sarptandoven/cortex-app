@@ -125,6 +125,31 @@ MANIFEST="$OUT_DIR/latest.json"
 CHECKSUMS="$OUT_DIR/$RELEASE_NAME.checksums.txt"
 HANDOFF="$OUT_DIR/BETA_HANDOFF.md"
 
+detach_existing_dmg_image() {
+  local image_path="$1"
+  local devices
+  devices="$(hdiutil info | awk -v path="$image_path" '
+    /^image-path[[:space:]]*:/ {
+      active = index($0, path) > 0
+      next
+    }
+    /^================================================/ {
+      active = 0
+      next
+    }
+    active && /^\/dev\/disk[0-9]+[[:space:]]/ {
+      print $1
+    }
+  ')"
+  if [[ -z "$devices" ]]; then
+    return 0
+  fi
+  while IFS= read -r device; do
+    [[ -z "$device" ]] && continue
+    hdiutil detach "$device" -force >/dev/null 2>&1 || true
+  done <<< "$devices"
+}
+
 if [[ ${#NOTES[@]} -eq 0 ]]; then
   NOTES+=("Local-first Cortex beta with bundled backend, capture, MCP, and trust controls.")
 fi
@@ -168,6 +193,7 @@ Channel: ${CHANNEL}
 Released: ${STAMP}
 EOF
 
+detach_existing_dmg_image "$DMG"
 rm -f "$DMG" "$ZIP" "$CHECKSUMS" "$MANIFEST" "$HANDOFF"
 COPYFILE_DISABLE=1 hdiutil create -volname "Cortex ${VERSION}" -srcfolder "$STAGING" -ov -format UDZO "$DMG" >/dev/null
 (cd "$ROOT/build" && COPYFILE_DISABLE=1 zip -qry -X "$ZIP" Cortex.app)
@@ -311,6 +337,7 @@ PY
 
 python3 "$PROJECT_ROOT/scripts/validate_update_manifest.py" "$MANIFEST"
 (cd "$OUT_DIR" && shasum -a 256 -c "$(basename "$CHECKSUMS")")
+detach_existing_dmg_image "$DMG"
 hdiutil verify "$DMG" >/dev/null
 unzip -tq "$ZIP" >/dev/null
 
