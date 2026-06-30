@@ -2408,7 +2408,7 @@ class CortexStore:
             "manifest_hash": scan.manifest_hash,
             "scan_errors": scan.errors,
         }
-        complete_record_set = not scan.truncated and not scan.errors and scan.records_returned == scan.records_found
+        complete_record_set = not scan.truncated and not scan.errors
         if not scan.records:
             archived_missing = 0
             if complete_record_set and scan.files_seen == 0:

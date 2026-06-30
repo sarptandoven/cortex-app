@@ -266,6 +266,47 @@ Decision: Cortex should keep this Obsidian section searchable.
         self.assertTrue(self.store.search(self.user_id, "keep this Obsidian section searchable", limit=5))
         self.assertEqual(self.store.search(self.user_id, "zinnia-retire marker", limit=5), [])
 
+    def test_sync_vault_archives_removed_section_when_multiple_sections_remain(self) -> None:
+        note = self.write_note(
+            "Projects/Removed Middle Section.md",
+            """# Keep One
+Decision: Cortex should keep the first Obsidian section searchable.
+
+## Remove
+Decision: Cortex should archive the azalea-middle marker when one section is removed.
+
+## Keep Two
+Decision: Cortex should keep the second Obsidian section searchable.
+""",
+        )
+        first = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+        self.assertEqual(first["saved"], 3)
+        self.assertEqual(first["scan"]["records_found"], 1)
+        self.assertEqual(first["scan"]["records_returned"], 3)
+        for record in first["records"]:
+            self.assertTrue(self.store.approve_capture(self.user_id, record["capture_id"]))
+        self.assertTrue(self.store.search(self.user_id, "azalea-middle marker", limit=5))
+
+        note.write_text(
+            """# Keep One
+Decision: Cortex should keep the first Obsidian section searchable.
+
+## Keep Two
+Decision: Cortex should keep the second Obsidian section searchable.
+""",
+            encoding="utf-8",
+        )
+        second = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+
+        self.assertEqual(second["saved"], 0)
+        self.assertEqual(second["skipped"], 2)
+        self.assertEqual(second["archived_missing"], 1)
+        self.assertEqual(second["scan"]["records_found"], 1)
+        self.assertEqual(second["scan"]["records_returned"], 2)
+        self.assertTrue(self.store.search(self.user_id, "first Obsidian section searchable", limit=5))
+        self.assertTrue(self.store.search(self.user_id, "second Obsidian section searchable", limit=5))
+        self.assertEqual(self.store.search(self.user_id, "azalea-middle marker", limit=5), [])
+
     def test_scan_vault_uses_explicit_obsidian_block_refs_as_stable_records(self) -> None:
         note = self.write_note(
             "Projects/Blocks.md",
