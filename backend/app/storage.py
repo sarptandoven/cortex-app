@@ -761,6 +761,25 @@ def normalize_token_scopes(scopes: list[str] | tuple[str, ...] | str | None) -> 
     return sorted({scope for scope in values if scope in MCP_TOKEN_SCOPES})
 
 
+def _parse_iso_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _age_seconds(value: str | None, *, now: datetime) -> int | None:
+    parsed = _parse_iso_timestamp(value)
+    if parsed is None:
+        return None
+    return max(0, int((now - parsed).total_seconds()))
+
+
 def memory_layer(kind: str | None, value: str | None = None) -> str:
     explicit = (value or "").strip().lower()
     if explicit in MEMORY_LAYERS:
@@ -3194,6 +3213,111 @@ class CortexStore:
                 [*params, limit],
             ).fetchall()
         return [self._job_from_row(row) for row in rows]
+
+    def job_health(
+        self,
+        user_id: str,
+        *,
+        failed_limit: int = 10,
+        stale_after_seconds: int = 15 * 60,
+    ) -> dict[str, Any]:
+        timestamp = now_iso()
+        now = datetime.now(timezone.utc)
+        stale_after = max(60, min(int(stale_after_seconds), 24 * 60 * 60))
+        failed_limit = max(0, min(int(failed_limit), 50))
+        with connect(self.db_path) as conn:
+            count_rows = conn.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM memory_jobs
+                WHERE user_id = ?
+                GROUP BY status
+                """,
+                (user_id,),
+            ).fetchall()
+            type_rows = conn.execute(
+                """
+                SELECT job_type, status, COUNT(*) AS count
+                FROM memory_jobs
+                WHERE user_id = ?
+                GROUP BY job_type, status
+                ORDER BY job_type, status
+                """,
+                (user_id,),
+            ).fetchall()
+            oldest_queued_at = conn.execute(
+                "SELECT MIN(created_at) FROM memory_jobs WHERE user_id = ? AND status = 'queued'",
+                (user_id,),
+            ).fetchone()[0]
+            due_queued = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM memory_jobs
+                WHERE user_id = ?
+                  AND status = 'queued'
+                  AND run_at <= ?
+                """,
+                (user_id, timestamp),
+            ).fetchone()[0]
+            failed_rows = conn.execute(
+                """
+                SELECT *
+                FROM memory_jobs
+                WHERE user_id = ?
+                  AND status = 'failed'
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (user_id, failed_limit),
+            ).fetchall()
+            running_rows = conn.execute(
+                """
+                SELECT *
+                FROM memory_jobs
+                WHERE user_id = ?
+                  AND status = 'running'
+                ORDER BY updated_at ASC
+                LIMIT 100
+                """,
+                (user_id,),
+            ).fetchall()
+
+        counts = {"queued": 0, "running": 0, "succeeded": 0, "failed": 0}
+        for row in count_rows:
+            counts[str(row["status"])] = int(row["count"] or 0)
+        by_type: dict[str, dict[str, int]] = {}
+        for row in type_rows:
+            job_type = str(row["job_type"])
+            by_type.setdefault(job_type, {})
+            by_type[job_type][str(row["status"])] = int(row["count"] or 0)
+
+        recent_failures = [self._job_health_item(self._job_from_row(row), now=now) for row in failed_rows]
+        stale_running: list[dict[str, Any]] = []
+        for row in running_rows:
+            job = self._job_from_row(row)
+            age = _age_seconds(job.get("updated_at"), now=now)
+            if age is not None and age >= stale_after:
+                stale_running.append(self._job_health_item(job, now=now))
+
+        if counts["failed"] or stale_running:
+            status = "blocked"
+        elif counts["queued"] or counts["running"]:
+            status = "attention"
+        else:
+            status = "ok"
+        return {
+            "status": status,
+            "checked_at": timestamp,
+            "user_id": user_id,
+            "counts": counts,
+            "by_type": by_type,
+            "due_queued": int(due_queued or 0),
+            "oldest_queued_at": oldest_queued_at,
+            "oldest_queued_age_seconds": _age_seconds(oldest_queued_at, now=now),
+            "stale_after_seconds": stale_after,
+            "stale_running": stale_running,
+            "recent_failures": recent_failures,
+        }
 
     def run_due_jobs(self, user_id: str, *, limit: int = 10, worker_id: str = "local-worker") -> dict[str, Any]:
         processed: list[dict[str, Any]] = []
@@ -7497,6 +7621,22 @@ class CortexStore:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "completed_at": row["completed_at"],
+        }
+
+    def _job_health_item(self, job: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+        return {
+            "id": job.get("id"),
+            "job_type": job.get("job_type"),
+            "object_type": job.get("object_type"),
+            "object_id": job.get("object_id"),
+            "status": job.get("status"),
+            "attempts": job.get("attempts"),
+            "max_attempts": job.get("max_attempts"),
+            "locked_by": job.get("locked_by"),
+            "locked_until": job.get("locked_until"),
+            "last_error": job.get("last_error"),
+            "updated_at": job.get("updated_at"),
+            "age_seconds": _age_seconds(job.get("updated_at"), now=now),
         }
 
     def _token_hash(self, token: str, salt: str) -> str:

@@ -1460,6 +1460,26 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(search_after.status_code, 200)
         self.assertTrue(search_after.json()["results"])
 
+    def test_job_health_endpoint_reports_queue_state(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "queue-health-contract"}
+        phrase = "FastAPI queue health endpoint should report pending work."
+        queued = self.client.post(
+            "/v1/captures/queue",
+            json={"content": phrase, "source": "fastapi-async-test"},
+            headers=headers,
+        )
+        self.assertEqual(queued.status_code, 202)
+
+        health = self.client.get("/v1/jobs/health", headers=headers)
+
+        self.assertEqual(health.status_code, 200)
+        payload = health.json()
+        self.assertEqual(payload["status"], "attention")
+        self.assertEqual(payload["counts"]["queued"], 1)
+        self.assertEqual(payload["due_queued"], 1)
+        self.assertEqual(payload["recent_failures"], [])
+        self.assertEqual(payload["stale_running"], [])
+
     def test_scoped_mcp_token_cannot_call_queue_rest_endpoint(self) -> None:
         scoped_token = "cxm_fastapi_queue_blocked_token_123456789"
         registered = self.client.post(

@@ -63,7 +63,7 @@ def _required_api_scope(method: str, path: str) -> str:
         return "export"
     if normalized_path == "/v1/settings" and normalized_method in {"PUT", "PATCH"}:
         return "maintenance"
-    if normalized_path in {"/v1/diagnostics", "/v1/reliability/report"}:
+    if normalized_path in {"/v1/diagnostics", "/v1/reliability/report", "/v1/jobs/health"}:
         return "maintenance"
     if normalized_path.startswith("/v1/maintenance/") or normalized_path in {"/v1/jobs/run", "/v1/maintenance/jobs/run"}:
         return "maintenance"
@@ -608,6 +608,15 @@ def list_jobs(
     user_id: str = Depends(auth),
 ) -> dict[str, Any]:
     return {"results": store.list_jobs(user_id, status=status, job_type=job_type, limit=limit)}
+
+
+@app.get("/v1/jobs/health")
+def job_health(
+    failed_limit: int = Query(default=10, ge=0, le=50),
+    stale_after_seconds: int = Query(default=900, ge=60, le=86_400),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return store.job_health(user_id, failed_limit=failed_limit, stale_after_seconds=stale_after_seconds)
 
 
 @app.get("/v1/jobs/{job_id}")

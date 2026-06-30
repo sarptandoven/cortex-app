@@ -310,14 +310,24 @@ class SmokeRunner:
         self.ensure("supersecret123" not in encoded and DUMMY_OPENAI_KEY not in encoded, "Support bundle leaked secret fixture", support)
 
         jobs = self.request("POST", "/v1/jobs/run", params={"limit": 25}).json()
+        queue_health = self.request("GET", "/v1/jobs/health").json()
         diagnostics = self.request("GET", "/v1/diagnostics").json()
         self.ensure(jobs["failed"] == 0, "Worker run reported failed jobs", jobs)
+        self.ensure(queue_health["status"] != "blocked", "Queue health is blocked", queue_health)
+        self.ensure(queue_health["counts"]["failed"] == 0, "Queue health reported failed jobs", queue_health)
+        self.ensure(not queue_health["stale_running"], "Queue health reported stale running jobs", queue_health)
         self.ensure(diagnostics["counts"]["failed_jobs"] == 0, "Diagnostics reported failed jobs", diagnostics)
         return {
             "detail": "Backup, content-free support bundle, and queue health checks passed.",
             "payload": {
                 "backup_path": backup["backup_path"],
                 "worker": {"processed": jobs["processed"], "pending": jobs["pending"], "failed": jobs["failed"]},
+                "queue": {
+                    "status": queue_health["status"],
+                    "queued": queue_health["counts"]["queued"],
+                    "running": queue_health["counts"]["running"],
+                    "failed": queue_health["counts"]["failed"],
+                },
             },
         }
 

@@ -89,6 +89,7 @@ The local app now has the first durable queue primitives:
 - `GET /v1/captures/{capture_id}/status`
 - `GET /v1/jobs/{job_id}`
 - `POST /v1/maintenance/jobs/run`
+- `GET /v1/jobs/health`
 - `backend/app/worker.py`
 - `scripts/run_memory_worker.py`
 
@@ -106,6 +107,7 @@ Workers should claim jobs with a short SQLite/libSQL lease, release the database
 Implemented local worker runner:
 
 - `run_worker_tick(...)` wraps the existing queue primitives without introducing a second queue system.
+- `GET /v1/jobs/health` reports queue status, due queued work, per-status/per-type counts, recent failures, and stale running jobs without returning job payload or memory content.
 - `scripts/run_memory_worker.py` runs one or more worker ticks for selected users and prints JSON summaries with processed, pending, failed, per-user, and recent failed-job data.
 - Example local run:
 

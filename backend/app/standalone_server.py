@@ -54,7 +54,7 @@ def _required_api_scope(method: str, path: str) -> str:
         return "export"
     if normalized_path == "/v1/settings" and normalized_method in {"PUT", "PATCH"}:
         return "maintenance"
-    if normalized_path in {"/v1/diagnostics", "/v1/reliability/report"}:
+    if normalized_path in {"/v1/diagnostics", "/v1/reliability/report", "/v1/jobs/health"}:
         return "maintenance"
     if normalized_path.startswith("/v1/maintenance/") or normalized_path in {"/v1/jobs/run", "/v1/maintenance/jobs/run"}:
         return "maintenance"
@@ -568,6 +568,13 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     job_type=(params.get("job_type") or [None])[0],
                     limit=_int_param(params, "limit", 50, 1, 100),
                 )})
+                return
+            if method == "GET" and path == "/v1/jobs/health":
+                self._send_json(store.job_health(
+                    user_id,
+                    failed_limit=_int_param(params, "failed_limit", 10, 0, 50),
+                    stale_after_seconds=_int_param(params, "stale_after_seconds", 900, 60, 86400),
+                ))
                 return
             if method == "POST" and path == "/v1/jobs/run":
                 self._send_json(store.run_due_jobs(user_id, limit=_int_param(params, "limit", 10, 1, 100)))

@@ -1479,6 +1479,59 @@ Never use [[Templates/Marketing]] boilerplate in memory.
         self.assertEqual(self.store.search(self.user_id, "Queued deletion"), [])
         self.assertEqual(self.store.list_jobs(self.user_id), [])
 
+    def test_job_health_reports_queued_failed_and_stale_running_jobs(self) -> None:
+        first = self.store.enqueue_capture(
+            user_id=self.user_id,
+            content="Queue health should report queued work.",
+            source="unit-test-async",
+            source_url=None,
+            title="Queued health",
+        )
+        queued_health = self.store.job_health(self.user_id)
+        self.assertEqual(queued_health["status"], "attention")
+        self.assertEqual(queued_health["counts"]["queued"], 1)
+        self.assertEqual(queued_health["due_queued"], 1)
+        self.assertIsNotNone(queued_health["oldest_queued_age_seconds"])
+
+        second = self.store.enqueue_capture(
+            user_id=self.user_id,
+            content="Queue health should report failed work.",
+            source="unit-test-async",
+            source_url=None,
+            title="Failed health",
+        )
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE memory_jobs
+                SET status = 'failed',
+                    attempts = max_attempts,
+                    last_error = 'Synthetic failure for queue health.',
+                    updated_at = '2000-01-01T00:00:00+00:00'
+                WHERE id = ?
+                """,
+                (second["jobs"][0]["id"],),
+            )
+            conn.execute(
+                """
+                UPDATE memory_jobs
+                SET status = 'running',
+                    locked_by = 'stale-worker',
+                    updated_at = '2000-01-01T00:00:00+00:00'
+                WHERE id = ?
+                """,
+                (first["jobs"][0]["id"],),
+            )
+
+        blocked = self.store.job_health(self.user_id, stale_after_seconds=60)
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertEqual(blocked["counts"]["failed"], 1)
+        self.assertEqual(blocked["counts"]["running"], 1)
+        self.assertEqual(blocked["recent_failures"][0]["last_error"], "Synthetic failure for queue health.")
+        self.assertEqual(blocked["stale_running"][0]["locked_by"], "stale-worker")
+        self.assertNotIn("payload", blocked["recent_failures"][0])
+        self.assertNotIn("result", blocked["stale_running"][0])
+
     def test_backup_prune_removes_archives_that_can_retain_deleted_content(self) -> None:
         phrase = "Backup retention phrase should vanish after backup pruning."
         result = self.capture(phrase)
