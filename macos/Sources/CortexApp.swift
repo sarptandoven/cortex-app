@@ -2481,7 +2481,7 @@ final class AppState: ObservableObject {
             askAnswer = answer.answer
             askCitations = answer.citations
             hasSearched = true
-            status = searchResults.isEmpty ? "No cited context found" : "Answered with \(answer.citations.count) citation\(answer.citations.count == 1 ? "" : "s")"
+            status = searchResults.isEmpty ? "No cited memory found" : "Found \(answer.citations.count) citation\(answer.citations.count == 1 ? "" : "s")"
             if hasUsableOnboardingCitation(answer.citations) {
                 markCortexUsed()
             }

@@ -220,7 +220,7 @@ struct AskAnswerPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
-                Label("Answer", systemImage: "quote.bubble")
+                Label("Cited memory", systemImage: "quote.bubble")
                     .font(.headline)
                 Spacer()
             }
