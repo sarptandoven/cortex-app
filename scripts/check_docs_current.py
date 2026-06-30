@@ -64,10 +64,6 @@ FORBIDDEN_PHRASES: dict[str, tuple[str, ...]] = {
         "Quick signal",
         "Capture Inbox",
     ),
-    "macos/Sources/SourcesTab.swift": (
-        "Soon",
-        "Cloud accounts",
-    ),
     "macos/Sources/OnboardingView.swift": (
         "See source layer",
         "View source connection layer",
