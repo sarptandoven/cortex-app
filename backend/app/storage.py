@@ -3722,6 +3722,7 @@ class CortexStore:
                 edges.append(self._edge(conn, user_id, capture_id, memory["id"], "contains", memory["id"], captured_at))
 
             self._save_memory_relations_for_capture(conn, user_id, capture_id, memories, captured_at)
+            self._save_cross_capture_memory_relations(conn, user_id, capture_id, memories, captured_at)
 
             if stable_source_record and memories:
                 self._link_superseded_capture_memories_in_conn(
@@ -8174,6 +8175,110 @@ class CortexStore:
                     ),
                 )
                 relations.append(relation)
+        return relations
+
+    def _save_cross_capture_memory_relations(
+        self,
+        conn,
+        user_id: str,
+        capture_id: str,
+        memories: list[dict[str, Any]],
+        captured_at: str,
+        *,
+        per_memory_limit: int = 8,
+    ) -> list[dict[str, Any]]:
+        active = [memory for memory in memories if memory.get("id") and memory.get("status", "active") == "active"]
+        if not active:
+            return []
+        memory_ids = [str(memory["id"]) for memory in active]
+        memory_placeholders = ",".join("?" for _ in memory_ids)
+        conn.execute(
+            f"""
+            DELETE FROM memory_relations
+            WHERE user_id = ?
+              AND kind IN ('shared_entity', 'shared_topic')
+              AND (source_memory_id IN ({memory_placeholders}) OR target_memory_id IN ({memory_placeholders}))
+              AND NOT (source_memory_id IN ({memory_placeholders}) AND target_memory_id IN ({memory_placeholders}))
+            """,
+            [user_id, *memory_ids, *memory_ids, *memory_ids, *memory_ids],
+        )
+
+        relations: list[dict[str, Any]] = []
+        now = now_iso()
+        for memory in active:
+            left_id = str(memory["id"])
+            left_entities = {str(value) for value in memory.get("entity_ids") or [] if str(value)}
+            if not left_entities:
+                continue
+            entity_placeholders = ",".join("?" for _ in left_entities)
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT m.*
+                FROM memory_entities me
+                JOIN memories m ON m.id = me.memory_id AND m.user_id = me.user_id
+                WHERE me.user_id = ?
+                  AND me.entity_id IN ({entity_placeholders})
+                  AND m.id NOT IN ({memory_placeholders})
+                  AND COALESCE(m.capture_id, '') != ?
+                  AND m.status = 'active'
+                  AND (m.valid_from IS NULL OR m.valid_from = '' OR m.valid_from <= ?)
+                  AND (m.valid_to IS NULL OR m.valid_to = '' OR m.valid_to > ?)
+                  AND (m.superseded_by IS NULL OR m.superseded_by = '')
+                ORDER BY m.importance DESC, COALESCE(m.occurred_at, m.captured_at) DESC, m.captured_at DESC
+                LIMIT ?
+                """,
+                [user_id, *sorted(left_entities), *memory_ids, capture_id, now, now, max(1, per_memory_limit * 4)],
+            ).fetchall()
+            left_topics = {str(value).lower() for value in memory.get("topics") or [] if str(value).strip()}
+            added = 0
+            for row in rows:
+                right = self._memory_from_row(row)
+                right_entities = {str(value) for value in right.get("entity_ids") or [] if str(value)}
+                shared_entities = sorted(left_entities & right_entities)
+                if not shared_entities:
+                    continue
+                right_topics = {str(value).lower() for value in right.get("topics") or [] if str(value).strip()}
+                shared_topics = sorted(left_topics & right_topics)
+                source_id, target_id = sorted([left_id, right["id"]])
+                metadata = {
+                    "capture_id": capture_id,
+                    "related_capture_id": right.get("capture_id"),
+                    "shared_entities": shared_entities[:12],
+                    "shared_topics": shared_topics[:12],
+                    "source": memory.get("source") or right.get("source"),
+                }
+                relation_id = stable_id("rel_", f"{user_id}:{source_id}:{target_id}:shared_entity:{','.join(shared_entities)}:{','.join(shared_topics)}")
+                relation = {
+                    "id": relation_id,
+                    "user_id": user_id,
+                    "source_memory_id": source_id,
+                    "target_memory_id": target_id,
+                    "kind": "shared_entity",
+                    "weight": round(min(1.0, 0.5 + (0.25 * len(shared_entities)) + (0.05 * len(shared_topics))), 3),
+                    "metadata": metadata,
+                    "created_at": captured_at,
+                }
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO memory_relations
+                    (id, user_id, source_memory_id, target_memory_id, kind, weight, metadata_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        relation["id"],
+                        user_id,
+                        source_id,
+                        target_id,
+                        relation["kind"],
+                        relation["weight"],
+                        json.dumps(metadata),
+                        captured_at,
+                    ),
+                )
+                relations.append(relation)
+                added += 1
+                if added >= per_memory_limit:
+                    break
         return relations
 
     def _vector_ready(self, conn) -> bool:

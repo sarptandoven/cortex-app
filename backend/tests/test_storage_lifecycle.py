@@ -198,6 +198,97 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(relation_count_after_archive, 0)
         self.assertEqual(self.store.answer_query(self.user_id, "risk budget local-first path", limit=2)["citations"], [])
 
+    def test_related_memory_links_across_source_records_by_entity(self) -> None:
+        decision = self.store.save_capture(
+            user_id=self.user_id,
+            content="Project Atlas cross-record decision.",
+            source="obsidian",
+            source_url="file:///tmp/Atlas%20Decision.md",
+            title="Atlas Decision",
+            extracted={
+                "_timestamp": "2026-06-29T10:00:00Z",
+                "summary": "Cross-record decision fixture.",
+                "records": [
+                    {
+                        "id": "mem_cross_atlas_decision",
+                        "kind": "decision",
+                        "layer": "decision",
+                        "content": "Project Atlas decision: keep the local-first beta because the budget cap is strict.",
+                        "summary": "Project Atlas local-first beta decision.",
+                        "confidence": "confirmed",
+                        "importance": 4,
+                        "topics": ["Project Atlas", "beta"],
+                        "entity_ids": ["project_atlas"],
+                    }
+                ],
+                "tasks": [],
+                "entities": [{"id": "project_atlas", "kind": "project", "name": "Project Atlas", "aliases": [], "context": ""}],
+            },
+        )
+        procedure = self.store.save_capture(
+            user_id=self.user_id,
+            content="Project Atlas cross-record procedure.",
+            source="obsidian",
+            source_url="file:///tmp/Atlas%20Procedure.md",
+            title="Atlas Procedure",
+            extracted={
+                "_timestamp": "2026-06-29T10:05:00Z",
+                "summary": "Cross-record procedure fixture.",
+                "records": [
+                    {
+                        "id": "mem_cross_atlas_procedure",
+                        "kind": "procedure",
+                        "layer": "procedural",
+                        "content": "Before the Project Atlas beta release, run backend smoke, build the app, verify codesign, and confirm source citations.",
+                        "summary": "Project Atlas beta release procedure.",
+                        "confidence": "confirmed",
+                        "importance": 3,
+                        "topics": ["Project Atlas", "beta"],
+                        "entity_ids": ["project_atlas"],
+                    }
+                ],
+                "tasks": [],
+                "entities": [{"id": "project_atlas", "kind": "project", "name": "Project Atlas", "aliases": [], "context": ""}],
+            },
+        )
+
+        with connect(self.db_path) as conn:
+            relation = conn.execute(
+                """
+                SELECT kind, source_memory_id, target_memory_id, metadata_json
+                FROM memory_relations
+                WHERE user_id = ?
+                """,
+                (self.user_id,),
+            ).fetchone()
+        self.assertIsNotNone(relation)
+        self.assertEqual(relation["kind"], "shared_entity")
+        self.assertEqual({relation["source_memory_id"], relation["target_memory_id"]}, {"mem_cross_atlas_decision", "mem_cross_atlas_procedure"})
+        relation_metadata = json.loads(relation["metadata_json"])
+        self.assertEqual(relation_metadata["shared_entities"], ["project_atlas"])
+        self.assertEqual(relation_metadata["related_capture_id"], decision["capture_id"])
+
+        answer = self.store.answer_query(self.user_id, "budget cap local-first beta", limit=2)
+        citation_ids = [citation["id"] for citation in answer["citations"]]
+        self.assertEqual(citation_ids[0], "mem_cross_atlas_decision")
+        self.assertIn("mem_cross_atlas_procedure", citation_ids)
+        related = next(citation for citation in answer["citations"] if citation["id"] == "mem_cross_atlas_procedure")
+        self.assertEqual(related["relationship"]["kind"], "shared_entity")
+        self.assertEqual(related["relationship"]["related_to_id"], "mem_cross_atlas_decision")
+
+        context_pack = self.store.context_pack(self.user_id, query="budget cap local-first beta", limit=2)
+        self.assertIn("mem_cross_atlas_decision", context_pack)
+        self.assertIn("mem_cross_atlas_procedure", context_pack)
+        self.assertIn("Related: shared_entity to mem_cross_atlas_decision.", context_pack)
+
+        self.assertTrue(self.store.archive_capture(self.user_id, procedure["capture_id"]))
+        with connect(self.db_path) as conn:
+            relation_count = conn.execute(
+                "SELECT COUNT(*) FROM memory_relations WHERE user_id = ?",
+                (self.user_id,),
+            ).fetchone()[0]
+        self.assertEqual(relation_count, 0)
+
     def test_entities_allow_same_id_across_users(self) -> None:
         for index, user_id in enumerate(("entity-user-a", "entity-user-b")):
             result = self.store.save_capture(
