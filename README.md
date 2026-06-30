@@ -2,7 +2,7 @@
 
 Your private personal memory model for AI tools.
 
-Cortex is a local-first personal memory and adaptation layer. It connects to approved services and AI tools, turns reviewed chats, notes, writing samples, decisions, people, projects, and follow-ups into cited memory, and lets AI tools retrieve that memory instead of guessing or starting from zero.
+Cortex is a local-first personal memory and adaptation layer. The current beta connects Obsidian/local notes and local MCP AI tools, turns reviewed source records into cited memory, and lets approved tools retrieve that memory instead of guessing or starting from zero.
 
 ## What Exists Now
 
@@ -10,11 +10,11 @@ Cortex is a local-first personal memory and adaptation layer. It connects to app
 - Bundled local service on `127.0.0.1:8766`
 - User-owned memory folder at `~/Library/Application Support/Cortex/Cortex.vault/`
 - SQLite FTS search with optional `sqlite-vec` and opt-in OpenAI embeddings
-- Connected-source setup for AI tools, notes, email, messaging, calendars, contacts, docs, bookmarks, and work tools
+- Connected-source setup for Obsidian/local notes and local MCP AI tools; other services stay planned or Advanced/Fallback until their direct connectors ship
 - Direct local app connection helpers for supported AI tools, with Advanced/Fallback import available only when a service cannot connect directly yet
 - Simple product flow: Home, Review, Ask, with Connections & Privacy kept behind one sheet
-- Source readiness report covering supported services, planned live connectors, connected accounts, review backlog, source errors, active memory, and citation coverage
-- Gated first-run setup for private memory folder, first connected source, first memory review, and first cited Ask/use action
+- Source readiness report covering the active beta source path, planned live connectors, connected accounts, review backlog, source errors, active memory, and citation coverage
+- Lightweight first-run setup for the private memory folder, with source connection, Review, and Ask as guided next steps
 - Review inbox for approve/archive, decisions, recommended actions, and follow-ups
 - Ask screen with cited memory search plus secondary handoffs for ChatGPT, Claude, Cursor, direct local tools, and browser-only workflows
 - Advanced local connection bridge and one-click setup helpers
@@ -105,4 +105,4 @@ python3 scripts/export_support_bundle.py --mode offline
 
 ## Current Boundaries
 
-Cortex is ready for local-first beta testing, not broad public distribution yet. The current beta centers on connected-service setup, direct local AI-tool integrations, review, Ask, and Trust. Selected export, folder, or file import remains available only as an Advanced/Fallback path for unsupported services or recovery. Public launch still needs Developer ID signing, notarization, hosted HTTPS downloads, a formal support path, a hosted update-feed decision, and a production privacy review.
+Cortex is ready for local-first beta testing, not broad public distribution yet. The current beta centers on Obsidian/local notes sync, direct local AI-tool integrations, Review, Ask, and Trust. Selected export, folder, or file import remains available only as an Advanced/Fallback path for unsupported services or recovery. Public launch still needs Developer ID signing, notarization, hosted HTTPS downloads, a formal support path, a hosted update-feed decision, and a production privacy review.

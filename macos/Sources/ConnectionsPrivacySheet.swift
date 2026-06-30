@@ -33,7 +33,7 @@ struct ConnectionsPrivacySheet: View {
                 Text("Connections & Privacy")
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text("Connect Cortex once, control what AI tools can read, and keep advanced controls out of the main flow.")
+                Text("Connect notes once, control what AI tools can read, and keep advanced controls out of the main flow.")
                     .font(.callout)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -231,7 +231,7 @@ private struct ConnectionsOverviewHero: View {
     @ObservedObject var state: AppState
 
     private var activeConnections: Int {
-        state.activeSourceAccounts.count + state.connectedAIIntegrationCount
+        state.activeSourceAccounts.count
     }
 
     private var obsidianConnector: SourceConnectorCatalogItem? {
@@ -250,9 +250,9 @@ private struct ConnectionsOverviewHero: View {
             .frame(width: 72, height: 72)
 
             VStack(alignment: .leading, spacing: 7) {
-                Text(activeConnections > 0 ? "Cortex is connected" : "Connect Cortex once")
+                Text(activeConnections > 0 ? "Cortex is connected" : "Connect notes once")
                     .font(.system(size: 28, weight: .semibold))
-                Text("Memory syncs from connected notes and local AI tools. New signals go to Review first, then Ask and connected tools use approved memory with citations.")
+                Text("Memory syncs from connected notes. New signals go to Review first, then Ask and connected AI tools use approved memory with citations.")
                     .font(.title3)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

@@ -2149,9 +2149,6 @@ final class AppState: ObservableObject {
 
     var canCompleteOnboarding: Bool {
         isLocalServiceReady
-            && onboardingHasSource
-            && onboardingHasReviewedMemory
-            && onboardingHasUsedCortex
     }
 
     var incompleteOnboardingStepTitles: [String] {
@@ -2167,7 +2164,7 @@ final class AppState: ObservableObject {
         if remaining.isEmpty {
             return "Setup is ready to finish."
         }
-        return "Still needs: \(remaining)."
+        return "Next: \(remaining)."
     }
 
     func onboardingStepIsComplete(_ step: OnboardingStep) -> Bool {
@@ -2184,7 +2181,7 @@ final class AppState: ObservableObject {
     }
 
     var canAdvanceOnboarding: Bool {
-        onboardingStepIsComplete(onboardingStep)
+        isLocalServiceReady
     }
 
     var onboardingAskSuggestions: [String] {
@@ -3245,7 +3242,7 @@ final class AppState: ObservableObject {
 
     func completeOnboarding() {
         guard canCompleteOnboarding else {
-            status = "Complete each setup step before starting Cortex"
+            status = "Start the local memory engine before opening Cortex"
             return
         }
         saveMemorySettings()
@@ -3260,8 +3257,7 @@ final class AppState: ObservableObject {
     func finishOnboarding() {
         guard canCompleteOnboarding else {
             dismissOnboardingForSession()
-            let remaining = incompleteOnboardingStepTitles.prefix(2).joined(separator: ", ")
-            status = remaining.isEmpty ? "Setup can be completed from Privacy" : "Setup will reopen until finished: \(remaining)"
+            status = "Setup closed. Start the local memory engine from Home when ready."
             return
         }
         completeOnboarding()
@@ -3269,7 +3265,7 @@ final class AppState: ObservableObject {
 
     func dismissOnboardingForSession() {
         showOnboarding = false
-        status = "Setup will reopen until finished; reopen it from Connections & Privacy anytime"
+        status = "Setup closed. Continue from Home anytime."
     }
 
     func showOnboardingAgain() {
@@ -3303,7 +3299,7 @@ final class AppState: ObservableObject {
     func nextOnboardingStep() {
         let steps = OnboardingStep.allCases
         if !canAdvanceOnboarding {
-            status = "Complete this setup step before continuing"
+            status = "Start the local memory engine before continuing"
             return
         }
         let nextIndex = min(steps.count - 1, onboardingStep.rawValue + 1)
@@ -4012,9 +4008,6 @@ struct IntegrationCenterView: View {
                 },
                 refresh: {
                     state.refreshIntegrationStates()
-                },
-                manualSetup: {
-                    state.copyMCPConfig()
                 }
             )
             if !compactIntegrations.isEmpty {
@@ -4129,7 +4122,6 @@ struct IntegrationCompactHero: View {
     let detectedCount: Int
     let connectDetected: () -> Void
     let refresh: () -> Void
-    let manualSetup: () -> Void
 
     private var needsConnection: Bool {
         detectedCount > connectedCount
@@ -4170,22 +4162,14 @@ struct IntegrationCompactHero: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
             } else if needsManualFallback {
-                VStack(alignment: .trailing, spacing: 8) {
-                    Button {
-                        manualSetup()
-                    } label: {
-                        Label("Copy Advanced Setup", systemImage: "doc.on.doc")
-                            .frame(minWidth: 150, minHeight: 46)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    Button {
-                        refresh()
-                    } label: {
-                        Label("Check Again", systemImage: "arrow.clockwise")
-                    }
-                    .buttonStyle(.borderless)
+                Button {
+                    refresh()
+                } label: {
+                    Label("Check Again", systemImage: "arrow.clockwise")
+                        .frame(minWidth: 128, minHeight: 46)
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
             } else {
                 Button {
                     refresh()
@@ -4219,7 +4203,7 @@ struct IntegrationCompactHero: View {
         if connectedCount > 0 {
             return "Approved memory and source-sync tools are available to connected AI tools."
         }
-        return "If your AI app is not detected, use Advanced Setup to connect it manually."
+        return "Open a supported local AI tool, then check again. Manual setup stays in Advanced."
     }
 }
 

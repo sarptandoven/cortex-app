@@ -9,7 +9,7 @@ Cortex is a local-first macOS beta. You do not need Redis, a GitHub token, Docke
 open macos/build/Cortex.app
 ```
 
-The app starts its bundled local service on `127.0.0.1:8766` and stores user-owned memory files in:
+The release package starts its bundled local service on `127.0.0.1:8766` and stores user-owned memory files in:
 
 ```text
 ~/Library/Application Support/Cortex/Cortex.vault/
@@ -20,17 +20,17 @@ The app starts its bundled local service on `127.0.0.1:8766` and stores user-own
 Use the setup flow:
 
 1. Vault: confirm the local memory folder path and service health.
-2. Connect: connect an MCP tool or Obsidian vault once.
-3. Review: approve at least one useful memory.
-4. Ask: ask a question and inspect cited memory.
+2. Source: connect Obsidian or a local notes folder when ready.
+3. Review: approve useful memory after a source syncs.
+4. Ask: ask a question and inspect cited memory after approval.
 
 `Finish Later` opens the app without marking setup complete. Setup can be reopened from Connections & Privacy.
 
 ## Connect Sources
 
-Open Connections & Privacy and connect the services or direct app integrations you want Cortex to use. Start with supported AI tools through MCP and an Obsidian vault.
+Open Connections & Privacy and connect Obsidian/local notes plus supported local AI tools through MCP.
 
-Cloud OAuth/API sync is staged by service readiness in this beta. If a service cannot connect directly yet, keep it out of the primary setup path.
+Cloud OAuth/API sync is staged by service readiness in this beta. Gmail, Notion, Slack, Drive, and similar services stay planned or Advanced/Fallback until their direct connectors ship.
 
 ## Review And Ask
 

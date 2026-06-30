@@ -7,7 +7,7 @@ It provides:
 - capture ingestion
 - source-account sync for connected local/MCP connectors
 - fallback import preview, duplicate-safe history, and batch undo for unsupported exports, folders, and files
-- source account registry and sync cursor state for live connectors
+- source account registry and sync cursor state for local connectors and future live connectors
 - content-free sync change feed for hosted-sync materialization work
 - structured memory extraction
 - layered memory metadata for semantic, episodic, style, decision, preference, and negative memory
@@ -160,9 +160,11 @@ python3 scripts/export_support_bundle.py --mode live
 python3 scripts/ops_readiness_check.py --require-live
 ```
 
-## Hosted Beta
+## Hosted Development Notes
 
-Deploy the same FastAPI service to Render, Fly.io, Railway, or a small VPS. For the hosted beta, keep SQLite WAL plus `sqlite-vec` as the primary memory store, add login/API-token auth, encrypted backups, and eventually per-user or per-shard database files.
+These notes are experimental. The first-100 beta does not include hosted accounts, cloud sync, remote recovery, or a 10k-user hosted platform.
+
+The same FastAPI service can be deployed to Render, Fly.io, Railway, or a small VPS for development. For hosted experiments, keep SQLite WAL plus `sqlite-vec` as the primary memory store, add login/API-token auth, encrypted backups, and eventually per-user or per-shard database files.
 
 Shard routing is opt-in and defaults to the local single-store mode used by the macOS app:
 

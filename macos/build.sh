@@ -138,11 +138,17 @@ if [[ -d "${PY_VERSION:-}" ]]; then
     sign_file_if_macho "$macho_file" "$child_entitlements"
   done < <(find "$PY_VERSION" -type f \( -name "Python" -o -name "python3.12" -o -name "*.so" -o -name "*.dylib" \))
   if [[ -d "$PY_VERSION/Resources/Python.app" ]]; then
-    if [[ "$NESTED_SIGN_IDENTITY" == "-" ]]; then
-      codesign --force --entitlements "$CHILD_ENTITLEMENTS" --sign - "$PY_VERSION/Resources/Python.app" >/dev/null
-    else
-      codesign --force --entitlements "$CHILD_ENTITLEMENTS" --options runtime --sign "$NESTED_SIGN_IDENTITY" "$PY_VERSION/Resources/Python.app" >/dev/null
+    PY_APP_SIGN_ARGS=(--force)
+    if [[ -n "$CHILD_ENTITLEMENTS" ]]; then
+      PY_APP_SIGN_ARGS+=(--entitlements "$CHILD_ENTITLEMENTS")
     fi
+    if [[ "$NESTED_SIGN_IDENTITY" == "-" ]]; then
+      PY_APP_SIGN_ARGS+=(--sign -)
+    else
+      PY_APP_SIGN_ARGS+=(--options runtime --sign "$NESTED_SIGN_IDENTITY")
+    fi
+    PY_APP_SIGN_ARGS+=("$PY_VERSION/Resources/Python.app")
+    codesign "${PY_APP_SIGN_ARGS[@]}" >/dev/null
   fi
 fi
 

@@ -17,7 +17,7 @@ NOTES=()
 SIGN_IDENTITY="${CORTEX_CODESIGN_IDENTITY:--}"
 NOTARY_PROFILE="${CORTEX_NOTARY_PROFILE:-}"
 STRICT_RELEASE="${CORTEX_RELEASE_STRICT:-0}"
-BUNDLE_PYTHON="${CORTEX_BUNDLE_PYTHON:-0}"
+BUNDLE_PYTHON="${CORTEX_BUNDLE_PYTHON:-1}"
 
 usage() {
   cat <<'EOF'
@@ -34,7 +34,7 @@ Options:
 Environment:
   CORTEX_CODESIGN_IDENTITY   Optional Developer ID Application identity.
   CORTEX_NOTARY_PROFILE      Optional notarytool keychain profile.
-  CORTEX_BUNDLE_PYTHON       Set to 1 for production direct builds.
+  CORTEX_BUNDLE_PYTHON       Defaults to 1 for release packages. Set to 0 only for developer-only packages.
   CORTEX_RELEASE_STRICT      Set to 1 to enable the same checks as --production.
 
 Creates:
@@ -171,7 +171,8 @@ Install:
 2. Drag Cortex.app to Applications.
 3. Open Cortex from Applications.
 4. If macOS warns because this local beta is not notarized yet, Control-click Cortex.app and choose Open.
-5. Complete first-run setup, connect MCP or Obsidian, approve one memory, ask a cited question, and create or intentionally defer a backup.
+5. Open Cortex. The local backend runtime is bundled in this release package.
+6. Connect notes from Home when ready, approve one memory in Review, and ask a cited question.
 
 Update:
 1. Quit Cortex.

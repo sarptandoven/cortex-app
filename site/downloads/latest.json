@@ -4,15 +4,15 @@
     {
       "filename": "Cortex-0.1.0-1.dmg",
       "kind": "dmg",
-      "sha256": "671f8a645b5a8c8899caf2d829ad7d26dc455b6e5366d492e6154d5acddb0629",
-      "size_bytes": 2764084,
+      "sha256": "b3d26fafbc4f9ef865a51272ca82de1dc353be2735503ae52d687daf2ecb2b26",
+      "size_bytes": 20068774,
       "url": "downloads/Cortex-0.1.0-1.dmg"
     },
     {
       "filename": "Cortex-0.1.0-1.app.zip",
       "kind": "zip",
-      "sha256": "d2a112b7624d42400780ebffe52717013dfd84289912e0c3b4e23f142e082abf",
-      "size_bytes": 2261958,
+      "sha256": "2e8961017ad5507f899241e9dee42271af79d3a1288a19fb8f8731f6143fe80f",
+      "size_bytes": 16561423,
       "url": "downloads/Cortex-0.1.0-1.app.zip"
     }
   ],
@@ -69,6 +69,6 @@
   "release_notes": [
     "Local-first Cortex beta with bundled backend, capture, MCP, and trust controls."
   ],
-  "released_at": "2026-06-30T19:31:07Z",
+  "released_at": "2026-06-30T19:40:20Z",
   "version": "0.1.0"
 }

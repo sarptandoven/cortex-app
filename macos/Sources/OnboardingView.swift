@@ -183,29 +183,11 @@ struct OnboardingView: View {
 
     private var continueButtonTitle: String {
         guard !state.canAdvanceOnboarding else { return "Continue" }
-        switch state.onboardingStep {
-            case .privateVault:
-                return "Waiting for Service"
-            case .firstSource:
-                return "Connect Cortex"
-            case .reviewMemory:
-                return "Approve Memory"
-            case .askUse:
-                return "Ask Cortex"
-            }
+        return "Waiting for Service"
     }
 
     private var continueButtonIcon: String {
-        switch state.onboardingStep {
-        case .privateVault:
-            return "clock"
-        case .firstSource:
-            return "link.circle"
-        case .reviewMemory:
-            return "checkmark.circle"
-        case .askUse:
-            return "sparkle.magnifyingglass"
-        }
+        "clock"
     }
 
     @ViewBuilder
@@ -251,7 +233,7 @@ struct OnboardingVaultStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Cortex starts with a private memory folder on this Mac, then builds memory from connected notes, accounts, and AI tools. Setup stays focused on getting useful context flowing.")
+            Text("Cortex starts with a private memory folder on this Mac. Once the local engine is healthy, you can enter the app and connect notes from Home.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -311,39 +293,39 @@ struct OnboardingFirstSourceStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Connect one real source. For this beta, the most useful paths are Obsidian notes and local AI tools that send useful memory into Review.")
+            Text("This step is optional for setup, but it is what makes Cortex useful. Obsidian or a local notes folder is the automatic memory source for this beta.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 240), spacing: 12)], spacing: 12) {
                 OnboardingConnectionCard(
-                    title: "Connect AI tools",
-                    detail: "Claude Desktop, Cursor, Windsurf, and other local AI tools can read approved memory and send new memory into Review.",
-                    systemImage: "wand.and.stars",
-                    isPrimary: true,
-                    status: state.connectedAIIntegrationCount > 0 ? "\(state.connectedAIIntegrationCount) connected" : "Ready",
-                    buttonTitle: state.connectedAIIntegrationCount > 0 ? "Manage" : "Connect"
-                ) {
-                    state.openConnectionsPrivacy(statusMessage: "Connect local AI tools")
-                    state.dismissOnboardingForSession()
-                }
-
-                OnboardingConnectionCard(
-                    title: state.hasConnectedObsidianVault ? "Obsidian connected" : "Connect Obsidian",
-                    detail: state.hasConnectedObsidianVault ? "Cortex syncs the saved notes automatically on launch and periodically." : "Choose an Obsidian folder once. Cortex reads notes locally, cleans Markdown, and preserves citations.",
+                    title: state.hasConnectedObsidianVault ? "Notes connected" : "Connect notes",
+                    detail: state.hasConnectedObsidianVault ? "Cortex syncs saved notes automatically on launch and periodically." : "Choose an Obsidian or Markdown notes folder once. Cortex reads notes locally, cleans Markdown, and preserves citations.",
                     systemImage: state.hasConnectedObsidianVault ? "checkmark.seal.fill" : "folder.badge.plus",
-                    isPrimary: false,
+                    isPrimary: true,
                     status: state.hasConnectedObsidianVault ? "Connected" : "Local",
                     buttonTitle: state.hasConnectedObsidianVault ? "Connected" : "Connect notes"
                 ) {
                     if state.hasConnectedObsidianVault {
-                        state.status = "Obsidian will sync automatically"
+                        state.status = "Notes will sync automatically"
                     } else if let connector = obsidianConnector {
                         state.connectLocalNotesFolder(connector)
                     } else {
                         Task { await state.loadSourceConnectivity() }
-                        state.status = "Checking Obsidian connector"
+                        state.status = "Checking notes connector"
                     }
+                }
+
+                OnboardingConnectionCard(
+                    title: state.connectedAIIntegrationCount > 0 ? "AI tools connected" : "Connect AI tools",
+                    detail: "Claude Desktop, Cursor, Windsurf, and other local AI tools can use approved memory after Review.",
+                    systemImage: state.connectedAIIntegrationCount > 0 ? "checkmark.seal.fill" : "wand.and.stars",
+                    isPrimary: false,
+                    status: state.connectedAIIntegrationCount > 0 ? "\(state.connectedAIIntegrationCount) connected" : "Use layer",
+                    buttonTitle: state.connectedAIIntegrationCount > 0 ? "Manage" : "Set up"
+                ) {
+                    state.openConnectionsPrivacy(statusMessage: "Connect local AI tools")
+                    state.dismissOnboardingForSession()
                 }
             }
 
@@ -360,10 +342,10 @@ struct OnboardingFirstSourceStep: View {
             }
 
             OnboardingCheckRow(
-                title: state.onboardingHasSource ? "Connection ready" : "Waiting for one connection",
-                detail: state.onboardingHasSource ? "Setup can continue. New memory will appear in Review when a connected source or tool saves context." : "Connect Obsidian notes, or use a connected AI tool to send useful memory into Review.",
+                title: state.onboardingHasSource ? "Connection ready" : "No source connected yet",
+                detail: state.onboardingHasSource ? "New memory will appear in Review when connected notes sync." : "You can start Cortex now and connect notes from Home when ready.",
                 systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "link.circle",
-                color: state.onboardingHasSource ? .green : .orange
+                color: state.onboardingHasSource ? .green : .secondary
             )
         }
         .task {
@@ -443,7 +425,7 @@ struct OnboardingReviewMemoryStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Review is the safety layer. When connected sources or tools produce memory candidates, approve only what Cortex should remember.")
+            Text("Review is the safety layer. When connected sources produce memory candidates, approve only what Cortex should remember.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -497,16 +479,16 @@ struct OnboardingReviewMemoryStep: View {
             return "You already reviewed memory from your first connection."
         }
         if state.onboardingHasSource {
-            return "No reviewable memory is waiting yet. New source or tool memory will land here before Cortex uses it."
+            return "No reviewable memory is waiting yet. New source memory will land here before Cortex uses it."
         }
-        return "Connect Obsidian notes first, or send useful memory from a connected AI tool. Anything useful will appear here before Cortex remembers it."
+        return "Useful memory will appear here after you connect notes from Home."
     }
 
     private var reviewPathTitle: String {
         if state.onboardingHasReviewedMemory {
             return "Memory reviewed"
         }
-        return state.onboardingHasSource ? "Approve one memory" : "Connect Cortex first"
+        return state.onboardingHasSource ? "Approve one memory" : "Review later"
     }
 
     private var reviewPathDetail: String {
@@ -516,7 +498,7 @@ struct OnboardingReviewMemoryStep: View {
         if state.onboardingHasSource {
             return "Approve one useful memory to let Cortex cite it in Ask."
         }
-        return "Connect notes or send useful memory from a connected AI tool before Review can receive memory."
+        return "Review will become active after your first source syncs."
     }
 }
 
@@ -607,7 +589,7 @@ struct OnboardingAskUseStep: View {
         if state.onboardingHasReviewedMemory {
             return "Ask once with citations"
         }
-        return state.onboardingHasSource ? "Review memory first" : "Connect Cortex first"
+        return state.onboardingHasSource ? "Review memory first" : "Ask later"
     }
 
     private var askPathDetail: String {
@@ -620,7 +602,7 @@ struct OnboardingAskUseStep: View {
         if state.onboardingHasSource {
             return "Ask becomes useful after one memory is approved in Review."
         }
-        return "Connect notes or send useful memory from a connected AI tool before Ask can cite memory."
+        return "Ask becomes useful after approved memory exists."
     }
 }
 

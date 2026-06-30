@@ -66,10 +66,16 @@ struct HomeHeroSection: View {
         if memoryCount > 0 {
             return "Cortex is ready"
         }
-        if activeSources > 0 || state.connectedAIIntegrationCount > 0 {
-            return "Cortex is connected"
+        if pendingCount > 0 {
+            return "Review new memory"
         }
-        return "Connect Cortex once"
+        if activeSources > 0 {
+            return "Cortex is syncing"
+        }
+        if state.connectedAIIntegrationCount > 0 {
+            return "Connect a memory source"
+        }
+        return "Cortex is running locally"
     }
 
     private var detail: String {
@@ -79,7 +85,13 @@ struct HomeHeroSection: View {
         if memoryCount > 0 {
             return "Ask questions, inspect citations, and let connected AI tools use approved memory."
         }
-        return "Cortex runs locally, connects to your tools, and builds memory quietly in the background."
+        if activeSources > 0 {
+            return "Cortex is syncing connected notes. Useful memory will appear in Review."
+        }
+        if state.connectedAIIntegrationCount > 0 {
+            return "Your AI tool is connected. Add Obsidian or local notes so Cortex has memory to use."
+        }
+        return "Connect notes once. Cortex syncs quietly, sends useful memory to Review, then answers with citations."
     }
 
     var body: some View {
@@ -107,10 +119,10 @@ struct HomeHeroSection: View {
 
             VStack(spacing: 10) {
                 HomeStatusRow(
-                    title: activeSources > 0 || state.connectedAIIntegrationCount > 0 ? "Connected sources" : "No source connected yet",
+                    title: activeSources > 0 ? "Memory source connected" : "No memory source connected",
                     detail: sourceDetail(activeSources: activeSources),
-                    systemImage: activeSources > 0 || state.connectedAIIntegrationCount > 0 ? "checkmark.seal.fill" : "link.circle",
-                    color: activeSources > 0 || state.connectedAIIntegrationCount > 0 ? .green : .accentColor
+                    systemImage: activeSources > 0 ? "checkmark.seal.fill" : "folder.badge.plus",
+                    color: activeSources > 0 ? .green : .accentColor
                 )
                 HomeStatusRow(
                     title: pendingCount > 0 ? "Memory waiting for review" : (memoryCount > 0 ? "Approved memory ready" : "Memory will appear after sync"),
@@ -118,6 +130,14 @@ struct HomeHeroSection: View {
                     systemImage: pendingCount > 0 ? "tray.full.fill" : (memoryCount > 0 ? "brain.head.profile.fill" : "brain.head.profile"),
                     color: pendingCount > 0 ? .orange : (memoryCount > 0 ? .accentColor : .secondary)
                 )
+                if state.connectedAIIntegrationCount > 0 || state.detectedAIIntegrationCount > 0 {
+                    HomeStatusRow(
+                        title: state.connectedAIIntegrationCount > 0 ? "AI tool connected" : "AI tool detected",
+                        detail: aiToolDetail,
+                        systemImage: state.connectedAIIntegrationCount > 0 ? "checkmark.circle.fill" : "app.badge.checkmark",
+                        color: state.connectedAIIntegrationCount > 0 ? .green : .accentColor
+                    )
+                }
             }
         }
         .padding(20)
@@ -131,10 +151,14 @@ struct HomeHeroSection: View {
         if activeSources > 0 {
             return "\(activeSources) source\(activeSources == 1 ? "" : "s") syncing automatically"
         }
+        return "Connect Obsidian or a local notes folder from Connections & Privacy"
+    }
+
+    private var aiToolDetail: String {
         if state.connectedAIIntegrationCount > 0 {
-            return "\(state.connectedAIIntegrationCount) AI tool\(state.connectedAIIntegrationCount == 1 ? "" : "s") can use approved memory"
+            return "\(state.connectedAIIntegrationCount) tool\(state.connectedAIIntegrationCount == 1 ? "" : "s") can use approved memory after Review"
         }
-        return "Connect Obsidian or a local AI tool from Connections & Privacy"
+        return "Detected tools can be connected after a memory source is ready"
     }
 
     private func memoryDetail(memoryCount: Int, pendingCount: Int) -> String {
@@ -202,7 +226,7 @@ struct HomeActionSection: View {
 
     private var actionTitle: String {
         if !state.isLocalServiceReady { return "Start private vault" }
-        if state.activeSourceAccounts.isEmpty && state.connectedAIIntegrationCount == 0 { return "Connect Cortex" }
+        if state.activeSourceAccounts.isEmpty { return "Connect notes" }
         if pendingCount > 0 { return "Review memory" }
         if hasMemory { return "Ask Cortex" }
         return "Check connections"
@@ -210,7 +234,12 @@ struct HomeActionSection: View {
 
     private var actionDetail: String {
         if !state.isLocalServiceReady { return state.displayBackendStatus }
-        if state.activeSourceAccounts.isEmpty && state.connectedAIIntegrationCount == 0 { return "Connect notes or AI tools once. Cortex keeps sync automatic after that." }
+        if state.activeSourceAccounts.isEmpty {
+            if state.connectedAIIntegrationCount > 0 {
+                return "Your AI tool is ready. Add notes so memory can sync automatically."
+            }
+            return "Connect Obsidian or local notes once. Cortex keeps sync automatic after that."
+        }
         if pendingCount > 0 { return "\(pendingCount) new item\(pendingCount == 1 ? "" : "s") waiting for approval" }
         if hasMemory { return "Search approved memory with citations" }
         return "Confirm source health and privacy controls"
@@ -218,7 +247,7 @@ struct HomeActionSection: View {
 
     private var actionIcon: String {
         if !state.isLocalServiceReady { return "externaldrive.badge.checkmark" }
-        if state.activeSourceAccounts.isEmpty && state.connectedAIIntegrationCount == 0 { return "link.circle" }
+        if state.activeSourceAccounts.isEmpty { return "folder.badge.plus" }
         if pendingCount > 0 { return "checklist" }
         if hasMemory { return "magnifyingglass" }
         return "lock.shield"
@@ -236,8 +265,8 @@ struct HomeActionSection: View {
                 await state.loadReview()
                 await state.loadStats()
             }
-        } else if state.activeSourceAccounts.isEmpty && state.connectedAIIntegrationCount == 0 {
-            state.openConnectionsPrivacy(statusMessage: "Connect notes or AI tools")
+        } else if state.activeSourceAccounts.isEmpty {
+            state.openConnectionsPrivacy(statusMessage: "Connect notes")
         } else if pendingCount > 0 {
             state.selectedTab = .review
             state.status = "Review memory"
