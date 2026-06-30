@@ -1,0 +1,88 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import tempfile
+import unittest
+from pathlib import Path
+
+from backend.app.database import init_db
+from backend.app.storage import CortexStore
+
+
+FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "noisy_imports"
+
+
+class NoisyImportGoldenTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.db_path = self.root / "golden.sqlite"
+        self.vault_path = self.root / "Cortex.vault"
+        init_db(self.db_path)
+        self.store = CortexStore(self.db_path, self.vault_path)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_noisy_import_fixture_matches_manifest(self) -> None:
+        manifest = json.loads((FIXTURE_ROOT / "manifest.json").read_text(encoding="utf-8"))
+        self.store.update_settings("test-user", {"identity_aliases": manifest["identity_aliases"]})
+        result = self.store.import_sources(
+            user_id="test-user",
+            paths=[str(FIXTURE_ROOT / path) for path in manifest["paths"]],
+            processing="sync",
+            max_records=40,
+        )
+
+        self.assertEqual(result["failed"], 0)
+        self.assertGreater(result["saved"], 0)
+
+        rows = self._memory_rows()
+        joined_content = "\n".join(row["content"] for row in rows)
+        joined_excerpt = "\n".join(row["raw_excerpt"] or "" for row in rows)
+        for phrase in manifest["rejected_phrases"]:
+            self.assertNotIn(phrase, joined_content)
+            self.assertNotIn(phrase, joined_excerpt)
+        for phrase in manifest["boilerplate_phrases"]:
+            self.assertNotIn(phrase, joined_content)
+            self.assertNotIn(phrase, joined_excerpt)
+
+        for expected in manifest["expected"]:
+            with self.subTest(expected=expected["name"]):
+                hits = [
+                    hit
+                    for hit in self.store.search("test-user", expected["query"], limit=8)
+                    if hit["source"] == expected["source"]
+                    and hit["layer"] == expected["layer"]
+                    and hit["kind"] == expected["kind"]
+                    and expected["must_include"] in hit["content"]
+                ]
+                self.assertTrue(hits)
+                top = hits[0]
+                if expected.get("occurred_at"):
+                    self.assertEqual(top["occurred_at"], expected["occurred_at"])
+                self.assertTrue(top["source_url"])
+                for fragment in expected["source_url_contains"]:
+                    self.assertIn(fragment, top["source_url"])
+                self.assertTrue(top["raw_excerpt"])
+
+    def _memory_rows(self) -> list[sqlite3.Row]:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            return conn.execute(
+                """
+                SELECT kind, layer, source, content, source_url, occurred_at, raw_excerpt
+                FROM memories
+                WHERE user_id = ?
+                ORDER BY source, kind, content
+                """,
+                ("test-user",),
+            ).fetchall()
+        finally:
+            conn.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

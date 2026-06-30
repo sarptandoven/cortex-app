@@ -1,0 +1,14 @@
+[
+  {
+    "id": "U1",
+    "name": "sarpt",
+    "real_name": "Sarpt Tandoven",
+    "profile": {"email": "sarpt@example.com"}
+  },
+  {
+    "id": "U2",
+    "name": "dana",
+    "real_name": "Dana Partner",
+    "profile": {"email": "dana@example.com"}
+  }
+]

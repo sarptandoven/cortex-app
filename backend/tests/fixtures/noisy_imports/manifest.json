@@ -1,0 +1,75 @@
+{
+  "identity_aliases": ["sarpt@example.com"],
+  "paths": ["chatgpt", "slack", "mail", "docs"],
+  "expected": [
+    {
+      "name": "chatgpt_decision",
+      "query": "Project Atlas five primary tabs Model Sources Review Ask Trust",
+      "source": "chatgpt",
+      "layer": "decision",
+      "kind": "decision",
+      "must_include": "five primary tabs",
+      "source_url_contains": ["service=chatgpt", "conversation=Project%20Atlas%20golden%20import", "line=", "message=", "excerpt="]
+    },
+    {
+      "name": "chatgpt_event_date",
+      "query": "Project Atlas durable noisy import fixture test June 29",
+      "source": "chatgpt",
+      "layer": "episodic",
+      "kind": "event",
+      "must_include": "durable noisy import fixture test",
+      "occurred_at": "2026-06-29",
+      "source_url_contains": ["service=chatgpt", "line=", "message=", "excerpt="]
+    },
+    {
+      "name": "slack_preference",
+      "query": "source-backed fixture answers citation gutters",
+      "source": "slack",
+      "layer": "preference",
+      "kind": "preference",
+      "must_include": "source-backed fixture answers",
+      "source_url_contains": ["service=slack", "channel=general", "line=", "message=1", "excerpt="]
+    },
+    {
+      "name": "slack_style",
+      "query": "direct golden-test notes",
+      "source": "slack",
+      "layer": "style",
+      "kind": "style",
+      "must_include": "direct golden-test notes",
+      "source_url_contains": ["service=slack", "channel=general", "line=", "message=2", "excerpt="]
+    },
+    {
+      "name": "email_external_decision",
+      "query": "Project Atlas external email citations fixture tests",
+      "source": "email",
+      "layer": "decision",
+      "kind": "decision",
+      "must_include": "external email citations",
+      "occurred_at": "2026-06-29",
+      "source_url_contains": ["service=email", "subject=External%20fixture%20advice", "line=", "excerpt="]
+    },
+    {
+      "name": "docs_negative",
+      "query": "ceremonial fixture intros",
+      "source": "docs",
+      "layer": "negative",
+      "kind": "negative",
+      "must_include": "ceremonial fixture intros",
+      "source_url_contains": ["Voice.md", "line=", "excerpt="]
+    }
+  ],
+  "rejected_phrases": [
+    "splashy launch pages",
+    "long onboarding checklists",
+    "long stakeholder recap rituals",
+    "verbose sales decks",
+    "legalistic and slow"
+  ],
+  "boilerplate_phrases": [
+    "Source:",
+    "Conversation:",
+    "Created:",
+    "--- Messages ---"
+  ]
+}

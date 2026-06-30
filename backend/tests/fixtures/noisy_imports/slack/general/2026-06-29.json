@@ -1,0 +1,20 @@
+[
+  {
+    "type": "message",
+    "user": "U1",
+    "text": "I prefer source-backed fixture answers with citation gutters.",
+    "ts": "1782739300.0001"
+  },
+  {
+    "type": "message",
+    "user": "U1",
+    "text": "My writing style uses direct golden-test notes.",
+    "ts": "1782739301.0001"
+  },
+  {
+    "type": "message",
+    "user": "U2",
+    "text": "I prefer long stakeholder recap rituals for Project Atlas.",
+    "ts": "1782739302.0001"
+  }
+]

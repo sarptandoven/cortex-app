@@ -1,0 +1,30 @@
+[
+  {
+    "id": "conv-golden-atlas",
+    "title": "Project Atlas golden import",
+    "create_time": 1782739200,
+    "mapping": {
+      "assistant_pref": {
+        "message": {
+          "author": {"role": "assistant"},
+          "create_time": 1782739201,
+          "content": {"parts": ["I prefer splashy launch pages and long onboarding checklists for you."]}
+        }
+      },
+      "decision": {
+        "message": {
+          "author": {"role": "user"},
+          "create_time": 1782739202,
+          "content": {"parts": ["We decided Project Atlas should keep Model, Sources, Review, Ask, and Trust as the five primary tabs."]}
+        }
+      },
+      "event": {
+        "message": {
+          "author": {"role": "user"},
+          "create_time": 1782739203,
+          "content": {"parts": ["On June 29, 2026, Project Atlas passed the durable noisy import fixture test."]}
+        }
+      }
+    }
+  }
+]
