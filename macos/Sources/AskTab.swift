@@ -15,26 +15,30 @@ struct AskTab: View {
     @State private var citedMemoriesExpanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            AskHeaderSection()
-            AskQuerySection(state: state)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                AskHeaderSection()
+                AskQuerySection(state: state)
 
-            if state.hasSearched {
-                AskResponseSection(
-                    state: state,
-                    citedMemoriesExpanded: $citedMemoriesExpanded,
-                    copyForAIApp: copyAnswerForAIApp
-                )
-            } else {
-                QuietState(
-                    title: "Ask for a cited answer",
-                    detail: "Try a question about a project, person, decision, preference, or phrase from your imported sources."
-                )
+                if state.hasSearched {
+                    AskResponseSection(
+                        state: state,
+                        citedMemoriesExpanded: $citedMemoriesExpanded,
+                        copyForAIApp: copyAnswerForAIApp
+                    )
+                } else {
+                    QuietState(
+                        title: "Ask for a cited answer",
+                        detail: "Try a question about a project, person, decision, preference, or phrase from your imported sources."
+                    )
+                }
+
+                AskAIHandoffSection(state: state, isExpanded: $exportOptionsExpanded)
             }
-
-            AskAIHandoffSection(state: state, isExpanded: $exportOptionsExpanded)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(16)
         }
-        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func copyAnswerForAIApp() {

@@ -13,7 +13,6 @@ struct TrustTab: View {
                 if let summary = state.trustSummary {
                     TrustChecklistSection(state: state, summary: summary)
                     TrustPolicySection(state: state)
-                    TrustBackupSummarySection(state: state)
                     SettingsPrivacySection(state: state)
                     DisclosureGroup("Sources and audit trail", isExpanded: $sourcesExpanded) {
                         VStack(alignment: .leading, spacing: 14) {
@@ -132,32 +131,30 @@ struct TrustChecklistSection: View {
     }
 
     private var backupStatus: TrustChecklistItem {
-        if let path = state.lastBackupPath, !path.isEmpty {
+        guard let backups = state.dataLifecycleReport?.backups else {
             return TrustChecklistItem(
-                title: "Latest backup ready",
-                detail: path,
+                title: "Checking backups",
+                detail: "Reading the local lifecycle report for backup history.",
+                systemImage: "hourglass",
+                color: .secondary
+            )
+        }
+
+        if let latest = backups.latest_backup {
+            return TrustChecklistItem(
+                title: "Backup recorded",
+                detail: "Latest local backup \(shortDateTime(latest.created_at)) · \(latest.age_days) day\(latest.age_days == 1 ? "" : "s") old · \(formatBytes(latest.size_bytes)) · \(backups.count) total\n\(latest.backup_path)",
                 systemImage: "checkmark.seal.fill",
                 color: .green
             )
         }
-
-        if let backups = state.dataLifecycleReport?.backups {
-            if let latest = backups.latest_backup {
-                return TrustChecklistItem(
-                    title: "Backup recorded",
-                    detail: "Latest local backup \(shortDateTime(latest.created_at)) · \(latest.age_days) day\(latest.age_days == 1 ? "" : "s") old · \(formatBytes(latest.size_bytes)) · \(backups.count) total",
-                    systemImage: "checkmark.seal.fill",
-                    color: .green
-                )
-            }
-            if backups.count > 0 {
-                return TrustChecklistItem(
-                    title: "Backups recorded",
-                    detail: "\(backups.count) local backup archive\(backups.count == 1 ? "" : "s") tracked.",
-                    systemImage: "externaldrive.fill",
-                    color: .green
-                )
-            }
+        if backups.count > 0 {
+            return TrustChecklistItem(
+                title: "Backups recorded",
+                detail: "\(backups.count) local backup archive\(backups.count == 1 ? "" : "s") tracked by the lifecycle report.",
+                systemImage: "externaldrive.fill",
+                color: .green
+            )
         }
 
         return TrustChecklistItem(
@@ -282,7 +279,14 @@ struct TrustChecklistSection: View {
                 Divider()
                 TrustChecklistRow(item: changeStatus)
                 Divider()
-                TrustChecklistRow(item: backupStatus)
+                TrustChecklistRow(
+                    item: backupStatus,
+                    actionTitle: "Back Up Now",
+                    actionSystemImage: "archivebox",
+                    action: {
+                        state.createBackup()
+                    }
+                )
                 Divider()
                 TrustChecklistRow(item: warningStatus)
             }
@@ -313,6 +317,21 @@ struct TrustChecklistItem {
 
 struct TrustChecklistRow: View {
     let item: TrustChecklistItem
+    let actionTitle: String?
+    let actionSystemImage: String?
+    let action: (() -> Void)?
+
+    init(
+        item: TrustChecklistItem,
+        actionTitle: String? = nil,
+        actionSystemImage: String? = nil,
+        action: (() -> Void)? = nil
+    ) {
+        self.item = item
+        self.actionTitle = actionTitle
+        self.actionSystemImage = actionSystemImage
+        self.action = action
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -330,57 +349,17 @@ struct TrustChecklistRow: View {
                     .textSelection(.enabled)
             }
             Spacer(minLength: 0)
+            if let actionTitle, let action {
+                Button(action: action) {
+                    if let actionSystemImage {
+                        Label(actionTitle, systemImage: actionSystemImage)
+                    } else {
+                        Text(actionTitle)
+                    }
+                }
+                .buttonStyle(.bordered)
+            }
         }
         .padding(.vertical, 9)
-    }
-}
-
-struct TrustBackupSummarySection: View {
-    @ObservedObject var state: AppState
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Vault backup")
-                        .font(.headline)
-                    Text("Create a local backup before connecting more tools or importing large source exports.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer()
-                Button {
-                    state.createBackup()
-                } label: {
-                    Label("Back Up Now", systemImage: "archivebox")
-                }
-                .buttonStyle(.borderedProminent)
-            }
-
-            if let backup = state.lastBackupPath {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "checkmark.seal.fill")
-                        .foregroundColor(.green)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Latest backup ready")
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                        Text(backup)
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                            .lineLimit(2)
-                            .truncationMode(.middle)
-                            .textSelection(.enabled)
-                    }
-                    Spacer(minLength: 0)
-                }
-            } else {
-                TrustNotice(systemImage: "externaldrive", title: "No backup recorded", detail: "Backups stay local and can be managed from Advanced when needed.", color: .orange)
-            }
-        }
-        .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }

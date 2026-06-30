@@ -6,7 +6,6 @@ struct SourcesTab: View {
     @ObservedObject var state: AppState
     @State private var isSupportedSourcesExpanded = false
     @State private var isSecondaryCaptureExpanded = false
-    @State private var isSourceHealthExpanded = false
     @State private var isImportHistoryExpanded = false
     @State private var isInboxExpanded = false
 
@@ -21,21 +20,6 @@ struct SourcesTab: View {
                 VStack(alignment: .leading, spacing: 8) {
                     SourcesInboxImportSection(state: state, isExpanded: $isInboxExpanded)
                     SourceCatalogDisclosureSection(state: state, isExpanded: $isSupportedSourcesExpanded)
-
-                    DisclosureGroup(isExpanded: $isSourceHealthExpanded) {
-                        SourceHealthSummarySection(state: state)
-                            .padding(.top, 8)
-                    } label: {
-                        SourcesDisclosureLabel(
-                            systemImage: "checkmark.seal",
-                            title: "Source health",
-                            detail: "Readiness, coverage, and attention checks"
-                        )
-                    }
-                    .padding(12)
-                    .background(Color(nsColor: .windowBackgroundColor))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
 
                     DisclosureGroup(isExpanded: $isImportHistoryExpanded) {
                         ImportHistorySection(state: state)
@@ -242,13 +226,17 @@ struct SourceCatalogDisclosureSection: View {
 
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
-            SupportedSourceGroupsSection(groups: supportedGroups, isLoading: state.sourceConnectorCatalog.isEmpty)
+            VStack(alignment: .leading, spacing: 12) {
+                SourceHealthSummarySection(state: state)
+                Divider()
+                SupportedSourceGroupsSection(groups: supportedGroups, isLoading: state.sourceConnectorCatalog.isEmpty)
+            }
                 .padding(.top, 8)
         } label: {
             SourcesDisclosureLabel(
                 systemImage: "list.bullet.rectangle",
-                title: "Source catalog",
-                detail: "Supported exports and readiness details"
+                title: "Supported sources",
+                detail: "Readiness, coverage, and import options"
             )
         }
         .padding(12)
@@ -492,8 +480,8 @@ struct SupportedSourceGroupsSection: View {
     var body: some View {
         if groups.isEmpty {
             QuietState(
-                title: isLoading ? "Loading source catalog" : "Source catalog unavailable",
-                detail: isLoading ? "Cortex is checking supported imports." : "Refresh Sources after the local backend is healthy."
+                title: isLoading ? "Loading supported sources" : "Supported sources unavailable",
+                detail: isLoading ? "Cortex is checking supported imports and readiness." : "Refresh Sources after the local backend is healthy."
             )
         } else {
             VStack(alignment: .leading, spacing: 12) {
