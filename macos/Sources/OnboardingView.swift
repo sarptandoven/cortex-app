@@ -293,14 +293,14 @@ struct OnboardingFirstSourceStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("This step is optional for setup, but it is what makes Cortex useful. Obsidian or a local notes folder is the automatic memory source for this beta.")
+            Text("Start with Obsidian or a local notes folder. Cortex syncs notes automatically and sends useful memory to Review.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 240), spacing: 12)], spacing: 12) {
                 OnboardingConnectionCard(
                     title: state.hasConnectedObsidianVault ? "Notes connected" : "Connect notes",
-                    detail: state.hasConnectedObsidianVault ? "Cortex syncs saved notes automatically on launch and periodically." : "Choose an Obsidian or Markdown notes folder once. Cortex reads notes locally, cleans Markdown, and preserves citations.",
+                    detail: state.hasConnectedObsidianVault ? "Cortex syncs saved notes automatically on launch and periodically." : "Choose an Obsidian or Markdown notes folder once. Cortex reads notes locally and keeps citations attached.",
                     systemImage: state.hasConnectedObsidianVault ? "checkmark.seal.fill" : "folder.badge.plus",
                     isPrimary: true,
                     status: state.hasConnectedObsidianVault ? "Connected" : "Local",
@@ -317,12 +317,12 @@ struct OnboardingFirstSourceStep: View {
                 }
 
                 OnboardingConnectionCard(
-                    title: state.connectedAIIntegrationCount > 0 ? "AI tools connected" : "Connect AI tools",
-                    detail: "Claude Desktop, Cursor, Windsurf, and other local AI tools can use approved memory after Review.",
+                    title: state.connectedAIIntegrationCount > 0 ? "AI tools connected" : "AI tool access",
+                    detail: "Optional: let Claude Desktop, Cursor, Windsurf, and other local AI tools use approved memory after Review.",
                     systemImage: state.connectedAIIntegrationCount > 0 ? "checkmark.seal.fill" : "wand.and.stars",
                     isPrimary: false,
                     status: state.connectedAIIntegrationCount > 0 ? "\(state.connectedAIIntegrationCount) connected" : "Use layer",
-                    buttonTitle: state.connectedAIIntegrationCount > 0 ? "Manage" : "Set up"
+                    buttonTitle: state.connectedAIIntegrationCount > 0 ? "Manage" : "Set up later"
                 ) {
                     state.openConnectionsPrivacy(statusMessage: "Connect local AI tools")
                     state.dismissOnboardingForSession()
@@ -411,10 +411,10 @@ struct OnboardingConnectionCard: View {
             .controlSize(.large)
         } else {
             Button(action: action) {
-                Label(buttonTitle, systemImage: "folder.badge.plus")
+                Label(buttonTitle, systemImage: "ellipsis.circle")
                     .frame(maxWidth: .infinity, minHeight: 42)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.bordered)
             .controlSize(.large)
         }
     }
@@ -572,7 +572,7 @@ struct OnboardingAskUseStep: View {
     }
 
     private var askEmptyTitle: String {
-        state.hasSearched ? "No cited answer yet" : "Use approved context once"
+        state.hasSearched ? "No cited answer yet" : "Ask approved memory once"
     }
 
     private var askEmptyDetail: String {

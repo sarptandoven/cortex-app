@@ -33,7 +33,7 @@ struct ConnectionsPrivacySheet: View {
                 Text("Connections & Privacy")
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text("Connect notes once, control what AI tools can read, and keep advanced controls out of the main flow.")
+                Text("Connect notes once, then choose which AI tools can read approved memory.")
                     .font(.callout)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -74,7 +74,7 @@ private struct ConnectionsPrivacyOverview: View {
                 VStack(alignment: .leading, spacing: 18) {
                     SectionHeader(
                         title: "Connect",
-                        detail: "Cortex works best when local tools and notes sync in the background."
+                        detail: "Start with notes. AI tools can use approved memory after Review."
                     )
                     ConnectionsObsidianSection(state: state)
                     ConnectionsAIToolsSection(state: state)
@@ -209,7 +209,7 @@ private struct ConnectionsPrivacyOverview: View {
             ConnectionsDisclosureLabel(
                 systemImage: "slider.horizontal.3",
                 title: "Advanced diagnostics",
-                detail: "Only needed for troubleshooting, recovery, token history, and developer details"
+                detail: "Troubleshooting, recovery, token history, and developer details"
             )
         }
         .padding(14)
@@ -387,7 +387,7 @@ private struct ConnectionsAIToolsSection: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
                 title: "AI tools",
-                detail: "Detected local tools can use approved memory automatically."
+                detail: "Optional connections for using approved memory where you already work."
             )
 
             HStack(alignment: .center, spacing: 14) {
@@ -599,7 +599,7 @@ private struct ConnectionsActiveSourcesSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if activeAccounts.isEmpty {
-                QuietState(title: "No source accounts connected", detail: "Connect Obsidian or a local AI tool once. Cortex syncs after that.")
+                QuietState(title: "No notes connected", detail: "Connect Obsidian or a local notes folder once. Cortex syncs after that.")
             } else {
                 ForEach(activeAccounts.prefix(8)) { account in
                     SourceAccountHealthRow(

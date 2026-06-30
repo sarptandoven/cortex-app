@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.app.connectors.obsidian import stable_section_external_id
+from backend.app.connectors.obsidian import stable_external_id, stable_section_external_id
 from backend.app.database import connect, init_db
 from backend.app.mcp_tools import TOOLS, call_tool, tool_required_capabilities
 from backend.app.storage import CortexStore
@@ -141,6 +141,16 @@ I prefer Cortex answers that cite the edited Obsidian note when memory changes.
         self.assertTrue(any(citation["source"] == "obsidian" for citation in cited_answer["citations"]))
         self.assertTrue(any((citation["source_url"] or "").startswith("local-file://Memory%20Loop.md#") for citation in cited_answer["citations"]))
         self.assertTrue(any("line=" in (citation["source_url"] or "") and "excerpt=" in (citation["source_url"] or "") for citation in cited_answer["citations"]))
+        edited_citation = next(citation for citation in cited_answer["citations"] if "edited Obsidian" in citation["excerpt"])
+        expected_section_id = stable_section_external_id(self.vault, note, "first-100-memory-loop")
+        self.assertEqual(edited_citation["external_id"], expected_section_id)
+        self.assertEqual(edited_citation["source_record_id"], expected_section_id)
+        self.assertEqual(edited_citation["citation_path"], "Loops/Memory Loop.md")
+        self.assertEqual(edited_citation["record_scope"], "section")
+        self.assertEqual(edited_citation["section_title"], "First 100 Memory Loop")
+        self.assertIn("source_account_id", edited_citation)
+        self.assertIn("line_start", edited_citation)
+        self.assertIn("line_end", edited_citation)
 
         loop_after_retrieval = call_tool(self.store, self.user_id, "get_product_loop", {})
         self.assertEqual(loop_after_retrieval["primary_action"]["action"], "done")
@@ -206,6 +216,52 @@ Procedure: Before using synced note memory, approve the review item.
         self.assertTrue(any("Project Gate" in item["content"] for item in search_after_approval))
         answer_after_approval = self.store.answer_query(self.user_id, "Project Gate explicit approval", limit=5)
         self.assertTrue(answer_after_approval["citations"])
+
+    def test_ask_citations_disambiguate_duplicate_obsidian_basenames(self) -> None:
+        project_note = self.write_note(
+            "Projects/Plan.md",
+            """# Project Plan
+
+Decision: Cortex should cite the cobalt-plan project note with a safe relative path.
+""",
+        )
+        archive_note = self.write_note(
+            "Archive/Plan.md",
+            """# Archive Plan
+
+Decision: Cortex should cite the violet-plan archive note with a safe relative path.
+""",
+        )
+
+        synced = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+        self.assertEqual(synced["status"], "complete")
+        self.assertEqual(synced["saved"], 2)
+        for record in synced["records"]:
+            self.assertEqual(call_tool(self.store, self.user_id, "approve_memory_capture", {"capture_id": record["capture_id"]}), {"approved": True})
+
+        project_answer = self.store.answer_query(self.user_id, "cobalt-plan project note safe relative path", limit=5)
+        self.assertTrue(project_answer["citations"])
+        project_citation = next(citation for citation in project_answer["citations"] if "cobalt-plan" in citation["excerpt"])
+        project_external_id = stable_section_external_id(self.vault, project_note, "project-plan")
+        self.assertTrue((project_citation["source_url"] or "").startswith("local-file://Plan.md#"))
+        self.assertEqual(project_citation["citation_path"], "Projects/Plan.md")
+        self.assertEqual(project_citation["external_id"], project_external_id)
+        self.assertEqual(project_citation["source_record_id"], project_external_id)
+        self.assertEqual(project_citation["record_scope"], "section")
+        self.assertEqual(project_citation["source"], "obsidian")
+        self.assertIn("source_account_id", project_citation)
+        self.assertNotIn(str(self.vault), project_citation["citation_path"])
+
+        archive_answer = self.store.answer_query(self.user_id, "violet-plan archive note safe relative path", limit=5)
+        self.assertTrue(archive_answer["citations"])
+        archive_citation = next(citation for citation in archive_answer["citations"] if "violet-plan" in citation["excerpt"])
+        archive_external_id = stable_section_external_id(self.vault, archive_note, "archive-plan")
+        self.assertTrue((archive_citation["source_url"] or "").startswith("local-file://Plan.md#"))
+        self.assertEqual(archive_citation["citation_path"], "Archive/Plan.md")
+        self.assertEqual(archive_citation["external_id"], archive_external_id)
+        self.assertEqual(archive_citation["source_record_id"], archive_external_id)
+        self.assertNotEqual(project_citation["citation_path"], archive_citation["citation_path"])
+        self.assertNotEqual(stable_external_id(self.vault, project_note), stable_external_id(self.vault, archive_note))
 
 
 if __name__ == "__main__":

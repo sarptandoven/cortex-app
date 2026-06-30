@@ -463,7 +463,7 @@ struct ReviewDecisionSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            SectionHeader(title: "Recent decisions", detail: "Approved decisions available as context while reviewing new source memory.")
+            SectionHeader(title: "Recent decisions", detail: "Approved decisions available while reviewing new source memory.")
             ForEach(decisions.prefix(3)) { decision in
                 Text(decision.content)
                     .fixedSize(horizontal: false, vertical: true)

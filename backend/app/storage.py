@@ -3796,6 +3796,8 @@ class CortexStore:
             result_type = item.get("result_type") or "memory"
             source_url = item.get("source_url")
             excerpt = self._shared_text(item.get("content") or item.get("summary") or "", redact_sensitive=redact_sensitive)
+            provenance = item.get("provenance") if isinstance(item.get("provenance"), dict) else {}
+            citation_metadata = self._citation_metadata(item, provenance)
             citations.append(
                 {
                     "index": index,
@@ -3806,6 +3808,7 @@ class CortexStore:
                     "status": item.get("status"),
                     "source": item["source"],
                     "source_url": self._safe_source_locator(source_url, force_local=True),
+                    **citation_metadata,
                     "captured_at": item.get("captured_at"),
                     "occurred_at": item.get("occurred_at"),
                     "excerpt": self._answer_excerpt(excerpt),
@@ -3841,6 +3844,36 @@ class CortexStore:
             "citations": citations,
             "results": self._shared_payload(results, redact_sensitive=redact_sensitive),
         }
+
+    def _citation_metadata(self, item: dict[str, Any], provenance: dict[str, Any]) -> dict[str, Any]:
+        record_metadata = provenance.get("record_metadata") if isinstance(provenance.get("record_metadata"), dict) else {}
+        external_id = str(provenance.get("external_id") or "").strip()
+        citation_path = self._safe_relative_citation_path(record_metadata.get("relative_path"))
+        metadata = {
+            "source_account_id": provenance.get("source_account_id"),
+            "external_id": external_id or None,
+            "source_record_id": external_id or item.get("capture_id") or item.get("id"),
+            "sector": item.get("sector") or None,
+            "source_type": item.get("source_type") or None,
+            "citation_path": citation_path or None,
+        }
+        for key in ("line_start", "line_end", "record_scope", "section_title", "block_id"):
+            value = record_metadata.get(key)
+            if value not in (None, "", [], {}):
+                metadata[key] = value
+        return {key: value for key, value in metadata.items() if value not in (None, "", [], {})}
+
+    def _safe_relative_citation_path(self, value: Any) -> str:
+        text = str(value or "").strip().replace("\\", "/")
+        if not text or text.startswith("/") or "://" in text or "\x00" in text:
+            return ""
+        parts: list[str] = []
+        for raw_part in text.split("/"):
+            part = re.sub(r"[\r\n\t]+", " ", unquote(raw_part)).strip()
+            if not part or part in {".", ".."}:
+                continue
+            parts.append(part[:160])
+        return "/".join(parts)[:500]
 
     def _answer_excerpt(self, text: str, limit: int = 220) -> str:
         cleaned = re.sub(r"\s+", " ", str(text or "")).strip()

@@ -4101,7 +4101,7 @@ struct IntegrationCenterView: View {
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy Advanced Setup", systemImage: "doc.on.doc")
+                        Label("Copy MCP JSON", systemImage: "doc.on.doc")
                     }
                     Spacer()
                 }
@@ -4201,7 +4201,7 @@ struct IntegrationCompactHero: View {
             return "Cortex can connect detected local AI tools automatically."
         }
         if connectedCount > 0 {
-            return "Approved memory and source-sync tools are available to connected AI tools."
+            return "Approved memory is available to connected AI tools."
         }
         return "Open a supported local AI tool, then check again. Manual setup stays in Advanced."
     }
@@ -4409,7 +4409,7 @@ struct IntegrationCard: View {
                     Button {
                         state.copyMCPConfig(for: integration)
                     } label: {
-                        Label("Copy Advanced Setup", systemImage: "doc.on.doc")
+                        Label("Copy MCP JSON", systemImage: "doc.on.doc")
                     }
                     Button {
                         state.openIntegrationConfig(integration)
@@ -5157,8 +5157,8 @@ struct TrustPolicySection: View {
                             isOn: $state.appSettings.allow_agent_writes
                         )
                         TrustToggleRow(
-                            title: "Let connected AI prepare artifacts",
-                            detail: "Connected AI tools can prepare redacted profile artifacts or adaptation instructions.",
+                            title: "Let connected AI prepare optional files",
+                            detail: "Advanced workflows can prepare redacted profile files or adaptation instructions.",
                             systemImage: "square.and.arrow.up",
                             isOn: $state.appSettings.allow_agent_exports
                         )
@@ -5212,7 +5212,7 @@ struct TrustPolicySection: View {
                     }
 
                     Stepper(value: $state.appSettings.context_pack_limit, in: 4...50, step: 2) {
-                        Text("Ask memory depth: \(state.appSettings.context_pack_limit)")
+                        Text("Retrieved memories per Ask: \(state.appSettings.context_pack_limit)")
                     }
                 }
                 .padding(.top, 8)
@@ -5581,7 +5581,7 @@ struct SettingsOnboardingSection: View {
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy Advanced Setup", systemImage: "doc.on.doc")
+                        Label("Copy MCP JSON", systemImage: "doc.on.doc")
                             .frame(minHeight: 40)
                     }
                     .controlSize(.large)
@@ -6039,12 +6039,12 @@ struct SettingsStatsSection: View {
                 Button {
                     state.openExport(format: "json")
                 } label: {
-                    Label("Export JSON", systemImage: "curlybraces")
+                    Label("Save JSON", systemImage: "curlybraces")
                 }
                 Button {
                     state.openExport(format: "markdown")
                 } label: {
-                    Label("Export Markdown", systemImage: "doc.text")
+                    Label("Save Markdown", systemImage: "doc.text")
                 }
                 Spacer()
             }
@@ -6059,11 +6059,11 @@ struct SettingsPrivacySection: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Privacy")
                 .font(.headline)
-            Text("Cortex does not monitor the clipboard, record the screen, capture ambient activity, or upload background data.")
+            Text("Cortex does not monitor the clipboard, record the screen, capture ambient activity, or send background data.")
                 .font(.body)
                 .foregroundColor(.secondary)
-            DisclosureGroup("Keyboard shortcut") {
-                Toggle("Send selected clipboard text to Review with Cmd Shift V", isOn: $state.globalClipboardHotkeyEnabled)
+            DisclosureGroup("Optional keyboard shortcut") {
+                Toggle("Enable Cmd Shift V review shortcut", isOn: $state.globalClipboardHotkeyEnabled)
                     .onChange(of: state.globalClipboardHotkeyEnabled) { _ in
                         state.saveHotkeyPreference()
                     }

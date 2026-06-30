@@ -328,7 +328,7 @@ struct HomeFirstRunNotes: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Connect once")
                         .font(.headline)
-                    Text("Connect local AI tools or Obsidian notes. Cortex syncs quietly, sends useful memory to Review, then answers with citations.")
+                    Text("Connect Obsidian or local notes once. Cortex syncs quietly, sends useful memory to Review, then answers with citations.")
                         .font(.callout)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -512,7 +512,7 @@ struct ModelSignalSummarySection: View {
                 ModelMetricPill(label: "Decisions", value: "\(review.recent_decisions.count)", systemImage: "checkmark.seal")
             }
             if review.top_topics.isEmpty && review.top_entities.isEmpty {
-                QuietState(title: "Needs more context", detail: "Approve more memory or connect a richer source to improve people, project, topic, and style coverage.")
+                QuietState(title: "Needs more approved memory", detail: "Approve more memory or connect a richer notes source to improve people, project, topic, and style coverage.")
             } else {
                 ModelTopicSection(topics: review.top_topics, entities: review.top_entities)
             }
