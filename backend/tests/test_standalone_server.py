@@ -18,6 +18,10 @@ os.environ["CORTEX_API_KEY"] = "test-token"
 from backend.app import standalone_server
 
 
+def tearDownModule() -> None:
+    MODULE_TMP.cleanup()
+
+
 class FakeStore:
     def __init__(self) -> None:
         self.search_calls: list[tuple[str, str, int, str | None, str | None]] = []

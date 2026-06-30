@@ -19,6 +19,10 @@ from backend.app import main as main_module
 app = main_module.app
 
 
+def tearDownModule() -> None:
+    MODULE_TMP.cleanup()
+
+
 class FastAPIContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

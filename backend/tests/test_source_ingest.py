@@ -195,7 +195,8 @@ class SourceIngestTests(unittest.TestCase):
         )
 
         self.assertEqual(result["failed"], 0)
-        with sqlite3.connect(db_path) as conn:
+        conn = sqlite3.connect(db_path)
+        try:
             rows = conn.execute(
                 """
                 SELECT source, content, occurred_at
@@ -204,6 +205,8 @@ class SourceIngestTests(unittest.TestCase):
                 ORDER BY source, content
                 """
             ).fetchall()
+        finally:
+            conn.close()
         self.assertEqual(len(rows), 3)
         by_source = {row[0]: row[2] for row in rows}
         self.assertEqual(by_source["chatgpt"], "2026-06-29")

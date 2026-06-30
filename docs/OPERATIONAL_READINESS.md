@@ -72,16 +72,16 @@ For a live installed app:
 python3 scripts/ops_readiness_check.py --require-live --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
 ```
 
-The gate checks:
+The local readiness gate checks:
 
 - Python syntax without creating bytecode as the syntax step
 - required operator docs
 - backend unit tests
 - macOS local build
-- optional DMG/ZIP packaging
+- DMG/ZIP packaging when `--include-package` is set
 - static distribution links and artifact hashes
 - site update feed
-- latest packaged release update feed
+- latest packaged release update feed when package output exists, or when package/site refresh is requested
 - offline support-bundle generation
 - optional live backend health, reliability, and support-bundle contracts
 

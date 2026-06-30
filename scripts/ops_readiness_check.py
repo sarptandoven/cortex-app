@@ -108,8 +108,8 @@ def main() -> None:
     add_check(checks, "operator_docs", not missing_docs, "Required operator docs exist.", {"missing": missing_docs})
 
     if not args.skip_tests:
-        test_result = run_command(root, [sys.executable, "-m", "unittest", "discover", "backend/tests"], timeout=120)
-        add_check(checks, "backend_unit_tests", test_result["ok"], "Backend unit tests pass.", test_result)
+        test_result = run_command(root, [sys.executable, "-W", "error::ResourceWarning", "-m", "unittest", "discover", "backend/tests"], timeout=120)
+        add_check(checks, "backend_unit_tests", test_result["ok"], "Backend unit tests pass with ResourceWarning treated as an error.", test_result)
         retrieval_result = run_command(root, [sys.executable, "scripts/retrieval_eval.py"], timeout=120)
         add_check(checks, "retrieval_quality_eval", retrieval_result["ok"], "Retrieval quality eval passes noisy-import and layer-recall gates.", retrieval_result)
         adaptation_result = run_command(root, [sys.executable, "scripts/adaptation_eval.py"], timeout=120)
@@ -137,8 +137,10 @@ def main() -> None:
     if release_dir:
         release_manifest_result = run_command(root, [sys.executable, "scripts/validate_update_manifest.py", str(release_dir / "latest.json")], timeout=60)
         add_check(checks, "release_update_manifest", release_manifest_result["ok"], "Latest packaged release update feed validates.", release_manifest_result)
-    else:
+    elif args.include_package or args.refresh_site:
         add_check(checks, "release_update_manifest", False, f"No packaged Cortex release found under {output_root}.")
+    else:
+        add_check(checks, "release_update_manifest", True, f"No packaged Cortex release found under {output_root}; release manifest validation skipped for local readiness.")
 
     try:
         bundle = offline_support_bundle(root)
