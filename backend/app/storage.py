@@ -4191,8 +4191,14 @@ class CortexStore:
         if memory_ids:
             placeholders = ",".join("?" for _ in memory_ids)
             conn.execute(
-                f"UPDATE memories SET status = 'archived', updated_at = ? WHERE user_id = ? AND id IN ({placeholders})",
-                [timestamp, user_id, *memory_ids],
+                f"""
+                UPDATE memories
+                SET status = 'archived',
+                    valid_to = CASE WHEN valid_to IS NULL OR valid_to = '' THEN ? ELSE valid_to END,
+                    updated_at = ?
+                WHERE user_id = ? AND id IN ({placeholders})
+                """,
+                [timestamp, timestamp, user_id, *memory_ids],
             )
             conn.execute(
                 f"DELETE FROM memory_relations WHERE user_id = ? AND (source_memory_id IN ({placeholders}) OR target_memory_id IN ({placeholders}))",
@@ -4205,7 +4211,7 @@ class CortexStore:
             )
             for memory_id in memory_ids:
                 self._delete_memory_vector(conn, memory_id)
-                self.vault.patch_memory(memory_id, {"status": "archived", "updated_at": timestamp})
+                self.vault.patch_memory(memory_id, {"status": "archived", "valid_to": timestamp, "updated_at": timestamp})
         if task_ids:
             placeholders = ",".join("?" for _ in task_ids)
             conn.execute(

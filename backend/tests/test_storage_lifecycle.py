@@ -711,7 +711,7 @@ class CortexStorageLifecycleTests(unittest.TestCase):
             ).fetchall()
             stale_memory = conn.execute(
                 """
-                SELECT id, status, superseded_by
+                SELECT id, status, valid_to, superseded_by
                 FROM memories
                 WHERE user_id = ?
                   AND capture_id = ?
@@ -736,6 +736,7 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertIsNotNone(stale_memory)
         self.assertIsNotNone(replacement_memory)
         self.assertEqual(stale_memory["status"], "archived")
+        self.assertEqual(stale_memory["valid_to"], "2026-06-29T12:45:00Z")
         self.assertEqual(stale_memory["superseded_by"], replacement_memory["id"])
         self.assertEqual(replacement_memory["status"], "active")
 
@@ -1466,7 +1467,7 @@ Never use [[Templates/Marketing]] boilerplate in memory.
             ).fetchone()[0]
             stale_memory = conn.execute(
                 """
-                SELECT id, status, superseded_by
+                SELECT id, status, valid_to, superseded_by
                 FROM memories
                 WHERE user_id = ?
                   AND capture_id = ?
@@ -1494,6 +1495,7 @@ Never use [[Templates/Marketing]] boilerplate in memory.
         self.assertIsNotNone(stale_memory)
         self.assertIsNotNone(replacement_memory)
         self.assertEqual(stale_memory["status"], "archived")
+        self.assertTrue(stale_memory["valid_to"])
         self.assertEqual(stale_memory["superseded_by"], replacement_memory["id"])
         self.assertEqual(replacement_memory["status"], "active")
         self.assertEqual(capture["source_account_id"], account["id"])
