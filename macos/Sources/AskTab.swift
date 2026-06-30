@@ -1,5 +1,13 @@
 import SwiftUI
 
+private struct AskStarter: Identifiable {
+    let label: String
+    let systemImage: String
+    let query: String
+
+    var id: String { label }
+}
+
 struct AskTab: View {
     @ObservedObject var state: AppState
     @State private var useElsewhereExpanded = false
@@ -35,6 +43,14 @@ struct AskHeaderSection: View {
 
 struct AskQuerySection: View {
     @ObservedObject var state: AppState
+    private let starters: [AskStarter] = [
+        AskStarter(label: "Decisions", systemImage: "checkmark.seal", query: "What decisions should I remember?"),
+        AskStarter(label: "Preferences", systemImage: "slider.horizontal.3", query: "What preferences have I stated?"),
+        AskStarter(label: "Style", systemImage: "signature", query: "How do I usually write?"),
+        AskStarter(label: "Projects", systemImage: "folder", query: "What context do I have about this project?"),
+        AskStarter(label: "People", systemImage: "person.2", query: "What context do I have about this person?"),
+        AskStarter(label: "Changed", systemImage: "clock.arrow.circlepath", query: "What changed recently?")
+    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -48,6 +64,19 @@ struct AskQuerySection: View {
                     Label("Ask", systemImage: "magnifyingglass")
                 }
                 .buttonStyle(.borderedProminent)
+            }
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 116), spacing: 8)], spacing: 8) {
+                ForEach(starters) { starter in
+                    Button {
+                        state.searchQuery = starter.query
+                        state.runSearch()
+                    } label: {
+                        Label(starter.label, systemImage: starter.systemImage)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.bordered)
+                }
             }
 
             if state.hasSearched {

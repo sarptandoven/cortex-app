@@ -90,15 +90,16 @@ struct ReviewInboxSection: View {
                 Spacer()
                 if !captures.isEmpty {
                     Button {
-                        Task {
-                            await state.loadInbox()
-                            await state.loadReview()
-                        }
+                        state.archiveCaptures(Array(captures.prefix(10)))
                     } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
+                        Label("Archive Visible", systemImage: "archivebox")
                     }
-                    .labelStyle(.iconOnly)
-                    .help("Refresh memory inbox")
+                    Button {
+                        state.approveCaptures(Array(captures.prefix(10)))
+                    } label: {
+                        Label("Approve Visible", systemImage: "checkmark.seal")
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
             }
 

@@ -14,6 +14,9 @@ struct ModelTab: View {
                         if let quality = state.memoryQuality {
                             ModelQualitySection(quality: quality)
                         }
+                        if let recentMemory = review.recent_memories.first {
+                            ModelRecentMemorySection(state: state, memory: recentMemory)
+                        }
                         ModelCoverageSection(review: review)
                         ModelSourceCoverageSection(state: state, review: review)
                         ModelSignalSummarySection(review: review)
@@ -329,6 +332,83 @@ struct ModelQualitySection: View {
 
     private func percent(_ value: Double) -> String {
         "\(Int((value * 100).rounded()))%"
+    }
+}
+
+struct ModelRecentMemorySection: View {
+    @ObservedObject var state: AppState
+    let memory: MemoryItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "Recent useful memory", detail: "A concrete signal currently shaping the personal model.")
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: icon)
+                    .foregroundColor(.accentColor)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(layerTitle)
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.secondary)
+                    Text(memory.content)
+                        .font(.body)
+                        .lineLimit(4)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 8) {
+                        Text(sourceDetail)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 0)
+                        Button {
+                            state.searchQuery = String(memory.content.prefix(140))
+                            state.selectedTab = .ask
+                            state.runSearch()
+                        } label: {
+                            Label("Ask", systemImage: "magnifyingglass")
+                        }
+                    }
+                }
+            }
+            .padding(12)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    private var layerTitle: String {
+        (memory.layer ?? memory.kind).replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    private var icon: String {
+        switch memory.layer ?? memory.kind {
+        case "decision":
+            return "checkmark.seal"
+        case "episodic", "event":
+            return "calendar"
+        case "style":
+            return "signature"
+        case "preference":
+            return "slider.horizontal.3"
+        case "negative":
+            return "hand.raised"
+        default:
+            return "brain.head.profile"
+        }
+    }
+
+    private var sourceDetail: String {
+        var parts = [memory.source]
+        if let date = memory.captured_at {
+            parts.append(String(date.prefix(10)))
+        }
+        if let url = memory.source_url, !url.isEmpty {
+            parts.append(url)
+        }
+        return parts.joined(separator: " · ")
     }
 }
 

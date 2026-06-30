@@ -592,7 +592,7 @@ enum TrustPreset: String, CaseIterable, Identifiable, Hashable {
         case .privateMode:
             return "Connected AI tools cannot read, write, export, maintain, or delete memory."
         case .readOnly:
-            return "Connected AI tools can read approved memory and prepare redacted handoffs, but cannot save or delete memory."
+            return "Connected AI tools can read memory, but cannot save, maintain, or delete memory."
         case .canSave:
             return "Connected AI tools can read memory, save useful context, and prepare redacted handoffs. Deletion and maintenance stay off."
         case .advanced:
@@ -613,7 +613,6 @@ enum TrustPreset: String, CaseIterable, Identifiable, Hashable {
         if settings.allow_pending_in_context
             && settings.allow_agent_reads
             && !settings.allow_agent_writes
-            && settings.allow_agent_exports
             && !settings.allow_agent_maintenance
             && !settings.allow_agent_destructive_actions
             && settings.redact_sensitive_context {
@@ -645,7 +644,7 @@ enum TrustPreset: String, CaseIterable, Identifiable, Hashable {
             settings.allow_pending_in_context = true
             settings.allow_agent_reads = true
             settings.allow_agent_writes = false
-            settings.allow_agent_exports = true
+            settings.allow_agent_exports = false
             settings.allow_agent_maintenance = false
             settings.allow_agent_destructive_actions = false
             settings.redact_sensitive_context = true
@@ -3119,6 +3118,55 @@ final class AppState: ObservableObject {
                 await loadTrust()
             } catch {
                 status = "Archive failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func approveCaptures(_ captures: [CaptureItem]) {
+        let visibleCaptures = Array(captures.prefix(10))
+        guard !visibleCaptures.isEmpty else { return }
+        Task {
+            do {
+                for capture in visibleCaptures {
+                    _ = try await request(path: "/v1/captures/\(capture.id)/approve", method: "POST")
+                    markFirstMemoryReviewed(capture: capture)
+                }
+                status = "Approved \(visibleCaptures.count) visible capture\(visibleCaptures.count == 1 ? "" : "s")"
+                await loadInbox()
+                await loadRecent()
+                await loadStats()
+                await loadGraph()
+                await loadReview()
+                await loadProductLoop()
+                await loadDiagnostics()
+                await loadReliability()
+                await loadTrust()
+            } catch {
+                status = "Batch approve failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func archiveCaptures(_ captures: [CaptureItem]) {
+        let visibleCaptures = Array(captures.prefix(10))
+        guard !visibleCaptures.isEmpty else { return }
+        Task {
+            do {
+                for capture in visibleCaptures {
+                    _ = try await request(path: "/v1/captures/\(capture.id)/archive", method: "POST")
+                }
+                status = "Archived \(visibleCaptures.count) visible capture\(visibleCaptures.count == 1 ? "" : "s")"
+                await loadInbox()
+                await loadRecent()
+                await loadStats()
+                await loadGraph()
+                await loadReview()
+                await loadProductLoop()
+                await loadDiagnostics()
+                await loadReliability()
+                await loadTrust()
+            } catch {
+                status = "Batch archive failed: \(error.localizedDescription)"
             }
         }
     }
