@@ -850,6 +850,10 @@ def _memory_sector(record: dict[str, Any], source_url: str | None, source_accoun
     return ""
 
 
+def _normalize_sector_filter(value: str | None) -> str:
+    return str(value or "").strip()[:120]
+
+
 def _memory_source_type(source: str, source_url: str | None) -> str:
     if source_url:
         scheme = urlsplit(source_url).scheme.lower()
@@ -3716,10 +3720,10 @@ class CortexStore:
             ).fetchall()
             return [self._capture_from_row(row, conn=conn, include_review_preview=True, redact_source_urls=True) for row in rows]
 
-    def recent(self, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    def recent(self, user_id: str, limit: int = 20, *, sector: str | None = None) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
-            filters, params = self._memory_filters(user_id, user_settings, alias="m")
+            filters, params = self._memory_filters(user_id, user_settings, alias="m", sector=sector)
             where = " AND ".join(filters)
             rows = conn.execute(
                 f"SELECT * FROM memories m WHERE {where} ORDER BY m.captured_at DESC LIMIT ?",
@@ -3735,11 +3739,12 @@ class CortexStore:
         kind: str | None = None,
         layer: str | None = None,
         *,
+        sector: str | None = None,
         include_related: bool = False,
     ) -> list[dict[str, Any]]:
         query = query.strip()
         if not query:
-            return self.recent(user_id, limit)
+            return self.recent(user_id, limit, sector=sector)
 
         fts_query = self._fts_query(query)
         candidate_limit = max(limit * 4, 12)
@@ -3748,7 +3753,7 @@ class CortexStore:
 
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
-            filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer)
+            filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer, sector=sector)
             where = " AND ".join(filters)
             rows = []
             fts_rows = []
@@ -3765,11 +3770,11 @@ class CortexStore:
                     [fts_query, *params, candidate_limit],
                 ).fetchall()
             vector_available = self._vector_ready(conn)
-            vector_rows = self._vector_search(conn, user_id, query, candidate_limit, kind, layer, user_settings)
-            temporal_rows = self._temporal_search(conn, user_id, query, candidate_limit, kind, layer, user_settings)
+            vector_rows = self._vector_search(conn, user_id, query, candidate_limit, kind, layer, user_settings, sector=sector)
+            temporal_rows = self._temporal_search(conn, user_id, query, candidate_limit, kind, layer, user_settings, sector=sector)
             intent_rows = []
             if not fts_rows and not temporal_rows:
-                intent_rows = self._intent_search(conn, user_id, query, candidate_limit, kind, layer, user_settings)
+                intent_rows = self._intent_search(conn, user_id, query, candidate_limit, kind, layer, user_settings, sector=sector)
             rows = self._fuse_search_rows(query, fts_rows, vector_rows, temporal_rows, intent_rows, limit)
             if not rows:
                 like = f"%{query}%"
@@ -3785,10 +3790,10 @@ class CortexStore:
                 rows = self._rank_rows_with_layer_boosts(query, fallback_rows, limit)
             if not vector_available and not rows:
                 existing_ids = {row["id"] for row in rows}
-                lexical_rows = self._lexical_fallback_search(conn, user_id, query, candidate_limit, kind, layer, user_settings)
+                lexical_rows = self._lexical_fallback_search(conn, user_id, query, candidate_limit, kind, layer, user_settings, sector=sector)
                 rows.extend(row for row in lexical_rows if row["id"] not in existing_ids)
                 rows = rows[:limit]
-            if layer is None and (task_intent or not rows):
+            if sector is None and layer is None and (task_intent or not rows):
                 task_rows = self._task_search_rows(conn, user_id, query, candidate_limit, kind, user_settings)
 
         memory_results = [self._memory_from_row(row) for row in rows]
@@ -3802,6 +3807,7 @@ class CortexStore:
                     max(0, limit - len(memory_results)),
                     kind=kind,
                     layer=layer,
+                    sector=sector,
                     user_settings=user_settings,
                 )
             seen_memory_ids = {item["id"] for item in memory_results}
@@ -3826,11 +3832,12 @@ class CortexStore:
             return task_results[:limit]
         return memory_results
 
-    def answer_query(self, user_id: str, query: str, limit: int = 8) -> dict[str, Any]:
+    def answer_query(self, user_id: str, query: str, limit: int = 8, *, sector: str | None = None) -> dict[str, Any]:
         query = query.strip()
         limit = max(1, min(20, int(limit)))
+        sector = _normalize_sector_filter(sector) or None
         redact_sensitive = bool(self.settings(user_id)["redact_sensitive_context"])
-        results = self.search(user_id, query, limit=limit, include_related=True)
+        results = self.search(user_id, query, limit=limit, sector=sector, include_related=True)
         citations: list[dict[str, Any]] = []
         for index, item in enumerate(results, start=1):
             result_type = item.get("result_type") or "memory"
@@ -3945,12 +3952,19 @@ class CortexStore:
             ).fetchall()
         return [self._task_from_row(row) for row in rows]
 
-    def list_topics(self, user_id: str, limit: int = 30, *, include_pending: bool | None = None) -> list[dict[str, Any]]:
+    def list_topics(
+        self,
+        user_id: str,
+        limit: int = 30,
+        *,
+        include_pending: bool | None = None,
+        sector: str | None = None,
+    ) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
             if include_pending is False:
                 user_settings = {**user_settings, "allow_pending_in_context": False}
-            filters, params = self._memory_filters(user_id, user_settings, alias="m")
+            filters, params = self._memory_filters(user_id, user_settings, alias="m", sector=sector)
             where = " AND ".join(filters)
             rows = conn.execute(
                 f"""
@@ -3966,12 +3980,19 @@ class CortexStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def list_entities(self, user_id: str, limit: int = 30, *, include_pending: bool | None = None) -> list[dict[str, Any]]:
+    def list_entities(
+        self,
+        user_id: str,
+        limit: int = 30,
+        *,
+        include_pending: bool | None = None,
+        sector: str | None = None,
+    ) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
             if include_pending is False:
                 user_settings = {**user_settings, "allow_pending_in_context": False}
-            filters, params = self._memory_filters(user_id, user_settings, alias="m")
+            filters, params = self._memory_filters(user_id, user_settings, alias="m", sector=sector)
             memory_filter = " AND ".join(filters)
             rows = conn.execute(
                 f"""
@@ -4751,16 +4772,17 @@ class CortexStore:
             "product_loop": self.product_loop(user_id),
         }
 
-    def context_pack(self, user_id: str, query: str = "", limit: int | None = None) -> str:
+    def context_pack(self, user_id: str, query: str = "", limit: int | None = None, *, sector: str | None = None) -> str:
         query = query.strip()
+        sector = _normalize_sector_filter(sector) or None
         user_settings = self.settings(user_id)
         if limit is None:
             limit = int(user_settings["context_pack_limit"])
-        memories = self.search(user_id, query, limit=limit, include_related=True) if query else self.recent(user_id, limit=limit)
-        decisions = self._memories_by_kind(user_id, "decision", limit=5)
-        tasks = self.open_tasks(user_id, limit=8)
-        topics = self.list_topics(user_id, limit=8)
-        entities = self.list_entities(user_id, limit=8)
+        memories = self.search(user_id, query, limit=limit, sector=sector, include_related=True) if query else self.recent(user_id, limit=limit, sector=sector)
+        decisions = self._memories_by_kind(user_id, "decision", limit=5, sector=sector)
+        tasks = [] if sector else self.open_tasks(user_id, limit=8)
+        topics = self.list_topics(user_id, limit=8, sector=sector)
+        entities = self.list_entities(user_id, limit=8, sector=sector)
         redact = bool(user_settings["redact_sensitive_context"])
 
         lines = [
@@ -4770,6 +4792,8 @@ class CortexStore:
         ]
         if query:
             lines.append(f"Focus: {query}")
+        if sector:
+            lines.append(f"Sector: {sector}")
         lines.extend([
             "",
             "Use this Cortex context as partial, cited memory for this conversation. Treat it as coverage-limited, follow the user's newest message when there is conflict, and ask when coverage is missing.",
@@ -4831,15 +4855,16 @@ class CortexStore:
         lines.append(", ".join(f"{item['name']} ({item['kind']})" for item in entities) if entities else "No active entities yet.")
         return "\n".join(lines)
 
-    def personal_profile(self, user_id: str, query: str = "", limit: int = 6, include_pending: bool = False) -> dict[str, Any]:
+    def personal_profile(self, user_id: str, query: str = "", limit: int = 6, include_pending: bool = False, *, sector: str | None = None) -> dict[str, Any]:
         query = query.strip()
+        sector = _normalize_sector_filter(sector) or None
         limit = max(1, min(20, int(limit)))
         user_settings = self.settings(user_id)
         profile_settings = {**user_settings}
         if not include_pending:
             profile_settings["allow_pending_in_context"] = False
         redact = bool(user_settings["redact_sensitive_context"])
-        stats = self._profile_stats(user_id, profile_settings)
+        stats = self._profile_stats(user_id, profile_settings, sector=sector)
         layer_counts = {item["layer"]: int(item["count"]) for item in stats["by_layer"]}
         layer_order = [
             ("preference", "Preference memory", "Durable likes, dislikes, defaults, and working preferences."),
@@ -4852,7 +4877,7 @@ class CortexStore:
         ]
         sections: list[dict[str, Any]] = []
         for layer, title, description in layer_order:
-            memories = self._memories_by_layer(user_id, layer, limit=limit, include_pending=include_pending)
+            memories = self._memories_by_layer(user_id, layer, limit=limit, include_pending=include_pending, sector=sector)
             sections.append(
                 {
                     "layer": layer,
@@ -4863,11 +4888,11 @@ class CortexStore:
                 }
             )
 
-        focus_memories = self.search(user_id, query, limit=limit, include_related=True) if query else []
+        focus_memories = self.search(user_id, query, limit=limit, sector=sector, include_related=True) if query else []
         focus_memories = self._approved_profile_memories(user_id, focus_memories, include_pending=include_pending)
-        open_loops = self.open_tasks(user_id, limit=limit, include_pending=include_pending)
-        topics = self.list_topics(user_id, limit=8, include_pending=include_pending)
-        entities = self.list_entities(user_id, limit=8, include_pending=include_pending)
+        open_loops = [] if sector else self.open_tasks(user_id, limit=limit, include_pending=include_pending)
+        topics = self.list_topics(user_id, limit=8, include_pending=include_pending, sector=sector)
+        entities = self.list_entities(user_id, limit=8, include_pending=include_pending, sector=sector)
         sources = self._source_freshness(user_id, limit=8, user_settings=profile_settings)
         covered_layers = sum(1 for item in layer_order if layer_counts.get(item[0], 0) > 0)
         readiness = min(
@@ -4894,6 +4919,7 @@ class CortexStore:
             "generated_at": now_iso(),
             "name": "Cortex Personal Adaptation Profile",
             "query": query,
+            "sector": sector,
             "readiness": readiness,
             "include_pending": include_pending,
             "summary": {
@@ -4935,9 +4961,9 @@ class CortexStore:
         profile["markdown"] = self._personal_profile_markdown(profile)
         return profile
 
-    def _profile_stats(self, user_id: str, user_settings: dict[str, Any]) -> dict[str, Any]:
+    def _profile_stats(self, user_id: str, user_settings: dict[str, Any], *, sector: str | None = None) -> dict[str, Any]:
         with connect(self.db_path) as conn:
-            memory_filters, memory_params = self._memory_filters(user_id, user_settings, alias="m")
+            memory_filters, memory_params = self._memory_filters(user_id, user_settings, alias="m", sector=sector)
             memory_where = " AND ".join(memory_filters)
             task_filters, task_params = self._task_filters(user_id, user_settings, alias="t", capture_alias="c")
             task_where = " AND ".join(task_filters)
@@ -4964,15 +4990,17 @@ class CortexStore:
                     memory_params,
                 ).fetchall()
             ]
-            task_count = conn.execute(
-                f"""
-                SELECT COUNT(*)
-                FROM tasks t
-                LEFT JOIN captures c ON c.id = t.capture_id AND c.user_id = t.user_id
-                WHERE {task_where}
-                """,
-                task_params,
-            ).fetchone()[0]
+            task_count = 0
+            if not sector:
+                task_count = conn.execute(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM tasks t
+                    LEFT JOIN captures c ON c.id = t.capture_id AND c.user_id = t.user_id
+                    WHERE {task_where}
+                    """,
+                    task_params,
+                ).fetchone()[0]
             entity_count = conn.execute(
                 f"""
                 SELECT COUNT(DISTINCT e.id)
@@ -5003,9 +5031,9 @@ class CortexStore:
             "by_layer": by_layer,
         }
 
-    def agent_adaptation(self, user_id: str, query: str = "", target: str = "assistant", limit: int = 8, include_pending: bool = False) -> dict[str, Any]:
+    def agent_adaptation(self, user_id: str, query: str = "", target: str = "assistant", limit: int = 8, include_pending: bool = False, *, sector: str | None = None) -> dict[str, Any]:
         target = (target or "assistant").strip()[:80] or "assistant"
-        profile = self.personal_profile(user_id, query=query, limit=limit, include_pending=include_pending)
+        profile = self.personal_profile(user_id, query=query, limit=limit, include_pending=include_pending, sector=sector)
         layer_priority = ["preference", "negative", "style", "decision", "procedural", "episodic", "semantic"]
         section_by_layer = {section["layer"]: section for section in profile["sections"]}
         rule_templates = {
@@ -8026,10 +8054,21 @@ class CortexStore:
         except sqlite3.Error:
             return False
 
-    def _vector_search(self, conn, user_id: str, query: str, limit: int, kind: str | None, layer: str | None, user_settings: dict[str, Any]) -> list[Any]:
+    def _vector_search(
+        self,
+        conn,
+        user_id: str,
+        query: str,
+        limit: int,
+        kind: str | None,
+        layer: str | None,
+        user_settings: dict[str, Any],
+        *,
+        sector: str | None = None,
+    ) -> list[Any]:
         if not self._vector_ready(conn):
             return []
-        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer)
+        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer, sector=sector)
         where = " AND ".join(filters)
         try:
             vector = embedding_json(embed_text(query))
@@ -8051,13 +8090,24 @@ class CortexStore:
         except sqlite3.Error:
             return []
 
-    def _temporal_search(self, conn, user_id: str, query: str, limit: int, kind: str | None, layer: str | None, user_settings: dict[str, Any]) -> list[Any]:
+    def _temporal_search(
+        self,
+        conn,
+        user_id: str,
+        query: str,
+        limit: int,
+        kind: str | None,
+        layer: str | None,
+        user_settings: dict[str, Any],
+        *,
+        sector: str | None = None,
+    ) -> list[Any]:
         prefixes = query_temporal_prefixes(query)
         if not prefixes:
             return []
         most_specific_length = len(prefixes[0])
         effective_prefixes = [prefix for prefix in prefixes if len(prefix) == most_specific_length]
-        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer)
+        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer, sector=sector)
         date_filters = []
         date_params: list[Any] = []
         for prefix in effective_prefixes:
@@ -8093,7 +8143,18 @@ class CortexStore:
             [*params, *date_params, *term_params, limit],
         ).fetchall()
 
-    def _intent_search(self, conn, user_id: str, query: str, limit: int, kind: str | None, layer: str | None, user_settings: dict[str, Any]) -> list[Any]:
+    def _intent_search(
+        self,
+        conn,
+        user_id: str,
+        query: str,
+        limit: int,
+        kind: str | None,
+        layer: str | None,
+        user_settings: dict[str, Any],
+        *,
+        sector: str | None = None,
+    ) -> list[Any]:
         boosts = query_layer_boosts(query)
         if not boosts:
             return []
@@ -8103,7 +8164,7 @@ class CortexStore:
             intent_layers = [value for value in intent_layers if value == requested_layer]
         if not intent_layers:
             return []
-        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=None)
+        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=None, sector=sector)
         placeholders = ", ".join("?" for _ in intent_layers)
         where = " AND ".join(filters)
         return conn.execute(
@@ -8118,12 +8179,23 @@ class CortexStore:
             [*params, *intent_layers, limit],
         ).fetchall()
 
-    def _lexical_fallback_search(self, conn, user_id: str, query: str, limit: int, kind: str | None, layer: str | None, user_settings: dict[str, Any]) -> list[Any]:
+    def _lexical_fallback_search(
+        self,
+        conn,
+        user_id: str,
+        query: str,
+        limit: int,
+        kind: str | None,
+        layer: str | None,
+        user_settings: dict[str, Any],
+        *,
+        sector: str | None = None,
+    ) -> list[Any]:
         terms = self._lexical_fallback_terms(query)
         if not terms:
             return []
         match_query = " OR ".join(f"{term}*" for term in terms)
-        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer)
+        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer, sector=sector)
         where = " AND ".join(filters)
         rows = conn.execute(
             f"""
@@ -8210,6 +8282,7 @@ class CortexStore:
         *,
         kind: str | None,
         layer: str | None,
+        sector: str | None,
         user_settings: dict[str, Any],
     ) -> list[Any]:
         primary_ids = [str(item.get("id") or "") for item in primary_results if item.get("result_type", "memory") == "memory"]
@@ -8217,7 +8290,7 @@ class CortexStore:
         if not primary_ids or limit <= 0:
             return []
         primary_placeholders = ",".join("?" for _ in primary_ids)
-        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer)
+        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer, sector=sector)
         filters.append(f"m.id NOT IN ({primary_placeholders})")
         where = " AND ".join(filters)
         return conn.execute(
@@ -8863,7 +8936,16 @@ class CortexStore:
             pieces.append(f"error={metadata['error']}")
         return ", ".join(str(piece) for piece in pieces[:6])
 
-    def _memory_filters(self, user_id: str, user_settings: dict[str, Any], *, alias: str = "m", kind: str | None = None, layer: str | None = None) -> tuple[list[str], list[Any]]:
+    def _memory_filters(
+        self,
+        user_id: str,
+        user_settings: dict[str, Any],
+        *,
+        alias: str = "m",
+        kind: str | None = None,
+        layer: str | None = None,
+        sector: str | None = None,
+    ) -> tuple[list[str], list[Any]]:
         filters = [f"{alias}.user_id = ?", f"{alias}.status = 'active'"]
         params: list[Any] = [user_id]
         if kind:
@@ -8872,6 +8954,10 @@ class CortexStore:
         if layer:
             filters.append(f"{alias}.layer = ?")
             params.append(memory_layer(None, layer))
+        normalized_sector = _normalize_sector_filter(sector)
+        if normalized_sector:
+            filters.append(f"lower(COALESCE({alias}.sector, '')) = ?")
+            params.append(normalized_sector.lower())
         now = now_iso()
         filters.append(f"({alias}.valid_from IS NULL OR {alias}.valid_from = '' OR {alias}.valid_from <= ?)")
         params.append(now)
@@ -9476,10 +9562,10 @@ class CortexStore:
             "last_seen": row["last_seen"],
         }
 
-    def _memories_by_kind(self, user_id: str, kind: str, limit: int) -> list[dict[str, Any]]:
+    def _memories_by_kind(self, user_id: str, kind: str, limit: int, *, sector: str | None = None) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
-            filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind)
+            filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, sector=sector)
             where = " AND ".join(filters)
             rows = conn.execute(
                 f"""
@@ -9493,12 +9579,12 @@ class CortexStore:
             ).fetchall()
         return [self._memory_from_row(row) for row in rows]
 
-    def _memories_by_layer(self, user_id: str, layer: str, limit: int, *, include_pending: bool = False) -> list[dict[str, Any]]:
+    def _memories_by_layer(self, user_id: str, layer: str, limit: int, *, include_pending: bool = False, sector: str | None = None) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
             if not include_pending:
                 user_settings = {**user_settings, "allow_pending_in_context": False}
-            filters, params = self._memory_filters(user_id, user_settings, alias="m", layer=layer)
+            filters, params = self._memory_filters(user_id, user_settings, alias="m", layer=layer, sector=sector)
             where = " AND ".join(filters)
             rows = conn.execute(
                 f"""

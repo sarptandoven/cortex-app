@@ -184,6 +184,66 @@ class MemoryQualityLayerTests(unittest.TestCase):
         self.assertTrue(procedure["procedures"])
         self.assertEqual(procedure["procedures"][0]["layer"], "procedural")
 
+    def test_sector_scoped_retrieval_keeps_project_memory_separate(self) -> None:
+        extracted = {
+            "_timestamp": "2026-06-30T10:00:00+00:00",
+            "summary": "Sector scoping fixture",
+            "records": [
+                {
+                    "id": "mem_atlas_release_sector",
+                    "kind": "procedure",
+                    "layer": "procedural",
+                    "content": "Release checklist: Project Atlas runs backend tests, app build, and codesign.",
+                    "importance": 4,
+                    "sector": "Project Atlas",
+                    "topics": ["release", "Project Atlas"],
+                },
+                {
+                    "id": "mem_boreal_release_sector",
+                    "kind": "procedure",
+                    "layer": "procedural",
+                    "content": "Release checklist: Project Boreal runs web smoke tests and CDN purge.",
+                    "importance": 4,
+                    "sector": "Project Boreal",
+                    "topics": ["release", "Project Boreal"],
+                },
+            ],
+            "tasks": [],
+            "entities": [],
+        }
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Sector scoping fixture",
+            source="unit-test",
+            source_url="unit-test://sector-scope",
+            title="Sector scoping fixture",
+            extracted=extracted,
+        )
+
+        atlas_results = self.store.search(self.user_id, "release checklist", limit=5, sector="Project Atlas")
+        self.assertEqual([item["id"] for item in atlas_results], ["mem_atlas_release_sector"])
+
+        boreal_results = self.store.search(self.user_id, "release checklist", limit=5, sector="Project Boreal")
+        self.assertEqual([item["id"] for item in boreal_results], ["mem_boreal_release_sector"])
+
+        atlas_pack = self.store.context_pack(self.user_id, query="release checklist", limit=5, sector="Project Atlas")
+        self.assertIn("Sector: Project Atlas", atlas_pack)
+        self.assertIn("Project Atlas runs backend tests", atlas_pack)
+        self.assertNotIn("Project Boreal runs web smoke tests", atlas_pack)
+
+        profile = self.store.personal_profile(self.user_id, query="release checklist", limit=5, include_pending=True, sector="Project Atlas")
+        self.assertEqual(profile["sector"], "Project Atlas")
+        self.assertEqual([item["id"] for item in profile["focus"]], ["mem_atlas_release_sector"])
+        self.assertNotIn("Project Boreal", profile["markdown"])
+
+        self.store.update_settings(self.user_id, {"allow_agent_exports": True})
+        context_tool = call_tool(self.store, self.user_id, "build_context_pack", {"query": "release checklist", "sector": "Project Atlas", "limit": 5})
+        self.assertIn("Project Atlas runs backend tests", context_tool)
+        self.assertNotIn("Project Boreal runs web smoke tests", context_tool)
+
+        project_tool = call_tool(self.store, self.user_id, "get_project_context", {"name": "Project Atlas", "query": "release checklist", "limit": 5})
+        self.assertEqual([item["id"] for item in project_tool["memories"]], ["mem_atlas_release_sector"])
+
 
 if __name__ == "__main__":
     unittest.main()

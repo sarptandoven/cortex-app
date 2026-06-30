@@ -607,20 +607,24 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 query = (params.get("query") or [""])[0]
                 kind = (params.get("kind") or [None])[0]
                 layer = (params.get("layer") or [None])[0]
-                self._send_json({"query": query, "results": store.search(user_id, query, _int_param(params, "limit", 10, 1, 50), kind, layer)})
+                sector = (params.get("sector") or [None])[0]
+                self._send_json({"query": query, "sector": sector, "results": store.search(user_id, query, _int_param(params, "limit", 10, 1, 50), kind, layer, sector=sector)})
                 return
             if method == "GET" and path == "/v1/ask":
                 query = (params.get("query") or [""])[0]
-                self._send_json(store.answer_query(user_id, query, _int_param(params, "limit", 8, 1, 20)))
+                sector = (params.get("sector") or [None])[0]
+                self._send_json(store.answer_query(user_id, query, _int_param(params, "limit", 8, 1, 20), sector=sector))
                 return
             if method == "GET" and path == "/v1/tasks/open":
                 self._send_json({"results": store.open_tasks(user_id, _int_param(params, "limit", 20, 1, 100))})
                 return
             if method == "GET" and path == "/v1/topics":
-                self._send_json({"results": store.list_topics(user_id, _int_param(params, "limit", 30, 1, 100))})
+                sector = (params.get("sector") or [None])[0]
+                self._send_json({"sector": sector, "results": store.list_topics(user_id, _int_param(params, "limit", 30, 1, 100), sector=sector)})
                 return
             if method == "GET" and path == "/v1/entities":
-                self._send_json({"results": store.list_entities(user_id, _int_param(params, "limit", 30, 1, 100))})
+                sector = (params.get("sector") or [None])[0]
+                self._send_json({"sector": sector, "results": store.list_entities(user_id, _int_param(params, "limit", 30, 1, 100), sector=sector)})
                 return
             if method == "GET" and path.startswith("/v1/people/"):
                 name = unquote(path.removeprefix("/v1/people/"))
@@ -647,16 +651,19 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and path == "/v1/context-pack":
                 query = (params.get("query") or [""])[0]
-                self._send_text(store.context_pack(user_id, query=query, limit=_int_param(params, "limit", 12, 1, 50)), media_type="text/markdown")
+                sector = (params.get("sector") or [None])[0]
+                self._send_text(store.context_pack(user_id, query=query, limit=_int_param(params, "limit", 12, 1, 50), sector=sector), media_type="text/markdown")
                 return
             if method == "GET" and path == "/v1/personal-profile":
                 query = (params.get("query") or [""])[0]
+                sector = (params.get("sector") or [None])[0]
                 include_pending = (params.get("include_pending") or ["false"])[0].strip().lower() in {"1", "true", "yes"}
                 profile = store.personal_profile(
                     user_id,
                     query=query,
                     limit=_int_param(params, "limit", 6, 1, 20),
                     include_pending=include_pending,
+                    sector=sector,
                 )
                 if (params.get("format") or ["json"])[0] == "markdown":
                     self._send_text(profile["markdown"], media_type="text/markdown")
@@ -665,6 +672,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and path == "/v1/agent-adaptation":
                 query = (params.get("query") or [""])[0]
+                sector = (params.get("sector") or [None])[0]
                 target = (params.get("target") or ["assistant"])[0][:80]
                 include_pending = (params.get("include_pending") or ["false"])[0].strip().lower() in {"1", "true", "yes"}
                 adaptation = store.agent_adaptation(
@@ -673,6 +681,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     target=target,
                     limit=_int_param(params, "limit", 8, 1, 20),
                     include_pending=include_pending,
+                    sector=sector,
                 )
                 if (params.get("format") or ["json"])[0] == "markdown":
                     self._send_text(adaptation["markdown"], media_type="text/markdown")

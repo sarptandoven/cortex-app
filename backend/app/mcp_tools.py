@@ -32,6 +32,7 @@ TOOLS = [
                 "top_k": {"type": "integer", "default": 8},
                 "kind": {"type": "string"},
                 "layer": {"type": "string", "enum": ["semantic", "episodic", "style", "decision", "preference", "negative", "procedural"]},
+                "sector": {"type": "string"},
             },
             "required": ["query"],
         },
@@ -66,6 +67,7 @@ TOOLS = [
                 "limit": {"type": "integer", "default": 6},
                 "include_pending": {"type": "boolean", "default": False},
                 "format": {"type": "string", "default": "json", "enum": ["json", "markdown"]},
+                "sector": {"type": "string"},
             },
         },
     },
@@ -80,6 +82,7 @@ TOOLS = [
                 "limit": {"type": "integer", "default": 8},
                 "include_pending": {"type": "boolean", "default": False},
                 "format": {"type": "string", "default": "json", "enum": ["json", "markdown"]},
+                "sector": {"type": "string"},
             },
         },
     },
@@ -92,6 +95,7 @@ TOOLS = [
                 "query": {"type": "string", "default": "writing style"},
                 "limit": {"type": "integer", "default": 6},
                 "format": {"type": "string", "default": "json", "enum": ["json", "markdown"]},
+                "sector": {"type": "string"},
             },
         },
     },
@@ -104,6 +108,7 @@ TOOLS = [
                 "name": {"type": "string"},
                 "query": {"type": "string", "default": ""},
                 "limit": {"type": "integer", "default": 8},
+                "sector": {"type": "string"},
             },
             "required": ["name"],
         },
@@ -117,6 +122,7 @@ TOOLS = [
                 "query": {"type": "string"},
                 "limit": {"type": "integer", "default": 6},
                 "format": {"type": "string", "default": "json", "enum": ["json", "markdown"]},
+                "sector": {"type": "string"},
             },
             "required": ["query"],
         },
@@ -191,12 +197,12 @@ TOOLS = [
     {
         "name": "build_context_pack",
         "description": "Build a scoped Cortex memory view for ChatGPT, Claude, Cursor, or another assistant.",
-        "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "default": ""}, "limit": {"type": "integer", "default": 12}, "target": {"type": "string", "default": "mcp-agent"}}},
+        "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "default": ""}, "limit": {"type": "integer", "default": 12}, "target": {"type": "string", "default": "mcp-agent"}, "sector": {"type": "string"}}},
     },
     {
         "name": "get_decisions",
         "description": "Search decisions in Cortex memory.",
-        "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "default": "decision"}}},
+        "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "default": "decision"}, "sector": {"type": "string"}}},
     },
     {
         "name": "get_open_questions",
@@ -206,12 +212,12 @@ TOOLS = [
     {
         "name": "list_memory_topics",
         "description": "List active memory topics ranked by frequency and recency.",
-        "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "default": 30}}},
+        "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "default": 30}, "sector": {"type": "string"}}},
     },
     {
         "name": "list_memory_entities",
         "description": "List people, projects, organizations, and topics found in active memory.",
-        "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "default": 30}}},
+        "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "default": 30}, "sector": {"type": "string"}}},
     },
     {
         "name": "get_about_person",
@@ -423,7 +429,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             extracted=extracted,
         ))
     if name == "search_memory":
-        return store.agent_payload(user_id, store.search(user_id, args.get("query", ""), int(args.get("top_k", 8)), kind=args.get("kind"), layer=args.get("layer")))
+        return store.agent_payload(user_id, store.search(user_id, args.get("query", ""), int(args.get("top_k", 8)), kind=args.get("kind"), layer=args.get("layer"), sector=args.get("sector")))
     if name == "get_recent_context":
         return store.agent_payload(user_id, store.recent(user_id, int(args.get("limit", 10))))
     if name == "get_memory_graph":
@@ -438,6 +444,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             query=args.get("query", ""),
             limit=int(args.get("limit", 6)),
             include_pending=_bool_arg(args, "include_pending"),
+            sector=args.get("sector"),
         )
         store.record_context_reuse(user_id, surface="mcp", query=args.get("query", ""), target="personal-profile")
         if args.get("format", "json") == "markdown":
@@ -450,6 +457,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             target=args.get("target", "assistant"),
             limit=int(args.get("limit", 8)),
             include_pending=_bool_arg(args, "include_pending"),
+            sector=args.get("sector"),
         )
         store.record_context_reuse(user_id, surface="mcp", query=args.get("query", ""), target=args.get("target", "agent-adaptation"))
         if args.get("format", "json") == "markdown":
@@ -458,9 +466,10 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
     if name == "get_style_profile":
         query = args.get("query", "writing style")
         limit = int(args.get("limit", 6))
-        style = store.search(user_id, query, limit=limit, layer="style")
-        preferences = store.search(user_id, query, limit=max(2, limit // 2), layer="preference")
-        negatives = store.search(user_id, query, limit=max(2, limit // 2), layer="negative")
+        sector = args.get("sector")
+        style = store.search(user_id, query, limit=limit, layer="style", sector=sector)
+        preferences = store.search(user_id, query, limit=max(2, limit // 2), layer="preference", sector=sector)
+        negatives = store.search(user_id, query, limit=max(2, limit // 2), layer="negative", sector=sector)
         result = {
             "query": query,
             "style": style,
@@ -480,8 +489,12 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         query = str(args.get("query") or "").strip()
         combined_query = " ".join(value for value in [name_arg, query] if value).strip()
         limit = int(args.get("limit", 8))
-        memories = store.about_entity(user_id, combined_query or name_arg, limit=limit)
-        if len(memories) < limit and combined_query:
+        sector = str(args.get("sector") or name_arg).strip() or None
+        if sector:
+            memories = store.search(user_id, query, limit=limit, sector=sector)
+        else:
+            memories = store.about_entity(user_id, combined_query or name_arg, limit=limit)
+        if not sector and len(memories) < limit and combined_query:
             seen = {item["id"] for item in memories}
             memories.extend(item for item in store.search(user_id, combined_query, limit=limit) if item["id"] not in seen)
             memories = memories[:limit]
@@ -490,7 +503,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         return store.agent_payload(user_id, result)
     if name == "get_procedure":
         query = args.get("query", "")
-        procedures = store.search(user_id, query, limit=int(args.get("limit", 6)), layer="procedural")
+        procedures = store.search(user_id, query, limit=int(args.get("limit", 6)), layer="procedural", sector=args.get("sector"))
         result = {"query": query, "procedures": procedures}
         store.record_context_reuse(user_id, surface="mcp", query=query, target="procedure")
         if args.get("format", "json") == "markdown":
@@ -536,17 +549,17 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         return store.agent_payload(user_id, result)
     if name == "build_context_pack":
         query = args.get("query", "")
-        value = store.context_pack(user_id, query, int(args.get("limit", 12)))
+        value = store.context_pack(user_id, query, int(args.get("limit", 12)), sector=args.get("sector"))
         store.record_context_reuse(user_id, surface="mcp", query=query, target=args.get("target", "mcp-agent"))
         return value
     if name == "get_decisions":
-        return store.agent_payload(user_id, store.search(user_id, args.get("query", "decision"), int(args.get("top_k", 10)), kind="decision"))
+        return store.agent_payload(user_id, store.search(user_id, args.get("query", "decision"), int(args.get("top_k", 10)), kind="decision", sector=args.get("sector")))
     if name == "get_open_questions":
         return store.agent_payload(user_id, store.open_tasks(user_id, int(args.get("limit", 20))))
     if name == "list_memory_topics":
-        return store.list_topics(user_id, int(args.get("limit", 30)))
+        return store.list_topics(user_id, int(args.get("limit", 30)), sector=args.get("sector"))
     if name == "list_memory_entities":
-        return store.agent_payload(user_id, store.list_entities(user_id, int(args.get("limit", 30))))
+        return store.agent_payload(user_id, store.list_entities(user_id, int(args.get("limit", 30)), sector=args.get("sector")))
     if name == "get_about_person":
         return store.agent_payload(user_id, store.about_person(user_id, args.get("name", ""), int(args.get("limit", 12))))
     if name == "get_about_entity":

@@ -282,6 +282,7 @@ class JobRunResponse(BaseModel):
 
 class SearchResponse(BaseModel):
     query: str
+    sector: str | None = None
     results: list[dict[str, Any]]
 
 

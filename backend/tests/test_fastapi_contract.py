@@ -268,6 +268,62 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(payload["results"][0]["source_url"], "local-file://ask-source.md")
         self.assertIn("Ask citation contract", payload["citations"][0]["excerpt"])
 
+    def test_retrieval_endpoints_support_sector_scope(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "sector-contract"}
+        records = [
+            (
+                "Project Atlas",
+                "Release checklist sector contract: Project Atlas runs backend tests and codesign.",
+                "service://notes?project=Project%20Atlas",
+            ),
+            (
+                "Project Boreal",
+                "Release checklist sector contract: Project Boreal runs web smoke tests and CDN purge.",
+                "service://notes?project=Project%20Boreal",
+            ),
+        ]
+        for _, content, source_url in records:
+            created = self.client.post(
+                "/v1/captures",
+                json={"content": content, "source": "notes", "source_url": source_url},
+                headers=headers,
+            )
+            self.assertEqual(created.status_code, 200)
+            approved = self.client.post(f"/v1/captures/{created.json()['capture_id']}/approve", headers=headers)
+            self.assertEqual(approved.status_code, 200)
+
+        search = self.client.get(
+            "/v1/search",
+            params={"query": "release checklist sector contract", "sector": "Project Atlas", "limit": 5},
+            headers=headers,
+        )
+        self.assertEqual(search.status_code, 200)
+        search_payload = search.json()
+        self.assertEqual(search_payload["sector"], "Project Atlas")
+        search_text = json.dumps(search_payload)
+        self.assertIn("Project Atlas runs backend tests", search_text)
+        self.assertNotIn("Project Boreal runs web smoke tests", search_text)
+
+        ask = self.client.get(
+            "/v1/ask",
+            params={"query": "release checklist sector contract", "sector": "Project Atlas", "limit": 5},
+            headers=headers,
+        )
+        self.assertEqual(ask.status_code, 200)
+        ask_text = json.dumps(ask.json())
+        self.assertIn("Project Atlas runs backend tests", ask_text)
+        self.assertNotIn("Project Boreal runs web smoke tests", ask_text)
+
+        pack = self.client.get(
+            "/v1/context-pack",
+            params={"query": "release checklist sector contract", "sector": "Project Atlas", "limit": 5},
+            headers=headers,
+        )
+        self.assertEqual(pack.status_code, 200)
+        self.assertIn("Sector: Project Atlas", pack.text)
+        self.assertIn("Project Atlas runs backend tests", pack.text)
+        self.assertNotIn("Project Boreal runs web smoke tests", pack.text)
+
     def test_ask_endpoint_redacts_local_paths_inside_service_citation_parameters(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "ask-service-locator-contract"}
         phrase = "FastAPI Ask service locator privacy should quote source-backed memory."

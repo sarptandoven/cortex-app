@@ -652,13 +652,20 @@ def inbox(limit: int = Query(default=30, ge=1, le=100), user_id: str = Depends(a
 
 
 @app.get("/v1/search", response_model=SearchResponse)
-def search(query: str, limit: int = Query(default=10, ge=1, le=50), kind: str | None = None, layer: str | None = None, user_id: str = Depends(auth)) -> dict[str, Any]:
-    return {"query": query, "results": store.search(user_id, query, limit, kind, layer)}
+def search(
+    query: str,
+    limit: int = Query(default=10, ge=1, le=50),
+    kind: str | None = None,
+    layer: str | None = None,
+    sector: str | None = Query(default=None, max_length=120),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return {"query": query, "sector": sector, "results": store.search(user_id, query, limit, kind, layer, sector=sector)}
 
 
 @app.get("/v1/ask", response_model=AskResponse)
-def ask(query: str, limit: int = Query(default=8, ge=1, le=20), user_id: str = Depends(auth)) -> dict[str, Any]:
-    return store.answer_query(user_id, query, limit)
+def ask(query: str, limit: int = Query(default=8, ge=1, le=20), sector: str | None = Query(default=None, max_length=120), user_id: str = Depends(auth)) -> dict[str, Any]:
+    return store.answer_query(user_id, query, limit, sector=sector)
 
 
 @app.get("/v1/tasks/open")
@@ -667,13 +674,21 @@ def open_tasks(limit: int = Query(default=20, ge=1, le=100), user_id: str = Depe
 
 
 @app.get("/v1/topics")
-def topics(limit: int = Query(default=30, ge=1, le=100), user_id: str = Depends(auth)) -> dict[str, Any]:
-    return {"results": store.list_topics(user_id, limit)}
+def topics(
+    limit: int = Query(default=30, ge=1, le=100),
+    sector: str | None = Query(default=None, max_length=120),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return {"sector": sector, "results": store.list_topics(user_id, limit, sector=sector)}
 
 
 @app.get("/v1/entities")
-def entities(limit: int = Query(default=30, ge=1, le=100), user_id: str = Depends(auth)) -> dict[str, Any]:
-    return {"results": store.list_entities(user_id, limit)}
+def entities(
+    limit: int = Query(default=30, ge=1, le=100),
+    sector: str | None = Query(default=None, max_length=120),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return {"sector": sector, "results": store.list_entities(user_id, limit, sector=sector)}
 
 
 @app.get("/v1/people/{name}")
@@ -702,8 +717,8 @@ def record_context_reuse(request: ContextReuseRequest, user_id: str = Depends(au
 
 
 @app.get("/v1/context-pack")
-def context_pack(query: str = "", limit: int = Query(default=12, ge=1, le=50), user_id: str = Depends(auth)) -> Response:
-    return Response(content=store.context_pack(user_id, query=query, limit=limit), media_type="text/markdown")
+def context_pack(query: str = "", limit: int = Query(default=12, ge=1, le=50), sector: str | None = Query(default=None, max_length=120), user_id: str = Depends(auth)) -> Response:
+    return Response(content=store.context_pack(user_id, query=query, limit=limit, sector=sector), media_type="text/markdown")
 
 
 @app.get("/v1/personal-profile", response_model=None)
@@ -712,9 +727,10 @@ def personal_profile(
     limit: int = Query(default=6, ge=1, le=20),
     include_pending: bool = Query(default=False),
     format: str = Query(default="json", pattern="^(json|markdown)$"),
+    sector: str | None = Query(default=None, max_length=120),
     user_id: str = Depends(auth),
 ) -> dict[str, Any] | Response:
-    profile = store.personal_profile(user_id, query=query, limit=limit, include_pending=include_pending)
+    profile = store.personal_profile(user_id, query=query, limit=limit, include_pending=include_pending, sector=sector)
     if format == "markdown":
         return Response(content=profile["markdown"], media_type="text/markdown")
     return profile
@@ -727,9 +743,10 @@ def agent_adaptation(
     limit: int = Query(default=8, ge=1, le=20),
     include_pending: bool = Query(default=False),
     format: str = Query(default="json", pattern="^(json|markdown)$"),
+    sector: str | None = Query(default=None, max_length=120),
     user_id: str = Depends(auth),
 ) -> dict[str, Any] | Response:
-    adaptation = store.agent_adaptation(user_id, query=query, target=target, limit=limit, include_pending=include_pending)
+    adaptation = store.agent_adaptation(user_id, query=query, target=target, limit=limit, include_pending=include_pending, sector=sector)
     if format == "markdown":
         return Response(content=adaptation["markdown"], media_type="text/markdown")
     return adaptation
