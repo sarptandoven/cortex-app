@@ -28,6 +28,7 @@ class SourceIngestTests(unittest.TestCase):
         self._write_claude_export()
         self._write_slack_export()
         self._write_discord_export()
+        self._write_telegram_export()
         self._write_google_keep_export()
         self._write_notion_export()
         self._write_email_export()
@@ -48,6 +49,7 @@ class SourceIngestTests(unittest.TestCase):
         self.assertIn("claude", sources)
         self.assertIn("slack", sources)
         self.assertIn("discord", sources)
+        self.assertIn("telegram", sources)
         self.assertIn("google-keep", sources)
         self.assertIn("notion", sources)
         self.assertIn("email", sources)
@@ -72,6 +74,20 @@ class SourceIngestTests(unittest.TestCase):
         self.assertTrue(any("Google Chat launch plan" in record.content for record in records))
         self.assertTrue(any("Teams migration note" in record.content for record in records))
         self.assertTrue(any("Zoom transcript memory" in record.content for record in records))
+
+        source_urls: dict[str, list[str]] = {}
+        for record in records:
+            source_urls.setdefault(record.source, []).append(record.source_url or "")
+        self.assertTrue(any("service=discord" in url and "channel=c123" in url for url in source_urls["discord"]))
+        self.assertTrue(any("service=telegram" in url and "chat=Project%20Telegram" in url for url in source_urls["telegram"]))
+        self.assertTrue(any("service=google-keep" in url and "note=Preference" in url for url in source_urls["google-keep"]))
+        self.assertTrue(any("service=google-chat" in url and "conversation=Project%20Space" in url for url in source_urls["google-chat"]))
+        self.assertTrue(any("service=teams" in url and "conversation=General" in url for url in source_urls["teams"]))
+        self.assertTrue(any("service=zoom" in url and "transcript=Project%20Sync" in url for url in source_urls["zoom"]))
+        self.assertTrue(any("service=twitter-x" in url and "archive=tweets" in url for url in source_urls["twitter-x"]))
+        self.assertTrue(any("service=twitter-x" in url and "archive=direct-messages" in url for url in source_urls["twitter-x"]))
+        self.assertTrue(any("service=linkedin" in url and "export=messages" in url for url in source_urls["linkedin"]))
+        self.assertTrue(any("service=linkedin" in url and "export=connections" in url for url in source_urls["linkedin"]))
 
         analysis = analyze_sources([str(self.root)])
         self.assertGreaterEqual(analysis["records_found"], 16)
@@ -1168,6 +1184,28 @@ class SourceIngestTests(unittest.TestCase):
         channel = self.root / "discord" / "messages" / "c123"
         channel.mkdir(parents=True)
         (channel / "messages.csv").write_text("ID,Timestamp,Contents,Attachments\n1,2026-06-29,Discord decision memory,\n", encoding="utf-8")
+
+    def _write_telegram_export(self) -> None:
+        folder = self.root / "telegram"
+        folder.mkdir()
+        payload = {
+            "chats": {
+                "list": [
+                    {
+                        "name": "Project Telegram",
+                        "messages": [
+                            {
+                                "id": 1,
+                                "date": "2026-06-29T10:00:00",
+                                "from": "Sarpt",
+                                "text": "Telegram export should keep source citations.",
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        (folder / "result.json").write_text(json.dumps(payload), encoding="utf-8")
 
     def _write_google_keep_export(self) -> None:
         folder = self.root / "takeout" / "Keep"

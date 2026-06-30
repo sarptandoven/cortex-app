@@ -732,6 +732,7 @@ def _parse_discord(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
             continue
         channel = _path_parts(asset.name)[-2] if len(_path_parts(asset.name)) > 1 else "Discord"
         lines = [f"Source: Discord", f"Channel: {channel}", f"File: {asset.name}", "", "--- Messages ---"]
+        first_timestamp = ""
         for row in rows:
             timestamp = row.get("Timestamp") or row.get("timestamp") or ""
             content = row.get("Contents") or row.get("content") or ""
@@ -740,9 +741,12 @@ def _parse_discord(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
             if attachments.strip():
                 content = f"{content}\nAttachments: {attachments}".strip()
             if content:
+                if not first_timestamp and timestamp:
+                    first_timestamp = str(timestamp)
                 lines.append(f"{timestamp}: {content}".strip())
         if len(lines) > 5:
-            records.append(SourceRecord("discord", f"Discord {channel}", "\n".join(lines), source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "Discord", "channel": channel}))
+            source_url = _source_locator(asset.display_path, service="discord", channel=channel, file=Path(asset.name).name, first_timestamp=first_timestamp)
+            records.append(SourceRecord("discord", f"Discord {channel}", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Discord", "channel": channel}))
     return records
 
 
@@ -763,6 +767,8 @@ def _parse_telegram(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
                 continue
             title = str(chat.get("name") or chat.get("title") or chat.get("id") or "Telegram chat")
             lines = [f"Source: Telegram", f"Chat: {title}", "", "--- Messages ---"]
+            first_message = ""
+            first_date = ""
             for message in chat.get("messages") or []:
                 if not isinstance(message, dict):
                     continue
@@ -770,9 +776,14 @@ def _parse_telegram(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
                 if text:
                     sender = message.get("from") or message.get("actor") or "unknown"
                     date = message.get("date") or ""
+                    if not first_message:
+                        first_message = str(message.get("id") or "")
+                    if not first_date and date:
+                        first_date = str(date)
                     lines.append(f"{date} {sender}: {text}".strip())
             if len(lines) > 4:
-                records.append(SourceRecord("telegram", f"Telegram {title}", "\n".join(lines), source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "Telegram"}))
+                source_url = _source_locator(asset.display_path, service="telegram", chat=title, file=Path(asset.name).name, first_message=first_message, first_date=first_date)
+                records.append(SourceRecord("telegram", f"Telegram {title}", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Telegram"}))
     return records
 
 
@@ -809,6 +820,7 @@ def _parse_google_chat(assets: list[SourceAsset], hint: str) -> list[SourceRecor
             continue
         title = _path_parts(asset.name)[-2] if len(_path_parts(asset.name)) > 1 else "Google Chat"
         lines = ["Source: Google Chat", f"Conversation: {title}", f"File: {asset.name}", "", "--- Messages ---"]
+        first_created = ""
         for message in messages[:1500]:
             if not isinstance(message, dict):
                 continue
@@ -817,9 +829,12 @@ def _parse_google_chat(assets: list[SourceAsset], hint: str) -> list[SourceRecor
                 continue
             sender = _person_name(message.get("creator") or message.get("sender") or message.get("from")) or str(message.get("sender_name") or "unknown")
             created = str(message.get("created_date") or message.get("createdDate") or message.get("create_time") or message.get("timestamp") or "").strip()
+            if not first_created and created:
+                first_created = created
             lines.append(f"{created} {sender}: {text}".strip())
         if len(lines) > 5:
-            records.append(SourceRecord("google-chat", f"Google Chat {title}", "\n".join(lines), source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "Google Chat"}))
+            source_url = _source_locator(asset.display_path, service="google-chat", conversation=title, file=Path(asset.name).name, first_created=first_created)
+            records.append(SourceRecord("google-chat", f"Google Chat {title}", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Google Chat"}))
     return records
 
 
@@ -851,6 +866,7 @@ def _teams_json_record(asset: SourceAsset) -> SourceRecord | None:
         return None
     title = _path_parts(asset.name)[-2] if len(_path_parts(asset.name)) > 1 else Path(asset.name).stem or "Teams"
     lines = ["Source: Microsoft Teams", f"Conversation: {title}", f"File: {asset.name}", "", "--- Messages ---"]
+    first_created = ""
     for message in messages[:1500]:
         if not isinstance(message, dict):
             continue
@@ -863,10 +879,13 @@ def _teams_json_record(asset: SourceAsset) -> SourceRecord | None:
             continue
         sender = _person_name(message.get("from") or message.get("sender") or message.get("user")) or str(message.get("userDisplayName") or message.get("from") or "unknown")
         created = str(message.get("createdDateTime") or message.get("created_at") or message.get("date") or message.get("timestamp") or "").strip()
+        if not first_created and created:
+            first_created = created
         lines.append(f"{created} {sender}: {_html_to_text(text)}".strip())
     if len(lines) <= 5:
         return None
-    return SourceRecord("teams", f"Teams {title}", "\n".join(lines), source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "Microsoft Teams"})
+    source_url = _source_locator(asset.display_path, service="teams", conversation=title, file=Path(asset.name).name, first_created=first_created)
+    return SourceRecord("teams", f"Teams {title}", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Microsoft Teams"})
 
 
 def _teams_csv_record(asset: SourceAsset) -> SourceRecord | None:
@@ -878,6 +897,7 @@ def _teams_csv_record(asset: SourceAsset) -> SourceRecord | None:
         return None
     title = _path_parts(asset.name)[-2] if len(_path_parts(asset.name)) > 1 else Path(asset.name).stem or "Teams"
     lines = ["Source: Microsoft Teams", f"Conversation: {title}", f"File: {asset.name}", "", "--- Messages ---"]
+    first_created = ""
     for row in rows[:1500]:
         normalized = {_normalize_header(key): str(value or "").strip() for key, value in row.items()}
         text = normalized.get("content") or normalized.get("message") or normalized.get("text") or normalized.get("body") or ""
@@ -885,10 +905,13 @@ def _teams_csv_record(asset: SourceAsset) -> SourceRecord | None:
             continue
         sender = normalized.get("from") or normalized.get("sender") or normalized.get("user") or normalized.get("user_display_name") or "unknown"
         created = normalized.get("created_date_time") or normalized.get("created_at") or normalized.get("date") or normalized.get("timestamp") or ""
+        if not first_created and created:
+            first_created = created
         lines.append(f"{created} {sender}: {_html_to_text(text)}".strip())
     if len(lines) <= 5:
         return None
-    return SourceRecord("teams", f"Teams {title}", "\n".join(lines), source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "Microsoft Teams"})
+    source_url = _source_locator(asset.display_path, service="teams", conversation=title, file=Path(asset.name).name, first_created=first_created)
+    return SourceRecord("teams", f"Teams {title}", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Microsoft Teams"})
 
 
 def _parse_zoom_transcripts(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
@@ -907,7 +930,8 @@ def _parse_zoom_transcripts(assets: list[SourceAsset], hint: str) -> list[Source
             continue
         title = Path(asset.name).stem or "Zoom transcript"
         content = f"Source: Zoom\nTranscript: {title}\nFile: {asset.name}\n\n--- Transcript ---\n{transcript}"
-        records.append(SourceRecord("zoom", title, content, source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "Zoom"}))
+        source_url = _source_locator(asset.display_path, service="zoom", transcript=title, file=Path(asset.name).name)
+        records.append(SourceRecord("zoom", title, content, source_url=source_url, metadata={"asset": asset.display_path, "service": "Zoom"}))
     return records
 
 
@@ -981,7 +1005,8 @@ def _parse_google_keep(assets: list[SourceAsset], hint: str) -> list[SourceRecor
             text = _html_to_text(asset.read_text()).strip()
             if text and ("Google Keep" in asset.read_text() or "keep" in asset.display_path.lower()):
                 title = Path(asset.name).stem or "Google Keep note"
-                records.append(SourceRecord("google-keep", title, f"Source: Google Keep\nTitle: {title}\n\n{text}", source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "Google Keep"}))
+                source_url = _source_locator(asset.display_path, service="google-keep", note=title, file=Path(asset.name).name)
+                records.append(SourceRecord("google-keep", title, f"Source: Google Keep\nTitle: {title}\n\n{text}", source_url=source_url, metadata={"asset": asset.display_path, "service": "Google Keep"}))
             continue
         try:
             payload = json.loads(asset.read_text())
@@ -1006,7 +1031,8 @@ def _parse_google_keep(assets: list[SourceAsset], hint: str) -> list[SourceRecor
             for item in list_items:
                 if isinstance(item, dict):
                     lines.append(f"- {item.get('text') or ''}".strip())
-        records.append(SourceRecord("google-keep", title, "\n".join(lines), source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "Google Keep"}))
+        source_url = _source_locator(asset.display_path, service="google-keep", note=title, file=Path(asset.name).name, created=created)
+        records.append(SourceRecord("google-keep", title, "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Google Keep"}))
     return records
 
 
@@ -1032,6 +1058,7 @@ def _parse_twitter_archive(assets: list[SourceAsset], hint: str) -> list[SourceR
 
 def _twitter_tweet_record(asset: SourceAsset, payload: list[Any]) -> SourceRecord | None:
     lines = [f"Source: Twitter/X", f"Archive file: {asset.name}", "", "--- Tweets ---"]
+    first_created = ""
     for item in payload[:1000]:
         tweet = item.get("tweet") if isinstance(item, dict) else None
         if not isinstance(tweet, dict):
@@ -1040,22 +1067,29 @@ def _twitter_tweet_record(asset: SourceAsset, payload: list[Any]) -> SourceRecor
         if not text:
             continue
         created = str(tweet.get("created_at") or "").strip()
+        if not first_created and created:
+            first_created = created
         favorite_count = str(tweet.get("favorite_count") or "").strip()
         retweet_count = str(tweet.get("retweet_count") or "").strip()
         metrics = " ".join(part for part in (f"likes={favorite_count}" if favorite_count else "", f"retweets={retweet_count}" if retweet_count else "") if part)
         lines.append(f"{created} {metrics}: {text}".strip())
     if len(lines) <= 4:
         return None
-    return SourceRecord("twitter-x", "Twitter/X tweets", "\n".join(lines), source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "Twitter/X"})
+    source_url = _source_locator(asset.display_path, service="twitter-x", archive="tweets", file=Path(asset.name).name, first_created=first_created)
+    return SourceRecord("twitter-x", "Twitter/X tweets", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Twitter/X"})
 
 
 def _twitter_dm_record(asset: SourceAsset, payload: list[Any]) -> SourceRecord | None:
     lines = [f"Source: Twitter/X", f"Archive file: {asset.name}", "", "--- Direct Messages ---"]
+    first_conversation = ""
+    first_created = ""
     for item in payload[:300]:
         conversation = item.get("dmConversation") if isinstance(item, dict) else None
         if not isinstance(conversation, dict):
             continue
         conversation_id = str(conversation.get("conversationId") or "").strip()
+        if not first_conversation and conversation_id:
+            first_conversation = conversation_id
         messages = conversation.get("messages") or []
         for message in messages[:500]:
             create = message.get("messageCreate") if isinstance(message, dict) else None
@@ -1066,10 +1100,13 @@ def _twitter_dm_record(asset: SourceAsset, payload: list[Any]) -> SourceRecord |
                 continue
             sender = str(create.get("senderId") or "").strip()
             created = str(create.get("createdAt") or "").strip()
+            if not first_created and created:
+                first_created = created
             lines.append(f"{created} {conversation_id} {sender}: {text}".strip())
     if len(lines) <= 4:
         return None
-    return SourceRecord("twitter-x", "Twitter/X direct messages", "\n".join(lines), source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "Twitter/X"})
+    source_url = _source_locator(asset.display_path, service="twitter-x", archive="direct-messages", file=Path(asset.name).name, first_conversation=first_conversation, first_created=first_created)
+    return SourceRecord("twitter-x", "Twitter/X direct messages", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Twitter/X"})
 
 
 def _parse_linkedin(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
@@ -1099,18 +1136,22 @@ def _linkedin_messages_record(asset: SourceAsset) -> SourceRecord | None:
     if "content" not in headers and "message" not in headers:
         return None
     lines = [f"Source: LinkedIn", f"File: {asset.name}", "", "--- Messages ---"]
+    first_date = ""
     for row in rows[:1000]:
         normalized = {_normalize_header(key): value for key, value in row.items()}
         content = str(normalized.get("content") or normalized.get("message") or "").strip()
         if not content:
             continue
         date = str(normalized.get("date") or normalized.get("created_at") or "").strip()
+        if not first_date and date:
+            first_date = date
         sender = str(normalized.get("from") or normalized.get("sender") or "").strip()
         title = str(normalized.get("conversation_title") or normalized.get("conversation_id") or "").strip()
         lines.append(f"{date} {title} {sender}: {content}".strip())
     if len(lines) <= 4:
         return None
-    return SourceRecord("linkedin", "LinkedIn messages", "\n".join(lines), source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "LinkedIn"})
+    source_url = _source_locator(asset.display_path, service="linkedin", export="messages", file=Path(asset.name).name, first_date=first_date)
+    return SourceRecord("linkedin", "LinkedIn messages", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "LinkedIn"})
 
 
 def _linkedin_connections_record(asset: SourceAsset) -> SourceRecord | None:
@@ -1118,6 +1159,7 @@ def _linkedin_connections_record(asset: SourceAsset) -> SourceRecord | None:
     if not rows:
         return None
     lines = [f"Source: LinkedIn", f"File: {asset.name}", "", "--- Connections ---"]
+    first_connection = ""
     for row in rows[:1500]:
         normalized = {_normalize_header(key): value for key, value in row.items()}
         name = " ".join(
@@ -1130,11 +1172,14 @@ def _linkedin_connections_record(asset: SourceAsset) -> SourceRecord | None:
         connected = str(normalized.get("connected_on") or normalized.get("date") or "").strip()
         email_address = str(normalized.get("email_address") or normalized.get("email") or "").strip()
         if name or company or position:
+            if not first_connection and connected:
+                first_connection = connected
             detail = " | ".join(part for part in (position, company, email_address, connected) if part)
             lines.append(f"{name}: {detail}".strip(": "))
     if len(lines) <= 4:
         return None
-    return SourceRecord("linkedin", "LinkedIn connections", "\n".join(lines), source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "LinkedIn"})
+    source_url = _source_locator(asset.display_path, service="linkedin", export="connections", file=Path(asset.name).name, first_connection=first_connection)
+    return SourceRecord("linkedin", "LinkedIn connections", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "LinkedIn"})
 
 
 def _parse_single_asset(asset: SourceAsset, hint: str) -> list[SourceRecord]:
@@ -1569,7 +1614,9 @@ def _parse_imessage_db(asset: SourceAsset, hint: str) -> list[SourceRecord]:
     for chat, lines in grouped.items():
         ordered = list(reversed(lines))
         content = f"Source: Messages\nChat: {chat}\nFile: {asset.display_path}\n\n--- Messages ---\n" + "\n".join(ordered)
-        records.append(SourceRecord("messages", f"Messages {chat}", content, source_url=asset.display_path, metadata={"asset": asset.display_path, "service": "Messages", "chat": chat}))
+        first_message_at = ordered[0].split(" ", 1)[0] if ordered else ""
+        source_url = _source_locator(asset.display_path, service="messages", chat=chat, file=Path(asset.name).name, first_message_at=first_message_at)
+        records.append(SourceRecord("messages", f"Messages {chat}", content, source_url=source_url, metadata={"asset": asset.display_path, "service": "Messages", "chat": chat}))
     return records[:40]
 
 
