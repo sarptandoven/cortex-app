@@ -11,6 +11,7 @@ private struct AskStarter: Identifiable {
 struct AskTab: View {
     @ObservedObject var state: AppState
     @State private var useElsewhereExpanded = false
+    @State private var citedMemoriesExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -19,9 +20,14 @@ struct AskTab: View {
 
             if state.hasSearched && !state.askAnswer.isEmpty {
                 AskAnswerPanel(answer: state.askAnswer, citations: state.askCitations)
+                DisclosureGroup("Cited memories", isExpanded: $citedMemoriesExpanded) {
+                    AskResultsSection(state: state)
+                        .padding(.top, 8)
+                }
+            } else {
+                AskResultsSection(state: state)
             }
 
-            AskResultsSection(state: state)
             AskAIHandoffSection(state: state, isExpanded: $useElsewhereExpanded)
         }
         .padding(16)
@@ -120,7 +126,7 @@ struct AskAIHandoffSection: View {
     @Binding var isExpanded: Bool
 
     var body: some View {
-        DisclosureGroup("AI Handoff", isExpanded: $isExpanded) {
+        DisclosureGroup("Use in another AI app", isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Use these only when another AI app cannot connect to Cortex directly.")
                     .font(.caption)
@@ -129,18 +135,18 @@ struct AskAIHandoffSection: View {
                     Button {
                         state.copyAgentAdaptation()
                     } label: {
-                        Label("Adaptation", systemImage: "wand.and.stars")
+                        Label("Copy Instructions", systemImage: "wand.and.stars")
                     }
                     Button {
                         state.contextQuery = state.searchQuery
                         state.copyContextPack()
                     } label: {
-                        Label("Cited Evidence", systemImage: "text.quote")
+                        Label("Copy Matching Memory", systemImage: "text.quote")
                     }
                     Button {
                         state.copyDailyContextPack()
                     } label: {
-                        Label("Profile", systemImage: "brain.head.profile")
+                        Label("Copy My Profile", systemImage: "brain.head.profile")
                     }
                     Spacer()
                 }

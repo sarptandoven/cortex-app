@@ -585,10 +585,10 @@ struct ModelTopicSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Active context")
+            Text("Active memory")
                 .font(.headline)
             if topics.isEmpty && entities.isEmpty {
-                Text("Topics and entities appear after you save more context.")
+                Text("Topics and entities appear after you save more memory.")
                     .foregroundColor(.secondary)
             } else {
                 if !topics.isEmpty {

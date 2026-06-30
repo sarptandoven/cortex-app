@@ -594,7 +594,7 @@ enum TrustPreset: String, CaseIterable, Identifiable, Hashable {
         case .readOnly:
             return "Connected AI tools can read memory, but cannot save, maintain, or delete memory."
         case .canSave:
-            return "Connected AI tools can read memory, save useful context, and prepare redacted handoffs. Deletion and maintenance stay off."
+            return "Connected AI tools can read memory, save useful memory, and prepare redacted handoffs. Deletion and maintenance stay off."
         case .advanced:
             return "Tune individual permissions when a connected AI workflow needs a narrower policy."
         }
@@ -2887,7 +2887,7 @@ final class AppState: ObservableObject {
         guard canCompleteOnboarding else {
             dismissOnboardingForSession()
             let remaining = incompleteOnboardingStepTitles.prefix(2).joined(separator: ", ")
-            status = remaining.isEmpty ? "Setup can be completed from Trust" : "Setup still needs: \(remaining)"
+            status = remaining.isEmpty ? "Setup can be completed from Trust" : "Setup will reopen until finished: \(remaining)"
             return
         }
         completeOnboarding()
@@ -2895,7 +2895,7 @@ final class AppState: ObservableObject {
 
     func dismissOnboardingForSession() {
         showOnboarding = false
-        status = "Setup can be reopened from Trust"
+        status = "Setup will reopen until finished; reopen it from Trust anytime"
     }
 
     func showOnboardingAgain() {
@@ -4551,7 +4551,7 @@ struct TrustScoreSection: View {
             }
 
             if summary.risk_flags.isEmpty {
-                TrustNotice(systemImage: "checkmark.shield.fill", title: "No active trust warnings", detail: "New memory is reviewed, shared context is redacted, and storage health is clean.", color: .green)
+                TrustNotice(systemImage: "checkmark.shield.fill", title: "No active trust warnings", detail: "New memory is reviewed, shared memory is redacted, and storage health is clean.", color: .green)
             } else {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(Array(summary.risk_flags.prefix(4).enumerated()), id: \.offset) { _, flag in
@@ -4690,7 +4690,7 @@ struct TrustPolicySection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Connected AI Access")
+                Text("AI access")
                     .font(.headline)
                 Spacer()
                 Button {
@@ -4700,11 +4700,11 @@ struct TrustPolicySection: View {
                 }
             }
 
-            Text("Choose what connected AI tools can do with memory stored on this Mac.")
+            Text("Choose how much approved memory connected AI tools may read or change.")
                 .font(.body)
                 .foregroundColor(.secondary)
 
-            Picker("Connected AI Access", selection: $selectedPreset) {
+            Picker("AI access", selection: $selectedPreset) {
                 ForEach(TrustPreset.allCases) { preset in
                     Text(preset.title).tag(preset)
                 }
@@ -4732,7 +4732,7 @@ struct TrustPolicySection: View {
 
             TrustNotice(systemImage: "shield.lefthalf.filled", title: selectedPreset.title, detail: selectedPreset.detail, color: selectedPreset == .privateMode ? .green : .accentColor)
 
-            DisclosureGroup("Advanced permissions", isExpanded: $advancedExpanded) {
+            DisclosureGroup("Detailed permissions", isExpanded: $advancedExpanded) {
                 VStack(alignment: .leading, spacing: 12) {
                     TrustToggleRow(
                         title: "Review new saves",
@@ -4748,36 +4748,36 @@ struct TrustPolicySection: View {
                     )
                     TrustToggleRow(
                         title: "Let connected AI read memory",
-                        detail: "Connected MCP agents can search memory, read review context, and inspect stats.",
+                        detail: "Connected AI tools can search memory, read review queues, and inspect stats.",
                         systemImage: "eye",
                         isOn: $state.appSettings.allow_agent_reads
                     )
                     TrustToggleRow(
                         title: "Let connected AI save memory",
-                        detail: "Connected MCP agents can save, approve, or archive memory.",
+                        detail: "Connected AI tools can save, approve, or archive memory.",
                         systemImage: "square.and.pencil",
                         isOn: $state.appSettings.allow_agent_writes
                     )
                     TrustToggleRow(
                         title: "Let connected AI prepare artifacts",
-                        detail: "Connected MCP agents can prepare redacted profile artifacts, adaptation instructions, or exports.",
+                        detail: "Connected AI tools can prepare redacted profile artifacts, adaptation instructions, or exports.",
                         systemImage: "square.and.arrow.up",
                         isOn: $state.appSettings.allow_agent_exports
                     )
                     TrustToggleRow(
                         title: "Let connected AI run maintenance",
-                        detail: "Connected MCP agents can create backups, repair storage, or rebuild local indexes.",
+                        detail: "Connected AI tools can create backups, repair storage, or rebuild local indexes.",
                         systemImage: "wrench.and.screwdriver",
                         isOn: $state.appSettings.allow_agent_maintenance
                     )
                     TrustToggleRow(
                         title: "Let connected AI delete data",
-                        detail: "Connected MCP agents can delete memories, captures, backups, or all local user data.",
+                        detail: "Connected AI tools can delete memories, captures, backups, or all local user data.",
                         systemImage: "trash",
                         isOn: $state.appSettings.allow_agent_destructive_actions
                     )
                     TrustToggleRow(
-                        title: "Redact shared context",
+                        title: "Redact shared memory",
                         detail: "Secrets, tokens, emails, and long account-like numbers are masked before sharing.",
                         systemImage: "text.badge.xmark",
                         isOn: $state.appSettings.redact_sensitive_context
@@ -4983,7 +4983,7 @@ struct TrustActionsSection: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Privacy posture")
                 .font(.headline)
-            TrustNotice(systemImage: "lock.doc", title: "Local-first", detail: "Trust controls apply to the local backend, MCP agents, safe sharing artifacts, and exports. The vault remains on this Mac.", color: .accentColor)
+            TrustNotice(systemImage: "lock.doc", title: "Local-first", detail: "Trust controls apply to the local backend, connected AI tools, safe sharing artifacts, and exports. The vault remains on this Mac.", color: .accentColor)
             DisclosureGroup("Export fallback") {
                 HStack {
                     Button {

@@ -113,7 +113,7 @@ struct OnboardingView: View {
                     state.finishOnboarding()
                 } label: {
                     Label(
-                        state.canCompleteOnboarding ? "Finish Setup" : "Open Cortex",
+                        state.canCompleteOnboarding ? "Finish Setup" : "Open App for Now",
                         systemImage: state.canCompleteOnboarding ? "checkmark.circle" : "arrow.right.circle"
                     )
                 }
@@ -379,7 +379,7 @@ struct OnboardingTrustBackupStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Finish with a clear default: review new memory first, share only approved memory, redact copied context, and keep backups local.")
+            Text("Finish with a clear default: review new memory first, share only approved memory, redact copied memory, and keep backups local.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -398,7 +398,7 @@ struct OnboardingTrustBackupStep: View {
                     )
                 )
                 OnboardingToggleRow(
-                    title: "Redact copied context",
+                    title: "Redact copied memory",
                     detail: "AI handoffs remove sensitive details when possible.",
                     isOn: $state.appSettings.redact_sensitive_context
                 )

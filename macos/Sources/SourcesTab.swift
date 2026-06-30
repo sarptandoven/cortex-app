@@ -6,6 +6,8 @@ struct SourcesTab: View {
     @ObservedObject var state: AppState
     @State private var isSupportedSourcesExpanded = false
     @State private var isSecondaryCaptureExpanded = false
+    @State private var isSourceHealthExpanded = false
+    @State private var isImportHistoryExpanded = false
 
     var body: some View {
         ScrollView {
@@ -16,8 +18,34 @@ struct SourcesTab: View {
                     isSupportedSourcesExpanded: $isSupportedSourcesExpanded,
                     handleDrop: handleDrop
                 )
-                SourceHealthSummarySection(state: state)
-                ImportHistorySection(state: state)
+                DisclosureGroup(isExpanded: $isSourceHealthExpanded) {
+                    SourceHealthSummarySection(state: state)
+                        .padding(.top, 8)
+                } label: {
+                    SourcesDisclosureLabel(
+                        systemImage: "checkmark.seal",
+                        title: "Source health",
+                        detail: "Import readiness and source coverage"
+                    )
+                }
+                .padding(12)
+                .background(Color(nsColor: .controlBackgroundColor).opacity(0.65))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                DisclosureGroup(isExpanded: $isImportHistoryExpanded) {
+                    ImportHistorySection(state: state)
+                        .padding(.top, 8)
+                } label: {
+                    SourcesDisclosureLabel(
+                        systemImage: "clock.arrow.circlepath",
+                        title: "Import history",
+                        detail: "Recent imports and undo controls"
+                    )
+                }
+                .padding(12)
+                .background(Color(nsColor: .controlBackgroundColor).opacity(0.65))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
                 SecondaryCaptureToolsSection(state: state, isExpanded: $isSecondaryCaptureExpanded)
             }
             .padding(16)
@@ -62,6 +90,29 @@ struct SourcesTab: View {
             state.captureFiles(urls)
         }
         return !providers.isEmpty
+    }
+}
+
+struct SourcesDisclosureLabel: View {
+    let systemImage: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: systemImage)
+                .foregroundColor(.secondary)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.callout)
+                    .fontWeight(.medium)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+        }
     }
 }
 
@@ -136,6 +187,7 @@ struct SourcesImportSection: View {
     @ObservedObject var state: AppState
     @Binding var isSupportedSourcesExpanded: Bool
     let handleDrop: ([NSItemProvider]) -> Bool
+    @State private var isInboxExpanded = false
 
     private var supportedGroups: [SupportedSourceGroup] {
         var readinessBySource: [String: SourceReadinessItem] = [:]
@@ -201,28 +253,6 @@ struct SourcesImportSection: View {
                 }
                 .buttonStyle(.borderedProminent)
 
-                Button {
-                    state.importCaptureInbox()
-                } label: {
-                    Label("Import Inbox", systemImage: "tray.and.arrow.down")
-                }
-
-                Menu {
-                    Button {
-                        state.openCaptureInbox()
-                    } label: {
-                        Label("Open Inbox Folder", systemImage: "tray")
-                    }
-                    Button {
-                        state.copyCaptureInboxPath()
-                    } label: {
-                        Label("Copy Inbox Path", systemImage: "doc.on.doc")
-                    }
-                } label: {
-                    Label("Inbox", systemImage: "tray")
-                }
-                .menuStyle(.borderlessButton)
-
                 Spacer()
             }
 
@@ -230,6 +260,33 @@ struct SourcesImportSection: View {
                 Text(state.lastFileCaptureSummary)
                     .font(.caption)
                     .foregroundColor(.secondary)
+            }
+
+            DisclosureGroup("Inbox import", isExpanded: $isInboxExpanded) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Use the inbox when another app needs a stable folder to drop exports into.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    HStack {
+                        Button {
+                            state.importCaptureInbox()
+                        } label: {
+                            Label("Import Inbox", systemImage: "tray.and.arrow.down")
+                        }
+                        Button {
+                            state.openCaptureInbox()
+                        } label: {
+                            Label("Open Folder", systemImage: "tray")
+                        }
+                        Button {
+                            state.copyCaptureInboxPath()
+                        } label: {
+                            Label("Copy Path", systemImage: "doc.on.doc")
+                        }
+                        Spacer()
+                    }
+                }
+                .padding(.top, 8)
             }
 
             DisclosureGroup("Supported source types", isExpanded: $isSupportedSourcesExpanded) {
@@ -285,7 +342,7 @@ struct SupportedSourceDisplayItem: Identifiable {
         } else {
             status = catalog.live_status ?? "available"
             statusTitle = "Available"
-            detail = catalog.notes ?? "Add this source when it contains useful context."
+            detail = catalog.notes ?? "Add this source when it contains useful memory."
         }
     }
 
@@ -374,13 +431,7 @@ struct SupportedSourceCatalogRow: View {
                 Text(item.detail)
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                    .lineLimit(2)
-                if !item.sourceSummary.isEmpty {
-                    Text("Imports as \(item.sourceSummary)")
-                        .font(.caption2)
-                        .foregroundColor(.secondary.opacity(0.85))
-                        .lineLimit(1)
-                }
+                    .lineLimit(1)
             }
             Spacer(minLength: 0)
         }

@@ -5,6 +5,7 @@ struct TrustTab: View {
     @State private var integrationsExpanded = false
     @State private var sourcesExpanded = false
     @State private var advancedExpanded = false
+    @State private var developerDetailsExpanded = false
 
     var body: some View {
         ScrollView {
@@ -14,7 +15,6 @@ struct TrustTab: View {
                     TrustPolicySection(state: state)
                     SettingsPrivacySection(state: state)
                     TrustBackupSummarySection(state: state)
-                    TrustActionsSection(state: state)
                     DisclosureGroup("Connected AI tools", isExpanded: $integrationsExpanded) {
                         VStack(alignment: .leading, spacing: 14) {
                             IntegrationCenterView(state: state, compact: true)
@@ -31,32 +31,40 @@ struct TrustTab: View {
                         }
                         .padding(.top, 8)
                     }
-                    DisclosureGroup("Advanced diagnostics", isExpanded: $advancedExpanded) {
+                    DisclosureGroup("Advanced settings and diagnostics", isExpanded: $advancedExpanded) {
                         VStack(alignment: .leading, spacing: 14) {
-                            if let lifecycle = state.dataLifecycleReport {
-                                TrustLifecycleSection(report: lifecycle)
-                                Divider()
-                            }
                             SettingsDataRecoverySection(state: state)
                             Divider()
-                            Group {
-                                SettingsOnboardingSection(state: state)
-                                Divider()
-                                SettingsReliabilitySection(state: state)
-                                Divider()
+                            SettingsReliabilitySection(state: state)
+                            Divider()
+                            SettingsHealthSection(state: state)
+                            DisclosureGroup("Developer details", isExpanded: $developerDetailsExpanded) {
+                                VStack(alignment: .leading, spacing: 14) {
+                                    if let lifecycle = state.dataLifecycleReport {
+                                        TrustLifecycleSection(report: lifecycle)
+                                        Divider()
+                                    }
+                                    Group {
+                                        SettingsOnboardingSection(state: state)
+                                        Divider()
+                                        AdvancedGraphSection(state: state)
+                                        SettingsStatsSection(state: state)
+                                        Divider()
+                                    }
+                                    Group {
+                                        TrustSyncManifestSection(state: state)
+                                        Divider()
+                                        SettingsUpdatesSection(state: state)
+                                        Divider()
+                                        SettingsBackendSection(state: state)
+                                    }
+                                }
+                                .padding(.top, 8)
                             }
-                            Group {
-                                AdvancedGraphSection(state: state)
-                                SettingsStatsSection(state: state)
-                                Divider()
-                                TrustSyncManifestSection(state: state)
-                                Divider()
-                                SettingsUpdatesSection(state: state)
-                                Divider()
-                            }
-                            Group {
-                                SettingsHealthSection(state: state)
-                                SettingsBackendSection(state: state)
+                            .onChange(of: developerDetailsExpanded) { expanded in
+                                if expanded {
+                                    Task { await loadDeveloperDiagnostics() }
+                                }
                             }
                         }
                         .padding(.top, 8)
@@ -87,6 +95,9 @@ struct TrustTab: View {
     private func loadAdvancedDiagnostics() async {
         await state.loadDiagnostics()
         await state.loadReliability()
+    }
+
+    private func loadDeveloperDiagnostics() async {
         await state.loadStats()
         await state.loadGraph()
     }
