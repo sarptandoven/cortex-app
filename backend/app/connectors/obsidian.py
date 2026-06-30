@@ -24,6 +24,13 @@ _BLOCK_REF_RE = re.compile(r"(?:^|\s)\^(?P<id>[A-Za-z0-9][A-Za-z0-9_-]{0,80})\s*
 
 
 @dataclass(frozen=True)
+class ObsidianVaultIdentity:
+    vault_path: str
+    vault_name: str
+    vault_id: str
+
+
+@dataclass(frozen=True)
 class ObsidianVaultRecord:
     content: str
     title: str
@@ -113,10 +120,20 @@ class _MarkdownBlockRef:
     raw: str
 
 
-def scan_obsidian_vault(vault_path: str | Path, *, limit: int = 200) -> ObsidianVaultScan:
+def vault_identity(vault_path: str | Path) -> ObsidianVaultIdentity:
     root = Path(vault_path).expanduser().resolve()
     if not root.exists() or not root.is_dir():
         raise ValueError("Obsidian vault path must be a readable folder")
+    return ObsidianVaultIdentity(
+        vault_path=str(root),
+        vault_name=root.name or "Obsidian vault",
+        vault_id=_stable_scan_id(str(root)),
+    )
+
+
+def scan_obsidian_vault(vault_path: str | Path, *, limit: int = 200, cursor_value: str | None = None) -> ObsidianVaultScan:
+    identity = vault_identity(vault_path)
+    root = Path(identity.vault_path)
 
     candidates: list[tuple[float, Path, int]] = []
     seen_extensions: set[str] = set()
@@ -146,15 +163,20 @@ def scan_obsidian_vault(vault_path: str | Path, *, limit: int = 200) -> Obsidian
             seen_extensions.add(suffix)
             candidates.append((stat.st_mtime, path, stat.st_size))
 
-    capped_limit = max(1, min(limit, 5_000))
     ordered_candidates = sorted(candidates, key=lambda item: (-item[0], _relative_external_id(root, item[1])))
-    selected = ordered_candidates[:capped_limit]
-    records: list[ObsidianVaultRecord] = []
-    high_water: float | None = None
     manifest_parts = [
         f"{_relative_external_id(root, path)}:{size}:{int(modified)}"
         for modified, path, size in ordered_candidates
     ]
+    manifest_hash = _stable_scan_id("\n".join(sorted(manifest_parts)))
+    capped_limit = max(1, min(limit, 5_000))
+    start_offset = _cursor_offset(cursor_value, manifest_hash, len(ordered_candidates))
+    selected = ordered_candidates[start_offset:start_offset + capped_limit]
+    next_offset = start_offset + len(selected)
+    if next_offset >= len(ordered_candidates):
+        next_offset = 0
+    records: list[ObsidianVaultRecord] = []
+    high_water: float | None = None
     for modified, path, size in selected:
         try:
             raw = _read_text(path)
@@ -170,27 +192,28 @@ def scan_obsidian_vault(vault_path: str | Path, *, limit: int = 200) -> Obsidian
         records.extend(note_records)
 
     high_water_mark = _iso_from_timestamp(high_water) if high_water is not None else None
-    cursor_value = f"{len(records)}:{high_water_mark or 'none'}"
+    next_cursor_value = _format_cursor(next_offset, manifest_hash)
+    truncated = bool(start_offset > 0 or next_offset > 0 or len(ordered_candidates) > len(selected))
     return ObsidianVaultScan(
-        vault_path=str(root),
-        vault_name=root.name or "Obsidian vault",
-        vault_id=_stable_scan_id(str(root)),
+        vault_path=identity.vault_path,
+        vault_name=identity.vault_name,
+        vault_id=identity.vault_id,
         records=records,
         high_water_mark=high_water_mark,
-        cursor_value=cursor_value,
+        cursor_value=next_cursor_value,
         extensions=sorted(seen_extensions),
         records_found=len(ordered_candidates),
         records_returned=len(records),
         files_seen=files_seen,
         skipped=skipped,
         errors=errors[:25],
-        manifest_hash=_stable_scan_id("\n".join(sorted(manifest_parts))),
-        truncated=len(ordered_candidates) > len(selected),
+        manifest_hash=manifest_hash,
+        truncated=truncated,
     )
 
 
-def scan_vault(vault_path: str | Path, *, max_records: int = 200) -> ObsidianVaultScan:
-    return scan_obsidian_vault(vault_path, limit=max_records)
+def scan_vault(vault_path: str | Path, *, max_records: int = 200, cursor_value: str | None = None) -> ObsidianVaultScan:
+    return scan_obsidian_vault(vault_path, limit=max_records, cursor_value=cursor_value)
 
 
 def parse_note(raw: str, *, fallback_title: str = "Untitled") -> ParsedObsidianNote:
@@ -217,6 +240,30 @@ def stable_external_id(root: str | Path, path: str | Path) -> str:
 def clean_obsidian_markdown(raw: str) -> tuple[str, dict[str, Any], set[str]]:
     cleaned, frontmatter, tags, _wikilinks, _callouts, _removed_blocks = _parse_obsidian_markdown(raw)
     return cleaned, frontmatter, tags
+
+
+def _format_cursor(offset: int, manifest_hash: str) -> str:
+    return f"offset={max(0, offset)};manifest={manifest_hash}"
+
+
+def _cursor_offset(cursor_value: str | None, manifest_hash: str, total_records: int) -> int:
+    if not cursor_value:
+        return 0
+    parts: dict[str, str] = {}
+    for piece in str(cursor_value).split(";"):
+        if "=" not in piece:
+            continue
+        key, value = piece.split("=", 1)
+        parts[key.strip()] = value.strip()
+    if parts.get("manifest") != manifest_hash:
+        return 0
+    try:
+        offset = int(parts.get("offset") or "0")
+    except ValueError:
+        return 0
+    if offset <= 0 or offset >= total_records:
+        return 0
+    return offset
 
 
 def _records_for_note(root: Path, path: Path, raw: str, *, modified: float, size: int) -> list[ObsidianVaultRecord]:

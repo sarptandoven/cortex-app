@@ -2355,11 +2355,14 @@ class CortexStore:
         max_records: int = 200,
         cursor_name: str = "local-folder",
     ) -> dict[str, Any]:
-        from .connectors.obsidian import OBSIDIAN_SOURCE, scan_vault
+        from .connectors.obsidian import OBSIDIAN_SOURCE, scan_vault, vault_identity
 
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
-        scan = scan_vault(vault_path, max_records=max_records)
+        identity = vault_identity(vault_path)
+        resolved_account_id = (source_account_id or "").strip() or stable_id("sacct_", f"{user_id}:{OBSIDIAN_SOURCE}:{identity.vault_id}")
+        previous_cursor = self._latest_sync_cursor_value(user_id, resolved_account_id, cursor_name)
+        scan = scan_vault(vault_path, max_records=max_records, cursor_value=previous_cursor)
         label = (account_label or f"Obsidian: {scan.vault_name}").strip()[:160]
         identifier = (account_identifier or scan.vault_id).strip()[:240]
         metadata = {
@@ -2387,7 +2390,7 @@ class CortexStore:
             policy={"review_required": True, "allow_ai_context": True},
             metadata=metadata,
             last_error=scan.errors[0]["error"] if scan.errors else None,
-            account_id=(source_account_id or "").strip() or None,
+            account_id=resolved_account_id,
         )
         scan_summary = scan.to_summary()
         state = {
@@ -2463,6 +2466,25 @@ class CortexStore:
         result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
         result["scan"] = scan_summary
         return result
+
+    def _latest_sync_cursor_value(self, user_id: str, account_id: str, cursor_name: str) -> str | None:
+        normalized_name = (cursor_name or "default").strip() or "default"
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT cursor_value
+                FROM sync_cursors
+                WHERE user_id = ?
+                  AND source_account_id = ?
+                  AND cursor_name = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (user_id, account_id, normalized_name),
+            ).fetchone()
+        if not row:
+            return None
+        return str(row["cursor_value"] or "").strip() or None
 
     def _source_account_by_id(self, user_id: str, account_id: str) -> dict[str, Any] | None:
         with connect(self.db_path) as conn:

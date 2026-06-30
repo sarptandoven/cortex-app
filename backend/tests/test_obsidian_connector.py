@@ -355,6 +355,56 @@ Decision: Cortex should archive the orchid-block marker when an explicit block d
         self.assertEqual(scan.to_summary()["records_found"], 5)
         self.assertEqual(scan.to_summary()["records_returned"], 2)
         self.assertTrue(scan.to_summary()["truncated"])
+        self.assertIn("offset=2;", scan.cursor_value)
+
+        second = scan_vault(self.vault, max_records=2, cursor_value=scan.cursor_value)
+        self.assertEqual(second.records_found, 5)
+        self.assertEqual(second.records_returned, 2)
+        self.assertTrue(second.truncated)
+        self.assertIn("offset=4;", second.cursor_value)
+        self.assertTrue(
+            {record.external_id for record in scan.records}.isdisjoint(
+                {record.external_id for record in second.records}
+            )
+        )
+
+        third = scan_vault(self.vault, max_records=2, cursor_value=second.cursor_value)
+        self.assertEqual(third.records_found, 5)
+        self.assertEqual(third.records_returned, 1)
+        self.assertTrue(third.truncated)
+        self.assertIn("offset=0;", third.cursor_value)
+
+    def test_sync_vault_backfills_truncated_scans_across_runs(self) -> None:
+        for index in range(5):
+            self.write_note(
+                f"Backfill/Note {index}.md",
+                f"Decision: Cortex Obsidian backfill marker {index} should sync across repeated limited scans.",
+            )
+
+        first = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync", max_records=2)
+        second = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync", max_records=2)
+        third = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync", max_records=2)
+
+        self.assertEqual(first["saved"], 2)
+        self.assertEqual(second["saved"], 2)
+        self.assertEqual(third["saved"], 1)
+        self.assertTrue(first["scan"]["truncated"])
+        self.assertTrue(second["scan"]["truncated"])
+        self.assertTrue(third["scan"]["truncated"])
+        self.assertIn("offset=2;", first["cursor"]["cursor_value"])
+        self.assertIn("offset=4;", second["cursor"]["cursor_value"])
+        self.assertIn("offset=0;", third["cursor"]["cursor_value"])
+        with connect(self.db_path) as conn:
+            capture_count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM captures
+                WHERE user_id = ?
+                  AND source = 'obsidian'
+                """,
+                (self.user_id,),
+            ).fetchone()[0]
+        self.assertEqual(capture_count, 5)
 
     def test_obsidian_review_required_policy_overrides_global_auto_approve(self) -> None:
         self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": False})
