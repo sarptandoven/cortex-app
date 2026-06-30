@@ -51,6 +51,86 @@ TEXT_EXTENSIONS = {
     ".rtf",
 }
 
+STRUCTURED_CSV_EXPORT_SOURCES = {
+    "notion",
+    "linear",
+    "jira",
+    "asana",
+    "trello",
+    "github",
+    "gitlab",
+    "readwise",
+    "pocket",
+    "instapaper",
+    "raindrop",
+    "work-tools",
+}
+STRUCTURED_JSON_EXPORT_SOURCES = {"github", "jira", "linear", "work-tools"}
+STRUCTURED_JSON_COLLECTION_KEYS = (
+    "issues",
+    "pull_requests",
+    "pullRequests",
+    "pulls",
+    "prs",
+    "items",
+    "nodes",
+    "edges",
+    "values",
+    "results",
+    "data",
+)
+STRUCTURED_ROW_KEY_ORDER = (
+    "key",
+    "number",
+    "identifier",
+    "id",
+    "title",
+    "summary",
+    "body",
+    "description",
+    "text",
+    "content",
+    "message",
+    "state",
+    "status",
+    "type",
+    "url",
+    "html_url",
+    "web_url",
+    "created_at",
+    "createdAt",
+    "created",
+    "updated_at",
+    "updatedAt",
+    "updated",
+    "closed_at",
+    "closedAt",
+    "merged_at",
+    "mergedAt",
+    "author",
+    "user",
+    "creator",
+    "reporter",
+    "assignee",
+    "assignees",
+    "labels",
+)
+STRUCTURED_DISPLAY_KEYS = (
+    "name",
+    "displayName",
+    "display_name",
+    "login",
+    "username",
+    "emailAddress",
+    "email",
+    "key",
+    "id",
+    "value",
+    "title",
+    "summary",
+    "text",
+)
+
 
 SUPPORTED_SOURCES: list[dict[str, Any]] = [
     {
@@ -194,7 +274,7 @@ SUPPORTED_SOURCES: list[dict[str, Any]] = [
     {
         "id": "jira",
         "name": "Jira",
-        "formats": ["Jira CSV exports"],
+        "formats": ["Jira CSV and JSON exports"],
         "status": "generic",
     },
     {
@@ -1236,8 +1316,10 @@ def _parse_single_asset(asset: SourceAsset, hint: str) -> list[SourceRecord]:
     source = _infer_generic_source(asset, hint)
     if suffix == ".csv" and source == "contacts":
         return [_generic_record(asset, "contacts", _format_contacts_csv(asset, text))]
-    if suffix == ".csv" and source in {"notion", "linear", "jira", "asana", "trello", "github", "gitlab", "readwise", "pocket", "instapaper", "raindrop"}:
+    if suffix == ".csv" and source in STRUCTURED_CSV_EXPORT_SOURCES:
         text = _format_csv_export(asset, text, source)
+    if suffix in {".json", ".jsonl"} and source in STRUCTURED_JSON_EXPORT_SOURCES:
+        text = _format_json_export(asset, text, source)
     return [_generic_record(asset, source, text)]
 
 
@@ -1462,6 +1544,212 @@ def _format_csv_export(asset: SourceAsset, text: str, source: str) -> str:
         if parts:
             lines.append(f"Row {index}\n" + "\n".join(parts[:20]))
     return "\n\n".join(lines)
+
+
+def _format_json_export(asset: SourceAsset, text: str, source: str) -> str:
+    rows = _json_export_rows(asset, text, source)
+    if not rows:
+        return text
+    lines = [f"Source: {source}", f"File: {asset.name}", "", "--- Rows ---"]
+    for index, row in enumerate(rows[:1000], start=1):
+        parts = _structured_row_parts(row)
+        if parts:
+            lines.append(f"Row {index}\n" + "\n".join(parts[:24]))
+    return "\n\n".join(lines) if len(lines) > 4 else text
+
+
+def _json_export_rows(asset: SourceAsset, text: str, source: str) -> list[Any]:
+    if asset.suffix == ".jsonl":
+        return _jsonl_export_rows(text, source)
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return _jsonl_export_rows(text, source)
+    return _json_rows_from_payload(payload, source)
+
+
+def _jsonl_export_rows(text: str, source: str) -> list[Any]:
+    rows: list[Any] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        rows.extend(_json_rows_from_payload(payload, source))
+        if len(rows) >= 1000:
+            break
+    return rows
+
+
+def _json_rows_from_payload(payload: Any, source: str) -> list[Any]:
+    if isinstance(payload, list):
+        return [_json_row_value(item) for item in payload]
+    if not isinstance(payload, dict):
+        return []
+
+    for key in STRUCTURED_JSON_COLLECTION_KEYS:
+        if key not in payload:
+            continue
+        rows = _json_rows_from_collection(payload.get(key), source)
+        if rows:
+            return rows
+
+    if _looks_like_structured_json_row(payload, source):
+        return [_json_row_value(payload)]
+
+    for value in payload.values():
+        rows = _json_rows_from_collection(value, source)
+        if rows:
+            return rows
+
+    return []
+
+
+def _json_rows_from_collection(value: Any, source: str) -> list[Any]:
+    if isinstance(value, list):
+        return [_json_row_value(item) for item in value]
+    if isinstance(value, dict):
+        return _json_rows_from_payload(value, source)
+    return []
+
+
+def _json_row_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        node = value.get("node")
+        if isinstance(node, dict):
+            return node
+        issue = value.get("issue")
+        if isinstance(issue, dict) and len(value) <= 3:
+            return issue
+    return value
+
+
+def _looks_like_structured_json_row(value: dict[str, Any], source: str) -> bool:
+    keys = {_normalize_header(key) for key in value}
+    if source == "jira" and {"key", "fields"} & keys:
+        return True
+    if source == "linear" and {"identifier", "title", "description", "state"} & keys:
+        return True
+    if source == "github" and {"number", "title", "body", "html_url", "pull_request"} & keys:
+        return True
+    return bool(keys & {"key", "identifier", "number", "title", "summary", "body", "description", "content", "text"})
+
+
+def _structured_row_parts(row: Any) -> list[str]:
+    if not isinstance(row, dict):
+        value = _structured_value_text(row)
+        return [f"value: {value}"] if value else []
+
+    fields: list[tuple[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(label: str, value: Any) -> None:
+        key = str(label or "").strip()
+        if not key:
+            return
+        normalized = _normalize_header(key)
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        fields.append((key, value))
+
+    for key in STRUCTURED_ROW_KEY_ORDER:
+        if key in row:
+            add(key, row[key])
+
+    nested_fields = row.get("fields")
+    if isinstance(nested_fields, dict):
+        for key in STRUCTURED_ROW_KEY_ORDER:
+            if key in nested_fields:
+                add(key, nested_fields[key])
+
+    for key, value in row.items():
+        if key == "fields" or _normalize_header(key) in seen:
+            continue
+        if isinstance(value, dict) and not _structured_dict_display(value):
+            for child_key, child_value in value.items():
+                add(f"{key}.{child_key}", child_value)
+        else:
+            add(key, value)
+
+    if isinstance(nested_fields, dict):
+        for key, value in nested_fields.items():
+            if _normalize_header(key) in seen:
+                continue
+            add(key, value)
+
+    parts: list[str] = []
+    for key, value in fields:
+        cleaned = _structured_value_text(value)
+        if cleaned:
+            parts.append(f"{key}: {cleaned}")
+    return parts
+
+
+def _structured_value_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return _clean_structured_value(value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, list):
+        parts = [_structured_value_text(item) for item in value]
+        return "; ".join(part for part in parts if part)
+    if isinstance(value, dict):
+        display = _structured_dict_display(value)
+        if display:
+            return display
+        text = _json_text_content(value)
+        if text:
+            return _clean_structured_value(text)
+        try:
+            return _clean_structured_value(json.dumps(value, ensure_ascii=False, sort_keys=True))
+        except (TypeError, ValueError):
+            return ""
+    return _clean_structured_value(str(value))
+
+
+def _structured_dict_display(value: dict[str, Any]) -> str:
+    for key in STRUCTURED_DISPLAY_KEYS:
+        item = value.get(key)
+        if isinstance(item, (str, int, float, bool)) and str(item).strip():
+            return _structured_value_text(item)
+    return ""
+
+
+def _json_text_content(value: Any) -> str:
+    parts: list[str] = []
+
+    def collect(item: Any) -> None:
+        if isinstance(item, str):
+            if item.strip():
+                parts.append(item.strip())
+            return
+        if isinstance(item, list):
+            for child in item:
+                collect(child)
+            return
+        if isinstance(item, dict):
+            text = item.get("text")
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip())
+            for key in ("content", "paragraphs", "blocks"):
+                if key in item:
+                    collect(item.get(key))
+
+    collect(value)
+    return " ".join(parts)
+
+
+def _clean_structured_value(value: str) -> str:
+    text = _html_to_text(value) if "<" in value and ">" in value else value
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _format_contacts_csv(asset: SourceAsset, text: str) -> str:
@@ -1849,7 +2137,7 @@ def _generic_source_locator(asset: SourceAsset, source: str, title: str) -> str:
     if source in {"github", "gitlab"}:
         repository = _source_container_after(asset, {source})
         return _source_locator(asset.display_path, service=source, repository=repository, file=file_name)
-    if source in {"linear", "jira", "asana", "trello"}:
+    if source in {"linear", "jira", "asana", "trello", "work-tools"}:
         workspace = _source_container_after(asset, {source})
         return _source_locator(asset.display_path, service=source, workspace=workspace, file=file_name)
     if source in {"apple-notes", "obsidian", "logseq", "roam", "knowledge-base", "readwise", "pocket", "instapaper", "raindrop", "structured-export", "whatsapp"}:
@@ -1890,6 +2178,8 @@ def _infer_generic_source(asset: SourceAsset, hint: str) -> str:
         return "cloud-docs"
     if "microsoft" in lowered or "onedrive" in lowered or "office 365" in lowered or "outlook" in lowered or "dropbox paper" in lowered:
         return "cloud-docs"
+    if "work tools" in lowered or "work-tools" in lowered or "worktools" in lowered:
+        return "work-tools"
     if "obsidian" in lowered:
         return "obsidian"
     if "logseq" in lowered:

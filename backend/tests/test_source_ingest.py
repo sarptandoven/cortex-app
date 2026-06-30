@@ -125,6 +125,116 @@ class SourceIngestTests(unittest.TestCase):
         self.assertIn("repository=Project%20Cortex", by_source["github"].source_url or "")
         self.assertIn("file=issues.csv", by_source["github"].source_url or "")
 
+    def test_github_json_export_is_formatted_as_rows(self) -> None:
+        github = self.root / "GitHub" / "Project Cortex"
+        github.mkdir(parents=True)
+        payload = [
+            {
+                "number": 42,
+                "title": "Project JsonHub issue",
+                "body": "We decided Project JsonHub should preserve issue JSON rows.",
+                "state": "open",
+                "user": {"login": "ada"},
+                "labels": [{"name": "importer"}, {"name": "beta"}],
+            },
+            {
+                "number": 43,
+                "title": "Project JsonHub pull request",
+                "body": "Project JsonHub pull requests should share row formatting.",
+                "state": "closed",
+                "pull_request": {"html_url": "https://github.com/example/repo/pull/43"},
+            },
+        ]
+        (github / "issues.json").write_text(json.dumps(payload), encoding="utf-8")
+
+        records = import_source_records([str(github)], max_records=10)
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].source, "github")
+        self.assertIn("--- Rows ---", records[0].content)
+        self.assertIn("Row 1\nnumber: 42", records[0].content)
+        self.assertIn("body: We decided Project JsonHub should preserve issue JSON rows.", records[0].content)
+        self.assertIn("labels: importer; beta", records[0].content)
+        self.assertIn("Row 2\nnumber: 43", records[0].content)
+        self.assertIn("service=github", records[0].source_url or "")
+        self.assertIn("repository=Project%20Cortex", records[0].source_url or "")
+        self.assertIn("file=issues.json", records[0].source_url or "")
+
+    def test_jira_json_issues_export_is_formatted_as_rows(self) -> None:
+        jira = self.root / "Jira"
+        jira.mkdir()
+        payload = {
+            "issues": [
+                {
+                    "key": "CX-9",
+                    "fields": {
+                        "summary": "We decided Project JsonJira should preserve Jira JSON rows.",
+                        "description": {
+                            "type": "doc",
+                            "content": [
+                                {
+                                    "type": "paragraph",
+                                    "content": [
+                                        {
+                                            "type": "text",
+                                            "text": "Project JsonJira description should stay retrievable.",
+                                        }
+                                    ],
+                                }
+                            ],
+                        },
+                        "status": {"name": "Done"},
+                        "assignee": {"displayName": "Ada Lovelace"},
+                    },
+                }
+            ]
+        }
+        (jira / "issues.json").write_text(json.dumps(payload), encoding="utf-8")
+
+        records = import_source_records([str(jira)], max_records=10)
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].source, "jira")
+        self.assertIn("Row 1\nkey: CX-9", records[0].content)
+        self.assertIn("summary: We decided Project JsonJira should preserve Jira JSON rows.", records[0].content)
+        self.assertIn("description: Project JsonJira description should stay retrievable.", records[0].content)
+        self.assertIn("status: Done", records[0].content)
+        self.assertIn("assignee: Ada Lovelace", records[0].content)
+        self.assertIn("service=jira", records[0].source_url or "")
+        self.assertIn("file=issues.json", records[0].source_url or "")
+
+    def test_linear_jsonl_export_is_formatted_as_rows(self) -> None:
+        linear = self.root / "Linear"
+        linear.mkdir()
+        rows = [
+            {
+                "identifier": "COR-101",
+                "title": "Project JsonLinear issue",
+                "description": "We decided Project JsonLinear should preserve JSONL issue rows.",
+                "state": {"name": "In Progress"},
+                "labels": [{"name": "memory"}, {"name": "import"}],
+            },
+            {
+                "identifier": "COR-102",
+                "title": "Project JsonLinear follow-up",
+                "description": "Project JsonLinear follow-up rows should stay citable.",
+                "state": {"name": "Todo"},
+            },
+        ]
+        (linear / "issues.jsonl").write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+
+        records = import_source_records([str(linear)], max_records=10)
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].source, "linear")
+        self.assertIn("Row 1\nidentifier: COR-101", records[0].content)
+        self.assertIn("description: We decided Project JsonLinear should preserve JSONL issue rows.", records[0].content)
+        self.assertIn("state: In Progress", records[0].content)
+        self.assertIn("labels: memory; import", records[0].content)
+        self.assertIn("Row 2\nidentifier: COR-102", records[0].content)
+        self.assertIn("service=linear", records[0].source_url or "")
+        self.assertIn("file=issues.jsonl", records[0].source_url or "")
+
     def test_store_import_sources_queues_and_processes_records(self) -> None:
         self._write_chatgpt_export()
         db_path = self.root / "index.sqlite"
