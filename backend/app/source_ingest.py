@@ -130,6 +130,14 @@ STRUCTURED_DISPLAY_KEYS = (
     "summary",
     "text",
 )
+CONSUMER_AI_TRANSCRIPT_SOURCES: dict[str, str] = {
+    "gemini": "Gemini",
+    "perplexity": "Perplexity",
+    "copilot": "Microsoft Copilot",
+    "grok": "Grok",
+    "poe": "Poe",
+    "notebooklm": "NotebookLM",
+}
 
 
 SUPPORTED_SOURCES: list[dict[str, Any]] = [
@@ -144,6 +152,42 @@ SUPPORTED_SOURCES: list[dict[str, Any]] = [
         "name": "Claude",
         "formats": ["Claude export zip", "conversations.json"],
         "status": "native",
+    },
+    {
+        "id": "gemini",
+        "name": "Gemini",
+        "formats": ["transcript.json", "JSON/JSONL/TXT/Markdown transcript"],
+        "status": "generic",
+    },
+    {
+        "id": "perplexity",
+        "name": "Perplexity",
+        "formats": ["transcript.json", "JSON/JSONL/TXT/Markdown transcript"],
+        "status": "generic",
+    },
+    {
+        "id": "copilot",
+        "name": "Microsoft Copilot",
+        "formats": ["transcript.json", "JSON/JSONL/TXT/Markdown transcript"],
+        "status": "generic",
+    },
+    {
+        "id": "grok",
+        "name": "Grok",
+        "formats": ["transcript.json", "JSON/JSONL/TXT/Markdown transcript"],
+        "status": "generic",
+    },
+    {
+        "id": "poe",
+        "name": "Poe",
+        "formats": ["transcript.json", "JSON/JSONL/TXT/Markdown transcript"],
+        "status": "generic",
+    },
+    {
+        "id": "notebooklm",
+        "name": "NotebookLM",
+        "formats": ["transcript.json", "JSON/JSONL/TXT/Markdown transcript"],
+        "status": "generic",
     },
     {
         "id": "notion",
@@ -369,6 +413,7 @@ def import_source_records(paths: Iterable[str], source_hint: str = "", max_recor
 
     for parser in (
         _parse_chatgpt,
+        _parse_consumer_ai_transcripts,
         _parse_claude,
         _parse_slack,
         _parse_discord,
@@ -621,6 +666,229 @@ def _chatgpt_time(value: Any) -> str:
     return _iso_from_unix(timestamp)
 
 
+def _parse_consumer_ai_transcripts(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
+    records: list[SourceRecord] = []
+    for asset in assets:
+        source = _consumer_ai_source_for_asset(asset, hint)
+        if not source:
+            continue
+        if asset.suffix not in {".json", ".jsonl", ".txt", ".md", ".markdown", ".html", ".htm"}:
+            continue
+        provider = CONSUMER_AI_TRANSCRIPT_SOURCES[source]
+        if asset.suffix == ".json":
+            records.extend(_parse_consumer_ai_json_asset(asset, source, provider))
+        elif asset.suffix == ".jsonl":
+            records.extend(_parse_consumer_ai_jsonl_asset(asset, source, provider))
+        else:
+            record = _parse_consumer_ai_text_asset(asset, source, provider)
+            if record:
+                records.append(record)
+    return records
+
+
+def _consumer_ai_source_for_asset(asset: SourceAsset, hint: str) -> str:
+    if hint in CONSUMER_AI_TRANSCRIPT_SOURCES:
+        return hint
+    components = [
+        component
+        for component in re.split(r"[\\/]+", asset.display_path)
+        if component and component not in {".", ".."}
+    ]
+    nearby = [asset.name, *components[-3:]]
+    for component in nearby:
+        source = _consumer_ai_source_for_component(component)
+        if source:
+            return source
+    return ""
+
+
+def _consumer_ai_source_for_component(component: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", " ", component.lower()).strip()
+    compact = normalized.replace(" ", "")
+    aliases = {
+        "gemini": {"gemini", "google gemini", "googlegemini"},
+        "perplexity": {"perplexity", "perplexity ai", "perplexityai"},
+        "copilot": {"copilot", "microsoft copilot", "ms copilot", "microsoftcopilot", "mscopilot"},
+        "grok": {"grok"},
+        "poe": {"poe"},
+        "notebooklm": {"notebooklm", "notebook lm", "notebook-lm"},
+    }
+    for source, values in aliases.items():
+        if normalized in values or compact in values:
+            return source
+    tokens = normalized.split()
+    transcript_terms = {"ai", "chat", "chats", "conversation", "conversations", "export", "exports", "takeout", "transcript", "transcripts"}
+    for source in CONSUMER_AI_TRANSCRIPT_SOURCES:
+        if source in tokens and (set(tokens) & transcript_terms):
+            return source
+    if "notebook" in tokens and "lm" in tokens:
+        return "notebooklm"
+    if "microsoft" in tokens and "copilot" in tokens:
+        return "copilot"
+    return ""
+
+
+def _parse_consumer_ai_json_asset(asset: SourceAsset, source: str, provider: str) -> list[SourceRecord]:
+    try:
+        payload = json.loads(asset.read_text())
+    except json.JSONDecodeError:
+        return []
+    return [
+        record
+        for conversation in _consumer_ai_conversations(payload, fallback_title=Path(asset.name).stem)
+        if (record := _consumer_ai_record(asset, source, provider, conversation))
+    ]
+
+
+def _parse_consumer_ai_jsonl_asset(asset: SourceAsset, source: str, provider: str) -> list[SourceRecord]:
+    rows: list[dict[str, Any]] = []
+    for line in asset.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            return []
+        if isinstance(row, dict):
+            rows.append(row)
+    if not rows:
+        return []
+    if any(_consumer_ai_message_text(row) for row in rows):
+        conversation = {"title": Path(asset.name).stem, "messages": rows}
+        record = _consumer_ai_record(asset, source, provider, conversation)
+        return [record] if record else []
+    return [
+        record
+        for conversation in _consumer_ai_conversations(rows, fallback_title=Path(asset.name).stem)
+        if (record := _consumer_ai_record(asset, source, provider, conversation))
+    ]
+
+
+def _parse_consumer_ai_text_asset(asset: SourceAsset, source: str, provider: str) -> SourceRecord | None:
+    text = asset.read_text()
+    if asset.suffix in {".html", ".htm"}:
+        text = _html_to_text(text)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return None
+    title = Path(asset.name).stem or f"{provider} transcript"
+    messages: list[str] = []
+    for line in lines:
+        if re.match(r"^(?:\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2})?\s+)?(?:user|assistant|human|model|system|unknown)\s*:", line, flags=re.IGNORECASE):
+            messages.append(line)
+        else:
+            messages.append(f"unknown: {line}")
+    content = "\n".join([f"Source: {provider}", f"Conversation: {title}", "", "--- Messages ---", *messages])
+    source_url = _source_locator(asset.display_path, service=source, conversation=title, file=Path(asset.name).name)
+    return SourceRecord(source, title, content, source_url=source_url, metadata={"asset": asset.display_path, "service": provider})
+
+
+def _consumer_ai_conversations(payload: Any, *, fallback_title: str) -> list[dict[str, Any]]:
+    if isinstance(payload, dict):
+        for key in ("conversations", "chats", "threads", "items", "data", "results"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        if isinstance(payload.get("messages") or payload.get("chat_messages"), list):
+            return [payload]
+        return []
+    if isinstance(payload, list):
+        if all(isinstance(item, dict) and _consumer_ai_message_text(item) for item in payload):
+            return [{"title": fallback_title, "messages": payload}]
+        return [item for item in payload if isinstance(item, dict)]
+    return []
+
+
+def _consumer_ai_record(asset: SourceAsset, source: str, provider: str, conversation: dict[str, Any]) -> SourceRecord | None:
+    messages = conversation.get("messages") or conversation.get("chat_messages") or conversation.get("turns") or []
+    if not isinstance(messages, list):
+        return None
+    title = str(
+        conversation.get("title")
+        or conversation.get("name")
+        or conversation.get("subject")
+        or conversation.get("id")
+        or f"{provider} transcript"
+    ).strip()
+    lines = [f"Source: {provider}", f"Conversation: {title}"]
+    created = str(conversation.get("created_at") or conversation.get("createdAt") or conversation.get("created") or "").strip()
+    if created:
+        lines.append(f"Created: {created}")
+    message_lines = _consumer_ai_message_lines(messages)
+    if not message_lines:
+        return None
+    lines.extend(["", "--- Messages ---", *message_lines])
+    source_url = _source_locator(
+        asset.display_path,
+        service=source,
+        conversation=title,
+        conversation_id=conversation.get("id") or conversation.get("conversation_id") or conversation.get("uuid"),
+        file=Path(asset.name).name,
+    )
+    return SourceRecord(source, title, "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": provider})
+
+
+def _consumer_ai_message_lines(messages: list[Any]) -> list[str]:
+    lines: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        text = _consumer_ai_message_text(message)
+        if not text:
+            continue
+        role = _consumer_ai_role(message.get("role") or message.get("sender") or message.get("author") or message.get("from"))
+        created = _consumer_ai_message_time(message)
+        prefix = f"{created} {role}" if created else role
+        lines.append(f"{prefix}: {text}")
+    return lines
+
+
+def _consumer_ai_message_text(message: dict[str, Any]) -> str:
+    for key in ("text", "content", "body", "message", "answer"):
+        value = message.get(key)
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, list):
+            parts: list[str] = []
+            for item in value:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    parts.append(str(item.get("text") or item.get("content") or item.get("body") or ""))
+            return "\n".join(part.strip() for part in parts if part.strip())
+        if isinstance(value, dict):
+            text = value.get("text") or value.get("content") or value.get("body")
+            if isinstance(text, str):
+                return text.strip()
+    return ""
+
+
+def _consumer_ai_role(value: Any) -> str:
+    role = str(value or "unknown").strip().lower()
+    role = re.sub(r"[^a-z0-9_-]+", "-", role).strip("-")
+    if role in {"human", "user", "me", "self"}:
+        return "user"
+    if role in {"assistant", "ai", "model", "bot", "system", "tool"}:
+        return "assistant" if role != "system" else "system"
+    if role in CONSUMER_AI_TRANSCRIPT_SOURCES:
+        return "assistant"
+    return role or "unknown"
+
+
+def _consumer_ai_message_time(message: dict[str, Any]) -> str:
+    for key in ("created_at", "createdAt", "timestamp", "time", "date", "created", "create_time"):
+        value = message.get(key)
+        if value is None:
+            continue
+        if isinstance(value, (int, float)):
+            return _chatgpt_time(value)
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
 def _google_keep_time(value: Any) -> str:
     try:
         raw = int(value)
@@ -635,6 +903,9 @@ def _google_keep_time(value: Any) -> str:
 def _parse_claude(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
     records: list[SourceRecord] = []
     for asset in assets:
+        inferred_consumer_source = _consumer_ai_source_for_asset(asset, hint)
+        if inferred_consumer_source and inferred_consumer_source != "claude":
+            continue
         if Path(asset.name).name not in {"conversations.json", "chats.json"}:
             continue
         try:

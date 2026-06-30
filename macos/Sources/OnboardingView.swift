@@ -122,12 +122,44 @@ struct OnboardingView: View {
                 Button {
                     state.nextOnboardingStep()
                 } label: {
-                    Label("Continue", systemImage: "chevron.right")
+                    Label(continueButtonTitle, systemImage: state.canAdvanceOnboarding ? "chevron.right" : continueButtonIcon)
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(!state.canAdvanceOnboarding)
             }
         }
         .padding(18)
+    }
+
+    private var continueButtonTitle: String {
+        guard !state.canAdvanceOnboarding else { return "Continue" }
+        switch state.onboardingStep {
+        case .privateVault:
+            return "Waiting for Service"
+        case .firstSource:
+            return "Import a Source"
+        case .reviewMemory:
+            return "Approve One Memory"
+        case .askUse:
+            return "Ask with Citations"
+        case .trustBackup:
+            return "Choose Backup"
+        }
+    }
+
+    private var continueButtonIcon: String {
+        switch state.onboardingStep {
+        case .privateVault:
+            return "clock"
+        case .firstSource:
+            return "tray.and.arrow.down"
+        case .reviewMemory:
+            return "checkmark.circle"
+        case .askUse:
+            return "sparkle.magnifyingglass"
+        case .trustBackup:
+            return "externaldrive"
+        }
     }
 
     @ViewBuilder
@@ -231,19 +263,34 @@ struct OnboardingFirstSourceStep: View {
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            HStack {
-                Button {
-                    state.chooseFilesForCapture()
-                } label: {
-                    Label("Choose Sources", systemImage: "doc.badge.plus")
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Button {
+                        state.chooseFilesForCapture()
+                    } label: {
+                        Label("Choose Sources", systemImage: "doc.badge.plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button {
+                        state.importCaptureInbox()
+                    } label: {
+                        Label("Import Inbox", systemImage: "tray.and.arrow.down")
+                    }
+                    Spacer()
                 }
-                .buttonStyle(.borderedProminent)
-                Button {
-                    state.openCaptureInbox()
-                } label: {
-                    Label("Open Inbox", systemImage: "tray")
+                HStack {
+                    Button {
+                        state.openCaptureInbox()
+                    } label: {
+                        Label("Open Inbox", systemImage: "tray")
+                    }
+                    Button {
+                        state.copyCaptureInboxPath()
+                    } label: {
+                        Label("Copy Path", systemImage: "doc.on.doc")
+                    }
+                    Spacer()
                 }
-                Spacer()
             }
 
             if !state.onboardingFirstSourceNames.isEmpty {
@@ -260,7 +307,7 @@ struct OnboardingFirstSourceStep: View {
 
             OnboardingCheckRow(
                 title: state.onboardingHasSource ? "First source imported" : "Waiting for an imported source",
-                detail: state.onboardingHasSource ? "Continue to review and approve useful memory." : "Choose sources, drop files, or continue and add one from Sources later.",
+                detail: state.onboardingHasSource ? "Continue to review and approve useful memory." : "Choose a supported export or readable file to continue.",
                 systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "tray.and.arrow.down",
                 color: state.onboardingHasSource ? .green : .orange
             )
@@ -310,7 +357,7 @@ struct OnboardingReviewMemoryStep: View {
 
             OnboardingCheckRow(
                 title: state.onboardingHasReviewedMemory ? "Memory reviewed" : "Approve one useful memory",
-                detail: state.onboardingHasReviewedMemory ? "Cortex has at least one approved memory to use." : "Approve a pending item here, or keep moving and finish review from the main app.",
+                detail: state.onboardingHasReviewedMemory ? "Cortex has at least one approved memory to use." : "Approve a pending item to unlock the first cited Ask.",
                 systemImage: state.onboardingHasReviewedMemory ? "checkmark.seal.fill" : "tray.full",
                 color: state.onboardingHasReviewedMemory ? .green : .orange
             )
@@ -349,6 +396,25 @@ struct OnboardingAskUseStep: View {
             .padding(12)
             .background(Color(nsColor: .controlBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            if !state.onboardingAskSuggestions.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Try one")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    ForEach(state.onboardingAskSuggestions, id: \.self) { suggestion in
+                        Button {
+                            state.searchQuery = suggestion
+                            state.runSearch()
+                        } label: {
+                            Label(suggestion, systemImage: "sparkle.magnifyingglass")
+                                .lineLimit(2)
+                                .truncationMode(.tail)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+            }
 
             if state.hasSearched && !state.askAnswer.isEmpty {
                 AskAnswerPanel(answer: state.askAnswer, citations: state.askCitations)

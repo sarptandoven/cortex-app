@@ -533,7 +533,7 @@ struct AppSettingsResponse: Codable, Equatable {
 
     static let defaults = AppSettingsResponse(
         review_new_captures: true,
-        allow_pending_in_context: true,
+        allow_pending_in_context: false,
         context_pack_limit: 12,
         allow_agent_reads: true,
         allow_agent_writes: false,
@@ -616,7 +616,7 @@ enum TrustPreset: String, CaseIterable, Identifiable, Hashable {
             && settings.redact_sensitive_context {
             return .privateMode
         }
-        if settings.allow_pending_in_context
+        if !settings.allow_pending_in_context
             && settings.allow_agent_reads
             && !settings.allow_agent_writes
             && !settings.allow_agent_maintenance
@@ -624,7 +624,7 @@ enum TrustPreset: String, CaseIterable, Identifiable, Hashable {
             && settings.redact_sensitive_context {
             return .readOnly
         }
-        if settings.allow_pending_in_context
+        if !settings.allow_pending_in_context
             && settings.allow_agent_reads
             && settings.allow_agent_writes
             && settings.allow_agent_exports
@@ -647,7 +647,7 @@ enum TrustPreset: String, CaseIterable, Identifiable, Hashable {
             settings.allow_agent_destructive_actions = false
             settings.redact_sensitive_context = true
         case .readOnly:
-            settings.allow_pending_in_context = true
+            settings.allow_pending_in_context = false
             settings.allow_agent_reads = true
             settings.allow_agent_writes = false
             settings.allow_agent_exports = false
@@ -655,7 +655,7 @@ enum TrustPreset: String, CaseIterable, Identifiable, Hashable {
             settings.allow_agent_destructive_actions = false
             settings.redact_sensitive_context = true
         case .canSave:
-            settings.allow_pending_in_context = true
+            settings.allow_pending_in_context = false
             settings.allow_agent_reads = true
             settings.allow_agent_writes = true
             settings.allow_agent_exports = true
@@ -1678,7 +1678,7 @@ final class AppState: ObservableObject {
 
     var onboardingHasSource: Bool {
         onboardingFirstImport != nil
-            || (onboardingFirstImportID.isEmpty && firstSourceAdded && (latestUsableImport != nil || !inbox.isEmpty || !recent.isEmpty || (stats?.captures ?? 0) > 0))
+            || (onboardingFirstImportID.isEmpty && firstSourceAdded && !onboardingFirstSourceNames.isEmpty && (latestUsableImport != nil || !inbox.isEmpty || !recent.isEmpty || (stats?.captures ?? 0) > 0))
     }
 
     var onboardingHasReviewedMemory: Bool {
@@ -1737,6 +1737,23 @@ final class AppState: ObservableObject {
 
     var canAdvanceOnboarding: Bool {
         onboardingStepIsComplete(onboardingStep)
+    }
+
+    var onboardingAskSuggestions: [String] {
+        let sourceMatched = recent.filter { matchesOnboardingSource(source: $0.source, sourceURL: $0.source_url) }
+        let candidates = (sourceMatched.isEmpty ? recent : sourceMatched).prefix(3)
+        var suggestions = candidates.compactMap { onboardingAskSuggestion(from: $0.content) }
+        if suggestions.isEmpty {
+            suggestions = onboardingFirstSourceNames.prefix(2).map { "What useful memory came from \($0)?" }
+        }
+        var unique: [String] = []
+        for suggestion in suggestions where !unique.contains(suggestion) {
+            unique.append(suggestion)
+            if unique.count == 3 {
+                break
+            }
+        }
+        return unique
     }
 
     var preferredUpdateArtifact: UpdateArtifact? {
@@ -2055,7 +2072,7 @@ final class AppState: ObservableObject {
                 lastFileCaptureSummary = "Detected \(preview.records_found) record\(preview.records_found == 1 ? "" : "s")" + (sourceSummary.isEmpty ? "" : " (\(sourceSummary))")
                 status = lastFileCaptureSummary
             } else {
-                lastFileCaptureSummary = "No structured records found; saving file references"
+                lastFileCaptureSummary = "No structured records found; checking for readable files"
                 status = lastFileCaptureSummary
                 await fallbackCaptureFilesAsync(urls, moveImportedFromInbox: moveImportedFromInbox)
             }
@@ -2126,6 +2143,7 @@ final class AppState: ObservableObject {
 
     private func fallbackCaptureFilesAsync(_ urls: [URL], moveImportedFromInbox: Bool) async {
         var saved = 0
+        var usableSaved = 0
         var failed = 0
         var savedSources: [String] = []
         for url in urls {
@@ -2133,7 +2151,10 @@ final class AppState: ObservableObject {
                 let payload = try fileCapturePayload(for: url)
                 if await capture(text: payload.content, source: payload.source, title: payload.title, sourceURL: payload.sourceURL) {
                     saved += 1
-                    if !savedSources.contains(payload.source) {
+                    if payload.readable {
+                        usableSaved += 1
+                    }
+                    if payload.readable && !savedSources.contains(payload.source) {
                         savedSources.append(payload.source)
                     }
                     if moveImportedFromInbox {
@@ -2148,8 +2169,10 @@ final class AppState: ObservableObject {
         }
         lastFileCaptureSummary = failed == 0 ? "Saved \(saved) file\(saved == 1 ? "" : "s")" : "Saved \(saved), failed \(failed)"
         status = lastFileCaptureSummary
-        if saved > 0 {
+        if usableSaved > 0 {
             markFirstSourceAdded(importID: "", sources: savedSources)
+        } else if saved > 0 {
+            status = "Saved file reference. Choose a supported export or readable file to continue setup."
         }
         await refreshAfterCapture()
     }
@@ -2167,7 +2190,7 @@ final class AppState: ObservableObject {
         await loadTrust()
     }
 
-    private func fileCapturePayload(for url: URL) throws -> (content: String, source: String, title: String, sourceURL: String) {
+    private func fileCapturePayload(for url: URL) throws -> (content: String, source: String, title: String, sourceURL: String, readable: Bool) {
         let access = url.startAccessingSecurityScopedResource()
         defer {
             if access { url.stopAccessingSecurityScopedResource() }
@@ -2182,15 +2205,17 @@ final class AppState: ObservableObject {
         Size: \(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
         Modified: \(modified)
         """
+        var readable = false
         if let extracted = extractText(from: url, size: size), !extracted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             content += "\n\n--- Extracted content ---\n\(extracted)"
+            readable = true
         } else {
             content += "\n\nCortex saved this file reference. This file type is not text-readable in this local build yet."
         }
         if content.count > 190_000 {
             content = String(content.prefix(190_000)) + "\n\n[Truncated by Cortex before capture.]"
         }
-        return (content, "file", url.lastPathComponent, url.absoluteString)
+        return (content, "file", url.lastPathComponent, url.absoluteString, readable)
     }
 
     private func extractText(from url: URL, size: Int) -> String? {
@@ -2394,32 +2419,51 @@ final class AppState: ObservableObject {
         do {
             let data = try await request(path: "/v1/settings", method: "GET")
             appSettings = try JSONDecoder().decode(AppSettingsResponse.self, from: data)
+            if shouldApplyFirstRunTrustDefaults {
+                appSettings.allow_pending_in_context = false
+                if await saveMemorySettingsNow(statusMessage: nil, reload: false) {
+                    UserDefaults.standard.set(true, forKey: "onboardingTrustDefaultsApplied.v1")
+                }
+            }
         } catch {
             status = "Settings failed: \(error.localizedDescription)"
         }
     }
 
+    private var shouldApplyFirstRunTrustDefaults: Bool {
+        !UserDefaults.standard.bool(forKey: "onboardingTrustDefaultsApplied.v1")
+            && !UserDefaults.standard.bool(forKey: "onboardingComplete.v1")
+    }
+
     func saveMemorySettings() {
         Task {
-            do {
-                var body: [String: Any] = [
-                    "review_new_captures": appSettings.review_new_captures,
-                    "allow_pending_in_context": appSettings.allow_pending_in_context,
-                    "context_pack_limit": appSettings.context_pack_limit,
-                    "allow_agent_reads": appSettings.allow_agent_reads,
-                    "allow_agent_writes": appSettings.allow_agent_writes,
-                    "allow_agent_exports": appSettings.allow_agent_exports,
-                    "allow_agent_maintenance": appSettings.allow_agent_maintenance,
-                    "allow_agent_destructive_actions": appSettings.allow_agent_destructive_actions,
-                    "redact_sensitive_context": appSettings.redact_sensitive_context,
-                    "identity_aliases": appSettings.identity_aliases ?? []
-                ]
-                if let policies = sourcePoliciesBody() {
-                    body["source_policies"] = policies
-                }
-                let data = try await request(path: "/v1/settings", method: "PUT", body: body)
-                appSettings = try JSONDecoder().decode(AppSettingsResponse.self, from: data)
-                status = "Memory settings saved"
+            _ = await saveMemorySettingsNow(statusMessage: "Memory settings saved", reload: true)
+        }
+    }
+
+    private func saveMemorySettingsNow(statusMessage: String?, reload: Bool) async -> Bool {
+        do {
+            var body: [String: Any] = [
+                "review_new_captures": appSettings.review_new_captures,
+                "allow_pending_in_context": appSettings.allow_pending_in_context,
+                "context_pack_limit": appSettings.context_pack_limit,
+                "allow_agent_reads": appSettings.allow_agent_reads,
+                "allow_agent_writes": appSettings.allow_agent_writes,
+                "allow_agent_exports": appSettings.allow_agent_exports,
+                "allow_agent_maintenance": appSettings.allow_agent_maintenance,
+                "allow_agent_destructive_actions": appSettings.allow_agent_destructive_actions,
+                "redact_sensitive_context": appSettings.redact_sensitive_context,
+                "identity_aliases": appSettings.identity_aliases ?? []
+            ]
+            if let policies = sourcePoliciesBody() {
+                body["source_policies"] = policies
+            }
+            let data = try await request(path: "/v1/settings", method: "PUT", body: body)
+            appSettings = try JSONDecoder().decode(AppSettingsResponse.self, from: data)
+            if let statusMessage {
+                status = statusMessage
+            }
+            if reload {
                 await loadRecent()
                 if !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     await search()
@@ -2428,9 +2472,11 @@ final class AppState: ObservableObject {
                 await loadProductLoop()
                 await loadStats()
                 await loadTrust()
-            } catch {
-                status = "Settings save failed: \(error.localizedDescription)"
             }
+            return true
+        } catch {
+            status = "Settings save failed: \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -2861,14 +2907,30 @@ final class AppState: ObservableObject {
 
     private func hasUsableOnboardingCitation(_ citations: [AskCitationItem]) -> Bool {
         guard !citations.isEmpty else { return false }
+        return citations.contains { citation in
+            matchesOnboardingSource(source: citation.source, sourceURL: citation.source_url)
+        }
+    }
+
+    private func matchesOnboardingSource(source: String, sourceURL: String?) -> Bool {
         let sourceNames = Set(onboardingFirstSourceNames.map { $0.lowercased() })
         guard !sourceNames.isEmpty else { return true }
-        return citations.contains { citation in
-            sourceNames.contains(citation.source.lowercased())
-                || sourceNames.contains { source in
-                    citation.source_url?.lowercased().contains("service=\(source)") == true
-                }
-        }
+        let normalizedSource = source.lowercased()
+        let normalizedURL = sourceURL?.lowercased() ?? ""
+        return sourceNames.contains(normalizedSource)
+            || sourceNames.contains { sourceName in
+                normalizedURL.contains("service=\(sourceName)")
+            }
+    }
+
+    private func onboardingAskSuggestion(from content: String) -> String? {
+        let words = content
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.count > 2 }
+        guard words.count >= 4 else { return nil }
+        let phrase = words.prefix(10).joined(separator: " ")
+        return "What should I remember about \(phrase)?"
     }
 
     func markBackupDecision(_ decision: String) {
@@ -2926,6 +2988,7 @@ final class AppState: ObservableObject {
             "onboardingFirstImportID.v1",
             "onboardingFirstSourceNames.v1",
             "onboardingBackupDecision.v1",
+            "onboardingTrustDefaultsApplied.v1",
         ] {
             UserDefaults.standard.removeObject(forKey: key)
         }
@@ -2934,7 +2997,7 @@ final class AppState: ObservableObject {
     func nextOnboardingStep() {
         let steps = OnboardingStep.allCases
         if !canAdvanceOnboarding {
-            status = "You can finish this step from the main app later"
+            status = "Complete this setup step before continuing"
             return
         }
         let nextIndex = min(steps.count - 1, onboardingStep.rawValue + 1)

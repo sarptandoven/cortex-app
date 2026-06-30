@@ -1,0 +1,165 @@
+# First 100 User Demo Checkpoint
+
+This checkpoint defines the practical demo bar for inviting the first 100 local-first Cortex users. It is not a broad launch checklist. The goal is to prove that a nontechnical macOS user can create useful, cited personal memory from local source material and understand the trust boundaries.
+
+## Demo Story
+
+The demo should follow the real product loop:
+
+```text
+Model -> Sources -> Review -> Ask -> Trust
+```
+
+By the end of the run, the tester should have:
+
+- chosen or confirmed a local vault;
+- imported at least one real user-selected source export, folder, or file;
+- approved at least one useful memory candidate;
+- asked Cortex a question and received cited results;
+- checked trust, backup, export, and recovery controls.
+
+## Product Surfaces
+
+### Model
+
+Show that Cortex starts from a local model-readiness view rather than an empty chat box.
+
+- readiness, memory coverage, source health, decisions, and open loops are visible;
+- there is one obvious next action;
+- source readiness and citation coverage are product signals, not launch claims.
+
+### Sources
+
+Import real material through the Sources tab.
+
+- use user-selected exports, folders, or files;
+- show preview before import;
+- confirm duplicate-safe import history;
+- show undo for a bad import batch;
+- show the source readiness report after import.
+
+Good first-demo sources are ChatGPT export, Claude export, Slack export, Gmail/email mbox, Notion export, docs, notes, meeting transcripts, browser bookmarks, calendars, or contacts.
+
+### Review
+
+Use Review as the trust boundary.
+
+- pending source captures can be approved or archived;
+- decisions, recommended actions, and open loops remain visible;
+- noisy imports can stay pending or be archived instead of becoming trusted memory;
+- approved memory becomes available for the next Ask step.
+
+### Ask
+
+Ask a question that the imported source can answer.
+
+- results include citations back to the imported source;
+- cited memory is the primary success condition;
+- context packs, ChatGPT, Claude, Cursor, MCP, and browser handoffs are secondary actions;
+- an empty or weak answer should lead back to Sources or Review, not to hidden automation.
+
+### Trust
+
+End in Trust so the user sees control before continued use.
+
+- local vault path and backend health are visible;
+- review settings, pending-memory visibility, source policies, identity aliases, and agent permissions are understandable;
+- agent read, write, export, maintenance, and destructive controls remain explicit;
+- shared context redaction is enabled by default;
+- backup, export, support bundle, and maintenance actions are discoverable without being part of the core loop.
+
+## Onboarding Check
+
+A fresh install should guide the tester through:
+
+1. private vault confirmation;
+2. first real source import;
+3. first memory review;
+4. first Ask with citations;
+5. backup or explicit backup-later decision;
+6. landing in the five-tab product flow.
+
+Quick memories, clipboard captures, and web captures are useful secondary paths, but they should not replace the first-source import gate for this demo.
+
+## Backup And Export
+
+Before ending the session, verify that the user can leave with their data.
+
+- create a local vault backup;
+- confirm backups are written under the vault backup area;
+- verify JSON or Markdown export is available;
+- confirm redaction applies to shared context and exports when enabled;
+- confirm support bundle generation does not include raw memory content.
+
+## Verification Commands
+
+Run the app build:
+
+```bash
+./macos/build.sh
+open macos/build/Cortex.app
+```
+
+Run backend tests and retrieval checks:
+
+```bash
+python3 -m unittest discover backend/tests
+python3 scripts/retrieval_eval.py
+```
+
+With the packaged app backend running on `127.0.0.1:8766`, run:
+
+```bash
+python3 scripts/reliability_check.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
+python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
+```
+
+Run the operational ship gate before inviting testers:
+
+```bash
+python3 scripts/ops_readiness_check.py --refresh-site
+```
+
+For a packaged beta candidate, include packaging:
+
+```bash
+python3 scripts/ops_readiness_check.py --refresh-site --include-package
+```
+
+Generate support bundles:
+
+```bash
+python3 scripts/export_support_bundle.py --mode live --token "$CORTEX_API_KEY"
+python3 scripts/export_support_bundle.py --mode offline
+```
+
+## Manual Acceptance
+
+The demo is ready for the first 100 users when:
+
+- onboarding works on a clean user profile;
+- Sources can preview, import, show history, and undo a real selected source;
+- Review can approve and archive imported candidates;
+- Ask returns at least one useful cited result from approved memory;
+- Trust clearly shows local storage, permissions, redaction, backup, export, and support controls;
+- the reliability report has no critical issue;
+- the support bundle is content-free;
+- the user can explain where their data lives and how to back it up.
+
+## Known Non-Goals
+
+Do not present these as first-100-user capabilities:
+
+- hosted accounts or multi-user organizations;
+- broad public launch readiness;
+- live OAuth/API sync for Gmail, Notion, Slack, Google Drive, Microsoft 365, Teams, Linear, Jira, GitHub, LinkedIn, Twitter/X, Zoom, or browser history;
+- remote MCP/OAuth;
+- billing, quotas, teams, enterprise policy, or hosted analytics;
+- automatic app crawling or background cloud capture;
+- notarized external distribution unless the current release has completed that work;
+- perfect extraction quality on every large or noisy export;
+- production incident response, telemetry, or cloud backup.
+
+## Demo Notes
+
+Use real but non-sensitive test data where possible. Avoid promising that Cortex has learned the user's whole life after one import. The honest claim is narrower: selected local sources can become reviewed, cited memory that stays under the user's control.

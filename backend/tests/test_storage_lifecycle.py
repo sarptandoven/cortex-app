@@ -345,10 +345,31 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertIn("gmail", catalog)
         self.assertIn("notion", catalog)
         self.assertIn(catalog["chatgpt"]["import_status"], {"native", "generic", "export_only"})
-        self.assertNotIn("gemini", catalog)
+        for source_id in ("gemini", "perplexity", "copilot", "grok", "poe", "notebooklm"):
+            self.assertIn(source_id, catalog)
+            self.assertEqual(catalog[source_id]["category"], "AI chats")
+            self.assertEqual(catalog[source_id]["source_ids"], [source_id])
+            self.assertTrue(catalog[source_id]["supports_import"])
+            self.assertEqual(catalog[source_id]["import_status"], "generic")
 
         advertised_source_ids = {source_id for item in catalog.values() for source_id in item["source_ids"]}
-        for source_id in ("chatgpt", "claude", "email", "docs", "cloud-docs", "notion", "slack", "calendar", "github"):
+        for source_id in (
+            "chatgpt",
+            "claude",
+            "gemini",
+            "perplexity",
+            "copilot",
+            "grok",
+            "poe",
+            "notebooklm",
+            "email",
+            "docs",
+            "cloud-docs",
+            "notion",
+            "slack",
+            "calendar",
+            "github",
+        ):
             self.assertIn(source_id, advertised_source_ids)
         self.assertEqual(catalog["gmail"]["source_ids"], ["email"])
         self.assertEqual(catalog["gmail"]["export_status"], "native_via_email")
@@ -366,6 +387,11 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(gmail_readiness["source_ids"], ["email"])
         self.assertEqual(gmail_readiness["export_status"], "native_via_email")
         self.assertIn("live OAuth sync is planned", gmail_readiness["next_action"])
+        for source_id in ("gemini", "perplexity", "copilot", "grok", "poe", "notebooklm"):
+            ai_readiness = next(item for item in readiness["sources"] if item["source"] == source_id)
+            self.assertEqual(ai_readiness["status"], "import_ready")
+            self.assertEqual(ai_readiness["source_ids"], [source_id])
+            self.assertIn("transcript", ai_readiness["next_action"].lower())
 
         account = self.store.upsert_source_account(
             self.user_id,
@@ -1394,6 +1420,7 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         capture_id = result["capture_id"]
 
         self.assertTrue(self.store.search(self.user_id, "strict mode pending"))
+        self.assertIn("strict mode should hide", self.store.context_pack(self.user_id, query="strict mode"))
 
         updated = self.store.update_settings(self.user_id, {"allow_pending_in_context": False, "context_pack_limit": 6})
         self.assertFalse(updated["allow_pending_in_context"])

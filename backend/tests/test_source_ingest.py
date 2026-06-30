@@ -34,6 +34,7 @@ class SourceIngestTests(unittest.TestCase):
         self._write_notion_export()
         self._write_email_export()
         self._write_gmail_mbox_zip()
+        self._write_consumer_ai_transcript_exports()
         self._write_whatsapp_export()
         self._write_browser_bookmarks_export()
         self._write_calendar_export()
@@ -48,6 +49,12 @@ class SourceIngestTests(unittest.TestCase):
 
         self.assertIn("chatgpt", sources)
         self.assertIn("claude", sources)
+        self.assertIn("gemini", sources)
+        self.assertIn("perplexity", sources)
+        self.assertIn("copilot", sources)
+        self.assertIn("grok", sources)
+        self.assertIn("poe", sources)
+        self.assertIn("notebooklm", sources)
         self.assertIn("slack", sources)
         self.assertIn("discord", sources)
         self.assertIn("telegram", sources)
@@ -69,6 +76,12 @@ class SourceIngestTests(unittest.TestCase):
         self.assertEqual([(record.source, record.title) for record in records if not record.source_url], [])
         self.assertTrue(any("Project Atlas" in record.content for record in records))
         self.assertTrue(any("concise technical answers" in record.content for record in records))
+        self.assertTrue(any("Project GeminiTranscript" in record.content for record in records))
+        self.assertTrue(any("Project PerplexityTranscript" in record.content for record in records))
+        self.assertTrue(any("Project CopilotTranscript" in record.content for record in records))
+        self.assertTrue(any("Project GrokTranscript" in record.content for record in records))
+        self.assertTrue(any("Project PoeTranscript" in record.content for record in records))
+        self.assertTrue(any("Project NotebooklmTranscript" in record.content for record in records))
         self.assertTrue(any("Project Kestrel launch" in record.content for record in records))
         self.assertTrue(any("Ada Lovelace" in record.content for record in records))
         self.assertTrue(any("browser research" in record.content for record in records))
@@ -79,6 +92,12 @@ class SourceIngestTests(unittest.TestCase):
         source_urls: dict[str, list[str]] = {}
         for record in records:
             source_urls.setdefault(record.source, []).append(record.source_url or "")
+        self.assertTrue(any("service=gemini" in url and "conversation=Project%20Gemini%20transcript" in url for url in source_urls["gemini"]))
+        self.assertTrue(any("service=perplexity" in url and "conversation=Project%20Perplexity%20transcript" in url for url in source_urls["perplexity"]))
+        self.assertTrue(any("service=copilot" in url and "conversation=Project%20Microsoft%20Copilot%20transcript" in url for url in source_urls["copilot"]))
+        self.assertTrue(any("service=grok" in url and "conversation=Project%20Grok%20transcript" in url for url in source_urls["grok"]))
+        self.assertTrue(any("service=poe" in url and "conversation=Project%20Poe%20transcript" in url for url in source_urls["poe"]))
+        self.assertTrue(any("service=notebooklm" in url and "conversation=Project%20NotebookLM%20transcript" in url for url in source_urls["notebooklm"]))
         self.assertTrue(any("service=discord" in url and "channel=c123" in url for url in source_urls["discord"]))
         self.assertTrue(any("service=telegram" in url and "chat=Project%20Telegram" in url for url in source_urls["telegram"]))
         self.assertTrue(any("service=google-keep" in url and "note=Preference" in url for url in source_urls["google-keep"]))
@@ -468,6 +487,21 @@ class SourceIngestTests(unittest.TestCase):
         self.assertIn("Notion paragraph", records[0].content)
         self.assertIn("service=notion", records[0].source_url or "")
         self.assertIn("page=Project%20Notes", records[0].source_url or "")
+
+    def test_consumer_ai_detection_ignores_provider_names_in_distant_parent_paths(self) -> None:
+        folder = self.root / "poe-parent" / "docs"
+        folder.mkdir(parents=True)
+        (folder / "Citation Plan.md").write_text(
+            "We decided Project CitationParent should import as docs even when a parent path contains poe.",
+            encoding="utf-8",
+        )
+
+        records = import_source_records([str(folder)], max_records=10)
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].source, "docs")
+        self.assertIn("Project CitationParent", records[0].content)
+        self.assertEqual(records[0].source_url, str(folder / "Citation Plan.md"))
 
     def test_slack_metadata_is_skipped_and_rich_message_text_is_preserved(self) -> None:
         channel = self.root / "slack" / "general"
@@ -1184,15 +1218,26 @@ class SourceIngestTests(unittest.TestCase):
         self._write_chatgpt_export()
         self._write_claude_export()
         self._write_email_export()
+        self._write_consumer_ai_transcript_exports()
 
         db_path = self.root / "chat-email-granular.sqlite"
         init_db(db_path)
         store = CortexStore(db_path, self.root / "chat-email-granular-vault")
         result = store.import_sources(
             user_id="test-user",
-            paths=[str(self.root / "chatgpt"), str(self.root / "claude"), str(self.root / "mail")],
+            paths=[
+                str(self.root / "chatgpt"),
+                str(self.root / "claude"),
+                str(self.root / "mail"),
+                str(self.root / "gemini"),
+                str(self.root / "perplexity"),
+                str(self.root / "copilot"),
+                str(self.root / "grok"),
+                str(self.root / "poe"),
+                str(self.root / "notebooklm"),
+            ],
             processing="sync",
-            max_records=10,
+            max_records=20,
         )
 
         self.assertEqual(result["failed"], 0)
@@ -1200,6 +1245,12 @@ class SourceIngestTests(unittest.TestCase):
             "chatgpt": ("Project Atlas local-first memory", ("service=chatgpt", "conversation=Project%20Atlas%20planning", "line=", "message=1", "excerpt=")),
             "claude": ("concise technical answers clear tradeoffs", ("service=claude", "conversation=Writing%20style", "line=", "message=1", "excerpt=")),
             "email": ("migration plan approved memory candidates", ("service=email", "subject=Cortex%20migration%20plan", "line=", "excerpt=")),
+            "gemini": ("Project GeminiTranscript preserve line message excerpt citations", ("service=gemini", "conversation=Project%20Gemini%20transcript", "line=", "message=2", "excerpt=")),
+            "perplexity": ("Project PerplexityTranscript preserve line message excerpt citations", ("service=perplexity", "conversation=Project%20Perplexity%20transcript", "line=", "message=2", "excerpt=")),
+            "copilot": ("Project CopilotTranscript preserve line message excerpt citations", ("service=copilot", "conversation=Project%20Microsoft%20Copilot%20transcript", "line=", "message=2", "excerpt=")),
+            "grok": ("Project GrokTranscript preserve line message excerpt citations", ("service=grok", "conversation=Project%20Grok%20transcript", "line=", "message=2", "excerpt=")),
+            "poe": ("Project PoeTranscript preserve line message excerpt citations", ("service=poe", "conversation=Project%20Poe%20transcript", "line=", "message=2", "excerpt=")),
+            "notebooklm": ("Project NotebooklmTranscript preserve line message excerpt citations", ("service=notebooklm", "conversation=Project%20NotebookLM%20transcript", "line=", "message=2", "excerpt=")),
         }
         for source, (query, fragments) in expectations.items():
             with self.subTest(source=source):
@@ -1485,6 +1536,42 @@ class SourceIngestTests(unittest.TestCase):
             }
         ]
         (folder / "conversations.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def _write_consumer_ai_transcript_exports(self) -> None:
+        providers = {
+            "gemini": "Gemini",
+            "perplexity": "Perplexity",
+            "copilot": "Microsoft Copilot",
+            "grok": "Grok",
+            "poe": "Poe",
+            "notebooklm": "NotebookLM",
+        }
+        for source, provider in providers.items():
+            folder = self.root / source
+            folder.mkdir()
+            project_token = "Notebooklm" if source == "notebooklm" else source.title().replace("-", "")
+            payload = {
+                "conversations": [
+                    {
+                        "id": f"{source}-fixture-1",
+                        "title": f"Project {provider} transcript",
+                        "created_at": "2026-06-29T12:00:00Z",
+                        "messages": [
+                            {
+                                "role": "assistant",
+                                "created_at": "2026-06-29T12:00:01Z",
+                                "text": f"I prefer verbose summaries for {provider} imports.",
+                            },
+                            {
+                                "role": "user",
+                                "created_at": "2026-06-29T12:00:02Z",
+                                "text": f"We decided Project {project_token}Transcript should preserve line, message, and excerpt citations.",
+                            },
+                        ],
+                    }
+                ]
+            }
+            (folder / "transcript.json").write_text(json.dumps(payload), encoding="utf-8")
 
     def _write_slack_export(self) -> None:
         channel = self.root / "slack" / "general"

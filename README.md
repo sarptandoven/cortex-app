@@ -11,7 +11,7 @@ Cortex is a local-first personal memory and adaptation layer. It turns approved 
 - User-owned local vault at `~/Library/Application Support/Cortex/Cortex.vault/`
 - SQLite FTS search with optional `sqlite-vec` and opt-in OpenAI embeddings
 - Capture surfaces for clipboard, quick notes, files, browser capture, and drop-folder import
-- Stage 1 source import with preview, duplicate-safe history, and batch undo for user-selected exports, folders, and files from ChatGPT, Claude, Notion, Gmail/email, Slack, Discord, Telegram, Google Keep, Google Chat, Teams, Zoom, Messages, WhatsApp, bookmarks, calendars, contacts, LinkedIn, Twitter/X, docs, notes, and work-tool exports
+- Stage 1 source import with preview, duplicate-safe history, and batch undo for user-selected exports, folders, and files from ChatGPT, Claude, Gemini, Perplexity, Microsoft Copilot, Grok, Poe, NotebookLM, Notion, Gmail/email, Slack, Discord, Telegram, Google Keep, Google Chat, Teams, Zoom, Messages, WhatsApp, bookmarks, calendars, contacts, LinkedIn, Twitter/X, docs, notes, and work-tool exports
 - Five-tab product flow: Model, Sources, Review, Ask, Trust
 - Source readiness report covering import-ready services, planned live connectors, connected accounts, review backlog, source errors, active memory, and citation coverage
 - Gated first-run setup for private vault, first source import, first memory review, first Ask/use action, and backup/trust decision
@@ -88,6 +88,7 @@ python3 scripts/export_support_bundle.py --mode offline
 - [Simple Product Loop](docs/SIMPLE_PRODUCT_LOOP.md)
 - [Capture Surfaces](docs/CAPTURE_SURFACES.md)
 - [Source Imports](docs/SOURCE_IMPORTS.md)
+- [First 100 User Demo Checkpoint](docs/checkpoints/first-100-demo.md)
 - [Trust Controls](docs/TRUST_CONTROLS.md)
 - [Reliability Hardening](docs/RELIABILITY_HARDENING.md)
 - [Operational Readiness](docs/OPERATIONAL_READINESS.md)
