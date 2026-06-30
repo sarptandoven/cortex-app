@@ -201,7 +201,7 @@ Sparkle is the likely production path for background update download/install. Th
 - Run `./macos/build.sh`.
 - Run `codesign --verify --deep --strict --verbose=2 macos/build/Cortex.app`.
 - Launch the app and verify the bundled backend starts.
-- Run `python3 scripts/first100_live_smoke.py` after launching the packaged app. It reads the local API token from macOS defaults, uses an isolated smoke user, and cleans up after itself.
+- Run `python3 scripts/first100_live_smoke.py` after launching the packaged app. It reads the local API token from `~/Library/Application Support/Cortex/credentials.json` with legacy defaults fallback, uses an isolated smoke user, and cleans up after itself.
 - Keep `python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"` for deeper backend lifecycle QA because it writes broader test data into the target vault.
 - Run `./macos/package_release.sh`.
 - Confirm the generated release directory includes `BETA_HANDOFF.md`.

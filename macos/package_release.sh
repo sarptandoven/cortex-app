@@ -457,12 +457,14 @@ For a full package refresh, include packaging:
 python3 scripts/ops_readiness_check.py --refresh-site --include-package
 ~~~
 
-With the packaged app running, copy the local API token from
-Connections & Privacy > Advanced and run:
+With the packaged app running, run the first-100 smoke directly. It reads the
+local API token from the app credentials file and cleans up its isolated smoke
+user. For deeper diagnostics, copy the local API token from Connections &
+Privacy > Advanced.
 
 ~~~bash
+python3 scripts/first100_live_smoke.py --base-url http://127.0.0.1:8766
 python3 scripts/reliability_check.py --base-url http://127.0.0.1:8766 --token "\$CORTEX_API_KEY"
-python3 scripts/first100_live_smoke.py --base-url http://127.0.0.1:8766 --token "\$CORTEX_API_KEY"
 python3 scripts/export_support_bundle.py --mode live --token "\$CORTEX_API_KEY"
 python3 scripts/export_support_bundle.py --mode offline
 ~~~

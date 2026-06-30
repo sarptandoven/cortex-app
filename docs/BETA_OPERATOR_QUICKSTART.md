@@ -35,7 +35,7 @@ After launching the packaged app, run the live first-100 smoke once:
 python3 scripts/first100_live_smoke.py
 ```
 
-It uses the local app token from macOS defaults, syncs a temporary Obsidian vault under an isolated smoke user, verifies Review/Ask/MCP, and deletes the smoke user rows. It does not create a backup unless `--include-backup` is passed.
+It uses the local app token from `~/Library/Application Support/Cortex/credentials.json`, syncs a temporary Obsidian vault under an isolated smoke user, verifies Review/Ask/MCP, and deletes the smoke user rows. It does not create a backup unless `--include-backup` is passed.
 
 ## 2. Invite The Right Testers
 

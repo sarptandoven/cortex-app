@@ -141,7 +141,7 @@ python3 scripts/first100_live_smoke.py
 python3 scripts/reliability_check.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
 ```
 
-`first100_live_smoke.py` reads the app token from macOS defaults when `--token` is omitted, writes only under an isolated smoke user, and deletes that smoke user by default.
+`first100_live_smoke.py` reads the app token from `~/Library/Application Support/Cortex/credentials.json` when `--token` is omitted, writes only under an isolated smoke user, and deletes that smoke user by default.
 
 Run the operational ship gate before inviting testers:
 
