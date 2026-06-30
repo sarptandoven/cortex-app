@@ -17,7 +17,7 @@ enum OnboardingStep: Int, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .privateVault: return "Memory"
-        case .firstSource: return "Connect"
+        case .firstSource: return "Notes"
         case .reviewMemory: return "Review"
         case .askUse: return "Ask"
         }
@@ -28,7 +28,7 @@ enum OnboardingStep: Int, CaseIterable, Identifiable {
         case .privateVault:
             return "Confirm the local memory engine is ready on this Mac."
         case .firstSource:
-            return "Connect notes or MCP, then sync memory into Review."
+            return "Connect notes once, then let Cortex sync memory into Review."
         case .reviewMemory:
             return "Approve one synced item before Cortex uses it."
         case .askUse:

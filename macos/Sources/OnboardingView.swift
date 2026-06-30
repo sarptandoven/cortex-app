@@ -20,49 +20,6 @@ struct OnboardingView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
-    private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 6) {
-                Image(systemName: "brain.head.profile")
-                    .font(.system(size: 28, weight: .semibold))
-                    .foregroundColor(.accentColor)
-                Text("Cortex")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                Text("Private memory on this Mac")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(steps) { step in
-                    OnboardingStepRow(
-                        step: step,
-                        selected: state.onboardingStep == step,
-                        completed: state.onboardingStepIsComplete(step)
-                    )
-                }
-            }
-
-            Spacer()
-
-            HStack(spacing: 6) {
-                Image(systemName: "lock.shield")
-                Text("Local-first")
-            }
-            .font(.caption)
-            .foregroundColor(.secondary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-        }
-        .padding(20)
-        .frame(minWidth: 190, maxWidth: 190, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
-    }
-
     private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top) {
@@ -111,29 +68,6 @@ struct OnboardingView: View {
             return .accentColor.opacity(0.55)
         }
         return Color(nsColor: .separatorColor).opacity(0.55)
-    }
-
-    private var legacyHeader: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Step \(state.onboardingStepIndex + 1) of \(steps.count)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Text(state.onboardingStep.title)
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                Text(state.onboardingStep.subtitle)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer()
-            Button {
-                state.dismissOnboardingForSession()
-            } label: {
-                Label("Skip Setup for Now", systemImage: "xmark")
-            }
-        }
-        .padding(22)
     }
 
     private var footer: some View {
@@ -187,7 +121,7 @@ struct OnboardingView: View {
         case .privateVault:
             return "Waiting for Service"
         case .firstSource:
-            return "Connect and Sync"
+            return "Choose Notes"
         case .reviewMemory:
             return "Review One Item"
         case .askUse:
@@ -251,7 +185,7 @@ struct OnboardingVaultStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Cortex keeps memory local on this Mac. Once the engine is ready, connect notes or an AI tool and let Cortex sync useful items into Review.")
+            Text("Cortex keeps memory local on this Mac. Once the engine is ready, connect a notes folder and let Cortex sync useful items into Review.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -311,37 +245,23 @@ struct OnboardingFirstSourceStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Connect a notes folder or local AI tool, then sync one useful memory candidate into Review. Notes sync automatically after the first connection.")
+            Text("Choose a notes folder once. Cortex syncs Markdown locally, sends useful memory to Review, and keeps syncing after setup.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 240), spacing: 12)], spacing: 12) {
-                OnboardingConnectionCard(
-                    title: state.hasConnectedObsidianVault ? "Notes connected" : "Connect notes",
-                    detail: state.hasConnectedObsidianVault ? "Cortex syncs saved notes on launch and periodically, then sends new memory to Review with citations." : "Pick an Obsidian or Markdown notes folder once. Cortex keeps it synced locally and attaches citations.",
-                    systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "folder.badge.plus",
-                    isPrimary: true,
-                    status: state.onboardingHasSource ? "Synced" : (state.hasConnectedObsidianVault ? "Connected" : "Local"),
-                    buttonTitle: state.hasConnectedObsidianVault ? "Sync notes" : "Connect notes"
-                ) {
-                    if let connector = obsidianConnector {
-                        state.connectLocalNotesFolder(connector)
-                    } else {
-                        Task { await state.loadSourceConnectivity() }
-                        state.status = "Checking notes connector"
-                    }
-                }
-
-                OnboardingConnectionCard(
-                    title: state.connectedAIIntegrationCount > 0 ? "AI tools connected" : "Connect AI tools",
-                    detail: "Let Claude Desktop, Cursor, Windsurf, and other local AI tools read approved memory and save useful items to Review.",
-                    systemImage: state.connectedAIIntegrationCount > 0 ? "checkmark.seal.fill" : "wand.and.stars",
-                    isPrimary: false,
-                    status: state.connectedAIIntegrationCount > 0 ? "\(state.connectedAIIntegrationCount) connected" : "Local tools",
-                    buttonTitle: state.connectedAIIntegrationCount > 0 ? "Manage" : "Connect tools"
-                ) {
-                    state.openConnectionsPrivacy(statusMessage: "Connect local AI tools")
-                    state.dismissOnboardingForSession()
+            OnboardingConnectionCard(
+                title: state.hasConnectedObsidianVault ? "Notes connected" : "Connect notes",
+                detail: state.hasConnectedObsidianVault ? "Cortex syncs saved notes on launch and every 30 minutes, then sends new memory to Review with citations." : "Pick an Obsidian or Markdown folder. Cortex handles parsing, citations, and repeat sync automatically.",
+                systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "folder.badge.plus",
+                isPrimary: true,
+                status: state.onboardingHasSource ? "Synced" : (state.hasConnectedObsidianVault ? "Connected" : "Local"),
+                buttonTitle: state.hasConnectedObsidianVault ? "Sync notes" : "Connect notes"
+            ) {
+                if let connector = obsidianConnector {
+                    state.connectLocalNotesFolder(connector)
+                } else {
+                    Task { await state.loadSourceConnectivity() }
+                    state.status = "Checking notes connector"
                 }
             }
 
@@ -379,7 +299,7 @@ struct OnboardingFirstSourceStep: View {
         if state.onboardingHasConnectedMemoryLayer {
             return "Waiting for synced memory"
         }
-        return "Connect a source"
+        return "Connect notes"
     }
 
     private var connectionCheckDetail: String {
@@ -387,9 +307,9 @@ struct OnboardingFirstSourceStep: View {
             return "Review has memory from a connected source."
         }
         if state.onboardingHasConnectedMemoryLayer {
-            return "Sync notes or save one item from a connected AI tool so it appears in Review."
+            return "Sync notes so useful memory appears in Review."
         }
-        return "Connect notes or an AI tool from Home when ready."
+        return "Connect notes from Home when ready."
     }
 }
 
@@ -412,9 +332,10 @@ struct OnboardingConnectionCard: View {
                     Text(status)
                         .font(.caption)
                         .fontWeight(.semibold)
+                        .foregroundColor(.accentColor)
                         .padding(.horizontal, 9)
                         .padding(.vertical, 5)
-                        .background((isPrimary ? Color.white : Color.accentColor).opacity(0.16))
+                        .background(Color.accentColor.opacity(0.10))
                         .clipShape(Capsule())
                 }
             }
@@ -423,16 +344,16 @@ struct OnboardingConnectionCard: View {
                 .fontWeight(.semibold)
             Text(detail)
                 .font(.callout)
-                .foregroundColor(isPrimary ? .white.opacity(0.86) : .secondary)
+                .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
             actionButton
         }
         .padding(16)
         .frame(maxWidth: .infinity, minHeight: 186, alignment: .topLeading)
-        .foregroundColor(isPrimary ? .white : .primary)
-        .background(isPrimary ? Color.accentColor : Color(nsColor: .controlBackgroundColor))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(isPrimary ? Color.clear : Color(nsColor: .separatorColor).opacity(0.35)))
+        .foregroundColor(.primary)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(isPrimary ? 0.92 : 0.72))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke((isPrimary ? Color.accentColor : Color(nsColor: .separatorColor)).opacity(isPrimary ? 0.32 : 0.35)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -441,9 +362,9 @@ struct OnboardingConnectionCard: View {
         if isPrimary {
             Button(action: action) {
                 Label(buttonTitle, systemImage: "link.circle")
-                    .frame(maxWidth: .infinity, minHeight: 42)
+                    .frame(maxWidth: .infinity, minHeight: 46)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.borderedProminent)
             .controlSize(.large)
         } else {
             Button(action: action) {
@@ -515,9 +436,9 @@ struct OnboardingReviewMemoryStep: View {
             return "You already reviewed memory from your first connection."
         }
         if state.onboardingHasSource {
-            return "No reviewable memory is waiting yet. Let notes sync finish or save one item from a connected AI tool."
+            return "No reviewable memory is waiting yet. Let notes sync finish, then approve one useful item."
         }
-        return "Connect notes or an AI tool first; synced memory appears here before Cortex uses it."
+        return "Connect notes first; synced memory appears here before Cortex uses it."
     }
 
     private var reviewPathTitle: String {
@@ -615,7 +536,7 @@ struct OnboardingAskUseStep: View {
         if state.hasSearched {
             return "Try an exact phrase from approved memory, or go back to Review and approve one useful item."
         }
-        return "Ask about approved memory from notes or connected AI tools. Setup finishes after Cortex returns a cited answer."
+        return "Ask about approved memory from notes. Setup finishes after Cortex returns a cited answer."
     }
 
     private var askPathTitle: String {

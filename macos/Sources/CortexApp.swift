@@ -2115,10 +2115,6 @@ final class AppState: ObservableObject {
         Bundle.main.object(forInfoDictionaryKey: "CortexReleaseChannel") as? String ?? "local-beta"
     }
 
-    var onboardingStepIndex: Int {
-        onboardingStep.rawValue
-    }
-
     var isLocalServiceReady: Bool {
         guard let diagnostics, let vault = diagnostics.vault else { return false }
         let lowered = backendStatus.lowercased()
@@ -2135,7 +2131,6 @@ final class AppState: ObservableObject {
     var onboardingHasConnectedMemoryLayer: Bool {
         hasConnectedSourceAccount
             || hasConnectedObsidianVault
-            || connectedAIIntegrationCount > 0
     }
 
     var onboardingHasSyncedMemory: Bool {
@@ -2575,7 +2570,7 @@ final class AppState: ObservableObject {
     func performProductLoopAction(_ action: ProductLoopAction) {
         switch action.action {
         case "capture":
-            openConnectionsPrivacy(statusMessage: "Connect notes or AI tools to start memory sync")
+            openConnectionsPrivacy(statusMessage: "Connect notes to start memory sync")
         case "review":
             selectedTab = .review
             status = "Review new signals below"
@@ -3359,7 +3354,7 @@ final class AppState: ObservableObject {
             case .privateVault:
                 status = "Start the local memory engine before continuing"
             case .firstSource:
-                status = "Connect notes or an AI tool, then sync memory into Review"
+                status = "Connect notes, then sync memory into Review"
             case .reviewMemory:
                 status = "Approve one review item before asking Cortex"
             case .askUse:

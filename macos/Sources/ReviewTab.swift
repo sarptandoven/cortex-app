@@ -116,9 +116,9 @@ struct ReviewInboxSection: View {
 
     private var emptyDetail: String {
         if (state.review?.stats.memories ?? 0) == 0 {
-            return "Connect a source first. New memories will appear here before Cortex uses them."
+            return "Connect notes first. New memories will appear here before Cortex uses them."
         }
-        return "All caught up. New source items will appear here before Cortex uses them."
+        return "All caught up. New synced items will appear here before Cortex uses them."
     }
 }
 

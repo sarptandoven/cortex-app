@@ -119,9 +119,9 @@ struct HomeHeroSection: View {
             return "Choose a vault with notes"
         }
         if state.connectedAIIntegrationCount > 0 {
-            return "Connect notes to unlock memory"
+            return "Notes are the missing piece"
         }
-        return "Bring Cortex one source"
+        return "Start with notes"
     }
 
     private var detail: String {
@@ -144,14 +144,14 @@ struct HomeHeroSection: View {
             return "The last folder did not produce usable Markdown notes. Choose a notes folder with real content."
         }
         if state.connectedAIIntegrationCount > 0 {
-            return "Your AI tool is connected. Add a notes folder so Cortex has something to recall."
+            return "Your AI tool is connected. Add notes once so Cortex has approved memory to recall."
         }
-        return "Choose a notes folder. Cortex keeps sync automatic and review-first."
+        return "Open Connections once, choose notes, and Cortex keeps sync automatic and review-first."
     }
 
     private var actionTitle: String {
         if !state.isLocalServiceReady { return "Start Cortex" }
-        if activeSources == 0 { return hasEmptySource ? "Choose notes" : "Connect notes" }
+        if activeSources == 0 { return hasEmptySource ? "Choose notes" : "Open Connections" }
         if pendingCount > 0 { return "Review memory" }
         if hasMemory { return "Ask Cortex" }
         return "Check sync"
@@ -166,7 +166,7 @@ struct HomeHeroSection: View {
             if state.connectedAIIntegrationCount > 0 {
                 return "Your AI tool is ready; notes are the missing piece."
             }
-            return "Add a Markdown notes folder."
+            return "Choose notes once; Cortex syncs after that."
         }
         if pendingCount > 0 {
             return "\(pendingCount) item\(pendingCount == 1 ? "" : "s") waiting"
@@ -239,7 +239,7 @@ struct HomeHeroSection: View {
                 await state.loadStats()
             }
         } else if activeSources == 0 {
-            state.openConnectionsPrivacy(statusMessage: "Connect notes")
+            state.openConnectionsPrivacy(statusMessage: "Connections")
         } else if pendingCount > 0 {
             state.selectedTab = .review
             state.status = "Review memory"
