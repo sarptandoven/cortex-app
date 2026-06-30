@@ -177,6 +177,39 @@ class SourceIngestTests(unittest.TestCase):
         self.assertTrue(any("Project Longtail" in memory["content"] for memory in hits))
         self.assertTrue(any("chunk=2" in (memory["source_url"] or "") for memory in hits))
 
+    def test_service_metadata_dates_become_memory_dates(self) -> None:
+        self._write_dated_service_exports()
+        db_path = self.root / "service-dates.sqlite"
+        init_db(db_path)
+        store = CortexStore(db_path, self.root / "service-dates-vault")
+
+        result = store.import_sources(
+            user_id="test-user",
+            paths=[
+                str(self.root / "dated-chatgpt"),
+                str(self.root / "dated-claude"),
+                str(self.root / "dated-keep"),
+            ],
+            processing="sync",
+            max_records=10,
+        )
+
+        self.assertEqual(result["failed"], 0)
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT source, content, occurred_at
+                FROM memories
+                WHERE content LIKE '%Project MetadataDate%'
+                ORDER BY source, content
+                """
+            ).fetchall()
+        self.assertEqual(len(rows), 3)
+        by_source = {row[0]: row[2] for row in rows}
+        self.assertEqual(by_source["chatgpt"], "2026-06-29")
+        self.assertEqual(by_source["claude"], "2026-06-30")
+        self.assertEqual(by_source["google-keep"], "2026-07-01")
+
     def test_repeated_import_skips_duplicates_without_deleting_original(self) -> None:
         self._write_chatgpt_export()
         db_path = self.root / "index.sqlite"
@@ -718,6 +751,48 @@ class SourceIngestTests(unittest.TestCase):
             }
         ]
         (folder / "conversations.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def _write_dated_service_exports(self) -> None:
+        chatgpt = self.root / "dated-chatgpt"
+        chatgpt.mkdir()
+        chatgpt_payload = [
+            {
+                "title": "Metadata date ChatGPT",
+                "create_time": 1_782_734_400,
+                "mapping": {
+                    "decision": {
+                        "message": {
+                            "author": {"role": "user"},
+                            "create_time": 1_782_734_400,
+                            "content": {"parts": ["We decided Project MetadataDate ChatGPT should use message timestamps."]},
+                        }
+                    }
+                },
+            }
+        ]
+        (chatgpt / "conversations.json").write_text(json.dumps(chatgpt_payload), encoding="utf-8")
+
+        claude = self.root / "dated-claude"
+        claude.mkdir()
+        claude_payload = [
+            {
+                "name": "Metadata date Claude",
+                "created_at": "2026-06-30T10:00:00Z",
+                "chat_messages": [
+                    {"sender": "human", "text": "We decided Project MetadataDate Claude should use conversation timestamps."}
+                ],
+            }
+        ]
+        (claude / "conversations.json").write_text(json.dumps(claude_payload), encoding="utf-8")
+
+        keep = self.root / "dated-keep"
+        keep.mkdir()
+        keep_payload = {
+            "title": "Metadata date Keep",
+            "createdTimestampUsec": 1_782_864_000_000_000,
+            "textContent": "We decided Project MetadataDate Keep should use note timestamps.",
+        }
+        (keep / "metadata-date.json").write_text(json.dumps(keep_payload), encoding="utf-8")
 
     def _write_claude_export(self) -> None:
         folder = self.root / "claude"

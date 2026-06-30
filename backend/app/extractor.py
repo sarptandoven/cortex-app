@@ -43,6 +43,7 @@ BOILERPLATE_PREFIXES = {
     "to",
     "updated",
 }
+SERVICE_DATE_HEADERS = {"created", "created at", "date", "edited", "updated", "user edited"}
 NON_SPEAKER_LABELS = BOILERPLATE_PREFIXES | {
     "action item",
     "attendees",
@@ -249,6 +250,8 @@ def _sentence_candidates(text: str, source: str = "unknown", author_aliases: Ite
                     email_from_is_user = _matches_identity_alias(header_text, aliases)
                 if header_label == "date":
                     current_date = _extract_absolute_date(header_text) or line_date or current_date
+            elif header_label in SERVICE_DATE_HEADERS and (line_date or _extract_absolute_date(header_text)):
+                current_date = _extract_absolute_date(header_text) or line_date or current_date
         if _is_boilerplate_line(line):
             if line_date and email_source:
                 current_date = line_date

@@ -509,7 +509,9 @@ def _chatgpt_messages(conversation: dict[str, Any]) -> list[str]:
         if not content:
             continue
         created = float(message.get("create_time") or 0)
-        messages.append((created, f"{role}: {content}"))
+        created_label = _chatgpt_time(created)
+        prefix = f"{created_label} {role}" if created_label else role
+        messages.append((created, f"{prefix}: {content}"))
     return [text for _, text in sorted(messages, key=lambda item: item[0])]
 
 
@@ -537,6 +539,17 @@ def _chatgpt_time(value: Any) -> str:
     if timestamp <= 0:
         return ""
     return _iso_from_unix(timestamp)
+
+
+def _google_keep_time(value: Any) -> str:
+    try:
+        raw = int(value)
+    except (TypeError, ValueError):
+        return ""
+    if raw <= 0:
+        return ""
+    seconds = raw / 1_000_000 if raw > 10_000_000_000 else raw
+    return _iso_from_unix(seconds)
 
 
 def _parse_claude(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
@@ -568,7 +581,9 @@ def _parse_claude(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
                 sender = str(message.get("sender") or message.get("role") or "unknown")
                 text = _claude_message_text(message)
                 if text:
-                    lines.append(f"{sender}: {text}")
+                    created = str(message.get("created_at") or message.get("createdAt") or message.get("timestamp") or "").strip()
+                    prefix = f"{created} {sender}" if created else sender
+                    lines.append(f"{prefix}: {text}")
             if len(lines) > 4:
                 source_url = _source_locator(
                     asset.display_path,
@@ -964,9 +979,12 @@ def _parse_google_keep(assets: list[SourceAsset], hint: str) -> list[SourceRecor
             continue
         title = str(payload.get("title") or "Google Keep note").strip()
         lines = ["Source: Google Keep", f"Title: {title}"]
-        for key in ("createdTimestampUsec", "userEditedTimestampUsec"):
-            if payload.get(key):
-                lines.append(f"{key}: {payload[key]}")
+        created = _google_keep_time(payload.get("createdTimestampUsec"))
+        updated = _google_keep_time(payload.get("userEditedTimestampUsec"))
+        if created:
+            lines.append(f"Created: {created}")
+        if updated and updated != created:
+            lines.append(f"Updated: {updated}")
         text = str(payload.get("textContent") or "").strip()
         if text:
             lines.extend(["", text])
