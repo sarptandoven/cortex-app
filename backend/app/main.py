@@ -328,17 +328,22 @@ def create_capture(
     processing: str = Query(default="sync", pattern="^(sync|async)$"),
     user_id: str = Depends(auth),
 ) -> dict[str, Any]:
+    resolved_user_id = user_id or request.user_id
     if processing == "async":
         return store.enqueue_capture(
-            user_id=user_id or request.user_id,
+            user_id=resolved_user_id,
             content=request.content,
             source=request.source,
             source_url=request.source_url,
             title=request.title,
         )
-    extracted = extract_context(request.content, request.source)
+    extracted = extract_context(
+        request.content,
+        request.source,
+        author_aliases=store.settings(resolved_user_id).get("identity_aliases"),
+    )
     return store.save_capture(
-        user_id=user_id or request.user_id,
+        user_id=resolved_user_id,
         content=request.content,
         source=request.source,
         source_url=request.source_url,

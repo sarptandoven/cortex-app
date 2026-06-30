@@ -23,6 +23,60 @@ USER_AUTHORED_ROLES = {"user", "human", "me", "self"}
 ASSISTANT_ROLES = {"assistant", "model", "bot", "tool", "system", "chatgpt", "claude"}
 NAMED_SPEAKER_ROLE = "speaker"
 KNOWN_TURN_ROLES = USER_AUTHORED_ROLES | ASSISTANT_ROLES | {NAMED_SPEAKER_ROLE}
+PERSONAL_MEMORY_KINDS = {"preference", "style", "negative"}
+CONVERSATION_SOURCES = {
+    "chatgpt",
+    "claude",
+    "discord",
+    "email",
+    "gmail",
+    "google-chat",
+    "linkedin",
+    "messages",
+    "slack",
+    "teams",
+    "telegram",
+    "twitter-x",
+    "whatsapp",
+    "zoom",
+}
+SELF_AUTHORED_UNATTRIBUTED_SOURCES = {
+    "apple-notes",
+    "docs",
+    "file",
+    "google-keep",
+    "knowledge-base",
+    "local",
+    "logseq",
+    "manual",
+    "note",
+    "notes",
+    "notion",
+    "obsidian",
+    "quick-note",
+    "readwise",
+    "roam",
+    "writing",
+}
+STRICT_UNATTRIBUTED_PERSONAL_SOURCES = CONVERSATION_SOURCES | {
+    "asana",
+    "browser-bookmarks",
+    "browser-capture",
+    "browser-history",
+    "calendar",
+    "cloud-docs",
+    "contacts",
+    "github",
+    "gitlab",
+    "instapaper",
+    "jira",
+    "linear",
+    "pocket",
+    "raindrop",
+    "structured-export",
+    "trello",
+    "work-tools",
+}
 BOILERPLATE_PREFIXES = {
     "archive file",
     "channel",
@@ -128,17 +182,19 @@ Use stable IDs and keep each memory atomic. Return JSON only.""" + alias_instruc
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     data = json.loads(text)
-    return _normalize_extraction(data, raw_text, source)
+    normalized = _normalize_extraction(data, raw_text, source)
+    return _filter_disallowed_personal_records(normalized, raw_text, source, author_aliases)
 
 
 def _extract_locally(raw_text: str, source: str, author_aliases: Iterable[str] | None = None) -> dict[str, Any]:
     candidates = _sentence_candidates(raw_text, source, author_aliases=author_aliases)
     has_known_turns = any(candidate.get("role") in KNOWN_TURN_ROLES for candidate in candidates)
+    allow_unattributed_personal_memory = _allow_unattributed_personal_memory(raw_text, source)
     memory_candidates = [
         candidate
         for candidate in candidates
         if candidate.get("role") not in ASSISTANT_ROLES
-        and not _is_disallowed_user_preference_candidate(candidate, has_known_turns)
+        and not _is_disallowed_user_preference_candidate(candidate, has_known_turns, allow_unattributed_personal_memory)
     ]
     memory_candidates = _dedupe_candidates(memory_candidates)
     sentences = [candidate["text"] for candidate in memory_candidates]
@@ -150,7 +206,7 @@ def _extract_locally(raw_text: str, source: str, author_aliases: Iterable[str] |
     for candidate in memory_candidates[:24]:
         sentence = candidate["text"]
         lower = sentence.lower()
-        personal_allowed = _allows_user_authored_memory(candidate, has_known_turns)
+        personal_allowed = _allows_user_authored_memory(candidate, has_known_turns, allow_unattributed_personal_memory)
         if _looks_like_task(sentence):
             tasks.append(_task(sentence))
         elif _looks_like_negative(lower):
@@ -221,11 +277,65 @@ def _normalize_extraction(data: dict[str, Any], raw_text: str, source: str) -> d
     return data
 
 
+def _filter_disallowed_personal_records(
+    data: dict[str, Any],
+    raw_text: str,
+    source: str,
+    author_aliases: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    candidates = _sentence_candidates(raw_text, source, author_aliases=author_aliases)
+    has_known_turns = any(candidate.get("role") in KNOWN_TURN_ROLES for candidate in candidates)
+    allow_unattributed_personal_memory = _allow_unattributed_personal_memory(raw_text, source)
+    filtered: list[dict[str, Any]] = []
+    for record in data.get("records", []):
+        kind = str(record.get("kind") or "").strip().lower()
+        layer = str(record.get("layer") or "").strip().lower()
+        if kind not in PERSONAL_MEMORY_KINDS and layer not in PERSONAL_MEMORY_KINDS:
+            filtered.append(record)
+            continue
+        if _record_has_allowed_personal_evidence(
+            record,
+            candidates,
+            has_known_turns,
+            allow_unattributed_personal_memory,
+        ):
+            filtered.append(record)
+    data["records"] = filtered
+    return data
+
+
+def _record_has_allowed_personal_evidence(
+    record: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    has_known_turns: bool,
+    allow_unattributed_personal_memory: bool,
+) -> bool:
+    if allow_unattributed_personal_memory and not has_known_turns:
+        return True
+    content = str(record.get("content") or record.get("summary") or "").strip()
+    for candidate in candidates:
+        if not _texts_overlap(content, candidate.get("text", "")):
+            continue
+        if _allows_user_authored_memory(candidate, has_known_turns, allow_unattributed_personal_memory):
+            return True
+    return False
+
+
+def _texts_overlap(left: str, right: str) -> bool:
+    left_key = re.sub(r"\s+", " ", str(left or "").strip().lower())
+    right_key = re.sub(r"\s+", " ", str(right or "").strip().lower())
+    if not left_key or not right_key:
+        return False
+    return left_key in right_key or right_key in left_key
+
+
 def _sentence_candidates(text: str, source: str = "unknown", author_aliases: Iterable[str] | None = None) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     current_role: str | None = None
     aliases = _identity_alias_tokens(author_aliases)
-    email_source = _normalize_source_label(source) in {"email", "gmail"}
+    normalized_source = _normalize_source_label(source)
+    email_source = normalized_source in {"email", "gmail"}
+    allow_named_speakers = _allows_named_speaker_labels(normalized_source)
     saw_email_header = False
     saw_email_from = False
     email_from_is_user = False
@@ -257,7 +367,7 @@ def _sentence_candidates(text: str, source: str = "unknown", author_aliases: Ite
             if line_date and email_source:
                 current_date = line_date
             continue
-        role, payload, speaker_present = _parse_role_line(line, aliases)
+        role, payload, speaker_present = _parse_role_line(line, aliases, allow_named_speakers=allow_named_speakers)
         if email_from_is_user and role == NAMED_SPEAKER_ROLE:
             role = "user"
         if role:
@@ -287,7 +397,12 @@ def _dedupe_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]
     return unique
 
 
-def _parse_role_line(line: str, identity_aliases: set[str] | None = None) -> tuple[str | None, str, bool]:
+def _parse_role_line(
+    line: str,
+    identity_aliases: set[str] | None = None,
+    *,
+    allow_named_speakers: bool = True,
+) -> tuple[str | None, str, bool]:
     timestamped = re.match(
         r"^(?:\[[^\]]+\]|[0-9T:.,+/\- ]{8,40})\s+(?P<label>[A-Za-z][A-Za-z0-9 _.'-]{0,40})\s*:\s*(?P<text>.+)$",
         line,
@@ -310,7 +425,7 @@ def _parse_role_line(line: str, identity_aliases: set[str] | None = None) -> tup
     role = _normalize_role(label, identity_aliases)
     if role:
         return role, match.group("text").strip(), True
-    if _looks_like_named_speaker(label):
+    if allow_named_speakers and _looks_like_named_speaker(label, allow_lowercase=True):
         return NAMED_SPEAKER_ROLE, match.group("text").strip(), True
     return None, line, False
 
@@ -403,6 +518,23 @@ def _normalize_source_label(value: str) -> str:
     return re.sub(r"[^a-z0-9-]+", "-", str(value or "").strip().lower()).strip("-")
 
 
+def _allows_named_speaker_labels(source: str) -> bool:
+    return _normalize_source_label(source) in CONVERSATION_SOURCES
+
+
+def _allow_unattributed_personal_memory(raw_text: str, source: str) -> bool:
+    normalized_source = _normalize_source_label(source)
+    if normalized_source in SELF_AUTHORED_UNATTRIBUTED_SOURCES:
+        return True
+    if normalized_source == "twitter-x":
+        return "--- Tweets ---" in raw_text and "--- Direct Messages ---" not in raw_text
+    if normalized_source in STRICT_UNATTRIBUTED_PERSONAL_SOURCES:
+        return False
+    if normalized_source.startswith("browser"):
+        return False
+    return True
+
+
 def _is_boilerplate_line(line: str) -> bool:
     stripped = line.strip()
     if not stripped:
@@ -422,7 +554,11 @@ def _is_boilerplate_line(line: str) -> bool:
     return False
 
 
-def _allows_user_authored_memory(candidate: dict[str, Any], has_known_turns: bool) -> bool:
+def _allows_user_authored_memory(
+    candidate: dict[str, Any],
+    has_known_turns: bool,
+    allow_unattributed_personal_memory: bool,
+) -> bool:
     role = candidate.get("role")
     if role in USER_AUTHORED_ROLES:
         return True
@@ -432,12 +568,16 @@ def _allows_user_authored_memory(candidate: dict[str, Any], has_known_turns: boo
         return False
     if candidate.get("speaker_present"):
         return False
-    return not has_known_turns
+    return allow_unattributed_personal_memory and not has_known_turns
 
 
-def _is_disallowed_user_preference_candidate(candidate: dict[str, Any], has_known_turns: bool) -> bool:
+def _is_disallowed_user_preference_candidate(
+    candidate: dict[str, Any],
+    has_known_turns: bool,
+    allow_unattributed_personal_memory: bool,
+) -> bool:
     return _looks_like_user_preference_memory(candidate["text"].lower()) and not _allows_user_authored_memory(
-        candidate, has_known_turns
+        candidate, has_known_turns, allow_unattributed_personal_memory
     )
 
 

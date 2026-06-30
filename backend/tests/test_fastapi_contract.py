@@ -651,6 +651,53 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(fetched.status_code, 200)
         self.assertEqual(fetched.json()["identity_aliases"], ["sarpt", "sarpt@example.com"])
 
+    def test_sync_capture_uses_identity_aliases_for_personal_memory_gating(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "identity-capture-contract"}
+        updated = self.client.put(
+            "/v1/settings",
+            json={"identity_aliases": ["sarpt"]},
+            headers=headers,
+        )
+        self.assertEqual(updated.status_code, 200)
+
+        created = self.client.post(
+            "/v1/captures",
+            json={
+                "source": "slack",
+                "content": (
+                    "Source: Slack\n"
+                    "Channel: general\n\n"
+                    "--- Messages ---\n"
+                    "2026-06-29T12:40:00+00:00 sarpt: I prefer API Alias Capture answers with direct citations.\n"
+                    "2026-06-29T12:41:00+00:00 dana: I prefer API Alias Capture answers with long public launch rituals.\n"
+                ),
+            },
+            headers=headers,
+        )
+
+        self.assertEqual(created.status_code, 200)
+        memories = created.json()["memories"]
+        memory_text = "\n".join(memory["content"] for memory in memories)
+        self.assertIn("direct citations", memory_text)
+        self.assertNotIn("long public launch rituals", memory_text)
+        self.assertTrue(any(memory["kind"] == "preference" for memory in memories))
+
+        self.assertTrue(
+            self.client.get(
+                "/v1/search",
+                params={"query": "API Alias Capture direct citations"},
+                headers=headers,
+            ).json()["results"]
+        )
+        self.assertEqual(
+            self.client.get(
+                "/v1/search",
+                params={"query": "API Alias Capture long public launch rituals"},
+                headers=headers,
+            ).json()["results"],
+            [],
+        )
+
     def test_sync_changes_contract_is_cursorable_and_redacted(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "sync-contract"}
         phrase = "FastAPI Sync Feed Raw Phrase"

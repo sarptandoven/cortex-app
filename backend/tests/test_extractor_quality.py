@@ -4,6 +4,7 @@ import os
 import unittest
 from unittest.mock import patch
 
+from backend.app import extractor
 from backend.app.extractor import extract_context
 
 
@@ -166,6 +167,70 @@ My writing style uses short direct paragraphs.
         for leaked in ("long onboarding rituals", "threads for launch"):
             self.assertNotIn(leaked, joined_content)
             self.assertNotIn(leaked, data["summary"])
+
+    def test_browser_capture_unattributed_personal_text_does_not_seed_personal_memory(self) -> None:
+        data = extract_local(
+            "I prefer promotional product pages with long testimonials. "
+            "My writing style is breathless and emoji-heavy. "
+            "Never use local-first privacy language.",
+            "browser-capture",
+        )
+        joined_content = "\n".join(record["content"] for record in data["records"])
+
+        self.assertFalse(any(record["kind"] in PERSONAL_MEMORY_KINDS for record in data["records"]))
+        for leaked in ("promotional product pages", "breathless", "local-first privacy"):
+            self.assertNotIn(leaked, joined_content)
+            self.assertNotIn(leaked, data["summary"])
+
+    def test_local_docs_style_headings_still_seed_personal_memory(self) -> None:
+        data = extract_local(
+            """Voice:
+My writing style uses terse project notes.
+
+Preference:
+I prefer source-backed answers with direct caveats.
+
+Avoid:
+Never use ceremonial launch intros.
+""",
+            "docs",
+        )
+        records = data["records"]
+
+        self.assertTrue(any(record["kind"] == "style" and "terse project notes" in record["content"] for record in records))
+        self.assertTrue(any(record["kind"] == "preference" and "source-backed answers" in record["content"] for record in records))
+        self.assertTrue(any(record["kind"] == "negative" and "ceremonial launch intros" in record["content"] for record in records))
+
+    def test_model_extraction_post_filter_drops_disallowed_personal_records(self) -> None:
+        raw_text = (
+            "I prefer scraped marketing pages with long testimonials. "
+            "We decided Project Atlas should keep cited source paths."
+        )
+        data = extractor._normalize_extraction(
+            {
+                "records": [
+                    {
+                        "kind": "preference",
+                        "content": "I prefer scraped marketing pages with long testimonials.",
+                    },
+                    {
+                        "kind": "decision",
+                        "content": "We decided Project Atlas should keep cited source paths.",
+                    },
+                ],
+                "tasks": [],
+                "entities": [],
+                "summary": "",
+            },
+            raw_text,
+            "browser-capture",
+        )
+
+        filtered = extractor._filter_disallowed_personal_records(data, raw_text, "browser-capture")
+        contents = [record["content"] for record in filtered["records"]]
+
+        self.assertNotIn("I prefer scraped marketing pages with long testimonials.", contents)
+        self.assertIn("We decided Project Atlas should keep cited source paths.", contents)
 
     def test_external_email_sender_body_does_not_seed_personal_memories(self) -> None:
         data = extract_local(

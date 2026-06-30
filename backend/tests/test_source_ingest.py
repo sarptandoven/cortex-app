@@ -783,6 +783,56 @@ class SourceIngestTests(unittest.TestCase):
         self.assertNotIn("Source file:", memory_content)
         self.assertNotIn("Path:", memory_content)
 
+    def test_docs_headings_keep_personal_memory_but_work_tool_rows_do_not(self) -> None:
+        docs = self.root / "docs"
+        docs.mkdir()
+        (docs / "Voice Guide.md").write_text(
+            "Voice:\n"
+            "My writing style uses terse project notes.\n\n"
+            "Preference:\n"
+            "I prefer source-backed answers with direct caveats.\n\n"
+            "Avoid:\n"
+            "Never use ceremonial launch intros.\n",
+            encoding="utf-8",
+        )
+        github = self.root / "GitHub" / "Project Cortex"
+        github.mkdir(parents=True)
+        (github / "issues.csv").write_text(
+            "Title,Body\n"
+            "External preference,I prefer every ticket to use long public launch testimonials.\n"
+            "Useful decision,We decided Project Gate should keep issue decisions as semantic memory.\n",
+            encoding="utf-8",
+        )
+
+        db_path = self.root / "personal-gating.sqlite"
+        init_db(db_path)
+        store = CortexStore(db_path, self.root / "personal-gating-vault")
+        result = store.import_sources(
+            user_id="test-user",
+            paths=[str(docs), str(github)],
+            processing="sync",
+            max_records=10,
+        )
+
+        self.assertEqual(result["failed"], 0)
+        self.assertTrue(store.search("test-user", "terse project notes", limit=5))
+        self.assertTrue(store.search("test-user", "direct caveats", limit=5))
+        self.assertTrue(store.search("test-user", "ceremonial launch intros", limit=5))
+        self.assertTrue(store.search("test-user", "Project Gate issue decisions semantic memory", limit=5))
+        self.assertFalse(store.search("test-user", "long public launch testimonials", limit=5))
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute("SELECT source, kind, content FROM memories").fetchall()
+        finally:
+            conn.close()
+        docs_kinds = {row["kind"] for row in rows if row["source"] == "docs"}
+        github_text = "\n".join(row["content"] for row in rows if row["source"] == "github")
+        self.assertTrue({"style", "preference", "negative"}.issubset(docs_kinds))
+        self.assertNotIn("long public launch testimonials", github_text)
+        self.assertFalse(any(row["source"] == "github" and row["kind"] in {"preference", "style", "negative"} for row in rows))
+
     def _write_chatgpt_export(self) -> None:
         folder = self.root / "chatgpt"
         folder.mkdir()
