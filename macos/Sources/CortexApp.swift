@@ -1251,6 +1251,225 @@ enum DistributionMode {
     }
 }
 
+struct CortexHTTPError: LocalizedError {
+    let statusCode: Int
+    let responseBody: String?
+
+    var errorDescription: String? {
+        "HTTP \(statusCode)"
+    }
+}
+
+enum CortexRecoveryText {
+    static func failureStatus(_ action: String, error: Error) -> String {
+        "\(action) failed. \(recoveryText(for: error))"
+    }
+
+    static func statusLine(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return trimmed }
+
+        if let backend = backendStatusLine(trimmed) {
+            return backend
+        }
+        if let range = trimmed.range(of: " failed: ", options: .caseInsensitive) {
+            let action = String(trimmed[..<range.lowerBound])
+            let detail = String(trimmed[range.upperBound...])
+            return "\(action) failed. \(recoveryText(forRawMessage: detail))"
+        }
+        if looksLikeRawError(trimmed) {
+            return recoveryText(forRawMessage: trimmed)
+        }
+        return trimmed
+    }
+
+    static func backendStatusLine(_ raw: String) -> String? {
+        let lowered = raw.lowercased()
+        if lowered.hasPrefix("backend start failed") {
+            return "Backend could not start. Click Reconnect, then try again."
+        }
+        if lowered == "backend did not become ready" {
+            return "Backend is still starting. Wait a moment, then click Reconnect."
+        }
+        if lowered.contains("backend") && lowered.contains("unavailable") {
+            return "Backend is unavailable. Click Reconnect, then try again."
+        }
+        return nil
+    }
+
+    static func inlineError(_ raw: String, fallback: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return fallback }
+        if looksLikeRawError(trimmed) {
+            return recoveryText(forRawMessage: trimmed)
+        }
+        if trimmed.count > 120 {
+            return fallback
+        }
+        return trimmed
+    }
+
+    static func needsAttention(_ raw: String) -> Bool {
+        let lowered = raw.lowercased()
+        return lowered.contains("error")
+            || lowered.contains("failed")
+            || lowered.contains("offline")
+            || lowered.contains("unhealthy")
+            || lowered.contains("denied")
+            || lowered.contains("unreachable")
+            || lowered.contains("unavailable")
+            || lowered.contains("could not")
+            || lowered.contains("timed out")
+            || lowered.contains("timeout")
+            || lowered.contains("unexpected response")
+            || lowered.contains("authentication needs")
+            || lowered.contains("reconnect")
+    }
+
+    private static func recoveryText(for error: Error) -> String {
+        if let httpError = error as? CortexHTTPError {
+            return httpRecoveryText(statusCode: httpError.statusCode)
+        }
+        if let urlError = error as? URLError {
+            return urlRecoveryText(urlError.code)
+        }
+        if error is DecodingError {
+            return "Cortex received an unexpected response. Click Reconnect, then try again."
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain {
+            return urlRecoveryText(URLError.Code(rawValue: nsError.code))
+        }
+        if nsError.domain == NSCocoaErrorDomain {
+            return cocoaRecoveryText(nsError.code)
+        }
+        return recoveryText(forRawMessage: error.localizedDescription)
+    }
+
+    private static func recoveryText(forRawMessage raw: String) -> String {
+        let lowered = raw.lowercased()
+        if lowered.contains("http 401") || lowered.contains("http 403") || lowered.contains("unauthorized") || lowered.contains("forbidden") {
+            return "Authentication needs a reset. Click Reconnect, then try again."
+        }
+        if lowered.contains("http 404") || lowered.contains("not found") {
+            return "This app and backend may be out of sync. Click Reconnect, then try again."
+        }
+        if lowered.contains("http 409") || lowered.contains("conflict") || lowered.contains("database is locked") {
+            return "Cortex is finishing another change. Wait a moment, then try again."
+        }
+        if lowered.contains("http 413") || lowered.contains("request entity too large") || lowered.contains("payload too large") {
+            return "That source is too large. Try a smaller export or import fewer files."
+        }
+        if lowered.contains("http 429") || lowered.contains("too many requests") {
+            return "Cortex is busy. Wait a moment, then try again."
+        }
+        if lowered.contains("http 5") || lowered.contains("internal server error") || lowered.contains("bad gateway") || lowered.contains("service unavailable") {
+            return "Local backend hit a problem. Click Reconnect, then try again."
+        }
+        if lowered.contains("connection refused") || lowered.contains("could not connect to the server") || lowered.contains("cannot connect to host") || lowered.contains("failed to connect") || lowered.contains("nsurlerrordomain code=-1004") {
+            return "Local backend is unreachable. Click Reconnect, then try again."
+        }
+        if lowered.contains("network connection was lost") || lowered.contains("nsurlerrordomain code=-1005") {
+            return "Connection dropped. Click Reconnect, then try again."
+        }
+        if lowered.contains("timed out") || lowered.contains("timeout") || lowered.contains("nsurlerrordomain code=-1001") {
+            return "The request timed out. Wait a moment, then try again."
+        }
+        if lowered.contains("not connected to the internet") || lowered.contains("offline") || lowered.contains("nsurlerrordomain code=-1009") {
+            return "Network is offline. Check the connection, then try again."
+        }
+        if lowered.contains("unsupported url") || lowered.contains("bad url") || lowered.contains("nsurlerrordomain code=-1000") {
+            return "The backend endpoint is invalid. Check the endpoint, then reconnect."
+        }
+        if lowered.contains("existing config") || lowered.contains("config is not a json") {
+            return "That app config could not be updated automatically. Copy the setup guide and update it manually."
+        }
+        if lowered.contains("data couldn") || lowered.contains("correct format") || lowered.contains("decoding") {
+            return "Cortex received an unexpected response. Click Reconnect, then try again."
+        }
+        if lowered.contains("operation not permitted") || lowered.contains("permission denied") || lowered.contains("not authorized") || lowered.contains("sandbox") {
+            return "Cortex needs permission for that file or folder. Choose it again or use the capture inbox."
+        }
+        if lowered.contains("no such file") || lowered.contains("file doesn") || lowered.contains("file not found") {
+            return "That file is no longer available. Choose it again or refresh Sources."
+        }
+        return "Refresh and try again. If it repeats, click Reconnect."
+    }
+
+    private static func httpRecoveryText(statusCode: Int) -> String {
+        switch statusCode {
+        case 401, 403:
+            return "Authentication needs a reset. Click Reconnect, then try again."
+        case 404:
+            return "This app and backend may be out of sync. Click Reconnect, then try again."
+        case 409:
+            return "Cortex is finishing another change. Wait a moment, then try again."
+        case 413:
+            return "That source is too large. Try a smaller export or import fewer files."
+        case 429:
+            return "Cortex is busy. Wait a moment, then try again."
+        case 500...599:
+            return "Local backend hit a problem. Click Reconnect, then try again."
+        default:
+            return "Refresh and try again. If it repeats, click Reconnect."
+        }
+    }
+
+    private static func urlRecoveryText(_ code: URLError.Code) -> String {
+        switch code {
+        case .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed:
+            return "Local backend is unreachable. Click Reconnect, then try again."
+        case .networkConnectionLost:
+            return "Connection dropped. Click Reconnect, then try again."
+        case .timedOut:
+            return "The request timed out. Wait a moment, then try again."
+        case .notConnectedToInternet:
+            return "Network is offline. Check the connection, then try again."
+        case .badURL, .unsupportedURL:
+            return "The backend endpoint is invalid. Check the endpoint, then reconnect."
+        case .userAuthenticationRequired, .userCancelledAuthentication:
+            return "Authentication needs a reset. Click Reconnect, then try again."
+        default:
+            return "Local backend is unreachable. Click Reconnect, then try again."
+        }
+    }
+
+    private static func cocoaRecoveryText(_ code: Int) -> String {
+        switch code {
+        case NSFileReadNoPermissionError, NSFileWriteNoPermissionError:
+            return "Cortex needs permission for that file or folder. Choose it again or use the capture inbox."
+        case NSFileNoSuchFileError:
+            return "That file is no longer available. Choose it again or refresh Sources."
+        default:
+            return "Refresh and try again. If it repeats, click Reconnect."
+        }
+    }
+
+    private static func looksLikeRawError(_ raw: String) -> Bool {
+        let lowered = raw.lowercased()
+        return lowered.contains("http ")
+            || lowered.contains("nsurlerrordomain")
+            || lowered.contains("error domain=")
+            || lowered.contains("localized description")
+            || lowered.contains("connection refused")
+            || lowered.contains("could not connect")
+            || lowered.contains("cannot connect")
+            || lowered.contains("timed out")
+            || lowered.contains("timeout")
+            || lowered.contains("not connected to the internet")
+            || lowered.contains("internal server error")
+            || lowered.contains("bad gateway")
+            || lowered.contains("service unavailable")
+            || lowered.contains("data couldn")
+            || lowered.contains("correct format")
+            || lowered.contains("decoding")
+            || lowered.contains("permission denied")
+            || lowered.contains("operation not permitted")
+            || lowered.contains("no such file")
+    }
+}
+
 final class BackendSupervisor {
     static let shared = BackendSupervisor()
 
@@ -1302,7 +1521,7 @@ final class BackendSupervisor {
             }
             return "Backend did not become ready"
         } catch {
-            return "Backend start failed: \(error.localizedDescription)"
+            return CortexRecoveryText.failureStatus("Backend start", error: error)
         }
     }
 
@@ -1644,8 +1863,14 @@ final class AppState: ObservableObject {
     }
 
     var displayStatus: String {
-        if backendStatus == status { return status }
-        return "\(backendStatus) · \(status)"
+        let backend = displayBackendStatus
+        let current = CortexRecoveryText.statusLine(status)
+        if backend == current { return current }
+        return "\(backend) · \(current)"
+    }
+
+    var displayBackendStatus: String {
+        CortexRecoveryText.statusLine(backendStatus)
     }
 
     var appVersion: String {
@@ -1849,7 +2074,7 @@ final class AppState: ObservableObject {
             )
             return true
         } catch {
-            status = "MCP token registration failed: \(error.localizedDescription)"
+            status = CortexRecoveryText.failureStatus("MCP token registration", error: error)
             return false
         }
     }
@@ -2064,7 +2289,7 @@ final class AppState: ObservableObject {
             await loadTrust()
             return true
         } catch {
-            status = "Save failed: \(error.localizedDescription)"
+            status = CortexRecoveryText.failureStatus("Save", error: error)
             notify("Cortex", "Save failed")
             return false
         }
@@ -2287,7 +2512,7 @@ final class AppState: ObservableObject {
             let data = try await request(path: "/v1/inbox?limit=30", method: "GET")
             inbox = try JSONDecoder().decode(InboxResponse.self, from: data).results
         } catch {
-            status = "Inbox failed: \(error.localizedDescription)"
+            status = CortexRecoveryText.failureStatus("Inbox", error: error)
         }
     }
 
@@ -2296,7 +2521,7 @@ final class AppState: ObservableObject {
             let data = try await request(path: "/v1/recent?limit=20", method: "GET")
             recent = try JSONDecoder().decode(RecentResponse.self, from: data).results
         } catch {
-            status = "Recent failed: \(error.localizedDescription)"
+            status = CortexRecoveryText.failureStatus("Recent", error: error)
         }
     }
 
@@ -2305,7 +2530,7 @@ final class AppState: ObservableObject {
             let data = try await request(path: "/v1/imports?limit=12&include_deleted=false", method: "GET")
             importHistory = try JSONDecoder().decode(SourceImportHistoryResponse.self, from: data).results
         } catch {
-            status = "Import history failed: \(error.localizedDescription)"
+            status = CortexRecoveryText.failureStatus("Import history", error: error)
         }
     }
 
@@ -2342,7 +2567,7 @@ final class AppState: ObservableObject {
             hasSearched = true
             askAnswer = ""
             askCitations = []
-            status = "Search failed: \(error.localizedDescription)"
+            status = CortexRecoveryText.failureStatus("Search", error: error)
         }
     }
 
@@ -2353,7 +2578,7 @@ final class AppState: ObservableObject {
             graphNodes = graph.nodes
             graphEdges = graph.edges
         } catch {
-            status = "Graph failed: \(error.localizedDescription)"
+            status = CortexRecoveryText.failureStatus("Graph", error: error)
         }
     }
 
@@ -2363,7 +2588,7 @@ final class AppState: ObservableObject {
             stats = try JSONDecoder().decode(StatsResponse.self, from: data)
             await loadMemoryQuality()
         } catch {
-            status = "Stats failed: \(error.localizedDescription)"
+            status = CortexRecoveryText.failureStatus("Stats", error: error)
         }
     }
 
@@ -2372,7 +2597,7 @@ final class AppState: ObservableObject {
             let data = try await request(path: "/v1/memory/quality", method: "GET")
             memoryQuality = try JSONDecoder().decode(MemoryQualityResponse.self, from: data)
         } catch {
-            status = "Quality failed: \(error.localizedDescription)"
+            status = CortexRecoveryText.failureStatus("Quality", error: error)
         }
     }
 
@@ -2381,7 +2606,7 @@ final class AppState: ObservableObject {
             let data = try await request(path: "/v1/review/today", method: "GET")
             review = try JSONDecoder().decode(DailyReviewResponse.self, from: data)
         } catch {
-            status = "Review failed: \(error.localizedDescription)"
+            status = CortexRecoveryText.failureStatus("Review", error: error)
         }
     }
 
@@ -2390,7 +2615,7 @@ final class AppState: ObservableObject {
             let data = try await request(path: "/v1/loop", method: "GET")
             productLoop = try JSONDecoder().decode(ProductLoopResponse.self, from: data)
         } catch {
-            status = "Loop failed: \(error.localizedDescription)"
+            status = CortexRecoveryText.failureStatus("Loop", error: error)
         }
     }
 
@@ -2444,7 +2669,7 @@ final class AppState: ObservableObject {
                 }
             }
         } catch {
-            status = "Settings failed: \(error.localizedDescription)"
+            status = CortexRecoveryText.failureStatus("Settings", error: error)
         }
     }
 
@@ -2493,7 +2718,7 @@ final class AppState: ObservableObject {
             }
             return true
         } catch {
-            status = "Settings save failed: \(error.localizedDescription)"
+            status = CortexRecoveryText.failureStatus("Settings save", error: error)
             return false
         }
     }
@@ -2552,7 +2777,7 @@ final class AppState: ObservableObject {
             await loadIntegrationTokens()
             await loadSourceConnectivity()
         } catch {
-            status = "Trust failed: \(error.localizedDescription)"
+            status = CortexRecoveryText.failureStatus("Trust", error: error)
         }
     }
 
@@ -2612,7 +2837,7 @@ final class AppState: ObservableObject {
             let data = try await request(path: "/v1/integrations/tokens?include_revoked=\(include ? "true" : "false")", method: "GET")
             integrationTokens = try JSONDecoder().decode(IntegrationTokenListResponse.self, from: data).results
         } catch {
-            status = "Token refresh failed: \(error.localizedDescription)"
+            status = CortexRecoveryText.failureStatus("Token refresh", error: error)
         }
     }
 
@@ -2634,7 +2859,7 @@ final class AppState: ObservableObject {
             await loadIntegrationTokens()
             refreshIntegrationStates()
         } catch {
-            status = "Token revoke failed: \(error.localizedDescription)"
+            status = CortexRecoveryText.failureStatus("Token revoke", error: error)
         }
     }
 
@@ -2692,7 +2917,7 @@ final class AppState: ObservableObject {
             refreshIntegrationStates()
             status = "\(integration.name) connected"
         } catch {
-            status = "\(integration.name) install failed: \(error.localizedDescription)"
+            status = CortexRecoveryText.failureStatus("\(integration.name) install", error: error)
         }
     }
 
@@ -3093,7 +3318,7 @@ final class AppState: ObservableObject {
                 status = label
                 await recordContextReuse(surface: surface, query: query, target: target)
             } catch {
-                status = "Agent adaptation layer failed: \(error.localizedDescription)"
+                status = CortexRecoveryText.failureStatus("Agent adaptation layer", error: error)
             }
         }
     }
@@ -3113,14 +3338,14 @@ final class AppState: ObservableObject {
                 await recordContextReuse(surface: surface, query: query, target: target)
             } catch {
                 if !query.isEmpty {
-                    status = "Profile failed: \(error.localizedDescription)"
+                    status = CortexRecoveryText.failureStatus("Profile", error: error)
                 } else if let review {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(review.context_pack, forType: .string)
                     status = "Memory view prepared"
                     await recordContextReuse(surface: surface, query: query, target: target)
                 } else {
-                    status = "Profile failed: \(error.localizedDescription)"
+                    status = CortexRecoveryText.failureStatus("Profile", error: error)
                 }
             }
         }
@@ -3131,7 +3356,7 @@ final class AppState: ObservableObject {
             let data = try await request(path: "/v1/diagnostics", method: "GET")
             diagnostics = try JSONDecoder().decode(DiagnosticsResponse.self, from: data)
         } catch {
-            status = "Diagnostics failed: \(error.localizedDescription)"
+            status = CortexRecoveryText.failureStatus("Diagnostics", error: error)
         }
     }
 
@@ -3140,7 +3365,7 @@ final class AppState: ObservableObject {
             let data = try await request(path: "/v1/reliability/report", method: "GET")
             reliabilityReport = try JSONDecoder().decode(ReliabilityReportResponse.self, from: data)
         } catch {
-            status = "Reliability check failed: \(error.localizedDescription)"
+            status = CortexRecoveryText.failureStatus("Reliability check", error: error)
         }
     }
 
@@ -3156,7 +3381,7 @@ final class AppState: ObservableObject {
                 await loadReliability()
                 await loadTrust()
             } catch {
-                status = "Backup failed: \(error.localizedDescription)"
+                status = CortexRecoveryText.failureStatus("Backup", error: error)
             }
         }
     }
@@ -3182,8 +3407,9 @@ final class AppState: ObservableObject {
                 await loadReliability()
                 await loadTrust()
             } catch {
-                lastRepairSummary = "Repair failed: \(error.localizedDescription)"
-                status = "Repair failed: \(error.localizedDescription)"
+                let message = CortexRecoveryText.failureStatus("Repair", error: error)
+                lastRepairSummary = message
+                status = message
             }
         }
     }
@@ -3202,7 +3428,7 @@ final class AppState: ObservableObject {
                 await loadReliability()
                 await loadTrust()
             } catch {
-                status = "Rebuild failed: \(error.localizedDescription)"
+                status = CortexRecoveryText.failureStatus("Rebuild", error: error)
             }
         }
     }
@@ -3221,7 +3447,7 @@ final class AppState: ObservableObject {
                 status = "Support bundle saved"
                 NSWorkspace.shared.open(fileURL)
             } catch {
-                status = "Support bundle failed: \(error.localizedDescription)"
+                status = CortexRecoveryText.failureStatus("Support bundle", error: error)
             }
         }
     }
@@ -3242,7 +3468,7 @@ final class AppState: ObservableObject {
                 await loadReliability()
                 await loadTrust()
             } catch {
-                status = "Approve failed: \(error.localizedDescription)"
+                status = CortexRecoveryText.failureStatus("Approve", error: error)
             }
         }
     }
@@ -3262,7 +3488,7 @@ final class AppState: ObservableObject {
                 await loadReliability()
                 await loadTrust()
             } catch {
-                status = "Archive failed: \(error.localizedDescription)"
+                status = CortexRecoveryText.failureStatus("Archive", error: error)
             }
         }
     }
@@ -3287,7 +3513,7 @@ final class AppState: ObservableObject {
                 await loadReliability()
                 await loadTrust()
             } catch {
-                status = "Batch approve failed: \(error.localizedDescription)"
+                status = CortexRecoveryText.failureStatus("Batch approve", error: error)
             }
         }
     }
@@ -3311,7 +3537,7 @@ final class AppState: ObservableObject {
                 await loadReliability()
                 await loadTrust()
             } catch {
-                status = "Batch archive failed: \(error.localizedDescription)"
+                status = CortexRecoveryText.failureStatus("Batch archive", error: error)
             }
         }
     }
@@ -3331,7 +3557,7 @@ final class AppState: ObservableObject {
                 await loadReliability()
                 await loadTrust()
             } catch {
-                status = "Forget failed: \(error.localizedDescription)"
+                status = CortexRecoveryText.failureStatus("Forget", error: error)
             }
         }
     }
@@ -3348,7 +3574,7 @@ final class AppState: ObservableObject {
                 }
                 await refreshAfterCapture()
             } catch {
-                status = "Remove import failed: \(error.localizedDescription)"
+                status = CortexRecoveryText.failureStatus("Remove import", error: error)
             }
         }
     }
@@ -3364,7 +3590,7 @@ final class AppState: ObservableObject {
                 await loadReliability()
                 await loadTrust()
             } catch {
-                status = "Delete backups failed: \(error.localizedDescription)"
+                status = CortexRecoveryText.failureStatus("Delete backups", error: error)
             }
         }
     }
@@ -3393,7 +3619,7 @@ final class AppState: ObservableObject {
                 await loadReliability()
                 await loadTrust()
             } catch {
-                status = "Restore failed: \(error.localizedDescription)"
+                status = CortexRecoveryText.failureStatus("Restore", error: error)
             }
         }
     }
@@ -3435,7 +3661,7 @@ final class AppState: ObservableObject {
                 await loadReliability()
                 await loadTrust()
             } catch {
-                status = "Delete all data failed: \(error.localizedDescription)"
+                status = CortexRecoveryText.failureStatus("Delete all data", error: error)
             }
         }
     }
@@ -3458,7 +3684,7 @@ final class AppState: ObservableObject {
             status = "Export saved"
             NSWorkspace.shared.open(fileURL)
         } catch {
-            status = "Export failed: \(error.localizedDescription)"
+            status = CortexRecoveryText.failureStatus("Export", error: error)
         }
     }
 
@@ -3509,7 +3735,7 @@ final class AppState: ObservableObject {
                     updateStatus = "Cortex is up to date"
                 }
             } catch {
-                updateStatus = "Update check failed: \(error.localizedDescription)"
+                updateStatus = CortexRecoveryText.failureStatus("Update check", error: error)
             }
         }
     }
@@ -3602,7 +3828,7 @@ final class AppState: ObservableObject {
         }
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            throw NSError(domain: "Cortex", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode)"])
+            throw CortexHTTPError(statusCode: http.statusCode, responseBody: String(data: data, encoding: .utf8))
         }
         return data
     }
@@ -3735,12 +3961,7 @@ struct CortexView: View {
     }
 
     private var footerNeedsAttention: Bool {
-        let status = state.displayStatus.lowercased()
-        return status.contains("error")
-            || status.contains("failed")
-            || status.contains("offline")
-            || status.contains("unhealthy")
-            || status.contains("denied")
+        CortexRecoveryText.needsAttention(state.displayStatus)
     }
 }
 
@@ -4312,7 +4533,7 @@ struct SourceAccountHealthRow: View {
 
     private var detail: String {
         if let error = account.last_error ?? cursor?.last_error {
-            return error
+            return CortexRecoveryText.inlineError(error, fallback: "Refresh Sources. If it repeats, reconnect this source.")
         }
         if let synced = account.last_sync_at ?? cursor?.last_completed_at {
             return "\(account.source) · \(account.status) · synced \(shortDate(synced))"
@@ -5543,7 +5764,7 @@ struct SettingsBackendSection: View {
                 }
                 Spacer()
             }
-            Text("Backend: \(state.backendStatus)")
+            Text("Backend: \(state.displayBackendStatus)")
                 .font(.caption)
                 .foregroundColor(.secondary)
             Text("Log: \(state.backendLogPath)")

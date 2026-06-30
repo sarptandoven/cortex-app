@@ -54,6 +54,16 @@ class NoisyImportGoldenTests(unittest.TestCase):
         for phrase in manifest["boilerplate_phrases"]:
             self.assertNotIn(phrase, joined_content)
             self.assertNotIn(phrase, joined_excerpt)
+        for guard in manifest.get("external_speaker_rejected_personal_signals", []):
+            with self.subTest(external_speaker_rejected_personal_signal=guard):
+                leaked = [
+                    dict(row)
+                    for row in rows
+                    if row["source"] == guard["source"]
+                    and row["layer"] == guard["layer"]
+                    and guard["phrase"] in row["content"]
+                ]
+                self.assertEqual([], leaked)
 
         original_vector_ready = self.store._vector_ready
         self.store._vector_ready = lambda conn: False
@@ -86,6 +96,18 @@ class NoisyImportGoldenTests(unittest.TestCase):
                 for fragment in expected["source_url_contains"]:
                     self.assertIn(fragment, top["source_url"])
                 self.assertTrue(top["raw_excerpt"])
+
+        sanitization = manifest.get("local_file_citation_sanitization")
+        if sanitization:
+            answer = self.store.answer_query("test-user", sanitization["query"], limit=3)
+            context = self.store.context_pack("test-user", query=sanitization["query"], limit=3)
+            combined = json.dumps(answer, sort_keys=True) + "\n" + context
+            for fragment in sanitization["raw_path_fragments"]:
+                with self.subTest(local_file_raw_path_fragment=fragment):
+                    self.assertNotIn(fragment, combined)
+            for fragment in sanitization["sanitized_source_contains"]:
+                with self.subTest(local_file_sanitized_source_fragment=fragment):
+                    self.assertIn(fragment, combined)
 
     def _memory_rows(self) -> list[sqlite3.Row]:
         conn = sqlite3.connect(self.db_path)

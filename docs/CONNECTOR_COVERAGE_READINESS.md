@@ -17,6 +17,27 @@ Live OAuth means later direct cloud sync for services that expose appropriate AP
 | OAuth planned | Candidate for the later live OAuth/API sync phase. Not a beta promise. |
 | Local/import only | Should remain user-selected local import unless a safer platform API becomes available. |
 
+## Catalog Metadata Contract
+
+`GET /v1/source-accounts/catalog` is the source of truth for connector readiness copy in product surfaces. It does not mean OAuth is implemented. Each catalog item should expose:
+
+- `readiness_status`: one of `export-only`, `import-ready`, or `live-planned`.
+- `scopes`: future live OAuth/API scopes only. Export-only and local import connectors use an empty list.
+- `permissions_required`: the first-100 import permission requirement, plus future live consent scope requirements when `readiness_status` is `live-planned`.
+- `first_100_note`: the beta-safe setup note. This should describe exports, selected files/folders, or legal local copies, not live account sync.
+
+Representative catalog expectations:
+
+| Connector | `readiness_status` | First-100 permission | Live scopes |
+| --- | --- | --- | --- |
+| ChatGPT | `export-only` | User-selected OpenAI data export. | None. |
+| Apple Mail | `import-ready` | User-selected `.eml`, `.emlx`, or `.mbox` export files. | None. |
+| Gmail | `live-planned` | User-selected Gmail Takeout or mail export files; no OAuth token. | `gmail.readonly`. |
+| Notion | `live-planned` | User-selected Markdown, CSV, or HTML export. | `read_content`. |
+| Slack | `live-planned` | User-selected workspace export folder or zip. | `channels:history`, `groups:history`, `im:history`. |
+| GitHub | `live-planned` | User-selected issue, PR, project, CSV, JSON, Markdown, or text exports. | `repo:read`, `read:org`. |
+| Obsidian | `import-ready` | User-selected Markdown vault folder. | None. |
+
 ## Coverage Map
 
 | Source | First-100 beta path | Beta readiness | Later live OAuth/API posture | Catalog mapping |

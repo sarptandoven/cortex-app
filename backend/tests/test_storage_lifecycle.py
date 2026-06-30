@@ -13,6 +13,7 @@ from backend.app.database import connect, init_db
 from backend.app.extractor import extract_context
 from backend.app.mcp_tools import call_tool
 from backend.app.storage import CortexStore
+from scripts.export_support_bundle import validate_content_free_bundle
 
 
 DUMMY_OPENAI_KEY = "sk-" + ("0" * 24)
@@ -1045,14 +1046,17 @@ class CortexStorageLifecycleTests(unittest.TestCase):
     def test_delete_user_data_purges_current_vault_index_events_and_backups(self) -> None:
         phrase = "Delete all local Cortex user data phrase."
         self.capture(phrase)
-        backup = self.store.create_backup(self.user_id)
-        self.assertTrue(Path(backup["backup_path"]).exists())
+        backups = [self.store.create_backup(self.user_id) for _ in range(2)]
+        backup_paths = [Path(backup["backup_path"]) for backup in backups]
+        self.assertTrue(all(path.exists() for path in backup_paths))
         self.assertTrue(self.store.search(self.user_id, "local Cortex user data"))
         self.assertTrue(list(self.store.vault.iter_events(self.user_id)))
 
         deleted = self.store.delete_user_data(self.user_id)
 
         self.assertTrue(deleted["include_backups"])
+        self.assertEqual(deleted["vault"]["backups"], 2)
+        self.assertGreater(deleted["vault"]["backup_bytes_deleted"], 0)
         self.assertGreaterEqual(deleted["sqlite"]["captures"], 1)
         self.assertGreaterEqual(deleted["sqlite"]["memories"], 1)
         self.assertGreaterEqual(deleted["vault"]["captures"], 1)
@@ -1063,6 +1067,10 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertFalse(list((self.store.vault.root / "captures").rglob("*.json")))
         self.assertFalse(list((self.store.vault.root / "memories").rglob("*.json")))
         self.assertFalse(list(self.store.vault.backups_dir.glob("*")))
+        self.assertTrue(all(not path.exists() for path in backup_paths))
+        self.assertIsNone(self.store.latest_backup())
+        with self.assertRaises(FileNotFoundError):
+            self.store.restore_latest_backup(self.user_id)
         self.assertEqual(list(self.store.vault.iter_events(self.user_id)), [])
 
         rebuilt = self.store.rebuild_index_from_vault(self.user_id)
@@ -1271,6 +1279,7 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         )
         bundle = self.store.support_bundle(self.user_id)
         payload = json.dumps(bundle, sort_keys=True)
+        validate_content_free_bundle(bundle)
 
         self.assertEqual(bundle["bundle_schema"], 1)
         self.assertEqual(bundle["backend"]["health_contract"], 3)
@@ -1289,6 +1298,17 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         mcp_bundle = call_tool(self.store, self.user_id, "get_support_bundle", {})
         self.assertEqual(mcp_bundle["bundle_schema"], 1)
         self.assertFalse(mcp_bundle["privacy"]["contains_memory_content"])
+        validate_content_free_bundle(mcp_bundle)
+
+        compromised = json.loads(json.dumps(bundle))
+        compromised["captures"] = [{"raw_text": "private support text"}]
+        with self.assertRaisesRegex(ValueError, "content-free"):
+            validate_content_free_bundle(compromised)
+
+        compromised_query = json.loads(json.dumps(bundle))
+        compromised_query["recent_events"][0]["safe_metadata"]["query"] = "Support bundle smoke text"
+        with self.assertRaisesRegex(ValueError, "content-free"):
+            validate_content_free_bundle(compromised_query)
 
     def test_data_lifecycle_report_explains_storage_backup_export_and_delete(self) -> None:
         self.capture(
@@ -1570,19 +1590,55 @@ class CortexStorageLifecycleTests(unittest.TestCase):
     def test_trust_controls_redact_shared_context_and_exports(self) -> None:
         self.capture(
             f"Cortex should never leak password=supersecret123 or {DUMMY_OPENAI_KEY} "
-            "or vamika@example.com to agent context after testing."
+            "or vamika@example.com or ghp_abcdefghijklmnopqrstuvwxyz123456 "
+            "or xoxb-12345678901234567890 or 4111 1111 1111 1111 to agent context after testing."
         )
 
         pack = self.store.context_pack(self.user_id, query="leak", limit=5)
         self.assertIn("[REDACTED_SECRET]", pack)
         self.assertIn("[REDACTED_OPENAI_KEY]", pack)
         self.assertIn("[REDACTED_EMAIL]", pack)
+        self.assertIn("[REDACTED_GITHUB_TOKEN]", pack)
+        self.assertIn("[REDACTED_SLACK_TOKEN]", pack)
+        self.assertIn("[REDACTED_NUMBER]", pack)
         self.assertNotIn("supersecret123", pack)
         self.assertNotIn("vamika@example.com", pack)
+        self.assertNotIn("ghp_abcdefghijklmnopqrstuvwxyz123456", pack)
+        self.assertNotIn("xoxb-12345678901234567890", pack)
+        self.assertNotIn("4111 1111 1111 1111", pack)
 
         export = self.store.export_markdown(self.user_id)
         self.assertIn("[REDACTED_SECRET]", export)
         self.assertNotIn(DUMMY_OPENAI_KEY, export)
+        self.assertNotIn("supersecret123", export)
+        self.assertNotIn("vamika@example.com", export)
+
+        json_export = self.store.export_json(self.user_id)
+        json_export_text = json.dumps(json_export, sort_keys=True)
+        self.assertIn("[REDACTED_SECRET]", json_export_text)
+        self.assertIn("[REDACTED_OPENAI_KEY]", json_export_text)
+        self.assertIn("[REDACTED_EMAIL]", json_export_text)
+        self.assertIn("[REDACTED_GITHUB_TOKEN]", json_export_text)
+        self.assertIn("[REDACTED_SLACK_TOKEN]", json_export_text)
+        self.assertIn("[REDACTED_NUMBER]", json_export_text)
+        self.assertNotIn("supersecret123", json_export_text)
+        self.assertNotIn(DUMMY_OPENAI_KEY, json_export_text)
+        self.assertNotIn("vamika@example.com", json_export_text)
+        self.assertNotIn("ghp_abcdefghijklmnopqrstuvwxyz123456", json_export_text)
+        self.assertNotIn("xoxb-12345678901234567890", json_export_text)
+        self.assertNotIn("4111 1111 1111 1111", json_export_text)
+
+        self.store.update_settings(self.user_id, {"allow_agent_exports": True})
+        mcp_json = call_tool(self.store, self.user_id, "export_memory", {"format": "json"})
+        mcp_json_text = json.dumps(mcp_json, sort_keys=True)
+        self.assertIn("[REDACTED_SECRET]", mcp_json_text)
+        self.assertNotIn("supersecret123", mcp_json_text)
+        self.assertNotIn(DUMMY_OPENAI_KEY, mcp_json_text)
+
+        mcp_markdown = call_tool(self.store, self.user_id, "export_memory", {"format": "markdown"})
+        self.assertIn("[REDACTED_SECRET]", mcp_markdown)
+        self.assertNotIn("supersecret123", mcp_markdown)
+        self.assertNotIn(DUMMY_OPENAI_KEY, mcp_markdown)
 
         self.store.update_settings(self.user_id, {"redact_sensitive_context": False})
         unredacted = self.store.context_pack(self.user_id, query="leak", limit=5)
@@ -1646,6 +1702,50 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         unredacted_answer_text = json.dumps(unredacted_answer)
         self.assertNotIn("/Users/vamika", unredacted_answer_text)
         self.assertIn("local-file://Project%20Atlas.md#line=12", unredacted_answer_text)
+
+    def test_trust_controls_redact_local_paths_inside_service_citation_parameters(self) -> None:
+        service_locator = (
+            "notion://page/project-atlas?workspace=beta"
+            "&path=/Users/vamika/Documents/Cortex Private/Project Atlas.md"
+            "#anchor=/Users/vamika/Library/Application Support/Cortex/Project Atlas Notes.md"
+            "&encoded=%2FUsers%2Fvamika%2FDocuments%2FCortex%20Private%2FEncoded%20Plan.md%23line%3D44"
+            "&line=12"
+        )
+        capture = self.store.save_capture(
+            user_id=self.user_id,
+            content="Project Atlas service locator parameters should preserve service citations without local paths.",
+            source="notion",
+            source_url=service_locator,
+            title="Project Atlas service locator",
+            extracted=extract_context(
+                "Project Atlas service locator parameters should preserve service citations without local paths.",
+                "notion",
+            ),
+        )
+        self.assertTrue(self.store.approve_capture(self.user_id, capture["capture_id"]))
+        self.store.update_settings(self.user_id, {"allow_agent_exports": True})
+
+        shared_outputs = [
+            json.dumps(self.store.answer_query(self.user_id, "Project Atlas service locator", limit=5)),
+            self.store.context_pack(self.user_id, query="Project Atlas service locator", limit=5),
+            json.dumps(self.store.personal_profile(self.user_id, query="Project Atlas service locator", limit=5)),
+            json.dumps(self.store.export_json(self.user_id)),
+            self.store.export_markdown(self.user_id),
+            json.dumps(call_tool(self.store, self.user_id, "search_memory", {"query": "Project Atlas service locator", "top_k": 5})),
+            json.dumps(call_tool(self.store, self.user_id, "export_memory", {"format": "json"})),
+            call_tool(self.store, self.user_id, "build_context_pack", {"query": "Project Atlas service locator", "limit": 5}),
+        ]
+
+        for output in shared_outputs:
+            with self.subTest(output=output[:80]):
+                self.assertNotIn("/Users/vamika", output)
+                self.assertNotIn("%2FUsers%2Fvamika", output)
+                self.assertIn("notion://page/project-atlas", output)
+                self.assertIn("workspace=beta", output)
+                self.assertIn("path=local-file://Project%20Atlas.md", output)
+                self.assertIn("anchor=local-file://Project%20Atlas%20Notes.md", output)
+                self.assertIn("encoded=local-file://Encoded%20Plan.md%23line%3D44", output)
+                self.assertIn("line=12", output)
 
     def test_agent_permission_gates_and_audit_summary(self) -> None:
         self.store.update_settings(self.user_id, {"allow_agent_writes": False})

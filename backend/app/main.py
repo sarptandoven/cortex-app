@@ -125,6 +125,33 @@ def _global_token_user_id(x_cortex_user: str | None) -> str:
     return requested_user or settings.default_user_id
 
 
+def _hosted_readiness_contract() -> dict[str, Any]:
+    shard_mode = (settings.shard_mode or "local").strip().lower()
+    hosted_mode = shard_mode != "local"
+    requires_scoped_tokens = bool(settings.require_scoped_api_tokens)
+    global_token_user_switching = "blocked" if hosted_mode or requires_scoped_tokens else "allowed_local_compatibility"
+    scoped_token_check = {
+        "name": "scoped_api_tokens_required",
+        "status": "ok",
+        "detail": "Hosted shard modes require per-user scoped REST tokens before readiness passes.",
+    }
+    if hosted_mode and not requires_scoped_tokens:
+        scoped_token_check = {
+            "name": "scoped_api_tokens_required",
+            "status": "blocked",
+            "detail": "Set CORTEX_REQUIRE_SCOPED_API_TOKENS=1 before marking hosted shard mode ready.",
+        }
+    checks = [scoped_token_check]
+    return {
+        "status": "ok" if all(check["status"] == "ok" for check in checks) else "blocked",
+        "hosted_mode": hosted_mode,
+        "shard_mode": shard_mode,
+        "require_scoped_api_tokens": requires_scoped_tokens,
+        "global_token_user_switching": global_token_user_switching,
+        "checks": checks,
+    }
+
+
 def auth(request: Request, authorization: str | None = Header(default=None), x_cortex_user: str | None = Header(default=None)) -> str:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid Cortex API token")
@@ -267,15 +294,26 @@ def root() -> str:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return store.health_payload(mode="fastapi", auth=bool(settings.api_key))
+    payload = store.health_payload(mode="fastapi", auth=bool(settings.api_key))
+    payload["hosted_readiness"] = _hosted_readiness_contract()
+    return payload
 
 
 @app.get("/ready")
 def ready() -> dict[str, Any]:
+    hosted_readiness = _hosted_readiness_contract()
+    if hosted_readiness["status"] != "ok":
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "needs_configuration",
+                "hosted_readiness": hosted_readiness,
+            },
+        )
     diagnostics = store.diagnostics(settings.default_user_id)
     if diagnostics["status"] != "ok":
         raise HTTPException(status_code=503, detail=diagnostics)
-    return {"status": "ok", "diagnostics": diagnostics}
+    return {"status": "ok", "diagnostics": diagnostics, "hosted_readiness": hosted_readiness}
 
 
 @app.get("/capture", response_class=HTMLResponse)

@@ -120,10 +120,38 @@ class FastAPIContractTests(unittest.TestCase):
         response = self.client.get("/health")
 
         self.assertEqual(response.status_code, 200)
-        sharding = response.json()["sharding"]
+        payload = response.json()
+        sharding = payload["sharding"]
         self.assertEqual(sharding["mode"], "local")
         self.assertEqual(sharding["default"]["shard_id"], "local")
         self.assertIn("db_path", sharding["default"])
+        hosted_readiness = payload["hosted_readiness"]
+        self.assertEqual(hosted_readiness["status"], "ok")
+        self.assertFalse(hosted_readiness["hosted_mode"])
+        self.assertEqual(hosted_readiness["shard_mode"], "local")
+        self.assertFalse(hosted_readiness["require_scoped_api_tokens"])
+        self.assertEqual(hosted_readiness["global_token_user_switching"], "allowed_local_compatibility")
+        self.assertEqual(hosted_readiness["checks"][0]["name"], "scoped_api_tokens_required")
+
+    def test_ready_requires_scoped_api_tokens_for_hosted_shard_modes(self) -> None:
+        original_settings = main_module.settings
+        main_module.settings = replace(original_settings, shard_mode="bucket", require_scoped_api_tokens=False)
+        try:
+            response = self.client.get("/ready")
+
+            self.assertEqual(response.status_code, 503)
+            detail = response.json()["detail"]
+            self.assertEqual(detail["status"], "needs_configuration")
+            hosted_readiness = detail["hosted_readiness"]
+            self.assertEqual(hosted_readiness["status"], "blocked")
+            self.assertTrue(hosted_readiness["hosted_mode"])
+            self.assertEqual(hosted_readiness["shard_mode"], "bucket")
+            self.assertFalse(hosted_readiness["require_scoped_api_tokens"])
+            self.assertEqual(hosted_readiness["global_token_user_switching"], "blocked")
+            self.assertEqual(hosted_readiness["checks"][0]["status"], "blocked")
+            self.assertIn("CORTEX_REQUIRE_SCOPED_API_TOKENS=1", hosted_readiness["checks"][0]["detail"])
+        finally:
+            main_module.settings = original_settings
 
     def test_memory_quality_endpoint_exposes_citation_and_review_contract(self) -> None:
         created = self.client.post(
@@ -175,6 +203,40 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(payload["citations"][0]["source_url"], "local-file://ask-source.md")
         self.assertEqual(payload["results"][0]["source_url"], "local-file://ask-source.md")
         self.assertIn("Ask citation contract", payload["citations"][0]["excerpt"])
+
+    def test_ask_endpoint_redacts_local_paths_inside_service_citation_parameters(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "ask-service-locator-contract"}
+        phrase = "FastAPI Ask service locator privacy should quote source-backed memory."
+        source_url = (
+            "obsidian://open?vault=Work"
+            "&path=%2FUsers%2Fvamika%2FDocuments%2FFastAPI%20Private%2FAsk%20Source.md"
+            "#ref=/Users/vamika/Documents/FastAPI Private/Ask Notes.md&line=9"
+        )
+        created = self.client.post(
+            "/v1/captures",
+            json={
+                "content": phrase,
+                "source": "ask-service-test",
+                "source_url": source_url,
+            },
+            headers=headers,
+        )
+        self.assertEqual(created.status_code, 200)
+        approved = self.client.post(f"/v1/captures/{created.json()['capture_id']}/approve", headers=headers)
+        self.assertEqual(approved.status_code, 200)
+
+        response = self.client.get("/v1/ask", params={"query": "Ask service locator privacy", "limit": 5}, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        payload_text = json.dumps(payload)
+        self.assertNotIn("/Users/vamika", payload_text)
+        self.assertNotIn("%2FUsers%2Fvamika", payload_text)
+        self.assertIn("obsidian://open", payload["citations"][0]["source_url"])
+        self.assertIn("vault=Work", payload["citations"][0]["source_url"])
+        self.assertIn("path=local-file://Ask%20Source.md", payload["citations"][0]["source_url"])
+        self.assertIn("ref=local-file://Ask%20Notes.md", payload["citations"][0]["source_url"])
+        self.assertIn("line=9", payload["citations"][0]["source_url"])
 
     def test_ask_endpoint_returns_open_task_citation_contract(self) -> None:
         user_id = "ask-task-contract"
@@ -729,6 +791,34 @@ class FastAPIContractTests(unittest.TestCase):
         )
         self.assertEqual(search_after_delete.status_code, 200)
         self.assertFalse(search_after_delete.json()["results"])
+
+    def test_source_account_catalog_exposes_live_connector_readiness_metadata(self) -> None:
+        response = self.client.get("/v1/source-accounts/catalog", headers={"Authorization": "Bearer test-token"})
+
+        self.assertEqual(response.status_code, 200)
+        catalog = {item["id"]: item for item in response.json()["results"]}
+        expected = {
+            "chatgpt": ("export-only", [], "OpenAI data export"),
+            "apple-mail": ("import-ready", [], "eml"),
+            "gmail": ("live-planned", ["gmail.readonly"], "Gmail Takeout"),
+            "notion": ("live-planned", ["read_content"], "Markdown, CSV, and HTML exports"),
+            "slack": ("live-planned", ["channels:history", "groups:history", "im:history"], "Workspace export"),
+            "github": ("live-planned", ["repo:read", "read:org"], "Issue/PR exports"),
+            "obsidian": ("import-ready", [], "Markdown vault"),
+        }
+
+        for source_id, (readiness_status, scopes, first_100_note) in expected.items():
+            self.assertIn(source_id, catalog)
+            entry = catalog[source_id]
+            self.assertEqual(entry["readiness_status"], readiness_status)
+            self.assertEqual(entry["scopes"], scopes)
+            self.assertIsInstance(entry["permissions_required"], list)
+            self.assertTrue(entry["permissions_required"])
+            self.assertIn(first_100_note, entry["first_100_note"])
+
+        self.assertTrue(any("no OAuth token required" in item for item in catalog["gmail"]["permissions_required"]))
+        self.assertTrue(any("OAuth/API consent for gmail.readonly" in item for item in catalog["gmail"]["permissions_required"]))
+        self.assertTrue(any("user-selected local folder" in item for item in catalog["obsidian"]["permissions_required"]))
 
     def test_scoped_mcp_token_can_use_mcp_but_not_rest(self) -> None:
         scoped_token = "cxm_fastapi_contract_token_123456789"

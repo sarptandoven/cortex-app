@@ -92,6 +92,7 @@ python3 scripts/export_support_bundle.py --mode offline
 - [Simple Product Loop](docs/SIMPLE_PRODUCT_LOOP.md)
 - [Capture Surfaces](docs/CAPTURE_SURFACES.md)
 - [Source Imports](docs/SOURCE_IMPORTS.md)
+- [First 100 Beta Operator Quickstart](docs/BETA_OPERATOR_QUICKSTART.md)
 - [First 100 User Demo Checkpoint](docs/checkpoints/first-100-demo.md)
 - [First 100 User Support and Privacy Runbook](docs/BETA_SUPPORT.md)
 - [Trust Controls](docs/TRUST_CONTROLS.md)

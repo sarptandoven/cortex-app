@@ -36,10 +36,11 @@ Before sending a build to any new batch:
 1. Run the beta ship gate from `docs/OPERATIONAL_READINESS.md`.
 2. Confirm the packaged release includes `BETA_HANDOFF.md`.
 3. Confirm the app shows the five-tab product flow: Model, Sources, Review, Ask, Trust.
-4. Confirm support-bundle export works in live and offline modes.
+4. Confirm support-bundle export works in live and offline modes, and fails closed if the bundle is not content-free.
 5. Confirm delete-all and export flows are available from the current build.
-6. Confirm the operator has the current release version, build number, hash, and download location.
-7. Confirm the known-limitations list below matches the build being sent.
+6. Confirm delete-all with the default backup-including path removes current backup archives and leaves restore unavailable.
+7. Confirm the operator has the current release version, build number, hash, and download location.
+8. Confirm the known-limitations list below matches the build being sent.
 
 Do not expand the batch if any current tester has an unresolved SEV 0 possible-data-loss issue.
 
@@ -56,7 +57,7 @@ Support may ask for a sanitized support bundle. The support bundle is designed t
 
 Support will not ask you to paste private memory content. If a bug depends on exact content, send a short redacted example that you are comfortable sharing, or describe the source type and visible behavior without the private text.
 
-You can export your memory and delete local Cortex data from this beta. Deletion is local to your Mac and covers the current Cortex vault/index data according to the app's delete-all flow. If you previously sent a support bundle or redacted example to operators, ask support to delete their copy too.
+You can export your memory and delete local Cortex data from this beta. Deletion is local to your Mac and covers the current Cortex vault/index data and, by default, local Cortex backup archives. If you previously sent a support bundle or redacted example to operators, ask support to delete their copy too.
 
 This is beta software. Import quality, citations, search, MCP handoffs, packaging, and recovery flows may have bugs. Do not rely on Cortex as the only copy of important data.
 ```
@@ -82,7 +83,7 @@ Operator actions for export:
 
 1. Ask the user to create a local backup before export.
 2. Ask the user to use the app export flow from Trust, or the documented export endpoint if they are running a developer build.
-3. Confirm whether redaction is enabled before any shared export.
+3. Confirm whether redaction is enabled before any shared export. Redaction must cover Markdown export, JSON export, and MCP export responses before operators treat the build as first-100 ready.
 4. Tell the user to store the exported file somewhere they control.
 5. Do not ask the user to send the export to support.
 
@@ -92,8 +93,15 @@ Operator actions for deletion:
 2. Ask the user to quit connected AI tools that may use the Cortex MCP bridge.
 3. Ask the user to run the app delete-all flow from Trust, or the documented delete endpoint if they are running a developer build.
 4. Confirm whether backups should also be deleted.
-5. Ask the user to reopen Cortex and confirm it starts as a fresh setup.
-6. If deletion fails, treat it as SEV 0 until a backup and support bundle are captured.
+5. For beta offboarding, use the backup-including delete path unless the user explicitly asks to preserve local backups.
+6. After backup-including delete-all, confirm there are no Cortex backup archives available to restore and Cortex starts as a fresh setup.
+7. If deletion fails, treat it as SEV 0 until a backup and support bundle are captured.
+
+Support-bundle handling:
+
+- Use `scripts/export_support_bundle.py` in live or offline mode when possible; it validates the privacy flags and rejects content-bearing fields before writing the JSON file.
+- A support bundle is acceptable only when it omits raw capture text, memory content, task content, exported user files, context packs, and raw MCP query values.
+- If the exporter exits with a content-free validation error, do not ask the user to send the file. Escalate as a privacy issue for that build.
 
 Support copy retention:
 

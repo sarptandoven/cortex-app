@@ -19,6 +19,22 @@ from backend.app.storage import CortexStore
 
 USER_ID = "adaptation-quality"
 SEED_TIMESTAMP = "2026-06-29T10:00:00+00:00"
+NOISY_ADAPTATION_SOURCES = {"email", "slack"}
+NOISY_ADAPTATION_USER_PHRASES = (
+    "source-backed adaptation preferences from my email replies",
+    "compact adaptation Slack summaries",
+)
+NOISY_ADAPTATION_EXTERNAL_SIGNAL_GUARDS: tuple[dict[str, str], ...] = (
+    {"source": "email", "layer": "preference", "phrase": "external sender onboarding theater"},
+    {"source": "email", "layer": "style", "phrase": "external sender sales prose"},
+    {"source": "slack", "layer": "preference", "phrase": "external Slack consensus rituals"},
+)
+LOCAL_FILE_SOURCE_URL = "/Users/sarptandoven/Documents/Cortex Beta/Adaptation Local Notes.md#line=14&excerpt=adaptation-local-citation"
+LOCAL_FILE_SAFE_SOURCE_URL = "local-file://Adaptation%20Local%20Notes.md#line=14&excerpt=adaptation-local-citation"
+LOCAL_FILE_RAW_FRAGMENTS = ("/Users/sarptandoven", "Documents/Cortex Beta")
+LOCAL_FILE_CITATION_CONTENT = (
+    "Local adaptation citation fixture keeps local file source locators sanitized in profile focus and adaptation evidence."
+)
 
 
 @dataclass(frozen=True)
@@ -187,12 +203,155 @@ def seed_adaptation_memories(store: CortexStore, user_id: str = USER_ID) -> list
     return approved_memories
 
 
+def seed_noisy_adaptation_imports(store: CortexStore, user_id: str = USER_ID) -> list[dict[str, Any]]:
+    with tempfile.TemporaryDirectory(prefix="cortex-adaptation-import-") as tmp:
+        root = Path(tmp)
+        mail = root / "mail"
+        slack = root / "slack"
+        channel = slack / "general"
+        mail.mkdir(parents=True)
+        channel.mkdir(parents=True)
+
+        (mail / "user_reply.eml").write_text(
+            "Subject: Adaptation user reply\n"
+            "From: Adapt User <adapt@example.com>\n"
+            "To: Dana Partner <dana@example.com>\n"
+            "Date: Mon, 29 Jun 2026 12:00:00 +0000\n"
+            "\n"
+            "I prefer source-backed adaptation preferences from my email replies.\n",
+            encoding="utf-8",
+        )
+        (mail / "external_advice.eml").write_text(
+            "Subject: External adaptation advice\n"
+            "From: Dana Partner <dana@example.com>\n"
+            "To: Adapt User <adapt@example.com>\n"
+            "Date: Mon, 29 Jun 2026 12:05:00 +0000\n"
+            "\n"
+            "I prefer external sender onboarding theater for every adaptation summary.\n"
+            "My writing style is external sender sales prose.\n",
+            encoding="utf-8",
+        )
+        (slack / "users.json").write_text(
+            json.dumps(
+                [
+                    {"id": "U1", "name": "adapt", "real_name": "Adapt User", "profile": {"email": "adapt@example.com"}},
+                    {"id": "U2", "name": "dana", "real_name": "Dana Partner", "profile": {"email": "dana@example.com"}},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (channel / "2026-06-29.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "type": "message",
+                        "user": "U1",
+                        "text": "I prefer compact adaptation Slack summaries with source labels.",
+                        "ts": "1782740000.0001",
+                    },
+                    {
+                        "type": "message",
+                        "user": "U2",
+                        "text": "I prefer external Slack consensus rituals for every adaptation answer.",
+                        "ts": "1782740001.0001",
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        store.update_settings(
+            user_id,
+            {
+                "review_new_captures": False,
+                "allow_pending_in_context": True,
+                "identity_aliases": ["adapt@example.com", "adapt", "Adapt User"],
+            },
+        )
+        result = store.import_sources(
+            user_id=user_id,
+            paths=[str(mail), str(slack)],
+            processing="sync",
+            max_records=20,
+        )
+        if result["failed"]:
+            raise AssertionError(f"Noisy adaptation import failed: {result['errors']}")
+    return [memory for memory in store.recent(user_id, limit=120) if memory["source"] in NOISY_ADAPTATION_SOURCES]
+
+
+def seed_local_file_citation_memory(store: CortexStore, user_id: str = USER_ID) -> dict[str, Any]:
+    store.update_settings(user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+    saved = store.save_capture(
+        user_id=user_id,
+        content=LOCAL_FILE_CITATION_CONTENT,
+        source="docs",
+        source_url=LOCAL_FILE_SOURCE_URL,
+        title="Adaptation local citation sanitization fixture",
+        extracted={
+            "_timestamp": "2026-06-29T10:07:00+00:00",
+            "summary": LOCAL_FILE_CITATION_CONTENT,
+            "records": [
+                {
+                    "id": "aq_local_file_citation_sanitized",
+                    "kind": "claim",
+                    "layer": "semantic",
+                    "content": LOCAL_FILE_CITATION_CONTENT,
+                    "summary": LOCAL_FILE_CITATION_CONTENT,
+                    "confidence": "confirmed",
+                    "importance": 1,
+                    "topics": ["citations", "local-files", "adaptation"],
+                    "entity_ids": [],
+                }
+            ],
+            "tasks": [],
+            "entities": [],
+        },
+    )
+    return saved["memories"][0]
+
+
+def assert_adaptation_local_file_citations_sanitized(store: CortexStore, user_id: str = USER_ID) -> dict[str, Any]:
+    memory = seed_local_file_citation_memory(store, user_id)
+    query = "local adaptation citation fixture sanitized profile focus adaptation evidence"
+    profile = store.personal_profile(user_id, query=query, limit=8, include_pending=False)
+    artifact = store.agent_adaptation(user_id, query=query, target="Claude", limit=8, include_pending=False)
+    serialized = json.dumps({"profile": profile, "artifact": artifact}, sort_keys=True)
+
+    if LOCAL_FILE_SOURCE_URL in serialized:
+        raise AssertionError("Adaptation profile/evidence leaked the raw local source_url")
+    for fragment in LOCAL_FILE_RAW_FRAGMENTS:
+        if fragment in serialized:
+            raise AssertionError(f"Adaptation profile/evidence leaked local path fragment: {fragment}")
+    if LOCAL_FILE_SAFE_SOURCE_URL not in serialized:
+        raise AssertionError(f"Adaptation profile/evidence missed sanitized local citation {LOCAL_FILE_SAFE_SOURCE_URL!r}")
+
+    focus = next((item for item in profile.get("focus") or [] if item.get("id") == memory["id"]), None)
+    if not focus:
+        raise AssertionError("Personal profile focus missed the local-file citation fixture")
+    if focus.get("source_url") != LOCAL_FILE_SAFE_SOURCE_URL:
+        raise AssertionError(f"Personal profile focus citation was not sanitized: {focus}")
+
+    evidence = next((item for item in artifact.get("evidence") or [] if item.get("id") == memory["id"]), None)
+    if not evidence:
+        raise AssertionError("Adaptation evidence missed the local-file citation fixture")
+    if evidence.get("source_url") != LOCAL_FILE_SAFE_SOURCE_URL:
+        raise AssertionError(f"Adaptation evidence citation was not sanitized: {evidence}")
+
+    return {
+        "memory_id": memory["id"],
+        "raw_source_url": LOCAL_FILE_SOURCE_URL,
+        "safe_source_url": LOCAL_FILE_SAFE_SOURCE_URL,
+    }
+
+
 def _check(checks: list[dict[str, Any]], name: str, ok: bool, detail: str, payload: dict[str, Any] | None = None) -> None:
     checks.append({"name": name, "status": "ok" if ok else "failed", "detail": detail, "payload": payload or {}})
 
 
 def evaluate_adaptation(store: CortexStore, user_id: str = USER_ID) -> dict[str, Any]:
     seeded = seed_adaptation_memories(store, user_id)
+    noisy_import_memories = seed_noisy_adaptation_imports(store, user_id)
+    local_file_citation = assert_adaptation_local_file_citations_sanitized(store, user_id)
     artifact = store.agent_adaptation(
         user_id,
         query="five tab product work tradeoffs local-first adaptation",
@@ -203,9 +362,43 @@ def evaluate_adaptation(store: CortexStore, user_id: str = USER_ID) -> dict[str,
     rules = artifact.get("rules") or []
     markdown = artifact.get("markdown") or ""
     serialized = json.dumps(artifact, sort_keys=True)
-    rules_by_layer = {rule.get("layer"): rule for rule in rules}
+    rules_by_layer: dict[str, list[dict[str, Any]]] = {}
+    for rule in rules:
+        rules_by_layer.setdefault(str(rule.get("layer") or ""), []).append(rule)
     evidence_ids = {item.get("id") for item in artifact.get("evidence") or []}
     checks: list[dict[str, Any]] = []
+
+    noisy_joined = "\n".join(str(memory.get("content") or "") for memory in noisy_import_memories)
+    _check(
+        checks,
+        "noisy_user_speaker_preferences_imported",
+        all(phrase in noisy_joined for phrase in NOISY_ADAPTATION_USER_PHRASES),
+        "Noisy email and Slack imports include user-authored personal preference signals.",
+        {"phrases": NOISY_ADAPTATION_USER_PHRASES, "imported_memories": noisy_import_memories},
+    )
+    personal_signal_payload = json.dumps(
+        {
+            "imported_memories": noisy_import_memories,
+            "rules": artifact.get("rules") or [],
+            "evidence": artifact.get("evidence") or [],
+            "style_guide": artifact.get("style_guide") or [],
+            "preference_policy": artifact.get("preference_policy") or [],
+            "negative_constraints": artifact.get("negative_constraints") or [],
+        },
+        sort_keys=True,
+    )
+    leaked_external_signals = [
+        guard
+        for guard in NOISY_ADAPTATION_EXTERNAL_SIGNAL_GUARDS
+        if guard["phrase"] in personal_signal_payload
+    ]
+    _check(
+        checks,
+        "noisy_external_speaker_preferences_excluded",
+        not leaked_external_signals,
+        "External email and Slack speakers do not become user preference/style adaptation signals.",
+        {"leaked": leaked_external_signals},
+    )
 
     expected_layers = {seed.layer for seed in ADAPTATION_SEEDS}
     actual_layers = {str(rule.get("layer")) for rule in rules}
@@ -218,7 +411,8 @@ def evaluate_adaptation(store: CortexStore, user_id: str = USER_ID) -> dict[str,
     )
 
     for seed in ADAPTATION_SEEDS:
-        rule = rules_by_layer.get(seed.layer) or {}
+        layer_rules = rules_by_layer.get(seed.layer) or []
+        rule = next((item for item in layer_rules if item.get("memory_id") == seed.id), {})
         instruction = str(rule.get("instruction") or "")
         _check(
             checks,
@@ -321,6 +515,8 @@ def evaluate_adaptation(store: CortexStore, user_id: str = USER_ID) -> dict[str,
     return {
         "status": "failed" if failures else "ok",
         "seeded_memories": len(seeded),
+        "noisy_import_memories": len(noisy_import_memories),
+        "local_file_citation": local_file_citation,
         "rules": len(rules),
         "readiness": artifact.get("readiness"),
         "target": artifact.get("target"),

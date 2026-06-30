@@ -105,6 +105,9 @@ struct SyncManifestDeviceRow: View {
         }
         if let receipt = latestReceipt {
             pieces.append("last receipt \(receipt.status)")
+            if let error = receipt.error, !error.isEmpty {
+                pieces.append(CortexRecoveryText.inlineError(error, fallback: "Refresh sync status, then try again."))
+            }
         } else {
             pieces.append("no receipts")
         }

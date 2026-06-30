@@ -35,6 +35,17 @@ NOISY_SOURCE_URL_FRAGMENTS: dict[str, tuple[str, ...]] = {
 }
 PENDING_LEAK_PHRASE = "Pending-only retrieval memory must not leak into search"
 ARCHIVED_REJECTED_LEAK_PHRASE = "Archived rejected retrieval memory must not leak into search"
+LOCAL_FILE_SOURCE_URL = "/Users/sarptandoven/Documents/Cortex Beta/Local Citation Plan.md#line=9&excerpt=local-file-citation"
+LOCAL_FILE_SAFE_SOURCE_URL = "local-file://Local%20Citation%20Plan.md#line=9&excerpt=local-file-citation"
+LOCAL_FILE_RAW_FRAGMENTS = ("/Users/sarptandoven", "Documents/Cortex Beta")
+LOCAL_FILE_CITATION_CONTENT = (
+    "Local file citation fixture prefers sanitized source locators in shared answer and context outputs."
+)
+EXTERNAL_SPEAKER_PERSONAL_SIGNAL_GUARDS: tuple[dict[str, str], ...] = (
+    {"source": "email", "layer": "preference", "phrase": "long onboarding checklists"},
+    {"source": "email", "layer": "style", "phrase": "verbose and salesy"},
+    {"source": "slack", "layer": "preference", "phrase": "long-form consensus memos"},
+)
 
 
 @dataclass(frozen=True)
@@ -486,6 +497,7 @@ def seed_noisy_import_memories(store: CortexStore, user_id: str = USER_ID) -> li
         raise AssertionError("Noisy import treated external Slack/Claude text as user preference or style")
     assert_noisy_import_citations(memories)
     assert_no_duplicate_noisy_import_memories(memories)
+    assert_external_speaker_personal_signals_excluded(memories)
     return memories
 
 
@@ -521,6 +533,82 @@ def assert_no_duplicate_noisy_import_memories(memories: list[dict[str, Any]]) ->
             seen[key] = memory["id"]
     if duplicates:
         raise AssertionError(f"Noisy import produced obvious duplicate memories: {duplicates}")
+
+
+def assert_external_speaker_personal_signals_excluded(memories: list[dict[str, Any]]) -> None:
+    leaked: list[dict[str, str]] = []
+    for guard in EXTERNAL_SPEAKER_PERSONAL_SIGNAL_GUARDS:
+        for memory in memories:
+            if (
+                memory.get("source") == guard["source"]
+                and memory.get("layer") == guard["layer"]
+                and guard["phrase"] in str(memory.get("content") or "")
+            ):
+                leaked.append({"id": memory["id"], **guard})
+    if leaked:
+        raise AssertionError(f"Noisy import treated external speaker text as user personal signals: {leaked}")
+
+
+def seed_local_file_citation_memory(store: CortexStore, user_id: str = USER_ID) -> dict[str, Any]:
+    store.update_settings(user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+    saved = store.save_capture(
+        user_id=user_id,
+        content=LOCAL_FILE_CITATION_CONTENT,
+        source="docs",
+        source_url=LOCAL_FILE_SOURCE_URL,
+        title="Local citation sanitization fixture",
+        extracted={
+            "_timestamp": "2026-06-29T10:12:00Z",
+            "summary": LOCAL_FILE_CITATION_CONTENT,
+            "records": [
+                {
+                    "id": "rq_local_file_citation_sanitized",
+                    "kind": "preference",
+                    "layer": "preference",
+                    "content": LOCAL_FILE_CITATION_CONTENT,
+                    "summary": LOCAL_FILE_CITATION_CONTENT,
+                    "confidence": "confirmed",
+                    "importance": 5,
+                    "topics": ["citations", "local-files", "context"],
+                    "entity_ids": [],
+                }
+            ],
+            "tasks": [],
+            "entities": [],
+        },
+    )
+    return saved["memories"][0]
+
+
+def assert_shared_local_file_citations_sanitized(store: CortexStore, user_id: str = USER_ID) -> dict[str, Any]:
+    memory = seed_local_file_citation_memory(store, user_id)
+    query = "sanitized source locators shared answer context outputs"
+    answer = store.answer_query(user_id, query, limit=3)
+    context = store.context_pack(user_id, query=query, limit=3)
+    serialized_answer = json.dumps(answer, sort_keys=True)
+    combined = f"{serialized_answer}\n{context}"
+
+    if LOCAL_FILE_SOURCE_URL in combined:
+        raise AssertionError("Shared answer/context output leaked the raw local source_url")
+    for fragment in LOCAL_FILE_RAW_FRAGMENTS:
+        if fragment in combined:
+            raise AssertionError(f"Shared answer/context output leaked local path fragment: {fragment}")
+    if LOCAL_FILE_SAFE_SOURCE_URL not in serialized_answer:
+        raise AssertionError(f"Shared answer output missed sanitized local citation {LOCAL_FILE_SAFE_SOURCE_URL!r}")
+    if LOCAL_FILE_SAFE_SOURCE_URL not in context:
+        raise AssertionError(f"Context pack missed sanitized local citation {LOCAL_FILE_SAFE_SOURCE_URL!r}")
+
+    citation = next((item for item in answer.get("citations") or [] if item.get("id") == memory["id"]), None)
+    if not citation:
+        raise AssertionError("Shared answer citations missed the local-file citation fixture")
+    if citation.get("source_url") != LOCAL_FILE_SAFE_SOURCE_URL:
+        raise AssertionError(f"Shared answer citation was not sanitized: {citation}")
+
+    return {
+        "memory_id": memory["id"],
+        "raw_source_url": LOCAL_FILE_SOURCE_URL,
+        "safe_source_url": LOCAL_FILE_SAFE_SOURCE_URL,
+    }
 
 
 def _write_eval_chatgpt_export(folder: Path) -> None:
@@ -847,6 +935,7 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
     for case in noisy_cases:
         checks.append(_evaluate_case(store, user_id, case, limit))
 
+    local_file_citation = assert_shared_local_file_citations_sanitized(store, user_id)
     state_leakage = assert_state_leakage_excluded(store, user_id)
 
     return {
@@ -854,6 +943,7 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
         "seeded_memories": len(seeded),
         "distractor_memories": len(distractors),
         "noisy_import_memories": len(noisy_memories),
+        "local_file_citation": local_file_citation,
         "state_leakage_seeded": state_leakage,
         "seeded_layers": sorted(seeded_layers),
         "metrics": _summarize_metrics(checks, METRIC_K_VALUES),

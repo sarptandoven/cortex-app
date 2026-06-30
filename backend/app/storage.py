@@ -12,7 +12,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from .database import connect, sqlite_vec_status
 from .embeddings import VECTOR_DIMENSIONS, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status
@@ -550,6 +550,60 @@ def _default_import_label(import_status: str, source_name: str) -> str:
     if status == "export_only":
         return f"{source_name} uses export files today"
     return "Import exported files when available"
+
+
+def _connector_readiness_status(item: dict[str, Any]) -> str:
+    live_status = str(item.get("live_status") or "").lower()
+    if live_status == "planned":
+        return "live-planned"
+    if live_status in {"import_ready", "local_only", "imported"}:
+        return "import-ready"
+    return "export-only"
+
+
+def _connector_permission_requirements(item: dict[str, Any]) -> list[str]:
+    explicit = _unique_catalog_strings(item.get("permissions_required") or [])
+    if explicit:
+        return explicit
+
+    auth = str(item.get("auth") or "").lower()
+    scopes = _unique_catalog_strings(item.get("scopes") or [])
+    live_status = str(item.get("live_status") or "").lower()
+    requirements: list[str]
+    if auth == "local_folder":
+        requirements = ["First-100: user-selected local folder."]
+    elif auth == "local_file":
+        requirements = ["First-100: user-selected local file or database copy."]
+    elif auth == "file":
+        requirements = ["First-100: user-selected local file or folder."]
+    elif auth == "export":
+        requirements = ["First-100: user-selected service export."]
+    elif auth == "api_token":
+        requirements = ["First-100: user-selected export files; no API token required."]
+    elif auth == "oauth":
+        requirements = ["First-100: user-selected export files or folders; no OAuth token required."]
+    else:
+        requirements = ["First-100: user-selected import data."]
+
+    if live_status == "planned" and scopes:
+        requirements.append(f"Live-planned: user OAuth/API consent for {', '.join(scopes)}.")
+    return requirements
+
+
+def _connector_first_100_note(item: dict[str, Any]) -> str:
+    explicit = str(item.get("first_100_note") or "").strip()
+    if explicit:
+        return explicit
+
+    note = str(item.get("notes") or "").strip()
+    readiness_status = _connector_readiness_status(item)
+    if readiness_status == "live-planned":
+        prefix = "First-100: import user-provided exports or selected files; no live OAuth/API sync."
+    elif readiness_status == "import-ready":
+        prefix = "First-100: import selected local files, folders, or legal local copies."
+    else:
+        prefix = "First-100: import a user-provided service export."
+    return f"{prefix} {note}".strip()
 
 
 def _normalize_identity_aliases(value: Any) -> list[str]:
@@ -1426,6 +1480,9 @@ class CortexStore:
             catalog.append(
                 {
                     **item,
+                    "readiness_status": _connector_readiness_status(item),
+                    "permissions_required": _connector_permission_requirements(item),
+                    "first_100_note": _connector_first_100_note(item),
                     "import_status": import_status,
                     "export_status": export_status,
                     "source_ids": source_ids,
@@ -1547,7 +1604,11 @@ class CortexStore:
                     "import_label": item.get("import_label") or "",
                     "supports_import": supports_import,
                     "live_status": live_status,
+                    "readiness_status": item.get("readiness_status") or _connector_readiness_status(item),
+                    "permissions_required": item.get("permissions_required") or _connector_permission_requirements(item),
+                    "first_100_note": item.get("first_100_note") or _connector_first_100_note(item),
                     "auth": item.get("auth"),
+                    "scopes": item.get("scopes") or [],
                     "formats": item.get("formats") or [],
                     "accounts": len(active_accounts),
                     "cursors": len(source_cursors),
@@ -7226,6 +7287,8 @@ class CortexStore:
             return value
         if self._looks_like_local_locator(value, force_local=force_locator):
             return self._safe_source_locator(value, force_local=force_locator)
+        if self._looks_like_service_locator(value):
+            return self._sanitize_locator_path_components(value)
         return LOCAL_PATH_PATTERN.sub(lambda match: self._safe_source_locator(match.group(0)), value)
 
     def _looks_like_local_locator(self, value: Any, *, force_local: bool = False) -> bool:
@@ -7234,10 +7297,19 @@ class CortexStore:
             return True
         return force_local and text.startswith("/")
 
+    def _looks_like_service_locator(self, value: Any) -> bool:
+        text = str(value or "").strip()
+        if not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", text):
+            return False
+        locator_head = re.split(r"[?#]", text, maxsplit=1)[0]
+        return not bool(re.search(r"\s", locator_head))
+
     def _safe_source_locator(self, value: Any, *, force_local: bool = False) -> str:
         text = str(value or "").strip()
-        if not text or not self._looks_like_local_locator(text, force_local=force_local):
+        if not text:
             return text
+        if not self._looks_like_local_locator(text, force_local=force_local):
+            return self._sanitize_locator_path_components(text) if self._looks_like_service_locator(text) else text
 
         path_text = text
         query = ""
@@ -7253,10 +7325,53 @@ class CortexStore:
         basename = Path(unquote(path_text)).name or "local-source"
         safe = f"local-file://{quote(basename)}"
         if query:
-            safe = f"{safe}?{query}"
+            safe = f"{safe}?{self._sanitize_locator_parameter_component(query)}"
         if fragment:
-            safe = f"{safe}#{fragment}"
+            safe = f"{safe}#{self._sanitize_locator_parameter_component(fragment)}"
         return safe
+
+    def _sanitize_locator_path_components(self, value: str) -> str:
+        parts = urlsplit(value)
+        query = self._sanitize_locator_parameter_component(parts.query)
+        fragment = self._sanitize_locator_parameter_component(parts.fragment)
+        if query == parts.query and fragment == parts.fragment:
+            return value
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, query, fragment))
+
+    def _sanitize_locator_parameter_component(self, value: str) -> str:
+        if not value:
+            return value
+        parts = re.split(r"([&;])", value)
+        changed = False
+        sanitized_parts: list[str] = []
+        for part in parts:
+            if part in {"&", ";"}:
+                sanitized_parts.append(part)
+                continue
+            key, separator, raw_value = part.partition("=")
+            if separator:
+                sanitized_value = self._sanitize_locator_parameter_value(raw_value)
+                changed = changed or sanitized_value != raw_value
+                sanitized_parts.append(f"{key}{separator}{sanitized_value}")
+                continue
+            sanitized_value = self._sanitize_locator_parameter_value(part)
+            changed = changed or sanitized_value != part
+            sanitized_parts.append(sanitized_value)
+        return "".join(sanitized_parts) if changed else value
+
+    def _sanitize_locator_parameter_value(self, value: str) -> str:
+        if not value:
+            return value
+        decoded = unquote(value)
+        if self._looks_like_local_locator(decoded, force_local=True):
+            sanitized = self._safe_source_locator(decoded, force_local=True)
+        elif self._looks_like_service_locator(decoded):
+            sanitized = self._sanitize_locator_path_components(decoded)
+        else:
+            sanitized = LOCAL_PATH_PATTERN.sub(lambda match: self._safe_source_locator(match.group(0)), decoded)
+        if sanitized == decoded:
+            return value
+        return quote(sanitized, safe="/:%@")
 
     def _json_or_empty(self, value: str | None) -> dict[str, Any]:
         try:

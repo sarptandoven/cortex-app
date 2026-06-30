@@ -2,6 +2,8 @@
 
 This checkpoint defines the practical demo bar for inviting the first 100 local-first Cortex users. It is not a broad launch checklist. The goal is to prove that a nontechnical macOS user can create useful, cited personal memory from local source material and understand the trust boundaries.
 
+For the short operator checklist, start with [First 100 Beta Operator Quickstart](../BETA_OPERATOR_QUICKSTART.md).
+
 ## Demo Story
 
 The demo should follow the real product loop:

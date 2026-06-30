@@ -73,7 +73,7 @@ struct TrustTab: View {
                         ProgressView()
                         Text("Preparing trust controls")
                             .font(.headline)
-                        Text("Cortex is reading privacy settings, source history, and recent audit events.")
+                        Text(loadingDetail)
                             .foregroundColor(.secondary)
                     }
                     .frame(maxWidth: .infinity, minHeight: 420)
@@ -99,6 +99,12 @@ struct TrustTab: View {
     private func loadDeveloperDiagnostics() async {
         await state.loadStats()
         await state.loadGraph()
+    }
+
+    private var loadingDetail: String {
+        CortexRecoveryText.needsAttention(state.displayStatus)
+            ? state.displayStatus
+            : "Cortex is reading privacy settings, source history, and recent audit events."
     }
 }
 

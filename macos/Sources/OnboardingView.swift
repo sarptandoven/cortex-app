@@ -248,7 +248,7 @@ struct OnboardingVaultStep: View {
                     OnboardingCheckRow(title: "Audit log", detail: "\(vault.event_count) events", systemImage: "list.bullet.rectangle", color: .secondary)
                 }
             } else {
-                OnboardingCheckRow(title: "Starting local backend", detail: state.backendStatus, systemImage: "clock", color: .orange)
+                OnboardingCheckRow(title: "Starting local backend", detail: state.displayBackendStatus, systemImage: "clock", color: .orange)
             }
         }
     }

@@ -32,10 +32,13 @@ class AdaptationQualityHarnessTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["seeded_memories"], len(ADAPTATION_SEEDS))
-        self.assertEqual(result["rules"], len(ADAPTATION_SEEDS))
+        self.assertGreaterEqual(result["rules"], len(ADAPTATION_SEEDS))
         self.assertGreaterEqual(result["readiness"], 80)
         self.assertFalse(result["failures"])
         self.assertTrue(all(check["status"] == "ok" for check in result["checks"]))
+        check_names = {check["name"] for check in result["checks"]}
+        self.assertIn("noisy_external_speaker_preferences_excluded", check_names)
+        self.assertIn("rules_cover_all_memory_layers", check_names)
 
 
 if __name__ == "__main__":

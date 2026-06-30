@@ -38,7 +38,7 @@ struct ModelTab: View {
                         ProgressView()
                         Text("Loading Cortex memory")
                             .font(.headline)
-                        Text("Cortex is starting the local memory engine on this Mac.")
+                        Text(loadingDetail)
                             .foregroundColor(.secondary)
                     }
                     .frame(maxWidth: .infinity, minHeight: 420)
@@ -46,6 +46,12 @@ struct ModelTab: View {
             }
             .padding(16)
         }
+    }
+
+    private var loadingDetail: String {
+        CortexRecoveryText.needsAttention(state.displayStatus)
+            ? state.displayStatus
+            : "Cortex is starting the local memory engine on this Mac."
     }
 }
 

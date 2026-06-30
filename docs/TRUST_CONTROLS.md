@@ -160,7 +160,7 @@ Current redaction labels include:
 - `[REDACTED_EMAIL]`
 - `[REDACTED_NUMBER]`
 
-Local absolute file paths are converted into safe citation labels such as `local-file://Notes.md#line=12` before they appear in shared context, exports, Ask answers, or agent payloads, even when sensitive-text masking is disabled. The local vault remains the source of truth. Redaction is a sharing-time control.
+Local absolute file paths are converted into safe citation labels such as `local-file://Notes.md#line=12` before they appear in shared context, exports, Ask answers, or agent payloads, even when sensitive-text masking is disabled. The same rule applies to raw or percent-encoded local paths embedded in citation query or fragment values, while preserving useful service locators such as `notion://page/id?path=local-file://Notes.md`. The local vault remains the source of truth. Redaction is a sharing-time control.
 
 ## Audit Trail
 
@@ -221,6 +221,23 @@ The score is not a security guarantee. It is a product signal that helps users u
 - connected AI access posture and recent audit activity
 
 The report contains counts, paths, settings, and policy status; it does not include memory bodies or raw capture text.
+
+Delete-all defaults to the backup-including path for first-100 beta offboarding. When `include_backups=true`, Cortex removes current SQLite rows, vault records, events, settings, tokens, jobs, sync records, and local Cortex backup archives. After that path succeeds, there should be no latest backup available to restore.
+
+Exports remain user data. Markdown export, JSON export, and MCP `export_memory` responses honor `redact_sensitive_context` before they leave the local memory surface. Operators should not ask users to send full exports to support.
+
+## Support Bundle Guard
+
+The support bundle is an operational diagnostic artifact, not an export. It is expected to contain counts, settings posture, health checks, safe event metadata, feature flags, and shortened local paths only.
+
+The bundle privacy contract is:
+
+- `contains_raw_capture_text: false`
+- `contains_memory_content: false`
+- `contains_context_pack: false`
+- `contains_user_files: false`
+
+`scripts/export_support_bundle.py` validates those flags and rejects content-bearing fields or unredacted common secrets before it writes a bundle file. If the guard fails, treat that build as a privacy regression and do not ask a beta user to send the artifact.
 
 ## API Surface
 

@@ -9,6 +9,48 @@
     "apple-notes": 3,
     "obsidian": 3
   },
+  "local_file_citation_sanitization": {
+    "query": "ceremonial fixture intros",
+    "raw_path_fragments": ["/Users/", "backend/tests/fixtures/noisy_imports"],
+    "sanitized_source_contains": ["local-file://Voice.md", "line=", "excerpt="]
+  },
+  "external_speaker_rejected_personal_signals": [
+    {
+      "source": "email",
+      "layer": "preference",
+      "phrase": "verbose sales decks"
+    },
+    {
+      "source": "email",
+      "layer": "style",
+      "phrase": "legalistic and slow"
+    },
+    {
+      "source": "email",
+      "layer": "preference",
+      "phrase": "long stakeholder recap rituals"
+    },
+    {
+      "source": "email",
+      "layer": "preference",
+      "phrase": "unsubscribe-heavy forwarded newsletters"
+    },
+    {
+      "source": "email",
+      "layer": "style",
+      "phrase": "maze-like compliance preambles"
+    },
+    {
+      "source": "slack",
+      "layer": "preference",
+      "phrase": "long stakeholder recap rituals"
+    },
+    {
+      "source": "slack",
+      "layer": "preference",
+      "phrase": "maze-like Slack recap walls"
+    }
+  ],
   "expected": [
     {
       "name": "chatgpt_decision",
