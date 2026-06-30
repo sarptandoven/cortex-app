@@ -233,7 +233,7 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertEqual(result["distractor_memories"], len(DISTRACTOR_MEMORIES))
         self.assertEqual(result["noisy_import_memories"], 11)
         self.assertEqual(set(result["seeded_layers"]), MEMORY_LAYERS)
-        expected_noisy_cases = 10
+        expected_noisy_cases = 11
         self.assertEqual(len(result["checks"]), len(RETRIEVAL_CASES) + expected_noisy_cases)
         self.assertEqual(result["metrics"]["overall"]["case_count"], len(RETRIEVAL_CASES) + expected_noisy_cases)
         self.assertEqual(result["metrics"]["overall"]["top1_accuracy"], 1.0)
@@ -243,6 +243,7 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertEqual(result["metrics"]["by_category"]["noisy_import_preference"]["case_count"], 1)
         self.assertEqual(result["metrics"]["by_category"]["noisy_import_style"]["case_count"], 1)
         self.assertEqual(result["metrics"]["by_category"]["noisy_import_negative"]["case_count"], 1)
+        self.assertEqual(result["metrics"]["by_category"]["noisy_import_email"]["case_count"], 1)
         self.assertEqual(result["metrics"]["by_category"]["noisy_import_docs"]["case_count"], 1)
         self.assertEqual(result["metrics"]["by_category"]["noisy_import_notion"]["case_count"], 1)
         self.assertEqual(result["metrics"]["by_category"]["noisy_import_cloud_docs"]["case_count"], 1)
@@ -254,6 +255,7 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
             "noisy_import_preference",
             "noisy_import_style",
             "noisy_import_negative",
+            "noisy_import_email",
             "noisy_import_docs",
             "noisy_import_notion",
             "noisy_import_cloud_docs",

@@ -910,6 +910,15 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
             source_url_contains=("service=slack", "channel=general", "line=", "message=2", "excerpt="),
         ),
         RetrievalCase(
+            name="noisy_import_email_decision",
+            query="Project Atlas external email citations",
+            expected_id=noisy_id("external email citations", layer="decision"),
+            expected_layer="decision",
+            expected_phrase="external email citations",
+            category="noisy_import_email",
+            source_url_contains=("service=email", "subject=External%20advice", "line=", "excerpt="),
+        ),
+        RetrievalCase(
             name="noisy_import_docs_semantic",
             query="Project Lumen docs retrieval coverage cited source paths",
             expected_id=noisy_id("document fixture requires docs retrieval coverage", layer="semantic"),
