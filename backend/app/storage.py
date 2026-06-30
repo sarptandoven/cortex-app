@@ -4863,7 +4863,7 @@ class CortexStore:
                 }
             )
 
-        focus_memories = self.search(user_id, query, limit=limit) if query else []
+        focus_memories = self.search(user_id, query, limit=limit, include_related=True) if query else []
         focus_memories = self._approved_profile_memories(user_id, focus_memories, include_pending=include_pending)
         open_loops = self.open_tasks(user_id, limit=limit, include_pending=include_pending)
         topics = self.list_topics(user_id, limit=8, include_pending=include_pending)
@@ -5214,7 +5214,13 @@ class CortexStore:
         date = item.get("captured_at") or "unknown date"
         topics = item.get("topics") or []
         topics_text = f" Topics: {', '.join(topics)}." if topics else ""
-        return f"- [{item['id']}] ({item['kind']}, {item['source']}, {date}) Source: {self._memory_citation(item)}. {item['content']}{topics_text}"
+        relationship = item.get("relationship") if isinstance(item.get("relationship"), dict) else {}
+        relation_text = ""
+        if relationship:
+            relation_kind = str(relationship.get("kind") or "related")
+            related_to = str(relationship.get("related_to_id") or "").strip()
+            relation_text = f" Related: {relation_kind}{f' to {related_to}' if related_to else ''}."
+        return f"- [{item['id']}] ({item['kind']}, {item['source']}, {date}) Source: {self._memory_citation(item)}. {item['content']}{topics_text}{relation_text}"
 
     def _memory_citation(self, item: dict[str, Any], *, redact_paths: bool = True) -> str:
         source_url = str(item.get("source_url") or "").strip()
@@ -5223,7 +5229,7 @@ class CortexStore:
         return str(item.get("source") or "unknown source")
 
     def _profile_memory_item(self, item: dict[str, Any], *, redact: bool) -> dict[str, Any]:
-        return {
+        profile_item = {
             "id": item["id"],
             "kind": item["kind"],
             "layer": item["layer"],
@@ -5240,6 +5246,14 @@ class CortexStore:
             "topics": item.get("topics") or [],
             "entity_ids": item.get("entity_ids") or [],
         }
+        relationship = item.get("relationship") if isinstance(item.get("relationship"), dict) else {}
+        if relationship:
+            profile_item["relationship"] = {
+                "kind": relationship.get("kind"),
+                "weight": relationship.get("weight"),
+                "related_to_id": relationship.get("related_to_id"),
+            }
+        return profile_item
 
     def _source_freshness(self, user_id: str, limit: int = 8, *, user_settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         source_policies = _normalize_source_policies((user_settings or {}).get("source_policies"))

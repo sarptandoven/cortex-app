@@ -176,6 +176,19 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertIn("mem_atlas_release_procedure", context_pack)
         self.assertIn("Related: shared_entity to mem_atlas_beta_decision.", context_pack)
 
+        profile = self.store.personal_profile(self.user_id, query="risk budget local-first path", limit=2, include_pending=True)
+        focus_ids = [item["id"] for item in profile["focus"]]
+        self.assertEqual(focus_ids[0], "mem_atlas_beta_decision")
+        self.assertIn("mem_atlas_release_procedure", focus_ids)
+        related_focus = next(item for item in profile["focus"] if item["id"] == "mem_atlas_release_procedure")
+        self.assertEqual(related_focus["relationship"]["kind"], "shared_entity")
+        self.assertIn("Related: shared_entity to mem_atlas_beta_decision.", profile["markdown"])
+
+        adaptation = self.store.agent_adaptation(self.user_id, query="risk budget local-first path", limit=2, include_pending=True)
+        evidence_ids = [item["id"] for item in adaptation["evidence"]]
+        self.assertIn("mem_atlas_release_procedure", evidence_ids)
+        self.assertIn("Related: shared_entity to mem_atlas_beta_decision.", adaptation["markdown"])
+
         self.assertTrue(self.store.archive_capture(self.user_id, result["capture_id"]))
         with connect(self.db_path) as conn:
             relation_count_after_archive = conn.execute(
