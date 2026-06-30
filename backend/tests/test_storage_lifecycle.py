@@ -180,6 +180,142 @@ class CortexStorageLifecycleTests(unittest.TestCase):
                 self.assertEqual(answer["citations"][0]["layer"], expected_layer)
                 self.assertIn(expected_text, answer["citations"][0]["excerpt"])
 
+    def test_task_intent_ask_returns_open_loop_citation(self) -> None:
+        saved = self.store.save_capture(
+            user_id=self.user_id,
+            content="Meeting notes: Follow up with Dana about the API keys rotation before Friday.",
+            source="slack",
+            source_url="slack://channel/C123/p202606291200",
+            title="Platform sync",
+            extracted={
+                "_timestamp": "2026-06-29T12:00:00Z",
+                "summary": "Platform sync follow-up.",
+                "records": [],
+                "tasks": [
+                    {
+                        "id": "task_api_key_rotation",
+                        "kind": "action",
+                        "content": "Follow up with Dana about the API keys rotation before Friday.",
+                        "status": "open",
+                        "importance": 4,
+                        "topics": ["api-keys", "platform"],
+                        "entity_ids": [],
+                    }
+                ],
+                "entities": [],
+            },
+        )
+        self.assertTrue(self.store.approve_capture(self.user_id, saved["capture_id"]))
+
+        answer = self.store.answer_query(self.user_id, "What open loops do I have about API keys?", limit=5)
+
+        self.assertTrue(answer["citations"])
+        self.assertEqual(answer["citations"][0]["result_type"], "task")
+        self.assertEqual(answer["citations"][0]["layer"], "task")
+        self.assertEqual(answer["citations"][0]["status"], "open")
+        self.assertEqual(answer["citations"][0]["source"], "slack")
+        self.assertEqual(answer["citations"][0]["source_url"], "slack://channel/C123/p202606291200")
+        self.assertIn("API keys rotation", answer["citations"][0]["excerpt"])
+        self.assertEqual(answer["results"][0]["result_type"], "task")
+        self.assertEqual(answer["results"][0]["source_url"], "slack://channel/C123/p202606291200")
+
+    def test_task_results_do_not_pad_non_task_memory_search(self) -> None:
+        memory = self.store.save_capture(
+            user_id=self.user_id,
+            content="I prefer source-backed answers with direct caveats.",
+            source="notes",
+            source_url="file:///tmp/preferences.md",
+            title="Answer preferences",
+            extracted={
+                "_timestamp": "2026-06-29T12:10:00Z",
+                "summary": "Answer preferences.",
+                "records": [
+                    {
+                        "id": "mem_source_backed_answers",
+                        "kind": "preference",
+                        "layer": "preference",
+                        "content": "I prefer source-backed answers with direct caveats.",
+                        "summary": "Source-backed answers with caveats.",
+                        "confidence": "confirmed",
+                        "importance": 4,
+                        "topics": ["answers"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+        task = self.store.save_capture(
+            user_id=self.user_id,
+            content="Follow up on source-backed answers in the onboarding QA list.",
+            source="notes",
+            source_url="file:///tmp/tasks.md",
+            title="QA tasks",
+            extracted={
+                "_timestamp": "2026-06-29T12:11:00Z",
+                "summary": "QA tasks.",
+                "records": [],
+                "tasks": [
+                    {
+                        "id": "task_source_backed_answers",
+                        "kind": "action",
+                        "content": "Follow up on source-backed answers in the onboarding QA list.",
+                        "status": "open",
+                        "importance": 5,
+                        "topics": ["answers"],
+                        "entity_ids": [],
+                    }
+                ],
+                "entities": [],
+            },
+        )
+        self.assertTrue(self.store.approve_capture(self.user_id, memory["capture_id"]))
+        self.assertTrue(self.store.approve_capture(self.user_id, task["capture_id"]))
+
+        results = self.store.search(self.user_id, "source-backed answers direct caveats", limit=5)
+
+        self.assertTrue(results)
+        self.assertTrue(any(item["id"] == "mem_source_backed_answers" for item in results))
+        self.assertFalse(any(item.get("result_type") == "task" for item in results))
+
+    def test_task_ask_obeys_pending_review_policy(self) -> None:
+        self.store.update_settings(self.user_id, {"allow_pending_in_context": False})
+        saved = self.store.save_capture(
+            user_id=self.user_id,
+            content="Open question: should Cortex rotate API keys monthly?",
+            source="email",
+            source_url="message://api-key-policy",
+            title="API key policy",
+            extracted={
+                "_timestamp": "2026-06-29T12:20:00Z",
+                "summary": "API key policy question.",
+                "records": [],
+                "tasks": [
+                    {
+                        "id": "task_pending_api_key_policy",
+                        "kind": "question",
+                        "content": "Should Cortex rotate API keys monthly?",
+                        "status": "open",
+                        "importance": 3,
+                        "topics": ["api-keys", "security"],
+                        "entity_ids": [],
+                    }
+                ],
+                "entities": [],
+            },
+        )
+
+        pending_answer = self.store.answer_query(self.user_id, "What open questions are there about API keys?", limit=5)
+        self.assertEqual(pending_answer["citations"], [])
+
+        self.assertTrue(self.store.approve_capture(self.user_id, saved["capture_id"]))
+        approved_answer = self.store.answer_query(self.user_id, "What open questions are there about API keys?", limit=5)
+
+        self.assertTrue(approved_answer["citations"])
+        self.assertEqual(approved_answer["citations"][0]["result_type"], "task")
+        self.assertEqual(approved_answer["citations"][0]["source_url"], "message://api-key-policy")
+
     def test_api_and_mcp_tokens_are_audience_scoped(self) -> None:
         api_token = "cxa_storage_lifecycle_token_123456789"
         mcp_token = "cxm_storage_lifecycle_token_123456789"

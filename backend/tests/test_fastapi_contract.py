@@ -175,6 +175,51 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(payload["citations"][0]["source_url"], "/tmp/ask-source.md")
         self.assertIn("Ask citation contract", payload["citations"][0]["excerpt"])
 
+    def test_ask_endpoint_returns_open_task_citation_contract(self) -> None:
+        user_id = "ask-task-contract"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user_id}
+        saved = main_module.store.save_capture(
+            user_id=user_id,
+            content="Planning notes: follow up with Mira about the import undo copy before beta.",
+            source="notion",
+            source_url="notion://page/import-undo",
+            title="Beta planning",
+            extracted={
+                "_timestamp": "2026-06-29T13:00:00Z",
+                "summary": "Beta planning task.",
+                "records": [],
+                "tasks": [
+                    {
+                        "id": "task_fastapi_import_undo",
+                        "kind": "action",
+                        "content": "Follow up with Mira about the import undo copy before beta.",
+                        "status": "open",
+                        "importance": 4,
+                        "topics": ["import", "beta"],
+                        "entity_ids": [],
+                    }
+                ],
+                "entities": [],
+            },
+        )
+        self.assertTrue(main_module.store.approve_capture(user_id, saved["capture_id"]))
+
+        response = self.client.get(
+            "/v1/ask",
+            params={"query": "What open loops are there about import undo?", "limit": 5},
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["citations"])
+        self.assertTrue(payload["results"])
+        self.assertEqual(payload["citations"][0]["result_type"], "task")
+        self.assertEqual(payload["citations"][0]["layer"], "task")
+        self.assertEqual(payload["citations"][0]["status"], "open")
+        self.assertEqual(payload["citations"][0]["source_url"], "notion://page/import-undo")
+        self.assertEqual(payload["results"][0]["result_type"], "task")
+
     def test_scoped_api_token_prevents_user_header_impersonation_when_required(self) -> None:
         scoped_token = "cxa_fastapi_contract_token_123456789"
         registered = self.client.post(

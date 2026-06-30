@@ -328,7 +328,7 @@ struct OnboardingAskUseStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Ask Cortex one question against approved memory. This is the core use loop: imported sources become cited answers you can trust.")
+            Text("Ask Cortex one question against approved context. This is the core use loop: imported sources become cited answers you can trust.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -361,12 +361,12 @@ struct OnboardingAskUseStep: View {
                     }
                 }
             } else {
-                QuietState(title: "Use approved memory once", detail: "Ask a question about your imported source. Cortex will answer with citations when approved memory matches.")
+                QuietState(title: "Use approved context once", detail: "Ask a question about your imported source. Cortex will answer with citations when approved context matches.")
             }
 
             OnboardingCheckRow(
                 title: state.onboardingHasUsedCortex ? "Cortex used once" : "Use Cortex once",
-                detail: state.onboardingHasUsedCortex ? "Approved memory was used in a cited answer." : "Ask a question that returns cited memory.",
+                detail: state.onboardingHasUsedCortex ? "Approved context was used in a cited answer." : "Ask a question that returns cited context.",
                 systemImage: state.onboardingHasUsedCortex ? "checkmark.seal.fill" : "sparkle.magnifyingglass",
                 color: state.onboardingHasUsedCortex ? .green : .orange
             )

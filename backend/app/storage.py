@@ -243,6 +243,74 @@ QUERY_LEXICAL_FALLBACK_STOPWORDS = QUERY_FTS_STOPWORDS | {
     "you",
     "your",
 }
+TASK_QUERY_STOPWORDS = {
+    "action",
+    "actions",
+    "agenda",
+    "ask",
+    "asks",
+    "blocker",
+    "blockers",
+    "close",
+    "due",
+    "follow",
+    "followup",
+    "followups",
+    "item",
+    "items",
+    "loop",
+    "loops",
+    "need",
+    "next",
+    "open",
+    "pending",
+    "question",
+    "questions",
+    "step",
+    "steps",
+    "task",
+    "tasks",
+    "todo",
+    "todos",
+    "unresolved",
+    "waiting",
+    "work",
+}
+TASK_QUERY_PHRASES = (
+    "action item",
+    "action items",
+    "anything pending",
+    "follow up",
+    "follow-up",
+    "followup",
+    "loose end",
+    "loose ends",
+    "need to do",
+    "next step",
+    "next steps",
+    "open loop",
+    "open loops",
+    "open question",
+    "open questions",
+    "still need",
+    "to-do",
+    "todo",
+    "unresolved",
+    "waiting on",
+)
+TASK_QUERY_TERMS = {
+    "action",
+    "blocker",
+    "blockers",
+    "followup",
+    "followups",
+    "pending",
+    "task",
+    "tasks",
+    "todo",
+    "todos",
+    "unresolved",
+}
 
 
 DEFAULT_USER_SETTINGS: dict[str, Any] = {
@@ -2578,6 +2646,8 @@ class CortexStore:
 
         fts_query = self._fts_query(query)
         candidate_limit = max(limit * 4, 12)
+        task_intent = self._query_has_task_intent(query)
+        task_rows = []
 
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
@@ -2621,36 +2691,49 @@ class CortexStore:
                 lexical_rows = self._lexical_fallback_search(conn, user_id, query, candidate_limit, kind, layer, user_settings)
                 rows.extend(row for row in lexical_rows if row["id"] not in existing_ids)
                 rows = rows[:limit]
-        return [self._memory_from_row(row) for row in rows]
+            if layer is None and (task_intent or not rows):
+                task_rows = self._task_search_rows(conn, user_id, query, candidate_limit, kind, user_settings)
+
+        memory_results = [self._memory_from_row(row) for row in rows]
+        task_results = [self._task_search_result_from_row(row) for row in task_rows]
+        if task_intent:
+            task_ids = {item["id"] for item in task_results}
+            return [*task_results, *(item for item in memory_results if item["id"] not in task_ids)][:limit]
+        if not memory_results:
+            return task_results[:limit]
+        return memory_results
 
     def answer_query(self, user_id: str, query: str, limit: int = 8) -> dict[str, Any]:
         query = query.strip()
         limit = max(1, min(20, int(limit)))
         results = self.search(user_id, query, limit=limit)
         citations: list[dict[str, Any]] = []
-        for index, memory in enumerate(results, start=1):
+        for index, item in enumerate(results, start=1):
+            result_type = item.get("result_type") or "memory"
             citations.append(
                 {
                     "index": index,
-                    "id": memory["id"],
-                    "kind": memory["kind"],
-                    "layer": memory["layer"],
-                    "source": memory["source"],
-                    "source_url": memory.get("source_url"),
-                    "captured_at": memory.get("captured_at"),
-                    "occurred_at": memory.get("occurred_at"),
-                    "excerpt": self._answer_excerpt(memory.get("content") or memory.get("summary") or ""),
-                    "topics": memory.get("topics") or [],
+                    "id": item["id"],
+                    "result_type": result_type,
+                    "kind": item["kind"],
+                    "layer": item.get("layer") or result_type,
+                    "status": item.get("status"),
+                    "source": item["source"],
+                    "source_url": item.get("source_url"),
+                    "captured_at": item.get("captured_at"),
+                    "occurred_at": item.get("occurred_at"),
+                    "excerpt": self._answer_excerpt(item.get("content") or item.get("summary") or ""),
+                    "topics": item.get("topics") or [],
                 }
             )
         if citations:
-            lines = [f"Cortex found {len(citations)} cited memor{'y' if len(citations) == 1 else 'ies'} for this question:"]
+            lines = [f"Cortex found {len(citations)} cited item{'s' if len(citations) != 1 else ''} for this question:"]
             for citation in citations[:5]:
                 source = citation["source_url"] or citation["source"]
                 lines.append(f"[{citation['index']}] {citation['excerpt']} ({source})")
             answer = "\n".join(lines)
         else:
-            answer = "Cortex did not find cited memory for this question yet. Import or approve more source material, then ask again."
+            answer = "Cortex did not find a cited item for this question yet. Import or approve more source material, then ask again."
         return {
             "query": query,
             "answer": answer,
@@ -2667,24 +2750,21 @@ class CortexStore:
     def open_tasks(self, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
-            filters = ["t.user_id = ?", "t.status = 'open'"]
-            params: list[Any] = [user_id]
-            if not user_settings["allow_pending_in_context"]:
-                filters.append(
-                    "(t.capture_id IS NULL OR EXISTS (SELECT 1 FROM captures c WHERE c.id = t.capture_id AND c.user_id = t.user_id AND c.review_status = 'approved'))"
-                )
-            source_policies = _normalize_source_policies(user_settings.get("source_policies"))
-            excluded_sources = [source for source, policy in source_policies.items() if not policy.get("allow_ai_context", True)]
-            if excluded_sources:
-                filters.append(f"(t.capture_id IS NULL OR NOT EXISTS (SELECT 1 FROM captures c WHERE c.id = t.capture_id AND c.user_id = t.user_id AND c.source IN ({','.join('?' for _ in excluded_sources)})))")
-                params.extend(excluded_sources)
-            review_sources = [source for source, policy in source_policies.items() if policy.get("review_required") and source not in excluded_sources]
-            if review_sources:
-                filters.append(f"(t.capture_id IS NULL OR NOT EXISTS (SELECT 1 FROM captures c WHERE c.id = t.capture_id AND c.user_id = t.user_id AND c.source IN ({','.join('?' for _ in review_sources)})) OR EXISTS (SELECT 1 FROM captures c WHERE c.id = t.capture_id AND c.user_id = t.user_id AND c.review_status = 'approved'))")
-                params.extend(review_sources)
+            filters, params = self._task_filters(user_id, user_settings, alias="t", capture_alias="c")
             where = " AND ".join(filters)
             rows = conn.execute(
-                f"SELECT * FROM tasks t WHERE {where} ORDER BY t.importance DESC, t.captured_at DESC LIMIT ?",
+                f"""
+                SELECT
+                  t.*,
+                  c.source AS capture_source,
+                  c.source_url AS capture_source_url,
+                  c.title AS capture_title
+                FROM tasks t
+                LEFT JOIN captures c ON c.id = t.capture_id AND c.user_id = t.user_id
+                WHERE {where}
+                ORDER BY t.importance DESC, t.captured_at DESC
+                LIMIT ?
+                """,
                 [*params, limit],
             ).fetchall()
         return [self._task_from_row(row) for row in rows]
@@ -6387,6 +6467,141 @@ class CortexStore:
             row_terms.add(clean)
         return {term for term in terms if any(candidate.startswith(term) for candidate in row_terms)}
 
+    def _query_has_task_intent(self, query: str) -> bool:
+        lowered = re.sub(r"\s+", " ", str(query or "").strip().lower())
+        if any(phrase in lowered for phrase in TASK_QUERY_PHRASES):
+            return True
+        tokens = set(re.findall(r"[a-z0-9_]+", lowered.replace("-", "")))
+        if tokens & TASK_QUERY_TERMS:
+            return True
+        if {"what", "do"} <= tokens and ({"need", "next", "pending"} & tokens):
+            return True
+        return False
+
+    def _task_search_rows(
+        self,
+        conn,
+        user_id: str,
+        query: str,
+        limit: int,
+        kind: str | None,
+        user_settings: dict[str, Any],
+    ) -> list[Any]:
+        task_intent = self._query_has_task_intent(query)
+        terms = self._lexical_fallback_terms(query, limit=14)
+        meaningful_terms = [term for term in terms if term not in TASK_QUERY_STOPWORDS]
+        if kind and kind not in {"action", "question"}:
+            return []
+        if not task_intent and not meaningful_terms:
+            return []
+
+        filters, params = self._task_filters(user_id, user_settings, alias="t", capture_alias="c", kind=kind)
+        term_params: list[Any] = []
+        if meaningful_terms:
+            term_filters = []
+            for term in meaningful_terms:
+                like = f"%{term}%"
+                term_filters.append(
+                    "("
+                    "lower(COALESCE(t.content, '')) LIKE ? OR "
+                    "lower(COALESCE(t.topics_json, '')) LIKE ? OR "
+                    "lower(COALESCE(t.entity_ids_json, '')) LIKE ? OR "
+                    "lower(COALESCE(c.title, '')) LIKE ? OR "
+                    "lower(COALESCE(c.source, '')) LIKE ? OR "
+                    "lower(COALESCE(c.raw_text, '')) LIKE ?"
+                    ")"
+                )
+                term_params.extend([like, like, like, like, like, like])
+            filters.append(f"({' OR '.join(term_filters)})")
+        where = " AND ".join(filters)
+        candidate_limit = max(limit * 4, 20)
+        rows = conn.execute(
+            f"""
+            SELECT
+              t.*,
+              c.source AS capture_source,
+              c.source_url AS capture_source_url,
+              c.title AS capture_title,
+              c.raw_text AS capture_raw_text
+            FROM tasks t
+            LEFT JOIN captures c ON c.id = t.capture_id AND c.user_id = t.user_id
+            WHERE {where}
+            ORDER BY t.importance DESC, t.captured_at DESC
+            LIMIT ?
+            """,
+            [*params, *term_params, candidate_limit],
+        ).fetchall()
+        if not meaningful_terms:
+            return rows[:limit]
+
+        ranked: list[dict[str, Any]] = []
+        min_matches = 1 if task_intent else min(2, len(meaningful_terms))
+        for index, row in enumerate(rows):
+            matched = self._task_matched_terms(row, meaningful_terms)
+            if len(matched) < min_matches:
+                continue
+            ranked.append(
+                {
+                    "row": row,
+                    "score": (len(matched) / len(meaningful_terms))
+                    + ((row["importance"] or 3) * 0.01)
+                    + (0.05 / (60 + index)),
+                }
+            )
+        return [item["row"] for item in sorted(ranked, key=lambda item: item["score"], reverse=True)[:limit]]
+
+    def _task_matched_terms(self, row: Any, terms: list[str]) -> set[str]:
+        keys = set(row.keys())
+        text = " ".join(
+            str(value or "")
+            for value in (
+                row["content"],
+                row["topics_json"],
+                row["entity_ids_json"],
+                row["kind"],
+                row["capture_source"] if "capture_source" in keys else "",
+                row["capture_title"] if "capture_title" in keys else "",
+                row["capture_raw_text"] if "capture_raw_text" in keys else "",
+            )
+        )
+        row_terms: set[str] = set()
+        for token in re.findall(r"[a-z0-9_]+", text.lower().replace("'", "")):
+            clean = token.strip("_")
+            if not clean:
+                continue
+            if len(clean) > 3 and clean.endswith("s") and not clean.endswith(("ss", "ies")):
+                clean = clean[:-1]
+            row_terms.add(clean)
+        return {term for term in terms if any(candidate.startswith(term) for candidate in row_terms)}
+
+    def _task_search_result_from_row(self, row: Any) -> dict[str, Any]:
+        keys = set(row.keys())
+        source = row["capture_source"] if "capture_source" in keys and row["capture_source"] else "task"
+        source_url = row["capture_source_url"] if "capture_source_url" in keys else None
+        topics = json.loads(row["topics_json"] or "[]")
+        entity_ids = json.loads(row["entity_ids_json"] or "[]")
+        return {
+            "id": row["id"],
+            "capture_id": row["capture_id"] if "capture_id" in keys else None,
+            "user_id": row["user_id"] if "user_id" in keys else None,
+            "result_type": "task",
+            "kind": row["kind"],
+            "layer": "task",
+            "content": row["content"],
+            "summary": row["content"],
+            "source": source,
+            "source_url": source_url,
+            "confidence": "confirmed",
+            "importance": row["importance"],
+            "status": row["status"],
+            "topics": topics,
+            "entity_ids": entity_ids,
+            "occurred_at": None,
+            "captured_at": row["captured_at"],
+            "updated_at": row["captured_at"],
+            "raw_excerpt": row["content"],
+        }
+
     def _enqueue_embed_memory_job(
         self,
         conn,
@@ -6697,6 +6912,38 @@ class CortexStore:
         if review_sources:
             filters.append(
                 f"({alias}.source NOT IN ({','.join('?' for _ in review_sources)}) OR {alias}.capture_id IS NULL OR EXISTS (SELECT 1 FROM captures c WHERE c.id = {alias}.capture_id AND c.user_id = {alias}.user_id AND c.review_status = 'approved'))"
+            )
+            params.extend(review_sources)
+        return filters, params
+
+    def _task_filters(
+        self,
+        user_id: str,
+        user_settings: dict[str, Any],
+        *,
+        alias: str = "t",
+        capture_alias: str = "c",
+        kind: str | None = None,
+    ) -> tuple[list[str], list[Any]]:
+        filters = [f"{alias}.user_id = ?", f"{alias}.status = 'open'"]
+        params: list[Any] = [user_id]
+        if kind:
+            filters.append(f"{alias}.kind = ?")
+            params.append(kind)
+        capture_missing = f"({alias}.capture_id IS NULL OR {capture_alias}.id IS NULL)"
+        if not user_settings["allow_pending_in_context"]:
+            filters.append(f"({capture_missing} OR {capture_alias}.review_status = 'approved')")
+        source_policies = _normalize_source_policies(user_settings.get("source_policies"))
+        excluded_sources = [source for source, policy in source_policies.items() if not policy.get("allow_ai_context", True)]
+        if excluded_sources:
+            filters.append(
+                f"({capture_missing} OR {capture_alias}.source NOT IN ({','.join('?' for _ in excluded_sources)}))"
+            )
+            params.extend(excluded_sources)
+        review_sources = [source for source, policy in source_policies.items() if policy.get("review_required") and source not in excluded_sources]
+        if review_sources:
+            filters.append(
+                f"({capture_missing} OR {capture_alias}.source NOT IN ({','.join('?' for _ in review_sources)}) OR {capture_alias}.review_status = 'approved')"
             )
             params.extend(review_sources)
         return filters, params
@@ -7015,6 +7262,7 @@ class CortexStore:
             "id": row["id"],
             "capture_id": row["capture_id"] if "capture_id" in keys else None,
             "user_id": row["user_id"] if "user_id" in keys else None,
+            "result_type": "memory",
             "kind": kind,
             "layer": memory_layer(kind, row["layer"] if "layer" in keys else None),
             "content": row["content"],
@@ -7071,14 +7319,20 @@ class CortexStore:
         return None
 
     def _task_from_row(self, row) -> dict[str, Any]:
+        keys = set(row.keys())
         return {
             "id": row["id"],
+            "capture_id": row["capture_id"] if "capture_id" in keys else None,
+            "result_type": "task",
             "kind": row["kind"],
+            "layer": "task",
             "content": row["content"],
             "status": row["status"],
             "importance": row["importance"],
             "topics": json.loads(row["topics_json"] or "[]"),
             "entity_ids": json.loads(row["entity_ids_json"] or "[]"),
+            "source": row["capture_source"] if "capture_source" in keys and row["capture_source"] else "task",
+            "source_url": row["capture_source_url"] if "capture_source_url" in keys else None,
             "captured_at": row["captured_at"],
         }
 

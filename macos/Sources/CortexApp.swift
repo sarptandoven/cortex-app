@@ -285,8 +285,10 @@ struct AskCitationItem: Codable, Identifiable, Hashable {
     var id: String { "\(index)-\(memory_id)" }
     let index: Int
     let memory_id: String
+    let result_type: String?
     let kind: String
     let layer: String
+    let status: String?
     let source: String
     let source_url: String?
     let captured_at: String?
@@ -297,8 +299,10 @@ struct AskCitationItem: Codable, Identifiable, Hashable {
     enum CodingKeys: String, CodingKey {
         case index
         case memory_id = "id"
+        case result_type
         case kind
         case layer
+        case status
         case source
         case source_url
         case captured_at
@@ -334,9 +338,11 @@ struct GraphResponse: Codable {
 
 struct MemoryItem: Codable, Identifiable, Hashable {
     let id: String
+    let result_type: String?
     let kind: String
     let layer: String?
     let content: String
+    let status: String?
     let source: String
     let source_url: String?
     let confidence: String?
@@ -2285,7 +2291,7 @@ final class AppState: ObservableObject {
             askAnswer = answer.answer
             askCitations = answer.citations
             hasSearched = true
-            status = searchResults.isEmpty ? "No cited memory found" : "Answered with \(answer.citations.count) citation\(answer.citations.count == 1 ? "" : "s")"
+            status = searchResults.isEmpty ? "No cited context found" : "Answered with \(answer.citations.count) citation\(answer.citations.count == 1 ? "" : "s")"
             if hasUsableOnboardingCitation(answer.citations) {
                 markCortexUsed()
             }
@@ -5938,7 +5944,7 @@ struct MemoryCard: View {
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
-                if let onArchive {
+                if let onArchive, canForget {
                     Button("Forget") { confirmForget = true }
                         .font(.caption)
                         .confirmationDialog("Forget this memory?", isPresented: $confirmForget) {
@@ -5988,6 +5994,11 @@ struct MemoryCard: View {
         case "action": return .green
         default: return .blue
         }
+    }
+
+    private var canForget: Bool {
+        let type = item.result_type?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return type == nil || type == "" || type == "memory"
     }
 
     private var citationLabel: String? {

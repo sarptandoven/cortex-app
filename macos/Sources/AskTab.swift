@@ -65,7 +65,7 @@ struct AskHeaderSection: View {
             Text("Ask Cortex")
                 .font(.title3)
                 .fontWeight(.semibold)
-            Text("Get a natural-language answer from approved memory, with citations ready to reuse.")
+            Text("Get a natural-language answer from approved context, with citations ready to use.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -121,7 +121,7 @@ struct AskQuerySection: View {
 
     private var citationSummary: String {
         if state.askCitations.isEmpty {
-            return state.searchResults.isEmpty ? "No citations found" : "\(state.searchResults.count) source memory match\(state.searchResults.count == 1 ? "" : "es")"
+            return state.searchResults.isEmpty ? "No citations found" : "\(state.searchResults.count) source match\(state.searchResults.count == 1 ? "" : "es")"
         }
         return "\(state.askCitations.count) citation\(state.askCitations.count == 1 ? "" : "s")"
     }
@@ -147,8 +147,8 @@ struct AskResponseSection: View {
                 )
             } else {
                 QuietState(
-                    title: "Source memory found",
-                    detail: "Cortex found matching source memory, but no natural-language answer was returned."
+                    title: "Source result found",
+                    detail: "Cortex found matching source context, but no natural-language answer was returned."
                 )
             }
 
@@ -163,7 +163,7 @@ struct AskResponseSection: View {
     }
 
     private var memoryDisclosureTitle: String {
-        "Source memory details (\(state.searchResults.count))"
+        "Source details (\(state.searchResults.count))"
     }
 }
 
@@ -176,7 +176,7 @@ struct AskResultsSection: View {
                 QuietState(title: "Ask your model", detail: "Try a question about a project, person, decision, preference, or phrase from your imported sources.")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if state.searchResults.isEmpty {
-                QuietState(title: "No cited memory matched that", detail: "Try a project, person, decision, or exact phrase from an approved source.")
+                QuietState(title: "No cited result matched that", detail: "Try a project, person, decision, or exact phrase from an approved source.")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -213,7 +213,7 @@ struct AskAIHandoffSection: View {
                         state.contextQuery = state.searchQuery
                         state.copyContextPack()
                     } label: {
-                        Label("Copy Matching Memory", systemImage: "text.quote")
+                        Label("Copy Matching Context", systemImage: "text.quote")
                     }
                     Button {
                         state.copyDailyContextPack()
