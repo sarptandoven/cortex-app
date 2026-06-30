@@ -274,6 +274,14 @@ class LiveSmokeRunner:
         review = self.request("/v1/review/today")
         pending_ids = {item["id"] for item in review["pending"]}
         ensure(any(capture_id in pending_ids for capture_id in self.capture_ids), "Synced capture was not pending review", review)
+        pending_captures = [item for item in review["pending"] if item["id"] in set(self.capture_ids)]
+        encoded_pending = json.dumps(pending_captures)
+        ensure(str(vault) not in encoded_pending, "Review queue leaked the local Obsidian vault path", {"pending": pending_captures})
+        ensure(
+            any(str(item.get("source_url") or "").startswith("local-file://Live%20Smoke.md") for item in pending_captures),
+            "Review queue did not expose a safe local-file citation",
+            {"pending": pending_captures},
+        )
 
         for capture_id in self.capture_ids:
             approved = self.request(f"/v1/captures/{capture_id}/approve", method="POST")
