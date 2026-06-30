@@ -10,6 +10,12 @@ from scripts.retrieval_eval import (
     DISTRACTOR_MEMORIES,
     METRIC_K_VALUES,
     RETRIEVAL_CASES,
+    RELATED_MEMORY_COMPANION_ID,
+    RELATED_MEMORY_PRIMARY_ID,
+    SECTOR_SCOPE_ATLAS_ID,
+    SECTOR_SCOPE_BOREAL_ID,
+    TEMPORAL_VALIDITY_CURRENT_ID,
+    TEMPORAL_VALIDITY_EXCLUDED_IDS,
     evaluate_retrieval,
     seed_representative_memories,
 )
@@ -247,6 +253,7 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["seeded_memories"], len(MEMORY_LAYERS))
         self.assertEqual(result["distractor_memories"], len(DISTRACTOR_MEMORIES))
+        self.assertEqual(result["focused_retrieval_memories"], 8)
         self.assertEqual(result["noisy_import_memories"], 11)
         self.assertEqual(set(result["seeded_layers"]), MEMORY_LAYERS)
         expected_noisy_cases = 11
@@ -265,6 +272,9 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertEqual(result["metrics"]["by_category"]["noisy_import_cloud_docs"]["case_count"], 1)
         self.assertEqual(result["metrics"]["by_category"]["noisy_import_calendar"]["case_count"], 1)
         self.assertEqual(result["metrics"]["by_category"]["noisy_import_github"]["case_count"], 1)
+        self.assertEqual(result["metrics"]["by_category"]["sector_scoping"]["case_count"], 2)
+        self.assertEqual(result["metrics"]["by_category"]["temporal_validity"]["case_count"], 1)
+        self.assertEqual(result["metrics"]["by_category"]["related_memory"]["case_count"], 1)
 
         categories = {case.category for case in RETRIEVAL_CASES} | {
             "noisy_import",
@@ -282,6 +292,27 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertIn("style_recall", categories)
         self.assertIn("negative_recall", categories)
         self.assertEqual(set(result["metrics"]["by_category"]), categories)
+
+        focused_contracts = result["focused_answer_contracts"]
+        self.assertEqual(focused_contracts["sector_scoping"]["citation_ids"][0], SECTOR_SCOPE_ATLAS_ID)
+        self.assertNotIn(SECTOR_SCOPE_BOREAL_ID, focused_contracts["sector_scoping"]["citation_ids"])
+        self.assertEqual(focused_contracts["temporal_validity"]["citation_ids"][0], TEMPORAL_VALIDITY_CURRENT_ID)
+        for stale_id in TEMPORAL_VALIDITY_EXCLUDED_IDS:
+            self.assertNotIn(stale_id, focused_contracts["temporal_validity"]["citation_ids"])
+        self.assertEqual(focused_contracts["related_memory"]["citation_ids"][0], RELATED_MEMORY_PRIMARY_ID)
+        self.assertIn(RELATED_MEMORY_COMPANION_ID, focused_contracts["related_memory"]["citation_ids"])
+        self.assertEqual(focused_contracts["related_memory"]["relationship"]["kind"], "shared_entity")
+        self.assertEqual(focused_contracts["related_memory"]["relationship"]["related_to_id"], RELATED_MEMORY_PRIMARY_ID)
+
+        sector_checks = {check["name"]: check for check in result["checks"] if check["category"] == "sector_scoping"}
+        self.assertEqual(sector_checks["sector_scope_atlas_release"]["top_sector"], "Project Atlas")
+        self.assertEqual(sector_checks["sector_scope_boreal_release"]["top_sector"], "Project Boreal")
+        validity_check = next(check for check in result["checks"] if check["category"] == "temporal_validity")
+        for stale_id in TEMPORAL_VALIDITY_EXCLUDED_IDS:
+            self.assertNotIn(stale_id, validity_check["result_ids"])
+        related_check = next(check for check in result["checks"] if check["category"] == "related_memory")
+        self.assertEqual(related_check["related_result"]["id"], RELATED_MEMORY_COMPANION_ID)
+        self.assertEqual(related_check["related_result"]["relationship"]["related_to_id"], RELATED_MEMORY_PRIMARY_ID)
 
         for check in result["checks"]:
             self.assertEqual(check["expected_rank"], 1)

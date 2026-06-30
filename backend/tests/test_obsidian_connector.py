@@ -520,7 +520,10 @@ Decision: Cortex should archive the orchid-block marker when an explicit block d
 
         self.assertEqual(second["status"], "complete")
         self.assertEqual(second["received"], 501)
-        self.assertEqual(second["queued"] + second["saved"] + second["skipped"], 501)
+        self.assertEqual(second["queued"], 0)
+        self.assertEqual(second["saved"], 0)
+        self.assertEqual(second["skipped"], 501)
+        self.assertTrue(all(record["status"] == "duplicate" for record in second["records"]))
         self.assertEqual(second["archived_missing"], 1)
         self.assertEqual(second["failed"], 0)
         self.assertFalse(second["scan"]["truncated"])

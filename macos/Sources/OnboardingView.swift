@@ -185,19 +185,27 @@ struct OnboardingVaultStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Cortex keeps memory local on this Mac. Once the engine is ready, connect a notes folder and let Cortex sync useful items into Review.")
+            Text("Your memory stays on this Mac. Cortex builds a private index, sends new memory to Review, and only uses memory after you approve it.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Memory folder")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Text(state.vaultPath)
-                    .font(.system(.caption, design: .monospaced))
-                    .lineLimit(2)
-                    .textSelection(.enabled)
-                DisclosureGroup("Advanced memory folder", isExpanded: $vaultLocationExpanded) {
+            if state.diagnostics?.vault != nil {
+                OnboardingCheckRow(title: "Private memory ready", detail: "Next, connect notes so Cortex can start the review loop.", systemImage: "checkmark.seal.fill", color: .green)
+            } else {
+                OnboardingCheckRow(title: "Starting private memory", detail: state.displayBackendStatus, systemImage: "clock", color: .orange)
+            }
+
+            DisclosureGroup("Local details", isExpanded: $vaultLocationExpanded) {
+                VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Memory folder")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(state.vaultPath)
+                            .font(.system(.caption, design: .monospaced))
+                            .lineLimit(2)
+                            .textSelection(.enabled)
+                    }
                     HStack {
                         Button {
                             state.useDefaultVaultFolder()
@@ -216,22 +224,19 @@ struct OnboardingVaultStep: View {
                         }
                         Spacer()
                     }
-                    .padding(.top, 6)
+                    if let vault = state.diagnostics?.vault {
+                        VStack(alignment: .leading, spacing: 8) {
+                            OnboardingCheckRow(title: "Local folder", detail: vault.path, systemImage: "externaldrive", color: .secondary)
+                            OnboardingCheckRow(title: "Local index", detail: vault.index_path, systemImage: "bolt.horizontal.circle.fill", color: .accentColor)
+                            OnboardingCheckRow(title: "Activity log", detail: "\(vault.event_count) events", systemImage: "list.bullet.rectangle", color: .secondary)
+                        }
+                    }
                 }
+                .padding(.top, 6)
             }
             .padding(12)
             .background(Color(nsColor: .controlBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 8))
-
-            if let vault = state.diagnostics?.vault {
-                VStack(alignment: .leading, spacing: 8) {
-                    OnboardingCheckRow(title: "Memory folder ready", detail: vault.path, systemImage: "checkmark.seal.fill", color: .green)
-                    OnboardingCheckRow(title: "Memory index", detail: vault.index_path, systemImage: "bolt.horizontal.circle.fill", color: .accentColor)
-                    OnboardingCheckRow(title: "Activity log", detail: "\(vault.event_count) events", systemImage: "list.bullet.rectangle", color: .secondary)
-                }
-            } else {
-                OnboardingCheckRow(title: "Starting local backend", detail: state.displayBackendStatus, systemImage: "clock", color: .orange)
-            }
         }
     }
 }

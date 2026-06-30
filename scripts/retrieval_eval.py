@@ -41,6 +41,19 @@ LOCAL_FILE_RAW_FRAGMENTS = ("/Users/sarptandoven", "Documents/Cortex Beta")
 LOCAL_FILE_CITATION_CONTENT = (
     "Local file citation fixture prefers sanitized source locators in shared answer and context outputs."
 )
+SECTOR_SCOPE_SOURCE_URL = "cortex-eval://retrieval/sector-scope"
+TEMPORAL_VALIDITY_SOURCE_URL = "cortex-eval://retrieval/temporal-validity"
+RELATED_MEMORY_SOURCE_URL = "cortex-eval://retrieval/related-memory"
+SECTOR_SCOPE_ATLAS_ID = "rq_sector_atlas_release_current"
+SECTOR_SCOPE_BOREAL_ID = "rq_sector_boreal_release_current"
+TEMPORAL_VALIDITY_CURRENT_ID = "rq_validity_current_support_policy"
+TEMPORAL_VALIDITY_EXCLUDED_IDS = (
+    "rq_validity_expired_support_policy",
+    "rq_validity_future_support_policy",
+    "rq_validity_superseded_support_policy",
+)
+RELATED_MEMORY_PRIMARY_ID = "rq_related_memory_eval_decision"
+RELATED_MEMORY_COMPANION_ID = "rq_related_memory_eval_procedure"
 EXTERNAL_SPEAKER_PERSONAL_SIGNAL_GUARDS: tuple[dict[str, str], ...] = (
     {"source": "email", "layer": "preference", "phrase": "long onboarding checklists"},
     {"source": "email", "layer": "style", "phrase": "verbose and salesy"},
@@ -67,6 +80,13 @@ class RetrievalCase:
     expected_layer: str
     expected_phrase: str
     category: str = "focused"
+    sector: str | None = None
+    include_related: bool = False
+    disallowed_ids: tuple[str, ...] = ()
+    expected_related_id: str | None = None
+    expected_related_layer: str | None = None
+    expected_related_phrase: str | None = None
+    expected_relationship_kind: str | None = None
     source_url_contains: tuple[str, ...] = ()
     expected_occurred_at: str | None = None
 
@@ -319,6 +339,53 @@ RETRIEVAL_CASES: tuple[RetrievalCase, ...] = (
         expected_phrase="metaphorical intros",
         category="negative_recall",
     ),
+    RetrievalCase(
+        name="sector_scope_atlas_release",
+        query="sector eval release checklist codesign cohort",
+        expected_id=SECTOR_SCOPE_ATLAS_ID,
+        expected_layer="procedural",
+        expected_phrase="Project Atlas uses signed Mac build",
+        category="sector_scoping",
+        sector="Project Atlas",
+        disallowed_ids=(SECTOR_SCOPE_BOREAL_ID,),
+        source_url_contains=("cortex-eval://retrieval/sector-scope",),
+    ),
+    RetrievalCase(
+        name="sector_scope_boreal_release",
+        query="sector eval release checklist web smoke CDN purge",
+        expected_id=SECTOR_SCOPE_BOREAL_ID,
+        expected_layer="procedural",
+        expected_phrase="Project Boreal uses web smoke tests",
+        category="sector_scoping",
+        sector="Project Boreal",
+        disallowed_ids=(SECTOR_SCOPE_ATLAS_ID,),
+        source_url_contains=("cortex-eval://retrieval/sector-scope",),
+    ),
+    RetrievalCase(
+        name="temporal_validity_current_policy",
+        query="validity eval support policy",
+        expected_id=TEMPORAL_VALIDITY_CURRENT_ID,
+        expected_layer="decision",
+        expected_phrase="Current validity eval support policy",
+        category="temporal_validity",
+        disallowed_ids=TEMPORAL_VALIDITY_EXCLUDED_IDS,
+        source_url_contains=("cortex-eval://retrieval/temporal-validity",),
+    ),
+    RetrievalCase(
+        name="related_memory_companion_surfaces",
+        query="related memory eval risk ledger local-first beta path",
+        expected_id=RELATED_MEMORY_PRIMARY_ID,
+        expected_layer="decision",
+        expected_phrase="risk ledger is tight",
+        category="related_memory",
+        sector="Project Atlas",
+        include_related=True,
+        expected_related_id=RELATED_MEMORY_COMPANION_ID,
+        expected_related_layer="procedural",
+        expected_related_phrase="verify update manifest",
+        expected_relationship_kind="shared_entity",
+        source_url_contains=("cortex-eval://retrieval/related-memory",),
+    ),
 )
 
 def seed_representative_memories(store: CortexStore, user_id: str = USER_ID) -> list[dict[str, Any]]:
@@ -388,6 +455,163 @@ def seed_distractor_memories(store: CortexStore, user_id: str = USER_ID) -> list
         },
     )
     return result["memories"]
+
+
+def seed_focused_retrieval_memories(store: CortexStore, user_id: str = USER_ID) -> list[dict[str, Any]]:
+    store.update_settings(user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+    sector = store.save_capture(
+        user_id=user_id,
+        content="Sector scoped retrieval eval release checklist fixture.",
+        source="retrieval-eval-sector",
+        source_url=SECTOR_SCOPE_SOURCE_URL,
+        title="Sector scoped retrieval eval",
+        extracted={
+            "_timestamp": "2026-06-30T09:00:00Z",
+            "summary": "Sector scoped retrieval eval release checklist fixture.",
+            "records": [
+                {
+                    "id": SECTOR_SCOPE_ATLAS_ID,
+                    "kind": "procedure",
+                    "layer": "procedural",
+                    "content": "Sector eval release checklist: Project Atlas uses signed Mac build, backend smoke, and cohort guardrail.",
+                    "summary": "Project Atlas sector eval release checklist uses Mac build, backend smoke, and cohort guardrail.",
+                    "confidence": "confirmed",
+                    "importance": 4,
+                    "sector": "Project Atlas",
+                    "topics": ["sector-eval", "release", "Project Atlas"],
+                    "entity_ids": [],
+                },
+                {
+                    "id": SECTOR_SCOPE_BOREAL_ID,
+                    "kind": "procedure",
+                    "layer": "procedural",
+                    "content": "Sector eval release checklist: Project Boreal uses web smoke tests, CDN purge, and metrics review.",
+                    "summary": "Project Boreal sector eval release checklist uses web smoke tests and CDN purge.",
+                    "confidence": "confirmed",
+                    "importance": 4,
+                    "sector": "Project Boreal",
+                    "topics": ["sector-eval", "release", "Project Boreal"],
+                    "entity_ids": [],
+                },
+            ],
+            "tasks": [],
+            "entities": [],
+        },
+    )
+
+    validity = store.save_capture(
+        user_id=user_id,
+        content="Temporal validity retrieval eval support policy fixture.",
+        source="retrieval-eval-validity",
+        source_url=TEMPORAL_VALIDITY_SOURCE_URL,
+        title="Temporal validity retrieval eval",
+        extracted={
+            "_timestamp": "2026-06-30T09:01:00Z",
+            "summary": "Temporal validity retrieval eval support policy fixture.",
+            "records": [
+                {
+                    "id": TEMPORAL_VALIDITY_CURRENT_ID,
+                    "kind": "decision",
+                    "layer": "decision",
+                    "content": "Current validity eval support policy: First-100 pilots use manual approval and capped beta invites.",
+                    "summary": "Current validity eval support policy uses manual approval and capped beta invites.",
+                    "confidence": "confirmed",
+                    "importance": 3,
+                    "valid_from": "2000-01-01T00:00:00+00:00",
+                    "topics": ["validity-eval", "support-policy", "first-100"],
+                    "entity_ids": [],
+                },
+                {
+                    "id": TEMPORAL_VALIDITY_EXCLUDED_IDS[0],
+                    "kind": "decision",
+                    "layer": "decision",
+                    "content": "Expired validity eval support policy: First-100 pilots use spreadsheet triage only.",
+                    "summary": "Expired validity eval support policy uses spreadsheet triage.",
+                    "confidence": "confirmed",
+                    "importance": 5,
+                    "valid_to": "2020-01-01T00:00:00+00:00",
+                    "topics": ["validity-eval", "support-policy", "first-100"],
+                    "entity_ids": [],
+                },
+                {
+                    "id": TEMPORAL_VALIDITY_EXCLUDED_IDS[1],
+                    "kind": "decision",
+                    "layer": "decision",
+                    "content": "Future validity eval support policy: First-100 pilots use autonomous routing.",
+                    "summary": "Future validity eval support policy uses autonomous routing.",
+                    "confidence": "confirmed",
+                    "importance": 5,
+                    "valid_from": "2999-01-01T00:00:00+00:00",
+                    "topics": ["validity-eval", "support-policy", "first-100"],
+                    "entity_ids": [],
+                },
+                {
+                    "id": TEMPORAL_VALIDITY_EXCLUDED_IDS[2],
+                    "kind": "decision",
+                    "layer": "decision",
+                    "content": "Superseded validity eval support policy: First-100 pilots skip manual approval.",
+                    "summary": "Superseded validity eval support policy skips manual approval.",
+                    "confidence": "confirmed",
+                    "importance": 5,
+                    "superseded_by": TEMPORAL_VALIDITY_CURRENT_ID,
+                    "topics": ["validity-eval", "support-policy", "first-100"],
+                    "entity_ids": [],
+                },
+            ],
+            "tasks": [],
+            "entities": [],
+        },
+    )
+
+    related = store.save_capture(
+        user_id=user_id,
+        content="Related-memory retrieval eval Project Atlas beta fixture.",
+        source="retrieval-eval-related",
+        source_url=RELATED_MEMORY_SOURCE_URL,
+        title="Related-memory retrieval eval",
+        extracted={
+            "_timestamp": "2026-06-30T09:02:00Z",
+            "summary": "Related-memory retrieval eval Project Atlas beta fixture.",
+            "records": [
+                {
+                    "id": RELATED_MEMORY_PRIMARY_ID,
+                    "kind": "decision",
+                    "layer": "decision",
+                    "content": "Related-memory eval decision: Project Atlas keeps the local-first beta path because the risk ledger is tight.",
+                    "summary": "Project Atlas related-memory eval decision keeps local-first beta because risk ledger is tight.",
+                    "confidence": "confirmed",
+                    "importance": 5,
+                    "sector": "Project Atlas",
+                    "topics": ["related-memory-eval", "Project Atlas", "beta"],
+                    "entity_ids": ["project_atlas_related_eval"],
+                },
+                {
+                    "id": RELATED_MEMORY_COMPANION_ID,
+                    "kind": "procedure",
+                    "layer": "procedural",
+                    "content": "Related-memory eval companion procedure: before Project Atlas beta release, run backend smoke, build the signed app, and verify update manifest.",
+                    "summary": "Project Atlas related-memory eval companion procedure covers backend smoke, signed app build, and update manifest.",
+                    "confidence": "confirmed",
+                    "importance": 3,
+                    "sector": "Project Atlas",
+                    "topics": ["related-memory-eval", "Project Atlas", "beta"],
+                    "entity_ids": ["project_atlas_related_eval"],
+                },
+            ],
+            "tasks": [],
+            "entities": [
+                {
+                    "id": "project_atlas_related_eval",
+                    "kind": "project",
+                    "name": "Project Atlas",
+                    "aliases": ["Atlas"],
+                    "context": "Related-memory retrieval eval fixture.",
+                }
+            ],
+        },
+    )
+
+    return [*sector["memories"], *validity["memories"], *related["memories"]]
 
 
 def seed_state_leakage_memories(store: CortexStore, user_id: str = USER_ID) -> dict[str, str]:
@@ -798,7 +1022,7 @@ def _summarize_metrics(checks: list[dict[str, Any]], k_values: tuple[int, ...]) 
 
 
 def _evaluate_case(store: CortexStore, user_id: str, case: RetrievalCase, limit: int) -> dict[str, Any]:
-    results = store.search(user_id, case.query, limit=limit)
+    results = store.search(user_id, case.query, limit=limit, sector=case.sector, include_related=case.include_related)
     if not results:
         raise AssertionError(f"{case.name}: query returned no results: {case.query!r}")
 
@@ -811,6 +1035,8 @@ def _evaluate_case(store: CortexStore, user_id: str, case: RetrievalCase, limit:
         raise AssertionError(f"{case.name}: expected layer {case.expected_layer}, got {top['layer']}")
     if case.expected_phrase not in top["content"]:
         raise AssertionError(f"{case.name}: expected phrase {case.expected_phrase!r} in {top['content']!r}")
+    if case.sector and top.get("sector") != case.sector:
+        raise AssertionError(f"{case.name}: expected sector {case.sector}, got {top.get('sector')}")
     source_url = str(top.get("source_url") or "")
     for expected_fragment in case.source_url_contains:
         if expected_fragment not in source_url:
@@ -818,33 +1044,149 @@ def _evaluate_case(store: CortexStore, user_id: str, case: RetrievalCase, limit:
     if case.expected_occurred_at and top.get("occurred_at") != case.expected_occurred_at:
         raise AssertionError(f"{case.name}: expected occurred_at {case.expected_occurred_at}, got {top.get('occurred_at')}")
 
-    layer_results = store.search(user_id, case.query, limit=limit, layer=case.expected_layer)
+    result_ids = [item["id"] for item in results]
+    leaked_ids = [memory_id for memory_id in case.disallowed_ids if memory_id in result_ids]
+    if leaked_ids:
+        raise AssertionError(f"{case.name}: disallowed memories appeared in retrieval results: {leaked_ids}")
+
+    related_check: dict[str, Any] | None = None
+    if case.expected_related_id:
+        related = next((item for item in results if item["id"] == case.expected_related_id), None)
+        if not related:
+            raise AssertionError(f"{case.name}: expected related result {case.expected_related_id}, got {result_ids}")
+        if case.expected_related_layer and related.get("layer") != case.expected_related_layer:
+            raise AssertionError(f"{case.name}: expected related layer {case.expected_related_layer}, got {related.get('layer')}")
+        if case.expected_related_phrase and case.expected_related_phrase not in str(related.get("content") or ""):
+            raise AssertionError(f"{case.name}: expected related phrase {case.expected_related_phrase!r} in {related.get('content')!r}")
+        relationship = related.get("relationship") if isinstance(related.get("relationship"), dict) else {}
+        if case.expected_relationship_kind and relationship.get("kind") != case.expected_relationship_kind:
+            raise AssertionError(f"{case.name}: expected relationship kind {case.expected_relationship_kind}, got {relationship}")
+        if relationship and relationship.get("related_to_id") != case.expected_id:
+            raise AssertionError(f"{case.name}: expected related_to_id {case.expected_id}, got {relationship}")
+        related_check = {
+            "id": related["id"],
+            "layer": related.get("layer"),
+            "rank": result_ids.index(case.expected_related_id) + 1,
+            "relationship": relationship,
+        }
+
+    layer_results = store.search(user_id, case.query, limit=limit, layer=case.expected_layer, sector=case.sector)
     layer_ids = [item["id"] for item in layer_results]
     if case.expected_id not in layer_ids:
         raise AssertionError(f"{case.name}: layer-filtered search missed {case.expected_id}: {layer_ids}")
 
-    result_ids = [item["id"] for item in results]
     expected_rank = result_ids.index(case.expected_id) + 1 if case.expected_id in result_ids else None
     return {
         "name": case.name,
         "category": case.category,
         "query": case.query,
+        "sector": case.sector,
+        "include_related": case.include_related,
         "expected_layer": case.expected_layer,
         "expected_id": case.expected_id,
         "expected_rank": expected_rank,
         "top_result": top["id"],
         "top_layer": top["layer"],
+        "top_sector": top.get("sector"),
         "top_source_url": top.get("source_url"),
         "top_occurred_at": top.get("occurred_at"),
         "result_ids": result_ids,
+        "disallowed_ids": list(case.disallowed_ids),
+        "related_result": related_check,
         "layer_filtered_results": layer_ids,
         "metrics": _metrics_for_results(case.expected_id, result_ids, METRIC_K_VALUES),
+    }
+
+
+def assert_focused_answer_contracts(store: CortexStore, user_id: str = USER_ID) -> dict[str, Any]:
+    sector_answer = store.answer_query(
+        user_id,
+        "sector eval release checklist codesign cohort",
+        limit=3,
+        sector="Project Atlas",
+    )
+    sector_ids = [citation["id"] for citation in sector_answer.get("citations") or []]
+    if not sector_ids or sector_ids[0] != SECTOR_SCOPE_ATLAS_ID:
+        raise AssertionError(f"Sector-scoped Ask returned unexpected citations: {sector_ids}")
+    if SECTOR_SCOPE_BOREAL_ID in sector_ids:
+        raise AssertionError(f"Sector-scoped Ask leaked the Project Boreal citation: {sector_ids}")
+    sector_citation = sector_answer["citations"][0]
+    if sector_citation.get("sector") != "Project Atlas":
+        raise AssertionError(f"Sector-scoped Ask missed sector metadata: {sector_citation}")
+    wrong_sector_citations = [
+        citation["id"]
+        for citation in sector_answer.get("citations") or []
+        if citation.get("sector") != "Project Atlas"
+    ]
+    if wrong_sector_citations:
+        raise AssertionError(f"Sector-scoped Ask returned out-of-sector citations: {wrong_sector_citations}")
+    if SECTOR_SCOPE_SOURCE_URL not in str(sector_citation.get("source_url") or ""):
+        raise AssertionError(f"Sector-scoped Ask missed source citation: {sector_citation}")
+    if "Project Boreal uses web smoke tests" in json.dumps(sector_answer, sort_keys=True):
+        raise AssertionError("Sector-scoped Ask leaked the Project Boreal memory into the Project Atlas answer")
+
+    validity_answer = store.answer_query(user_id, "validity eval support policy", limit=4)
+    validity_ids = [citation["id"] for citation in validity_answer.get("citations") or []]
+    if not validity_ids or validity_ids[0] != TEMPORAL_VALIDITY_CURRENT_ID:
+        raise AssertionError(f"Temporal-validity Ask missed the current support policy: {validity_ids}")
+    leaked_validity_ids = [memory_id for memory_id in TEMPORAL_VALIDITY_EXCLUDED_IDS if memory_id in validity_ids]
+    if leaked_validity_ids:
+        raise AssertionError(f"Temporal-validity Ask leaked expired/future/superseded memories: {leaked_validity_ids}")
+    current_citation = next(citation for citation in validity_answer["citations"] if citation["id"] == TEMPORAL_VALIDITY_CURRENT_ID)
+    if TEMPORAL_VALIDITY_SOURCE_URL not in str(current_citation.get("source_url") or ""):
+        raise AssertionError(f"Temporal-validity Ask missed source citation: {current_citation}")
+
+    related_answer = store.answer_query(
+        user_id,
+        "related memory eval risk ledger local-first beta path",
+        limit=2,
+        sector="Project Atlas",
+    )
+    related_ids = [citation["id"] for citation in related_answer.get("citations") or []]
+    if not related_ids or related_ids[0] != RELATED_MEMORY_PRIMARY_ID:
+        raise AssertionError(f"Related-memory Ask missed the primary decision: {related_ids}")
+    if RELATED_MEMORY_COMPANION_ID not in related_ids:
+        raise AssertionError(f"Related-memory Ask missed the companion memory: {related_ids}")
+    companion = next(citation for citation in related_answer["citations"] if citation["id"] == RELATED_MEMORY_COMPANION_ID)
+    relationship = companion.get("relationship") if isinstance(companion.get("relationship"), dict) else {}
+    if relationship.get("kind") != "shared_entity" or relationship.get("related_to_id") != RELATED_MEMORY_PRIMARY_ID:
+        raise AssertionError(f"Related-memory Ask missed relationship metadata: {relationship}")
+    if RELATED_MEMORY_SOURCE_URL not in str(companion.get("source_url") or ""):
+        raise AssertionError(f"Related-memory Ask missed source citation: {companion}")
+
+    for label, answer in (
+        ("sector_scoping", sector_answer),
+        ("temporal_validity", validity_answer),
+        ("related_memory", related_answer),
+    ):
+        missing_citations = [citation["id"] for citation in answer.get("citations") or [] if not citation.get("source_url")]
+        if missing_citations:
+            raise AssertionError(f"{label}: Ask citations missed source_url values: {missing_citations}")
+
+    return {
+        "sector_scoping": {
+            "sector": "Project Atlas",
+            "citation_ids": sector_ids,
+            "source_url": sector_citation.get("source_url"),
+        },
+        "temporal_validity": {
+            "citation_ids": validity_ids,
+            "excluded_ids": list(TEMPORAL_VALIDITY_EXCLUDED_IDS),
+            "source_url": current_citation.get("source_url"),
+        },
+        "related_memory": {
+            "citation_ids": related_ids,
+            "related_id": RELATED_MEMORY_COMPANION_ID,
+            "relationship": relationship,
+            "source_url": companion.get("source_url"),
+        },
     }
 
 
 def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 3) -> dict[str, Any]:
     seeded = seed_representative_memories(store, user_id)
     distractors = seed_distractor_memories(store, user_id)
+    focused_memories = seed_focused_retrieval_memories(store, user_id)
     seeded_layers = {memory["layer"] for memory in seeded}
     if seeded_layers != MEMORY_LAYERS:
         missing = sorted(MEMORY_LAYERS - seeded_layers)
@@ -970,14 +1312,17 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
 
     local_file_citation = assert_shared_local_file_citations_sanitized(store, user_id)
     state_leakage = assert_state_leakage_excluded(store, user_id)
+    focused_answer_contracts = assert_focused_answer_contracts(store, user_id)
 
     return {
         "status": "ok",
         "seeded_memories": len(seeded),
         "distractor_memories": len(distractors),
+        "focused_retrieval_memories": len(focused_memories),
         "noisy_import_memories": len(noisy_memories),
         "local_file_citation": local_file_citation,
         "state_leakage_seeded": state_leakage,
+        "focused_answer_contracts": focused_answer_contracts,
         "seeded_layers": sorted(seeded_layers),
         "metrics": _summarize_metrics(checks, METRIC_K_VALUES),
         "checks": checks,

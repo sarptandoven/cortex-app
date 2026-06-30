@@ -2833,7 +2833,7 @@ class CortexStore:
         record_metadata: dict[str, Any] | None,
     ) -> bool:
         capture = conn.execute(
-            "SELECT source_url, title, captured_at FROM captures WHERE user_id = ? AND id = ?",
+            "SELECT source_url, title, captured_at, raw_hash FROM captures WHERE user_id = ? AND id = ?",
             (user_id, capture_id),
         ).fetchone()
         if not capture:
@@ -2857,11 +2857,60 @@ class CortexStore:
             (user_id, capture_id),
         ).fetchall()
         if not rows:
+            if self._pending_source_record_metadata_matches(
+                conn,
+                user_id,
+                capture_id,
+                source_url=source_url,
+                title=title,
+                raw_hash=str(capture["raw_hash"] or ""),
+                record_metadata=record_metadata,
+            ):
+                return False
             return True
         for row in rows:
             provenance = self._json_or_empty(row["provenance_json"])
             existing_metadata = provenance.get("record_metadata") if isinstance(provenance.get("record_metadata"), dict) else {}
             if _source_record_refresh_metadata(existing_metadata) != normalized_metadata:
+                return True
+        return False
+
+    def _pending_source_record_metadata_matches(
+        self,
+        conn,
+        user_id: str,
+        capture_id: str,
+        *,
+        source_url: str | None,
+        title: str | None,
+        raw_hash: str | None,
+        record_metadata: dict[str, Any] | None,
+    ) -> bool:
+        normalized_metadata = _source_record_refresh_metadata(record_metadata)
+        rows = conn.execute(
+            """
+            SELECT payload_json
+            FROM memory_jobs
+            WHERE user_id = ?
+              AND object_type = 'capture'
+              AND object_id = ?
+              AND job_type = 'extract_capture'
+              AND status IN ('queued', 'running')
+            ORDER BY updated_at DESC
+            LIMIT 10
+            """,
+            (user_id, capture_id),
+        ).fetchall()
+        for row in rows:
+            payload = self._json_or_empty(row["payload_json"])
+            if str(payload.get("raw_hash") or "") != str(raw_hash or ""):
+                continue
+            if str(payload.get("source_url") or "") != str(source_url or ""):
+                continue
+            if str(payload.get("title") or "") != str(title or ""):
+                continue
+            pending_metadata = payload.get("record_metadata") if isinstance(payload.get("record_metadata"), dict) else {}
+            if _source_record_refresh_metadata(pending_metadata) == normalized_metadata:
                 return True
         return False
 

@@ -121,8 +121,8 @@ private struct ConnectionsPrivacyOverview: View {
         } label: {
             ConnectionsDisclosureLabel(
                 systemImage: "shield.lefthalf.filled",
-                title: "Privacy settings",
-                detail: "\(summary.mode.capitalized) mode · trust \(summary.trust_score)/100"
+                title: "Privacy",
+                detail: "Local-first · review-first"
             )
         }
         .padding(14)
@@ -217,8 +217,8 @@ private struct ConnectionsPrivacyOverview: View {
         } label: {
             ConnectionsDisclosureLabel(
                 systemImage: "slider.horizontal.3",
-                title: "Troubleshooting",
-                detail: "Recovery, tool access, source audit, and diagnostics"
+                title: "Advanced",
+                detail: "Backup, tool access, audit, and diagnostics"
             )
         }
         .padding(14)

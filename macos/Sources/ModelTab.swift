@@ -23,8 +23,8 @@ struct ModelTab: View {
                     } label: {
                         ModelDisclosureLabel(
                             systemImage: "square.stack.3d.up",
-                            title: "Memory details",
-                            detail: "Optional coverage and citation diagnostics"
+                            title: "What Cortex knows",
+                            detail: "Coverage, sources, and citation health"
                         )
                     }
                     .padding(12)
