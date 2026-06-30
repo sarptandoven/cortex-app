@@ -127,7 +127,10 @@ def _global_token_user_id(x_cortex_user: str | None) -> str:
 
 
 def _hosted_readiness_contract() -> dict[str, Any]:
-    return hosted_readiness_contract(settings)
+    runtime: dict[str, Any] = {}
+    if settings.shard_mode != "local":
+        runtime["control_plane"] = store.control_plane_status()
+    return hosted_readiness_contract(settings, runtime=runtime)
 
 
 def auth(request: Request, authorization: str | None = Header(default=None), x_cortex_user: str | None = Header(default=None)) -> str:

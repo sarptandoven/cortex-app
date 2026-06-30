@@ -162,8 +162,14 @@ class ShardingTests(unittest.TestCase):
     def test_generated_tokens_are_added_to_control_index(self) -> None:
         settings = self.settings(mode="bucket", shard_count=8)
         issuer = StoreRegistry.from_settings(settings)
+        self.assertEqual(issuer.control_plane_status()["status"], "blocked")
         api_token = issuer.create_api_token("alice", label="Generated API", scopes=["read"])
         mcp_token = issuer.create_mcp_token("alice", label="Generated MCP", scopes=["read"])
+        control = issuer.control_plane_status()
+        self.assertEqual(control["status"], "ok")
+        self.assertEqual(control["active_api_tokens"], 1)
+        self.assertEqual(control["active_mcp_tokens"], 1)
+        self.assertEqual(control["active_users"], 1)
 
         registry = StoreRegistry.from_settings(settings)
         scoped_api = registry.authenticate_api_token(api_token["token"])

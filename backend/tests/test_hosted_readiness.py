@@ -39,8 +39,9 @@ class HostedReadinessTests(unittest.TestCase):
         self.assertIn("hosted_vector_backend", blocked)
         self.assertIn("background_workers", blocked)
         self.assertIn("observability", blocked)
+        self.assertIn("control_plane_scoped_tokens", blocked)
 
-    def test_hosted_mode_passes_when_10k_platform_controls_are_declared(self) -> None:
+    def test_hosted_mode_still_blocks_without_runtime_control_plane_evidence(self) -> None:
         contract = hosted_readiness_contract(
             replace(
                 self.settings,
@@ -53,6 +54,32 @@ class HostedReadinessTests(unittest.TestCase):
                 observability_enabled=True,
                 embedding_provider="openai",
             )
+        )
+
+        self.assertEqual(contract["status"], "blocked")
+        blocked = {check["name"] for check in contract["checks"] if check["status"] == "blocked"}
+        self.assertEqual(blocked, {"control_plane_scoped_tokens"})
+
+    def test_hosted_mode_passes_when_10k_platform_controls_are_declared_and_proven(self) -> None:
+        contract = hosted_readiness_contract(
+            replace(
+                self.settings,
+                shard_mode="bucket",
+                require_scoped_api_tokens=True,
+                public_base_url="https://api.cortex.example",
+                sync_signing_key="sync-signing-key",
+                hosted_vector_backend="pgvector",
+                worker_mode="external",
+                observability_enabled=True,
+                embedding_provider="openai",
+            ),
+            runtime={
+                "control_plane": {
+                    "active_api_tokens": 1,
+                    "active_mcp_tokens": 1,
+                    "active_users": 1,
+                }
+            },
         )
 
         self.assertEqual(contract["status"], "ok")

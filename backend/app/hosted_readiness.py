@@ -9,7 +9,7 @@ HOSTED_VECTOR_BACKENDS = {"pgvector", "postgres-pgvector"}
 HOSTED_WORKER_MODES = {"external", "hosted", "worker"}
 
 
-def hosted_readiness_contract(settings: Settings) -> dict:
+def hosted_readiness_contract(settings: Settings, runtime: dict | None = None) -> dict:
     shard_mode = (settings.shard_mode or "local").strip().lower()
     hosted_mode = shard_mode != "local"
     requires_scoped_tokens = bool(settings.require_scoped_api_tokens)
@@ -23,6 +23,7 @@ def hosted_readiness_contract(settings: Settings) -> dict:
         _vector_backend_check(hosted_mode, settings.hosted_vector_backend),
         _worker_check(hosted_mode, settings.worker_mode),
         _observability_check(hosted_mode, settings.observability_enabled),
+        _control_plane_check(hosted_mode, runtime),
     ]
 
     return {
@@ -31,6 +32,7 @@ def hosted_readiness_contract(settings: Settings) -> dict:
         "shard_mode": shard_mode,
         "require_scoped_api_tokens": requires_scoped_tokens,
         "global_token_user_switching": global_token_user_switching,
+        "runtime": runtime or {},
         "checks": checks,
     }
 
@@ -147,4 +149,34 @@ def _observability_check(hosted_mode: bool, observability_enabled: bool) -> dict
         "name": "observability",
         "status": "blocked",
         "detail": "Set CORTEX_OBSERVABILITY_ENABLED=1 after wiring logs, metrics, and job-failure alerts.",
+    }
+
+
+def _control_plane_check(hosted_mode: bool, runtime: dict | None) -> dict:
+    if not hosted_mode:
+        return {
+            "name": "control_plane_scoped_tokens",
+            "status": "ok",
+            "detail": "Local mode can run without hosted scoped-token control-plane evidence.",
+        }
+    control = (runtime or {}).get("control_plane") if isinstance(runtime, dict) else None
+    if not isinstance(control, dict):
+        return {
+            "name": "control_plane_scoped_tokens",
+            "status": "blocked",
+            "detail": "Hosted readiness needs runtime control-plane evidence from the scoped token index.",
+        }
+    api_tokens = int(control.get("active_api_tokens") or 0)
+    mcp_tokens = int(control.get("active_mcp_tokens") or 0)
+    users = int(control.get("active_users") or 0)
+    if api_tokens > 0 and mcp_tokens > 0 and users > 0:
+        return {
+            "name": "control_plane_scoped_tokens",
+            "status": "ok",
+            "detail": f"Scoped control plane has {api_tokens} API token(s), {mcp_tokens} MCP token(s), and {users} active user(s).",
+        }
+    return {
+        "name": "control_plane_scoped_tokens",
+        "status": "blocked",
+        "detail": "Create at least one active scoped API token and one active scoped MCP token for a hosted user before marking hosted readiness ok.",
     }

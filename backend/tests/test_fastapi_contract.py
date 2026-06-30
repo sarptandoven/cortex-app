@@ -163,6 +163,44 @@ class FastAPIContractTests(unittest.TestCase):
         finally:
             main_module.settings = original_settings
 
+    def test_hosted_ready_requires_runtime_scoped_token_control_plane(self) -> None:
+        original_settings = main_module.settings
+        main_module.settings = replace(
+            original_settings,
+            shard_mode="bucket",
+            require_scoped_api_tokens=True,
+            public_base_url="https://api.cortex.example",
+            sync_signing_key="sync-signing-key",
+            hosted_vector_backend="pgvector",
+            worker_mode="external",
+            observability_enabled=True,
+            embedding_provider="openai",
+        )
+        user = "hosted-ready-contract"
+        main_module.store.token_index.delete_user(user)
+        try:
+            response = self.client.get("/ready")
+            self.assertEqual(response.status_code, 503)
+            blocked = {
+                check["name"]
+                for check in response.json()["detail"]["hosted_readiness"]["checks"]
+                if check["status"] == "blocked"
+            }
+            self.assertEqual(blocked, {"control_plane_scoped_tokens"})
+
+            main_module.store.ensure_api_token(user, "cxa_hosted_ready_api_token_123456789", label="Hosted API", scopes=["read"])
+            main_module.store.ensure_mcp_token(user, "cxm_hosted_ready_mcp_token_123456789", label="Hosted MCP", scopes=["read"])
+
+            ready = self.client.get("/ready")
+            self.assertEqual(ready.status_code, 200)
+            control = ready.json()["hosted_readiness"]["runtime"]["control_plane"]
+            self.assertGreaterEqual(control["active_api_tokens"], 1)
+            self.assertGreaterEqual(control["active_mcp_tokens"], 1)
+            self.assertGreaterEqual(control["active_users"], 1)
+        finally:
+            main_module.store.token_index.delete_user(user)
+            main_module.settings = original_settings
+
     def test_memory_quality_endpoint_exposes_citation_and_review_contract(self) -> None:
         created = self.client.post(
             "/v1/captures",

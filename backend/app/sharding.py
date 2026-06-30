@@ -232,6 +232,44 @@ class TokenControlIndex:
             finally:
                 conn.close()
 
+    def summary(self) -> dict[str, Any]:
+        if not self.path.exists():
+            return {
+                "path": str(self.path),
+                "exists": False,
+                "active_tokens": 0,
+                "active_api_tokens": 0,
+                "active_mcp_tokens": 0,
+                "active_users": 0,
+                "revoked_tokens": 0,
+            }
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT
+                  COUNT(*) AS total_tokens,
+                  SUM(CASE WHEN revoked_at IS NULL THEN 1 ELSE 0 END) AS active_tokens,
+                  SUM(CASE WHEN revoked_at IS NULL AND audience = 'api' THEN 1 ELSE 0 END) AS active_api_tokens,
+                  SUM(CASE WHEN revoked_at IS NULL AND audience = 'mcp' THEN 1 ELSE 0 END) AS active_mcp_tokens,
+                  COUNT(DISTINCT CASE WHEN revoked_at IS NULL THEN user_id ELSE NULL END) AS active_users,
+                  SUM(CASE WHEN revoked_at IS NOT NULL THEN 1 ELSE 0 END) AS revoked_tokens
+                FROM scoped_token_index
+                """
+            ).fetchone()
+        finally:
+            conn.close()
+        return {
+            "path": str(self.path),
+            "exists": True,
+            "total_tokens": int(row["total_tokens"] or 0),
+            "active_tokens": int(row["active_tokens"] or 0),
+            "active_api_tokens": int(row["active_api_tokens"] or 0),
+            "active_mcp_tokens": int(row["active_mcp_tokens"] or 0),
+            "active_users": int(row["active_users"] or 0),
+            "revoked_tokens": int(row["revoked_tokens"] or 0),
+        }
+
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path)
@@ -299,7 +337,18 @@ class StoreRegistry:
             "active_store_count": len(self._stores),
             "default": self.assignment_for(self.default_user_id).as_dict(),
         }
+        if self.router.mode != "local":
+            payload["sharding"]["control_plane"] = self.control_plane_status()
         return payload
+
+    def control_plane_status(self) -> dict[str, Any]:
+        summary = self.token_index.summary()
+        ready = summary["active_api_tokens"] > 0 and summary["active_mcp_tokens"] > 0 and summary["active_users"] > 0
+        return {
+            **summary,
+            "status": "ok" if ready else "blocked",
+            "requires": ["active scoped API token", "active scoped MCP token", "active user"],
+        }
 
     def authenticate_mcp_token(self, token: str, user_id: str | None = None) -> dict[str, Any] | None:
         return self._authenticate_scoped_token(token, audience="mcp", user_id=user_id)
