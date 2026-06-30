@@ -325,6 +325,28 @@ class StoreRegistry:
                 return scoped
         return None
 
+    def create_api_token(
+        self,
+        user_id: str,
+        *,
+        label: str = "REST API client",
+        scopes: list[str] | tuple[str, ...] | str | None = None,
+    ) -> dict[str, Any]:
+        token = "cxa_" + secrets.token_urlsafe(32).replace("-", "").replace("_", "")[:43]
+        metadata = self.ensure_api_token(user_id, token, label=label, scopes=scopes)
+        return {**metadata, "token": token}
+
+    def create_mcp_token(
+        self,
+        user_id: str,
+        *,
+        label: str = "MCP integration",
+        scopes: list[str] | tuple[str, ...] | str | None = None,
+    ) -> dict[str, Any]:
+        token = "cxm_" + secrets.token_urlsafe(32).replace("-", "").replace("_", "")[:43]
+        metadata = self.ensure_mcp_token(user_id, token, label=label, scopes=scopes)
+        return {**metadata, "token": token}
+
     def ensure_api_token(
         self,
         user_id: str,

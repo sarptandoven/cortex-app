@@ -159,6 +159,24 @@ class ShardingTests(unittest.TestCase):
         self.assertEqual(set(scoped["scopes"]), {"read", "export"})
         self.assertEqual(registry._stores, {})
 
+    def test_generated_tokens_are_added_to_control_index(self) -> None:
+        settings = self.settings(mode="bucket", shard_count=8)
+        issuer = StoreRegistry.from_settings(settings)
+        api_token = issuer.create_api_token("alice", label="Generated API", scopes=["read"])
+        mcp_token = issuer.create_mcp_token("alice", label="Generated MCP", scopes=["read"])
+
+        registry = StoreRegistry.from_settings(settings)
+        scoped_api = registry.authenticate_api_token(api_token["token"])
+        scoped_mcp = registry.authenticate_mcp_token(mcp_token["token"])
+
+        self.assertIsNotNone(scoped_api)
+        self.assertIsNotNone(scoped_mcp)
+        self.assertEqual(scoped_api["user_id"], "alice")
+        self.assertEqual(scoped_mcp["user_id"], "alice")
+        self.assertTrue(scoped_api["control_index"])
+        self.assertTrue(scoped_mcp["control_index"])
+        self.assertEqual(registry._stores, {})
+
     def test_control_index_respects_user_hint_revoke_and_user_deletion(self) -> None:
         settings = self.settings(mode="user")
         registry = StoreRegistry.from_settings(settings)
