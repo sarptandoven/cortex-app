@@ -1,14 +1,14 @@
 {
-  "_comment": "Add this block to ~/Library/Application Support/Claude/claude_desktop_config.json under mcpServers. Use the app-generated path from Trust > Connected AI when possible.",
+  "_comment": "Add this block to ~/Library/Application Support/Claude/claude_desktop_config.json under mcpServers. Use the app-generated setup from Connections & Privacy when possible.",
   "mcpServers": {
     "cortex": {
-      "command": "python3",
+      "command": "/usr/bin/python3",
       "args": [
         "/Applications/Cortex.app/Contents/Resources/scripts/cortex_mcp_stdio.py"
       ],
       "env": {
-        "CORTEX_API_BASE_URL": "http://127.0.0.1:8766",
-        "CORTEX_MCP_API_KEY": "<copy from Cortex Trust > Connected AI>"
+        "CORTEX_BASE_URL": "http://127.0.0.1:8766",
+        "CORTEX_API_KEY": "<copy from Cortex Connections & Privacy > Advanced Setup>"
       }
     }
   }

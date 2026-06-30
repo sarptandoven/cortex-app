@@ -1117,6 +1117,7 @@ struct AIIntegrationState: Hashable {
     var appInstalled: Bool = false
     var configured: Bool = false
     var configExists: Bool = false
+    var needsRepair: Bool = false
     var configuredPaths: [String] = []
     var availablePaths: [String] = []
 }
@@ -2952,7 +2953,7 @@ final class AppState: ObservableObject {
             integration.supportsInstall && integrationState(for: integration).appInstalled
         }
         guard !detected.isEmpty else {
-            status = "No detected MCP apps yet"
+            status = "No detected local AI apps yet"
             return
         }
         var installed = 0
@@ -2981,12 +2982,16 @@ final class AppState: ObservableObject {
                     appInstalled: installed,
                     configured: false,
                     configExists: false,
+                    needsRepair: false,
                     configuredPaths: [],
                     availablePaths: paths
                 )
                 continue
             }
-            let configured = integration.configTargets.filter { target in
+            let verified = integration.configTargets.filter { target in
+                configHasVerifiedCortexServer(at: target.url)
+            }
+            let cortexPresent = integration.configTargets.filter { target in
                 configContainsCortex(at: target.url)
             }
             let exists = integration.configTargets.contains { target in
@@ -2994,9 +2999,10 @@ final class AppState: ObservableObject {
             }
             next[integration.id] = AIIntegrationState(
                 appInstalled: installed,
-                configured: !configured.isEmpty,
+                configured: !verified.isEmpty,
                 configExists: exists,
-                configuredPaths: configured.map { $0.url.path },
+                needsRepair: verified.isEmpty && !cortexPresent.isEmpty,
+                configuredPaths: (verified.isEmpty ? cortexPresent : verified).map { $0.url.path },
                 availablePaths: paths
             )
         }
@@ -3009,15 +3015,19 @@ final class AppState: ObservableObject {
                 appInstalled: integrationAppearsInstalled(integration),
                 configured: false,
                 configExists: false,
+                needsRepair: false,
                 configuredPaths: [],
                 availablePaths: integration.configTargets.map { $0.url.path }
             )
         }
+        let verified = integration.configTargets.filter { configHasVerifiedCortexServer(at: $0.url) }
+        let cortexPresent = integration.configTargets.filter { configContainsCortex(at: $0.url) }
         return integrationStates[integration.id] ?? AIIntegrationState(
             appInstalled: integrationAppearsInstalled(integration),
-            configured: integration.configTargets.contains { configContainsCortex(at: $0.url) },
+            configured: !verified.isEmpty,
             configExists: integration.configTargets.contains { FileManager.default.fileExists(atPath: $0.url.path) },
-            configuredPaths: integration.configTargets.filter { configContainsCortex(at: $0.url) }.map { $0.url.path },
+            needsRepair: verified.isEmpty && !cortexPresent.isEmpty,
+            configuredPaths: (verified.isEmpty ? cortexPresent : verified).map { $0.url.path },
             availablePaths: integration.configTargets.map { $0.url.path }
         )
     }
@@ -3149,6 +3159,28 @@ final class AppState: ObservableObject {
             return false
         }
         return servers["cortex"] != nil
+    }
+
+    private func configHasVerifiedCortexServer(at url: URL) -> Bool {
+        guard let data = try? Data(contentsOf: url),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let servers = root["mcpServers"] as? [String: Any],
+              let cortex = servers["cortex"] as? [String: Any] else {
+            return false
+        }
+        guard let command = cortex["command"] as? String,
+              command == "/usr/bin/python3",
+              let args = cortex["args"] as? [String],
+              let scriptPath = args.first,
+              scriptPath.hasSuffix("cortex_mcp_stdio.py"),
+              FileManager.default.fileExists(atPath: scriptPath),
+              let env = cortex["env"] as? [String: String] else {
+            return false
+        }
+        let configuredBaseURL = (env["CORTEX_BASE_URL"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let expectedBaseURL = endpoint.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let configuredToken = (env["CORTEX_API_KEY"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return configuredBaseURL == expectedBaseURL && !configuredToken.isEmpty && configuredToken == mcpAPIKey
     }
 
     func copyLocalAPISettings() {
@@ -4202,13 +4234,13 @@ struct IntegrationCompactRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: integrationState.configured ? "checkmark.circle.fill" : integration.systemImage)
-                .foregroundColor(integrationState.configured ? .green : .accentColor)
+                .foregroundColor(integrationState.configured ? .green : (integrationState.needsRepair ? .orange : .accentColor))
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(integration.name)
                     .font(.callout)
                     .fontWeight(.medium)
-                Text(integrationState.configured ? "Connected locally" : "Installed and ready to connect")
+                Text(statusDetail)
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -4226,7 +4258,7 @@ struct IntegrationCompactRow: View {
                 Button {
                     state.installIntegration(integration)
                 } label: {
-                    Label("Connect", systemImage: "link.circle")
+                    Label(integrationState.needsRepair ? "Repair" : "Connect", systemImage: integrationState.needsRepair ? "wrench.and.screwdriver" : "link.circle")
                         .frame(minHeight: 38)
                 }
                 .buttonStyle(.borderedProminent)
@@ -4236,6 +4268,16 @@ struct IntegrationCompactRow: View {
         .padding(10)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.70))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var statusDetail: String {
+        if integrationState.configured {
+            return "Connected locally"
+        }
+        if integrationState.needsRepair {
+            return "Connection needs repair"
+        }
+        return "Installed and ready to connect"
     }
 }
 
@@ -4336,6 +4378,15 @@ struct IntegrationCard: View {
                 Spacer()
             }
             .frame(minHeight: 36)
+        } else if integrationState.needsRepair {
+            Button {
+                state.installIntegration(integration)
+            } label: {
+                Label("Repair", systemImage: "wrench.and.screwdriver")
+                    .frame(maxWidth: .infinity, minHeight: 38)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
         } else if integration.supportsInstall && integrationState.appInstalled {
             Button {
                 state.installIntegration(integration)
@@ -4364,7 +4415,7 @@ struct IntegrationCard: View {
                 Button {
                     state.installIntegration(integration)
                 } label: {
-                    Label(integrationState.configured ? "Repair" : "Connect", systemImage: integrationState.configured ? "wrench.and.screwdriver" : "link.circle")
+                    Label(integrationState.configured || integrationState.needsRepair ? "Repair" : "Connect", systemImage: integrationState.configured || integrationState.needsRepair ? "wrench.and.screwdriver" : "link.circle")
                         .frame(minHeight: 40)
                 }
                 .buttonStyle(.borderedProminent)
@@ -4408,6 +4459,9 @@ struct IntegrationCard: View {
             if integrationState.configured {
                 return integration.restartHint
             }
+            if integrationState.needsRepair {
+                return "Repair the connection, then reopen the tool if it asks."
+            }
             if integration.supportsInstall && integrationState.appInstalled {
                 return "Connect once, then reopen the tool if it asks."
             }
@@ -4416,7 +4470,10 @@ struct IntegrationCard: View {
             }
         }
         if !integration.supportsInstall {
-            return "Direct MCP/local connectors are the primary path."
+            return "Direct local connectors are the primary path."
+        }
+        if integrationState.needsRepair {
+            return "Connection settings are present but need to be updated."
         }
         return integration.restartHint
     }
@@ -4439,6 +4496,7 @@ struct IntegrationStatusBadge: View {
 
     private var label: String {
         if state.configured { return "Connected" }
+        if state.needsRepair { return "Repair" }
         if supportsInstall && state.appInstalled { return "Detected" }
         if supportsInstall && state.configExists { return "Config" }
         return supportsInstall ? "Ready" : "Reference"
@@ -4446,6 +4504,7 @@ struct IntegrationStatusBadge: View {
 
     private var color: Color {
         if state.configured { return .green }
+        if state.needsRepair { return .orange }
         if state.appInstalled { return .accentColor }
         if state.configExists { return .orange }
         return supportsInstall ? .secondary : .purple

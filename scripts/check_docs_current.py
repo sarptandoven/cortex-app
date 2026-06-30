@@ -158,11 +158,21 @@ def mcp_config_errors() -> list[str]:
     except json.JSONDecodeError as exc:
         return [f"claude_desktop_config.json: invalid JSON: {exc}"]
     text = json.dumps(payload)
-    for phrase in ("mcp_server.py", "github_store", "redis_store", "GITHUB_TOKEN", "REDIS_URL"):
+    for phrase in (
+        "mcp_server.py",
+        "github_store",
+        "redis_store",
+        "GITHUB_TOKEN",
+        "REDIS_URL",
+        "CORTEX_API_BASE_URL",
+        "CORTEX_MCP_API_KEY",
+    ):
         if phrase in text:
             errors.append(f"claude_desktop_config.json: stale MCP config references {phrase!r}")
     if "scripts/cortex_mcp_stdio.py" not in text and "cortex_mcp_stdio.py" not in text:
         errors.append("claude_desktop_config.json: must use scripts/cortex_mcp_stdio.py")
+    if "CORTEX_BASE_URL" not in text or "CORTEX_API_KEY" not in text:
+        errors.append("claude_desktop_config.json: must set CORTEX_BASE_URL and CORTEX_API_KEY")
     return errors
 
 
