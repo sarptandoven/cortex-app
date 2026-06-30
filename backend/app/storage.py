@@ -4756,7 +4756,7 @@ class CortexStore:
         user_settings = self.settings(user_id)
         if limit is None:
             limit = int(user_settings["context_pack_limit"])
-        memories = self.search(user_id, query, limit=limit) if query else self.recent(user_id, limit=limit)
+        memories = self.search(user_id, query, limit=limit, include_related=True) if query else self.recent(user_id, limit=limit)
         decisions = self._memories_by_kind(user_id, "decision", limit=5)
         tasks = self.open_tasks(user_id, limit=8)
         topics = self.list_topics(user_id, limit=8)
@@ -4801,6 +4801,11 @@ class CortexStore:
                     date = item.get("captured_at") or ""
                     topics_text = ", ".join(item.get("topics") or [])
                     suffix = f" Topics: {topics_text}." if topics_text else ""
+                    relationship = item.get("relationship") if isinstance(item.get("relationship"), dict) else {}
+                    if relationship:
+                        relation_kind = str(relationship.get("kind") or "related")
+                        related_to = str(relationship.get("related_to_id") or "").strip()
+                        suffix += f" Related: {relation_kind}{f' to {related_to}' if related_to else ''}."
                     citation = self._memory_citation(item)
                     content = self._shared_text(item["content"], redact_sensitive=redact)
                     lines.append(f"- [{item['id']}] ({item['kind']}, {item['source']}, {date}) Source: {citation}. {content}{suffix}")
