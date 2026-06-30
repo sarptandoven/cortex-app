@@ -616,8 +616,35 @@ class CortexStorageLifecycleTests(unittest.TestCase):
                 """,
                 (self.user_id, "gmail", "msg-001"),
             ).fetchall()
+            stale_memory = conn.execute(
+                """
+                SELECT id, status, superseded_by
+                FROM memories
+                WHERE user_id = ?
+                  AND capture_id = ?
+                  AND content LIKE '%manual file import%'
+                LIMIT 1
+                """,
+                (self.user_id, sync_result["records"][0]["capture_id"]),
+            ).fetchone()
+            replacement_memory = conn.execute(
+                """
+                SELECT id, status
+                FROM memories
+                WHERE user_id = ?
+                  AND capture_id = ?
+                  AND content LIKE '%remote content changes%'
+                LIMIT 1
+                """,
+                (self.user_id, sync_result["records"][0]["capture_id"]),
+            ).fetchone()
         self.assertEqual(len(capture_rows), 1)
         self.assertEqual(capture_rows[0]["source_account_id"], account["id"])
+        self.assertIsNotNone(stale_memory)
+        self.assertIsNotNone(replacement_memory)
+        self.assertEqual(stale_memory["status"], "archived")
+        self.assertEqual(stale_memory["superseded_by"], replacement_memory["id"])
+        self.assertEqual(replacement_memory["status"], "active")
 
         repeated_text_result = self.store.sync_source_account_records(
             self.user_id,
@@ -1226,11 +1253,38 @@ Never use [[Templates/Marketing]] boilerplate in memory.
                 "SELECT COUNT(*) FROM memories WHERE user_id = ? AND capture_id = ?",
                 (self.user_id, first_capture_id),
             ).fetchone()[0]
+            stale_memory = conn.execute(
+                """
+                SELECT id, status, superseded_by
+                FROM memories
+                WHERE user_id = ?
+                  AND capture_id = ?
+                  AND content LIKE '%stale draft policy%'
+                LIMIT 1
+                """,
+                (self.user_id, first_capture_id),
+            ).fetchone()
+            replacement_memory = conn.execute(
+                """
+                SELECT id, status
+                FROM memories
+                WHERE user_id = ?
+                  AND capture_id = ?
+                  AND content LIKE '%current remote policy%'
+                LIMIT 1
+                """,
+                (self.user_id, first_capture_id),
+            ).fetchone()
             capture = conn.execute(
                 "SELECT source_account_id, external_id FROM captures WHERE user_id = ? AND id = ?",
                 (self.user_id, first_capture_id),
             ).fetchone()
         self.assertGreaterEqual(memory_count, 1)
+        self.assertIsNotNone(stale_memory)
+        self.assertIsNotNone(replacement_memory)
+        self.assertEqual(stale_memory["status"], "archived")
+        self.assertEqual(stale_memory["superseded_by"], replacement_memory["id"])
+        self.assertEqual(replacement_memory["status"], "active")
         self.assertEqual(capture["source_account_id"], account["id"])
         self.assertEqual(capture["external_id"], "msg-async-update")
 

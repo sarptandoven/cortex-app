@@ -1526,12 +1526,17 @@ class CortexStore:
             user_settings = self._settings(conn, user_id)
             review_status = "pending" if user_settings["review_new_captures"] else "approved"
             approved_at = None if review_status == "pending" else captured_at
+            stable_source_record = bool(normalized_source_account_id and normalized_external_id)
             existing_capture = conn.execute(
                 "SELECT id, raw_hash FROM captures WHERE user_id = ? AND id = ?",
                 (user_id, capture_id),
             ).fetchone()
             if existing_capture and existing_capture["raw_hash"] != raw_hash:
-                purged = self._purge_capture_derivatives_in_conn(conn, user_id, capture_id)
+                purged = (
+                    self._archive_capture_derivatives_in_conn(conn, user_id, capture_id, timestamp=captured_at)
+                    if stable_source_record
+                    else self._purge_capture_derivatives_in_conn(conn, user_id, capture_id)
+                )
                 self._event(
                     conn,
                     user_id,
@@ -3293,12 +3298,17 @@ class CortexStore:
             if isinstance(source_account_policy, dict) and source_account_policy.get("review_required"):
                 review_status = "pending"
                 approved_at = None
+            stable_source_record = bool(normalized_source_account_id and normalized_external_id)
             existing_capture = conn.execute(
                 "SELECT id, raw_hash FROM captures WHERE user_id = ? AND id = ?",
                 (user_id, capture_id),
             ).fetchone()
             if existing_capture and existing_capture["raw_hash"] != raw_hash:
-                purged = self._purge_capture_derivatives_in_conn(conn, user_id, capture_id)
+                purged = (
+                    self._archive_capture_derivatives_in_conn(conn, user_id, capture_id, timestamp=captured_at)
+                    if stable_source_record
+                    else self._purge_capture_derivatives_in_conn(conn, user_id, capture_id)
+                )
                 self._event(
                     conn,
                     user_id,
@@ -3369,6 +3379,15 @@ class CortexStore:
                 )
                 memories.append(memory)
                 edges.append(self._edge(conn, user_id, capture_id, memory["id"], "contains", memory["id"], captured_at))
+
+            if stable_source_record and memories:
+                self._link_superseded_capture_memories_in_conn(
+                    conn,
+                    user_id,
+                    capture_id,
+                    memories,
+                    timestamp=captured_at,
+                )
 
             for task in extracted.get("tasks", []):
                 saved_task = self._save_task(conn, capture_id, user_id, task, captured_at)
@@ -3831,6 +3850,111 @@ class CortexStore:
             "task_count": len(task_ids),
             "edge_count": len(edge_ids),
         }
+
+    def _archive_capture_derivatives_in_conn(self, conn, user_id: str, capture_id: str, *, timestamp: str) -> dict[str, Any]:
+        memory_rows = conn.execute(
+            """
+            SELECT id, kind, layer
+            FROM memories
+            WHERE user_id = ?
+              AND capture_id = ?
+              AND status != 'archived'
+            """,
+            (user_id, capture_id),
+        ).fetchall()
+        task_rows = conn.execute(
+            """
+            SELECT id
+            FROM tasks
+            WHERE user_id = ?
+              AND capture_id = ?
+              AND status != 'archived'
+            """,
+            (user_id, capture_id),
+        ).fetchall()
+        memory_ids = [row["id"] for row in memory_rows]
+        task_ids = [row["id"] for row in task_rows]
+        edge_ids = self._purge_edges_for_objects(conn, user_id, [capture_id, *memory_ids, *task_ids])
+        if memory_ids:
+            placeholders = ",".join("?" for _ in memory_ids)
+            conn.execute(
+                f"UPDATE memories SET status = 'archived', updated_at = ? WHERE user_id = ? AND id IN ({placeholders})",
+                [timestamp, user_id, *memory_ids],
+            )
+            conn.execute(f"DELETE FROM memory_fts WHERE memory_id IN ({placeholders})", memory_ids)
+            conn.execute(
+                f"DELETE FROM memory_jobs WHERE user_id = ? AND object_type = 'memory' AND object_id IN ({placeholders})",
+                [user_id, *memory_ids],
+            )
+            for memory_id in memory_ids:
+                self._delete_memory_vector(conn, memory_id)
+                self.vault.patch_memory(memory_id, {"status": "archived", "updated_at": timestamp})
+        if task_ids:
+            placeholders = ",".join("?" for _ in task_ids)
+            conn.execute(
+                f"UPDATE tasks SET status = 'archived' WHERE user_id = ? AND id IN ({placeholders})",
+                [user_id, *task_ids],
+            )
+            for task_id in task_ids:
+                self.vault.patch_task(task_id, {"status": "archived"})
+        conn.execute(
+            "DELETE FROM memory_jobs WHERE user_id = ? AND object_type = 'capture' AND object_id = ?",
+            (user_id, capture_id),
+        )
+        for edge_id in edge_ids:
+            self.vault.delete_edge(edge_id)
+        return {
+            "memory_ids": memory_ids,
+            "task_ids": task_ids,
+            "edge_ids": edge_ids,
+            "memory_count": len(memory_ids),
+            "task_count": len(task_ids),
+            "edge_count": len(edge_ids),
+        }
+
+    def _link_superseded_capture_memories_in_conn(
+        self,
+        conn,
+        user_id: str,
+        capture_id: str,
+        replacements: list[dict[str, Any]],
+        *,
+        timestamp: str,
+    ) -> int:
+        replacement_ids = [str(memory.get("id") or "") for memory in replacements if str(memory.get("id") or "")]
+        if not replacement_ids:
+            return 0
+        replacement_by_kind_layer: dict[tuple[str, str], str] = {}
+        for memory in replacements:
+            memory_id = str(memory.get("id") or "")
+            if not memory_id:
+                continue
+            replacement_by_kind_layer.setdefault((str(memory.get("kind") or ""), str(memory.get("layer") or "")), memory_id)
+        replacement_set = set(replacement_ids)
+        rows = conn.execute(
+            """
+            SELECT id, kind, layer
+            FROM memories
+            WHERE user_id = ?
+              AND capture_id = ?
+              AND status = 'archived'
+              AND (superseded_by IS NULL OR superseded_by = '')
+            """,
+            (user_id, capture_id),
+        ).fetchall()
+        linked = 0
+        for row in rows:
+            memory_id = row["id"]
+            if memory_id in replacement_set:
+                continue
+            replacement_id = replacement_by_kind_layer.get((row["kind"], row["layer"])) or replacement_ids[0]
+            conn.execute(
+                "UPDATE memories SET superseded_by = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (replacement_id, timestamp, user_id, memory_id),
+            )
+            self.vault.patch_memory(memory_id, {"superseded_by": replacement_id, "updated_at": timestamp})
+            linked += 1
+        return linked
 
     def delete_capture(self, user_id: str, capture_id: str) -> bool:
         timestamp = now_iso()
