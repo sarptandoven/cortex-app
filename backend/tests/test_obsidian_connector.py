@@ -4,7 +4,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.app.connectors.obsidian import parse_note, scan_vault, stable_external_id, stable_section_external_id
+from backend.app.connectors.obsidian import (
+    parse_note,
+    scan_vault,
+    stable_block_external_id,
+    stable_external_id,
+    stable_section_external_id,
+)
 from backend.app.database import connect, init_db
 from backend.app.storage import CortexStore
 
@@ -259,6 +265,80 @@ Decision: Cortex should keep this Obsidian section searchable.
         self.assertEqual(second["archived_missing"], 1)
         self.assertTrue(self.store.search(self.user_id, "keep this Obsidian section searchable", limit=5))
         self.assertEqual(self.store.search(self.user_id, "zinnia-retire marker", limit=5), [])
+
+    def test_scan_vault_uses_explicit_obsidian_block_refs_as_stable_records(self) -> None:
+        note = self.write_note(
+            "Projects/Blocks.md",
+            """# Decisions
+Decision: Cortex should preserve explicit Obsidian block anchors for important memory. ^decision-anchor
+
+## Procedure
+Procedure: Cortex should strip block ids from remembered text. ^procedure-anchor
+""",
+        )
+
+        scan = scan_vault(self.vault, max_records=20)
+
+        self.assertEqual(scan.records_found, 1)
+        self.assertEqual(scan.records_returned, 2)
+        records = [record.to_source_account_record() for record in scan.records]
+        self.assertEqual(records[0]["external_id"], stable_block_external_id(self.vault, note, "decision-anchor"))
+        self.assertEqual(records[1]["external_id"], stable_block_external_id(self.vault, note, "procedure-anchor"))
+        self.assertEqual(records[0]["metadata"]["record_scope"], "block")
+        self.assertEqual(records[0]["metadata"]["line_start"], 2)
+        self.assertEqual(records[0]["metadata"]["block_id"], "decision-anchor")
+        self.assertIn("preserve explicit Obsidian block anchors", records[0]["content"])
+        self.assertIn("strip block ids from remembered text", records[1]["content"])
+        self.assertNotIn("^decision-anchor", records[0]["content"])
+        self.assertNotIn("^procedure-anchor", records[1]["content"])
+
+    def test_sync_vault_updates_changed_explicit_block_ref(self) -> None:
+        note = self.write_note(
+            "Projects/Block Updates.md",
+            "Decision: Cortex should keep explicit block refs stable across edits. ^stable-block",
+        )
+
+        first = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+        self.assertEqual(first["saved"], 1)
+        first_capture_id = first["records"][0]["capture_id"]
+        self.assertEqual(first["records"][0]["source_url"], note.resolve().as_uri())
+
+        note.write_text(
+            "Decision: Cortex should update explicit block refs without changing capture identity. ^stable-block",
+            encoding="utf-8",
+        )
+        changed = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+
+        self.assertEqual(changed["saved"], 1)
+        self.assertEqual(changed["records"][0]["status"], "updated")
+        self.assertEqual(changed["records"][0]["capture_id"], first_capture_id)
+        self.assertEqual(changed["records"][0]["title"], "Block Updates / stable-block")
+
+    def test_sync_vault_archives_removed_explicit_block_ref(self) -> None:
+        note = self.write_note(
+            "Projects/Block Removed.md",
+            """Decision: Cortex should keep this regular note memory available.
+
+Decision: Cortex should archive the orchid-block marker when an explicit block disappears. ^orchid-block
+""",
+        )
+        first = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+        self.assertEqual(first["saved"], 2)
+        for record in first["records"]:
+            self.assertTrue(self.store.approve_capture(self.user_id, record["capture_id"]))
+        self.assertTrue(self.store.search(self.user_id, "orchid-block marker", limit=5))
+
+        note.write_text(
+            "Decision: Cortex should keep this regular note memory available.",
+            encoding="utf-8",
+        )
+        second = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+
+        self.assertEqual(second["saved"], 0)
+        self.assertEqual(second["skipped"], 1)
+        self.assertEqual(second["archived_missing"], 1)
+        self.assertTrue(self.store.search(self.user_id, "regular note memory available", limit=5))
+        self.assertEqual(self.store.search(self.user_id, "orchid-block marker", limit=5), [])
 
     def test_scan_vault_reports_partial_coverage_when_limited(self) -> None:
         for index in range(5):

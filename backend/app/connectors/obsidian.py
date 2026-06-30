@@ -20,6 +20,7 @@ _FENCED_BLOCK_RE = re.compile(r"```(?P<language>[^\n`]*)\n(?P<body>.*?)```", re.
 _WIKILINK_RE = re.compile(r"!?\[\[(?P<target>[^\]|#]+)(?:#[^\]|]+)?(?:\|(?P<alias>[^\]]+))?\]\]")
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _TAG_RE = re.compile(r"(?<![\w/])#([A-Za-z0-9_][A-Za-z0-9_/-]*)")
+_BLOCK_REF_RE = re.compile(r"(?:^|\s)\^(?P<id>[A-Za-z0-9][A-Za-z0-9_-]{0,80})\s*$")
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,15 @@ class ParsedObsidianNote:
 class _MarkdownSection:
     title: str
     slug: str
+    ordinal: int
+    line_start: int
+    line_end: int
+    raw: str
+
+
+@dataclass(frozen=True)
+class _MarkdownBlockRef:
+    block_id: str
     ordinal: int
     line_start: int
     line_end: int
@@ -233,11 +243,46 @@ def _records_for_note(root: Path, path: Path, raw: str, *, modified: float, size
     captured_at = _iso_from_timestamp(modified)
     source_url = path.resolve().as_uri()[:500]
 
+    block_refs = _markdown_block_refs(raw)
     sections = _markdown_sections(raw)
-    if not sections:
-        return [
+    block_covered_lines = _covered_lines(block_refs)
+    records: list[ObsidianVaultRecord] = []
+
+    for block in block_refs:
+        block_cleaned, _block_frontmatter, block_tags, block_wikilinks, block_callouts, block_removed = _parse_obsidian_markdown(block.raw)
+        if not block_cleaned:
+            continue
+        records.append(
             ObsidianVaultRecord(
-                content=cleaned[:MAX_RECORD_CHARS],
+                content=block_cleaned[:MAX_RECORD_CHARS],
+                title=f"{note_title} / {block.block_id}"[:200],
+                external_id=stable_block_external_id(root, path, block.block_id, block.ordinal),
+                source_url=source_url,
+                captured_at=captured_at,
+                metadata={
+                    **base_metadata,
+                    "record_scope": "block",
+                    "note_external_id": stable_external_id(root, path),
+                    "block_id": block.block_id,
+                    "block_index": block.ordinal,
+                    "line_start": block.line_start,
+                    "line_end": block.line_end,
+                    "block_tags": sorted(block_tags),
+                    "block_wikilinks": block_wikilinks,
+                    "block_callouts": block_callouts,
+                    "block_removed_blocks": block_removed,
+                },
+            )
+        )
+
+    if not sections:
+        cleaned_without_blocks = _parse_obsidian_markdown(_remove_line_numbers(raw, block_covered_lines))[0] if block_covered_lines else cleaned
+        if block_refs and (not cleaned_without_blocks or not _has_meaningful_body(cleaned_without_blocks)):
+            return records
+        return [
+            *records,
+            ObsidianVaultRecord(
+                content=cleaned_without_blocks[:MAX_RECORD_CHARS],
                 title=note_title,
                 external_id=stable_external_id(root, path),
                 source_url=source_url,
@@ -246,10 +291,10 @@ def _records_for_note(root: Path, path: Path, raw: str, *, modified: float, size
             )
         ]
 
-    records: list[ObsidianVaultRecord] = []
     for section in sections:
-        section_cleaned, _section_frontmatter, section_tags, section_wikilinks, section_callouts, section_removed = _parse_obsidian_markdown(section.raw)
-        if not section_cleaned:
+        section_raw = _remove_line_numbers(section.raw, block_covered_lines, base_line=section.line_start)
+        section_cleaned, _section_frontmatter, section_tags, section_wikilinks, section_callouts, section_removed = _parse_obsidian_markdown(section_raw)
+        if not section_cleaned or not _has_meaningful_body(section_cleaned):
             continue
         record_title = note_title if section.title.casefold() == note_title.casefold() else f"{note_title} / {section.title}"[:200]
         records.append(
@@ -338,11 +383,104 @@ def _markdown_sections(raw: str) -> list[_MarkdownSection]:
     return sections
 
 
+def _markdown_block_refs(raw: str) -> list[_MarkdownBlockRef]:
+    text = raw.replace("\r\n", "\n").replace("\r", "\n")
+    match = _FRONTMATTER_RE.match(text)
+    frontmatter_lines = 0
+    if match:
+        frontmatter_lines = _line_count(text[:match.end()])
+        text = text[match.end():]
+
+    lines = text.split("\n")
+    blocks: list[_MarkdownBlockRef] = []
+    id_counts: dict[str, int] = {}
+    in_fence = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        match = _BLOCK_REF_RE.search(stripped)
+        if not match:
+            continue
+        block_id = match.group("id")
+        ordinal = id_counts.get(block_id, 0) + 1
+        id_counts[block_id] = ordinal
+        start_index = _block_ref_start_index(lines, index)
+        block_lines = lines[start_index : index + 1]
+        block_lines[-1] = _strip_block_ref_marker(block_lines[-1])
+        raw_block = "\n".join(block_lines).strip()
+        if not raw_block:
+            continue
+        blocks.append(
+            _MarkdownBlockRef(
+                block_id=block_id,
+                ordinal=ordinal,
+                line_start=frontmatter_lines + start_index + 1,
+                line_end=frontmatter_lines + index + 1,
+                raw=raw_block,
+            )
+        )
+    return blocks
+
+
+def _block_ref_start_index(lines: list[str], marker_index: int) -> int:
+    start = marker_index
+    while start > 0:
+        previous = lines[start - 1].strip()
+        if not previous or re.match(r"^#{1,6}\s+", previous):
+            break
+        start -= 1
+    return start
+
+
+def _covered_lines(blocks: list[_MarkdownBlockRef]) -> set[int]:
+    covered: set[int] = set()
+    for block in blocks:
+        covered.update(range(block.line_start, block.line_end + 1))
+    return covered
+
+
+def _remove_line_numbers(raw: str, line_numbers: set[int], *, base_line: int = 1) -> str:
+    if not line_numbers:
+        return raw
+    lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    kept = [
+        line
+        for index, line in enumerate(lines)
+        if base_line + index not in line_numbers
+    ]
+    return "\n".join(kept)
+
+
+def _has_meaningful_body(cleaned: str) -> bool:
+    for line in cleaned.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            return True
+    return False
+
+
 def stable_section_external_id(root: str | Path, path: str | Path, section_slug: str, section_ordinal: int = 1) -> str:
     note_id = stable_external_id(root, path)
     suffix = f"#heading={section_slug}"
     if section_ordinal > 1:
         suffix = f"{suffix}~{section_ordinal}"
+    external_id = f"{note_id}{suffix}"
+    if len(external_id) <= 240:
+        return external_id
+    digest = _stable_scan_id(external_id).removeprefix("obs_")[:16]
+    return f"{note_id[: max(1, 240 - len(suffix) - 17)]}#{digest}{suffix}"[:240]
+
+
+def stable_block_external_id(root: str | Path, path: str | Path, block_id: str, block_ordinal: int = 1) -> str:
+    note_id = stable_external_id(root, path)
+    safe_block = re.sub(r"[^A-Za-z0-9_-]+", "-", str(block_id or "").strip()).strip("-")[:80] or "block"
+    suffix = f"#^{safe_block}"
+    if block_ordinal > 1:
+        suffix = f"{suffix}~{block_ordinal}"
     external_id = f"{note_id}{suffix}"
     if len(external_id) <= 240:
         return external_id
@@ -377,6 +515,7 @@ def _parse_obsidian_markdown(raw: str) -> tuple[str, dict[str, Any], set[str], l
             continue
         stripped = re.sub(r"^>\s?", "", stripped)
         stripped = re.sub(r"^[-*]\s+\[[ xX]\]\s+", "- ", stripped)
+        stripped = _strip_block_ref_marker(stripped)
         stripped = _TAG_RE.sub(lambda match: _normalize_tag(match.group(1)).replace("/", " "), stripped)
         cleaned_lines.append(stripped)
 
@@ -524,6 +663,10 @@ def _clean_heading_title(value: str) -> str:
     title = _MARKDOWN_LINK_RE.sub(r"\1", title)
     title = _TAG_RE.sub("", title)
     return re.sub(r"\s+", " ", title).strip()[:200]
+
+
+def _strip_block_ref_marker(value: str) -> str:
+    return _BLOCK_REF_RE.sub("", value).rstrip()
 
 
 def _slugify(value: str) -> str:
