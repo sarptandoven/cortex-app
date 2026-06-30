@@ -3081,7 +3081,7 @@ final class AppState: ObservableObject {
         status = "Opened \(integration.name) config folder"
     }
 
-    private func mcpServerDefinition() -> [String: Any] {
+    private func mcpServerDefinition(redactToken: Bool = false) -> [String: Any] {
         ensureUsableMCPAPIKey()
         let scriptURL = Bundle.main.resourceURL?
             .appendingPathComponent("scripts", isDirectory: true)
@@ -3092,15 +3092,15 @@ final class AppState: ObservableObject {
             "args": [scriptPath],
             "env": [
                 "CORTEX_BASE_URL": endpoint,
-                "CORTEX_API_KEY": mcpAPIKey
+                "CORTEX_API_KEY": redactToken ? "<copy-secret-mcp-json-from-advanced-setup>" : mcpAPIKey
             ]
         ]
     }
 
-    private func mcpConfigJSON() -> String {
+    private func mcpConfigJSON(redactToken: Bool = false) -> String {
         let config: [String: Any] = [
             "mcpServers": [
-                "cortex": mcpServerDefinition()
+                "cortex": mcpServerDefinition(redactToken: redactToken)
             ]
         ]
         let data = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
@@ -3123,12 +3123,12 @@ final class AppState: ObservableObject {
         Config targets:
         \(targetPaths)
 
-        MCP server config:
-        \(mcpConfigJSON())
+        MCP server config preview:
+        \(mcpConfigJSON(redactToken: true))
 
         Local MCP service:
         Base URL: \(endpoint)
-        Token: scoped integration token
+        Token: use Copy MCP JSON from Advanced AI tool setup when the app requires a pasted config.
 
         Assistant rule:
         Search Cortex memory before asking the user to repeat project, person, decision, or open-loop context. Prefer cited memory search or agent adaptation when another app needs approved personal context.
