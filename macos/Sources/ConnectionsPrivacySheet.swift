@@ -63,6 +63,7 @@ private struct ConnectionsPrivacyOverview: View {
     @State private var advancedExpanded = false
     @State private var sourceAuditExpanded = false
     @State private var tokenDetailsExpanded = false
+    @State private var aiToolSetupExpanded = false
     @State private var developerDetailsExpanded = false
 
     var body: some View {
@@ -76,7 +77,7 @@ private struct ConnectionsPrivacyOverview: View {
                         detail: "Cortex works best when local tools and notes sync in the background."
                     )
                     ConnectionsObsidianSection(state: state)
-                    IntegrationCenterView(state: state, compact: true)
+                    ConnectionsAIToolsSection(state: state)
                 }
 
                 if let summary = state.trustSummary {
@@ -156,13 +157,20 @@ private struct ConnectionsPrivacyOverview: View {
                         .padding(.top, 8)
                 }
 
-                SettingsPrivacySection(state: state)
-                Divider()
-                SettingsDataRecoverySection(state: state)
-                Divider()
-                SettingsReliabilitySection(state: state)
-                Divider()
-                SettingsHealthSection(state: state)
+                DisclosureGroup("AI tool setup", isExpanded: $aiToolSetupExpanded) {
+                    IntegrationCenterView(state: state, compact: false)
+                        .padding(.top, 8)
+                }
+
+                Group {
+                    SettingsPrivacySection(state: state)
+                    Divider()
+                    SettingsDataRecoverySection(state: state)
+                    Divider()
+                    SettingsReliabilitySection(state: state)
+                    Divider()
+                    SettingsHealthSection(state: state)
+                }
 
                 DisclosureGroup("Developer details", isExpanded: $developerDetailsExpanded) {
                     VStack(alignment: .leading, spacing: 14) {
@@ -200,8 +208,8 @@ private struct ConnectionsPrivacyOverview: View {
         } label: {
             ConnectionsDisclosureLabel(
                 systemImage: "slider.horizontal.3",
-                title: "Advanced",
-                detail: "Backups, recovery, token history, audit logs, and diagnostics"
+                title: "Advanced diagnostics",
+                detail: "Only needed for troubleshooting, recovery, token history, and developer details"
             )
         }
         .padding(14)
@@ -353,6 +361,136 @@ private struct ConnectionsObsidianSection: View {
         return state.activeSourceAccounts.contains { account in
             account.source == connector.id || (connector.source_ids ?? []).contains(account.source)
         }
+    }
+}
+
+private struct ConnectionsAIToolsSection: View {
+    @ObservedObject var state: AppState
+
+    private var connectedCount: Int {
+        state.integrations.filter { state.integrationState(for: $0).configured }.count
+    }
+
+    private var detectedConnectable: [AIIntegration] {
+        state.integrations.filter { integration in
+            guard integration.supportsInstall else { return false }
+            let integrationState = state.integrationState(for: integration)
+            return integrationState.appInstalled && !integrationState.configured
+        }
+    }
+
+    private var connectedIntegrations: [AIIntegration] {
+        state.integrations.filter { state.integrationState(for: $0).configured }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(
+                title: "AI tools",
+                detail: "Detected local tools can use approved memory automatically."
+            )
+
+            HStack(alignment: .center, spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(statusColor.opacity(0.13))
+                    Image(systemName: statusIcon)
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundColor(statusColor)
+                }
+                .frame(width: 56, height: 56)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(statusTitle)
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                    Text(statusDetail)
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                if !detectedConnectable.isEmpty {
+                    Button {
+                        state.installDetectedIntegrations()
+                    } label: {
+                        Label("Connect", systemImage: "link.circle")
+                            .frame(minWidth: 118, minHeight: 46)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                } else {
+                    Button {
+                        state.refreshIntegrationStates()
+                    } label: {
+                        Label("Check", systemImage: "arrow.clockwise")
+                            .frame(minWidth: 108, minHeight: 46)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                }
+            }
+            .padding(14)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.70))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            if !connectedIntegrations.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(connectedIntegrations.prefix(3)) { integration in
+                        HStack(spacing: 10) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                                .frame(width: 24)
+                            Text(integration.name)
+                                .font(.callout)
+                                .fontWeight(.medium)
+                            Spacer(minLength: 0)
+                            Text("Connected")
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.green)
+                        }
+                        .padding(10)
+                        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+            }
+        }
+    }
+
+    private var statusColor: Color {
+        if connectedCount > 0 { return .green }
+        if !detectedConnectable.isEmpty { return .accentColor }
+        return .secondary
+    }
+
+    private var statusIcon: String {
+        if connectedCount > 0 { return "checkmark.seal.fill" }
+        if !detectedConnectable.isEmpty { return "app.badge.checkmark" }
+        return "app.badge"
+    }
+
+    private var statusTitle: String {
+        if connectedCount > 0 {
+            return "\(connectedCount) tool\(connectedCount == 1 ? "" : "s") connected"
+        }
+        if !detectedConnectable.isEmpty {
+            return "\(detectedConnectable.count) tool\(detectedConnectable.count == 1 ? "" : "s") ready"
+        }
+        return "No local AI tool detected"
+    }
+
+    private var statusDetail: String {
+        if connectedCount > 0 {
+            return "Approved memory is available to connected tools."
+        }
+        if !detectedConnectable.isEmpty {
+            return "Connect detected tools once. Cortex handles the local setup."
+        }
+        return "Open Claude, ChatGPT, or another supported local tool, then check again."
     }
 }
 
