@@ -252,7 +252,7 @@ private struct ConnectionsOverviewHero: View {
             VStack(alignment: .leading, spacing: 7) {
                 Text(activeConnections > 0 ? "Cortex is connected" : "Connect Cortex once")
                     .font(.system(size: 28, weight: .semibold))
-                Text("Memory syncs from MCP tools and Obsidian. New signals go to Review first, then Ask and connected AI tools use approved memory with citations.")
+                Text("Memory syncs from connected notes and local AI tools. New signals go to Review first, then Ask and connected tools use approved memory with citations.")
                     .font(.title3)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -338,7 +338,7 @@ private struct ConnectionsObsidianSection: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
                 title: "Obsidian",
-                detail: "Choose a vault once. Cortex scans Markdown locally, keeps citations stable, and resyncs changed notes."
+                detail: "Choose a notes folder once. Cortex scans Markdown locally, keeps citations stable, and resyncs changed notes."
             )
             if state.sourceConnectorCatalog.isEmpty {
                 QuietState(title: "Checking connectors", detail: "Cortex is reading the local source registry.")
@@ -599,7 +599,7 @@ private struct ConnectionsActiveSourcesSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if activeAccounts.isEmpty {
-                QuietState(title: "No source accounts connected", detail: "Connect Obsidian or a local MCP tool once. Cortex syncs after that.")
+                QuietState(title: "No source accounts connected", detail: "Connect Obsidian or a local AI tool once. Cortex syncs after that.")
             } else {
                 ForEach(activeAccounts.prefix(8)) { account in
                     SourceAccountHealthRow(

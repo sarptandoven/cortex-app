@@ -2035,7 +2035,7 @@ Never use [[Templates/Marketing]] boilerplate in memory.
         self.assertTrue(review["recent_memories"])
         self.assertTrue(review["recent_decisions"])
         self.assertTrue(review["open_tasks"])
-        self.assertTrue(any("Review 1 pending capture" in item for item in review["recommended_actions"]))
+        self.assertTrue(any("Review 1 pending item" in item for item in review["recommended_actions"]))
         self.assertIn("# Cortex Memory View", review["context_pack"])
         self.assertIn("Suggested Assistant Instruction", review["context_pack"])
 

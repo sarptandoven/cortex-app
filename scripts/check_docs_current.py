@@ -63,10 +63,38 @@ FORBIDDEN_PHRASES: dict[str, tuple[str, ...]] = {
         "Open Capture Page",
         "Quick signal",
         "Capture Inbox",
+        "Connect MCP tools or local notes",
+        "Copy MCP Settings",
+        "manual MCP setup",
+        "local MCP settings",
+        "Open Vault",
+    ),
+    "macos/Sources/ProductFlowTypes.swift": (
+        'return "Vault"',
+        "Connect an MCP tool",
+    ),
+    "macos/Sources/ModelTab.swift": (
+        "Connect MCP tools",
+        "MCP tools or Obsidian",
+    ),
+    "macos/Sources/ConnectionsPrivacySheet.swift": (
+        "Memory syncs from MCP tools",
+        "local MCP tool",
+        "Choose a vault once",
+    ),
+    "macos/Sources/ReviewTab.swift": (
+        "Add a source first",
+        "Approved context",
+        "open loops",
     ),
     "macos/Sources/OnboardingView.swift": (
         "See source layer",
         "View source connection layer",
+        "private local vault",
+        "Local vault",
+        "Advanced vault",
+        "Vault ready",
+        "MCP clients",
     ),
 }
 

@@ -1128,13 +1128,13 @@ enum AIIntegrationCatalog {
             name: "Claude Desktop",
             category: .oneClick,
             systemImage: "sparkles",
-            summary: "Adds Cortex memory tools directly inside Claude Desktop through MCP.",
+            summary: "Adds Cortex memory tools directly inside Claude Desktop.",
             restartHint: "Quit and reopen Claude Desktop after installing.",
             bundleIdentifiers: ["com.anthropic.claudefordesktop", "com.anthropic.Claude"],
             configTargets: [
                 IntegrationConfigTarget(label: "Claude Desktop", root: .applicationSupport, relativePath: "Claude/claude_desktop_config.json")
             ],
-            setupHint: "Use Claude Desktop for direct MCP access to Cortex search, review, approved memory, and source sync.",
+            setupHint: "Use Claude Desktop to search approved memory, review new items, and sync useful source records.",
             browserURL: "https://claude.ai"
         ),
         AIIntegration(
@@ -1148,7 +1148,7 @@ enum AIIntegrationCatalog {
             configTargets: [
                 IntegrationConfigTarget(label: "Cursor global MCP", root: .home, relativePath: ".cursor/mcp.json")
             ],
-            setupHint: "Use Cortex before implementation tasks: search memory for project decisions, people, and open loops.",
+            setupHint: "Use Cortex before implementation tasks: search memory for project decisions, people, and follow-ups.",
             browserURL: "https://cursor.com"
         ),
         AIIntegration(
@@ -1156,13 +1156,13 @@ enum AIIntegrationCatalog {
             name: "Windsurf",
             category: .oneClick,
             systemImage: "wind",
-            summary: "Connects Windsurf/Cascade to Cortex through the local MCP stdio bridge.",
-            restartHint: "Restart Windsurf after installing the MCP server.",
+            summary: "Connects Windsurf/Cascade to Cortex through a local bridge.",
+            restartHint: "Restart Windsurf after connecting Cortex.",
             bundleIdentifiers: ["com.exafunction.windsurf", "com.codeium.windsurf"],
             configTargets: [
                 IntegrationConfigTarget(label: "Windsurf MCP", root: .home, relativePath: ".codeium/windsurf/mcp_config.json")
             ],
-            setupHint: "Use Cortex in Cascade to retrieve decisions, previous implementation context, and daily open loops.",
+            setupHint: "Use Cortex in Cascade to retrieve decisions, previous implementation context, and daily follow-ups.",
             browserURL: "https://windsurf.com"
         ),
         AIIntegration(
@@ -1170,7 +1170,7 @@ enum AIIntegrationCatalog {
             name: "Cline",
             category: .developer,
             systemImage: "hammer",
-            summary: "Installs Cortex as a Cline MCP server for VS Code agent workflows.",
+            summary: "Installs Cortex memory tools for Cline agent workflows.",
             restartHint: "Reload VS Code after installing.",
             bundleIdentifiers: ["com.microsoft.VSCode"],
             configTargets: [
@@ -1185,7 +1185,7 @@ enum AIIntegrationCatalog {
             name: "Roo Code",
             category: .developer,
             systemImage: "chevron.left.forwardslash.chevron.right",
-            summary: "Adds Cortex MCP tools for Roo Code coding sessions.",
+            summary: "Adds Cortex memory tools for Roo Code coding sessions.",
             restartHint: "Reload VS Code after installing.",
             bundleIdentifiers: ["com.microsoft.VSCode"],
             configTargets: [
@@ -1200,11 +1200,11 @@ enum AIIntegrationCatalog {
             name: "VS Code Copilot",
             category: .developer,
             systemImage: "rectangle.connected.to.line.below",
-            summary: "Connect Cortex to VS Code user or workspace MCP setup.",
-            restartHint: "Add the copied MCP server to VS Code's MCP configuration, then reload the window.",
+            summary: "Connect Cortex to VS Code user or workspace AI tool setup.",
+            restartHint: "Add the copied setup to VS Code, then reload the window.",
             bundleIdentifiers: ["com.microsoft.VSCode"],
             configTargets: [],
-            setupHint: "Add the Cortex MCP server to VS Code's user or workspace MCP configuration.",
+            setupHint: "Use Advanced Setup to add Cortex to VS Code user or workspace settings.",
             browserURL: "https://code.visualstudio.com"
         ),
         AIIntegration(
@@ -1212,11 +1212,11 @@ enum AIIntegrationCatalog {
             name: "Claude Code",
             category: .developer,
             systemImage: "terminal",
-            summary: "Add Cortex as a local MCP server for Claude Code.",
+            summary: "Connect Cortex memory tools to Claude Code.",
             restartHint: "Run the copied setup from a terminal, then restart the Claude Code session.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Use the setup command to add Cortex as a local MCP server for Claude Code.",
+            setupHint: "Use the setup command to connect Cortex to Claude Code.",
             browserURL: "https://docs.anthropic.com"
         ),
         AIIntegration(
@@ -2523,7 +2523,7 @@ final class AppState: ObservableObject {
     func performProductLoopAction(_ action: ProductLoopAction) {
         switch action.action {
         case "capture":
-            openConnectionsPrivacy(statusMessage: "Connect MCP tools or local notes to start memory sync")
+            openConnectionsPrivacy(statusMessage: "Connect notes or AI tools to start memory sync")
         case "review":
             selectedTab = .review
             status = "Review new signals below"
@@ -2944,7 +2944,7 @@ final class AppState: ObservableObject {
 
     func installDetectedIntegrations() {
         if DistributionMode.isAppStore {
-            status = "App Store builds require manual MCP setup"
+            status = "App Store builds require advanced AI tool setup"
             return
         }
         let detected = integrations.filter { integration in
@@ -4066,16 +4066,16 @@ struct IntegrationCenterView: View {
     }
 
     private var manualMCPSetupActions: some View {
-        DisclosureGroup("Advanced MCP setup") {
+        DisclosureGroup("Advanced AI tool setup") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Use this when a supported local tool needs a hand-configured MCP server.")
+                Text("Use this when a supported local AI tool needs a hand-configured connection.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 HStack {
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy MCP Settings", systemImage: "doc.on.doc")
+                        Label("Copy Advanced Setup", systemImage: "doc.on.doc")
                     }
                     Spacer()
                 }
@@ -4141,7 +4141,7 @@ struct IntegrationCompactHero: View {
                     Button {
                         manualSetup()
                     } label: {
-                        Label("Copy MCP Settings", systemImage: "doc.on.doc")
+                        Label("Copy Advanced Setup", systemImage: "doc.on.doc")
                             .frame(minWidth: 150, minHeight: 46)
                     }
                     .buttonStyle(.borderedProminent)
@@ -4181,12 +4181,12 @@ struct IntegrationCompactHero: View {
 
     private var detail: String {
         if needsConnection {
-            return "Cortex can install the local MCP connection for detected tools."
+            return "Cortex can connect detected local AI tools automatically."
         }
         if connectedCount > 0 {
-            return "Approved memory and source-sync tools are available through MCP."
+            return "Approved memory and source-sync tools are available to connected AI tools."
         }
-        return "If your AI app is not detected, copy the local MCP settings and paste them into that app's MCP configuration."
+        return "If your AI app is not detected, use Advanced Setup to connect it manually."
     }
 }
 
@@ -4373,7 +4373,7 @@ struct IntegrationCard: View {
                     Button {
                         state.copyMCPConfig(for: integration)
                     } label: {
-                        Label("Copy MCP Settings", systemImage: "doc.on.doc")
+                        Label("Copy Advanced Setup", systemImage: "doc.on.doc")
                     }
                     Button {
                         state.openIntegrationConfig(integration)
@@ -5398,7 +5398,7 @@ struct IntegrationTokensSection: View {
             }
 
             if state.integrationTokens.isEmpty {
-                QuietState(title: "No integration tokens", detail: "Connect AI tools to create the local MCP token.")
+                QuietState(title: "No integration tokens", detail: "Connect AI tools to create local access.")
             } else {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(state.integrationTokens) { token in
@@ -5532,18 +5532,18 @@ struct SettingsOnboardingSection: View {
                 Button {
                     state.openVaultFolder()
                 } label: {
-                    Label("Open Vault", systemImage: "folder")
+                    Label("Open Memory Folder", systemImage: "folder")
                 }
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy MCP Settings", systemImage: "doc.on.doc")
+                        Label("Copy Advanced Setup", systemImage: "doc.on.doc")
                             .frame(minHeight: 40)
                     }
                     .controlSize(.large)
                     Spacer()
                 }
-            Text("Vault: \(state.vaultPath)")
+            Text("Memory folder: \(state.vaultPath)")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .lineLimit(1)

@@ -1959,7 +1959,7 @@ class CortexStore:
         if summary["needs_review"]:
             recommendations.append("Review pending source captures so they can become trusted model memory.")
         if not summary["sources_with_data"]:
-            recommendations.append("Connect MCP AI tools or an Obsidian vault before adding planned service connectors.")
+            recommendations.append("Connect local AI tools or Obsidian notes before adding planned service connectors.")
         if not recommendations:
             recommendations.append("Source readiness is healthy for local beta use.")
         return {
@@ -4371,7 +4371,7 @@ class CortexStore:
         recommendations: list[str] = []
         if totals["active_memories"] == 0:
             warnings.append("No active memories are available yet.")
-            recommendations.append("Connect MCP or Obsidian and approve useful memory before relying on Ask.")
+            recommendations.append("Connect local AI tools or Obsidian notes and approve useful memory before relying on Ask.")
         if totals["active_memories"] > 0 and citation_coverage < 0.8:
             warnings.append("Some active memories are missing source citations.")
             recommendations.append("Prefer connected-source sync and cited captures so retrieved memory has citations.")
@@ -4528,7 +4528,7 @@ class CortexStore:
                 "action": "capture",
                 "label": "Connect Source",
                 "title": "Start memory sync",
-                "detail": "Connect MCP AI tools or an Obsidian vault so Cortex can sync memory into Review.",
+                "detail": "Connect local AI tools or Obsidian notes so Cortex can sync memory into Review.",
             }
         elif stats["pending_captures"] > 0:
             primary = {
@@ -5059,12 +5059,12 @@ class CortexStore:
                 lines.append(self._profile_markdown_item(item))
         else:
             lines.append("- No cited evidence yet.")
-        lines.extend(["", "## Open Loops", ""])
+        lines.extend(["", "## Follow-ups", ""])
         if artifact["open_loops"]:
             for task in artifact["open_loops"][:8]:
                 lines.append(f"- [{task['id']}] ({task['kind']}) {task['content']}")
         else:
-            lines.append("- No active open loops.")
+            lines.append("- No active follow-ups.")
         lines.extend(["", "## Limits", ""])
         for limitation in artifact["limitations"]:
             lines.append(f"- {limitation}")
@@ -5100,12 +5100,12 @@ class CortexStore:
                     lines.append(self._profile_markdown_item(item))
             else:
                 lines.append("- No approved signals yet.")
-        lines.extend(["", "## Open Loops", ""])
+        lines.extend(["", "## Follow-ups", ""])
         if profile["open_loops"]:
             for task in profile["open_loops"]:
                 lines.append(f"- [{task['id']}] ({task['kind']}) {task['content']}")
         else:
-            lines.append("- No active open loops.")
+            lines.append("- No active follow-ups.")
         lines.extend(["", "## Topics", ""])
         lines.append(", ".join(f"#{item['topic']}" for item in profile["topics"]) if profile["topics"] else "No active topics yet.")
         lines.extend(["", "## People, Projects, And Entities", ""])
@@ -9399,15 +9399,15 @@ class CortexStore:
     ) -> list[str]:
         actions: list[str] = []
         if pending_count:
-            actions.append(f"Review {pending_count} pending capture{'s' if pending_count != 1 else ''}.")
+            actions.append(f"Review {pending_count} pending item{'s' if pending_count != 1 else ''}.")
         if open_task_count:
-            actions.append(f"Clear or update {open_task_count} open loop{'s' if open_task_count != 1 else ''}.")
+            actions.append(f"Clear or update {open_task_count} follow-up{'s' if open_task_count != 1 else ''}.")
         if captured_today == 0:
-            actions.append("Add one useful source today so your personal model has fresh signal.")
+            actions.append("Connect one useful source so Cortex has fresh memory to review.")
         if top_topics:
             actions.append(f"Use Cortex's #{top_topics[0]['topic']} memory before your next AI session.")
         if not recent_decisions:
-            actions.append("Capture the next decision explicitly so it is easy to retrieve later.")
+            actions.append("Approve the next important decision so it is easy to retrieve later.")
         return actions[:5]
 
     def _fts_query(self, query: str) -> str:

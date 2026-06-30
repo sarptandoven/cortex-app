@@ -251,19 +251,19 @@ struct OnboardingVaultStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Cortex starts with a private local vault, then builds memory from connected accounts, apps, and direct AI tools. The vault stays backup-friendly while setup focuses on connected context.")
+            Text("Cortex starts with a private memory folder on this Mac, then builds memory from connected notes, accounts, and AI tools. Setup stays focused on getting useful context flowing.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Local vault")
+                Text("Memory folder")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Text(state.vaultPath)
                     .font(.system(.caption, design: .monospaced))
                     .lineLimit(2)
                     .textSelection(.enabled)
-                DisclosureGroup("Advanced vault location", isExpanded: $vaultLocationExpanded) {
+                DisclosureGroup("Advanced memory folder", isExpanded: $vaultLocationExpanded) {
                     HStack {
                         Button {
                             state.useDefaultVaultFolder()
@@ -291,9 +291,9 @@ struct OnboardingVaultStep: View {
 
             if let vault = state.diagnostics?.vault {
                 VStack(alignment: .leading, spacing: 8) {
-                    OnboardingCheckRow(title: "Vault ready", detail: vault.path, systemImage: "checkmark.seal.fill", color: .green)
-                    OnboardingCheckRow(title: "Local index", detail: vault.index_path, systemImage: "bolt.horizontal.circle.fill", color: .accentColor)
-                    OnboardingCheckRow(title: "Audit log", detail: "\(vault.event_count) events", systemImage: "list.bullet.rectangle", color: .secondary)
+                    OnboardingCheckRow(title: "Memory folder ready", detail: vault.path, systemImage: "checkmark.seal.fill", color: .green)
+                    OnboardingCheckRow(title: "Memory index", detail: vault.index_path, systemImage: "bolt.horizontal.circle.fill", color: .accentColor)
+                    OnboardingCheckRow(title: "Activity log", detail: "\(vault.event_count) events", systemImage: "list.bullet.rectangle", color: .secondary)
                 }
             } else {
                 OnboardingCheckRow(title: "Starting local backend", detail: state.displayBackendStatus, systemImage: "clock", color: .orange)
@@ -311,17 +311,17 @@ struct OnboardingFirstSourceStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Connect one real source path. For this beta, the useful paths are local AI tools through MCP and an Obsidian vault that syncs notes into Review.")
+            Text("Connect one real source. For this beta, the most useful paths are Obsidian notes and local AI tools that send useful memory into Review.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 240), spacing: 12)], spacing: 12) {
                 OnboardingConnectionCard(
                     title: "Connect AI tools",
-                    detail: "Claude Desktop, Cursor, Windsurf, and MCP clients can read approved memory and write new source records into Review.",
+                    detail: "Claude Desktop, Cursor, Windsurf, and other local AI tools can read approved memory and send new memory into Review.",
                     systemImage: "wand.and.stars",
                     isPrimary: true,
-                    status: state.connectedAIIntegrationCount > 0 ? "\(state.connectedAIIntegrationCount) connected" : "MCP",
+                    status: state.connectedAIIntegrationCount > 0 ? "\(state.connectedAIIntegrationCount) connected" : "Ready",
                     buttonTitle: state.connectedAIIntegrationCount > 0 ? "Manage" : "Connect"
                 ) {
                     state.openConnectionsPrivacy(statusMessage: "Connect local AI tools")
@@ -330,7 +330,7 @@ struct OnboardingFirstSourceStep: View {
 
                 OnboardingConnectionCard(
                     title: state.hasConnectedObsidianVault ? "Obsidian connected" : "Connect Obsidian",
-                    detail: state.hasConnectedObsidianVault ? "Cortex syncs the saved vault automatically on launch and periodically." : "Choose an Obsidian vault once. Cortex reads notes locally, cleans Markdown, and preserves citations.",
+                    detail: state.hasConnectedObsidianVault ? "Cortex syncs the saved notes automatically on launch and periodically." : "Choose an Obsidian folder once. Cortex reads notes locally, cleans Markdown, and preserves citations.",
                     systemImage: state.hasConnectedObsidianVault ? "checkmark.seal.fill" : "folder.badge.plus",
                     isPrimary: false,
                     status: state.hasConnectedObsidianVault ? "Connected" : "Local",

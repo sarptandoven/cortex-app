@@ -147,7 +147,7 @@ struct ReviewInboxSection: View {
 
     private var emptyDetail: String {
         if (state.review?.stats.memories ?? 0) == 0 {
-            return "Add a source first. Useful memory lands here before Cortex can use it."
+            return "Connect a source first. Useful memory lands here before Cortex can use it."
         }
         return "All caught up. New source records land here before Cortex can use them."
     }
@@ -389,7 +389,7 @@ struct ReviewContextDisclosure: View {
             .padding(.top, 8)
         } label: {
             HStack(alignment: .firstTextBaseline) {
-                Label("Approved context", systemImage: "sidebar.right")
+                Label("Approved memory", systemImage: "sidebar.right")
                     .font(.subheadline)
                 Spacer()
                 Text(contextSummary)
@@ -405,7 +405,7 @@ struct ReviewContextDisclosure: View {
             parts.append("\(review.recent_decisions.count) decisions")
         }
         if !review.open_tasks.isEmpty {
-            parts.append("\(review.open_tasks.count) open loops")
+            parts.append("\(review.open_tasks.count) follow-ups")
         }
         if !review.recommended_actions.isEmpty {
             parts.append("\(review.recommended_actions.count) guidance")
@@ -438,7 +438,7 @@ struct ReviewOpenLoopsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            SectionHeader(title: "Open loops", detail: "Unfinished work Cortex keeps visible outside the approval queue.")
+            SectionHeader(title: "Follow-ups", detail: "Unfinished work Cortex keeps visible outside the approval queue.")
             ForEach(tasks.prefix(4)) { task in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(task.kind.uppercased())

@@ -134,7 +134,7 @@ struct HomeHeroSection: View {
         if state.connectedAIIntegrationCount > 0 {
             return "\(state.connectedAIIntegrationCount) AI tool\(state.connectedAIIntegrationCount == 1 ? "" : "s") can use approved memory"
         }
-        return "Connect MCP tools or Obsidian once from Connections & Privacy"
+        return "Connect Obsidian or a local AI tool from Connections & Privacy"
     }
 
     private func memoryDetail(memoryCount: Int, pendingCount: Int) -> String {
@@ -210,7 +210,7 @@ struct HomeActionSection: View {
 
     private var actionDetail: String {
         if !state.isLocalServiceReady { return state.displayBackendStatus }
-        if state.activeSourceAccounts.isEmpty && state.connectedAIIntegrationCount == 0 { return "Connect MCP tools or Obsidian once. Cortex handles sync after that." }
+        if state.activeSourceAccounts.isEmpty && state.connectedAIIntegrationCount == 0 { return "Connect notes or AI tools once. Cortex keeps sync automatic after that." }
         if pendingCount > 0 { return "\(pendingCount) new item\(pendingCount == 1 ? "" : "s") waiting for approval" }
         if hasMemory { return "Search approved memory with citations" }
         return "Confirm source health and privacy controls"
@@ -237,7 +237,7 @@ struct HomeActionSection: View {
                 await state.loadStats()
             }
         } else if state.activeSourceAccounts.isEmpty && state.connectedAIIntegrationCount == 0 {
-            state.openConnectionsPrivacy(statusMessage: "Connect MCP tools or Obsidian")
+            state.openConnectionsPrivacy(statusMessage: "Connect notes or AI tools")
         } else if pendingCount > 0 {
             state.selectedTab = .review
             state.status = "Review memory"
