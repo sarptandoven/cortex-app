@@ -531,6 +531,16 @@ def _memory_raw_excerpt(record: dict[str, Any], raw_text: str) -> str:
     return raw_text[:500]
 
 
+def _memory_duplicate_key(value: str) -> str:
+    text = re.sub(r"https?://\S+|www\.\S+", " ", value.casefold())
+    text = re.sub(r"\b[\w.+-]+@[\w.-]+\.\w+\b", " ", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    words = [word for word in text.split() if word]
+    if len(words) < 6:
+        return ""
+    return " ".join(words)
+
+
 def _granular_memory_source_url(source_url: str | None, raw_text: str, excerpt: str, *, enabled: bool) -> str | None:
     if not enabled or not source_url:
         return source_url
@@ -6004,6 +6014,9 @@ class CortexStore:
         entity_ids = record.get("entity_ids", [])
         raw_excerpt = _memory_raw_excerpt(record, raw_text)
         memory_source_url = _granular_memory_source_url(source_url, raw_text, raw_excerpt, enabled=granular_source_url)
+        duplicate = self._find_duplicate_memory(conn, user_id, capture_id, memory_id, kind, layer, record.get("content", ""))
+        if duplicate:
+            return self._memory_from_row(duplicate)
         conn.execute(
             """
             INSERT OR REPLACE INTO memories
@@ -6877,6 +6890,8 @@ class CortexStore:
         kind = row["kind"]
         return {
             "id": row["id"],
+            "capture_id": row["capture_id"] if "capture_id" in keys else None,
+            "user_id": row["user_id"] if "user_id" in keys else None,
             "kind": kind,
             "layer": memory_layer(kind, row["layer"] if "layer" in keys else None),
             "content": row["content"],
@@ -6890,8 +6905,47 @@ class CortexStore:
             "entity_ids": json.loads(row["entity_ids_json"] or "[]"),
             "occurred_at": row["occurred_at"],
             "captured_at": row["captured_at"],
+            "updated_at": row["updated_at"] if "updated_at" in keys else row["captured_at"],
             "raw_excerpt": row["raw_excerpt"],
         }
+
+    def _find_duplicate_memory(
+        self,
+        conn,
+        user_id: str,
+        capture_id: str,
+        memory_id: str,
+        kind: str,
+        layer: str,
+        content: str,
+    ):
+        key = _memory_duplicate_key(content)
+        if len(key) < 48:
+            return None
+        rows = conn.execute(
+            """
+            SELECT m.*
+            FROM memories m
+            LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
+            WHERE m.user_id = ?
+              AND m.status = 'active'
+              AND m.kind = ?
+              AND m.layer = ?
+              AND m.id != ?
+              AND (
+                m.capture_id = ?
+                OR m.capture_id IS NULL
+                OR c.review_status = 'approved'
+              )
+            ORDER BY m.captured_at DESC
+            LIMIT 250
+            """,
+            (user_id, kind, layer, memory_id, capture_id),
+        ).fetchall()
+        for row in rows:
+            if _memory_duplicate_key(row["content"]) == key:
+                return row
+        return None
 
     def _task_from_row(self, row) -> dict[str, Any]:
         return {

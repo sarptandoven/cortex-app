@@ -50,6 +50,16 @@
       "source_url_contains": ["service=email", "subject=External%20fixture%20advice", "line=", "excerpt="]
     },
     {
+      "name": "email_quoted_preference",
+      "query": "fixture answers clean email quotes",
+      "source": "email",
+      "layer": "preference",
+      "kind": "preference",
+      "must_include": "clean email quotes",
+      "occurred_at": "2026-06-29",
+      "source_url_contains": ["service=email", "subject=Quoted%20fixture%20reply", "line=", "excerpt="]
+    },
+    {
       "name": "docs_negative",
       "query": "ceremonial fixture intros",
       "source": "docs",
@@ -132,7 +142,8 @@
     "legalistic and slow",
     "wall-of-text import summaries",
     "storybook-only demos",
-    "long public launch testimonials"
+    "long public launch testimonials",
+    "long stakeholder recap rituals"
   ],
   "boilerplate_phrases": [
     "Source:",
@@ -144,6 +155,9 @@
     "Structured CSV export:",
     "--- Messages ---",
     "--- Rows ---",
-    "--- Events ---"
+    "--- Events ---",
+    "Unsubscribe from these updates",
+    "Manage email preferences",
+    "wrote:"
   ]
 }

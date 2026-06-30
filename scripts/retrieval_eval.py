@@ -21,6 +21,20 @@ from backend.app.storage import CortexStore, MEMORY_LAYERS
 USER_ID = "retrieval-quality"
 SEED_TIMESTAMP = "2026-01-01T00:00:00Z"
 METRIC_K_VALUES = (1, 3)
+NOISY_IMPORT_SOURCES = {"chatgpt", "claude", "slack", "email", "docs", "notion", "cloud-docs", "calendar", "github"}
+NOISY_SOURCE_URL_FRAGMENTS: dict[str, tuple[str, ...]] = {
+    "chatgpt": ("service=chatgpt", "conversation=", "line=", "message=", "excerpt="),
+    "claude": ("service=claude", "conversation=", "line=", "message=", "excerpt="),
+    "slack": ("service=slack", "channel=", "line=", "message=", "excerpt="),
+    "email": ("service=email", "subject=", "line=", "excerpt="),
+    "docs": ("line=", "excerpt="),
+    "notion": ("service=notion", "page=", "line=", "excerpt="),
+    "cloud-docs": ("service=cloud-docs", "provider=", "document=", "line=", "excerpt="),
+    "calendar": ("service=calendar", "line=", "event=", "excerpt="),
+    "github": ("service=github", "file=", "line=", "row=", "excerpt="),
+}
+PENDING_LEAK_PHRASE = "Pending-only retrieval memory must not leak into search"
+ARCHIVED_REJECTED_LEAK_PHRASE = "Archived rejected retrieval memory must not leak into search"
 
 
 @dataclass(frozen=True)
@@ -341,6 +355,88 @@ def seed_distractor_memories(store: CortexStore, user_id: str = USER_ID) -> list
     return result["memories"]
 
 
+def seed_state_leakage_memories(store: CortexStore, user_id: str = USER_ID) -> dict[str, str]:
+    store.update_settings(user_id, {"review_new_captures": True, "allow_pending_in_context": False})
+    pending = store.save_capture(
+        user_id=user_id,
+        content=PENDING_LEAK_PHRASE,
+        source="retrieval-eval-pending",
+        source_url="cortex-eval://retrieval/pending-leak",
+        title="Pending retrieval leakage seed",
+        extracted={
+            "_timestamp": "2026-06-29T10:10:00Z",
+            "summary": PENDING_LEAK_PHRASE,
+            "records": [
+                {
+                    "id": "rq_pending_should_not_leak",
+                    "kind": "preference",
+                    "layer": "preference",
+                    "content": PENDING_LEAK_PHRASE,
+                    "summary": PENDING_LEAK_PHRASE,
+                    "confidence": "unverified",
+                    "importance": 5,
+                    "topics": ["pending", "retrieval"],
+                    "entity_ids": [],
+                }
+            ],
+            "tasks": [],
+            "entities": [],
+        },
+    )
+
+    store.update_settings(user_id, {"review_new_captures": False, "allow_pending_in_context": False})
+    archived = store.save_capture(
+        user_id=user_id,
+        content=ARCHIVED_REJECTED_LEAK_PHRASE,
+        source="retrieval-eval-archived",
+        source_url="cortex-eval://retrieval/archived-rejected-leak",
+        title="Archived rejected retrieval leakage seed",
+        extracted={
+            "_timestamp": "2026-06-29T10:11:00Z",
+            "summary": ARCHIVED_REJECTED_LEAK_PHRASE,
+            "records": [
+                {
+                    "id": "rq_archived_rejected_should_not_leak",
+                    "kind": "negative",
+                    "layer": "negative",
+                    "content": ARCHIVED_REJECTED_LEAK_PHRASE,
+                    "summary": ARCHIVED_REJECTED_LEAK_PHRASE,
+                    "confidence": "rejected",
+                    "importance": 5,
+                    "topics": ["archived", "rejected", "retrieval"],
+                    "entity_ids": [],
+                }
+            ],
+            "tasks": [],
+            "entities": [],
+        },
+    )
+    if not store.archive_capture(user_id, archived["capture_id"]):
+        raise AssertionError("Failed to archive rejected retrieval leakage seed")
+    return {
+        "pending_id": pending["memories"][0]["id"],
+        "pending_capture_id": pending["capture_id"],
+        "archived_id": archived["memories"][0]["id"],
+        "archived_capture_id": archived["capture_id"],
+    }
+
+
+def assert_state_leakage_excluded(store: CortexStore, user_id: str = USER_ID) -> dict[str, Any]:
+    seeded = seed_state_leakage_memories(store, user_id)
+    leaks: dict[str, list[str]] = {}
+    for name, phrase, memory_id in (
+        ("pending", PENDING_LEAK_PHRASE, seeded["pending_id"]),
+        ("archived_rejected", ARCHIVED_REJECTED_LEAK_PHRASE, seeded["archived_id"]),
+    ):
+        results = store.search(user_id, phrase, limit=5)
+        leaked = [item["id"] for item in results if item["id"] == memory_id or phrase in item["content"]]
+        if leaked:
+            leaks[name] = leaked
+    if leaks:
+        raise AssertionError(f"Retrieval leaked pending or archived/rejected memories: {leaks}")
+    return seeded
+
+
 def seed_noisy_import_memories(store: CortexStore, user_id: str = USER_ID) -> list[dict[str, Any]]:
     with tempfile.TemporaryDirectory(prefix="cortex-retrieval-import-") as tmp:
         root = Path(tmp)
@@ -377,8 +473,7 @@ def seed_noisy_import_memories(store: CortexStore, user_id: str = USER_ID) -> li
             jobs = store.run_due_jobs(user_id, limit=max(50, result["queued"] * 2))
             if jobs["failed"]:
                 raise AssertionError(f"Noisy import eval failed queued jobs: {jobs['jobs']}")
-    expected_sources = {"chatgpt", "claude", "slack", "email", "docs", "notion", "cloud-docs", "calendar", "github"}
-    memories = [memory for memory in store.recent(user_id, limit=120) if memory["source"] in expected_sources]
+    memories = [memory for memory in store.recent(user_id, limit=120) if memory["source"] in NOISY_IMPORT_SOURCES]
     joined = "\n".join(memory["content"] for memory in memories)
     for boilerplate in ("Source:", "Conversation:", "Created:", "--- Messages ---"):
         if boilerplate in joined:
@@ -389,9 +484,43 @@ def seed_noisy_import_memories(store: CortexStore, user_id: str = USER_ID) -> li
         raise AssertionError("Noisy import treated external email sender preference/style as user memory")
     if "long-form consensus memos" in joined or "glossy launch copy" in joined:
         raise AssertionError("Noisy import treated external Slack/Claude text as user preference or style")
-    if not all(memory.get("source_url") for memory in memories):
-        raise AssertionError("Noisy import memories did not preserve source_url citations")
+    assert_noisy_import_citations(memories)
+    assert_no_duplicate_noisy_import_memories(memories)
     return memories
+
+
+def assert_noisy_import_citations(memories: list[dict[str, Any]]) -> None:
+    missing = [memory["id"] for memory in memories if not memory.get("source_url")]
+    if missing:
+        raise AssertionError(f"Noisy import memories did not preserve source_url citations: {missing}")
+
+    incomplete: list[dict[str, str]] = []
+    for memory in memories:
+        source = str(memory.get("source") or "")
+        fragments = NOISY_SOURCE_URL_FRAGMENTS.get(source, ())
+        source_url = str(memory.get("source_url") or "")
+        missing_fragments = [fragment for fragment in fragments if fragment not in source_url]
+        if missing_fragments:
+            incomplete.append({"id": memory["id"], "source": source, "source_url": source_url, "missing": ",".join(missing_fragments)})
+    if incomplete:
+        raise AssertionError(f"Noisy import source_url citations are incomplete: {incomplete}")
+
+
+def assert_no_duplicate_noisy_import_memories(memories: list[dict[str, Any]]) -> None:
+    seen: dict[tuple[str, str, str], str] = {}
+    duplicates: list[dict[str, str]] = []
+    for memory in memories:
+        normalized_content = " ".join(str(memory.get("content") or "").casefold().split())
+        if not normalized_content:
+            continue
+        key = (str(memory.get("source") or ""), str(memory.get("layer") or ""), normalized_content)
+        existing = seen.get(key)
+        if existing:
+            duplicates.append({"first_id": existing, "duplicate_id": memory["id"], "source": key[0], "layer": key[1]})
+        else:
+            seen[key] = memory["id"]
+    if duplicates:
+        raise AssertionError(f"Noisy import produced obvious duplicate memories: {duplicates}")
 
 
 def _write_eval_chatgpt_export(folder: Path) -> None:
@@ -718,11 +847,14 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
     for case in noisy_cases:
         checks.append(_evaluate_case(store, user_id, case, limit))
 
+    state_leakage = assert_state_leakage_excluded(store, user_id)
+
     return {
         "status": "ok",
         "seeded_memories": len(seeded),
         "distractor_memories": len(distractors),
         "noisy_import_memories": len(noisy_memories),
+        "state_leakage_seeded": state_leakage,
         "seeded_layers": sorted(seeded_layers),
         "metrics": _summarize_metrics(checks, METRIC_K_VALUES),
         "checks": checks,

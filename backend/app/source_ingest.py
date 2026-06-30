@@ -1673,14 +1673,99 @@ def _email_body(message: email.message.EmailMessage) -> str:
             if cleaned and key not in seen:
                 seen.add(key)
                 deduped.append(cleaned)
-        return "\n\n".join(deduped)
+        return _clean_email_body("\n\n".join(deduped))
     try:
         payload = message.get_content()
     except Exception:
         return ""
     if message.get_content_type() == "text/html":
-        return _html_to_text(str(payload))
-    return str(payload)
+        return _clean_email_body(_html_to_text(str(payload)))
+    return _clean_email_body(str(payload))
+
+
+def _clean_email_body(value: str) -> str:
+    lines = value.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    cleaned: list[str] = []
+    blank_pending = False
+    for index, raw_line in enumerate(lines):
+        line = raw_line.strip()
+        if _is_email_quote_boundary(lines, index) or _is_email_footer_boundary(line):
+            break
+        if _is_email_quoted_line(line) or _is_email_noise_line(line):
+            continue
+        if not line:
+            blank_pending = bool(cleaned)
+            continue
+        if blank_pending:
+            cleaned.append("")
+            blank_pending = False
+        cleaned.append(line)
+    while cleaned and cleaned[-1] == "":
+        cleaned.pop()
+    return "\n".join(cleaned).strip()
+
+
+def _is_email_quote_boundary(lines: list[str], index: int) -> bool:
+    line = lines[index].strip()
+    if not line:
+        return False
+    lowered = line.lower().strip()
+    if lowered in {"-----original message-----", "----- forwarded message -----", "begin forwarded message:"}:
+        return True
+    if re.match(r"^on .{8,240}wrote:$", line, flags=re.IGNORECASE):
+        return True
+    if re.match(r"^from:\s+.+", line, flags=re.IGNORECASE) and _starts_email_header_block(lines[index + 1 : index + 7]):
+        return True
+    return False
+
+
+def _starts_email_header_block(next_lines: list[str]) -> bool:
+    header_count = 0
+    for raw_line in next_lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        if re.match(r"^(sent|date|to|cc|subject):\s+.+", line, flags=re.IGNORECASE):
+            header_count += 1
+            if header_count >= 1:
+                return True
+            continue
+        if header_count:
+            break
+    return False
+
+
+def _is_email_footer_boundary(line: str) -> bool:
+    if not line:
+        return False
+    lowered = re.sub(r"\s+", " ", line.lower()).strip()
+    footer_patterns = (
+        r"^--\s*$",
+        r"^sent from my (iphone|ipad|android|mobile)",
+        r"^get outlook for ",
+        r"^this email was sent to ",
+        r"^you are receiving this email because ",
+        r"^unsubscribe\b",
+        r"\bunsubscribe from\b",
+        r"\bmanage (your )?(email )?preferences\b",
+        r"\bview this email in (your )?browser\b",
+        r"^confidentiality notice\b",
+        r"^this (email|message) and any attachments",
+        r"^this communication is confidential",
+        r"^please consider the environment before printing",
+    )
+    return any(re.search(pattern, lowered, flags=re.IGNORECASE) for pattern in footer_patterns)
+
+
+def _is_email_quoted_line(line: str) -> bool:
+    return bool(line and re.match(r"^>+", line))
+
+
+def _is_email_noise_line(line: str) -> bool:
+    lowered = line.lower().strip()
+    if not lowered:
+        return False
+    return lowered in {"[image]", "[cid:image]", "[external email]"} or bool(re.match(r"^\[image:.*\]$", lowered))
 
 
 def _email_body_parts(message: Any) -> list[str]:

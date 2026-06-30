@@ -272,6 +272,76 @@ class SourceIngestTests(unittest.TestCase):
         self.assertEqual(deleted_duplicate_session["deleted_captures"], 0)
         self.assertTrue(store.search("test-user", "Project Atlas", limit=5))
 
+    def test_near_duplicate_active_memories_reuse_existing_memory(self) -> None:
+        db_path = self.root / "memory-dedupe.sqlite"
+        init_db(db_path)
+        store = CortexStore(db_path, self.root / "vault")
+        store.update_settings("test-user", {"review_new_captures": False})
+
+        first = store.save_capture(
+            user_id="test-user",
+            content="We decided Project Dedup should keep one memory with citations.",
+            source="email",
+            source_url="mail://first",
+            title="First",
+            extracted={
+                "_timestamp": "2026-06-29T10:00:00Z",
+                "summary": "",
+                "records": [
+                    {
+                        "id": "mem_first_dedup",
+                        "kind": "decision",
+                        "layer": "decision",
+                        "content": "We decided Project Dedup should keep one memory with citations.",
+                        "summary": "",
+                        "confidence": "confirmed",
+                        "importance": 4,
+                        "topics": ["dedup"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+        second = store.save_capture(
+            user_id="test-user",
+            content="we decided project dedup should keep one memory with citations! https://example.com/thread",
+            source="email",
+            source_url="mail://second",
+            title="Second",
+            extracted={
+                "_timestamp": "2026-06-29T10:01:00Z",
+                "summary": "",
+                "records": [
+                    {
+                        "id": "mem_second_dedup",
+                        "kind": "decision",
+                        "layer": "decision",
+                        "content": "we decided project dedup should keep one memory with citations! https://example.com/thread",
+                        "summary": "",
+                        "confidence": "confirmed",
+                        "importance": 4,
+                        "topics": ["dedup"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+
+        self.assertEqual(second["memories"][0]["id"], first["memories"][0]["id"])
+        conn = sqlite3.connect(db_path)
+        try:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE user_id = ? AND status = 'active' AND layer = 'decision'",
+                ("test-user",),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(count, 1)
+
     def test_html_with_links_is_not_misclassified_as_bookmarks(self) -> None:
         folder = self.root / "Notion Export"
         folder.mkdir()
@@ -465,6 +535,72 @@ class SourceIngestTests(unittest.TestCase):
         self.assertNotIn("verbose and salesy", joined)
         self.assertTrue(all(row["source_url"] for row in rows))
         self.assertFalse(any(row["kind"] in {"preference", "style", "negative"} for row in rows))
+
+    def test_self_authored_email_strips_quoted_threads_and_footers(self) -> None:
+        folder = self.root / "quoted-mail"
+        folder.mkdir()
+        message = EmailMessage()
+        message["Subject"] = "Quoted thread cleanup"
+        message["From"] = "Sarpt <sarpt@example.com>"
+        message["To"] = "Alex <alex@example.com>"
+        message["Date"] = "Mon, 29 Jun 2026 10:00:00 +0000"
+        message.set_content(
+            "I prefer concise product updates with citations.\n"
+            "We decided Project ThreadClean should ignore quoted history.\n\n"
+            "On Mon, Jun 29, 2026 at 9:00 AM Alex <alex@example.com> wrote:\n"
+            "> I prefer ceremonial launch emails.\n"
+            "> My writing style is verbose and salesy.\n\n"
+            "-- \n"
+            "Sarpt\n"
+            "Unsubscribe from these updates\n"
+        )
+        (folder / "quoted.eml").write_bytes(message.as_bytes())
+
+        records = import_source_records([str(folder)], max_records=10)
+
+        self.assertEqual(len(records), 1)
+        self.assertIn("concise product updates", records[0].content)
+        self.assertIn("Project ThreadClean", records[0].content)
+        self.assertNotIn("ceremonial launch emails", records[0].content)
+        self.assertNotIn("verbose and salesy", records[0].content)
+        self.assertNotIn("Unsubscribe", records[0].content)
+
+        db_path = self.root / "quoted.sqlite"
+        init_db(db_path)
+        store = CortexStore(db_path, self.root / "quoted-vault")
+        store.update_settings("test-user", {"identity_aliases": ["Sarpt", "sarpt@example.com"]})
+        result = store.import_sources(
+            user_id="test-user",
+            paths=[str(folder)],
+            processing="sync",
+            max_records=10,
+        )
+
+        self.assertEqual(result["failed"], 0)
+        self.assertTrue(store.search("test-user", "concise product updates citations", limit=5))
+        self.assertTrue(store.search("test-user", "Project ThreadClean quoted history", limit=5))
+        self.assertFalse(store.search("test-user", "ceremonial launch emails", limit=5))
+        self.assertFalse(store.search("test-user", "verbose and salesy", limit=5))
+
+    def test_email_body_from_line_is_preserved_when_not_quoted_header(self) -> None:
+        folder = self.root / "from-body-mail"
+        folder.mkdir()
+        message = EmailMessage()
+        message["Subject"] = "Body from line"
+        message["From"] = "Sarpt <sarpt@example.com>"
+        message["To"] = "Alex <alex@example.com>"
+        message["Date"] = "Mon, 29 Jun 2026 10:00:00 +0000"
+        message.set_content(
+            "From: our perspective, Project FromLine should keep legitimate body prose.\n"
+            "We decided Project FromLine should preserve non-header from lines."
+        )
+        (folder / "from-line.eml").write_bytes(message.as_bytes())
+
+        records = import_source_records([str(folder)], max_records=10)
+
+        self.assertEqual(len(records), 1)
+        self.assertIn("Project FromLine should keep legitimate body prose", records[0].content)
+        self.assertIn("preserve non-header from lines", records[0].content)
 
     def test_identity_aliases_allow_self_authored_slack_and_email_preferences(self) -> None:
         slack = self.root / "slack" / "general"
