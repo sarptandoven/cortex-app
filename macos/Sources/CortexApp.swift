@@ -1889,6 +1889,66 @@ final class BackendSupervisor {
     }
     }
 
+private enum CortexCredentialStore {
+    private static var credentialsURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base
+            .appendingPathComponent("Cortex", isDirectory: true)
+            .appendingPathComponent("credentials.json", isDirectory: false)
+    }
+
+    static func loadSecret(forKey key: String) -> String? {
+        guard let payload = readPayload(),
+              let value = payload[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+
+    static func saveSecret(_ value: String, forKey key: String) {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        var payload = readPayload() ?? [:]
+        payload[key] = normalized
+        writePayload(payload)
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    static func removeLegacyDefault(forKey key: String) {
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    private static func readPayload() -> [String: String]? {
+        guard let data = try? Data(contentsOf: credentialsURL),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        var payload: [String: String] = [:]
+        for (key, value) in raw {
+            if let stringValue = value as? String {
+                payload[key] = stringValue
+            }
+        }
+        return payload
+    }
+
+    private static func writePayload(_ payload: [String: String]) {
+        let manager = FileManager.default
+        let directory = credentialsURL.deletingLastPathComponent()
+        do {
+            try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+            try? manager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: credentialsURL, options: .atomic)
+            try? manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: credentialsURL.path)
+        } catch {
+            NSLog("Cortex credential store write failed: \(error.localizedDescription)")
+        }
+    }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     private static let apiKeyDefaultsKey = "localBetaAPIKey.v1"
@@ -1896,22 +1956,33 @@ final class AppState: ObservableObject {
     private static let obsidianVaultPathDefaultsKey = "connectedObsidianVaultPath.v1"
 
     private static func loadOrCreateAPIKey() -> String {
-        let existing = UserDefaults.standard.string(forKey: apiKeyDefaultsKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !existing.isEmpty && existing != "dev-local-key" {
+        if let existing = CortexCredentialStore.loadSecret(forKey: apiKeyDefaultsKey),
+           !existing.isEmpty,
+           existing != "dev-local-key" {
             return existing
         }
+        let legacy = UserDefaults.standard.string(forKey: apiKeyDefaultsKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !legacy.isEmpty && legacy != "dev-local-key" {
+            CortexCredentialStore.saveSecret(legacy, forKey: apiKeyDefaultsKey)
+            return legacy
+        }
         let generated = generateAPIKey()
-        UserDefaults.standard.set(generated, forKey: apiKeyDefaultsKey)
+        CortexCredentialStore.saveSecret(generated, forKey: apiKeyDefaultsKey)
         return generated
     }
 
     private static func loadOrCreateMCPAPIKey() -> String {
+        if let existing = CortexCredentialStore.loadSecret(forKey: mcpAPIKeyDefaultsKey),
+           existing.hasPrefix("cxm_") {
+            return existing
+        }
         let existing = UserDefaults.standard.string(forKey: mcpAPIKeyDefaultsKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if existing.hasPrefix("cxm_") {
+            CortexCredentialStore.saveSecret(existing, forKey: mcpAPIKeyDefaultsKey)
             return existing
         }
         let generated = generateMCPAPIKey()
-        UserDefaults.standard.set(generated, forKey: mcpAPIKeyDefaultsKey)
+        CortexCredentialStore.saveSecret(generated, forKey: mcpAPIKeyDefaultsKey)
         return generated
     }
 
@@ -2138,8 +2209,8 @@ final class AppState: ObservableObject {
         ensureUsableMCPAPIKey()
         UserDefaults.standard.set(endpoint, forKey: "endpoint")
         UserDefaults.standard.set(vaultPath, forKey: "vaultPath")
-        UserDefaults.standard.set(apiKey, forKey: Self.apiKeyDefaultsKey)
-        UserDefaults.standard.set(mcpAPIKey, forKey: Self.mcpAPIKeyDefaultsKey)
+        CortexCredentialStore.saveSecret(apiKey, forKey: Self.apiKeyDefaultsKey)
+        CortexCredentialStore.saveSecret(mcpAPIKey, forKey: Self.mcpAPIKeyDefaultsKey)
         status = "Settings saved"
     }
 
@@ -2214,22 +2285,28 @@ final class AppState: ObservableObject {
         let normalized = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if normalized.isEmpty || normalized == "dev-local-key" {
             apiKey = AppState.generateAPIKey()
-            UserDefaults.standard.set(apiKey, forKey: Self.apiKeyDefaultsKey)
+            CortexCredentialStore.saveSecret(apiKey, forKey: Self.apiKeyDefaultsKey)
         } else if normalized != apiKey {
             apiKey = normalized
-            UserDefaults.standard.set(apiKey, forKey: Self.apiKeyDefaultsKey)
+            CortexCredentialStore.saveSecret(apiKey, forKey: Self.apiKeyDefaultsKey)
+        } else {
+            CortexCredentialStore.saveSecret(apiKey, forKey: Self.apiKeyDefaultsKey)
         }
+        CortexCredentialStore.removeLegacyDefault(forKey: Self.apiKeyDefaultsKey)
     }
 
     private func ensureUsableMCPAPIKey() {
         let normalized = mcpAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if !normalized.hasPrefix("cxm_") || normalized == apiKey {
             mcpAPIKey = AppState.generateMCPAPIKey()
-            UserDefaults.standard.set(mcpAPIKey, forKey: Self.mcpAPIKeyDefaultsKey)
+            CortexCredentialStore.saveSecret(mcpAPIKey, forKey: Self.mcpAPIKeyDefaultsKey)
         } else if normalized != mcpAPIKey {
             mcpAPIKey = normalized
-            UserDefaults.standard.set(mcpAPIKey, forKey: Self.mcpAPIKeyDefaultsKey)
+            CortexCredentialStore.saveSecret(mcpAPIKey, forKey: Self.mcpAPIKeyDefaultsKey)
+        } else {
+            CortexCredentialStore.saveSecret(mcpAPIKey, forKey: Self.mcpAPIKeyDefaultsKey)
         }
+        CortexCredentialStore.removeLegacyDefault(forKey: Self.mcpAPIKeyDefaultsKey)
     }
 
     func chooseVaultFolder() {
@@ -2801,7 +2878,7 @@ final class AppState: ObservableObject {
 
     func resetMCPIntegrationToken() async {
         mcpAPIKey = AppState.generateMCPAPIKey()
-        UserDefaults.standard.set(mcpAPIKey, forKey: Self.mcpAPIKeyDefaultsKey)
+        CortexCredentialStore.saveSecret(mcpAPIKey, forKey: Self.mcpAPIKeyDefaultsKey)
         let registered = await registerMCPToken()
         await loadIntegrationTokens()
         refreshIntegrationStates()

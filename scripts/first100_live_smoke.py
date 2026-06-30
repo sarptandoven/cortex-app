@@ -19,6 +19,7 @@ DUMMY_OPENAI_KEY = "sk-" + ("0" * 24)
 DEFAULT_BASE_URL = "http://127.0.0.1:8766"
 DEFAULT_APP_DOMAIN = "com.cortex.doppl"
 DEFAULT_TOKEN_KEY = "localBetaAPIKey.v1"
+DEFAULT_CREDENTIALS_PATH = Path.home() / "Library" / "Application Support" / "Cortex" / "credentials.json"
 
 
 class LiveSmokeFailure(AssertionError):
@@ -28,6 +29,14 @@ class LiveSmokeFailure(AssertionError):
 
 
 def read_default_token() -> str:
+    try:
+        if DEFAULT_CREDENTIALS_PATH.exists():
+            payload = json.loads(DEFAULT_CREDENTIALS_PATH.read_text(encoding="utf-8"))
+            token = str(payload.get(DEFAULT_TOKEN_KEY) or "").strip()
+            if token:
+                return token
+    except (OSError, json.JSONDecodeError):
+        pass
     try:
         result = subprocess.run(
             ["defaults", "read", DEFAULT_APP_DOMAIN, DEFAULT_TOKEN_KEY],
