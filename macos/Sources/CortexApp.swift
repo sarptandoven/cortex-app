@@ -3932,12 +3932,15 @@ struct CortexView: View {
                 }
                 Spacer()
                 Button {
-                    state.openConnectionsPrivacy(statusMessage: "Manage Cortex connections and privacy")
+                    state.openConnectionsPrivacy(statusMessage: "Connections")
                 } label: {
-                    Label("Connections & Privacy", systemImage: "lock.shield")
-                        .frame(minHeight: 40)
+                    Image(systemName: "lock.shield")
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(width: 44, height: 40)
                 }
+                .buttonStyle(.borderless)
                 .controlSize(.large)
+                .help("Connections & Privacy")
                 CortexLayerStatusPill(state: state)
             }
             .padding(.horizontal, 16)
@@ -3975,7 +3978,11 @@ struct CortexLayerStatusPill: View {
     @ObservedObject var state: AppState
 
     private var activeAccounts: Int {
-        state.sourceAccounts.filter { $0.disconnected_at == nil }.count
+        state.sourceAccounts.filter { account in
+            account.disconnected_at == nil
+                && account.status.lowercased() != "empty"
+                && account.auth_state.lowercased() != "needs-content"
+        }.count
     }
 
     private var pending: Int {
@@ -3992,7 +3999,7 @@ struct CortexLayerStatusPill: View {
         if (state.stats?.memories ?? 0) > 0 {
             return "Memory ready"
         }
-        return "Setup"
+        return "No notes"
     }
 
     private var icon: String {

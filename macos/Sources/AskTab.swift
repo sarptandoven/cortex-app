@@ -96,7 +96,7 @@ struct AskResponseSection: View {
             } else if state.searchResults.isEmpty {
                 QuietState(
                     title: "No cited answer found",
-                    detail: "Try an exact phrase from approved memory, or connect a source from Connections & Privacy and approve it in Review."
+                    detail: "Try an exact phrase from approved memory, or connect notes from Connections & Privacy and approve them in Review."
                 )
             } else {
                 QuietState(
