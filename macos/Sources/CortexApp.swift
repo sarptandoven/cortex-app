@@ -2898,6 +2898,12 @@ final class AppState: ObservableObject {
         status = "Setup will reopen until finished; reopen it from Trust anytime"
     }
 
+    func skipOnboarding() {
+        UserDefaults.standard.set(true, forKey: "onboardingComplete.v1")
+        showOnboarding = false
+        status = "Setup skipped; start from Sources when you are ready"
+    }
+
     func showOnboardingAgain() {
         UserDefaults.standard.set(false, forKey: "onboardingComplete.v1")
         setOnboardingStep(.privateVault)
@@ -3965,6 +3971,24 @@ struct SourceHealthSummarySection: View {
 struct SourceReadinessPanel: View {
     let report: SourceReadinessResponse
 
+    private var attentionSources: [SourceReadinessItem] {
+        report.sources.filter { source in
+            source.needsAttention || source.status == "needs_review" || source.pending > 0 || !source.warnings.isEmpty
+        }
+    }
+
+    private var displaySources: [SourceReadinessItem] {
+        let base = attentionSources.isEmpty
+            ? report.sources.sorted { lhs, rhs in
+                if lhs.active_memories != rhs.active_memories {
+                    return lhs.active_memories > rhs.active_memories
+                }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+            : attentionSources
+        return Array(base.prefix(5))
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 8) {
@@ -3991,7 +4015,19 @@ struct SourceReadinessPanel: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                ForEach(report.sources.prefix(5)) { source in
+                HStack {
+                    Text(attentionSources.isEmpty ? "Current sources" : "Needs attention")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    if !attentionSources.isEmpty {
+                        Text("\(attentionSources.count)")
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                    }
+                }
+                ForEach(displaySources) { source in
                     SourceReadinessRow(source: source)
                 }
             }
@@ -4686,6 +4722,7 @@ struct TrustPolicySection: View {
     @ObservedObject var state: AppState
     @State private var selectedPreset: TrustPreset = .advanced
     @State private var advancedExpanded = false
+    @State private var highRiskExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -4732,58 +4769,85 @@ struct TrustPolicySection: View {
 
             TrustNotice(systemImage: "shield.lefthalf.filled", title: selectedPreset.title, detail: selectedPreset.detail, color: selectedPreset == .privateMode ? .green : .accentColor)
 
-            DisclosureGroup("Detailed permissions", isExpanded: $advancedExpanded) {
-                VStack(alignment: .leading, spacing: 12) {
-                    TrustToggleRow(
-                        title: "Review new saves",
-                        detail: "New captures enter the inbox before you treat them as trusted.",
-                        systemImage: "tray.full",
-                        isOn: $state.appSettings.review_new_captures
-                    )
-                    TrustToggleRow(
-                        title: "Let AI use pending saves",
-                        detail: "Turn this off when only approved captures should appear in search and AI access.",
-                        systemImage: "lock.open",
-                        isOn: $state.appSettings.allow_pending_in_context
-                    )
-                    TrustToggleRow(
-                        title: "Let connected AI read memory",
-                        detail: "Connected AI tools can search memory, read review queues, and inspect stats.",
-                        systemImage: "eye",
-                        isOn: $state.appSettings.allow_agent_reads
-                    )
-                    TrustToggleRow(
-                        title: "Let connected AI save memory",
-                        detail: "Connected AI tools can save, approve, or archive memory.",
-                        systemImage: "square.and.pencil",
-                        isOn: $state.appSettings.allow_agent_writes
-                    )
-                    TrustToggleRow(
-                        title: "Let connected AI prepare artifacts",
-                        detail: "Connected AI tools can prepare redacted profile artifacts, adaptation instructions, or exports.",
-                        systemImage: "square.and.arrow.up",
-                        isOn: $state.appSettings.allow_agent_exports
-                    )
-                    TrustToggleRow(
-                        title: "Let connected AI run maintenance",
-                        detail: "Connected AI tools can create backups, repair storage, or rebuild local indexes.",
-                        systemImage: "wrench.and.screwdriver",
-                        isOn: $state.appSettings.allow_agent_maintenance
-                    )
-                    TrustToggleRow(
-                        title: "Let connected AI delete data",
-                        detail: "Connected AI tools can delete memories, captures, backups, or all local user data.",
-                        systemImage: "trash",
-                        isOn: $state.appSettings.allow_agent_destructive_actions
-                    )
-                    TrustToggleRow(
-                        title: "Redact shared memory",
-                        detail: "Secrets, tokens, emails, and long account-like numbers are masked before sharing.",
-                        systemImage: "text.badge.xmark",
-                        isOn: $state.appSettings.redact_sensitive_context
-                    )
+            DisclosureGroup("Permissions", isExpanded: $advancedExpanded) {
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Review and memory sharing")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.secondary)
+                        TrustToggleRow(
+                            title: "Review new saves",
+                            detail: "New captures enter the inbox before you treat them as trusted.",
+                            systemImage: "tray.full",
+                            isOn: $state.appSettings.review_new_captures
+                        )
+                        TrustToggleRow(
+                            title: "Let AI use pending saves",
+                            detail: "Turn this off when only approved captures should appear in search and AI access.",
+                            systemImage: "lock.open",
+                            isOn: $state.appSettings.allow_pending_in_context
+                        )
+                        TrustToggleRow(
+                            title: "Redact shared memory",
+                            detail: "Secrets, tokens, emails, and long account-like numbers are masked before sharing.",
+                            systemImage: "text.badge.xmark",
+                            isOn: $state.appSettings.redact_sensitive_context
+                        )
+                    }
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Connected AI actions")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.secondary)
+                        TrustToggleRow(
+                            title: "Let connected AI read memory",
+                            detail: "Connected AI tools can search memory, read review queues, and inspect stats.",
+                            systemImage: "eye",
+                            isOn: $state.appSettings.allow_agent_reads
+                        )
+                        TrustToggleRow(
+                            title: "Let connected AI save memory",
+                            detail: "Connected AI tools can save, approve, or archive memory.",
+                            systemImage: "square.and.pencil",
+                            isOn: $state.appSettings.allow_agent_writes
+                        )
+                        TrustToggleRow(
+                            title: "Let connected AI prepare artifacts",
+                            detail: "Connected AI tools can prepare redacted profile artifacts, adaptation instructions, or exports.",
+                            systemImage: "square.and.arrow.up",
+                            isOn: $state.appSettings.allow_agent_exports
+                        )
+                    }
+
+                    DisclosureGroup("Maintenance and deletion", isExpanded: $highRiskExpanded) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            TrustToggleRow(
+                                title: "Let connected AI run maintenance",
+                                detail: "Connected AI tools can create backups, repair storage, or rebuild local indexes.",
+                                systemImage: "wrench.and.screwdriver",
+                                isOn: $state.appSettings.allow_agent_maintenance
+                            )
+                            TrustToggleRow(
+                                title: "Let connected AI delete data",
+                                detail: "Connected AI tools can delete memories, captures, backups, or all local user data.",
+                                systemImage: "trash",
+                                isOn: $state.appSettings.allow_agent_destructive_actions
+                            )
+                        }
+                        .padding(.top, 8)
+                    }
+
+                    Divider()
 
                     VStack(alignment: .leading, spacing: 6) {
+                        Text("Identity and context size")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.secondary)
                         Label("Your source aliases", systemImage: "person.text.rectangle")
                             .font(.callout)
                             .fontWeight(.medium)

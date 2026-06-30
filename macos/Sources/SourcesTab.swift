@@ -177,8 +177,10 @@ struct SourcesHeroSection: View {
                     await state.loadImportHistory()
                 }
             } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
+                Image(systemName: "arrow.clockwise")
             }
+            .buttonStyle(.borderless)
+            .help("Refresh source status")
         }
     }
 }
