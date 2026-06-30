@@ -598,7 +598,9 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 return
 
             if method == "GET" and path == "/v1/recent":
-                self._send_json({"results": store.recent(user_id, _int_param(params, "limit", 20, 1, 100))})
+                limit = _int_param(params, "limit", 20, 1, 100)
+                results = store.public_recent(user_id, limit) if hasattr(store, "public_recent") else store.recent(user_id, limit)
+                self._send_json({"results": results})
                 return
             if method == "GET" and path == "/v1/inbox":
                 self._send_json({"results": store.inbox(user_id, _int_param(params, "limit", 30, 1, 100))})
@@ -608,7 +610,12 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 kind = (params.get("kind") or [None])[0]
                 layer = (params.get("layer") or [None])[0]
                 sector = (params.get("sector") or [None])[0]
-                self._send_json({"query": query, "sector": sector, "results": store.search(user_id, query, _int_param(params, "limit", 10, 1, 50), kind, layer, sector=sector)})
+                limit = _int_param(params, "limit", 10, 1, 50)
+                if hasattr(store, "public_search"):
+                    results = store.public_search(user_id, query, limit, kind, layer, sector=sector)
+                else:
+                    results = store.search(user_id, query, limit, kind, layer, sector=sector)
+                self._send_json({"query": query, "sector": sector, "results": results})
                 return
             if method == "GET" and path == "/v1/ask":
                 query = (params.get("query") or [""])[0]

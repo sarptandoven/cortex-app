@@ -643,7 +643,7 @@ def run_maintenance_jobs(limit: int = Query(default=10, ge=1, le=100), user_id: 
 
 @app.get("/v1/recent")
 def recent(limit: int = Query(default=20, ge=1, le=100), user_id: str = Depends(auth)) -> dict[str, Any]:
-    return {"results": store.recent(user_id, limit)}
+    return {"results": store.public_recent(user_id, limit)}
 
 
 @app.get("/v1/inbox", response_model=ListResponse)
@@ -660,7 +660,7 @@ def search(
     sector: str | None = Query(default=None, max_length=120),
     user_id: str = Depends(auth),
 ) -> dict[str, Any]:
-    return {"query": query, "sector": sector, "results": store.search(user_id, query, limit, kind, layer, sector=sector)}
+    return {"query": query, "sector": sector, "results": store.public_search(user_id, query, limit, kind, layer, sector=sector)}
 
 
 @app.get("/v1/ask", response_model=AskResponse)

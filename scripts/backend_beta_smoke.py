@@ -238,6 +238,8 @@ class SmokeRunner:
         self.capture_ids = [record["capture_id"] for record in synced["records"] if record.get("capture_id")]
         self.ensure(synced["status"] == "complete", "Obsidian sync did not complete", synced)
         self.ensure(synced["source"] == "obsidian", "Obsidian sync returned the wrong source", synced)
+        self.ensure(synced["source_account"]["source"] == "obsidian", "Obsidian source account had wrong source", synced)
+        self.ensure(synced["source_account"]["connection_type"] == "local-folder", "Obsidian source account was not local-folder", synced)
         self.ensure(synced["saved"] >= 1, "Obsidian sync did not save any captures", synced)
         self.ensure(synced["failed"] == 0, "Obsidian sync had failures", synced)
         self.ensure(synced["scan"]["records_found"] >= 1, "Obsidian scan found no records", synced)
@@ -251,16 +253,43 @@ class SmokeRunner:
         pending_ids = {item["id"] for item in review["pending"]}
         self.ensure(any(capture_id in pending_ids for capture_id in self.capture_ids), "Synced capture was not pending review", review)
         self.ensure(review["recommended_actions"], "Daily review did not include recommended actions", review)
+        readiness_before = self.request("GET", "/v1/sources/readiness").json()
+        obsidian_before = next((item for item in readiness_before.get("sources") or [] if item.get("source") == "obsidian"), None)
+        self.ensure(obsidian_before is not None, "Readiness omitted Obsidian before approval", readiness_before)
+        self.ensure(obsidian_before["status"] == "needs_review", "Obsidian readiness was not needs_review before approval", obsidian_before)
+        self.ensure(obsidian_before["pending"] >= len(self.capture_ids), "Obsidian readiness did not count pending captures", obsidian_before)
 
         for capture_id in self.capture_ids:
             approved = self.request("POST", f"/v1/captures/{capture_id}/approve").json()
             self.ensure(approved["approved"] is True, f"Capture {capture_id} was not approved", approved)
+
+        readiness_after = self.request("GET", "/v1/sources/readiness").json()
+        obsidian_after = next((item for item in readiness_after.get("sources") or [] if item.get("source") == "obsidian"), None)
+        self.ensure(obsidian_after is not None, "Readiness omitted Obsidian after approval", readiness_after)
+        self.ensure(obsidian_after["status"] == "synced", "Obsidian readiness was not synced after approval", obsidian_after)
+        self.ensure(obsidian_after["pending"] == 0, "Obsidian readiness still had pending captures after approval", obsidian_after)
+        self.ensure(obsidian_after["approved"] >= len(self.capture_ids), "Obsidian readiness did not count approved captures", obsidian_after)
+        self.ensure(obsidian_after["active_memories"] >= 1, "Obsidian readiness did not count active memories", obsidian_after)
+        self.ensure(obsidian_after["citation_coverage"] == 1.0, "Obsidian readiness did not report full citation coverage", obsidian_after)
 
         search_approved = self.request("GET", "/v1/search", params={"query": self.marker, "limit": 5}).json()
         self.ensure(search_approved["results"], "Approved Obsidian memory was not searchable", search_approved)
         self.ensure(
             all(result["source"] == "obsidian" for result in search_approved["results"]),
             "Approved search returned non-Obsidian source records for the marker",
+            search_approved,
+        )
+        encoded_search = json.dumps(search_approved)
+        self.ensure(str(vault_dir) not in encoded_search, "Approved search leaked the temp Obsidian vault path", search_approved)
+        self.ensure("file:///Users/" not in encoded_search, "Approved search leaked a raw local file URL", search_approved)
+        self.ensure(
+            any(
+                str(result.get("source_url") or "").startswith("local-file://")
+                and "line=" in str(result.get("source_url") or "")
+                and "excerpt=" in str(result.get("source_url") or "")
+                for result in search_approved["results"]
+            ),
+            "Approved search did not include safe cited local-file source URLs",
             search_approved,
         )
         return {
@@ -270,6 +299,7 @@ class SmokeRunner:
                 "records_found": synced["scan"]["records_found"],
                 "capture_ids": self.capture_ids,
                 "approved_results": len(search_approved["results"]),
+                "active_obsidian_memories": obsidian_after["active_memories"],
             },
         }
 
@@ -281,6 +311,16 @@ class SmokeRunner:
             "Ask citations did not include the smoke marker",
             asked,
         )
+        matching_citation = next((citation for citation in asked["citations"] if self.marker in citation.get("excerpt", "")), None)
+        self.ensure(matching_citation is not None, "Ask did not return a citation matching the smoke marker", asked)
+        self.ensure(matching_citation["source"] == "obsidian", "Ask marker citation was not from Obsidian", matching_citation)
+        citation_url = str(matching_citation.get("source_url") or "")
+        self.ensure(citation_url.startswith("local-file://"), "Ask marker citation was not a safe local-file locator", matching_citation)
+        self.ensure("line=" in citation_url and "excerpt=" in citation_url, "Ask marker citation missed line/excerpt source parameters", matching_citation)
+        self.ensure(matching_citation.get("source_account_id"), "Ask marker citation missed source_account_id", matching_citation)
+        encoded_ask = json.dumps(asked)
+        self.ensure(str(self.tmp) not in encoded_ask, "Ask leaked the temp vault path", asked)
+        self.ensure("file:///Users/" not in encoded_ask, "Ask leaked a raw local file URL", asked)
 
         exported = self.request("GET", "/v1/export.json").json()
         self.ensure(exported["stats"]["memories"] >= 1, "JSON export did not include memory stats", exported.get("stats"))

@@ -3969,6 +3969,18 @@ class CortexStore:
             ).fetchall()
         return [self._memory_from_row(row) for row in rows]
 
+    def public_recent(
+        self,
+        user_id: str,
+        limit: int = 20,
+        *,
+        kind: str | None = None,
+        layer: str | None = None,
+        sector: str | None = None,
+    ) -> list[dict[str, Any]]:
+        results = self.recent(user_id, limit=limit, kind=kind, layer=layer, sector=sector)
+        return self._shared_payload(results, redact_sensitive=bool(self.settings(user_id)["redact_sensitive_context"]))
+
     def search(
         self,
         user_id: str,
@@ -4069,6 +4081,20 @@ class CortexStore:
         if not memory_results:
             return task_results[:limit]
         return memory_results
+
+    def public_search(
+        self,
+        user_id: str,
+        query: str,
+        limit: int = 10,
+        kind: str | None = None,
+        layer: str | None = None,
+        *,
+        sector: str | None = None,
+        include_related: bool = False,
+    ) -> list[dict[str, Any]]:
+        results = self.search(user_id, query, limit, kind, layer, sector=sector, include_related=include_related)
+        return self._shared_payload(results, redact_sensitive=bool(self.settings(user_id)["redact_sensitive_context"]))
 
     def answer_query(self, user_id: str, query: str, limit: int = 8, *, sector: str | None = None) -> dict[str, Any]:
         query = query.strip()

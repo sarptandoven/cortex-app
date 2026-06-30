@@ -257,6 +257,12 @@ class LiveSmokeRunner:
         return {"detail": "MCP tool surface includes first-100 memory and connector tools.", "payload": {"tool_count": len(tools)}}
 
     def obsidian_review_ask(self) -> dict[str, Any]:
+        def step_status(loop: dict[str, Any], key: str) -> str:
+            for item in loop.get("steps") or []:
+                if item.get("key") == key:
+                    return str(item.get("status") or "")
+            return ""
+
         vault = write_obsidian_fixture(self.tmp, self.marker)
         synced = self.request(
             "/v1/connectors/obsidian/sync",
@@ -270,6 +276,12 @@ class LiveSmokeRunner:
         ensure(bool(self.capture_ids), "Obsidian sync did not return capture ids", synced)
 
         quoted = urllib.parse.quote(self.marker)
+        loop_after_sync = self.request("/v1/loop")
+        ensure(loop_after_sync["primary_action"]["action"] == "review", "Product loop did not move to Review after sync", loop_after_sync)
+        ensure(loop_after_sync["counts"]["pending_captures"] >= len(self.capture_ids), "Product loop did not count pending synced captures", loop_after_sync)
+        ensure(step_status(loop_after_sync, "capture") == "done", "Product loop capture step was not done after sync", loop_after_sync)
+        ensure(step_status(loop_after_sync, "review") == "current", "Product loop review step was not current after sync", loop_after_sync)
+
         pending_search = self.request(f"/v1/search?query={quoted}&limit=5")
         ensure(pending_search["results"] == [], "Pending synced memory leaked into search", pending_search)
 
@@ -311,6 +323,11 @@ class LiveSmokeRunner:
             "Approved captures remained in Review",
             {"capture_ids": self.capture_ids, "pending": review_after_approval["pending"]},
         )
+        loop_after_approval = self.request("/v1/loop")
+        ensure(loop_after_approval["primary_action"]["action"] == "reuse", "Product loop did not move to Ask after approval", loop_after_approval)
+        ensure(loop_after_approval["counts"]["pending_captures"] == 0, "Product loop still counted pending captures after approval", loop_after_approval)
+        ensure(loop_after_approval["counts"]["approved_today"] >= len(self.capture_ids), "Product loop did not count approved captures", loop_after_approval)
+        ensure(step_status(loop_after_approval, "review") == "done", "Product loop review step was not done after approval", loop_after_approval)
 
         readiness = self.request("/v1/sources/readiness")
         obsidian_source = next((item for item in readiness.get("sources") or [] if item.get("source") == "obsidian"), None)
@@ -331,6 +348,10 @@ class LiveSmokeRunner:
             asked,
         )
         ensure(str(vault) not in json.dumps(asked), "Ask leaked the local Obsidian vault path", asked)
+        loop_after_ask = self.request("/v1/loop")
+        ensure(loop_after_ask["primary_action"]["action"] == "done", "Product loop did not complete after cited Ask", loop_after_ask)
+        ensure(loop_after_ask["counts"]["used_today"] >= 1, "Product loop did not count cited Ask use", loop_after_ask)
+        ensure(step_status(loop_after_ask, "reuse") == "done", "Product loop reuse step was not done after cited Ask", loop_after_ask)
 
         mcp_search = self.scoped_mcp_request(
             "/mcp",
