@@ -2883,6 +2883,28 @@ final class AppState: ObservableObject {
         showOnboarding = true
     }
 
+    func resetOnboardingProgressAfterDataDeletion() {
+        firstSourceAdded = false
+        firstMemoryReviewed = false
+        cortexUsed = false
+        onboardingFirstImportID = ""
+        onboardingFirstSourceNames = []
+        onboardingBackupDecision = ""
+        showOnboarding = true
+        setOnboardingStep(.privateVault)
+        for key in [
+            "onboardingComplete.v1",
+            "onboardingFirstSourceImported.v1",
+            "onboardingFirstMemoryReviewed.v1",
+            "onboardingCortexUsed.v1",
+            "onboardingFirstImportID.v1",
+            "onboardingFirstSourceNames.v1",
+            "onboardingBackupDecision.v1",
+        ] {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+
     func nextOnboardingStep() {
         guard canAdvanceOnboarding else {
             status = "Finish this setup step first"
@@ -3276,6 +3298,7 @@ final class AppState: ObservableObject {
                 auditEvents = []
                 diagnostics = nil
                 reliabilityReport = nil
+                resetOnboardingProgressAfterDataDeletion()
                 status = "Deleted local Cortex data"
                 await loadSettings()
                 await loadInbox()
