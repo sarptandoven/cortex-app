@@ -554,15 +554,20 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         )
         connected_readiness = self.store.source_readiness_report(self.user_id)
         connected_gmail = next(item for item in connected_readiness["sources"] if item["source"] == "gmail")
-        self.assertEqual(connected_gmail["status"], "connected")
+        self.assertEqual(connected_gmail["status"], "planned")
         self.assertEqual(connected_gmail["beta_status"], "planned")
         self.assertFalse(connected_gmail["primary_beta"])
         self.assertFalse(connected_gmail["show_in_primary_ui"])
 
         self.assertTrue(account["id"].startswith("sacct_"))
         self.assertEqual(account["source"], "gmail")
+        self.assertEqual(account["status"], "planned")
+        self.assertEqual(account["auth_state"], "not_configured")
         self.assertEqual(account["account_label"], "Work Gmail")
         self.assertEqual(account["policy"]["sync"], "metadata_and_content")
+        self.assertEqual(account["metadata"]["requested_status"], "connected")
+        self.assertEqual(account["metadata"]["requested_auth_state"], "healthy")
+        self.assertEqual(account["metadata"]["connector_state"], "planned_until_records_sync")
         self.assertIsNone(account["last_sync_at"])
         self.assertEqual([item["id"] for item in self.store.list_source_accounts(self.user_id)], [account["id"]])
 
@@ -825,7 +830,14 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         )
         account = account_payload["account"]
         self.assertEqual(account["source"], "notion")
-        self.assertEqual(account["status"], "connected")
+        self.assertEqual(account["status"], "planned")
+        self.assertEqual(account["auth_state"], "not_configured")
+        self.assertEqual(account["metadata"]["requested_status"], "connected")
+
+        readiness_before_records = self.store.source_readiness_report(self.user_id)
+        notion_before_records = next(item for item in readiness_before_records["sources"] if item["source"] == "notion")
+        self.assertEqual(notion_before_records["status"], "planned")
+        self.assertEqual(notion_before_records["beta_status"], "planned")
 
         with self.assertRaises(PermissionError):
             call_tool(
@@ -869,6 +881,10 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertTrue(synced["records"][0]["source_url"].startswith(f"source-account://notion/{account['id']}/page-helix"))
         self.assertEqual(synced["cursor"]["cursor_name"], "pages")
         self.assertTrue(account["policy"]["review_required"])
+        readiness_after_records = self.store.source_readiness_report(self.user_id)
+        notion_after_records = next(item for item in readiness_after_records["sources"] if item["source"] == "notion")
+        self.assertEqual(notion_after_records["status"], "needs_review")
+        self.assertEqual(notion_after_records["beta_status"], "planned")
 
         capture_id = synced["capture_ids"][0]
         self.assertEqual([item["id"] for item in self.store.inbox(self.user_id, limit=10)], [capture_id])
@@ -879,6 +895,10 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertTrue(any("canonical project memory source" in item["content"] for item in inbox[0]["preview_memories"]))
         self.assertEqual(self.store.search(self.user_id, "canonical project memory source", limit=5), [])
         self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+        readiness_after_review = self.store.source_readiness_report(self.user_id)
+        notion_after_review = next(item for item in readiness_after_review["sources"] if item["source"] == "notion")
+        self.assertEqual(notion_after_review["status"], "synced")
+        self.assertEqual(notion_after_review["beta_status"], "planned")
 
         found = self.store.search(self.user_id, "canonical project memory source", limit=5)
         self.assertTrue(found)

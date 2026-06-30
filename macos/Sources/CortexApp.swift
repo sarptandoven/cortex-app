@@ -434,6 +434,17 @@ struct AskCitationItem: Codable, Identifiable, Hashable {
     let status: String?
     let source: String
     let source_url: String?
+    let source_account_id: String?
+    let external_id: String?
+    let source_record_id: String?
+    let sector: String?
+    let source_type: String?
+    let citation_path: String?
+    let line_start: Int?
+    let line_end: Int?
+    let record_scope: String?
+    let section_title: String?
+    let block_id: String?
     let captured_at: String?
     let occurred_at: String?
     let excerpt: String
@@ -448,6 +459,17 @@ struct AskCitationItem: Codable, Identifiable, Hashable {
         case status
         case source
         case source_url
+        case source_account_id
+        case external_id
+        case source_record_id
+        case sector
+        case source_type
+        case citation_path
+        case line_start
+        case line_end
+        case record_scope
+        case section_title
+        case block_id
         case captured_at
         case occurred_at
         case excerpt

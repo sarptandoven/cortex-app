@@ -667,6 +667,12 @@ def _connector_beta_status(item: dict[str, Any]) -> str:
     return "needs-connector"
 
 
+def _planned_connector_without_native_sync(item: dict[str, Any] | None) -> bool:
+    if not item or _connector_primary_beta(item):
+        return False
+    return _connector_readiness_status(item) == "live-planned"
+
+
 def _normalize_identity_aliases(value: Any) -> list[str]:
     raw_values: list[Any]
     if isinstance(value, dict):
@@ -1848,6 +1854,7 @@ class CortexStore:
             live_status = str(item.get("live_status") or "")
             readiness_status = str(item.get("readiness_status") or _connector_readiness_status(item))
             catalog_primary_beta = bool(item.get("primary_beta"))
+            planned_connector = _planned_connector_without_native_sync(item)
             has_completed_sync = any(cursor.get("last_completed_at") for cursor in source_cursors) or any(account.get("last_sync_at") for account in active_accounts)
             has_synced_data = has_completed_sync or captures or active_memories
             if has_synced_data and catalog_primary_beta:
@@ -1872,7 +1879,7 @@ class CortexStore:
             elif has_completed_sync:
                 status = "synced"
                 next_action = "Source sync has completed; review new memories as they arrive."
-            elif active_accounts:
+            elif active_accounts and not planned_connector:
                 status = "connected"
                 next_action = "Connection is registered; waiting for the first completed sync."
             elif captures or active_memories:
@@ -2049,6 +2056,17 @@ class CortexStore:
         resolved_id = account_id or stable_id("sacct_", f"{user_id}:{normalized_source}:{identifier or label}")
         resolved_policy = _normalize_source_account_policy(policy)
         resolved_metadata = metadata or {}
+        if _planned_connector_without_native_sync(catalog_entry):
+            requested_status = account_status
+            requested_auth = auth
+            resolved_metadata = {
+                **resolved_metadata,
+                "requested_status": requested_status,
+                "requested_auth_state": requested_auth,
+                "connector_state": "planned_until_records_sync",
+            }
+            account_status = "planned"
+            auth = "not_configured"
         with connect(self.db_path) as conn:
             conn.execute(
                 """

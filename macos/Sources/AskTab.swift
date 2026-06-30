@@ -264,6 +264,13 @@ struct AskCitationRow: View {
                     .foregroundColor(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if let detail = sourceDetail {
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
                 if !excerpt.isEmpty {
                     Text(excerpt)
                         .font(.caption)
@@ -277,8 +284,32 @@ struct AskCitationRow: View {
     }
 
     private var sourceLabel: String {
+        if let path = citation.citation_path?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty {
+            return path
+        }
         let sourceURL = citation.source_url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return sourceURL.isEmpty ? citation.source : sourceURL
+    }
+
+    private var sourceDetail: String? {
+        let pieces = [
+            citation.section_title?.trimmingCharacters(in: .whitespacesAndNewlines),
+            lineLabel,
+            citation.record_scope?.trimmingCharacters(in: .whitespacesAndNewlines)
+        ]
+        let detail = pieces.compactMap { value -> String? in
+            guard let value, !value.isEmpty else { return nil }
+            return value
+        }.joined(separator: " - ")
+        return detail.isEmpty ? nil : detail
+    }
+
+    private var lineLabel: String? {
+        guard let start = citation.line_start else { return nil }
+        if let end = citation.line_end, end > start {
+            return "Lines \(start)-\(end)"
+        }
+        return "Line \(start)"
     }
 
     private var excerpt: String {
