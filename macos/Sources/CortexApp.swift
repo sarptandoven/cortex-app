@@ -2905,7 +2905,6 @@ final class AppState: ObservableObject {
     }
 
     func showOnboardingAgain() {
-        UserDefaults.standard.set(false, forKey: "onboardingComplete.v1")
         setOnboardingStep(.privateVault)
         showOnboarding = true
     }
@@ -2936,6 +2935,7 @@ final class AppState: ObservableObject {
         let steps = OnboardingStep.allCases
         if !canAdvanceOnboarding {
             status = "You can finish this step from the main app later"
+            return
         }
         let nextIndex = min(steps.count - 1, onboardingStep.rawValue + 1)
         setOnboardingStep(steps[nextIndex])
@@ -3512,7 +3512,6 @@ final class AppState: ObservableObject {
 
     private func notify(_ title: String, _ body: String) {
         let center = UNUserNotificationCenter.current()
-        let shouldRequestPermission = UserDefaults.standard.bool(forKey: "onboardingComplete.v1") && !showOnboarding
         center.getNotificationSettings { settings in
             let send = {
                 let content = UNMutableNotificationContent()
@@ -3524,12 +3523,7 @@ final class AppState: ObservableObject {
             case .authorized, .provisional, .ephemeral:
                 send()
             case .notDetermined:
-                guard shouldRequestPermission else { return }
-                center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
-                    if granted {
-                        send()
-                    }
-                }
+                return
             default:
                 break
             }
