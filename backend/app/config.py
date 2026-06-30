@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+INSECURE_DEV_API_KEY = "dev-local-key"
+
+
 @dataclass(frozen=True)
 class Settings:
     vault_path: Path
@@ -23,6 +26,10 @@ class Settings:
     sync_signing_key: str = ""
 
 
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def load_settings() -> Settings:
     root = Path(__file__).resolve().parents[1]
     db_env = os.environ.get("CORTEX_DB_PATH")
@@ -35,10 +42,16 @@ def load_settings() -> Settings:
         vault_path = root / "data" / "Cortex.vault"
     db_path = Path(db_env).expanduser() if db_env else vault_path / "index.sqlite"
     require_scoped_api_tokens = os.environ.get("CORTEX_REQUIRE_SCOPED_API_TOKENS", "").strip().lower() in {"1", "true", "yes", "on"}
+    api_key = os.environ.get("CORTEX_API_KEY", "").strip()
+    if api_key == INSECURE_DEV_API_KEY and not _truthy_env("CORTEX_ALLOW_INSECURE_DEV_TOKEN"):
+        raise RuntimeError(
+            "CORTEX_API_KEY uses the insecure sample token 'dev-local-key'. "
+            "Set a long random token, or set CORTEX_ALLOW_INSECURE_DEV_TOKEN=1 only for local development."
+        )
     return Settings(
         vault_path=vault_path,
         db_path=db_path,
-        api_key=os.environ.get("CORTEX_API_KEY", "dev-local-key"),
+        api_key=api_key,
         public_base_url=os.environ.get("CORTEX_PUBLIC_BASE_URL", "http://127.0.0.1:8766"),
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
         mcp_api_key=os.environ.get("CORTEX_MCP_API_KEY", ""),

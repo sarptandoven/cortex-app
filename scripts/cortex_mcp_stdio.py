@@ -7,7 +7,7 @@ import urllib.request
 
 
 BASE_URL = os.environ.get("CORTEX_BASE_URL", "http://127.0.0.1:8766").rstrip("/")
-API_KEY = os.environ.get("CORTEX_API_KEY", "dev-local-key")
+API_KEY = os.environ.get("CORTEX_API_KEY", "").strip()
 
 
 def proxy_to_cortex(message: dict) -> dict:
@@ -37,6 +37,8 @@ def error_response(message: dict, exc: Exception) -> dict:
 
 
 def main() -> None:
+    if not API_KEY:
+        raise SystemExit("CORTEX_API_KEY must be set to a Cortex MCP token.")
     for line in sys.stdin:
         line = line.strip()
         if not line:

@@ -43,7 +43,8 @@ The macOS app defaults to `http://127.0.0.1:8766`.
 ```bash
 CORTEX_VAULT_PATH=./data/Cortex.vault
 CORTEX_DB_PATH=./data/Cortex.vault/index.sqlite
-CORTEX_API_KEY=dev-local-key
+CORTEX_API_KEY=replace-with-a-long-random-token
+CORTEX_ALLOW_INSECURE_DEV_TOKEN=0
 ANTHROPIC_API_KEY=optional
 CORTEX_EMBEDDING_PROVIDER=hash
 CORTEX_EMBEDDING_MODEL=text-embedding-3-small

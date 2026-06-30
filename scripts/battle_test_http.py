@@ -39,8 +39,10 @@ def form_request(base_url: str, path: str, data: dict) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Cortex HTTP smoke and lifecycle checks against a running backend.")
     parser.add_argument("--base-url", default="http://127.0.0.1:8766")
-    parser.add_argument("--token", default="dev-local-key")
+    parser.add_argument("--token", default="")
     args = parser.parse_args()
+    if not args.token:
+        raise SystemExit("Pass --token with the local Cortex API token.")
     marker = f"cortex-battle-{uuid.uuid4().hex[:10]}"
 
     health = request(args.base_url, args.token, "/health")

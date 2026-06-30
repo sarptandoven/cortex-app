@@ -2,5 +2,5 @@
 
 [scripts]
 setup = "python3 -m venv venv && venv/bin/python -m pip install -r backend/requirements.txt"
-run = "cd backend && CORTEX_PORT=\"${CONDUCTOR_PORT:-8766}\" CORTEX_PUBLIC_BASE_URL=\"http://127.0.0.1:${CONDUCTOR_PORT:-8766}\" CORTEX_API_KEY=\"${CORTEX_API_KEY:-dev-local-key}\" CORTEX_VAULT_PATH=\"./data/Cortex.vault\" CORTEX_DB_PATH=\"./data/Cortex.vault/index.sqlite\" ../venv/bin/python -m uvicorn app.main:app --reload --host 127.0.0.1 --port \"${CONDUCTOR_PORT:-8766}\""
+run = "cd backend && CORTEX_PORT=\"${CONDUCTOR_PORT:-8766}\" CORTEX_PUBLIC_BASE_URL=\"http://127.0.0.1:${CONDUCTOR_PORT:-8766}\" CORTEX_API_KEY=\"${CORTEX_API_KEY:-dev-local-key}\" CORTEX_ALLOW_INSECURE_DEV_TOKEN=\"${CORTEX_ALLOW_INSECURE_DEV_TOKEN:-1}\" CORTEX_VAULT_PATH=\"./data/Cortex.vault\" CORTEX_DB_PATH=\"./data/Cortex.vault/index.sqlite\" ../venv/bin/python -m uvicorn app.main:app --reload --host 127.0.0.1 --port \"${CONDUCTOR_PORT:-8766}\""
 run_mode = "concurrent"

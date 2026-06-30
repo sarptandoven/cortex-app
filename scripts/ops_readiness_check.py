@@ -88,7 +88,7 @@ def offline_support_bundle(root: Path) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Cortex local operational readiness checks.")
     parser.add_argument("--base-url", default="http://127.0.0.1:8766")
-    parser.add_argument("--token", default="dev-local-key")
+    parser.add_argument("--token", default="")
     parser.add_argument("--skip-tests", action="store_true")
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--refresh-site", action="store_true", help="Run prepare_distribution_site.py before validating the static site.")
@@ -96,6 +96,8 @@ def main() -> None:
     parser.add_argument("--output-root", default=None, help="Directory containing packaged Cortex-* releases. Defaults to the workspace outputs directory.")
     parser.add_argument("--require-live", action="store_true", help="Fail if the running local backend cannot pass live checks.")
     args = parser.parse_args()
+    if args.require_live and not args.token:
+        raise SystemExit("Pass --token when using --require-live.")
 
     root = repo_root()
     output_root = Path(args.output_root).expanduser() if args.output_root else workspace_root(root) / "outputs"

@@ -25,8 +25,10 @@ def fail(message: str, payload: dict | None = None) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate that a running Cortex backend has the expected reliability contract.")
     parser.add_argument("--base-url", default="http://127.0.0.1:8766")
-    parser.add_argument("--token", default="dev-local-key")
+    parser.add_argument("--token", default="")
     args = parser.parse_args()
+    if not args.token:
+        fail("Pass --token with the local Cortex API token.")
 
     try:
         health = request(args.base_url, args.token, "/health")

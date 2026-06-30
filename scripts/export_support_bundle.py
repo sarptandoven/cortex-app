@@ -52,7 +52,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Export a sanitized Cortex support bundle.")
     parser.add_argument("--mode", choices=("live", "offline"), default="live", help="live calls the running backend; offline reads the local vault/index directly.")
     parser.add_argument("--base-url", default="http://127.0.0.1:8766")
-    parser.add_argument("--token", default="dev-local-key")
+    parser.add_argument("--token", default="")
     parser.add_argument("--db-path", type=Path)
     parser.add_argument("--vault-path", type=Path)
     parser.add_argument("--user-id", default="local")
@@ -62,6 +62,8 @@ def main() -> None:
     root = repo_root()
     output_path = args.output or default_output_path(root)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if args.mode == "live" and not args.token:
+        raise SystemExit("Pass --token with the local Cortex API token, or use --mode offline.")
 
     try:
         bundle = live_bundle(args.base_url, args.token) if args.mode == "live" else offline_bundle(args.db_path, args.vault_path, args.user_id)

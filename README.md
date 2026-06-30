@@ -77,7 +77,7 @@ codesign --verify --deep --strict --verbose=2 macos/build/Cortex.app
 Export a sanitized support bundle:
 
 ```bash
-python3 scripts/export_support_bundle.py --mode live
+python3 scripts/export_support_bundle.py --mode live --token "$CORTEX_API_KEY"
 python3 scripts/export_support_bundle.py --mode offline
 ```
 
