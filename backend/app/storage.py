@@ -906,6 +906,44 @@ def _apply_source_record_metadata(extracted: dict[str, Any], metadata: dict[str,
     return extracted
 
 
+SOURCE_RECORD_REFRESH_METADATA_KEYS = {
+    "relative_path",
+    "record_scope",
+    "note_external_id",
+    "block_id",
+    "section_title",
+    "section_slug",
+    "tags",
+    "wikilinks",
+    "workspace",
+    "project",
+    "vault_name",
+    "team",
+    "page",
+    "document",
+    "message",
+    "row",
+    "event",
+    "subject",
+    "conversation",
+    "channel",
+    "repository",
+    "issue",
+    "url",
+}
+
+
+def _source_record_refresh_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(metadata, dict):
+        return {}
+    projected: dict[str, Any] = {}
+    for key in sorted(SOURCE_RECORD_REFRESH_METADATA_KEYS):
+        value = metadata.get(key)
+        if value not in (None, "", [], {}):
+            projected[key] = value
+    return projected
+
+
 def _source_record_line_offset(metadata: dict[str, Any]) -> int:
     try:
         line_start = int(metadata.get("line_start") or 0)
@@ -1549,6 +1587,7 @@ class CortexStore:
         source_account_id: str | None = None,
         external_id: str | None = None,
         record_metadata: dict[str, Any] | None = None,
+        refresh_key: str | None = None,
     ) -> dict[str, Any]:
         content = content.strip()
         if not content:
@@ -1571,7 +1610,7 @@ class CortexStore:
             approved_at = None if review_status == "pending" else captured_at
             stable_source_record = bool(normalized_source_account_id and normalized_external_id)
             existing_capture = conn.execute(
-                "SELECT id, raw_hash FROM captures WHERE user_id = ? AND id = ?",
+                "SELECT id, raw_hash, review_status, approved_at FROM captures WHERE user_id = ? AND id = ?",
                 (user_id, capture_id),
             ).fetchone()
             if existing_capture and existing_capture["raw_hash"] != raw_hash:
@@ -1595,6 +1634,13 @@ class CortexStore:
                         "edge_count": purged["edge_count"],
                     },
                 )
+            elif existing_capture and stable_source_record and existing_capture["review_status"] != "archived":
+                review_status = existing_capture["review_status"]
+                approved_at = existing_capture["approved_at"]
+            normalized_refresh_key = str(refresh_key or "").strip()[:120]
+            unique_key = f"extract_capture:{capture_id}:{raw_hash}"
+            if normalized_refresh_key:
+                unique_key = f"{unique_key}:refresh:{normalized_refresh_key}"
             conn.execute(
                 """
                 INSERT INTO captures
@@ -1638,7 +1684,7 @@ class CortexStore:
                 job_type="extract_capture",
                 object_type="capture",
                 object_id=capture_id,
-                unique_key=f"extract_capture:{capture_id}:{raw_hash}",
+                unique_key=unique_key,
                 payload={
                     "capture_id": capture_id,
                     "source": normalized_source,
@@ -2209,10 +2255,11 @@ class CortexStore:
                 duplicate = None
                 updated_existing_record = False
                 with connect(self.db_path) as conn:
+                    metadata_refresh_required = False
                     if external_id:
                         existing_record = conn.execute(
                             """
-                            SELECT id, raw_hash, review_status
+                            SELECT id, raw_hash, review_status, source_url, title, captured_at
                             FROM captures
                             WHERE user_id = ?
                               AND source_account_id = ?
@@ -2224,7 +2271,19 @@ class CortexStore:
                         ).fetchone()
                         if existing_record:
                             if existing_record["raw_hash"] == content_hash and existing_record["review_status"] != "archived":
-                                duplicate = existing_record
+                                metadata_refresh_required = self._source_record_metadata_refresh_required(
+                                    conn,
+                                    user_id,
+                                    existing_record["id"],
+                                    source_url=source_url,
+                                    title=title,
+                                    captured_at=captured_at,
+                                    record_metadata=record_metadata,
+                                )
+                                if metadata_refresh_required:
+                                    updated_existing_record = True
+                                else:
+                                    duplicate = existing_record
                             else:
                                 updated_existing_record = True
                     else:
@@ -2297,6 +2356,11 @@ class CortexStore:
                         source_account_id=account_id,
                         external_id=external_id,
                         record_metadata=record_metadata,
+                        refresh_key=(
+                            stable_id("", json.dumps({"source_url": source_url, "title": title, "metadata": _source_record_refresh_metadata(record_metadata)}, sort_keys=True))
+                            if metadata_refresh_required
+                            else None
+                        ),
                     )
                     queued += 1
                     record_results.append({
@@ -2687,6 +2751,50 @@ class CortexStore:
             return explicit[:500]
         record_id = external_id or f"record-{ordinal + 1}"
         return f"source-account://{quote(source)}/{quote(account_id)}/{quote(record_id)}"
+
+    def _source_record_metadata_refresh_required(
+        self,
+        conn,
+        user_id: str,
+        capture_id: str,
+        *,
+        source_url: str | None,
+        title: str | None,
+        captured_at: str | None,
+        record_metadata: dict[str, Any] | None,
+    ) -> bool:
+        capture = conn.execute(
+            "SELECT source_url, title, captured_at FROM captures WHERE user_id = ? AND id = ?",
+            (user_id, capture_id),
+        ).fetchone()
+        if not capture:
+            return True
+        if str(capture["source_url"] or "") != str(source_url or ""):
+            return True
+        if str(capture["title"] or "") != str(title or ""):
+            return True
+        normalized_metadata = _source_record_refresh_metadata(record_metadata)
+        if not normalized_metadata:
+            return False
+        rows = conn.execute(
+            """
+            SELECT provenance_json
+            FROM memories
+            WHERE user_id = ?
+              AND capture_id = ?
+              AND status = 'active'
+            LIMIT 20
+            """,
+            (user_id, capture_id),
+        ).fetchall()
+        if not rows:
+            return True
+        for row in rows:
+            provenance = self._json_or_empty(row["provenance_json"])
+            existing_metadata = provenance.get("record_metadata") if isinstance(provenance.get("record_metadata"), dict) else {}
+            if _source_record_refresh_metadata(existing_metadata) != normalized_metadata:
+                return True
+        return False
 
     def register_sync_device(
         self,
@@ -3521,7 +3629,7 @@ class CortexStore:
                 approved_at = None
             stable_source_record = bool(normalized_source_account_id and normalized_external_id)
             existing_capture = conn.execute(
-                "SELECT id, raw_hash FROM captures WHERE user_id = ? AND id = ?",
+                "SELECT id, raw_hash, review_status, approved_at FROM captures WHERE user_id = ? AND id = ?",
                 (user_id, capture_id),
             ).fetchone()
             if existing_capture and existing_capture["raw_hash"] != raw_hash:
@@ -3545,6 +3653,9 @@ class CortexStore:
                         "edge_count": purged["edge_count"],
                     },
                 )
+            elif existing_capture and stable_source_record and existing_capture["review_status"] != "archived":
+                review_status = existing_capture["review_status"]
+                approved_at = existing_capture["approved_at"]
             conn.execute(
                 """
                 INSERT INTO captures

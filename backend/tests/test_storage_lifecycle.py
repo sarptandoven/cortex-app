@@ -740,6 +740,59 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(stale_memory["superseded_by"], replacement_memory["id"])
         self.assertEqual(replacement_memory["status"], "active")
 
+        metadata_refresh_result = self.store.sync_source_account_records(
+            self.user_id,
+            account["id"],
+            records=[
+                {
+                    "content": "I decided connected Gmail sync should update the same Cortex record when remote content changes.",
+                    "title": "Gmail decision retitled",
+                    "external_id": "msg-001",
+                    "source_url": "service://gmail/messages/msg-001?thread=updated",
+                    "captured_at": "2026-06-29T12:50:00Z",
+                    "metadata": {"relative_path": "Gmail/Updated Thread.eml", "line_start": 12, "tags": ["connector-refresh"]},
+                }
+            ],
+            cursor_name="messages",
+            processing="sync",
+        )
+        self.assertEqual(metadata_refresh_result["status"], "complete")
+        self.assertEqual(metadata_refresh_result["saved"], 1)
+        self.assertEqual(metadata_refresh_result["skipped"], 0)
+        self.assertEqual(metadata_refresh_result["records"][0]["status"], "updated")
+        self.assertEqual(metadata_refresh_result["records"][0]["capture_id"], sync_result["records"][0]["capture_id"])
+        refreshed_results = self.store.search(self.user_id, "remote content changes", limit=5)
+        self.assertTrue(refreshed_results)
+        self.assertIn("thread=updated", refreshed_results[0]["source_url"])
+        self.assertIn("line=", refreshed_results[0]["source_url"])
+        with connect(self.db_path) as conn:
+            refreshed_capture = conn.execute(
+                "SELECT title, source_url, review_status, approved_at FROM captures WHERE user_id = ? AND id = ?",
+                (self.user_id, sync_result["records"][0]["capture_id"]),
+            ).fetchone()
+            refreshed_memory_rows = conn.execute(
+                """
+                SELECT source_url, status, valid_to, provenance_json, topics_json
+                FROM memories
+                WHERE user_id = ?
+                  AND capture_id = ?
+                  AND content LIKE '%remote content changes%'
+                """,
+                (self.user_id, sync_result["records"][0]["capture_id"]),
+            ).fetchall()
+        self.assertEqual(refreshed_capture["title"], "Gmail decision retitled")
+        self.assertEqual(refreshed_capture["source_url"], "service://gmail/messages/msg-001?thread=updated")
+        self.assertEqual(refreshed_capture["review_status"], "approved")
+        self.assertIsNotNone(refreshed_capture["approved_at"])
+        self.assertEqual(len(refreshed_memory_rows), 1)
+        self.assertEqual(refreshed_memory_rows[0]["status"], "active")
+        self.assertFalse(refreshed_memory_rows[0]["valid_to"])
+        self.assertIn("thread=updated", refreshed_memory_rows[0]["source_url"])
+        refreshed_provenance = json.loads(refreshed_memory_rows[0]["provenance_json"])
+        self.assertEqual(refreshed_provenance["record_metadata"]["relative_path"], "Gmail/Updated Thread.eml")
+        self.assertEqual(refreshed_provenance["record_metadata"]["line_start"], 12)
+        self.assertIn("connector refresh", json.loads(refreshed_memory_rows[0]["topics_json"]))
+
         repeated_text_result = self.store.sync_source_account_records(
             self.user_id,
             account["id"],
@@ -1500,6 +1553,52 @@ Never use [[Templates/Marketing]] boilerplate in memory.
         self.assertEqual(replacement_memory["status"], "active")
         self.assertEqual(capture["source_account_id"], account["id"])
         self.assertEqual(capture["external_id"], "msg-async-update")
+
+        metadata_refresh = self.store.sync_source_account_records(
+            self.user_id,
+            account["id"],
+            records=[
+                {
+                    "content": "I decided async connector sync should preserve only the current remote policy.",
+                    "title": "Async update retitled",
+                    "external_id": "msg-async-update",
+                    "source_url": "service://gmail/messages/msg-async-update?thread=refreshed",
+                    "metadata": {"relative_path": "Gmail/Async Refreshed.eml", "line_start": 8, "tags": ["async-refresh"]},
+                }
+            ],
+            processing="async",
+        )
+        self.assertEqual(metadata_refresh["queued"], 1)
+        self.assertEqual(metadata_refresh["records"][0]["status"], "updated")
+        self.assertEqual(metadata_refresh["records"][0]["capture_id"], first_capture_id)
+        ran_refresh = self.store.run_due_jobs(self.user_id, limit=10)
+        self.assertGreaterEqual(ran_refresh["processed"], 1)
+        refreshed_results = self.store.search(self.user_id, "current remote policy", limit=5)
+        self.assertTrue(refreshed_results)
+        self.assertIn("thread=refreshed", refreshed_results[0]["source_url"])
+        with connect(self.db_path) as conn:
+            refreshed_capture = conn.execute(
+                "SELECT title, source_url, review_status FROM captures WHERE user_id = ? AND id = ?",
+                (self.user_id, first_capture_id),
+            ).fetchone()
+            refreshed_memory = conn.execute(
+                """
+                SELECT provenance_json, topics_json
+                FROM memories
+                WHERE user_id = ?
+                  AND capture_id = ?
+                  AND status = 'active'
+                  AND content LIKE '%current remote policy%'
+                LIMIT 1
+                """,
+                (self.user_id, first_capture_id),
+            ).fetchone()
+        self.assertEqual(refreshed_capture["title"], "Async update retitled")
+        self.assertEqual(refreshed_capture["source_url"], "service://gmail/messages/msg-async-update?thread=refreshed")
+        self.assertEqual(refreshed_capture["review_status"], "approved")
+        refreshed_provenance = json.loads(refreshed_memory["provenance_json"])
+        self.assertEqual(refreshed_provenance["record_metadata"]["relative_path"], "Gmail/Async Refreshed.eml")
+        self.assertIn("async refresh", json.loads(refreshed_memory["topics_json"]))
 
     def test_strict_embedding_failure_keeps_keyword_search_usable(self) -> None:
         previous_provider = os.environ.get("CORTEX_EMBEDDING_PROVIDER")
