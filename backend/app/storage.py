@@ -3692,7 +3692,7 @@ class CortexStore:
                 """,
                 (user_id, limit),
             ).fetchall()
-            return [self._capture_from_row(row, conn=conn, include_review_preview=True) for row in rows]
+            return [self._capture_from_row(row, conn=conn, include_review_preview=True, redact_source_urls=True) for row in rows]
 
     def recent(self, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
@@ -9042,7 +9042,14 @@ class CortexStore:
         self.vault.append_event(event)
         return event
 
-    def _capture_from_row(self, row, conn=None, *, include_review_preview: bool = False) -> dict[str, Any]:
+    def _capture_from_row(
+        self,
+        row,
+        conn=None,
+        *,
+        include_review_preview: bool = False,
+        redact_source_urls: bool = False,
+    ) -> dict[str, Any]:
         keys = set(row.keys())
         capture = {
             "id": row["id"],
@@ -9050,7 +9057,7 @@ class CortexStore:
             "source_account_id": row["source_account_id"] if "source_account_id" in keys else None,
             "external_id": row["external_id"] if "external_id" in keys else None,
             "source": row["source"],
-            "source_url": row["source_url"],
+            "source_url": self._safe_source_locator(row["source_url"], force_local=True) if redact_source_urls else row["source_url"],
             "title": row["title"],
             "summary": row["summary"],
             "review_status": row["review_status"],
@@ -9061,11 +9068,19 @@ class CortexStore:
             "task_count": row["task_count"] if "task_count" in keys else None,
         }
         if include_review_preview and conn is not None:
-            capture["preview_memories"] = self._review_memory_preview(conn, row["user_id"], row["id"])
+            capture["preview_memories"] = self._review_memory_preview(conn, row["user_id"], row["id"], redact_source_urls=redact_source_urls)
             capture["preview_tasks"] = self._review_task_preview(conn, row["user_id"], row["id"])
         return capture
 
-    def _review_memory_preview(self, conn, user_id: str, capture_id: str, limit: int = 5) -> list[dict[str, Any]]:
+    def _review_memory_preview(
+        self,
+        conn,
+        user_id: str,
+        capture_id: str,
+        limit: int = 5,
+        *,
+        redact_source_urls: bool = False,
+    ) -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT id, kind, layer, content, source, source_url, confidence, importance, status, topics_json, entity_ids_json, captured_at
@@ -9085,7 +9100,7 @@ class CortexStore:
                 "layer": memory_layer(row["kind"], row["layer"]),
                 "content": row["content"],
                 "source": row["source"],
-                "source_url": row["source_url"],
+                "source_url": self._safe_source_locator(row["source_url"], force_local=True) if redact_source_urls else row["source_url"],
                 "confidence": row["confidence"],
                 "importance": row["importance"],
                 "status": row["status"],

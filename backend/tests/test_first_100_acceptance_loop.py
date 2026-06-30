@@ -73,9 +73,13 @@ I prefer Cortex answers that include citations back to the originating note.
         self.assertEqual(len(inbox), 1)
         self.assertEqual(inbox[0]["id"], capture_id)
         self.assertEqual(inbox[0]["review_status"], "pending")
+        self.assertTrue((inbox[0]["source_url"] or "").startswith("local-file://Memory%20Loop.md"))
+        self.assertNotIn(str(self.vault), inbox[0]["source_url"] or "")
         self.assertGreaterEqual(inbox[0]["memory_count"], 1)
         self.assertTrue(inbox[0]["preview_memories"])
         self.assertTrue(any("first-100 Cortex MVP" in item["content"] for item in inbox[0]["preview_memories"]))
+        self.assertTrue(all((item["source_url"] or "").startswith("local-file://Memory%20Loop.md#") for item in inbox[0]["preview_memories"]))
+        self.assertTrue(all(str(self.vault) not in (item["source_url"] or "") for item in inbox[0]["preview_memories"]))
         self.assertNotIn("raw_text", inbox[0])
 
         loop_after_sync = call_tool(self.store, self.user_id, "get_product_loop", {})
