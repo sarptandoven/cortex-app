@@ -169,14 +169,15 @@ def _control_plane_check(hosted_mode: bool, runtime: dict | None) -> dict:
     api_tokens = int(control.get("active_api_tokens") or 0)
     mcp_tokens = int(control.get("active_mcp_tokens") or 0)
     users = int(control.get("active_users") or 0)
-    if api_tokens > 0 and mcp_tokens > 0 and users > 0:
+    ready_users = int(control.get("active_ready_users") or 0)
+    if ready_users > 0:
         return {
             "name": "control_plane_scoped_tokens",
             "status": "ok",
-            "detail": f"Scoped control plane has {api_tokens} API token(s), {mcp_tokens} MCP token(s), and {users} active user(s).",
+            "detail": f"Scoped control plane has {ready_users} active user(s) with both API and MCP tokens ({api_tokens} API token(s), {mcp_tokens} MCP token(s), {users} active user(s) total).",
         }
     return {
         "name": "control_plane_scoped_tokens",
         "status": "blocked",
-        "detail": "Create at least one active scoped API token and one active scoped MCP token for a hosted user before marking hosted readiness ok.",
+        "detail": "Create at least one hosted user with both an active scoped API token and an active scoped MCP token before marking hosted readiness ok.",
     }

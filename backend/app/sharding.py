@@ -237,10 +237,12 @@ class TokenControlIndex:
             return {
                 "path": str(self.path),
                 "exists": False,
+                "total_tokens": 0,
                 "active_tokens": 0,
                 "active_api_tokens": 0,
                 "active_mcp_tokens": 0,
                 "active_users": 0,
+                "active_ready_users": 0,
                 "revoked_tokens": 0,
             }
         conn = self._connect()
@@ -257,6 +259,20 @@ class TokenControlIndex:
                 FROM scoped_token_index
                 """
             ).fetchone()
+            ready = conn.execute(
+                """
+                SELECT COUNT(*) AS active_ready_users
+                FROM (
+                  SELECT user_id
+                  FROM scoped_token_index
+                  WHERE revoked_at IS NULL
+                  GROUP BY user_id
+                  HAVING
+                    SUM(CASE WHEN audience = 'api' THEN 1 ELSE 0 END) > 0
+                    AND SUM(CASE WHEN audience = 'mcp' THEN 1 ELSE 0 END) > 0
+                )
+                """
+            ).fetchone()
         finally:
             conn.close()
         return {
@@ -267,6 +283,7 @@ class TokenControlIndex:
             "active_api_tokens": int(row["active_api_tokens"] or 0),
             "active_mcp_tokens": int(row["active_mcp_tokens"] or 0),
             "active_users": int(row["active_users"] or 0),
+            "active_ready_users": int(ready["active_ready_users"] or 0),
             "revoked_tokens": int(row["revoked_tokens"] or 0),
         }
 
@@ -343,11 +360,11 @@ class StoreRegistry:
 
     def control_plane_status(self) -> dict[str, Any]:
         summary = self.token_index.summary()
-        ready = summary["active_api_tokens"] > 0 and summary["active_mcp_tokens"] > 0 and summary["active_users"] > 0
+        ready = summary["active_ready_users"] > 0
         return {
             **summary,
             "status": "ok" if ready else "blocked",
-            "requires": ["active scoped API token", "active scoped MCP token", "active user"],
+            "requires": ["at least one active user with scoped API and MCP tokens"],
         }
 
     def authenticate_mcp_token(self, token: str, user_id: str | None = None) -> dict[str, Any] | None:

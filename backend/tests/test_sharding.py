@@ -170,6 +170,7 @@ class ShardingTests(unittest.TestCase):
         self.assertEqual(control["active_api_tokens"], 1)
         self.assertEqual(control["active_mcp_tokens"], 1)
         self.assertEqual(control["active_users"], 1)
+        self.assertEqual(control["active_ready_users"], 1)
 
         registry = StoreRegistry.from_settings(settings)
         scoped_api = registry.authenticate_api_token(api_token["token"])
@@ -182,6 +183,25 @@ class ShardingTests(unittest.TestCase):
         self.assertTrue(scoped_api["control_index"])
         self.assertTrue(scoped_mcp["control_index"])
         self.assertEqual(registry._stores, {})
+
+    def test_control_plane_requires_one_user_with_api_and_mcp_tokens(self) -> None:
+        settings = self.settings(mode="bucket", shard_count=8)
+        registry = StoreRegistry.from_settings(settings)
+        registry.ensure_api_token("alice", "cxa_alice_control_ready_token_123456789", label="Hosted API", scopes=["read"])
+        registry.ensure_mcp_token("bob", "cxm_bob_control_ready_token_123456789", label="Hosted MCP", scopes=["read"])
+
+        split = registry.control_plane_status()
+        self.assertEqual(split["active_api_tokens"], 1)
+        self.assertEqual(split["active_mcp_tokens"], 1)
+        self.assertEqual(split["active_users"], 2)
+        self.assertEqual(split["active_ready_users"], 0)
+        self.assertEqual(split["status"], "blocked")
+
+        registry.ensure_mcp_token("alice", "cxm_alice_control_ready_token_123456789", label="Hosted MCP", scopes=["read"])
+
+        ready = registry.control_plane_status()
+        self.assertEqual(ready["active_ready_users"], 1)
+        self.assertEqual(ready["status"], "ok")
 
     def test_control_index_respects_user_hint_revoke_and_user_deletion(self) -> None:
         settings = self.settings(mode="user")

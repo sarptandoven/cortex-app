@@ -7,6 +7,7 @@ import json
 import os
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .config import load_settings
@@ -94,7 +95,11 @@ def _require_api_token_trust(user_id: str, required_scope: str) -> None:
 
 
 def _hosted_readiness_contract() -> dict:
-    return hosted_readiness_contract(settings)
+    runtime: dict[str, Any] = {}
+    control_plane_status = getattr(store, "control_plane_status", None)
+    if settings.shard_mode != "local" and callable(control_plane_status):
+        runtime["control_plane"] = control_plane_status()
+    return hosted_readiness_contract(settings, runtime=runtime)
 
 
 ROOT_HTML = """
@@ -730,7 +735,6 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     str(body.get("token") or ""),
                     label=str(body.get("label") or "Local MCP integrations")[:120],
                     scopes=body.get("scopes"),
-                    token_id="tok_local_mcp",
                 ))
                 return
             if method == "POST" and path == "/v1/integrations/api-token":

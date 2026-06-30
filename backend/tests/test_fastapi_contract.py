@@ -165,20 +165,29 @@ class FastAPIContractTests(unittest.TestCase):
 
     def test_hosted_ready_requires_runtime_scoped_token_control_plane(self) -> None:
         original_settings = main_module.settings
-        main_module.settings = replace(
-            original_settings,
-            shard_mode="bucket",
-            require_scoped_api_tokens=True,
-            public_base_url="https://api.cortex.example",
-            sync_signing_key="sync-signing-key",
-            hosted_vector_backend="pgvector",
-            worker_mode="external",
-            observability_enabled=True,
-            embedding_provider="openai",
-        )
-        user = "hosted-ready-contract"
-        main_module.store.token_index.delete_user(user)
+        original_store = main_module.store
+        temp = tempfile.TemporaryDirectory()
         try:
+            root = Path(temp.name)
+            hosted_settings = replace(
+                original_settings,
+                db_path=root / "hosted.sqlite",
+                vault_path=root / "hosted.vault",
+                shard_root=root / "shards",
+                default_user_id="hosted-default",
+                shard_mode="bucket",
+                require_scoped_api_tokens=True,
+                public_base_url="https://api.cortex.example",
+                sync_signing_key="sync-signing-key",
+                hosted_vector_backend="pgvector",
+                worker_mode="external",
+                observability_enabled=True,
+                embedding_provider="openai",
+            )
+            main_module.settings = hosted_settings
+            main_module.store = main_module.StoreRegistry.from_settings(hosted_settings)
+            user = "hosted-ready-contract"
+
             response = self.client.get("/ready")
             self.assertEqual(response.status_code, 503)
             blocked = {
@@ -189,16 +198,23 @@ class FastAPIContractTests(unittest.TestCase):
             self.assertEqual(blocked, {"control_plane_scoped_tokens"})
 
             main_module.store.ensure_api_token(user, "cxa_hosted_ready_api_token_123456789", label="Hosted API", scopes=["read"])
+            split_user = "hosted-ready-mcp-only"
+            main_module.store.ensure_mcp_token(split_user, "cxm_hosted_ready_split_mcp_token_123456789", label="Hosted MCP", scopes=["read"])
+            split_ready = self.client.get("/ready")
+            self.assertEqual(split_ready.status_code, 503)
+
             main_module.store.ensure_mcp_token(user, "cxm_hosted_ready_mcp_token_123456789", label="Hosted MCP", scopes=["read"])
 
             ready = self.client.get("/ready")
             self.assertEqual(ready.status_code, 200)
             control = ready.json()["hosted_readiness"]["runtime"]["control_plane"]
-            self.assertGreaterEqual(control["active_api_tokens"], 1)
-            self.assertGreaterEqual(control["active_mcp_tokens"], 1)
-            self.assertGreaterEqual(control["active_users"], 1)
+            self.assertEqual(control["active_api_tokens"], 1)
+            self.assertEqual(control["active_mcp_tokens"], 2)
+            self.assertEqual(control["active_users"], 2)
+            self.assertEqual(control["active_ready_users"], 1)
         finally:
-            main_module.store.token_index.delete_user(user)
+            temp.cleanup()
+            main_module.store = original_store
             main_module.settings = original_settings
 
     def test_memory_quality_endpoint_exposes_citation_and_review_contract(self) -> None:
@@ -1051,6 +1067,24 @@ class FastAPIContractTests(unittest.TestCase):
         )
         self.assertEqual(mcp.status_code, 200)
         self.assertIn("tools", mcp.json()["result"])
+
+    def test_mcp_token_registration_uses_user_scoped_token_ids(self) -> None:
+        alice = self.client.post(
+            "/v1/integrations/mcp-token",
+            json={"token": "cxm_fastapi_alice_token_123456789", "label": "Desktop MCP", "scopes": ["read"]},
+            headers={"Authorization": "Bearer test-token", "X-Cortex-User": "mcp-token-alice"},
+        )
+        bob = self.client.post(
+            "/v1/integrations/mcp-token",
+            json={"token": "cxm_fastapi_bob_token_123456789", "label": "Desktop MCP", "scopes": ["read"]},
+            headers={"Authorization": "Bearer test-token", "X-Cortex-User": "mcp-token-bob"},
+        )
+
+        self.assertEqual(alice.status_code, 200)
+        self.assertEqual(bob.status_code, 200)
+        self.assertEqual(alice.json()["user_id"], "mcp-token-alice")
+        self.assertEqual(bob.json()["user_id"], "mcp-token-bob")
+        self.assertNotEqual(alice.json()["token_id"], bob.json()["token_id"])
 
     def test_scoped_mcp_token_blocks_unscoped_tool_even_when_setting_enabled(self) -> None:
         scoped_token = "cxm_fastapi_read_only_token_123456789"

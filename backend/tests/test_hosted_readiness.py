@@ -78,6 +78,7 @@ class HostedReadinessTests(unittest.TestCase):
                     "active_api_tokens": 1,
                     "active_mcp_tokens": 1,
                     "active_users": 1,
+                    "active_ready_users": 1,
                 }
             },
         )

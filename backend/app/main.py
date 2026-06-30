@@ -809,7 +809,6 @@ def register_mcp_token(request: MCPTokenRegistrationRequest, user_id: str = Depe
         request.token,
         label=request.label,
         scopes=request.scopes,
-        token_id="tok_local_mcp",
     )
 
 
