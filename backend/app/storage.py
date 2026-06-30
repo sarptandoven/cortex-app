@@ -144,6 +144,7 @@ LAYER_QUERY_INTENTS: tuple[tuple[set[str], set[str]], ...] = (
             "decide",
             "decided",
             "decision",
+            "decisions",
             "plan",
             "planning",
             "prioritize",
@@ -158,6 +159,7 @@ LAYER_QUERY_INTENTS: tuple[tuple[set[str], set[str]], ...] = (
             "favorite",
             "prefer",
             "preference",
+            "preferences",
             "preferred",
             "rather",
         },
@@ -173,9 +175,35 @@ LAYER_QUERY_INTENTS: tuple[tuple[set[str], set[str]], ...] = (
             "met",
             "timeline",
             "when",
+            "changed",
+            "recent",
+            "recently",
         },
     ),
 )
+QUERY_FTS_STOPWORDS = QUERY_TEMPORAL_STOPWORDS | {
+    "am",
+    "are",
+    "be",
+    "been",
+    "can",
+    "could",
+    "did",
+    "do",
+    "does",
+    "had",
+    "has",
+    "have",
+    "how",
+    "i",
+    "me",
+    "my",
+    "please",
+    "should",
+    "stated",
+    "to",
+    "usually",
+}
 
 
 DEFAULT_USER_SETTINGS: dict[str, Any] = {
@@ -2425,10 +2453,13 @@ class CortexStore:
                     LIMIT ?
                     """,
                     [fts_query, *params, candidate_limit],
-                ).fetchall()
+            ).fetchall()
             vector_rows = self._vector_search(conn, user_id, query, candidate_limit, kind, layer, user_settings)
             temporal_rows = self._temporal_search(conn, user_id, query, candidate_limit, kind, layer, user_settings)
-            rows = self._fuse_search_rows(query, fts_rows, vector_rows, temporal_rows, limit)
+            intent_rows = []
+            if not fts_rows and not temporal_rows:
+                intent_rows = self._intent_search(conn, user_id, query, candidate_limit, kind, layer, user_settings)
+            rows = self._fuse_search_rows(query, fts_rows, vector_rows, temporal_rows, intent_rows, limit)
             if not rows:
                 like = f"%{query}%"
                 fallback_rows = conn.execute(
@@ -6034,7 +6065,40 @@ class CortexStore:
             [*params, *date_params, *term_params, limit],
         ).fetchall()
 
-    def _fuse_search_rows(self, query: str, fts_rows: list[Any], vector_rows: list[Any], temporal_rows: list[Any], limit: int) -> list[Any]:
+    def _intent_search(self, conn, user_id: str, query: str, limit: int, kind: str | None, layer: str | None, user_settings: dict[str, Any]) -> list[Any]:
+        boosts = query_layer_boosts(query)
+        if not boosts:
+            return []
+        intent_layers = sorted(boosts, key=lambda value: (-boosts[value], value))
+        if layer:
+            requested_layer = memory_layer(kind, layer)
+            intent_layers = [value for value in intent_layers if value == requested_layer]
+        if not intent_layers:
+            return []
+        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=None)
+        placeholders = ", ".join("?" for _ in intent_layers)
+        where = " AND ".join(filters)
+        return conn.execute(
+            f"""
+            SELECT m.*
+            FROM memories m
+            WHERE {where}
+              AND m.layer IN ({placeholders})
+            ORDER BY m.importance DESC, COALESCE(m.occurred_at, m.captured_at) DESC, m.captured_at DESC
+            LIMIT ?
+            """,
+            [*params, *intent_layers, limit],
+        ).fetchall()
+
+    def _fuse_search_rows(
+        self,
+        query: str,
+        fts_rows: list[Any],
+        vector_rows: list[Any],
+        temporal_rows: list[Any],
+        intent_rows: list[Any],
+        limit: int,
+    ) -> list[Any]:
         ranked: dict[str, dict[str, Any]] = {}
         for index, row in enumerate(fts_rows):
             entry = ranked.setdefault(row["id"], {"row": row, "score": 0.0})
@@ -6045,6 +6109,9 @@ class CortexStore:
         for index, row in enumerate(temporal_rows):
             entry = ranked.setdefault(row["id"], {"row": row, "score": 0.0})
             entry["score"] += 0.5 / (60 + index)
+        for index, row in enumerate(intent_rows):
+            entry = ranked.setdefault(row["id"], {"row": row, "score": 0.0})
+            entry["score"] += 0.35 / (60 + index)
         layer_boosts = query_layer_boosts(query)
         temporal_prefixes = query_temporal_prefixes(query)
         for entry in ranked.values():
@@ -6814,10 +6881,17 @@ class CortexStore:
         return actions[:5]
 
     def _fts_query(self, query: str) -> str:
-        tokens = [token for token in query.lower().replace("'", "").split() if token]
+        tokens = re.findall(r"[a-z0-9_]+", query.lower().replace("'", ""))
         normalized: list[str] = []
+        seen: set[str] = set()
         for token in tokens:
-            clean = "".join(ch for ch in token if ch.isalnum() or ch == "_").strip("_")
-            if clean:
-                normalized.append(clean + "*")
+            clean = token.strip("_")
+            if not clean or clean in QUERY_FTS_STOPWORDS:
+                continue
+            normalized_token = clean
+            if len(clean) > 3 and clean.endswith("s") and not clean.endswith(("ss", "ies")):
+                normalized_token = clean[:-1]
+            if normalized_token not in seen:
+                seen.add(normalized_token)
+                normalized.append(normalized_token + "*")
         return " ".join(normalized)

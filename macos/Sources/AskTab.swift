@@ -47,9 +47,7 @@ struct AskQuerySection: View {
         AskStarter(label: "Decisions", systemImage: "checkmark.seal", query: "What decisions should I remember?"),
         AskStarter(label: "Preferences", systemImage: "slider.horizontal.3", query: "What preferences have I stated?"),
         AskStarter(label: "Style", systemImage: "signature", query: "How do I usually write?"),
-        AskStarter(label: "Projects", systemImage: "folder", query: "What context do I have about this project?"),
-        AskStarter(label: "People", systemImage: "person.2", query: "What context do I have about this person?"),
-        AskStarter(label: "Changed", systemImage: "clock.arrow.circlepath", query: "What changed recently?")
+        AskStarter(label: "Recent", systemImage: "clock.arrow.circlepath", query: "What changed recently?")
     ]
 
     var body: some View {
@@ -66,7 +64,7 @@ struct AskQuerySection: View {
                 .buttonStyle(.borderedProminent)
             }
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 116), spacing: 8)], spacing: 8) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 122), spacing: 8)], spacing: 8) {
                 ForEach(starters) { starter in
                     Button {
                         state.searchQuery = starter.query
@@ -100,7 +98,7 @@ struct AskResultsSection: View {
                 QuietState(title: "Ask your model", detail: "Try a question about a project, person, decision, preference, or phrase from your imported sources.")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if state.searchResults.isEmpty {
-                QuietState(title: "No saved memory matched that", detail: "Try a different person, project, decision, or topic, or import more source context.")
+                QuietState(title: "No cited memory matched that", detail: "Try a project, person, decision, or exact phrase from an approved source.")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -122,27 +120,27 @@ struct AskUseElsewhereSection: View {
     @Binding var isExpanded: Bool
 
     var body: some View {
-        DisclosureGroup("Fallback export", isExpanded: $isExpanded) {
+        DisclosureGroup("Use Elsewhere", isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Use these only when another app cannot connect to Cortex directly.")
+                Text("Copy scoped memory only when another AI app cannot connect to Cortex directly.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 HStack {
                     Button {
                         state.copyAgentAdaptation()
                     } label: {
-                        Label("Copy Adaptation Instructions", systemImage: "wand.and.stars")
+                        Label("Adaptation", systemImage: "wand.and.stars")
                     }
                     Button {
                         state.contextQuery = state.searchQuery
                         state.copyContextPack()
                     } label: {
-                        Label("Copy Focused Evidence", systemImage: "text.quote")
+                        Label("Evidence", systemImage: "text.quote")
                     }
                     Button {
                         state.copyDailyContextPack()
                     } label: {
-                        Label("Copy Redacted Profile", systemImage: "brain.head.profile")
+                        Label("Profile", systemImage: "brain.head.profile")
                     }
                     Spacer()
                 }

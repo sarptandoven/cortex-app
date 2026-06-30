@@ -93,6 +93,52 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         export_after_archive = self.store.export_markdown(self.user_id)
         self.assertIn("Supabase", export_after_archive)
 
+    def test_search_handles_hyphenated_user_queries(self) -> None:
+        result = self.capture(
+            "I prefer source-backed answers with direct caveats. "
+            "Cortex should retrieve hyphenated phrases when users type them naturally."
+        )
+
+        self.assertTrue(result["memories"])
+        hits = self.store.search(self.user_id, "source-backed answers direct caveats", limit=5)
+
+        self.assertTrue(hits)
+        self.assertTrue(any("source-backed answers" in hit["content"] for hit in hits))
+
+    def test_ask_starter_queries_return_layer_intent_memories(self) -> None:
+        self.store.save_capture(
+            user_id=self.user_id,
+            content=(
+                "We decided Project Starter should use five product tabs. "
+                "I prefer source-backed answers with direct caveats. "
+                "My writing style uses terse project notes. "
+                "On June 29, 2026, Project Starter shipped the importer."
+            ),
+            source="docs",
+            source_url="/tmp/starter-memory.md",
+            title="Starter memory",
+            extracted=extract_context(
+                "We decided Project Starter should use five product tabs. "
+                "I prefer source-backed answers with direct caveats. "
+                "My writing style uses terse project notes. "
+                "On June 29, 2026, Project Starter shipped the importer.",
+                "docs",
+            ),
+        )
+
+        cases = [
+            ("What decisions should I remember?", "decision", "five product tabs"),
+            ("What preferences have I stated?", "preference", "source-backed answers"),
+            ("How do I usually write?", "style", "terse project notes"),
+            ("What changed recently?", "episodic", "shipped the importer"),
+        ]
+        for query, expected_layer, expected_text in cases:
+            with self.subTest(query=query):
+                answer = self.store.answer_query(self.user_id, query, limit=3)
+                self.assertTrue(answer["citations"])
+                self.assertEqual(answer["citations"][0]["layer"], expected_layer)
+                self.assertIn(expected_text, answer["citations"][0]["excerpt"])
+
     def test_api_and_mcp_tokens_are_audience_scoped(self) -> None:
         api_token = "cxa_storage_lifecycle_token_123456789"
         mcp_token = "cxm_storage_lifecycle_token_123456789"
