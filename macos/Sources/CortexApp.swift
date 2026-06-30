@@ -1170,10 +1170,10 @@ enum AIIntegrationCatalog {
             category: .oneClick,
             systemImage: "cursorarrow.rays",
             summary: "Gives Cursor agent sessions access to Cortex project memory and adaptation signals.",
-            restartHint: "Restart Cursor, then enable the cortex MCP server in Cursor settings if prompted.",
+            restartHint: "Restart Cursor, then enable the Cortex connection in Cursor settings if prompted.",
             bundleIdentifiers: ["com.todesktop.230313mzl4w4u92", "com.cursor.Cursor"],
             configTargets: [
-                IntegrationConfigTarget(label: "Cursor global MCP", root: .home, relativePath: ".cursor/mcp.json")
+                IntegrationConfigTarget(label: "Cursor connection", root: .home, relativePath: ".cursor/mcp.json")
             ],
             setupHint: "Use Cortex before implementation tasks: search memory for project decisions, people, and follow-ups.",
             browserURL: "https://cursor.com"
@@ -1187,7 +1187,7 @@ enum AIIntegrationCatalog {
             restartHint: "Restart Windsurf after connecting Cortex.",
             bundleIdentifiers: ["com.exafunction.windsurf", "com.codeium.windsurf"],
             configTargets: [
-                IntegrationConfigTarget(label: "Windsurf MCP", root: .home, relativePath: ".codeium/windsurf/mcp_config.json")
+                IntegrationConfigTarget(label: "Windsurf connection", root: .home, relativePath: ".codeium/windsurf/mcp_config.json")
             ],
             setupHint: "Use Cortex in Cascade to retrieve decisions, previous implementation context, and daily follow-ups.",
             browserURL: "https://windsurf.com"
@@ -1201,7 +1201,7 @@ enum AIIntegrationCatalog {
             restartHint: "Reload VS Code after installing.",
             bundleIdentifiers: ["com.microsoft.VSCode"],
             configTargets: [
-                IntegrationConfigTarget(label: "Cline MCP settings", root: .applicationSupport, relativePath: "Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json")
+                IntegrationConfigTarget(label: "Cline connection settings", root: .applicationSupport, relativePath: "Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json")
             ],
             requiresExistingConfigTarget: true,
             setupHint: "Use Cline with Cortex to search memory before asking the user to repeat project context.",
@@ -1216,7 +1216,7 @@ enum AIIntegrationCatalog {
             restartHint: "Reload VS Code after installing.",
             bundleIdentifiers: ["com.microsoft.VSCode"],
             configTargets: [
-                IntegrationConfigTarget(label: "Roo Code MCP settings", root: .applicationSupport, relativePath: "Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json")
+                IntegrationConfigTarget(label: "Roo Code connection settings", root: .applicationSupport, relativePath: "Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json")
             ],
             requiresExistingConfigTarget: true,
             setupHint: "Use Roo Code with Cortex to retrieve saved decisions, source context, and open questions.",
@@ -1227,11 +1227,11 @@ enum AIIntegrationCatalog {
             name: "VS Code Copilot",
             category: .developer,
             systemImage: "rectangle.connected.to.line.below",
-            summary: "Connect Cortex to VS Code user or workspace AI tool setup.",
+            summary: "Connect Cortex to VS Code user or workspace AI tools.",
             restartHint: "Add the copied setup to VS Code, then reload the window.",
             bundleIdentifiers: ["com.microsoft.VSCode"],
             configTargets: [],
-            setupHint: "Use Connection recovery only if VS Code asks for pasted setup details.",
+            setupHint: "Use connection details only if VS Code asks for pasted setup.",
             browserURL: "https://code.visualstudio.com"
         ),
         AIIntegration(
@@ -1255,7 +1255,7 @@ enum AIIntegrationCatalog {
             restartHint: "Open ChatGPT when you want to work alongside Cortex.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Use direct MCP or local API access where available; browser chat is not the primary memory path.",
+            setupHint: "Use direct local tool or API access where available; browser chat is not the primary memory path.",
             browserURL: "https://chatgpt.com"
         ),
         AIIntegration(
@@ -1263,11 +1263,11 @@ enum AIIntegrationCatalog {
             name: "Claude Web",
             category: .browser,
             systemImage: "sparkle.magnifyingglass",
-            summary: "Browser reference while MCP access remains the primary path.",
+            summary: "Browser reference while direct tool access remains the primary path.",
             restartHint: "Open Claude when you want to work alongside Cortex.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Use Claude Desktop or another MCP client for connected Cortex memory.",
+            setupHint: "Use Claude Desktop or another local tool client for connected Cortex memory.",
             browserURL: "https://claude.ai"
         ),
         AIIntegration(
@@ -1347,11 +1347,11 @@ enum AIIntegrationCatalog {
             name: "LM Studio",
             category: .local,
             systemImage: "cpu",
-            summary: "Use Cortex MCP/API settings for local model workflows.",
-            restartHint: "Configure MCP where your LM Studio workflow accepts local tools.",
+            summary: "Use Cortex local tool/API settings for local model workflows.",
+            restartHint: "Configure Cortex where your LM Studio workflow accepts local tools.",
             bundleIdentifiers: ["com.lmstudio.lmstudio"],
             configTargets: [],
-            setupHint: "Use Cortex's local API or MCP bridge with local model agents that support tools.",
+            setupHint: "Use Cortex's local API or tool bridge with local model agents that support tools.",
             browserURL: "https://lmstudio.ai"
         ),
         AIIntegration(
@@ -1359,7 +1359,7 @@ enum AIIntegrationCatalog {
             name: "Open WebUI",
             category: .local,
             systemImage: "server.rack",
-            summary: "Connect self-hosted Open WebUI through Cortex API or MCP.",
+            summary: "Connect self-hosted Open WebUI through Cortex API or local tools.",
             restartHint: "Update your tool/server configuration, then restart Open WebUI.",
             bundleIdentifiers: [],
             configTargets: [],
@@ -1371,11 +1371,11 @@ enum AIIntegrationCatalog {
             name: "LibreChat",
             category: .local,
             systemImage: "globe.desk",
-            summary: "Connect team chat deployments through Cortex MCP/API settings.",
-            restartHint: "Update your LibreChat MCP/tool configuration and restart the service.",
+            summary: "Connect team chat deployments through Cortex local tool/API settings.",
+            restartHint: "Update your LibreChat tool configuration and restart the service.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Use Cortex as a local memory source for LibreChat where MCP or custom tools are enabled.",
+            setupHint: "Use Cortex as a local memory source for LibreChat where custom tools are enabled.",
             browserURL: "https://www.librechat.ai"
         ),
         AIIntegration(
@@ -1384,7 +1384,7 @@ enum AIIntegrationCatalog {
             category: .local,
             systemImage: "tray.and.arrow.down",
             summary: "Connect AnythingLLM workflows through Cortex local API where available.",
-            restartHint: "Configure local API or MCP support in the workspace.",
+            restartHint: "Configure local API or tool support in the workspace.",
             bundleIdentifiers: [],
             configTargets: [],
             setupHint: "Wire the local API into agent workflows instead of treating files as the primary memory path.",
@@ -1552,7 +1552,7 @@ enum CortexRecoveryText {
             return "The backend endpoint is invalid. Check the endpoint, then reconnect."
         }
         if lowered.contains("existing config") || lowered.contains("config is not a json") {
-            return "That tool connection could not be updated automatically. Open Troubleshooting, then Connection recovery."
+            return "That tool connection could not be updated automatically. Open Troubleshooting, then Connection details."
         }
         if lowered.contains("data couldn") || lowered.contains("correct format") || lowered.contains("decoding") {
             return "Cortex received an unexpected response. Click Reconnect, then try again."
@@ -1741,7 +1741,7 @@ final class BackendSupervisor {
             throw NSError(domain: "Cortex", code: 4, userInfo: [NSLocalizedDescriptionKey: "Cortex API token is missing"])
         }
         guard !normalizedMCPAPIKey.isEmpty && normalizedMCPAPIKey != normalizedAPIKey else {
-            throw NSError(domain: "Cortex", code: 5, userInfo: [NSLocalizedDescriptionKey: "Cortex MCP token is missing"])
+            throw NSError(domain: "Cortex", code: 5, userInfo: [NSLocalizedDescriptionKey: "Cortex tool access token is missing"])
         }
 
         writeLog("Starting bundled backend from \(backendURL.path)")
@@ -2324,13 +2324,13 @@ final class AppState: ObservableObject {
                 method: "POST",
                 body: [
                     "token": mcpAPIKey,
-                    "label": "Local MCP integrations",
+                    "label": "Local AI tool access",
                     "scopes": ["read", "write", "export", "maintenance"]
                 ]
             )
             return true
         } catch {
-            status = CortexRecoveryText.failureStatus("MCP token registration", error: error)
+            status = CortexRecoveryText.failureStatus("tool access registration", error: error)
             return false
         }
     }
@@ -2953,7 +2953,7 @@ final class AppState: ObservableObject {
         await loadIntegrationTokens()
         refreshIntegrationStates()
         if registered {
-            status = "MCP token reset. Reconnect or update setup for connected AI tools."
+            status = "Tool access token reset. Reconnect or update setup for connected AI tools."
         }
     }
 
@@ -2966,7 +2966,7 @@ final class AppState: ObservableObject {
         let text = mcpConfigJSON()
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-        status = integration.map { "\($0.name) MCP config copied" } ?? "MCP config copied"
+        status = integration.map { "\($0.name) setup details copied" } ?? "Setup details copied"
     }
 
     func copyIntegrationGuide(_ integration: AIIntegration) {
@@ -3125,7 +3125,7 @@ final class AppState: ObservableObject {
             "args": [scriptPath],
             "env": [
                 "CORTEX_BASE_URL": endpoint,
-                "CORTEX_API_KEY": redactToken ? "<copy-secret-mcp-json-from-advanced-setup>" : mcpAPIKey
+                "CORTEX_API_KEY": redactToken ? "<copy-secret-setup-details>" : mcpAPIKey
             ]
         ]
     }
@@ -3142,7 +3142,7 @@ final class AppState: ObservableObject {
 
     private func integrationGuide(for integration: AIIntegration) -> String {
         let targetPaths = integration.configTargets.isEmpty
-            ? "Manual setup required by the target app."
+            ? "This app needs pasted setup details."
             : integration.configTargets.map { "- \($0.label): \($0.url.path)" }.joined(separator: "\n")
         return """
         Cortex integration: \(integration.name)
@@ -3156,12 +3156,12 @@ final class AppState: ObservableObject {
         Config targets:
         \(targetPaths)
 
-        MCP server config preview:
+        Setup details preview:
         \(mcpConfigJSON(redactToken: true))
 
-        Local MCP service:
+        Local Cortex service:
         Base URL: \(endpoint)
-        Token: use Copy setup JSON from Connection recovery when the app requires a pasted setup.
+        Token: use Copy setup details from Connection details when the app requires pasted setup.
 
         Assistant rule:
         Search Cortex memory before asking the user to repeat project, person, decision, or open-loop context. Prefer cited memory search or agent adaptation when another app needs approved personal context.
@@ -3359,7 +3359,7 @@ final class AppState: ObservableObject {
             case .privateVault:
                 status = "Start the local memory engine before continuing"
             case .firstSource:
-                status = "Connect notes or MCP, then sync memory into Review"
+                status = "Connect notes or an AI tool, then sync memory into Review"
             case .reviewMemory:
                 status = "Approve one review item before asking Cortex"
             case .askUse:
@@ -4157,7 +4157,7 @@ struct IntegrationCenterView: View {
     }
 
     private var setupRecoveryActions: some View {
-        DisclosureGroup("Connection recovery") {
+        DisclosureGroup("Connection details") {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Use this only when a supported local tool asks for pasted setup details.")
                     .font(.caption)
@@ -4166,7 +4166,7 @@ struct IntegrationCenterView: View {
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy setup JSON", systemImage: "doc.on.doc")
+                        Label("Copy setup details", systemImage: "doc.on.doc")
                     }
                     Spacer()
                 }
@@ -4474,12 +4474,12 @@ struct IntegrationCard: View {
                     Button {
                         state.copyMCPConfig(for: integration)
                     } label: {
-                        Label("Copy setup JSON", systemImage: "doc.on.doc")
+                        Label("Copy setup details", systemImage: "doc.on.doc")
                     }
                     Button {
                         state.openIntegrationConfig(integration)
                     } label: {
-                        Label("Open settings file", systemImage: "folder")
+                        Label("Open tool settings", systemImage: "folder")
                     }
                 } label: {
                     Label("More", systemImage: "ellipsis.circle")
@@ -5562,7 +5562,7 @@ struct IntegrationTokensSection: View {
                 Button {
                     Task { await state.resetMCPIntegrationToken() }
                 } label: {
-                    Label("Reset MCP Token", systemImage: "key")
+                    Label("Reset Tool Token", systemImage: "key")
                 }
             }
 
@@ -5706,7 +5706,7 @@ struct SettingsOnboardingSection: View {
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy setup JSON", systemImage: "doc.on.doc")
+                        Label("Copy setup details", systemImage: "doc.on.doc")
                             .frame(minHeight: 40)
                     }
                     .controlSize(.large)

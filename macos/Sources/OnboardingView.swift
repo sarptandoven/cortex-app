@@ -251,7 +251,7 @@ struct OnboardingVaultStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Cortex keeps memory local on this Mac. Once the engine is ready, connect notes or MCP and let Cortex sync useful items into Review.")
+            Text("Cortex keeps memory local on this Mac. Once the engine is ready, connect notes or an AI tool and let Cortex sync useful items into Review.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -311,7 +311,7 @@ struct OnboardingFirstSourceStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Connect a notes folder or MCP tool, then sync one useful memory candidate into Review. Notes sync automatically after the first connection.")
+            Text("Connect a notes folder or local AI tool, then sync one useful memory candidate into Review. Notes sync automatically after the first connection.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -333,12 +333,12 @@ struct OnboardingFirstSourceStep: View {
                 }
 
                 OnboardingConnectionCard(
-                    title: state.connectedAIIntegrationCount > 0 ? "MCP connected" : "Connect MCP",
+                    title: state.connectedAIIntegrationCount > 0 ? "AI tools connected" : "Connect AI tools",
                     detail: "Let Claude Desktop, Cursor, Windsurf, and other local AI tools read approved memory and save useful items to Review.",
                     systemImage: state.connectedAIIntegrationCount > 0 ? "checkmark.seal.fill" : "wand.and.stars",
                     isPrimary: false,
-                    status: state.connectedAIIntegrationCount > 0 ? "\(state.connectedAIIntegrationCount) connected" : "MCP",
-                    buttonTitle: state.connectedAIIntegrationCount > 0 ? "Manage" : "Connect MCP"
+                    status: state.connectedAIIntegrationCount > 0 ? "\(state.connectedAIIntegrationCount) connected" : "Local tools",
+                    buttonTitle: state.connectedAIIntegrationCount > 0 ? "Manage" : "Connect tools"
                 ) {
                     state.openConnectionsPrivacy(statusMessage: "Connect local AI tools")
                     state.dismissOnboardingForSession()
@@ -379,17 +379,17 @@ struct OnboardingFirstSourceStep: View {
         if state.onboardingHasConnectedMemoryLayer {
             return "Waiting for synced memory"
         }
-        return "Connect notes or MCP"
+        return "Connect a source"
     }
 
     private var connectionCheckDetail: String {
         if state.onboardingHasSource {
-            return "Review has memory from a connected notes or MCP layer."
+            return "Review has memory from a connected source."
         }
         if state.onboardingHasConnectedMemoryLayer {
-            return "Sync notes or save one item through MCP so it appears in Review."
+            return "Sync notes or save one item from a connected AI tool so it appears in Review."
         }
-        return "Connect notes or MCP from Home when ready."
+        return "Connect notes or an AI tool from Home when ready."
     }
 }
 
@@ -515,9 +515,9 @@ struct OnboardingReviewMemoryStep: View {
             return "You already reviewed memory from your first connection."
         }
         if state.onboardingHasSource {
-            return "No reviewable memory is waiting yet. Let notes sync finish or save one item through MCP."
+            return "No reviewable memory is waiting yet. Let notes sync finish or save one item from a connected AI tool."
         }
-        return "Connect notes or MCP first; synced memory appears here before Cortex uses it."
+        return "Connect notes or an AI tool first; synced memory appears here before Cortex uses it."
     }
 
     private var reviewPathTitle: String {
@@ -534,7 +534,7 @@ struct OnboardingReviewMemoryStep: View {
         if state.onboardingHasSource {
             return "Approve one useful memory to let Cortex cite it in Ask."
         }
-        return "Review unlocks after a connected notes or MCP source syncs memory."
+        return "Review unlocks after a connected source syncs memory."
     }
 }
 
@@ -615,7 +615,7 @@ struct OnboardingAskUseStep: View {
         if state.hasSearched {
             return "Try an exact phrase from approved memory, or go back to Review and approve one useful item."
         }
-        return "Ask about approved memory from notes or MCP. Setup finishes after Cortex returns a cited answer."
+        return "Ask about approved memory from notes or connected AI tools. Setup finishes after Cortex returns a cited answer."
     }
 
     private var askPathTitle: String {
