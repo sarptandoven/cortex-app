@@ -285,9 +285,38 @@ class LiveSmokeRunner:
             {"pending": pending_captures},
         )
 
+        blocked_approval = self.scoped_mcp_request(
+            "/mcp",
+            method="POST",
+            data={
+                "jsonrpc": "2.0",
+                "id": "blocked-approval",
+                "method": "tools/call",
+                "params": {
+                    "name": "approve_memory_capture",
+                    "arguments": {"capture_id": self.capture_ids[0]},
+                },
+            },
+        )
+        ensure("error" in blocked_approval, "Read-only MCP token was able to approve memory", blocked_approval)
+
         for capture_id in self.capture_ids:
             approved = self.request(f"/v1/captures/{capture_id}/approve", method="POST")
             ensure(approved["approved"] is True, "Capture approval failed", approved)
+
+        review_after_approval = self.request("/v1/review/today")
+        remaining_pending_ids = {item["id"] for item in review_after_approval["pending"]}
+        ensure(
+            not any(capture_id in remaining_pending_ids for capture_id in self.capture_ids),
+            "Approved captures remained in Review",
+            {"capture_ids": self.capture_ids, "pending": review_after_approval["pending"]},
+        )
+
+        readiness = self.request("/v1/sources/readiness")
+        obsidian_source = next((item for item in readiness.get("sources") or [] if item.get("source") == "obsidian"), None)
+        ensure(obsidian_source is not None, "Source readiness omitted Obsidian", readiness)
+        ensure(int(obsidian_source.get("active_memories") or 0) > 0, "Source readiness did not count approved Obsidian memory", obsidian_source)
+        ensure(readiness.get("summary", {}).get("connected", 0) >= 1, "Source readiness did not report a connected notes source", readiness)
 
         search = self.request(f"/v1/search?query={quoted}&limit=5")
         ensure(search["results"], "Approved Obsidian memory was not searchable", search)
@@ -296,6 +325,12 @@ class LiveSmokeRunner:
         asked = self.request(f"/v1/ask?query={quoted}%20packaged%20app&limit=5")
         ensure(asked["citations"], "Ask returned no citations for approved memory", asked)
         ensure(any(self.marker in citation.get("excerpt", "") for citation in asked["citations"]), "Ask citation omitted smoke marker", asked)
+        ensure(
+            any(str(citation.get("source_url") or "").startswith("local-file://Live%20Smoke.md") for citation in asked["citations"]),
+            "Ask citations did not include a safe local-file source",
+            asked,
+        )
+        ensure(str(vault) not in json.dumps(asked), "Ask leaked the local Obsidian vault path", asked)
 
         mcp_search = self.scoped_mcp_request(
             "/mcp",
@@ -308,9 +343,44 @@ class LiveSmokeRunner:
             },
         )
         ensure(self.marker in mcp_search["result"]["content"][0]["text"], "MCP search did not return smoke memory", mcp_search)
+
+        mcp_procedure = self.scoped_mcp_request(
+            "/mcp",
+            method="POST",
+            data={
+                "jsonrpc": "2.0",
+                "id": "procedure",
+                "method": "tools/call",
+                "params": {
+                    "name": "get_procedure",
+                    "arguments": {"query": "connection-first live smoke packaged app", "limit": 3},
+                },
+            },
+        )
+        ensure("connection-first live smoke" in mcp_procedure["result"]["content"][0]["text"], "MCP get_procedure missed smoke procedure", mcp_procedure)
+
+        mcp_style = self.scoped_mcp_request(
+            "/mcp",
+            method="POST",
+            data={
+                "jsonrpc": "2.0",
+                "id": "style",
+                "method": "tools/call",
+                "params": {
+                    "name": "get_style_profile",
+                    "arguments": {"query": "first-100 Cortex answers cite connected source", "limit": 4},
+                },
+            },
+        )
+        ensure("cite the connected source" in mcp_style["result"]["content"][0]["text"], "MCP get_style_profile missed smoke preference", mcp_style)
+
         return {
-            "detail": "Packaged app synced Obsidian, gated pending memory, approved review, answered with citations, and served MCP retrieval.",
-            "payload": {"capture_ids": self.capture_ids, "citations": len(asked["citations"])},
+            "detail": "Packaged app synced Obsidian, gated pending memory, approved review, answered with safe citations, and served scoped MCP retrieval.",
+            "payload": {
+                "capture_ids": self.capture_ids,
+                "citations": len(asked["citations"]),
+                "active_obsidian_memories": obsidian_source.get("active_memories"),
+            },
         }
 
     def mcp_stdio_bridge(self) -> dict[str, Any]:
