@@ -2059,6 +2059,7 @@ final class AppState: ObservableObject {
 
     private let backend = BackendSupervisor.shared
     private var obsidianAutoSyncTask: Task<Void, Never>?
+    private var obsidianSyncInFlight = false
 
     var integrations: [AIIntegration] {
         AIIntegrationCatalog.all
@@ -2133,8 +2134,7 @@ final class AppState: ObservableObject {
     }
 
     var onboardingHasReviewedMemory: Bool {
-        firstMemoryReviewed
-            || (onboardingHasSource && (stats?.pending_captures ?? 0) == 0 && !recent.isEmpty)
+        firstMemoryReviewed || (stats?.memories ?? 0) > 0
     }
 
     var onboardingHasUsedCortex: Bool {
@@ -2148,6 +2148,8 @@ final class AppState: ObservableObject {
     var canCompleteOnboarding: Bool {
         isLocalServiceReady
             && onboardingHasSource
+            && onboardingHasReviewedMemory
+            && onboardingHasUsedCortex
     }
 
     var incompleteOnboardingStepTitles: [String] {
@@ -2173,9 +2175,9 @@ final class AppState: ObservableObject {
         case .firstSource:
             return onboardingHasSource
         case .reviewMemory:
-            return onboardingHasReviewedMemory || onboardingHasSource
+            return onboardingHasReviewedMemory
         case .askUse:
-            return onboardingHasUsedCortex || onboardingHasSource
+            return onboardingHasUsedCortex
         }
     }
 
@@ -2772,8 +2774,22 @@ final class AppState: ObservableObject {
     }
 
     private func syncLocalNotesFolder(_ connector: SourceConnectorCatalogItem, folderURL: URL, rememberPath: Bool, automatic: Bool = false) async {
-        isBusy = true
-        defer { isBusy = false }
+        guard !obsidianSyncInFlight else {
+            if !automatic {
+                status = "\(connector.name) sync is already running"
+            }
+            return
+        }
+        obsidianSyncInFlight = true
+        if !automatic {
+            isBusy = true
+        }
+        defer {
+            obsidianSyncInFlight = false
+            if !automatic {
+                isBusy = false
+            }
+        }
 
         do {
             if !automatic {

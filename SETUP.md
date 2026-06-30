@@ -17,31 +17,30 @@ The app starts its bundled local service on `127.0.0.1:8766` and stores user-own
 
 ## First Run
 
-Use the five-step setup flow:
+Use the setup flow:
 
-1. Memory Folder: confirm the local memory folder path and service health.
-2. Connect First Source: connect a supported service or direct app integration from Sources.
-3. Review Memory: approve at least one useful memory.
-4. Ask Cortex: ask a question and inspect cited memory.
-5. Trust & Backup: choose trust defaults and create or skip a first backup.
+1. Vault: confirm the local memory folder path and service health.
+2. Connect: connect an MCP tool or Obsidian vault once.
+3. Review: approve at least one useful memory.
+4. Ask: ask a question and inspect cited memory.
 
-`Finish Later` opens the app without marking setup complete. Setup can be reopened from `Trust > Advanced`.
+`Finish Later` opens the app without marking setup complete. Setup can be reopened from Connections & Privacy.
 
 ## Connect Sources
 
-Open `Sources` and connect the services or direct app integrations you want Cortex to use. Start with supported AI tools and work sources such as ChatGPT, Claude, Cursor, Notion, Gmail/email, Slack, Discord, Telegram, Google Keep, Google Chat, Teams, Zoom, Messages, WhatsApp, bookmarks, calendars, contacts, LinkedIn, Twitter/X, docs, notes, and work tools.
+Open Connections & Privacy and connect the services or direct app integrations you want Cortex to use. Start with supported AI tools through MCP and an Obsidian vault.
 
-Cloud OAuth/API sync is staged by service readiness in this beta. If a service cannot connect directly yet, use `Advanced/Fallback` import for a selected export, folder, or file instead of making that the primary setup path.
+Cloud OAuth/API sync is staged by service readiness in this beta. If a service cannot connect directly yet, keep it out of the primary setup path.
 
 ## Review And Ask
 
 - `Review` is where pending memories are approved or archived.
 - `Ask` searches approved memory and returns cited answers.
-- `Ask > AI Handoff` contains fallback copy actions for tools that cannot connect directly yet.
+- Connected AI tools can retrieve approved memory through MCP. Ask remains the in-app way to test cited answers.
 
 ## Trust And Backup
 
-Open `Trust` to manage:
+Open Connections & Privacy to manage:
 
 - privacy posture and AI access permissions
 - local memory folder backup

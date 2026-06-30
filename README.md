@@ -12,9 +12,9 @@ Cortex is a local-first personal memory and adaptation layer. It connects to app
 - SQLite FTS search with optional `sqlite-vec` and opt-in OpenAI embeddings
 - Connected-source setup for AI tools, notes, email, messaging, calendars, contacts, docs, bookmarks, and work tools
 - Direct local app connection helpers for supported AI tools, with Advanced/Fallback import available only when a service cannot connect directly yet
-- Five-tab product flow: Model, Sources, Review, Ask, Trust
+- Simple product flow: Home, Review, Ask, with Connections & Privacy kept behind one sheet
 - Source readiness report covering supported services, planned live connectors, connected accounts, review backlog, source errors, active memory, and citation coverage
-- Gated first-run setup for private memory folder, first connected source, first memory review, first Ask/use action, and backup/trust decision
+- Gated first-run setup for private memory folder, first connected source, first memory review, and first cited Ask/use action
 - Review inbox for approve/archive, decisions, recommended actions, and follow-ups
 - Ask screen with cited memory search plus secondary handoffs for ChatGPT, Claude, Cursor, direct local tools, and browser-only workflows
 - Advanced local connection bridge and one-click setup helpers

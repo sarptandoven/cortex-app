@@ -189,9 +189,9 @@ struct OnboardingView: View {
             case .firstSource:
                 return "Connect Cortex"
             case .reviewMemory:
-                return "Continue"
+                return "Approve Memory"
             case .askUse:
-                return "Continue"
+                return "Ask Cortex"
             }
     }
 
@@ -482,7 +482,7 @@ struct OnboardingReviewMemoryStep: View {
                 title: reviewPathTitle,
                 detail: reviewPathDetail,
                 systemImage: state.onboardingHasReviewedMemory ? "checkmark.seal.fill" : "tray.full",
-                color: state.onboardingHasReviewedMemory || state.onboardingHasSource ? .green : .orange
+                color: state.onboardingHasReviewedMemory ? .green : .orange
             )
         }
         .task {
@@ -497,7 +497,7 @@ struct OnboardingReviewMemoryStep: View {
             return "You already reviewed memory from your first connection."
         }
         if state.onboardingHasSource {
-            return "No reviewable memory is waiting yet. New source or tool memory will land here first."
+            return "No reviewable memory is waiting yet. New source or tool memory will land here before Cortex uses it."
         }
         return "Connect an AI tool or Obsidian vault first. Anything useful will appear here before Cortex remembers it."
     }
@@ -506,7 +506,7 @@ struct OnboardingReviewMemoryStep: View {
         if state.onboardingHasReviewedMemory {
             return "Memory reviewed"
         }
-        return state.onboardingHasSource ? "Review path ready" : "Connect Cortex first"
+        return state.onboardingHasSource ? "Approve one memory" : "Connect Cortex first"
     }
 
     private var reviewPathDetail: String {
@@ -514,7 +514,7 @@ struct OnboardingReviewMemoryStep: View {
             return "Cortex has approved memory it can cite."
         }
         if state.onboardingHasSource {
-            return "Review becomes active as soon as connected context creates memory candidates."
+            return "Approve one useful memory to let Cortex cite it in Ask."
         }
         return "Connect an AI tool or beta source before Review can receive memory."
     }
@@ -584,7 +584,7 @@ struct OnboardingAskUseStep: View {
                 title: askPathTitle,
                 detail: askPathDetail,
                 systemImage: state.onboardingHasUsedCortex ? "checkmark.seal.fill" : "sparkle.magnifyingglass",
-                color: state.onboardingHasUsedCortex || state.onboardingHasSource ? .green : .orange
+                color: state.onboardingHasUsedCortex ? .green : .orange
             )
         }
     }
@@ -604,15 +604,21 @@ struct OnboardingAskUseStep: View {
         if state.onboardingHasUsedCortex {
             return "Cortex used once"
         }
-        return state.onboardingHasSource ? "Ask path ready" : "Connect Cortex first"
+        if state.onboardingHasReviewedMemory {
+            return "Ask once with citations"
+        }
+        return state.onboardingHasSource ? "Review memory first" : "Connect Cortex first"
     }
 
     private var askPathDetail: String {
         if state.onboardingHasUsedCortex {
             return "Approved memory was used in a cited answer."
         }
+        if state.onboardingHasReviewedMemory {
+            return "Run Ask once. Setup finishes after Cortex returns a cited answer."
+        }
         if state.onboardingHasSource {
-            return "Ask becomes useful as soon as approved memory exists."
+            return "Ask becomes useful after one memory is approved in Review."
         }
         return "Connect an AI tool or Obsidian vault before Ask can cite memory."
     }

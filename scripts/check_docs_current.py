@@ -18,6 +18,14 @@ FORBIDDEN_PHRASES: dict[str, tuple[str, ...]] = {
         "Omi webhook",
         "Notion MCP",
         "push to GitHub",
+        "Ask > AI Handoff",
+        "Open `Sources`",
+        "Open `Trust`",
+        "five-step setup flow",
+    ),
+    "README.md": (
+        "Five-tab product flow",
+        "Model, Sources, Review, Ask, Trust",
     ),
     "docs/CAPTURE_SURFACES.md": (
         "Save tab",
