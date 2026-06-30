@@ -1060,7 +1060,7 @@ extension Notification.Name {
 }
 
 enum IntegrationCategory: String, CaseIterable, Hashable {
-    case oneClick = "One-click MCP"
+    case oneClick = "One-click tools"
     case developer = "Developer tools"
     case browser = "Browser assistants"
     case local = "Local and team stacks"
@@ -1231,7 +1231,7 @@ enum AIIntegrationCatalog {
             restartHint: "Add the copied setup to VS Code, then reload the window.",
             bundleIdentifiers: ["com.microsoft.VSCode"],
             configTargets: [],
-            setupHint: "Use Advanced Setup to add Cortex to VS Code user or workspace settings.",
+            setupHint: "Use Connection recovery only if VS Code asks for pasted setup details.",
             browserURL: "https://code.visualstudio.com"
         ),
         AIIntegration(
@@ -1552,7 +1552,7 @@ enum CortexRecoveryText {
             return "The backend endpoint is invalid. Check the endpoint, then reconnect."
         }
         if lowered.contains("existing config") || lowered.contains("config is not a json") {
-            return "That app config could not be updated automatically. Use Advanced Setup to update it manually."
+            return "That tool connection could not be updated automatically. Open Troubleshooting, then Connection recovery."
         }
         if lowered.contains("data couldn") || lowered.contains("correct format") || lowered.contains("decoding") {
             return "Cortex received an unexpected response. Click Reconnect, then try again."
@@ -2791,9 +2791,9 @@ final class AppState: ObservableObject {
         }
 
         let panel = NSOpenPanel()
-        panel.title = "Connect Obsidian Notes"
-        panel.message = "Choose the Obsidian notes folder Cortex should sync into Review."
-        panel.prompt = "Connect Notes"
+        panel.title = "Choose Notes Folder"
+        panel.message = "Choose the notes folder Cortex should sync into Review."
+        panel.prompt = "Choose Notes"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
@@ -3161,7 +3161,7 @@ final class AppState: ObservableObject {
 
         Local MCP service:
         Base URL: \(endpoint)
-        Token: use Copy MCP JSON from Advanced AI tool setup when the app requires a pasted config.
+        Token: use Copy setup JSON from Connection recovery when the app requires a pasted setup.
 
         Assistant rule:
         Search Cortex memory before asking the user to repeat project, person, decision, or open-loop context. Prefer cited memory search or agent adaptation when another app needs approved personal context.
@@ -4095,7 +4095,7 @@ struct IntegrationCenterView: View {
             summary
             quickActions
             if !compact {
-                manualMCPSetupActions
+                setupRecoveryActions
             }
             ForEach(IntegrationCategory.allCases, id: \.self) { category in
                 let categoryIntegrations = integrations(in: category)
@@ -4119,7 +4119,7 @@ struct IntegrationCenterView: View {
             Text(compact ? "AI tools" : "AI access")
                 .font(compact ? .headline : .title3)
                 .fontWeight(.semibold)
-            Text(compact ? "Connect local tools through MCP so approved memory is available where you already work." : "Let trusted local tools read approved memory directly. Browser tools are listed as references until direct connectors exist.")
+            Text(compact ? "Connect local AI tools so approved memory is available where you already work." : "Only tools Cortex can connect locally are shown here. Recovery options stay collapsed unless a tool asks for setup details.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -4139,7 +4139,7 @@ struct IntegrationCenterView: View {
                 Button {
                     state.installDetectedIntegrations()
                 } label: {
-                    Label("Connect Detected Tools", systemImage: "wand.and.stars")
+                    Label("Connect tools", systemImage: "wand.and.stars")
                 }
                 .buttonStyle(.borderedProminent)
             }
@@ -4156,17 +4156,17 @@ struct IntegrationCenterView: View {
         }
     }
 
-    private var manualMCPSetupActions: some View {
-        DisclosureGroup("Advanced AI tool setup") {
+    private var setupRecoveryActions: some View {
+        DisclosureGroup("Connection recovery") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Use this when a supported local AI tool needs a hand-configured connection.")
+                Text("Use this only when a supported local tool asks for pasted setup details.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 HStack {
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy MCP JSON", systemImage: "doc.on.doc")
+                        Label("Copy setup JSON", systemImage: "doc.on.doc")
                     }
                     Spacer()
                 }
@@ -4177,7 +4177,7 @@ struct IntegrationCenterView: View {
 
     private func integrations(in category: IntegrationCategory) -> [AIIntegration] {
         state.integrations.filter { integration in
-            integration.category == category && (!compact || integration.supportsInstall)
+            integration.category == category && integration.supportsInstall
         }
     }
 }
@@ -4268,7 +4268,7 @@ struct IntegrationCompactHero: View {
         if connectedCount > 0 {
             return "Approved memory is available to connected AI tools."
         }
-        return "Open a supported local AI tool, then check again. Manual setup stays in Advanced."
+        return "Open a supported local AI tool, then check again. Recovery controls stay in Troubleshooting."
     }
 }
 
@@ -4474,12 +4474,12 @@ struct IntegrationCard: View {
                     Button {
                         state.copyMCPConfig(for: integration)
                     } label: {
-                        Label("Copy MCP JSON", systemImage: "doc.on.doc")
+                        Label("Copy setup JSON", systemImage: "doc.on.doc")
                     }
                     Button {
                         state.openIntegrationConfig(integration)
                     } label: {
-                        Label("Open Config", systemImage: "folder")
+                        Label("Open settings file", systemImage: "folder")
                     }
                 } label: {
                     Label("More", systemImage: "ellipsis.circle")
@@ -4519,7 +4519,7 @@ struct IntegrationCard: View {
             }
         }
         if !integration.supportsInstall {
-            return "Direct local connectors are the primary path."
+            return "Reference only. Direct connections will appear here when they are ready."
         }
         if integrationState.needsRepair {
             return "Connection settings are present but need to be updated."
@@ -4871,11 +4871,11 @@ struct SourceAccountHealthRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: account.needsAttention || cursor?.needsAttention == true ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
-                .foregroundColor(account.needsAttention || cursor?.needsAttention == true ? .orange : .green)
+            Image(systemName: needsAttention ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+                .foregroundColor(needsAttention ? .orange : .green)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
-                Text(account.account_label.isEmpty ? account.source : account.account_label)
+                Text(accountTitle)
                     .font(.callout)
                     .fontWeight(.medium)
                     .lineLimit(1)
@@ -4895,13 +4895,73 @@ struct SourceAccountHealthRow: View {
         if let error = account.last_error ?? cursor?.last_error {
             return CortexRecoveryText.inlineError(error, fallback: "Refresh Connections. If it repeats, reconnect this source.")
         }
+        if account.status.lowercased() == "empty" || account.auth_state.lowercased() == "needs-content" {
+            return "No usable notes found. Choose a folder with Markdown notes."
+        }
         if let synced = account.last_sync_at ?? cursor?.last_completed_at {
             if let summary = latestBatchSummary {
-                return "\(account.source) · \(summary) · \(shortDate(synced))"
+                return "\(sourceName) · \(summary) · \(shortDate(synced))"
             }
-            return "\(account.source) · \(account.status) · synced \(shortDate(synced))"
+            return "\(sourceName) · \(statusText) · synced \(shortDate(synced))"
         }
-        return "\(account.source) · \(account.status) · \(account.auth_state)"
+        return "\(sourceName) · \(statusText)"
+    }
+
+    private var needsAttention: Bool {
+        account.needsAttention
+            || cursor?.needsAttention == true
+            || account.status.lowercased() == "empty"
+            || account.auth_state.lowercased() == "needs-content"
+    }
+
+    private var accountTitle: String {
+        let label = account.account_label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if label.isEmpty {
+            return sourceName
+        }
+        if account.source.lowercased() == "obsidian", label.lowercased().contains("obsidian") {
+            return "Notes folder"
+        }
+        return label
+    }
+
+    private var sourceName: String {
+        let source = account.source.lowercased()
+        if source == "obsidian" {
+            return "Notes"
+        }
+        if source == "mcp" {
+            return "AI tools"
+        }
+        return account.source
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .capitalized
+    }
+
+    private var statusText: String {
+        switch account.status.lowercased() {
+        case "needs_review":
+            return "waiting for Review"
+        case "synced", "imported", "active":
+            return "synced"
+        case "empty":
+            return "no notes found"
+        case "error":
+            return "needs attention"
+        default:
+            break
+        }
+        switch account.auth_state.lowercased() {
+        case "connected", "authorized":
+            return "connected"
+        case "needs-content":
+            return "choose notes"
+        case "needs-auth":
+            return "needs permission"
+        default:
+            return account.status.isEmpty ? "connected" : account.status.replacingOccurrences(of: "_", with: " ")
+        }
     }
 
     private var latestBatchSummary: String? {
@@ -5646,7 +5706,7 @@ struct SettingsOnboardingSection: View {
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy MCP JSON", systemImage: "doc.on.doc")
+                        Label("Copy setup JSON", systemImage: "doc.on.doc")
                             .frame(minHeight: 40)
                     }
                     .controlSize(.large)

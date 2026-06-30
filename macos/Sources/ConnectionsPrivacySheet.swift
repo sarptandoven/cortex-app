@@ -161,12 +161,12 @@ private struct ConnectionsPrivacyOverview: View {
                     .padding(.top, 8)
                 }
 
-                DisclosureGroup("MCP tokens", isExpanded: $tokenDetailsExpanded) {
+                DisclosureGroup("Tool access tokens", isExpanded: $tokenDetailsExpanded) {
                     IntegrationTokensSection(state: state)
                         .padding(.top, 8)
                 }
 
-                DisclosureGroup("AI tool setup", isExpanded: $aiToolSetupExpanded) {
+                DisclosureGroup("Tool connections", isExpanded: $aiToolSetupExpanded) {
                     IntegrationCenterView(state: state, compact: false)
                         .padding(.top, 8)
                 }
@@ -181,7 +181,7 @@ private struct ConnectionsPrivacyOverview: View {
                     SettingsHealthSection(state: state)
                 }
 
-                DisclosureGroup("Developer details", isExpanded: $developerDetailsExpanded) {
+                DisclosureGroup("Diagnostics", isExpanded: $developerDetailsExpanded) {
                     VStack(alignment: .leading, spacing: 14) {
                         if let lifecycle = state.dataLifecycleReport {
                             TrustLifecycleSection(report: lifecycle)
@@ -218,7 +218,7 @@ private struct ConnectionsPrivacyOverview: View {
             ConnectionsDisclosureLabel(
                 systemImage: "slider.horizontal.3",
                 title: "Troubleshooting",
-                detail: "Recovery, token history, source audit, and developer details"
+                detail: "Recovery, tool access, source audit, and diagnostics"
             )
         }
         .padding(14)
@@ -663,13 +663,28 @@ private struct ConnectionsActiveSourcesSection: View {
     @ObservedObject var state: AppState
 
     private var activeAccounts: [SourceAccountItem] {
-        state.sourceAccounts.filter { $0.disconnected_at == nil }
+        state.sourceAccounts.filter { account in
+            account.disconnected_at == nil
+                && account.status.lowercased() != "empty"
+                && account.auth_state.lowercased() != "needs-content"
+        }
+    }
+
+    private var accountsNeedingContent: [SourceAccountItem] {
+        state.sourceAccounts.filter { account in
+            account.disconnected_at == nil
+                && (account.status.lowercased() == "empty" || account.auth_state.lowercased() == "needs-content")
+        }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if activeAccounts.isEmpty {
-                QuietState(title: "No notes connected", detail: "Connect a notes folder once. Cortex syncs after that.")
+                if accountsNeedingContent.isEmpty {
+                    QuietState(title: "No notes connected", detail: "Connect a notes folder once. Cortex syncs after that.")
+                } else {
+                    QuietState(title: "Choose a folder with notes", detail: "The selected folder did not produce usable notes yet.")
+                }
             } else {
                 ForEach(activeAccounts.prefix(8)) { account in
                     SourceAccountHealthRow(
