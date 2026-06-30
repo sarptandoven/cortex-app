@@ -66,6 +66,15 @@ private struct ConnectionsPrivacyOverview: View {
     @State private var aiToolSetupExpanded = false
     @State private var developerDetailsExpanded = false
 
+    private var connectedSourceCount: Int {
+        if let connected = state.sourceReadinessReport?.summary.connected {
+            return connected
+        }
+        return state.activeSourceAccounts.filter { account in
+            account.status.lowercased() != "empty" && account.auth_state.lowercased() != "needs-content"
+        }.count
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
@@ -130,7 +139,7 @@ private struct ConnectionsPrivacyOverview: View {
             ConnectionsDisclosureLabel(
                 systemImage: "checkmark.seal",
                 title: "Connected now",
-                detail: "\(state.activeSourceAccounts.count) source\(state.activeSourceAccounts.count == 1 ? "" : "s") · \(state.connectedAIIntegrationCount) AI tool\(state.connectedAIIntegrationCount == 1 ? "" : "s")"
+                detail: "\(connectedSourceCount) note source\(connectedSourceCount == 1 ? "" : "s") · \(state.connectedAIIntegrationCount) AI tool\(state.connectedAIIntegrationCount == 1 ? "" : "s")"
             )
         }
         .padding(14)
@@ -208,8 +217,8 @@ private struct ConnectionsPrivacyOverview: View {
         } label: {
             ConnectionsDisclosureLabel(
                 systemImage: "slider.horizontal.3",
-                title: "Advanced diagnostics",
-                detail: "Troubleshooting, recovery, token history, and developer details"
+                title: "Troubleshooting",
+                detail: "Recovery, token history, source audit, and developer details"
             )
         }
         .padding(14)
@@ -231,7 +240,22 @@ private struct ConnectionsOverviewHero: View {
     @ObservedObject var state: AppState
 
     private var activeConnections: Int {
-        state.activeSourceAccounts.count
+        if let connected = state.sourceReadinessReport?.summary.connected {
+            return connected
+        }
+        return state.activeSourceAccounts.filter { account in
+            account.status.lowercased() != "empty" && account.auth_state.lowercased() != "needs-content"
+        }.count
+    }
+
+    private var notesNeedContent: Bool {
+        if let report = state.sourceReadinessReport {
+            return report.sources.contains { $0.source == "obsidian" && $0.status == "empty" }
+        }
+        return state.activeSourceAccounts.contains { account in
+            account.source == "obsidian"
+                && (account.status.lowercased() == "empty" || account.auth_state.lowercased() == "needs-content")
+        }
     }
 
     private var obsidianConnector: SourceConnectorCatalogItem? {
@@ -243,16 +267,16 @@ private struct ConnectionsOverviewHero: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(Color.accentColor.opacity(0.14))
-                Image(systemName: activeConnections > 0 ? "checkmark.seal.fill" : "link.circle.fill")
+                Image(systemName: statusIcon)
                     .font(.system(size: 34, weight: .semibold))
-                    .foregroundColor(activeConnections > 0 ? .green : .accentColor)
+                    .foregroundColor(statusColor)
             }
             .frame(width: 72, height: 72)
 
             VStack(alignment: .leading, spacing: 7) {
-                Text(activeConnections > 0 ? "Cortex is connected" : "Connect notes once")
+                Text(title)
                     .font(.system(size: 28, weight: .semibold))
-                Text("Memory syncs from connected notes. New signals go to Review first, then Ask and connected AI tools use approved memory with citations.")
+                Text(detail)
                     .font(.title3)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -300,19 +324,51 @@ private struct ConnectionsOverviewHero: View {
 
     private var primaryActionTitle: String {
         if activeConnections == 0, let _ = obsidianConnector {
-            return "Connect Obsidian"
+            return notesNeedContent ? "Choose notes" : "Connect notes"
         }
         if activeConnections == 0 {
-            return "Check tools"
+            return "Check status"
         }
         return "Refresh status"
     }
 
     private var primaryActionIcon: String {
         if activeConnections == 0, obsidianConnector != nil {
-            return "folder.badge.plus"
+            return notesNeedContent ? "folder.badge.questionmark" : "folder.badge.plus"
         }
         return "arrow.clockwise"
+    }
+
+    private var title: String {
+        if activeConnections > 0 {
+            return "Notes are connected"
+        }
+        if notesNeedContent {
+            return "Choose a folder with notes"
+        }
+        return "Connect notes once"
+    }
+
+    private var detail: String {
+        if activeConnections > 0 {
+            return "New notes sync into Review first. Ask and connected AI tools use only approved memory with citations."
+        }
+        if notesNeedContent {
+            return "The last folder did not produce usable Markdown notes. Choose a notes folder with real content."
+        }
+        return "Start with a notes folder. Cortex syncs locally, sends useful memory to Review, then makes approved memory available to Ask and connected AI tools."
+    }
+
+    private var statusIcon: String {
+        if activeConnections > 0 { return "checkmark.seal.fill" }
+        if notesNeedContent { return "folder.badge.questionmark" }
+        return "link.circle.fill"
+    }
+
+    private var statusColor: Color {
+        if activeConnections > 0 { return .green }
+        if notesNeedContent { return .orange }
+        return .accentColor
     }
 
     private func runPrimaryAction() {
@@ -337,7 +393,7 @@ private struct ConnectionsObsidianSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
-                title: "Obsidian",
+                title: "Notes",
                 detail: "Choose a notes folder once. Cortex scans Markdown locally, keeps citations stable, and resyncs changed notes."
             )
             if state.sourceConnectorCatalog.isEmpty {
@@ -346,15 +402,29 @@ private struct ConnectionsObsidianSection: View {
                 SourceConnectorStatusCard(
                     state: state,
                     connector: connector,
-                    connected: isConnected(connector)
+                    connected: isConnected(connector),
+                    needsContent: needsContent(connector)
                 )
             } else {
-                QuietState(title: "Obsidian unavailable", detail: "Restart Cortex after the local backend is healthy.")
+                QuietState(title: "Notes connector unavailable", detail: "Restart Cortex after the local backend is healthy.")
             }
         }
     }
 
+    private func needsContent(_ connector: SourceConnectorCatalogItem) -> Bool {
+        if state.sourceReadinessReport?.sources.contains(where: { $0.source == connector.id && $0.status == "empty" }) == true {
+            return true
+        }
+        return state.activeSourceAccounts.contains { account in
+            (account.source == connector.id || (connector.source_ids ?? []).contains(account.source))
+                && (account.status.lowercased() == "empty" || account.auth_state.lowercased() == "needs-content")
+        }
+    }
+
     private func isConnected(_ connector: SourceConnectorCatalogItem) -> Bool {
+        if needsContent(connector) {
+            return false
+        }
         if connector.id == "obsidian", state.hasConnectedObsidianVault {
             return true
         }
@@ -599,7 +669,7 @@ private struct ConnectionsActiveSourcesSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if activeAccounts.isEmpty {
-                QuietState(title: "No notes connected", detail: "Connect Obsidian or a local notes folder once. Cortex syncs after that.")
+                QuietState(title: "No notes connected", detail: "Connect a notes folder once. Cortex syncs after that.")
             } else {
                 ForEach(activeAccounts.prefix(8)) { account in
                     SourceAccountHealthRow(
