@@ -105,6 +105,47 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertTrue(hits)
         self.assertTrue(any("source-backed answers" in hit["content"] for hit in hits))
 
+    def test_entities_allow_same_id_across_users(self) -> None:
+        for index, user_id in enumerate(("entity-user-a", "entity-user-b")):
+            result = self.store.save_capture(
+                user_id=user_id,
+                content=f"{user_id} mentioned Shared Project.",
+                source="unit-test",
+                source_url=None,
+                title="Shared entity",
+                extracted={
+                    "_timestamp": f"2026-06-29T12:00:0{index}Z",
+                    "summary": "Shared entity test.",
+                    "records": [],
+                    "tasks": [],
+                    "entities": [
+                        {
+                            "id": "project_shared",
+                            "kind": "project",
+                            "name": "Shared Project",
+                            "aliases": [],
+                            "context": f"{user_id} context",
+                        }
+                    ],
+                },
+            )
+            self.assertEqual(result["entities"][0]["id"], "project_shared")
+
+        with connect(self.db_path) as conn:
+            table_info = conn.execute("PRAGMA table_info(entities)").fetchall()
+            primary_key_columns = [
+                row[1]
+                for row in sorted((row for row in table_info if row[5]), key=lambda row: row[5])
+            ]
+            rows = conn.execute(
+                "SELECT id, user_id, context FROM entities WHERE id = ? ORDER BY user_id",
+                ("project_shared",),
+            ).fetchall()
+
+        self.assertEqual(primary_key_columns, ["user_id", "id"])
+        self.assertEqual([row["user_id"] for row in rows], ["entity-user-a", "entity-user-b"])
+        self.assertEqual({row["context"] for row in rows}, {"entity-user-a context", "entity-user-b context"})
+
     def test_ask_starter_queries_return_layer_intent_memories(self) -> None:
         self.store.save_capture(
             user_id=self.user_id,
@@ -921,6 +962,77 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertIn("layer", memory_columns)
         self.assertIn("idx_memories_layer", indexes)
         self.assertIn("idx_memories_active_layer_rank", indexes)
+
+    def test_init_db_migrates_legacy_entities_primary_key_preserving_rows(self) -> None:
+        legacy_path = Path(self.tmp.name) / "legacy-entities.db"
+        conn = sqlite3.connect(legacy_path)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE entities (
+                  id TEXT PRIMARY KEY,
+                  user_id TEXT NOT NULL,
+                  kind TEXT NOT NULL,
+                  name TEXT NOT NULL,
+                  aliases_json TEXT NOT NULL DEFAULT '[]',
+                  context TEXT,
+                  first_seen TEXT NOT NULL,
+                  last_seen TEXT NOT NULL
+                );
+                INSERT INTO entities
+                (id, user_id, kind, name, aliases_json, context, first_seen, last_seen)
+                VALUES
+                ('project_taipei', 'legacy-user-a', 'project', 'Taipei', '["Taipei"]', 'legacy project context', '2026-06-01T00:00:00Z', '2026-06-02T00:00:00Z'),
+                ('person_vamika', 'legacy-user-b', 'person', 'Vamika', '[]', 'legacy person context', '2026-06-03T00:00:00Z', '2026-06-04T00:00:00Z');
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        init_db(legacy_path)
+
+        upgraded = sqlite3.connect(legacy_path)
+        upgraded.row_factory = sqlite3.Row
+        try:
+            table_info = upgraded.execute("PRAGMA table_info(entities)").fetchall()
+            primary_key_columns = [
+                row[1]
+                for row in sorted((row for row in table_info if row[5]), key=lambda row: row[5])
+            ]
+            rows = upgraded.execute("SELECT * FROM entities ORDER BY user_id, id").fetchall()
+            upgraded.execute(
+                """
+                INSERT INTO entities
+                (id, user_id, kind, name, aliases_json, context, first_seen, last_seen)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "project_taipei",
+                    "legacy-user-b",
+                    "project",
+                    "Taipei",
+                    "[]",
+                    "second user context",
+                    "2026-06-05T00:00:00Z",
+                    "2026-06-05T00:00:00Z",
+                ),
+            )
+            upgraded.commit()
+            shared_id_count = upgraded.execute(
+                "SELECT COUNT(*) FROM entities WHERE id = ?",
+                ("project_taipei",),
+            ).fetchone()[0]
+        finally:
+            upgraded.close()
+
+        self.assertEqual(primary_key_columns, ["user_id", "id"])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["id"], "project_taipei")
+        self.assertEqual(rows[0]["context"], "legacy project context")
+        self.assertEqual(rows[1]["id"], "person_vamika")
+        self.assertEqual(rows[1]["context"], "legacy person context")
+        self.assertEqual(shared_id_count, 2)
 
     def test_backup_diagnostics_and_rebuild_search(self) -> None:
         self.capture("Cortex should create recoverable local backups before users trust it.")

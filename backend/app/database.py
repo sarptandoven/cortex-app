@@ -98,14 +98,15 @@ CREATE TABLE IF NOT EXISTS memories (
 );
 
 CREATE TABLE IF NOT EXISTS entities (
-  id TEXT PRIMARY KEY,
+  id TEXT NOT NULL,
   user_id TEXT NOT NULL,
   kind TEXT NOT NULL,
   name TEXT NOT NULL,
   aliases_json TEXT NOT NULL DEFAULT '[]',
   context TEXT,
   first_seen TEXT NOT NULL,
-  last_seen TEXT NOT NULL
+  last_seen TEXT NOT NULL,
+  PRIMARY KEY(user_id, id)
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -395,6 +396,7 @@ def init_db(path: Path) -> None:
     try:
         conn.executescript(SCHEMA)
         _apply_lightweight_migrations(conn)
+        _migrate_entities_composite_primary_key(conn)
         conn.executescript(POST_MIGRATION_INDEXES)
         if load_sqlite_vec(conn)[0]:
             conn.executescript(VECTOR_SCHEMA)
@@ -445,6 +447,75 @@ def _apply_lightweight_migrations(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
+
+
+def _migrate_entities_composite_primary_key(conn: sqlite3.Connection) -> None:
+    table_info = conn.execute("PRAGMA table_info(entities)").fetchall()
+    if not table_info:
+        return
+
+    primary_key_columns = [
+        row[1]
+        for row in sorted((row for row in table_info if row[5]), key=lambda row: row[5])
+    ]
+    if primary_key_columns == ["user_id", "id"]:
+        return
+
+    legacy_columns = {row[1] for row in table_info}
+
+    def column_or_default(name: str, default: str) -> str:
+        return name if name in legacy_columns else default
+
+    first_seen = column_or_default("first_seen", "CURRENT_TIMESTAMP")
+    last_seen = (
+        "COALESCE(last_seen, first_seen, CURRENT_TIMESTAMP)"
+        if {"last_seen", "first_seen"}.issubset(legacy_columns)
+        else f"COALESCE({column_or_default('last_seen', first_seen)}, CURRENT_TIMESTAMP)"
+    )
+    select_columns = [
+        "id",
+        "user_id",
+        "COALESCE(kind, 'person')" if "kind" in legacy_columns else "'person'",
+        "COALESCE(name, id)" if "name" in legacy_columns else "id",
+        "COALESCE(aliases_json, '[]')" if "aliases_json" in legacy_columns else "'[]'",
+        column_or_default("context", "NULL"),
+        f"COALESCE({first_seen}, CURRENT_TIMESTAMP)",
+        last_seen,
+    ]
+
+    conn.execute("SAVEPOINT migrate_entities_primary_key")
+    try:
+        conn.execute("ALTER TABLE entities RENAME TO entities_legacy_primary_key")
+        conn.execute(
+            """
+            CREATE TABLE entities (
+              id TEXT NOT NULL,
+              user_id TEXT NOT NULL,
+              kind TEXT NOT NULL,
+              name TEXT NOT NULL,
+              aliases_json TEXT NOT NULL DEFAULT '[]',
+              context TEXT,
+              first_seen TEXT NOT NULL,
+              last_seen TEXT NOT NULL,
+              PRIMARY KEY(user_id, id)
+            )
+            """
+        )
+        conn.execute(
+            f"""
+            INSERT INTO entities
+            (id, user_id, kind, name, aliases_json, context, first_seen, last_seen)
+            SELECT {", ".join(select_columns)}
+            FROM entities_legacy_primary_key
+            """
+        )
+        conn.execute("DROP TABLE entities_legacy_primary_key")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_entities_user_name ON entities(user_id, name)")
+        conn.execute("RELEASE SAVEPOINT migrate_entities_primary_key")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT migrate_entities_primary_key")
+        conn.execute("RELEASE SAVEPOINT migrate_entities_primary_key")
+        raise
 
 
 @contextmanager
