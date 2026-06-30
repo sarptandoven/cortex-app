@@ -743,11 +743,25 @@ def _parse_discord(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
             if content:
                 if not first_timestamp and timestamp:
                     first_timestamp = str(timestamp)
-                lines.append(f"{timestamp}: {content}".strip())
+                author = _discord_row_author(row)
+                if timestamp and author:
+                    lines.append(f"{timestamp} {author}: {content}".strip())
+                elif author:
+                    lines.append(f"{author}: {content}".strip())
+                else:
+                    lines.append(f"{timestamp}: {content}".strip())
         if len(lines) > 5:
             source_url = _source_locator(asset.display_path, service="discord", channel=channel, file=Path(asset.name).name, first_timestamp=first_timestamp)
             records.append(SourceRecord("discord", f"Discord {channel}", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Discord", "channel": channel}))
     return records
+
+
+def _discord_row_author(row: dict[str, str]) -> str:
+    for key in ("Author", "author", "Username", "username", "User", "user", "AuthorID", "author_id", "User ID", "user_id"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return re.sub(r"\s+", " ", value)[:40]
+    return ""
 
 
 def _parse_telegram(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:

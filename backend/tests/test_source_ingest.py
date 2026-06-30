@@ -666,6 +666,54 @@ class SourceIngestTests(unittest.TestCase):
         self.assertIn("short direct paragraphs", style_text)
         self.assertIn("ceremonial launch intros", negative_text)
 
+    def test_discord_authors_preserve_self_authored_identity(self) -> None:
+        channel = self.root / "discord-identity" / "messages" / "c123"
+        channel.mkdir(parents=True)
+        (channel / "messages.csv").write_text(
+            "ID,Timestamp,Author,Contents,Attachments\n"
+            "1,2026-06-29T10:00:00,Sarpt,I prefer Discord importer identity for concise incident notes.,\n"
+            "2,2026-06-29T10:01:00,Alex,I prefer noisy Discord exports for everyone.,\n"
+            "3,2026-06-29T10:02:00,Sarpt,My writing style uses direct Discord bullets.,\n",
+            encoding="utf-8",
+        )
+
+        records = import_source_records([str(self.root / "discord-identity")], max_records=10)
+        self.assertEqual(len(records), 1)
+        self.assertIn("Sarpt: I prefer Discord importer identity", records[0].content)
+        self.assertIn("Alex: I prefer noisy Discord exports", records[0].content)
+        self.assertIn("service=discord", records[0].source_url or "")
+
+        db_path = self.root / "discord-identity.sqlite"
+        init_db(db_path)
+        store = CortexStore(db_path, self.root / "discord-identity-vault")
+        store.update_settings("test-user", {"identity_aliases": ["Sarpt"]})
+
+        result = store.import_sources(
+            user_id="test-user",
+            paths=[str(self.root / "discord-identity")],
+            processing="sync",
+            max_records=10,
+        )
+
+        self.assertEqual(result["failed"], 0)
+        self.assertTrue(store.search("test-user", "Discord importer identity concise incident notes", limit=5))
+        self.assertTrue(store.search("test-user", "direct Discord bullets", limit=5))
+        self.assertFalse(store.search("test-user", "noisy Discord exports for everyone", limit=5))
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute("SELECT kind, content, source_url FROM memories").fetchall()
+        finally:
+            conn.close()
+        preference_text = "\n".join(row["content"] for row in rows if row["kind"] == "preference")
+        style_text = "\n".join(row["content"] for row in rows if row["kind"] == "style")
+        source_urls = "\n".join(row["source_url"] or "" for row in rows)
+        self.assertIn("Discord importer identity", preference_text)
+        self.assertNotIn("noisy Discord exports", preference_text)
+        self.assertIn("direct Discord bullets", style_text)
+        self.assertIn("service=discord", source_urls)
+
     def test_source_accounts_contribute_identity_aliases_for_imports(self) -> None:
         slack = self.root / "account-slack" / "general"
         slack.mkdir(parents=True)
