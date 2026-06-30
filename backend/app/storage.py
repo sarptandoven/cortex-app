@@ -190,10 +190,19 @@ LAYER_QUERY_INTENTS: tuple[tuple[set[str], set[str]], ...] = (
             "deploy",
             "do",
             "how",
+            "operate",
+            "operating",
+            "playbook",
             "process",
             "procedure",
+            "release",
+            "releasing",
+            "rollback",
+            "rollout",
             "runbook",
             "setup",
+            "ship",
+            "shipping",
             "step",
             "steps",
             "workflow",
@@ -3831,10 +3840,18 @@ class CortexStore:
             ).fetchall()
             return [self._capture_from_row(row, conn=conn, include_review_preview=True, redact_source_urls=True) for row in rows]
 
-    def recent(self, user_id: str, limit: int = 20, *, sector: str | None = None) -> list[dict[str, Any]]:
+    def recent(
+        self,
+        user_id: str,
+        limit: int = 20,
+        *,
+        kind: str | None = None,
+        layer: str | None = None,
+        sector: str | None = None,
+    ) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
-            filters, params = self._memory_filters(user_id, user_settings, alias="m", sector=sector)
+            filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer, sector=sector)
             where = " AND ".join(filters)
             rows = conn.execute(
                 f"SELECT * FROM memories m WHERE {where} ORDER BY m.captured_at DESC LIMIT ?",
@@ -3855,7 +3872,7 @@ class CortexStore:
     ) -> list[dict[str, Any]]:
         query = query.strip()
         if not query:
-            return self.recent(user_id, limit, sector=sector)
+            return self.recent(user_id, limit, kind=kind, layer=layer, sector=sector)
 
         fts_query = self._fts_query(query)
         candidate_limit = max(limit * 4, 12)

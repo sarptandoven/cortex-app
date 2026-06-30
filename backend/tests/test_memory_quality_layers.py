@@ -204,6 +204,11 @@ class MemoryQualityLayerTests(unittest.TestCase):
         self.assertTrue(procedure["procedures"])
         self.assertEqual(procedure["procedures"][0]["layer"], "procedural")
 
+        recent_procedures = self.store.search(self.user_id, "", limit=5, layer="procedural")
+        self.assertEqual([item["id"] for item in recent_procedures], ["mem_project_atlas_procedure"])
+        default_procedure = call_tool(self.store, self.user_id, "get_procedure", {"query": "", "limit": 5})
+        self.assertEqual([item["id"] for item in default_procedure["procedures"]], ["mem_project_atlas_procedure"])
+
     def test_sector_scoped_retrieval_keeps_project_memory_separate(self) -> None:
         extracted = {
             "_timestamp": "2026-06-30T10:00:00+00:00",

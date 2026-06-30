@@ -102,6 +102,22 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
                 "importance": 1,
                 "topics": ["gamma", "summit"],
             },
+            {
+                "id": "boost_procedural_semantic",
+                "kind": "claim",
+                "layer": "semantic",
+                "content": "Ship delta safely appears in a generic release note and is not the operating workflow.",
+                "importance": 5,
+                "topics": ["ship", "delta", "release"],
+            },
+            {
+                "id": "boost_procedural_layer",
+                "kind": "procedure",
+                "layer": "procedural",
+                "content": "Ship delta safely playbook: run backend tests, build the Mac app, verify codesign, and check update manifest health.",
+                "importance": 1,
+                "topics": ["ship", "delta", "playbook"],
+            },
         ]
         self.store.save_capture(
             user_id=self.user_id,
@@ -286,6 +302,7 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
             ("planning alpha rank decision", "decision", "boost_decision_layer"),
             ("preference beta rank recommended option risks", "preference", "boost_preference_layer"),
             ("what happened gamma summit", "episodic", "boost_episodic_layer"),
+            ("ship delta safely", "procedural", "boost_procedural_layer"),
         ]
         for query, expected_layer, expected_id in cases:
             with self.subTest(query=query):
