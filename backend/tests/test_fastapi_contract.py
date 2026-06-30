@@ -1117,6 +1117,18 @@ class FastAPIContractTests(unittest.TestCase):
         synced_payload = json.loads(synced.json()["result"]["content"][0]["text"])
         self.assertEqual(synced_payload["saved"], 1)
         self.assertTrue(synced_payload["records"][0]["source_url"].startswith(f"source-account://slack/{account['id']}/thread-123"))
+        capture_id = synced_payload["capture_ids"][0]
+
+        found = self.client.get(
+            "/v1/search",
+            params={"query": "Project Orion cited product decisions"},
+            headers=headers,
+        )
+        self.assertEqual(found.status_code, 200)
+        self.assertEqual(found.json()["results"], [])
+
+        approved = self.client.post(f"/v1/captures/{capture_id}/approve", headers=headers)
+        self.assertEqual(approved.status_code, 200)
 
         found = self.client.get(
             "/v1/search",

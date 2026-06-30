@@ -589,9 +589,10 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         synced_readiness = self.store.source_readiness_report(self.user_id)
         synced_gmail = next(item for item in synced_readiness["sources"] if item["source"] == "gmail")
         self.assertEqual(synced_gmail["status"], "synced")
-        self.assertEqual(synced_gmail["beta_status"], "active")
-        self.assertTrue(synced_gmail["primary_beta"])
-        self.assertTrue(synced_gmail["show_in_primary_ui"])
+        self.assertEqual(synced_gmail["beta_status"], "planned")
+        self.assertFalse(synced_gmail["primary_beta"])
+        self.assertFalse(synced_gmail["show_in_primary_ui"])
+        self.assertEqual(synced_gmail["primary_beta_path"], "account-sign-in-planned")
 
         failed = self.store.upsert_sync_cursor(
             self.user_id,
@@ -673,6 +674,8 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(updated_result["records"][0]["status"], "updated")
         self.assertEqual(updated_result["records"][0]["capture_id"], sync_result["records"][0]["capture_id"])
         self.assertEqual(self.store.search(self.user_id, "manual file import"), [])
+        self.assertEqual(self.store.search(self.user_id, "remote content changes", limit=5), [])
+        self.assertTrue(self.store.approve_capture(self.user_id, updated_result["records"][0]["capture_id"]))
         self.assertTrue(self.store.search(self.user_id, "remote content changes", limit=5))
         with connect(self.db_path) as conn:
             capture_rows = conn.execute(
@@ -865,6 +868,17 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(synced["saved"], 1)
         self.assertTrue(synced["records"][0]["source_url"].startswith(f"source-account://notion/{account['id']}/page-helix"))
         self.assertEqual(synced["cursor"]["cursor_name"], "pages")
+        self.assertTrue(account["policy"]["review_required"])
+
+        capture_id = synced["capture_ids"][0]
+        self.assertEqual([item["id"] for item in self.store.inbox(self.user_id, limit=10)], [capture_id])
+        inbox = self.store.inbox(self.user_id)
+        self.assertEqual(len(inbox), 1)
+        self.assertEqual(inbox[0]["source"], "notion")
+        self.assertTrue(inbox[0]["preview_memories"])
+        self.assertTrue(any("canonical project memory source" in item["content"] for item in inbox[0]["preview_memories"]))
+        self.assertEqual(self.store.search(self.user_id, "canonical project memory source", limit=5), [])
+        self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
 
         found = self.store.search(self.user_id, "canonical project memory source", limit=5)
         self.assertTrue(found)
@@ -875,11 +889,51 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertIn("project helix", [topic.casefold() for topic in found[0]["topics"]])
         self.assertIn("memory source", [topic.casefold() for topic in found[0]["topics"]])
 
-        inbox = self.store.inbox(self.user_id)
-        self.assertEqual(len(inbox), 1)
-        self.assertEqual(inbox[0]["source"], "notion")
-        self.assertTrue(inbox[0]["preview_memories"])
-        self.assertTrue(any("canonical project memory source" in item["content"] for item in inbox[0]["preview_memories"]))
+    def test_source_account_policy_blocks_ai_context_after_approval(self) -> None:
+        account = self.store.upsert_source_account(
+            self.user_id,
+            source="gmail",
+            account_label="Private Gmail",
+            account_identifier="private@example.com",
+            connection_type="mcp",
+            policy={"allow_ai_context": False},
+        )
+        self.assertFalse(account["policy"]["allow_ai_context"])
+        self.assertTrue(account["policy"]["review_required"])
+
+        synced = self.store.sync_source_account_records(
+            self.user_id,
+            account["id"],
+            records=[
+                {
+                    "content": "Decision: Private Gmail Alpha should remain blocked from AI context.",
+                    "title": "Private Gmail Alpha",
+                    "external_id": "gmail-alpha",
+                    "captured_at": "2026-06-30T10:00:00Z",
+                }
+            ],
+            processing="sync",
+        )
+        self.assertEqual(synced["saved"], 1)
+        capture_id = synced["capture_ids"][0]
+        self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+        self.assertEqual(self.store.search(self.user_id, "Private Gmail Alpha", limit=5), [])
+        self.assertNotIn(
+            "remain blocked from AI context",
+            self.store.context_pack(self.user_id, query="Private Gmail Alpha"),
+        )
+
+        updated = self.store.upsert_source_account(
+            self.user_id,
+            source="gmail",
+            account_label="Private Gmail",
+            account_identifier="private@example.com",
+            connection_type="mcp",
+            policy={"allow_ai_context": True, "review_required": True},
+            account_id=account["id"],
+        )
+        self.assertTrue(updated["policy"]["allow_ai_context"])
+        self.assertTrue(self.store.search(self.user_id, "Private Gmail Alpha", limit=5))
 
     def test_obsidian_source_sync_cleans_markdown_and_preserves_file_citation(self) -> None:
         account = self.store.upsert_source_account(
@@ -947,6 +1001,7 @@ Never use [[Templates/Marketing]] boilerplate in memory.
         self.assertTrue(any(row["kind"] == "preference" and "cortex notes" in row["content"] for row in rows))
         self.assertTrue(any(row["kind"] == "negative" and "Marketing boilerplate" in row["content"] for row in rows))
 
+        self.assertTrue(self.store.approve_capture(self.user_id, synced["capture_ids"][0]))
         found = self.store.search(self.user_id, "source-backed retrieval MCP memory", limit=3)
         self.assertTrue(found)
         self.assertEqual(found[0]["source"], "obsidian")
@@ -1293,6 +1348,8 @@ Never use [[Templates/Marketing]] boilerplate in memory.
 
         ran_first = self.store.run_due_jobs(self.user_id, limit=10)
         self.assertGreaterEqual(ran_first["processed"], 1)
+        self.assertEqual(self.store.search(self.user_id, "stale draft policy", limit=5), [])
+        self.assertTrue(self.store.approve_capture(self.user_id, first_capture_id))
         self.assertTrue(self.store.search(self.user_id, "stale draft policy", limit=5))
 
         updated = self.store.sync_source_account_records(
@@ -1314,6 +1371,8 @@ Never use [[Templates/Marketing]] boilerplate in memory.
 
         ran_updated = self.store.run_due_jobs(self.user_id, limit=10)
         self.assertGreaterEqual(ran_updated["processed"], 1)
+        self.assertEqual(self.store.search(self.user_id, "current remote policy", limit=5), [])
+        self.assertTrue(self.store.approve_capture(self.user_id, first_capture_id))
         self.assertTrue(self.store.search(self.user_id, "current remote policy", limit=5))
         with connect(self.db_path) as conn:
             memory_count = conn.execute(

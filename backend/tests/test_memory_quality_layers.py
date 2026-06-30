@@ -47,6 +47,7 @@ class MemoryQualityLayerTests(unittest.TestCase):
         )
 
         self.assertEqual(synced["saved"], 1)
+        self.assertTrue(self.store.approve_capture(self.user_id, synced["capture_ids"][0]))
         found = self.store.search(self.user_id, "how deploy Cortex run backend suite codesign", limit=3)
 
         self.assertTrue(found)

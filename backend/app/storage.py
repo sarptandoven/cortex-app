@@ -540,6 +540,20 @@ def _normalize_source_policies(value: Any) -> dict[str, dict[str, Any]]:
     return policies
 
 
+def _normalize_source_account_policy(value: Any) -> dict[str, Any]:
+    raw_policy = dict(value) if isinstance(value, dict) else {}
+    mode = _normalize_source_key(str(raw_policy.get("mode") or "default")) or "default"
+    if mode not in {"default", "trusted", "review", "excluded"}:
+        mode = "default"
+    policy = dict(raw_policy)
+    policy["allow_ai_context"] = bool(policy.get("allow_ai_context", mode != "excluded"))
+    policy["review_required"] = bool(policy.get("review_required", True))
+    if mode == "excluded":
+        policy["allow_ai_context"] = False
+        policy["review_required"] = True
+    return policy
+
+
 def _source_policy_sources(source_policies: dict[str, dict[str, Any]], predicate) -> list[str]:
     sources: set[str] = set()
     for source, policy in source_policies.items():
@@ -1794,7 +1808,7 @@ class CortexStore:
         rows: list[dict[str, Any]] = []
         catalog_ids = {item["id"] for item in catalog}
         extra_sources = sorted(set(captures_by_source) - catalog_ids)
-        for item in [*catalog, *({"id": source, "name": source, "category": "Connected source", "auth": "direct", "live_status": "imported", "scopes": [], "notes": "", "readiness_status": "import-ready", "primary_beta": True, "beta_status": "active", "primary_beta_path": "connected-source-account", "show_in_primary_ui": True, "import_status": "native", "export_status": "imported", "source_ids": [source], "source_aliases": [], "import_label": "Connected source data", "supports_import": True, "formats": []} for source in extra_sources)]:
+        for item in [*catalog, *({"id": source, "name": source, "category": "Connected source", "auth": "direct", "live_status": "imported", "scopes": [], "notes": "", "readiness_status": "import-ready", "primary_beta": False, "beta_status": "advanced-fallback", "primary_beta_path": "advanced-fallback-only", "show_in_primary_ui": False, "import_status": "native", "export_status": "imported", "source_ids": [source], "source_aliases": [], "import_label": "Connected source data", "supports_import": True, "formats": []} for source in extra_sources)]:
             source = item["id"]
             source_accounts = accounts_by_source.get(source, [])
             active_accounts = [account for account in source_accounts if not account.get("disconnected_at")]
@@ -1830,7 +1844,7 @@ class CortexStore:
             catalog_primary_beta = bool(item.get("primary_beta"))
             has_completed_sync = any(cursor.get("last_completed_at") for cursor in source_cursors) or any(account.get("last_sync_at") for account in active_accounts)
             has_synced_data = has_completed_sync or captures or active_memories
-            if has_synced_data:
+            if has_synced_data and catalog_primary_beta:
                 beta_status = "active"
                 primary_beta_path = "connected-source-account"
                 primary_beta = True
@@ -2016,7 +2030,7 @@ class CortexStore:
         auth = _normalize_source_key(auth_state or "not_configured") or "not_configured"
         timestamp = now_iso()
         resolved_id = account_id or stable_id("sacct_", f"{user_id}:{normalized_source}:{identifier or label}")
-        resolved_policy = policy or {}
+        resolved_policy = _normalize_source_account_policy(policy)
         resolved_metadata = metadata or {}
         with connect(self.db_path) as conn:
             conn.execute(
@@ -3419,7 +3433,7 @@ class CortexStore:
                 if source_account_row:
                     source_account_snapshot = self._source_account_from_row(source_account_row)
             source_account_policy = source_account_snapshot.get("policy") if source_account_snapshot else {}
-            if isinstance(source_account_policy, dict) and source_account_policy.get("review_required"):
+            if normalized_source_account_id and not (isinstance(source_account_policy, dict) and source_account_policy.get("review_required") is False):
                 review_status = "pending"
                 approved_at = None
             stable_source_record = bool(normalized_source_account_id and normalized_external_id)
@@ -8744,7 +8758,7 @@ class CortexStore:
                  AND sa_review_required.user_id = c_review_required.user_id
                 WHERE c_review_required.id = {alias}.capture_id
                   AND c_review_required.user_id = {alias}.user_id
-                  AND sa_review_required.policy_json LIKE '%"review_required": true%'
+                  AND sa_review_required.policy_json NOT LIKE '%"review_required": false%'
               )
               OR EXISTS (
                 SELECT 1
@@ -8752,6 +8766,21 @@ class CortexStore:
                 WHERE c_review_approved.id = {alias}.capture_id
                   AND c_review_approved.user_id = {alias}.user_id
                   AND c_review_approved.review_status = 'approved'
+              )
+            )"""
+        )
+        filters.append(
+            f"""(
+              {alias}.capture_id IS NULL
+              OR NOT EXISTS (
+                SELECT 1
+                FROM captures c_ai_block
+                JOIN source_accounts sa_ai_block
+                  ON sa_ai_block.id = c_ai_block.source_account_id
+                 AND sa_ai_block.user_id = c_ai_block.user_id
+                WHERE c_ai_block.id = {alias}.capture_id
+                  AND c_ai_block.user_id = {alias}.user_id
+                  AND sa_ai_block.policy_json LIKE '%"allow_ai_context": false%'
               )
             )"""
         )
@@ -8799,9 +8828,21 @@ class CortexStore:
                 FROM source_accounts sa_review_required
                 WHERE sa_review_required.id = {capture_alias}.source_account_id
                   AND sa_review_required.user_id = {capture_alias}.user_id
-                  AND sa_review_required.policy_json LIKE '%"review_required": true%'
+                  AND sa_review_required.policy_json NOT LIKE '%"review_required": false%'
               )
               OR {capture_alias}.review_status = 'approved'
+            )"""
+        )
+        filters.append(
+            f"""(
+              {capture_missing}
+              OR NOT EXISTS (
+                SELECT 1
+                FROM source_accounts sa_ai_block
+                WHERE sa_ai_block.id = {capture_alias}.source_account_id
+                  AND sa_ai_block.user_id = {capture_alias}.user_id
+                  AND sa_ai_block.policy_json LIKE '%"allow_ai_context": false%'
+              )
             )"""
         )
         if not user_settings["allow_pending_in_context"]:
