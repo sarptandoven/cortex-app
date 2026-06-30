@@ -173,15 +173,9 @@ struct OnboardingVaultStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Your memory stays in a normal folder on this Mac. Cortex uses a local index for speed, but the vault files remain readable, portable, and backup-friendly.")
+            Text("Cortex stores your memory in a readable folder on this Mac. The search index can be rebuilt from those files, so the vault stays portable and backup-friendly.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], spacing: 8) {
-                OnboardingValueBadge(title: "Readable", detail: "JSON files", systemImage: "doc.text")
-                OnboardingValueBadge(title: "Recoverable", detail: "Rebuild index", systemImage: "arrow.clockwise")
-                OnboardingValueBadge(title: "Private", detail: "No account", systemImage: "lock.shield")
-            }
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Vault folder")
@@ -232,15 +226,9 @@ struct OnboardingFirstSourceStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Start with the sources that carry your real context: AI chat exports, notes, docs, email, messages, writing samples, decisions, bookmarks, calendar, and project files.")
+            Text("Start with one source that has real context: an AI chat export, notes, docs, email, messages, or project files.")
                 .foregroundColor(.secondary)
-
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 8)], spacing: 8) {
-                OnboardingValueBadge(title: "AI chats", detail: "ChatGPT, Claude", systemImage: "bubble.left.and.bubble.right")
-                OnboardingValueBadge(title: "Work tools", detail: "Slack, Notion, docs", systemImage: "folder.badge.gearshape")
-                OnboardingValueBadge(title: "Personal data", detail: "Email, messages, notes", systemImage: "person.text.rectangle")
-                OnboardingValueBadge(title: "Style", detail: "Writing samples", systemImage: "signature")
-            }
+                .fixedSize(horizontal: false, vertical: true)
 
             HStack {
                 Button {
@@ -257,11 +245,15 @@ struct OnboardingFirstSourceStep: View {
                 Spacer()
             }
 
-            if let stats = state.stats {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 8)], spacing: 8) {
-                    StatBox(label: "Captures", value: stats.captures)
-                    StatBox(label: "Pending", value: stats.pending_captures)
-                    StatBox(label: "Memories", value: stats.memories)
+            if !state.onboardingFirstSourceNames.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("First source")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text(state.onboardingFirstSourceNames.joined(separator: ", "))
+                        .font(.caption)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
                 }
             }
 
@@ -287,7 +279,7 @@ struct OnboardingReviewMemoryStep: View {
             if state.inbox.isEmpty {
                 QuietState(title: "No pending memory", detail: state.onboardingHasReviewedMemory ? "You already reviewed memory from your first source." : "Import a source, then return here to approve useful memory.")
             } else {
-                ForEach(state.inbox.prefix(3)) { capture in
+                ForEach(state.inbox.prefix(2)) { capture in
                     CaptureCard(
                         capture: capture,
                         approve: { state.approveCapture(capture) },
@@ -335,7 +327,7 @@ struct OnboardingAskUseStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Ask Cortex about the memory you just approved. This proves the local model can retrieve useful personal context before any AI tool uses it.")
+            Text("Use the memory you approved once. Ask Cortex here, or copy a context pack for another AI app.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -350,6 +342,12 @@ struct OnboardingAskUseStep: View {
                         Label("Ask Cortex", systemImage: "magnifyingglass")
                     }
                     .buttonStyle(.borderedProminent)
+                    Button {
+                        state.contextQuery = state.searchQuery
+                        state.copyContextPack()
+                    } label: {
+                        Label("Copy Context Pack", systemImage: "text.quote")
+                    }
                     Spacer()
                 }
             }
@@ -362,18 +360,18 @@ struct OnboardingAskUseStep: View {
             }
 
             if !state.searchResults.isEmpty {
-                ForEach(state.searchResults.prefix(3)) { item in
+                ForEach(state.searchResults.prefix(2)) { item in
                     MemoryCard(item: item) {
                         state.deleteMemory(item)
                     }
                 }
             } else {
-                QuietState(title: "Ask one real question", detail: "Use a person, project, decision, preference, or phrase from your approved source.")
+                QuietState(title: "Use approved memory once", detail: "Ask a question, or copy a context pack that another AI app can use.")
             }
 
             OnboardingCheckRow(
                 title: state.onboardingHasUsedCortex ? "Cortex used once" : "Use Cortex once",
-                detail: state.onboardingHasUsedCortex ? "The personal model returned cited memory from your approved source." : "Run a query that returns memory from the source you reviewed.",
+                detail: state.onboardingHasUsedCortex ? "Approved memory was used through Ask or a copied context pack." : "Ask a question with cited memory, or copy a context pack.",
                 systemImage: state.onboardingHasUsedCortex ? "checkmark.seal.fill" : "sparkle.magnifyingglass",
                 color: state.onboardingHasUsedCortex ? .green : .orange
             )
@@ -386,24 +384,35 @@ struct OnboardingTrustBackupStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Finish by choosing the trust posture for connected AI tools and deciding how the local vault should be backed up.")
+            Text("Finish with a clear default: review new memory first, share only approved memory, redact copied context, and keep backups local.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 10) {
-                Toggle("Review new memories first", isOn: $state.appSettings.review_new_captures)
-                Toggle("Strict mode: only approved memory in AI context", isOn: Binding(
-                    get: { !state.appSettings.allow_pending_in_context },
-                    set: { state.appSettings.allow_pending_in_context = !$0 }
-                ))
-                Toggle("Redact shared context", isOn: $state.appSettings.redact_sensitive_context)
+                OnboardingToggleRow(
+                    title: "Review new memories first",
+                    detail: "New imports wait for approval before shaping Cortex.",
+                    isOn: $state.appSettings.review_new_captures
+                )
+                OnboardingToggleRow(
+                    title: "Only approved memory leaves Cortex",
+                    detail: "Connected tools do not receive pending memory.",
+                    isOn: Binding(
+                        get: { !state.appSettings.allow_pending_in_context },
+                        set: { state.appSettings.allow_pending_in_context = !$0 }
+                    )
+                )
+                OnboardingToggleRow(
+                    title: "Redact copied context",
+                    detail: "Context packs remove sensitive details when possible.",
+                    isOn: $state.appSettings.redact_sensitive_context
+                )
                 HStack {
                     Button {
                         state.saveMemorySettings()
                     } label: {
                         Label("Save Trust Settings", systemImage: "checkmark.circle")
                     }
-                    .buttonStyle(.borderedProminent)
                     Button {
                         state.selectedTab = .trust
                         state.dismissOnboardingForSession()
@@ -417,24 +426,27 @@ struct OnboardingTrustBackupStep: View {
             .background(Color(nsColor: .controlBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
-            HStack {
-                Button {
-                    state.createBackup()
-                } label: {
-                    Label("Back Up Now", systemImage: "archivebox")
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Backup")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text("Backups are zip files stored inside the local Cortex vault. Create one now, or explicitly skip it for this setup.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Button {
+                        state.createBackup()
+                    } label: {
+                        Label("Back Up Now", systemImage: "archivebox")
+                    }
+                    Button {
+                        state.skipFirstBackup()
+                    } label: {
+                        Label("Skip for Now", systemImage: "forward")
+                    }
+                    Spacer()
                 }
-                .buttonStyle(.borderedProminent)
-                Button {
-                    state.skipFirstBackup()
-                } label: {
-                    Label("Skip First Backup", systemImage: "forward")
-                }
-                Button {
-                    state.openVaultFolder()
-                } label: {
-                    Label("Open Vault", systemImage: "folder")
-                }
-                Spacer()
             }
 
             if let backup = state.lastBackupPath {
@@ -455,29 +467,21 @@ struct OnboardingTrustBackupStep: View {
     }
 }
 
-struct OnboardingValueBadge: View {
+struct OnboardingToggleRow: View {
     let title: String
     let detail: String
-    let systemImage: String
+    @Binding var isOn: Bool
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: systemImage)
-                .foregroundColor(.accentColor)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 1) {
+        Toggle(isOn: $isOn) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.caption)
-                    .fontWeight(.semibold)
                 Text(detail)
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer()
         }
-        .padding(9)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 

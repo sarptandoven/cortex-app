@@ -208,6 +208,7 @@ def _normalize_extraction(data: dict[str, Any], raw_text: str, source: str) -> d
         record["entity_ids"] = list(record.get("entity_ids") or [])
         record["topics"] = list(record.get("topics") or [])
         record["content"] = content
+        record["raw_excerpt"] = str(record.get("raw_excerpt") or content).strip()[:500]
         record["occurred_at"] = record.get("occurred_at") or _extract_absolute_date(content)
     for task in data["tasks"]:
         content = str(task.get("content", "")).strip()
@@ -537,6 +538,7 @@ def _record(kind: str, content: str, importance: int, occurred_at: str | None = 
         "kind": kind,
         "layer": _normalize_layer(None, kind, content),
         "content": content,
+        "raw_excerpt": content[:500],
         "confidence": "confirmed",
         "importance": importance,
         "entity_ids": [],

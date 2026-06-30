@@ -595,6 +595,91 @@ class SourceIngestTests(unittest.TestCase):
                 self.assertTrue(hits)
                 self.assertTrue(all(item["source_url"] for item in hits))
 
+    def test_imported_memories_get_granular_source_url_fragments(self) -> None:
+        slack = self.root / "granular-slack" / "general"
+        slack.mkdir(parents=True)
+        (self.root / "granular-slack" / "users.json").write_text(
+            json.dumps([{"id": "U1", "name": "sarpt"}]),
+            encoding="utf-8",
+        )
+        (slack / "2026-06-29.json").write_text(
+            json.dumps(
+                [
+                    {"type": "message", "user": "U1", "text": "We decided Project Pinpoint first message should stay searchable.", "ts": "1700000000.0001"},
+                    {"type": "message", "user": "U1", "text": "We decided Project Pinpoint second Slack message should have a precise citation.", "ts": "1700000001.0001"},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        github = self.root / "GitHub" / "Project Cortex"
+        github.mkdir(parents=True)
+        (github / "issues.csv").write_text(
+            "Title,Body\n"
+            "First row,We decided Project Needle first row should stay searchable.\n"
+            "Second row,We decided Project Needle row citation should point at row two precisely.\n",
+            encoding="utf-8",
+        )
+        calendar = self.root / "calendar-granular"
+        calendar.mkdir()
+        (calendar / "calendar.ics").write_text(
+            "BEGIN:VCALENDAR\n"
+            "BEGIN:VEVENT\n"
+            "SUMMARY:Project Aurora first event\n"
+            "DTSTART:20260701T170000Z\n"
+            "DTEND:20260701T180000Z\n"
+            "DESCRIPTION:We decided Project Aurora first event should stay searchable.\n"
+            "END:VEVENT\n"
+            "BEGIN:VEVENT\n"
+            "SUMMARY:Project Aurora second event\n"
+            "DTSTART:20260702T170000Z\n"
+            "DTEND:20260702T180000Z\n"
+            "DESCRIPTION:We decided Project Aurora event citation should point at the second calendar event.\n"
+            "END:VEVENT\n"
+            "END:VCALENDAR\n",
+            encoding="utf-8",
+        )
+
+        db_path = self.root / "granular-citations.sqlite"
+        init_db(db_path)
+        store = CortexStore(db_path, self.root / "granular-vault")
+        result = store.import_sources(
+            user_id="test-user",
+            paths=[str(self.root / "granular-slack"), str(github), str(calendar)],
+            processing="sync",
+            max_records=10,
+        )
+
+        self.assertEqual(result["failed"], 0)
+        slack_hits = store.search("test-user", "Project Pinpoint second Slack precise citation", limit=5)
+        self.assertTrue(slack_hits)
+        self.assertTrue(any("message=2" in (hit["source_url"] or "") and "line=" in (hit["source_url"] or "") for hit in slack_hits))
+
+        row_hits = store.search("test-user", "Project Needle row citation row two", limit=5)
+        self.assertTrue(row_hits)
+        self.assertTrue(any("row=2" in (hit["source_url"] or "") and "line=" in (hit["source_url"] or "") for hit in row_hits))
+
+        event_hits = store.search("test-user", "Project Aurora event citation second calendar event", limit=5)
+        self.assertTrue(event_hits)
+        self.assertTrue(any("event=2" in (hit["source_url"] or "") and "line=" in (hit["source_url"] or "") for hit in event_hits))
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                """
+                SELECT content, source_url, raw_excerpt
+                FROM memories
+                WHERE content LIKE '%Project Pinpoint second%'
+                   OR content LIKE '%Project Needle row citation%'
+                   OR content LIKE '%Project Aurora event citation%'
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all(row["raw_excerpt"] and "Source:" not in row["raw_excerpt"] for row in rows))
+        self.assertTrue(all("excerpt=" in row["source_url"] for row in rows))
+
     def test_sync_source_import_uses_deterministic_extraction_by_default(self) -> None:
         docs = self.root / "docs"
         docs.mkdir()
@@ -692,7 +777,8 @@ class SourceIngestTests(unittest.TestCase):
         finally:
             conn.close()
         self.assertTrue(memory_rows)
-        self.assertTrue(all(row["source_url"] == str(note) for row in memory_rows))
+        self.assertTrue(all(row["source_url"].startswith(str(note)) for row in memory_rows))
+        self.assertTrue(all("line=" in row["source_url"] for row in memory_rows))
         memory_content = "\n".join(row["content"] for row in memory_rows)
         self.assertNotIn("Source file:", memory_content)
         self.assertNotIn("Path:", memory_content)

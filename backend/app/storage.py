@@ -12,6 +12,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import quote
 
 from .database import connect, sqlite_vec_status
 from .embeddings import VECTOR_DIMENSIONS, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status
@@ -420,6 +421,157 @@ def memory_layer(kind: str | None, value: str | None = None) -> str:
     if explicit in MEMORY_LAYERS:
         return explicit
     return MEMORY_LAYER_BY_KIND.get((kind or "").strip().lower(), "semantic")
+
+
+def _memory_raw_excerpt(record: dict[str, Any], raw_text: str) -> str:
+    explicit = str(record.get("raw_excerpt") or record.get("source_excerpt") or "").strip()
+    if explicit:
+        return explicit[:500]
+    content = str(record.get("content") or "").strip()
+    if content:
+        line = _matching_source_line(raw_text, content)
+        return (line or content)[:500]
+    return raw_text[:500]
+
+
+def _granular_memory_source_url(source_url: str | None, raw_text: str, excerpt: str, *, enabled: bool) -> str | None:
+    if not enabled or not source_url:
+        return source_url
+    locator = _source_locator_for_excerpt(raw_text, excerpt)
+    if not locator:
+        return source_url
+    return _append_source_locator(source_url, locator)
+
+
+def _matching_source_line(raw_text: str, excerpt: str) -> str:
+    normalized_excerpt = _locator_text_key(excerpt)
+    if not normalized_excerpt:
+        return ""
+    best_line = ""
+    best_score = 0
+    for line in raw_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        normalized_line = _locator_text_key(stripped)
+        if normalized_excerpt in normalized_line:
+            return stripped
+        if normalized_line in normalized_excerpt and len(normalized_line) > best_score:
+            best_line = stripped
+            best_score = len(normalized_line)
+    return best_line
+
+
+def _source_locator_for_excerpt(raw_text: str, excerpt: str) -> dict[str, str]:
+    normalized_excerpt = _locator_text_key(excerpt)
+    if not normalized_excerpt:
+        return {}
+    lines = raw_text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    matched_index = -1
+    best_score = 0
+    for index, line in enumerate(lines):
+        normalized_line = _locator_text_key(line)
+        if not normalized_line:
+            continue
+        if normalized_excerpt in normalized_line:
+            matched_index = index
+            break
+        if normalized_line in normalized_excerpt and len(normalized_line) > best_score:
+            matched_index = index
+            best_score = len(normalized_line)
+    if matched_index < 0:
+        return {}
+
+    locator: dict[str, str] = {"line": str(matched_index + 1)}
+    line = lines[matched_index].strip()
+    block = _nearest_source_block(lines, matched_index)
+    if block:
+        locator.update(block)
+    timestamp = _line_timestamp(line)
+    if timestamp and "message" in locator:
+        locator["message_at"] = timestamp[:40]
+    locator["excerpt"] = hashlib.sha256(excerpt.encode("utf-8")).hexdigest()[:10]
+    return locator
+
+
+def _nearest_source_block(lines: list[str], matched_index: int) -> dict[str, str]:
+    marker_index = -1
+    marker = ""
+    for index in range(matched_index, -1, -1):
+        stripped = lines[index].strip().lower()
+        if re.fullmatch(r"-{2,}\s*[^-]+\s*-{2,}", stripped):
+            marker_index = index
+            marker = stripped.strip("- ").lower()
+            break
+
+    for index in range(matched_index, max(marker_index, matched_index - 12), -1):
+        row_match = re.match(r"^row\s+(\d+)\b", lines[index].strip(), flags=re.IGNORECASE)
+        if row_match:
+            return {"row": row_match.group(1)}
+
+    if marker_index < 0:
+        return {}
+    key = {
+        "messages": "message",
+        "direct messages": "message",
+        "tweets": "tweet",
+        "events": "event",
+        "contacts": "contact",
+        "bookmarks": "bookmark",
+        "recent visits": "visit",
+    }.get(marker)
+    if not key:
+        return {}
+    single_line_items = key in {"message", "tweet", "bookmark", "visit"}
+    index = _block_item_index(lines, marker_index + 1, matched_index, single_line_items=single_line_items)
+    return {key: str(index)} if index else {}
+
+
+def _block_item_index(lines: list[str], start: int, matched_index: int, *, single_line_items: bool) -> int:
+    if single_line_items:
+        return sum(1 for line in lines[start : matched_index + 1] if line.strip())
+    count = 0
+    in_item = False
+    for line in lines[start : matched_index + 1]:
+        stripped = line.strip()
+        if not stripped:
+            in_item = False
+            continue
+        if not in_item:
+            count += 1
+            in_item = True
+    return count
+
+
+def _line_timestamp(line: str) -> str:
+    timestamp = re.match(r"^(\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?)\b", line)
+    if timestamp:
+        return timestamp.group(1)
+    slack_ts = re.match(r"^(\d{10}(?:\.\d+)?)\b", line)
+    if slack_ts:
+        return slack_ts.group(1)
+    bracketed = re.match(r"^\[([^\]]{6,60})\]", line)
+    if bracketed:
+        return bracketed.group(1)
+    return ""
+
+
+def _append_source_locator(source_url: str, locator: dict[str, str]) -> str:
+    if re.search(r"(?:[#?&])line=", source_url):
+        return source_url
+    fragment = "&".join(
+        f"{quote(str(key), safe='')}={quote(str(value), safe='')}"
+        for key, value in locator.items()
+        if str(value).strip()
+    )
+    if not fragment:
+        return source_url
+    separator = "&" if ("#" in source_url or "?" in source_url) else "#"
+    return f"{source_url}{separator}{fragment}"
+
+
+def _locator_text_key(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
 
 
 def query_layer_boosts(query: str) -> dict[str, float]:
@@ -2129,7 +2281,17 @@ class CortexStore:
             self._event(conn, user_id, capture_id, "capture", "created", {"source": source, "title": title})
 
             for record in extracted.get("records", []):
-                memory = self._save_memory(conn, capture_id, user_id, record, source, source_url, captured_at, content)
+                memory = self._save_memory(
+                    conn,
+                    capture_id,
+                    user_id,
+                    record,
+                    source,
+                    source_url,
+                    captured_at,
+                    content,
+                    granular_source_url=import_id is not None,
+                )
                 memories.append(memory)
                 edges.append(self._edge(conn, user_id, capture_id, memory["id"], "contains", memory["id"], captured_at))
 
@@ -5697,12 +5859,26 @@ class CortexStore:
             return []
         return parsed if isinstance(parsed, list) else []
 
-    def _save_memory(self, conn, capture_id: str, user_id: str, record: dict[str, Any], source: str, source_url: str | None, captured_at: str, raw_text: str) -> dict[str, Any]:
+    def _save_memory(
+        self,
+        conn,
+        capture_id: str,
+        user_id: str,
+        record: dict[str, Any],
+        source: str,
+        source_url: str | None,
+        captured_at: str,
+        raw_text: str,
+        *,
+        granular_source_url: bool = False,
+    ) -> dict[str, Any]:
         memory_id = record["id"]
         kind = record.get("kind", "observation")
         layer = memory_layer(kind, record.get("layer"))
         topics = record.get("topics", [])
         entity_ids = record.get("entity_ids", [])
+        raw_excerpt = _memory_raw_excerpt(record, raw_text)
+        memory_source_url = _granular_memory_source_url(source_url, raw_text, raw_excerpt, enabled=granular_source_url)
         conn.execute(
             """
             INSERT OR REPLACE INTO memories
@@ -5718,7 +5894,7 @@ class CortexStore:
                 record.get("content", ""),
                 record.get("summary", ""),
                 source,
-                source_url,
+                memory_source_url,
                 record.get("confidence", "confirmed"),
                 int(record.get("importance", 3)),
                 json.dumps(topics),
@@ -5726,7 +5902,7 @@ class CortexStore:
                 record.get("occurred_at"),
                 captured_at,
                 captured_at,
-                raw_text[:500],
+                raw_excerpt,
             ),
         )
         conn.execute("DELETE FROM memory_entities WHERE memory_id = ?", (memory_id,))
@@ -5767,7 +5943,7 @@ class CortexStore:
             "content": record.get("content", ""),
             "summary": record.get("summary", ""),
             "source": source,
-            "source_url": source_url,
+            "source_url": memory_source_url,
             "confidence": record.get("confidence", "confirmed"),
             "importance": int(record.get("importance", 3)),
             "status": "active",
@@ -5776,7 +5952,7 @@ class CortexStore:
             "occurred_at": record.get("occurred_at"),
             "captured_at": captured_at,
             "updated_at": captured_at,
-            "raw_excerpt": raw_text[:500],
+            "raw_excerpt": raw_excerpt,
         }
 
     def _vector_ready(self, conn) -> bool:
