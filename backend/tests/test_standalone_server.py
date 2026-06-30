@@ -44,6 +44,10 @@ class FakeStore:
         self.sync_feed_calls: list[tuple[str, str, int, str, str, dict | None]] = []
         self.source_account_disconnected = False
         self.sync_device_revoked = False
+        self.api_token_scopes = ["read"]
+        self.denied_agent_access: set[str] = set()
+        self.require_agent_access_calls: list[tuple[str, str]] = []
+        self.context_pack_calls: list[tuple[str, str, int]] = []
 
     def search(self, user_id: str, query: str, limit: int, kind: str | None = None, layer: str | None = None) -> list[dict]:
         self.search_calls.append((user_id, query, limit, kind, layer))
@@ -84,6 +88,10 @@ class FakeStore:
             ],
             "results": [result],
         }
+
+    def context_pack(self, user_id: str, *, query: str = "", limit: int = 12) -> str:
+        self.context_pack_calls.append((user_id, query, limit))
+        return "# Cortex Context\n\nLayer-aware result"
 
     def delete_capture(self, user_id: str, capture_id: str) -> bool:
         self.delete_capture_calls.append((user_id, capture_id))
@@ -540,7 +548,7 @@ class FakeStore:
             "user_id": "alice",
             "label": "Standalone test API",
             "audience": "api",
-            "scopes": ["read"],
+            "scopes": self.api_token_scopes,
             "admin": False,
         }
 
@@ -584,7 +592,9 @@ class FakeStore:
         }
 
     def require_agent_access(self, user_id: str, capability: str) -> None:
-        return None
+        self.require_agent_access_calls.append((user_id, capability))
+        if capability in self.denied_agent_access:
+            raise PermissionError(f"Cortex agent {capability} actions are disabled")
 
     def agent_payload(self, user_id: str, value):
         return value
@@ -1025,6 +1035,98 @@ class StandaloneServerTests(unittest.TestCase):
                 timeout=5,
             )
         self.assertEqual(context.exception.code, 403)
+
+    def test_scoped_api_tokens_obey_trust_controls(self) -> None:
+        standalone_server.settings = Settings(
+            vault_path=Path(self.tmp.name) / "vault",
+            db_path=Path(self.tmp.name) / "index.sqlite",
+            api_key="test-token",
+            public_base_url="http://127.0.0.1:8766",
+            require_scoped_api_tokens=True,
+        )
+        scoped_headers = {"Authorization": "Bearer cxa-standalone-token", "X-Cortex-User": "alice"}
+        self.fake_store.api_token_scopes = ["read", "write", "export", "maintenance", "destructive"]
+
+        self.fake_store.denied_agent_access = {"read"}
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(request.Request(self.base_url + "/v1/search?query=voice", headers=scoped_headers), timeout=5)
+        self.assertEqual(context.exception.code, 403)
+        self.assertIn("read actions are disabled", context.exception.read().decode("utf-8"))
+        self.assertEqual(self.fake_store.search_calls, [])
+
+        self.fake_store.denied_agent_access = {"export"}
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(request.Request(self.base_url + "/v1/context-pack?query=voice", headers=scoped_headers), timeout=5)
+        self.assertEqual(context.exception.code, 403)
+        self.assertIn("export actions are disabled", context.exception.read().decode("utf-8"))
+        self.assertEqual(self.fake_store.context_pack_calls, [])
+
+        self.fake_store.denied_agent_access = {"write"}
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(self.base_url + "/capture?token=cxa-standalone-token&content=Remember", timeout=5)
+        self.assertEqual(context.exception.code, 403)
+        self.assertIn("write actions are disabled", context.exception.read().decode("utf-8"))
+
+        self.fake_store.api_token_scopes = ["read", "write"]
+        self.fake_store.denied_agent_access = set()
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/source-accounts",
+                    data=json.dumps({"source": "gmail"}).encode("utf-8"),
+                    headers={**scoped_headers, "Content-Type": "application/json"},
+                    method="POST",
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 403)
+        self.assertIn("maintenance scope", context.exception.read().decode("utf-8"))
+        self.assertEqual(self.fake_store.source_account_calls, [])
+
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/sync-cursors",
+                    data=json.dumps({"source": "gmail", "cursor_name": "messages"}).encode("utf-8"),
+                    headers={**scoped_headers, "Content-Type": "application/json"},
+                    method="POST",
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 403)
+        self.assertIn("maintenance scope", context.exception.read().decode("utf-8"))
+        self.assertEqual(self.fake_store.sync_cursor_calls, [])
+
+        self.fake_store.api_token_scopes = ["read", "maintenance"]
+        self.fake_store.denied_agent_access = {"maintenance"}
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/source-accounts",
+                    data=json.dumps({"source": "gmail"}).encode("utf-8"),
+                    headers={**scoped_headers, "Content-Type": "application/json"},
+                    method="POST",
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 403)
+        self.assertIn("maintenance actions are disabled", context.exception.read().decode("utf-8"))
+        self.assertEqual(self.fake_store.source_account_calls, [])
+
+        self.fake_store.api_token_scopes = ["read", "destructive"]
+        self.fake_store.denied_agent_access = {"destructive"}
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/user-data?include_backups=false",
+                    headers=scoped_headers,
+                    method="DELETE",
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 403)
+        self.assertIn("destructive actions are disabled", context.exception.read().decode("utf-8"))
+        self.assertEqual(self.fake_store.delete_user_data_calls, [])
 
     def test_global_token_cannot_select_user_in_sharded_mode(self) -> None:
         standalone_server.settings = Settings(

@@ -345,6 +345,37 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(settings_escalation_blocked.status_code, 403)
         self.assertIn("maintenance scope", settings_escalation_blocked.json()["detail"])
 
+        source_account_blocked = self.client.post(
+            "/v1/source-accounts",
+            json={"source": "gmail", "account_label": "Scoped Gmail"},
+            headers={"Authorization": f"Bearer {tokens['write']}", "X-Cortex-User": user},
+        )
+        self.assertEqual(source_account_blocked.status_code, 403)
+        self.assertIn("maintenance scope", source_account_blocked.json()["detail"])
+
+        sync_cursor_blocked = self.client.post(
+            "/v1/sync-cursors",
+            json={"source": "gmail", "cursor_name": "messages"},
+            headers={"Authorization": f"Bearer {tokens['write']}", "X-Cortex-User": user},
+        )
+        self.assertEqual(sync_cursor_blocked.status_code, 403)
+        self.assertIn("maintenance scope", sync_cursor_blocked.json()["detail"])
+
+        self.client.put("/v1/settings", json={"allow_agent_maintenance": True}, headers=headers)
+        source_account_allowed = self.client.post(
+            "/v1/source-accounts",
+            json={"source": "gmail", "account_label": "Scoped Gmail"},
+            headers={"Authorization": f"Bearer {tokens['maintenance']}", "X-Cortex-User": user},
+        )
+        self.assertEqual(source_account_allowed.status_code, 200)
+
+        sync_cursor_allowed = self.client.post(
+            "/v1/sync-cursors",
+            json={"source": "gmail", "cursor_name": "messages"},
+            headers={"Authorization": f"Bearer {tokens['maintenance']}", "X-Cortex-User": user},
+        )
+        self.assertEqual(sync_cursor_allowed.status_code, 200)
+
     def test_scoped_capture_query_token_obeys_trust_controls(self) -> None:
         user = "scoped-capture-query-trust"
         scoped_token = "cxa_fastapi_query_capture_123456789"

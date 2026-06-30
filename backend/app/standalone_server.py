@@ -51,6 +51,8 @@ def _required_api_scope(method: str, path: str) -> str:
     normalized_path = path.rstrip("/") or "/"
     if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/context-pack", "/v1/personal-profile", "/v1/agent-adaptation", "/v1/support/bundle"}:
         return "export"
+    if normalized_path == "/v1/settings" and normalized_method in {"PUT", "PATCH"}:
+        return "maintenance"
     if normalized_path in {"/v1/diagnostics", "/v1/reliability/report"}:
         return "maintenance"
     if normalized_path.startswith("/v1/maintenance/") or normalized_path in {"/v1/jobs/run", "/v1/maintenance/jobs/run"}:
@@ -59,7 +61,11 @@ def _required_api_scope(method: str, path: str) -> str:
         return "maintenance"
     if normalized_path.startswith("/v1/integrations/tokens/"):
         return "maintenance"
+    if normalized_path == "/v1/source-accounts" and normalized_method == "POST":
+        return "maintenance"
     if normalized_path.startswith("/v1/source-accounts/") and normalized_method == "DELETE":
+        return "maintenance"
+    if normalized_path == "/v1/sync-cursors" and normalized_method == "POST":
         return "maintenance"
     if normalized_path == "/v1/sync/devices" and normalized_method == "POST":
         return "maintenance"
@@ -80,6 +86,10 @@ def _required_api_scope(method: str, path: str) -> str:
 
 def _api_token_has_scope(scoped: dict, required_scope: str) -> bool:
     return required_scope in set(scoped.get("scopes") or [])
+
+
+def _require_api_token_trust(user_id: str, required_scope: str) -> None:
+    store.require_agent_access(user_id, required_scope)
 
 
 ROOT_HTML = """
@@ -243,7 +253,11 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 source_url = (params.get("url") or [""])[0]
                 source = (params.get("source") or ["browser-capture"])[0]
                 if payload.strip():
-                    user_id = self._auth_token(token)
+                    try:
+                        user_id = self._auth_token(token)
+                    except PermissionError as exc:
+                        self._send_text(_capture_page(str(exc), "error", token, title, source_url, payload), status=HTTPStatus.FORBIDDEN, media_type="text/html")
+                        return
                     if not user_id:
                         self._send_text(_capture_page("Missing or invalid Cortex capture token", "error", token, title, source_url, payload), status=HTTPStatus.UNAUTHORIZED, media_type="text/html")
                         return
@@ -263,7 +277,11 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 title = (form.get("title") or [""])[0]
                 source_url = (form.get("url") or [""])[0]
                 source = (form.get("source") or ["browser-capture"])[0]
-                user_id = self._auth_token(token)
+                try:
+                    user_id = self._auth_token(token)
+                except PermissionError as exc:
+                    self._send_text(_capture_page(str(exc), "error", token, title, source_url, content), status=HTTPStatus.FORBIDDEN, media_type="text/html")
+                    return
                 if not user_id:
                     self._send_text(_capture_page("Missing or invalid Cortex capture token", "error", token, title, source_url, content), status=HTTPStatus.UNAUTHORIZED, media_type="text/html")
                     return
@@ -809,6 +827,11 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if not _api_token_has_scope(scoped, required_scope):
                 self._send_json({"detail": f"Cortex API token requires {required_scope} scope"}, status=HTTPStatus.FORBIDDEN)
                 return None
+            try:
+                _require_api_token_trust(scoped["user_id"], required_scope)
+            except PermissionError as exc:
+                self._send_json({"detail": str(exc)}, status=HTTPStatus.FORBIDDEN)
+                return None
             return scoped["user_id"]
         self._send_json({"detail": "Missing or invalid Cortex API token"}, status=HTTPStatus.UNAUTHORIZED)
         return None
@@ -856,6 +879,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if scoped:
                 if not _api_token_has_scope(scoped, required_scope):
                     return None
+                _require_api_token_trust(scoped["user_id"], required_scope)
                 return scoped["user_id"]
         if settings.api_key:
             return None

@@ -70,7 +70,11 @@ def _required_api_scope(method: str, path: str) -> str:
         return "maintenance"
     if normalized_path.startswith("/v1/integrations/tokens/"):
         return "maintenance"
+    if normalized_path == "/v1/source-accounts" and normalized_method == "POST":
+        return "maintenance"
     if normalized_path.startswith("/v1/source-accounts/") and normalized_method == "DELETE":
+        return "maintenance"
+    if normalized_path == "/v1/sync-cursors" and normalized_method == "POST":
         return "maintenance"
     if normalized_path == "/v1/sync/devices" and normalized_method == "POST":
         return "maintenance"
