@@ -6,20 +6,16 @@ struct ReviewTab: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 16) {
                 ReviewHeaderSection(state: state)
                 ReviewInboxSection(state: state, captures: state.inbox)
                 if let review = state.review {
-                    if state.inbox.isEmpty && !hasReviewContext(review) {
-                        QuietState(title: "Nothing to review", detail: "New imports, decisions, and open loops will appear here when Cortex finds them.")
-                    } else if hasReviewContext(review) {
+                    if hasReviewContext(review) {
                         ReviewContextDisclosure(
                             review: review,
                             isExpanded: $isContextExpanded
                         )
                     }
-                } else {
-                    QuietState(title: "Review is loading", detail: "Cortex is checking pending memories, decisions, and open loops.")
                 }
             }
             .padding(16)
@@ -43,14 +39,15 @@ struct ReviewHeaderSection: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Review memory")
+                    Text("Review queue")
                         .font(.title3)
                         .fontWeight(.semibold)
-                    Text("Approve useful signals and archive noise before agents rely on new memory.")
+                    Text("Approve memory worth keeping or archive noise before agents rely on it.")
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
+                ReviewPendingBadge(count: state.inbox.count)
                 Button {
                     Task {
                         await state.loadInbox()
@@ -61,15 +58,26 @@ struct ReviewHeaderSection: View {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
             }
-            if let review = state.review {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 8)], spacing: 8) {
-                    StatBox(label: "Pending", value: state.inbox.count)
-                    StatBox(label: "Approved", value: review.stats.memories)
-                    StatBox(label: "Decisions", value: review.recent_decisions.count)
-                    StatBox(label: "Open", value: review.open_tasks.count)
-                }
-            }
         }
+    }
+}
+
+struct ReviewPendingBadge: View {
+    let count: Int
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 1) {
+            Text("\(count)")
+                .font(.title3)
+                .fontWeight(.semibold)
+            Text("Pending")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -78,36 +86,36 @@ struct ReviewInboxSection: View {
     let captures: [CaptureItem]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Memory inbox")
+                    Text("Pending items")
                         .font(.headline)
-                    Text(captures.isEmpty ? "Imported source records waiting for approval appear here." : "\(captures.count) item\(captures.count == 1 ? "" : "s") waiting for a decision.")
+                    Text(queueDetail)
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
                 Spacer()
                 if !captures.isEmpty {
                     Button {
-                        state.archiveCaptures(Array(captures.prefix(10)))
+                        state.archiveCaptures(visibleCaptures)
                     } label: {
-                        Label("Archive Visible", systemImage: "archivebox")
+                        Label("Archive \(visibleCount)", systemImage: "archivebox")
                     }
                     Button {
-                        state.approveCaptures(Array(captures.prefix(10)))
+                        state.approveCaptures(visibleCaptures)
                     } label: {
-                        Label("Approve Visible", systemImage: "checkmark.seal")
+                        Label("Approve \(visibleCount)", systemImage: "checkmark.seal")
                     }
                     .buttonStyle(.borderedProminent)
                 }
             }
 
             if captures.isEmpty {
-                QuietState(title: "No new signals", detail: "Import a source in Sources. Cortex will place reviewable memory here before it strengthens your model.")
+                QuietState(title: "Queue clear", detail: "New source records will appear here for approval before they strengthen your model.")
             } else {
                 LazyVStack(alignment: .leading, spacing: 10) {
-                    ForEach(captures.prefix(10)) { capture in
+                    ForEach(visibleCaptures) { capture in
                         ReviewCaptureCard(
                             capture: capture,
                             approve: { state.approveCapture(capture) },
@@ -117,6 +125,24 @@ struct ReviewInboxSection: View {
                 }
             }
         }
+    }
+
+    private var visibleCaptures: [CaptureItem] {
+        Array(captures.prefix(10))
+    }
+
+    private var visibleCount: Int {
+        visibleCaptures.count
+    }
+
+    private var queueDetail: String {
+        if captures.isEmpty {
+            return "No captures are waiting for approval."
+        }
+        if captures.count > visibleCount {
+            return "\(captures.count) pending. Showing the first \(visibleCount) for batch actions."
+        }
+        return "\(captures.count) pending item\(captures.count == 1 ? "" : "s")."
     }
 }
 
@@ -128,20 +154,14 @@ struct ReviewCaptureCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "tray.full")
-                    .foregroundColor(.accentColor)
-                    .frame(width: 22)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
                         .font(.headline)
                         .lineLimit(2)
-                    Text(sourceDetail)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
                 }
                 Spacer()
+                ReviewCountPill(label: "Memories", value: capture.memory_count ?? 0, systemImage: "brain.head.profile")
+                ReviewCountPill(label: "Tasks", value: capture.task_count ?? 0, systemImage: "circle.dashed")
             }
 
             if let summary = capture.summary, !summary.isEmpty {
@@ -149,24 +169,27 @@ struct ReviewCaptureCard: View {
                     .font(.body)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("No summary available. Approving keeps derived memory from this source; archiving excludes it from the model.")
+                Text("No summary available.")
                     .font(.body)
                     .foregroundColor(.secondary)
             }
 
             HStack(spacing: 10) {
-                ReviewCountPill(label: "Memories", value: capture.memory_count ?? 0, systemImage: "brain.head.profile")
-                ReviewCountPill(label: "Tasks", value: capture.task_count ?? 0, systemImage: "circle.dashed")
+                Text(sourceDetail)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 Spacer()
                 Button {
                     archive()
                 } label: {
-                    Label("Archive Noise", systemImage: "archivebox")
+                    Label("Archive", systemImage: "archivebox")
                 }
                 Button {
                     approve()
                 } label: {
-                    Label("Approve Memory", systemImage: "checkmark.seal")
+                    Label("Approve", systemImage: "checkmark.seal")
                 }
                 .buttonStyle(.borderedProminent)
             }
@@ -233,15 +256,29 @@ struct ReviewContextDisclosure: View {
             }
             .padding(.top, 8)
         } label: {
-            HStack {
-                Label("Decisions, open loops, and review guidance", systemImage: "list.bullet.rectangle")
-                    .font(.headline)
+            HStack(alignment: .firstTextBaseline) {
+                Label("Supporting context", systemImage: "sidebar.right")
+                    .font(.subheadline)
                 Spacer()
-                Text("\(contextCount)")
+                Text(contextSummary)
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
         }
+    }
+
+    private var contextSummary: String {
+        var parts: [String] = []
+        if !review.recent_decisions.isEmpty {
+            parts.append("\(review.recent_decisions.count) decisions")
+        }
+        if !review.open_tasks.isEmpty {
+            parts.append("\(review.open_tasks.count) open")
+        }
+        if !review.recommended_actions.isEmpty {
+            parts.append("\(review.recommended_actions.count) guidance")
+        }
+        return parts.isEmpty ? "\(contextCount)" : parts.joined(separator: " · ")
     }
 }
 

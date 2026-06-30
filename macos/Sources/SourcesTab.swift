@@ -8,45 +8,53 @@ struct SourcesTab: View {
     @State private var isSecondaryCaptureExpanded = false
     @State private var isSourceHealthExpanded = false
     @State private var isImportHistoryExpanded = false
+    @State private var isInboxExpanded = false
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                SourcesHeroSection(state: state)
+            VStack(alignment: .leading, spacing: 12) {
                 SourcesImportSection(
                     state: state,
-                    isSupportedSourcesExpanded: $isSupportedSourcesExpanded,
                     handleDrop: handleDrop
                 )
-                DisclosureGroup(isExpanded: $isSourceHealthExpanded) {
-                    SourceHealthSummarySection(state: state)
-                        .padding(.top, 8)
-                } label: {
-                    SourcesDisclosureLabel(
-                        systemImage: "checkmark.seal",
-                        title: "Source health",
-                        detail: "Import readiness and source coverage"
-                    )
-                }
-                .padding(12)
-                .background(Color(nsColor: .controlBackgroundColor).opacity(0.65))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
 
-                DisclosureGroup(isExpanded: $isImportHistoryExpanded) {
-                    ImportHistorySection(state: state)
-                        .padding(.top, 8)
-                } label: {
-                    SourcesDisclosureLabel(
-                        systemImage: "clock.arrow.circlepath",
-                        title: "Import history",
-                        detail: "Recent imports and undo controls"
-                    )
-                }
-                .padding(12)
-                .background(Color(nsColor: .controlBackgroundColor).opacity(0.65))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 8) {
+                    SourcesInboxImportSection(state: state, isExpanded: $isInboxExpanded)
+                    SourceCatalogDisclosureSection(state: state, isExpanded: $isSupportedSourcesExpanded)
 
-                SecondaryCaptureToolsSection(state: state, isExpanded: $isSecondaryCaptureExpanded)
+                    DisclosureGroup(isExpanded: $isSourceHealthExpanded) {
+                        SourceHealthSummarySection(state: state)
+                            .padding(.top, 8)
+                    } label: {
+                        SourcesDisclosureLabel(
+                            systemImage: "checkmark.seal",
+                            title: "Source health",
+                            detail: "Readiness, coverage, and attention checks"
+                        )
+                    }
+                    .padding(12)
+                    .background(Color(nsColor: .windowBackgroundColor))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                    DisclosureGroup(isExpanded: $isImportHistoryExpanded) {
+                        ImportHistorySection(state: state)
+                            .padding(.top, 8)
+                    } label: {
+                        SourcesDisclosureLabel(
+                            systemImage: "clock.arrow.circlepath",
+                            title: "Import history",
+                            detail: "Recent imports and undo controls"
+                        )
+                    }
+                    .padding(12)
+                    .background(Color(nsColor: .windowBackgroundColor))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                    SecondaryCaptureToolsSection(state: state, isExpanded: $isSecondaryCaptureExpanded)
+                }
+                .padding(.top, 2)
             }
             .padding(16)
         }
@@ -133,63 +141,67 @@ struct SecondaryCaptureToolsSection: View {
             }
             .padding(.top, 8)
         } label: {
-            HStack(spacing: 9) {
-                Image(systemName: "plus.square.dashed")
-                    .foregroundColor(.secondary)
-                    .frame(width: 20)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Secondary capture tools")
-                        .font(.callout)
-                        .fontWeight(.medium)
-                    Text("Quick notes and links for edge cases")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-            }
+            SourcesDisclosureLabel(
+                systemImage: "plus.square.dashed",
+                title: "Secondary capture tools",
+                detail: "Quick notes and links for edge cases"
+            )
         }
         .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.65))
+        .background(Color(nsColor: .windowBackgroundColor))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
-struct SourcesHeroSection: View {
+struct SourcesInboxImportSection: View {
     @ObservedObject var state: AppState
+    @Binding var isExpanded: Bool
 
     var body: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Add sources")
-                    .font(.title3)
-                    .fontWeight(.semibold)
-                Text("Import the real conversations, notes, documents, messages, and writing samples that should shape your private model.")
+        DisclosureGroup(isExpanded: $isExpanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Use the inbox when another app needs a stable folder to drop exports into.")
+                    .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer()
-            Button {
-                Task {
-                    await state.loadTrust()
-                    if state.sourceConnectorCatalog.isEmpty {
-                        await state.loadSourceConnectivity()
+                HStack {
+                    Button {
+                        state.importCaptureInbox()
+                    } label: {
+                        Label("Import Inbox", systemImage: "tray.and.arrow.down")
                     }
-                    await state.loadImportHistory()
+                    Button {
+                        state.openCaptureInbox()
+                    } label: {
+                        Label("Open Folder", systemImage: "tray")
+                    }
+                    Button {
+                        state.copyCaptureInboxPath()
+                    } label: {
+                        Label("Copy Path", systemImage: "doc.on.doc")
+                    }
+                    Spacer()
                 }
-            } label: {
-                Image(systemName: "arrow.clockwise")
             }
-            .buttonStyle(.borderless)
-            .help("Refresh source status")
+            .padding(.top, 8)
+        } label: {
+            SourcesDisclosureLabel(
+                systemImage: "tray",
+                title: "Inbox import",
+                detail: "Stable folder for external exports"
+            )
         }
+        .padding(12)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
-struct SourcesImportSection: View {
+struct SourceCatalogDisclosureSection: View {
     @ObservedObject var state: AppState
-    @Binding var isSupportedSourcesExpanded: Bool
-    let handleDrop: ([NSItemProvider]) -> Bool
-    @State private var isInboxExpanded = false
+    @Binding var isExpanded: Bool
 
     private var supportedGroups: [SupportedSourceGroup] {
         var readinessBySource: [String: SourceReadinessItem] = [:]
@@ -229,23 +241,56 @@ struct SourcesImportSection: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(spacing: 8) {
-                Image(systemName: state.captureDropTargeted ? "arrow.down.doc.fill" : "arrow.down.doc")
-                    .font(.largeTitle)
-                    .foregroundColor(state.captureDropTargeted ? .accentColor : .secondary)
-                Text(state.captureDropTargeted ? "Drop to import" : "Drop source exports here")
-                    .font(.headline)
-                Text("Cortex scans locally, previews detected records, then queues reviewable memory signals.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
+        DisclosureGroup(isExpanded: $isExpanded) {
+            SupportedSourceGroupsSection(groups: supportedGroups, isLoading: state.sourceConnectorCatalog.isEmpty)
+                .padding(.top, 8)
+        } label: {
+            SourcesDisclosureLabel(
+                systemImage: "list.bullet.rectangle",
+                title: "Source catalog",
+                detail: "Supported exports and readiness details"
+            )
+        }
+        .padding(12)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct SourcesImportSection: View {
+    @ObservedObject var state: AppState
+    let handleDrop: ([NSItemProvider]) -> Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Import sources")
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                    Text("Drop exports or choose files. Cortex scans locally, previews detected records, then queues reviewable memory signals.")
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Button {
+                    Task {
+                        await state.loadTrust()
+                        if state.sourceConnectorCatalog.isEmpty {
+                            await state.loadSourceConnectivity()
+                        }
+                        await state.loadImportHistory()
+                    }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .help("Refresh source status")
             }
-            .frame(maxWidth: .infinity, minHeight: 132)
-            .background(Color(nsColor: .textBackgroundColor))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(state.captureDropTargeted ? Color.accentColor : Color.secondary.opacity(0.22), lineWidth: state.captureDropTargeted ? 2 : 1))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .onDrop(of: [UTType.fileURL.identifier], isTargeted: $state.captureDropTargeted, perform: handleDrop)
+
+            SourcesDropZone(state: state, handleDrop: handleDrop)
 
             HStack {
                 Button {
@@ -258,46 +303,105 @@ struct SourcesImportSection: View {
                 Spacer()
             }
 
-            if !state.lastFileCaptureSummary.isEmpty {
-                Text(state.lastFileCaptureSummary)
+            SourcesLastImportResult(summary: state.lastFileCaptureSummary)
+            SourcesReviewNextAction(state: state)
+        }
+        .padding(14)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct SourcesDropZone: View {
+    @ObservedObject var state: AppState
+    let handleDrop: ([NSItemProvider]) -> Bool
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: state.captureDropTargeted ? "arrow.down.doc.fill" : "arrow.down.doc")
+                .font(.largeTitle)
+                .foregroundColor(state.captureDropTargeted ? .accentColor : .secondary)
+            Text(state.captureDropTargeted ? "Drop to import" : "Drop source exports here")
+                .font(.headline)
+            Text("Conversations, notes, documents, messages, and writing samples all start here.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, minHeight: 146)
+        .background(Color(nsColor: .textBackgroundColor))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(state.captureDropTargeted ? Color.accentColor : Color.secondary.opacity(0.22), lineWidth: state.captureDropTargeted ? 2 : 1))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .onDrop(of: [UTType.fileURL.identifier], isTargeted: $state.captureDropTargeted, perform: handleDrop)
+    }
+}
+
+struct SourcesLastImportResult: View {
+    let summary: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: summary.isEmpty ? "clock" : "checkmark.circle.fill")
+                .foregroundColor(summary.isEmpty ? .secondary : .green)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Last import result")
+                    .font(.callout)
+                    .fontWeight(.medium)
+                Text(summary.isEmpty ? "No import result yet. Choose or drop a source to start." : summary)
                     .font(.caption)
                     .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-
-            DisclosureGroup("Inbox import", isExpanded: $isInboxExpanded) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Use the inbox when another app needs a stable folder to drop exports into.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    HStack {
-                        Button {
-                            state.importCaptureInbox()
-                        } label: {
-                            Label("Import Inbox", systemImage: "tray.and.arrow.down")
-                        }
-                        Button {
-                            state.openCaptureInbox()
-                        } label: {
-                            Label("Open Folder", systemImage: "tray")
-                        }
-                        Button {
-                            state.copyCaptureInboxPath()
-                        } label: {
-                            Label("Copy Path", systemImage: "doc.on.doc")
-                        }
-                        Spacer()
-                    }
-                }
-                .padding(.top, 8)
-            }
-
-            DisclosureGroup("Supported source types", isExpanded: $isSupportedSourcesExpanded) {
-                SupportedSourceGroupsSection(groups: supportedGroups, isLoading: state.sourceConnectorCatalog.isEmpty)
-                    .padding(.top, 8)
-            }
+            Spacer(minLength: 0)
         }
-        .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .padding(10)
+        .background(Color(nsColor: .textBackgroundColor))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct SourcesReviewNextAction: View {
+    @ObservedObject var state: AppState
+
+    private var pendingCount: Int {
+        max(state.inbox.count, state.review?.stats.pending_captures ?? 0)
+    }
+
+    private var detail: String {
+        if pendingCount > 0 {
+            return "\(pendingCount) item\(pendingCount == 1 ? "" : "s") waiting for approval or archive."
+        }
+        return "Review imported signals before they strengthen the model."
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "checklist")
+                .foregroundColor(.accentColor)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Next: Review")
+                    .font(.callout)
+                    .fontWeight(.semibold)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            Button {
+                state.selectedTab = .review
+                state.status = "Review new signals below"
+            } label: {
+                Label("Open Review", systemImage: "arrow.right")
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(10)
+        .background(Color.accentColor.opacity(0.08))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.accentColor.opacity(0.2)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ModelTab: View {
     @ObservedObject var state: AppState
+    @State private var modelDetailsExpanded = false
 
     var body: some View {
         ScrollView {
@@ -11,15 +12,26 @@ struct ModelTab: View {
                         ModelEmptySection(state: state)
                     } else {
                         ModelOverviewSection(state: state, review: review)
-                        if let quality = state.memoryQuality {
-                            ModelQualitySection(quality: quality)
+                        DisclosureGroup(isExpanded: $modelDetailsExpanded) {
+                            VStack(alignment: .leading, spacing: 14) {
+                                if let quality = state.memoryQuality {
+                                    ModelQualitySection(quality: quality)
+                                }
+                                ModelCoverageSection(review: review)
+                                ModelSourceCoverageSection(state: state, review: review)
+                                ModelSignalSummarySection(review: review)
+                            }
+                            .padding(.top, 8)
+                        } label: {
+                            ModelDisclosureLabel(
+                                systemImage: "square.stack.3d.up",
+                                title: "Model details",
+                                detail: "Layers, sources, topics, entities, and signal health"
+                            )
                         }
-                        if let recentMemory = review.recent_memories.first {
-                            ModelRecentMemorySection(state: state, memory: recentMemory)
-                        }
-                        ModelCoverageSection(review: review)
-                        ModelSourceCoverageSection(state: state, review: review)
-                        ModelSignalSummarySection(review: review)
+                        .padding(12)
+                        .background(Color(nsColor: .controlBackgroundColor).opacity(0.65))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                 } else {
                     VStack(alignment: .center, spacing: 12) {
@@ -39,6 +51,7 @@ struct ModelTab: View {
 
 struct ModelEmptySection: View {
     @ObservedObject var state: AppState
+    @State private var layersExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -83,14 +96,26 @@ struct ModelEmptySection: View {
                 Spacer()
             }
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 128), spacing: 8)], spacing: 8) {
-                EmptyLayerPill(title: "Facts", detail: "what is true", systemImage: "text.book.closed")
-                EmptyLayerPill(title: "Events", detail: "what happened", systemImage: "calendar")
-                EmptyLayerPill(title: "Style", detail: "how you write", systemImage: "signature")
-                EmptyLayerPill(title: "Decisions", detail: "what you chose", systemImage: "checkmark.seal")
-                EmptyLayerPill(title: "Preferences", detail: "what you like", systemImage: "slider.horizontal.3")
-                EmptyLayerPill(title: "Rejections", detail: "what to avoid", systemImage: "hand.raised")
+            DisclosureGroup(isExpanded: $layersExpanded) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 128), spacing: 8)], spacing: 8) {
+                    EmptyLayerPill(title: "Facts", detail: "what is true", systemImage: "text.book.closed")
+                    EmptyLayerPill(title: "Events", detail: "what happened", systemImage: "calendar")
+                    EmptyLayerPill(title: "Style", detail: "how you write", systemImage: "signature")
+                    EmptyLayerPill(title: "Decisions", detail: "what you chose", systemImage: "checkmark.seal")
+                    EmptyLayerPill(title: "Preferences", detail: "what you like", systemImage: "slider.horizontal.3")
+                    EmptyLayerPill(title: "Rejections", detail: "what to avoid", systemImage: "hand.raised")
+                }
+                .padding(.top, 8)
+            } label: {
+                ModelDisclosureLabel(
+                    systemImage: "square.stack.3d.up",
+                    title: "What Cortex learns",
+                    detail: "Facts, events, style, decisions, preferences, and rejections"
+                )
             }
+            .padding(12)
+            .background(Color(nsColor: .windowBackgroundColor).opacity(0.54))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
         }
         .padding(18)
         .frame(maxWidth: .infinity, minHeight: 420, alignment: .topLeading)
@@ -173,12 +198,7 @@ struct ModelOverviewSection: View {
                     Spacer()
                 }
 
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 8)], spacing: 8) {
-                    ModelMetricPill(label: "Signals", value: "\(review.stats.memories)", systemImage: "brain.head.profile")
-                    ModelMetricPill(label: "Review", value: "\(review.stats.pending_captures)", systemImage: "tray.full")
-                    ModelMetricPill(label: "Decisions", value: "\(review.recent_decisions.count)", systemImage: "checkmark.seal")
-                    ModelMetricPill(label: "Open work", value: "\(review.open_tasks.count)", systemImage: "circle.dashed")
-                }
+                ModelProofPointCard(state: state, memory: review.recent_memories.first, signalCount: review.stats.memories)
 
             } else {
                 HStack {
@@ -256,6 +276,88 @@ struct ModelReadinessRing: View {
         }
         .frame(width: 70, height: 70)
         .accessibilityLabel("Model readiness \(value) percent")
+    }
+}
+
+struct ModelProofPointCard: View {
+    @ObservedObject var state: AppState
+    let memory: MemoryItem?
+    let signalCount: Int
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .foregroundColor(.accentColor)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Proof point")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
+                if let memory {
+                    Text(memory.content)
+                        .font(.callout)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 8) {
+                        Text(sourceDetail(for: memory))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 0)
+                        Button {
+                            state.searchQuery = String(memory.content.prefix(140))
+                            state.selectedTab = .ask
+                            state.runSearch()
+                        } label: {
+                            Label("Ask", systemImage: "magnifyingglass")
+                        }
+                    }
+                } else {
+                    Text("\(signalCount) approved signals are available for adaptation.")
+                        .font(.callout)
+                    Text("Add richer sources to show a concrete memory here.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.64))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var icon: String {
+        guard let memory else {
+            return "brain.head.profile"
+        }
+        switch memory.layer ?? memory.kind {
+        case "decision":
+            return "checkmark.seal"
+        case "episodic", "event":
+            return "calendar"
+        case "style":
+            return "signature"
+        case "preference":
+            return "slider.horizontal.3"
+        case "negative":
+            return "hand.raised"
+        default:
+            return "brain.head.profile"
+        }
+    }
+
+    private func sourceDetail(for memory: MemoryItem) -> String {
+        var parts = [memory.source]
+        if let date = memory.captured_at {
+            parts.append(String(date.prefix(10)))
+        }
+        if let url = memory.source_url, !url.isEmpty {
+            parts.append(url)
+        }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -498,6 +600,8 @@ struct ModelSignalSummarySection: View {
         VStack(alignment: .leading, spacing: 10) {
             SectionHeader(title: "Current signal", detail: "High-level shape of the model without review clutter.")
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 8)], spacing: 8) {
+                ModelMetricPill(label: "Signals", value: "\(review.stats.memories)", systemImage: "brain.head.profile")
+                ModelMetricPill(label: "Review", value: "\(review.stats.pending_captures)", systemImage: "tray.full")
                 ModelMetricPill(label: "Topics", value: "\(review.top_topics.count)", systemImage: "number")
                 ModelMetricPill(label: "People & projects", value: "\(review.top_entities.count)", systemImage: "person.2")
                 ModelMetricPill(label: "Open loops", value: "\(review.open_tasks.count)", systemImage: "circle.dashed")
@@ -507,6 +611,28 @@ struct ModelSignalSummarySection: View {
                 QuietState(title: "Needs more context", detail: "Import a richer source to improve people, project, topic, and style coverage.")
             } else {
                 ModelTopicSection(topics: review.top_topics, entities: review.top_entities)
+            }
+        }
+    }
+}
+
+struct ModelDisclosureLabel: View {
+    let systemImage: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: systemImage)
+                .foregroundColor(.accentColor)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.headline)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
