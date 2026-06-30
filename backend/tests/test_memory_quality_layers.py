@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -122,6 +123,25 @@ class MemoryQualityLayerTests(unittest.TestCase):
         self.assertNotIn("Future deployment process", contents)
         self.assertNotIn("Superseded deployment process", contents)
         self.assertTrue(all(item["layer"] == "procedural" for item in results))
+
+        answer = json.dumps(self.store.answer_query(self.user_id, "deployment process", limit=10))
+        self.assertIn("Current deployment process", answer)
+        self.assertNotIn("Expired deployment process", answer)
+        self.assertNotIn("Future deployment process", answer)
+        self.assertNotIn("Superseded deployment process", answer)
+
+        pack = self.store.context_pack(self.user_id, query="deployment process", limit=10)
+        self.assertIn("Current deployment process", pack)
+        self.assertNotIn("Expired deployment process", pack)
+        self.assertNotIn("Future deployment process", pack)
+        self.assertNotIn("Superseded deployment process", pack)
+
+        profile = self.store.personal_profile(self.user_id, query="deployment process", limit=10, include_pending=True)
+        profile_text = json.dumps(profile)
+        self.assertIn("Current deployment process", profile_text)
+        self.assertNotIn("Expired deployment process", profile_text)
+        self.assertNotIn("Future deployment process", profile_text)
+        self.assertNotIn("Superseded deployment process", profile_text)
 
     def test_mcp_high_value_tools_return_style_project_and_procedure_context(self) -> None:
         extracted = {
