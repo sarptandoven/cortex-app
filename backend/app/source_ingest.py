@@ -20,6 +20,15 @@ from urllib.parse import quote
 
 MAX_TEXT_BYTES = 12_000_000
 MAX_RECORD_CHARS = 185_000
+MAX_RECORD_CHUNK_CHARS = 45_000
+MAX_RECORD_CHUNK_LINES = 18
+CHUNK_MARKERS = {
+    "--- messages ---",
+    "--- rows ---",
+    "--- events ---",
+    "--- contacts ---",
+    "--- recent visits ---",
+}
 
 TEXT_EXTENSIONS = {
     ".txt",
@@ -305,8 +314,100 @@ def import_source_records(paths: Iterable[str], source_hint: str = "", max_recor
         if parsed:
             records.extend(parsed)
 
-    bounded = [record.bounded() for record in records if record.content.strip()]
-    return bounded[:max_records]
+    expanded: list[SourceRecord] = []
+    for record in records:
+        if not record.content.strip():
+            continue
+        expanded.extend(_chunk_source_record(record))
+        if len(expanded) >= max_records:
+            break
+    return [record.bounded() for record in expanded[:max_records]]
+
+
+def _chunk_source_record(record: SourceRecord) -> list[SourceRecord]:
+    lines = record.content.splitlines()
+    body_start = _chunk_body_start(lines)
+    if body_start is None:
+        return [record]
+    header = lines[:body_start]
+    body = [line for line in lines[body_start:] if line.strip()]
+    if len(body) <= MAX_RECORD_CHUNK_LINES and len(record.content) <= MAX_RECORD_CHUNK_CHARS:
+        return [record]
+
+    grouped = _group_chunk_body_lines(body)
+    raw_chunks: list[list[str]] = []
+    current: list[str] = []
+    current_chars = 0
+    for group in grouped:
+        group_chars = sum(len(line) + 1 for line in group)
+        if current and (len(current) + len(group) > MAX_RECORD_CHUNK_LINES or current_chars + group_chars > MAX_RECORD_CHUNK_CHARS):
+            raw_chunks.append(current)
+            current = []
+            current_chars = 0
+        current.extend(group)
+        current_chars += group_chars
+    if current:
+        raw_chunks.append(current)
+    if len(raw_chunks) <= 1:
+        return [record]
+
+    chunk_count = len(raw_chunks)
+    chunks: list[SourceRecord] = []
+    for index, chunk_lines in enumerate(raw_chunks, start=1):
+        chunks.append(
+            SourceRecord(
+                source=record.source,
+                title=f"{record.title} (part {index}/{chunk_count})",
+                content="\n".join([*header, *chunk_lines]),
+                source_url=_source_url_with_chunk(record.source_url, index),
+                metadata={**record.metadata, "chunk_index": index, "chunk_count": chunk_count},
+            )
+        )
+    return chunks
+
+
+def _chunk_body_start(lines: list[str]) -> int | None:
+    for index, line in enumerate(lines):
+        if line.strip().lower() in CHUNK_MARKERS:
+            return index + 1
+    return None
+
+
+def _group_chunk_body_lines(lines: list[str]) -> list[list[str]]:
+    groups: list[list[str]] = []
+    current: list[str] = []
+    for line in lines:
+        if current and _looks_like_new_chunk_item(line):
+            groups.append(current)
+            current = []
+        current.append(line)
+    if current:
+        groups.append(current)
+    return groups
+
+
+def _looks_like_new_chunk_item(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if re.match(r"^row\s+\d+\b", stripped, re.IGNORECASE):
+        return True
+    if re.match(r"^\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2})?", stripped):
+        return True
+    if re.match(r"^\d{10}(?:\.\d+)?\b", stripped):
+        return True
+    if re.match(r"^(user|assistant|human|system|unknown|bot)\s*:", stripped, re.IGNORECASE):
+        return True
+    return False
+
+
+def _source_url_with_chunk(source_url: str | None, index: int) -> str | None:
+    if not source_url:
+        return source_url
+    if source_url.startswith("cortex-source://") or "#" in source_url or "?" in source_url:
+        separator = "&" if ("?" in source_url or "#" in source_url) else "?"
+        return f"{source_url}{separator}chunk={index}"
+    return f"{source_url}#chunk-{index}"
 
 
 def _collect_assets(paths: Iterable[str]) -> list[SourceAsset]:

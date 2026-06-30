@@ -152,6 +152,31 @@ class SourceIngestTests(unittest.TestCase):
         self.assertFalse(deleted_again["deleted"])
         self.assertEqual(deleted_again["status"], "already_deleted")
 
+    def test_long_chat_exports_are_chunked_before_extraction(self) -> None:
+        self._write_long_chatgpt_export()
+        records = import_source_records([str(self.root / "chatgpt-long")], max_records=10)
+
+        self.assertGreaterEqual(len(records), 2)
+        self.assertTrue(any("chunk=2" in (record.source_url or "") for record in records))
+        self.assertTrue(any("Project Longtail" in record.content for record in records[1:]))
+
+        db_path = self.root / "longtail.sqlite"
+        init_db(db_path)
+        store = CortexStore(db_path, self.root / "longtail-vault")
+        result = store.import_sources(
+            user_id="test-user",
+            paths=[str(self.root / "chatgpt-long")],
+            processing="sync",
+            max_records=10,
+        )
+
+        self.assertEqual(result["failed"], 0)
+        self.assertGreaterEqual(result["saved"], 2)
+        self.assertEqual(result["records_found"], len(records))
+        hits = store.search("test-user", "Project Longtail late export decisions", limit=5)
+        self.assertTrue(any("Project Longtail" in memory["content"] for memory in hits))
+        self.assertTrue(any("chunk=2" in (memory["source_url"] or "") for memory in hits))
+
     def test_repeated_import_skips_duplicates_without_deleting_original(self) -> None:
         self._write_chatgpt_export()
         db_path = self.root / "index.sqlite"
@@ -662,6 +687,34 @@ class SourceIngestTests(unittest.TestCase):
                         }
                     },
                 },
+            }
+        ]
+        (folder / "conversations.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def _write_long_chatgpt_export(self) -> None:
+        folder = self.root / "chatgpt-long"
+        folder.mkdir()
+        mapping = {}
+        for index in range(34):
+            mapping[f"filler-{index}"] = {
+                "message": {
+                    "author": {"role": "user"},
+                    "create_time": 1_782_700_000 + index,
+                    "content": {"parts": [f"Longtail filler note {index} should keep ordinary project context available."]},
+                }
+            }
+        mapping["late-decision"] = {
+            "message": {
+                "author": {"role": "user"},
+                "create_time": 1_782_700_100,
+                "content": {"parts": ["We decided Project Longtail should preserve late export decisions after chunking."]},
+            }
+        }
+        payload = [
+            {
+                "title": "Project Longtail history",
+                "create_time": 1_782_700_000,
+                "mapping": mapping,
             }
         ]
         (folder / "conversations.json").write_text(json.dumps(payload), encoding="utf-8")
