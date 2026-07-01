@@ -320,7 +320,7 @@ struct OnboardingFirstSourceStep: View {
     }
 
     private var firstSourceButtonTitle: String {
-        if state.hasConnectedObsidianVault { return "Check notes now" }
+        if state.hasConnectedObsidianVault { return "Sync source" }
         if obsidianConnector != nil { return "Connect source" }
         return "Refresh"
     }
@@ -455,7 +455,7 @@ struct OnboardingReviewMemoryStep: View {
                 Button {
                     state.connectLocalNotesFolder(connector)
                 } label: {
-                    Label("Check notes now", systemImage: "arrow.triangle.2.circlepath")
+                    Label("Sync source", systemImage: "arrow.triangle.2.circlepath")
                         .frame(minWidth: 158, minHeight: 42)
                 }
                 .buttonStyle(.borderedProminent)
@@ -465,7 +465,7 @@ struct OnboardingReviewMemoryStep: View {
                 Button {
                     state.previousOnboardingStep()
                 } label: {
-                    Label("Connect notes", systemImage: "folder.badge.plus")
+                    Label("Connect source", systemImage: "folder.badge.plus")
                         .frame(minWidth: 146, minHeight: 42)
                 }
                 .buttonStyle(.borderedProminent)
@@ -504,9 +504,9 @@ struct OnboardingReviewMemoryStep: View {
             return "You already reviewed memory from your first connection."
         }
         if state.onboardingHasSource {
-            return "No reviewable memory is waiting yet. Let notes sync finish, then approve one useful item."
+            return "No reviewable memory is waiting yet. Let source sync finish, then approve one useful item."
         }
-        return "Connect notes first; synced memory appears here before Cortex uses it."
+        return "Connect a source first; synced memory appears here before Cortex uses it."
     }
 
     private var reviewPathTitle: String {
@@ -523,7 +523,7 @@ struct OnboardingReviewMemoryStep: View {
         if state.onboardingHasSource {
             return "Approve one useful memory to let Cortex cite it in Ask."
         }
-        return "Review unlocks after connected notes sync memory."
+        return "Review unlocks after a connected source syncs memory."
     }
 }
 

@@ -2581,7 +2581,7 @@ final class AppState: ObservableObject {
     func performProductLoopAction(_ action: ProductLoopAction) {
         switch action.action {
         case "capture":
-            openConnectionsPrivacy(statusMessage: "Connect notes to start memory sync")
+            openConnectionsPrivacy(statusMessage: "Connect a source to start memory sync")
         case "review":
             selectedTab = .review
             status = "Review new signals below"
@@ -2797,9 +2797,9 @@ final class AppState: ObservableObject {
         }
 
         let panel = NSOpenPanel()
-        panel.title = "Choose Notes Folder"
-        panel.message = "Choose the notes folder Cortex should sync into Review."
-        panel.prompt = "Choose Notes"
+        panel.title = "Choose Source Folder"
+        panel.message = "Choose the local source Cortex should sync into Review."
+        panel.prompt = "Choose Folder"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
@@ -2921,7 +2921,7 @@ final class AppState: ObservableObject {
                 await loadSourceConnectivity()
                 await loadTrust()
                 if !automatic {
-                    status = "No usable notes found in \(synced.scan.vault_name). Choose notes with real content."
+                    status = "No usable notes found in \(synced.scan.vault_name). Choose a source with real content."
                 }
                 return
             }
@@ -3437,7 +3437,7 @@ final class AppState: ObservableObject {
             case .privateVault:
                 status = "Start the local memory engine before continuing"
             case .firstSource:
-                status = "Connect notes, then sync memory into Review"
+                status = "Connect a source, then sync memory into Review"
             case .reviewMemory:
                 status = "Approve one review item before asking Cortex"
             case .askUse:
@@ -4702,7 +4702,7 @@ struct SourceHealthSummarySection: View {
                     }
                 }
             } else {
-                QuietState(title: "No notes connected", detail: "Connect a notes folder to start. AI tools can use reviewed memory later.")
+                QuietState(title: "No source connected", detail: "Connect a local source to start. AI tools can use reviewed memory later.")
             }
         }
     }
@@ -4780,7 +4780,7 @@ struct SourceReadinessPanel: View {
 
     private func displayRecommendation(_ value: String) -> String {
         if value.lowercased().contains("import one high-signal source") {
-            return "Connect a notes folder so Cortex can sync useful memory into Review."
+            return "Connect a local source so Cortex can sync useful memory into Review."
         }
         if value.lowercased().contains("local beta use") {
             return "Connections are healthy for current and planned sync."
@@ -4966,7 +4966,7 @@ struct SourceAccountHealthRow: View {
             return CortexRecoveryText.inlineError(error, fallback: "Refresh Connections. If it repeats, reconnect this source.")
         }
         if account.status.lowercased() == "empty" || account.auth_state.lowercased() == "needs-content" {
-            return "No usable notes found. Choose notes with real content."
+            return "No usable notes found. Choose a source with real content."
         }
         if let synced = account.last_sync_at ?? cursor?.last_completed_at {
             if let summary = latestBatchSummary {
@@ -5486,7 +5486,7 @@ struct TrustSourceSection: View {
             Text("Memory sources")
                 .font(.headline)
             if summary.source_counts.isEmpty {
-                QuietState(title: "No notes connected yet", detail: "Connected notes and AI-tool activity will appear here.")
+                QuietState(title: "No source connected yet", detail: "Connected sources and AI-tool activity will appear here.")
             } else {
                 ForEach(summary.source_counts.prefix(8)) { source in
                     HStack(spacing: 10) {

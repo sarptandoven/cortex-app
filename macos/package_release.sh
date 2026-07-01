@@ -159,7 +159,7 @@ detach_existing_dmg_image() {
 }
 
 if [[ ${#NOTES[@]} -eq 0 ]]; then
-  NOTES+=("Local-first Cortex beta with bundled local service, notes connections, Review, cited Ask, backup, and Connections & Privacy controls.")
+  NOTES+=("Local-first Cortex beta with bundled local service, source connections, Review, cited Ask, backup, and Connections & Privacy controls.")
 fi
 
 mkdir -p "$OUT_DIR"
@@ -180,7 +180,7 @@ Install:
 3. Open Cortex from Applications.
 4. If macOS warns because this local beta is not notarized yet, Control-click Cortex.app and choose Open.
 5. Open Cortex. The local backend runtime is bundled in this release package.
-6. Connect notes, review one memory, ask a cited question, then decide on backup in Connections & Privacy.
+6. Connect a memory source, review one memory, ask a cited question, then decide on backup in Connections & Privacy.
 
 Update:
 1. Quit Cortex.
@@ -291,7 +291,7 @@ payload = {
             "Open the DMG and drag Cortex.app to Applications.",
             "Launch Cortex from Applications.",
             "If macOS blocks an unnotarized local beta, Control-click Cortex.app and choose Open.",
-            "Complete getting started by connecting notes, reviewing one memory, asking a cited question, then deciding on backup in Connections & Privacy.",
+            "Complete getting started by connecting a memory source, reviewing one memory, asking a cited question, then deciding on backup in Connections & Privacy.",
         ],
         "update_steps": [
             "Quit Cortex before replacing the app.",
@@ -314,7 +314,7 @@ payload = {
         "manual_qa_checklist": [
             "Install from the DMG on a clean macOS 13 or newer user profile.",
             "Launch from Applications and complete first-run setup.",
-            "Connect notes in Connections & Privacy.",
+            "Connect a memory source in Connections & Privacy.",
             "Approve at least one useful memory and archive obvious noise in Review.",
             "Ask a question that returns cited memory from the approved connected source.",
             "Verify Connections & Privacy shows memory folder path, backend health, backup, export, support bundle, and update feed controls.",
@@ -406,7 +406,7 @@ python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-packa
 4. Open Cortex from Applications.
 5. If macOS blocks this local beta because it is not notarized yet,
    Control-click Cortex.app and choose Open.
-6. Complete first-run setup by connecting notes, reviewing memory,
+6. Complete first-run setup by connecting a memory source, reviewing memory,
    asking a cited question, then deciding on backup in Connections & Privacy.
 
 The app starts its local backend on:
@@ -494,7 +494,7 @@ Do not invite the first 100 testers until these checks pass on a clean macOS
 
 1. Install from ${DMG_FILE}, launch from Applications, and complete first-run setup.
 2. Confirm Home shows readiness, connection health, decisions, and next action.
-3. Connect notes in Connections & Privacy.
+3. Connect a memory source in Connections & Privacy.
 4. Approve at least one useful memory and archive obvious noise in Review.
 5. Ask a question that returns cited memory from the approved connected source.
 6. Confirm Connections & Privacy shows memory folder path, backend health, backup, export, support bundle, and update feed controls.

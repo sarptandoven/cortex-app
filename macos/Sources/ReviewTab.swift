@@ -118,7 +118,7 @@ struct ReviewInboxSection: View {
 
     private var emptyDetail: String {
         if (state.review?.stats.memories ?? 0) == 0 {
-            return "Connect notes first. New memories will appear here before Cortex uses them."
+            return "Connect a memory source first. New memories will appear here before Cortex uses them."
         }
         return "All caught up. New synced items will appear here before Cortex uses them."
     }
@@ -155,7 +155,7 @@ struct ReviewEmptyState: View {
                     Button {
                         state.connectLocalNotesFolder(connector)
                     } label: {
-                        Label("Check notes now", systemImage: "arrow.triangle.2.circlepath")
+                        Label("Sync source", systemImage: "arrow.triangle.2.circlepath")
                             .frame(minWidth: 164, minHeight: 46)
                     }
                     .buttonStyle(.borderedProminent)
@@ -163,9 +163,9 @@ struct ReviewEmptyState: View {
                     .disabled(state.isBusy)
                 } else {
                     Button {
-                        state.openConnectionsPrivacy(statusMessage: "Connect notes")
+                        state.openConnectionsPrivacy(statusMessage: "Connect a source")
                     } label: {
-                        Label("Connect notes", systemImage: "folder.badge.plus")
+                        Label("Connect source", systemImage: "folder.badge.plus")
                             .frame(minWidth: 150, minHeight: 46)
                     }
                     .buttonStyle(.borderedProminent)

@@ -137,9 +137,9 @@ struct AskEmptyGuidance: View {
                 HStack(spacing: 10) {
                     if approvedMemoryCount == 0 {
                         Button {
-                            state.openConnectionsPrivacy(statusMessage: "Connect notes")
+                            state.openConnectionsPrivacy(statusMessage: "Connect a source")
                         } label: {
-                            Label("Connect notes", systemImage: "folder.badge.plus")
+                            Label("Connect source", systemImage: "folder.badge.plus")
                                 .frame(minWidth: 150, minHeight: 46)
                         }
                         .buttonStyle(.borderedProminent)
@@ -166,9 +166,9 @@ struct AskEmptyGuidance: View {
                         .controlSize(.large)
 
                         Button {
-                            state.openConnectionsPrivacy(statusMessage: "Connect notes")
+                            state.openConnectionsPrivacy(statusMessage: "Connect another source")
                         } label: {
-                            Label("Connect more notes", systemImage: "folder.badge.plus")
+                            Label("Connect source", systemImage: "folder.badge.plus")
                                 .frame(minWidth: 168, minHeight: 46)
                         }
                         .buttonStyle(.bordered)

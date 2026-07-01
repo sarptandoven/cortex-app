@@ -33,7 +33,7 @@ struct ConnectionsPrivacySheet: View {
                 Text("Connections & Privacy")
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text("Connect notes, keep review-first memory private, and choose where reviewed memory can be used.")
+                Text("Connect memory sources, keep review-first memory private, and choose where reviewed memory can be used.")
                     .font(.callout)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -71,7 +71,7 @@ private struct ConnectionsPrivacyOverview: View {
     }
 
     private var connectionStatusDetail: String {
-        let notes = notesHealth.isNeedsAttention ? "notes need attention" : "\(connectedNotesConnectionCount) notes folder\(connectedNotesConnectionCount == 1 ? "" : "s")"
+        let notes = notesHealth.isNeedsAttention ? "source needs attention" : "\(connectedNotesConnectionCount) local source\(connectedNotesConnectionCount == 1 ? "" : "s")"
         let tools = "\(state.connectedAIIntegrationCount) AI tool\(state.connectedAIIntegrationCount == 1 ? "" : "s")"
         return "\(notes) · \(tools)"
     }
@@ -362,16 +362,16 @@ private struct ConnectionsOverviewHero: View {
 
     private var primaryActionTitle: String {
         if notesConnected {
-            return state.hasConnectedObsidianVault ? "Check notes now" : "Reconnect"
+            return state.hasConnectedObsidianVault ? "Sync source" : "Reconnect"
         }
         if !notesConnected, let _ = obsidianConnector {
-            if notesNeedAttention { return "Fix notes" }
-            return notesNeedContent ? "Choose notes" : "Connect notes"
+            if notesNeedAttention { return "Fix source" }
+            return notesNeedContent ? "Choose source" : "Connect source"
         }
         if !notesConnected {
             return "Check status"
         }
-        return "Check notes now"
+        return "Sync source"
     }
 
     private var primaryActionIcon: String {
@@ -387,15 +387,15 @@ private struct ConnectionsOverviewHero: View {
 
     private var title: String {
         if notesConnected {
-            return "Notes are connected"
+            return "Source connected"
         }
         if notesNeedAttention {
-            return "Notes need attention"
+            return "Source needs attention"
         }
         if notesNeedContent {
-            return "Choose a folder with notes"
+            return "Choose a source with content"
         }
-        return "Connect notes once"
+        return "Connect source once"
     }
 
     private var detail: String {
@@ -408,7 +408,7 @@ private struct ConnectionsOverviewHero: View {
         if notesNeedContent {
             return "Cortex could not find usable notes there. Choose a notes library with real content."
         }
-        return "Choose the notes folder Cortex should sync. New memory goes to Review before Ask or AI tools can use it."
+        return "Choose the local source Cortex should sync. New memory goes to Review before Ask or AI tools can use it."
     }
 
     private var statusIcon: String {
@@ -817,9 +817,9 @@ private struct ConnectionsActiveSourcesSection: View {
         VStack(alignment: .leading, spacing: 8) {
             if activeAccounts.isEmpty {
                 if accountsNeedingContent.isEmpty {
-                    QuietState(title: "No notes connected", detail: "Connect a notes folder once. Cortex syncs after that.")
+                    QuietState(title: "No source connected", detail: "Connect a local source once. Cortex syncs after that.")
                 } else {
-                    QuietState(title: "Choose a folder with notes", detail: "The selected folder did not produce usable notes yet.")
+                    QuietState(title: "Choose a source with content", detail: "The selected folder did not produce usable memory yet.")
                 }
             } else {
                 ForEach(activeAccounts.prefix(8)) { account in

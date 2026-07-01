@@ -84,10 +84,10 @@ struct HomeHeroSection: View {
             return "Ask about your memory"
         }
         if activeSources > 0 {
-            return "Your notes are syncing"
+            return "Your source is syncing"
         }
         if hasEmptySource {
-            return "Choose notes with content"
+            return "Choose source with content"
         }
         if state.connectedAIIntegrationCount > 0 {
             return "Connect a memory source"
@@ -106,7 +106,7 @@ struct HomeHeroSection: View {
             return "Choose what Cortex should remember before it appears in Ask."
         }
         if hasMemory {
-            return "Cortex answers from saved memory and shows which notes each answer came from."
+            return "Cortex answers from saved memory and shows which source each answer came from."
         }
         if activeSources > 0 {
             return "New items will appear in Review when sync finishes."
@@ -115,14 +115,14 @@ struct HomeHeroSection: View {
             return "Cortex could not find usable notes there. Pick a folder or app that has real notes."
         }
         if state.connectedAIIntegrationCount > 0 {
-            return "Your AI tool is connected. Add a local notes source so Ask can answer with citations."
+            return "Your AI tool is connected. Add a memory source so Ask can answer with citations."
         }
-        return "Choose a local notes source once. Cortex keeps it in sync and brings new memory to Review."
+        return "Choose a memory source once. Cortex keeps it in sync and brings new memory to Review."
     }
 
     private var actionTitle: String {
         if !state.isLocalServiceReady { return "Start Cortex" }
-        if activeSources == 0 { return hasEmptySource ? "Choose notes" : "Connect source" }
+        if activeSources == 0 { return hasEmptySource ? "Choose source" : "Connect source" }
         if pendingCount > 0 { return "Review memory" }
         if hasMemory { return "Ask a question" }
         return "View sync status"
@@ -132,12 +132,12 @@ struct HomeHeroSection: View {
         if !state.isLocalServiceReady { return "Start Cortex on this Mac." }
         if activeSources == 0 {
             if hasEmptySource {
-                return "Pick a different notes folder or app."
+                return "Pick a different folder or app with useful memory."
             }
             if state.connectedAIIntegrationCount > 0 {
-                return "Notes give Ask something to cite."
+                return "A memory source gives Ask something to cite."
             }
-            return "Cortex syncs automatically after notes connect."
+            return "Cortex syncs automatically after a source connects."
         }
         if pendingCount > 0 {
             return "\(pendingCount) item\(pendingCount == 1 ? "" : "s") waiting"
@@ -430,7 +430,7 @@ struct ModelSourceCoverageSection: View {
                     Spacer(minLength: 0)
                 }
             } else if review.stats.memories == 0 {
-                QuietState(title: "No reviewed memory yet", detail: "Connect notes, then approve useful memory in Review before expecting Ask to answer.")
+                QuietState(title: "No reviewed memory yet", detail: "Connect a memory source, then approve useful memory in Review before expecting Ask to answer.")
             } else {
                 HStack(spacing: 8) {
                     ModelMetricPill(label: "Topics", value: "\(review.top_topics.count)", systemImage: "number")
