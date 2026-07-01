@@ -112,6 +112,7 @@ private struct ConnectionsPrivacyOverview: View {
                 ConnectionsOverviewHero(state: state)
 
                 ConnectionsObsidianSection(state: state)
+                otherSourceConnections
                 if state.connectedAIIntegrationCount > 0 {
                     ConnectionsAIToolsSection(state: state)
                 }
@@ -139,14 +140,14 @@ private struct ConnectionsPrivacyOverview: View {
         }
     }
 
-    private var advancedSourceConnections: some View {
+    private var otherSourceConnections: some View {
         DisclosureGroup(isExpanded: $advancedSourcesExpanded) {
             ConnectionsDirectSourcesSection(state: state)
                 .padding(.top, 10)
         } label: {
             ConnectionsDisclosureLabel(
-                systemImage: "slider.horizontal.3",
-                title: "Advanced source sync",
+                systemImage: "link.badge.plus",
+                title: "Other source connections",
                 detail: advancedSourceDisclosureDetail
             )
         }
@@ -161,7 +162,7 @@ private struct ConnectionsPrivacyOverview: View {
         if extraSources > 0 {
             return "\(extraSources) extra source\(extraSources == 1 ? "" : "s") connected"
         }
-        return "Read-only token and local-file options"
+        return "Read-only token, local-file, and local-app sync"
     }
 
     private var optionalAITools: some View {
@@ -231,8 +232,6 @@ private struct ConnectionsPrivacyOverview: View {
                     .font(.callout)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-
-                advancedSourceConnections
 
                 if state.connectedAIIntegrationCount == 0 {
                     optionalAITools
@@ -560,35 +559,50 @@ private struct ConnectionsDirectSourcesSection: View {
     @ObservedObject var state: AppState
     @State private var selectedTokenConnector: SourceConnectorCatalogItem?
 
-    private let connectorOrder = [
-        "calendar",
-        "zotero",
-        "notion",
-        "slack",
-        "github",
-        "readwise",
-        "raindrop",
-        "linear",
-        "jira"
-    ]
-
     private var wiredConnectors: [SourceConnectorCatalogItem] {
-        connectorOrder.compactMap { connectorID in
-            state.sourceConnectorCatalog.first { $0.id == connectorID }
+        state.sourceConnectorCatalog
+            .filter { state.isDirectConnectorSyncWired($0) }
+            .sorted {
+                let leftRank = state.directConnectorSortRank($0.id)
+                let rightRank = state.directConnectorSortRank($1.id)
+                if leftRank != rightRank { return leftRank < rightRank }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+    }
+
+    private var plannedConnectorNames: [String] {
+        state.sourceConnectorCatalog
+            .filter { connector in
+                connector.isAccountSignInPlanned
+                    || state.readiness(for: connector)?.sync_plan?.mode == "planned_account_sync"
+            }
+            .filter { !$0.showInPrimaryUI }
+            .map(\.name)
+            .sorted()
+    }
+
+    private var plannedConnectorSummary: String? {
+        let names = plannedConnectorNames
+        guard !names.isEmpty else { return nil }
+        let visible = names.prefix(3).joined(separator: ", ")
+        let remaining = names.count - min(3, names.count)
+        if remaining > 0 {
+            return "\(visible), and \(remaining) more are planned sign-in connectors."
         }
+        return "\(visible) \(names.count == 1 ? "is" : "are") planned sign-in \(names.count == 1 ? "connector" : "connectors")."
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
-                title: "Advanced source sync",
-                detail: "Optional read-only connectors for specific token, local-file, or local-app setup. Notes sync is the default path."
+                title: "Other source connections",
+                detail: "Optional read-only connections that already sync into Review. Planned sign-in services stay hidden until they are real."
             )
 
             if state.sourceConnectorCatalog.isEmpty {
-                QuietState(title: "Checking advanced connectors", detail: "Cortex is loading local source sync options.")
+                QuietState(title: "Checking source connections", detail: "Cortex is loading local source sync options.")
             } else if wiredConnectors.isEmpty {
-                QuietState(title: "No advanced connectors yet", detail: "Use notes sync as the default source path.")
+                QuietState(title: "No extra connectors ready", detail: "Use notes sync as the default source path.")
             } else {
                 VStack(spacing: 10) {
                     ForEach(wiredConnectors) { connector in
@@ -602,6 +616,13 @@ private struct ConnectionsDirectSourcesSection: View {
                         )
                     }
                 }
+            }
+
+            if let plannedConnectorSummary {
+                Text(plannedConnectorSummary)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .sheet(item: $selectedTokenConnector) { connector in

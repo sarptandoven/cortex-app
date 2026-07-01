@@ -79,6 +79,8 @@ struct SourceConnectorCatalogItem: Codable, Identifiable, Hashable {
     let beta_status: String?
     let primary_beta_path: String?
     let show_in_primary_ui: Bool?
+    let baseline_10k: Bool?
+    let service_baseline: SourceServiceBaseline?
 
     var showInPrimaryUI: Bool {
         if let show_in_primary_ui {
@@ -124,6 +126,32 @@ struct SourceConnectorCatalogItem: Codable, Identifiable, Hashable {
     var isAccountSignInPlanned: Bool {
         authKind == "oauth" || connectorReadinessStatus == "live-planned"
     }
+
+    var hasNativeDirectSync: Bool {
+        if service_baseline?.live_sync == true {
+            return true
+        }
+        switch (service_baseline?.path ?? "").lowercased() {
+        case "native-token-sync", "native-local-sync":
+            return true
+        default:
+            break
+        }
+        let status = (live_status ?? "").lowercased()
+        return ["api_token", "local_api", "local_only"].contains(status)
+    }
+}
+
+struct SourceServiceBaseline: Codable, Hashable {
+    let included: Bool?
+    let records_supported: Bool?
+    let live_sync: Bool?
+    let manual_direct_sync: Bool?
+    let local_app_autosync: Bool?
+    let hosted_managed_sync: Bool?
+    let primary_ui: Bool?
+    let path: String?
+    let source_ids: [String]?
 }
 
 struct SourceReadinessResponse: Codable, Hashable {
@@ -2417,6 +2445,17 @@ final class AppState: ObservableObject {
         "slack",
         "zotero"
     ]
+    private static let directConnectorSyncOrder = [
+        "calendar",
+        "zotero",
+        "notion",
+        "slack",
+        "github",
+        "readwise",
+        "raindrop",
+        "linear",
+        "jira"
+    ]
 
     var integrations: [AIIntegration] {
         AIIntegrationCatalog.all
@@ -3144,7 +3183,9 @@ final class AppState: ObservableObject {
         guard !configuredDirectConnectorIDs.isEmpty else { return [] }
         let readinessBySource = Dictionary(uniqueKeysWithValues: (sourceReadinessReport?.sources ?? []).map { ($0.source, $0) })
         return Set(configuredDirectConnectorIDs.filter { connectorID in
-            guard let readiness = readinessBySource[connectorID],
+            guard let connector = sourceConnectorCatalog.first(where: { $0.id == connectorID }),
+                  isDirectConnectorSyncWired(connector),
+                  let readiness = readinessBySource[connectorID],
                   let syncPlan = readiness.sync_plan else {
                 return true
             }
@@ -3168,6 +3209,7 @@ final class AppState: ObservableObject {
         guard !configuredIDs.isEmpty else { return }
         for connectorID in configuredIDs {
             guard let connector = sourceConnectorCatalog.first(where: { $0.id == connectorID }),
+                  isDirectConnectorSyncWired(connector),
                   let payload = storedDirectConnectorPayload(for: connectorID) else {
                 continue
             }
@@ -3263,7 +3305,7 @@ final class AppState: ObservableObject {
     }
 
     func syncDirectConnector(_ connector: SourceConnectorCatalogItem, payload: [String: Any], rememberPayload: Bool = false, automatic: Bool = false) async {
-        guard Self.directConnectorSyncIDs.contains(connector.id) else {
+        guard isDirectConnectorSyncWired(connector) else {
             if !automatic {
                 status = "\(connector.name) is not wired for direct sync yet"
             }
@@ -3342,6 +3384,36 @@ final class AppState: ObservableObject {
 
     private func refreshStoredConnectorConfigState() {
         configuredDirectConnectorIDs = Set(Self.directConnectorSyncIDs.filter { storedDirectConnectorPayload(for: $0) != nil })
+    }
+
+    func directConnectorSortRank(_ connectorID: String) -> Int {
+        Self.directConnectorSyncOrder.firstIndex(of: connectorID) ?? Self.directConnectorSyncOrder.count
+    }
+
+    func readiness(for connector: SourceConnectorCatalogItem) -> SourceReadinessItem? {
+        sourceReadinessReport?.sources.first { source in
+            source.source == connector.id
+                || (source.source_ids ?? []).contains(connector.id)
+                || (connector.source_ids ?? []).contains(source.source)
+        }
+    }
+
+    func isDirectConnectorSyncWired(_ connector: SourceConnectorCatalogItem) -> Bool {
+        guard Self.directConnectorSyncIDs.contains(connector.id), connector.id != "obsidian" else {
+            return false
+        }
+        if connector.isAccountSignInPlanned || !connector.hasNativeDirectSync {
+            return false
+        }
+        if let readiness = readiness(for: connector) {
+            if readiness.sync_plan?.mode == "planned_account_sync" {
+                return false
+            }
+            if readiness.primary_beta_path == "account-sign-in-planned" {
+                return false
+            }
+        }
+        return true
     }
 
     private func storedDirectConnectorPayload(for connectorID: String) -> [String: Any]? {
