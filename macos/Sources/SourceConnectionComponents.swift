@@ -21,7 +21,7 @@ struct SourceConnectorStatusCard: View {
                 )
             }
             VStack(alignment: .leading, spacing: 5) {
-                Text("Notes")
+                Text(connector.id == "obsidian" ? "Primary notes" : "Later")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(.secondary)
@@ -61,7 +61,7 @@ struct SourceConnectorStatusCard: View {
                 HStack(spacing: 8) {
                     Image(systemName: "clock")
                         .foregroundColor(.secondary)
-                    Text("This connection is not available in this beta")
+                    Text("Available later")
                         .font(.callout)
                         .fontWeight(.medium)
                     Spacer()
@@ -80,30 +80,37 @@ struct SourceConnectorStatusCard: View {
 
     private var statusTitle: String {
         if needsContent { return "No notes found" }
+        if connector.id != "obsidian" { return "Later" }
         return connected ? "Connected" : "Local"
     }
 
     private var statusIcon: String {
         if needsContent { return "folder.badge.questionmark" }
+        if connector.id != "obsidian" { return "clock" }
         return connected ? "checkmark.seal.fill" : "link.badge.plus"
     }
 
     private var statusChipIcon: String {
         if needsContent { return "exclamationmark.circle.fill" }
+        if connector.id != "obsidian" { return "clock" }
         return connected ? "checkmark.circle.fill" : "folder.badge.plus"
     }
 
     private var statusColor: Color {
         if needsContent { return .orange }
+        if connector.id != "obsidian" { return .secondary }
         return connected ? .green : .accentColor
     }
 
     private var statusDetail: String {
+        if connector.id != "obsidian" {
+            return "Use the notes folder connection here."
+        }
         if needsContent {
             return "Cortex could not find usable notes there. Choose a notes library with real content."
         }
         if connected {
-            return "Cortex keeps these notes synced and sends new memory to Review."
+            return "Cortex keeps these notes synced. Review approves memory before Ask or AI tools use it."
         }
         return "Connect notes once. Cortex syncs locally and keeps citations attached."
     }

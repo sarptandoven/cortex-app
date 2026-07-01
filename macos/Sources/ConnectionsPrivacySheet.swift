@@ -33,7 +33,7 @@ struct ConnectionsPrivacySheet: View {
                 Text("Connections & Privacy")
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text("Connect notes once, then choose which AI tools can read approved memory.")
+                Text("Connect notes, choose AI tool access, and keep local backups.")
                     .font(.callout)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -66,13 +66,26 @@ private struct ConnectionsPrivacyOverview: View {
     @State private var aiToolSetupExpanded = false
     @State private var developerDetailsExpanded = false
 
-    private var connectedSourceCount: Int {
-        if let connected = state.sourceReadinessReport?.summary.connected {
-            return connected
+    private var connectedNotesConnectionCount: Int {
+        if state.hasConnectedObsidianVault {
+            return 1
+        }
+        if let report = state.sourceReadinessReport {
+            return report.sources.contains { source in
+                source.source == "obsidian" && source.status.lowercased() != "empty"
+            } ? 1 : 0
         }
         return state.activeSourceAccounts.filter { account in
-            account.status.lowercased() != "empty" && account.auth_state.lowercased() != "needs-content"
+            account.source == "obsidian"
+                && account.status.lowercased() != "empty"
+                && account.auth_state.lowercased() != "needs-content"
         }.count
+    }
+
+    private var connectionStatusDetail: String {
+        let notes = "\(connectedNotesConnectionCount) notes folder\(connectedNotesConnectionCount == 1 ? "" : "s")"
+        let tools = "\(state.connectedAIIntegrationCount) AI tool\(state.connectedAIIntegrationCount == 1 ? "" : "s")"
+        return "\(notes) · \(tools)"
     }
 
     var body: some View {
@@ -80,10 +93,8 @@ private struct ConnectionsPrivacyOverview: View {
             VStack(alignment: .leading, spacing: 22) {
                 ConnectionsOverviewHero(state: state)
 
-                VStack(alignment: .leading, spacing: 12) {
-                    ConnectionsObsidianSection(state: state)
-                    ConnectionsAIToolsSection(state: state)
-                }
+                ConnectionsObsidianSection(state: state)
+                ConnectionsAIToolsSection(state: state)
 
                 if let summary = state.trustSummary {
                     ConnectionsPrivacyDefaultsSection(state: state, summary: summary)
@@ -117,8 +128,8 @@ private struct ConnectionsPrivacyOverview: View {
         } label: {
             ConnectionsDisclosureLabel(
                 systemImage: "shield.lefthalf.filled",
-                title: "Privacy",
-                detail: "Review, AI access, redaction"
+                title: "Privacy settings",
+                detail: "Review gate, AI reads, redaction"
             )
         }
         .padding(14)
@@ -134,8 +145,8 @@ private struct ConnectionsPrivacyOverview: View {
         } label: {
             ConnectionsDisclosureLabel(
                 systemImage: "checkmark.seal",
-                title: "Connected now",
-                detail: "\(connectedSourceCount) notes · \(state.connectedAIIntegrationCount) AI tools"
+                title: "Connection status",
+                detail: connectionStatusDetail
             )
         }
         .padding(14)
@@ -162,7 +173,7 @@ private struct ConnectionsPrivacyOverview: View {
                         .padding(.top, 8)
                 }
 
-                DisclosureGroup("Tool connections", isExpanded: $aiToolSetupExpanded) {
+                DisclosureGroup("Tool connection setup", isExpanded: $aiToolSetupExpanded) {
                     IntegrationCenterView(state: state, compact: false)
                         .padding(.top, 8)
                 }
@@ -213,8 +224,8 @@ private struct ConnectionsPrivacyOverview: View {
         } label: {
             ConnectionsDisclosureLabel(
                 systemImage: "slider.horizontal.3",
-                title: "Advanced",
-                detail: "Support, audit, repair"
+                title: "Support details",
+                detail: "History, tokens, diagnostics"
             )
         }
         .padding(14)
@@ -235,13 +246,20 @@ private struct ConnectionsPrivacyOverview: View {
 private struct ConnectionsOverviewHero: View {
     @ObservedObject var state: AppState
 
-    private var activeConnections: Int {
-        if let connected = state.sourceReadinessReport?.summary.connected {
-            return connected
+    private var notesConnected: Bool {
+        if state.hasConnectedObsidianVault {
+            return true
         }
-        return state.activeSourceAccounts.filter { account in
-            account.status.lowercased() != "empty" && account.auth_state.lowercased() != "needs-content"
-        }.count
+        if let report = state.sourceReadinessReport {
+            return report.sources.contains { source in
+                source.source == "obsidian" && source.status.lowercased() != "empty"
+            }
+        }
+        return state.activeSourceAccounts.contains { account in
+            account.source == "obsidian"
+                && account.status.lowercased() != "empty"
+                && account.auth_state.lowercased() != "needs-content"
+        }
     }
 
     private var notesNeedContent: Bool {
@@ -291,7 +309,7 @@ private struct ConnectionsOverviewHero: View {
 
     @ViewBuilder
     private var primaryButton: some View {
-        if activeConnections > 0 {
+        if notesConnected {
             Button {
                 runPrimaryAction()
             } label: {
@@ -319,24 +337,24 @@ private struct ConnectionsOverviewHero: View {
     }
 
     private var primaryActionTitle: String {
-        if activeConnections == 0, let _ = obsidianConnector {
+        if !notesConnected, let _ = obsidianConnector {
             return notesNeedContent ? "Choose notes" : "Connect notes"
         }
-        if activeConnections == 0 {
+        if !notesConnected {
             return "Check status"
         }
         return "Refresh status"
     }
 
     private var primaryActionIcon: String {
-        if activeConnections == 0, obsidianConnector != nil {
+        if !notesConnected, obsidianConnector != nil {
             return notesNeedContent ? "folder.badge.questionmark" : "folder.badge.plus"
         }
         return "arrow.clockwise"
     }
 
     private var title: String {
-        if activeConnections > 0 {
+        if notesConnected {
             return "Notes are connected"
         }
         if notesNeedContent {
@@ -346,29 +364,29 @@ private struct ConnectionsOverviewHero: View {
     }
 
     private var detail: String {
-        if activeConnections > 0 {
-            return "New notes sync into Review first. Ask and connected AI tools use only approved memory with citations."
+        if notesConnected {
+            return "New notes go to Review first. Ask and connected AI tools use approved memory with citations."
         }
         if notesNeedContent {
             return "Cortex could not find usable notes there. Choose a notes library with real content."
         }
-        return "Connect notes once. Cortex syncs locally, sends useful memory to Review, then makes approved memory available to Ask and connected AI tools."
+        return "Choose the notes folder Cortex should sync. New memory goes to Review before Ask or AI tools can use it."
     }
 
     private var statusIcon: String {
-        if activeConnections > 0 { return "checkmark.seal.fill" }
+        if notesConnected { return "checkmark.seal.fill" }
         if notesNeedContent { return "folder.badge.questionmark" }
         return "link.circle.fill"
     }
 
     private var statusColor: Color {
-        if activeConnections > 0 { return .green }
+        if notesConnected { return .green }
         if notesNeedContent { return .orange }
         return .accentColor
     }
 
     private func runPrimaryAction() {
-        if activeConnections == 0, let connector = obsidianConnector {
+        if !notesConnected, let connector = obsidianConnector {
             state.connectLocalNotesFolder(connector)
         } else {
             Task {
@@ -388,6 +406,11 @@ private struct ConnectionsObsidianSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(
+                title: "Notes connection",
+                detail: "Choose the folder Cortex should keep synced automatically."
+            )
+
             if state.sourceConnectorCatalog.isEmpty {
                 QuietState(title: "Checking note connections", detail: "Cortex is checking available local note connections.")
             } else if let connector = obsidianConnector {
@@ -447,6 +470,11 @@ private struct ConnectionsAIToolsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(
+                title: "AI tool access",
+                detail: "Ask works in Cortex; detected tools can read approved memory after you connect them."
+            )
+
             HStack(alignment: .center, spacing: 14) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 8)
@@ -494,7 +522,8 @@ private struct ConnectionsAIToolsSection: View {
                 }
             }
             .padding(14)
-            .background(CortexDesign.cardBackground)
+            .background(connectionsPanelBackground)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
             if !connectedIntegrations.isEmpty {
@@ -546,12 +575,12 @@ private struct ConnectionsAIToolsSection: View {
 
     private var statusDetail: String {
         if connectedCount > 0 {
-            return "Approved memory is available to connected tools."
+            return "Connected tools can read approved memory."
         }
         if !detectedConnectable.isEmpty {
-            return "Connect detected tools once. Cortex handles the local connection."
+            return "Connect detected tools when you want approved memory outside Cortex."
         }
-        return "Cortex works without another app. Connect AI tools later when you want approved memory outside Cortex."
+        return "Cortex works without another app. Ask uses approved memory with citations."
     }
 }
 
@@ -571,8 +600,8 @@ private struct ConnectionsPrivacyDefaultsSection: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center) {
                 SectionHeader(
-                    title: "Privacy",
-                    detail: "Local-first and review-first unless you widen access."
+                    title: "Backup & privacy",
+                    detail: "Review first, approved AI reads, and local backups."
                 )
                 Spacer(minLength: 12)
                 Button {
@@ -588,19 +617,19 @@ private struct ConnectionsPrivacyDefaultsSection: View {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 10)], spacing: 10) {
                 ConnectionsTrustTile(
                     title: settings.review_new_captures ? "Review first" : "Auto-approve",
-                    detail: settings.review_new_captures ? "new memory waits" : "new memory can activate",
+                    detail: settings.review_new_captures ? "new memory waits for approval" : "new memory can activate",
                     systemImage: settings.review_new_captures ? "checklist" : "bolt.fill",
                     color: settings.review_new_captures ? .green : .orange
                 )
                 ConnectionsTrustTile(
-                    title: settings.allow_agent_reads ? "AI can read approved memory" : "AI reads are off",
-                    detail: settings.allow_agent_reads ? (settings.allow_pending_in_context ? "pending can be shared" : "approved only") : "tools cannot search memory",
+                    title: settings.allow_agent_reads ? "AI access on" : "AI access off",
+                    detail: settings.allow_agent_reads ? (settings.allow_pending_in_context ? "pending memory allowed" : "approved memory only") : "tools cannot read memory",
                     systemImage: settings.allow_agent_reads ? "eye.fill" : "eye.slash.fill",
                     color: settings.allow_agent_reads ? .accentColor : .secondary
                 )
                 ConnectionsTrustTile(
                     title: backupCount > 0 ? "Backup ready" : "No backup yet",
-                    detail: backupCount > 0 ? "\(backupCount) local archive\(backupCount == 1 ? "" : "s")" : "create one before adding more sources",
+                    detail: backupCount > 0 ? "\(backupCount) local archive\(backupCount == 1 ? "" : "s")" : "create one before big changes",
                     systemImage: backupCount > 0 ? "externaldrive.fill" : "externaldrive.badge.exclamationmark",
                     color: backupCount > 0 ? .green : .orange
                 )

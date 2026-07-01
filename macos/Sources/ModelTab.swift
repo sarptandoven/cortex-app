@@ -2,46 +2,15 @@ import SwiftUI
 
 struct ModelTab: View {
     @ObservedObject var state: AppState
-    @State private var modelDetailsExpanded = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 HomeHeroSection(state: state, review: state.review)
-
-                if let review = state.review, review.stats.memories > 0 || !review.pending.isEmpty {
-                    DisclosureGroup(isExpanded: $modelDetailsExpanded) {
-                        VStack(alignment: .leading, spacing: 14) {
-                            if let quality = state.memoryQuality {
-                                ModelQualitySection(quality: quality)
-                            }
-                            ModelCoverageSection(review: review)
-                            ModelSourceCoverageSection(state: state, review: review)
-                            ModelSignalSummarySection(review: review)
-                        }
-                        .padding(.top, 8)
-                    } label: {
-                        ModelDisclosureLabel(
-                            systemImage: "square.stack.3d.up",
-                            title: "Memory snapshot",
-                            detail: "Quality, sources, topics"
-                        )
-                    }
-                    .padding(12)
-                    .background(CortexDesign.panelBackground)
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.softBorder))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
             }
             .padding(16)
         }
         .background(CortexDesign.appBackground)
-    }
-
-    private var loadingDetail: String {
-        CortexRecoveryText.needsAttention(state.displayStatus)
-            ? state.displayStatus
-            : "Cortex is starting the local memory engine on this Mac."
     }
 }
 
@@ -84,16 +53,16 @@ struct HomeHeroSection: View {
             if CortexRecoveryText.needsAttention(state.displayStatus) {
                 return ("Needs attention", "exclamationmark.triangle.fill", .orange)
             }
-            return ("Starting locally", "externaldrive.badge.checkmark", .accentColor)
+            return ("Starting", "power", .accentColor)
         }
         if pendingCount > 0 {
-            return ("Review needed", "tray.full.fill", .orange)
+            return ("Ready for Review", "tray.full.fill", .orange)
         }
         if hasMemory {
-            return ("Ready", "checkmark.seal.fill", .green)
+            return ("Ready to ask", "checkmark.seal.fill", .green)
         }
         if activeSources > 0 {
-            return ("Syncing", "arrow.triangle.2.circlepath", .accentColor)
+            return ("Syncing notes", "arrow.triangle.2.circlepath", .accentColor)
         }
         if hasEmptySource {
             return ("No notes found", "folder.badge.questionmark", .orange)
@@ -106,24 +75,24 @@ struct HomeHeroSection: View {
 
     private var title: String {
         if !state.isLocalServiceReady {
-            return "Cortex is waking up"
+            return "Cortex is starting"
         }
         if pendingCount > 0 {
-            return "A few memories are ready to review"
+            return "Review new memory"
         }
         if hasMemory {
-            return "Ask Cortex about your notes"
+            return "Ask about your notes"
         }
         if activeSources > 0 {
-            return "Cortex is learning from your notes"
+            return "Your notes are syncing"
         }
         if hasEmptySource {
-            return "Connect your notes"
+            return "Choose notes with content"
         }
         if state.connectedAIIntegrationCount > 0 {
-            return "Notes are the missing piece"
+            return "Connect notes to continue"
         }
-        return "Start with notes"
+        return "Connect your notes"
     }
 
     private var detail: String {
@@ -131,52 +100,52 @@ struct HomeHeroSection: View {
             if CortexRecoveryText.needsAttention(state.displayStatus) {
                 return state.displayStatus
             }
-            return "The private memory engine is starting on this Mac."
+            return "This usually takes a moment."
         }
         if pendingCount > 0 {
-            return "Approve what Cortex should remember. Ask and connected AI tools use only approved memory."
+            return "Choose what Cortex should remember before it appears in Ask."
         }
         if hasMemory {
-            return "Cortex answers from approved memory and shows the sources behind each answer."
+            return "Cortex answers from saved memory and shows which notes each answer came from."
         }
         if activeSources > 0 {
-            return "New memories will appear in Review when sync finishes."
+            return "New items will appear in Review when sync finishes."
         }
         if hasEmptySource {
-            return "Cortex could not find usable notes there. Choose a notes library with real content."
+            return "Cortex could not find usable notes there. Pick a folder or app that has real notes."
         }
         if state.connectedAIIntegrationCount > 0 {
-            return "Your AI tool is connected. Add notes once so Cortex has approved memory to recall."
+            return "Your AI tool is connected. Add notes so Ask can answer with sources."
         }
-        return "Open Connections once, choose notes, and Cortex keeps sync automatic and review-first."
+        return "Choose notes once. Cortex keeps them in sync and brings new memory to Review."
     }
 
     private var actionTitle: String {
         if !state.isLocalServiceReady { return "Start Cortex" }
-        if activeSources == 0 { return hasEmptySource ? "Choose notes" : "Open Connections" }
+        if activeSources == 0 { return hasEmptySource ? "Choose notes" : "Connect notes" }
         if pendingCount > 0 { return "Review memory" }
-        if hasMemory { return "Ask Cortex" }
-        return "Check sync"
+        if hasMemory { return "Ask a question" }
+        return "Check notes"
     }
 
     private var actionDetail: String {
-        if !state.isLocalServiceReady { return state.displayBackendStatus }
+        if !state.isLocalServiceReady { return "Start Cortex on this Mac." }
         if activeSources == 0 {
             if hasEmptySource {
-                return "Choose notes with real content."
+                return "Pick a different notes folder or app."
             }
             if state.connectedAIIntegrationCount > 0 {
-                return "Your AI tool is ready; notes are the missing piece."
+                return "Notes give Ask something to cite."
             }
-            return "Choose notes once; Cortex syncs after that."
+            return "Cortex syncs automatically after notes connect."
         }
         if pendingCount > 0 {
             return "\(pendingCount) item\(pendingCount == 1 ? "" : "s") waiting"
         }
         if hasMemory {
-            return "\(memoryCount) approved memor\(memoryCount == 1 ? "y" : "ies") available"
+            return "\(memoryCount) saved memor\(memoryCount == 1 ? "y" : "ies") ready"
         }
-        return "Confirm your notes are syncing."
+        return "Confirm notes are syncing."
     }
 
     private var actionIcon: String {
@@ -227,14 +196,14 @@ struct HomeHeroSection: View {
                 Spacer(minLength: 0)
             }
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 10)], spacing: 10) {
-                HomeStatusTile(
+            VStack(alignment: .leading, spacing: 8) {
+                HomeStatusRow(
                     title: "Notes",
-                    detail: notesStatus.detail,
-                    systemImage: notesStatus.systemImage,
-                    color: notesStatus.color
+                    detail: sourceStatus.detail,
+                    systemImage: sourceStatus.systemImage,
+                    color: sourceStatus.color
                 )
-                HomeStatusTile(
+                HomeStatusRow(
                     title: "Memory",
                     detail: memoryStatus.detail,
                     systemImage: memoryStatus.systemImage,
@@ -248,12 +217,12 @@ struct HomeHeroSection: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var notesStatus: (detail: String, systemImage: String, color: Color) {
+    private var sourceStatus: (detail: String, systemImage: String, color: Color) {
         if activeSources > 0 {
-            return ("\(activeSources) connected", "folder.fill.badge.checkmark", .green)
+            return ("\(activeSources) connected and syncing", "folder.fill.badge.checkmark", .green)
         }
         if hasEmptySource {
-            return ("Choose a folder with notes", "folder.badge.questionmark", .orange)
+            return ("No usable notes found", "folder.badge.questionmark", .orange)
         }
         return ("Not connected yet", "folder.badge.plus", .accentColor)
     }
@@ -263,9 +232,9 @@ struct HomeHeroSection: View {
             return ("\(pendingCount) waiting for Review", "tray.full.fill", .orange)
         }
         if memoryCount > 0 {
-            return ("\(memoryCount) approved", "brain.head.profile", .green)
+            return ("\(memoryCount) saved for Ask", "brain.head.profile", .green)
         }
-        return ("No approved memory yet", "checklist", .secondary)
+        return ("No saved memory yet", "checklist", .secondary)
     }
 
     private func runNextAction() {
@@ -285,12 +254,12 @@ struct HomeHeroSection: View {
             state.selectedTab = .ask
             state.status = "Ask Cortex"
         } else {
-            state.openConnectionsPrivacy(statusMessage: "Check notes and privacy")
+            state.openConnectionsPrivacy(statusMessage: "Check notes")
         }
     }
 }
 
-struct HomeStatusTile: View {
+struct HomeStatusRow: View {
     let title: String
     let detail: String
     let systemImage: String
@@ -304,20 +273,17 @@ struct HomeStatusTile: View {
                 .frame(width: 28, height: 28)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.caption)
+                    .font(.callout)
                     .fontWeight(.semibold)
-                    .foregroundColor(.secondary)
                 Text(detail)
                     .font(.callout)
-                    .fontWeight(.medium)
+                    .foregroundColor(.secondary)
                     .lineLimit(2)
             }
             Spacer(minLength: 0)
         }
-        .padding(12)
-        .frame(minHeight: 68, alignment: .leading)
-        .background(CortexDesign.panelBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding(.vertical, 6)
+        .frame(minHeight: 44, alignment: .leading)
     }
 }
 
