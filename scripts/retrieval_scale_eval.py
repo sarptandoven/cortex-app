@@ -273,6 +273,55 @@ def evaluate_search(
     }
 
 
+def evaluate_answer_contract(store: CortexStore, user_id: str, *, limit: int) -> dict[str, Any]:
+    started = time.perf_counter()
+    answer = store.answer_query(user_id, QUERY, limit=limit)
+    answer_ms = (time.perf_counter() - started) * 1000
+    citations = list(answer.get("citations") or [])
+    results = list(answer.get("results") or [])
+    first_citation = citations[0] if citations else {}
+    result_ids = [str(item.get("id") or "") for item in results]
+
+    context_pack = store.context_pack(user_id, query=QUERY, limit=limit)
+    failures: list[str] = []
+    if not citations:
+        failures.append("answer_query did not return citations for the scale target query")
+    elif first_citation.get("id") != TARGET_ID:
+        failures.append(f"first answer citation was {first_citation.get('id')!r}, expected {TARGET_ID!r}")
+    if TARGET_ID not in result_ids:
+        failures.append(f"answer results did not include target {TARGET_ID}")
+    if str(first_citation.get("source_url") or "") != TARGET_SOURCE_URL:
+        failures.append(f"first citation source_url mismatch: {first_citation.get('source_url')!r}")
+    if str(first_citation.get("line_start") or "") != "42":
+        failures.append(f"first citation line_start mismatch: {first_citation.get('line_start')!r}")
+    if str(first_citation.get("source_excerpt") or "") != "canonical-target-record":
+        failures.append(f"first citation source_excerpt mismatch: {first_citation.get('source_excerpt')!r}")
+    if TARGET_ID not in context_pack:
+        failures.append("context pack did not include the target memory id")
+    if TARGET_SOURCE_URL not in context_pack:
+        failures.append("context pack did not include the target source locator")
+
+    return {
+        "status": "fail" if failures else "ok",
+        "query": QUERY,
+        "latency": {
+            "answer_ms": round(answer_ms, 3),
+        },
+        "target": {
+            "id": TARGET_ID,
+            "first_citation_id": first_citation.get("id"),
+            "source_url": first_citation.get("source_url"),
+            "line_start": first_citation.get("line_start"),
+            "source_excerpt": first_citation.get("source_excerpt"),
+            "result_rank": _rank(results, TARGET_ID),
+        },
+        "citation_count": len(citations),
+        "context_pack_contains_target": TARGET_ID in context_pack,
+        "context_pack_contains_source_url": TARGET_SOURCE_URL in context_pack,
+        "failures": failures,
+    }
+
+
 def run_retrieval_scale_eval(
     db_path: Path,
     vault_path: Path | None,
@@ -299,14 +348,17 @@ def run_retrieval_scale_eval(
         max_rank=max_rank,
         max_search_ms=max_search_ms,
     )
+    answer_report = evaluate_answer_contract(store, user_id, limit=limit)
+    status = "ok" if search_report["status"] == "ok" and answer_report["status"] == "ok" else "fail"
     return {
-        "status": search_report["status"],
+        "status": status,
         "user_id": user_id,
         "seed": seed,
         "database": str(db_path),
         "vault": str(vault_path) if vault_path else None,
         "seed_report": seed_report,
         "search_report": search_report,
+        "answer_report": answer_report,
     }
 
 

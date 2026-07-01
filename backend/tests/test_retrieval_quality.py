@@ -19,6 +19,7 @@ from scripts.retrieval_eval import (
     evaluate_retrieval,
     seed_representative_memories,
 )
+from scripts.retrieval_scale_eval import TARGET_ID, TARGET_SOURCE_URL, run_retrieval_scale_eval
 
 
 class RetrievalQualityHarnessTests(unittest.TestCase):
@@ -728,6 +729,35 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
 
         gmail_results = self.store.search(self.user_id, "aliasfilter mailbox source family", limit=10, source="gmail")
         self.assertEqual({item["id"] for item in gmail_results}, {"source_alias_gmail"})
+
+    def test_scale_eval_checks_ask_citations_and_context_pack(self) -> None:
+        scale_db_path = Path(self.tmp.name) / "retrieval-scale-small.sqlite"
+        scale_vault_path = Path(self.tmp.name) / "RetrievalScale.vault"
+
+        result = run_retrieval_scale_eval(
+            scale_db_path,
+            scale_vault_path,
+            user_id="retrieval-scale-small-test",
+            record_count=40,
+            chunk_size=15,
+            limit=10,
+            max_rank=3,
+            max_search_ms=1000.0,
+            runs=1,
+            warmups=0,
+            seed=2026,
+        )
+
+        self.assertEqual(result["status"], "ok")
+        answer_report = result["answer_report"]
+        self.assertEqual(answer_report["status"], "ok")
+        self.assertEqual(answer_report["target"]["first_citation_id"], TARGET_ID)
+        self.assertEqual(answer_report["target"]["source_url"], TARGET_SOURCE_URL)
+        self.assertEqual(answer_report["target"]["line_start"], "42")
+        self.assertEqual(answer_report["target"]["source_excerpt"], "canonical-target-record")
+        self.assertEqual(answer_report["target"]["result_rank"], 1)
+        self.assertTrue(answer_report["context_pack_contains_target"])
+        self.assertTrue(answer_report["context_pack_contains_source_url"])
 
     def test_source_quality_boost_does_not_override_layer_intent_relevance(self) -> None:
         self.store.update_settings(
