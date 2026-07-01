@@ -276,7 +276,6 @@ class LiveSmokeRunner:
         tools = {tool["name"] for tool in result["result"]["tools"]}
         expected = {
             "search_memory",
-            "get_memory_inbox",
             "get_product_loop",
             "list_source_connectors",
             "get_style_profile",
@@ -285,9 +284,16 @@ class LiveSmokeRunner:
         }
         missing = sorted(expected - tools)
         ensure(not missing, "Packaged MCP tool surface is missing first-100 tools", {"missing": missing, "tools": sorted(tools)})
-        blocked = {"approve_memory_capture", "connect_source_account", "sync_source_records", "delete_all_user_data"}
+        blocked = {
+            "approve_memory_capture",
+            "connect_source_account",
+            "sync_source_records",
+            "get_memory_inbox",
+            "get_daily_review",
+            "delete_all_user_data",
+        }
         exposed = sorted(blocked & tools)
-        ensure(not exposed, "Read-only MCP token exposed write or destructive tools", {"exposed": exposed, "tools": sorted(tools)})
+        ensure(not exposed, "Read-only MCP token exposed review, write, or destructive tools", {"exposed": exposed, "tools": sorted(tools)})
         return {"detail": "Read-only MCP tool surface includes retrieval tools without write actions.", "payload": {"tool_count": len(tools)}}
 
     def obsidian_review_ask(self) -> dict[str, Any]:
@@ -296,6 +302,29 @@ class LiveSmokeRunner:
                 if item.get("key") == key:
                     return str(item.get("status") or "")
             return ""
+
+        def assert_notes_review_ask_loop(loop: dict[str, Any], phase: str) -> None:
+            steps = loop.get("steps") or []
+            keys = [str(item.get("key") or "") for item in steps]
+            expected = ["capture", "review", "reuse"]
+            positions: list[int] = []
+            for key in expected:
+                ensure(key in keys, f"Product loop omitted {key} during {phase}", loop)
+                positions.append(keys.index(key))
+            ensure(
+                positions == sorted(positions),
+                f"Product loop was not notes -> Review -> Ask during {phase}",
+                {"step_keys": keys, "loop": loop},
+            )
+
+            encoded = json.dumps(loop).lower()
+            blocked_terms = ("manual import", "context-copy", "context copy", "copy context")
+            leaked_terms = [term for term in blocked_terms if term in encoded]
+            ensure(
+                not leaked_terms,
+                f"Product loop referenced a manual import/context-copy path during {phase}",
+                {"terms": leaked_terms, "loop": loop},
+            )
 
         vault = write_obsidian_fixture(self.tmp, self.marker)
         synced = self.request(
@@ -311,6 +340,7 @@ class LiveSmokeRunner:
 
         quoted = urllib.parse.quote(self.marker)
         loop_after_sync = self.request("/v1/loop")
+        assert_notes_review_ask_loop(loop_after_sync, "notes sync")
         ensure(loop_after_sync["primary_action"]["action"] == "review", "Product loop did not move to Review after sync", loop_after_sync)
         ensure(loop_after_sync["counts"]["pending_captures"] >= len(self.capture_ids), "Product loop did not count pending synced captures", loop_after_sync)
         ensure(step_status(loop_after_sync, "capture") == "done", "Product loop capture step was not done after sync", loop_after_sync)
@@ -367,6 +397,7 @@ class LiveSmokeRunner:
             {"capture_ids": self.capture_ids, "pending": review_after_approval["pending"]},
         )
         loop_after_approval = self.request("/v1/loop")
+        assert_notes_review_ask_loop(loop_after_approval, "Review approval")
         ensure(loop_after_approval["primary_action"]["action"] == "reuse", "Product loop did not move to Ask after approval", loop_after_approval)
         ensure(loop_after_approval["counts"]["pending_captures"] == 0, "Product loop still counted pending captures after approval", loop_after_approval)
         ensure(loop_after_approval["counts"]["approved_today"] >= len(self.capture_ids), "Product loop did not count approved captures", loop_after_approval)
@@ -392,6 +423,7 @@ class LiveSmokeRunner:
         )
         ensure(str(vault) not in json.dumps(asked), "Ask leaked the local Obsidian vault path", asked)
         loop_after_ask = self.request("/v1/loop")
+        assert_notes_review_ask_loop(loop_after_ask, "cited Ask")
         ensure(loop_after_ask["primary_action"]["action"] == "done", "Product loop did not complete after cited Ask", loop_after_ask)
         ensure(loop_after_ask["counts"]["used_today"] >= 1, "Product loop did not count cited Ask use", loop_after_ask)
         ensure(step_status(loop_after_ask, "reuse") == "done", "Product loop reuse step was not done after cited Ask", loop_after_ask)

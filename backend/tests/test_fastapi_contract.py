@@ -1220,7 +1220,26 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertNotIn("connect_source_account", tool_names)
         self.assertNotIn("sync_source_records", tool_names)
         self.assertNotIn("approve_memory_capture", tool_names)
+        self.assertNotIn("get_daily_review", tool_names)
+        self.assertNotIn("get_memory_inbox", tool_names)
         self.assertNotIn("delete_all_user_data", tool_names)
+
+        for tool_name in ("get_daily_review", "get_memory_inbox"):
+            blocked = self.client.post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"blocked-{tool_name}",
+                    "method": "tools/call",
+                    "params": {"name": tool_name, "arguments": {}},
+                },
+                headers={"Authorization": f"Bearer {scoped_token}"},
+            )
+            self.assertEqual(blocked.status_code, 200)
+            blocked_payload = blocked.json()
+            self.assertNotIn("result", blocked_payload)
+            self.assertEqual(blocked_payload["error"]["code"], -32000)
+            self.assertIn("not scoped", blocked_payload["error"]["message"])
 
     def test_mcp_token_registration_uses_user_scoped_token_ids(self) -> None:
         alice = self.client.post(

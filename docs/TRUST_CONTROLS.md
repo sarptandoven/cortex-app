@@ -17,7 +17,7 @@ Cortex trust controls define what can become memory, what connected agents can r
 New local vaults start in a guarded mode:
 
 - new saves enter review by default,
-- pending saves can appear in app search/context until the user switches to strict mode,
+- pending saves stay out of assistant search/context unless the user explicitly allows pending context,
 - MCP agent read tools are enabled for retrieval,
 - MCP agent write tools are enabled so connected tools can save useful memories into review,
 - MCP export, maintenance, and destructive tools are disabled until the user opts in,
@@ -75,8 +75,13 @@ When enabled, new captures enter the inbox as `pending`.
 
 - `search_memory`
 - `get_recent_context`
-- `get_daily_review`
 - `get_memory_graph`
+- `get_product_loop`
+- `get_style_profile`
+- `get_project_context`
+- `get_procedure`
+- `list_supported_import_sources`
+- `list_source_connectors`
 - `get_decisions`
 - `get_open_questions`
 - `list_memory_topics`
@@ -84,7 +89,7 @@ When enabled, new captures enter the inbox as `pending`.
 - `get_about_person`
 - `get_about_entity`
 - `get_memory_stats`
-- `get_memory_inbox`
+- `get_support_bundle`
 - `get_trust_summary`
 - `get_audit_log`
 
@@ -92,15 +97,19 @@ When disabled, connected agents cannot inspect memory through MCP.
 
 ### Agent Write Access
 
-`allow_agent_writes` controls MCP write tools:
+`allow_agent_writes` controls MCP write and review-state tools:
 
 - `remember_this`
+- `get_daily_review`
+- `get_memory_inbox`
 - `connect_source_account`
 - `sync_source_records`
 - `approve_memory_capture`
 - `archive_memory_capture`
+- `forget_memory` (also requires destructive access)
+- `delete_memory_capture` (also requires destructive access)
 
-When disabled, connected agents cannot mutate memory or review state.
+When disabled, connected agents cannot mutate memory, change review state, or inspect pending review state. `get_daily_review` and `get_memory_inbox` require both read and write access because they expose pending review state. Destructive memory-delete tools also require write access, but remain blocked unless destructive access is enabled too.
 
 This is enabled by default for new local vaults so connected tools can save memories into the review queue. Users can disable it from Connections & Privacy.
 
@@ -138,6 +147,8 @@ This is disabled by default for new local vaults.
 `allow_agent_exports` controls MCP tools that package memory for use elsewhere:
 
 - `build_context_pack`
+- `get_personal_profile`
+- `get_agent_adaptation`
 - `export_memory`
 
 When disabled, connected agents cannot export or build large context bundles.

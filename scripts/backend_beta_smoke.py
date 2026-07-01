@@ -494,6 +494,21 @@ class SmokeRunner:
         ).json()
         self.ensure("error" in blocked_approval, "Read-only MCP token was able to approve memory", blocked_approval)
 
+        for review_tool in ("get_daily_review", "get_memory_inbox"):
+            blocked_review = self.request(
+                "POST",
+                "/mcp",
+                headers=mcp_headers,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"blocked-{review_tool}",
+                    "method": "tools/call",
+                    "params": {"name": review_tool, "arguments": {}},
+                },
+            ).json()
+            self.ensure("error" in blocked_review, f"Read-only MCP token opened pending review state through {review_tool}", blocked_review)
+            self.ensure("not scoped" in blocked_review["error"].get("message", ""), f"{review_tool} failed with the wrong authorization error", blocked_review)
+
         def mcp_call(call_id: str, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             payload = self.request(
                 "POST",

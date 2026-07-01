@@ -332,7 +332,6 @@ READ_TOOLS = {
     "search_memory",
     "get_recent_context",
     "get_memory_graph",
-    "get_daily_review",
     "get_product_loop",
     "get_style_profile",
     "get_project_context",
@@ -346,10 +345,13 @@ READ_TOOLS = {
     "get_about_person",
     "get_about_entity",
     "get_memory_stats",
-    "get_memory_inbox",
     "get_support_bundle",
     "get_trust_summary",
     "get_audit_log",
+}
+REVIEW_TOOLS = {
+    "get_daily_review",
+    "get_memory_inbox",
 }
 WRITE_TOOLS = {
     "remember_this",
@@ -376,6 +378,8 @@ def tool_required_capabilities(name: str) -> list[str]:
     capabilities: list[str] = []
     if name in READ_TOOLS:
         capabilities.append("read")
+    if name in REVIEW_TOOLS:
+        capabilities.extend(["read", "write"])
     if name in WRITE_TOOLS:
         capabilities.append("write")
     if name in EXPORT_TOOLS:

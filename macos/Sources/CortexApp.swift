@@ -2089,6 +2089,7 @@ final class AppState: ObservableObject {
     private let backend = BackendSupervisor.shared
     private var obsidianAutoSyncTask: Task<Void, Never>?
     private var obsidianSyncInFlight = false
+    private var onboardingDismissedForSession = false
 
     var integrations: [AIIntegration] {
         AIIntegrationCatalog.all
@@ -2309,6 +2310,7 @@ final class AppState: ObservableObject {
         await loadReliability()
         refreshIntegrationStates()
         startConnectedSourceAutoSync()
+        presentOnboardingIfNeeded()
     }
 
     func ensureBackend() async {
@@ -3361,6 +3363,7 @@ final class AppState: ObservableObject {
         }
         saveMemorySettings()
         onboardingComplete = true
+        onboardingDismissedForSession = false
         UserDefaults.standard.set(true, forKey: "onboardingComplete.v1")
         showOnboarding = false
         setOnboardingStep(.privateVault)
@@ -3378,17 +3381,23 @@ final class AppState: ObservableObject {
     }
 
     func dismissOnboardingForSession() {
+        onboardingDismissedForSession = true
         showOnboarding = false
         status = "Getting started closed. Continue from Home anytime."
     }
 
     func showOnboardingAgain() {
-        setOnboardingStep(.privateVault)
-        showOnboarding = true
+        onboardingDismissedForSession = false
+        setOnboardingStep(firstIncompleteOnboardingStep())
+        showConnectionsPrivacy = false
+        DispatchQueue.main.async { [weak self] in
+            self?.showOnboarding = true
+        }
     }
 
     func resetOnboardingProgressAfterDataDeletion() {
         onboardingComplete = false
+        onboardingDismissedForSession = false
         firstSourceAdded = false
         firstMemoryReviewed = false
         cortexUsed = false
@@ -3408,6 +3417,17 @@ final class AppState: ObservableObject {
         ] {
             UserDefaults.standard.removeObject(forKey: key)
         }
+    }
+
+    func presentOnboardingIfNeeded() {
+        guard !onboardingComplete, !onboardingDismissedForSession, !showOnboarding else { return }
+        setOnboardingStep(firstIncompleteOnboardingStep())
+        showOnboarding = true
+        status = "Finish the first memory loop to activate Cortex."
+    }
+
+    private func firstIncompleteOnboardingStep() -> OnboardingStep {
+        OnboardingStep.allCases.first { !onboardingStepIsComplete($0) } ?? .privateVault
     }
 
     func nextOnboardingStep() {

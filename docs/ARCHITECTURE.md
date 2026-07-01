@@ -8,7 +8,7 @@ The original prototype has these pieces:
 - `ingest.py`: Claude-based extraction into records, tasks, and entities
 - `github_store.py`: markdown persistence in GitHub
 - `redis_store.py`: Voyage embeddings plus Redis vector search
-- `mcp_server.py`: local stdio MCP server
+- `mcp_server.py`: legacy prototype local stdio MCP server; packaged builds use the app-bundled `scripts/cortex_mcp_stdio.py` proxy instead
 - `ui.py`: Streamlit memory chat
 
 ## Productized MVP
@@ -21,7 +21,7 @@ macOS app
   Review
   Ask
   Connections & Privacy
-  MCP AI-tool setup
+  MCP AI-tool setup via /Applications/Cortex.app/Contents/Resources/scripts/cortex_mcp_stdio.py
   Obsidian/local notes sync
       |
       v
@@ -262,24 +262,44 @@ The backend exposes an MCP-style JSON-RPC endpoint with these tools:
 - `remember_this`
 - `search_memory`
 - `get_recent_context`
+- `get_memory_graph`
 - `get_decisions`
 - `get_open_questions`
 - `get_daily_review`
 - `get_product_loop`
+- `get_style_profile`
+- `get_project_context`
+- `get_procedure`
+- `list_supported_import_sources`
+- `list_source_connectors`
 - `build_context_pack`
 - `get_about_person`
+- `get_about_entity`
+- `list_memory_topics`
+- `list_memory_entities`
 - `get_memory_stats`
 - `get_memory_inbox`
 - `get_memory_diagnostics`
 - `get_reliability_report`
 - `get_support_bundle`
+- `get_trust_summary`
+- `get_audit_log`
+- `get_personal_profile`
+- `get_agent_adaptation`
+- `connect_source_account`
+- `sync_source_records`
+- `approve_memory_capture`
+- `archive_memory_capture`
+- `create_memory_backup`
 - `restore_latest_memory_backup`
 - `delete_memory_backups`
 - `delete_all_user_data`
 - `repair_memory_storage`
+- `rebuild_memory_search`
 - `forget_memory`
 - `delete_memory_capture`
 - `rebuild_index_from_vault`
+- `export_memory`
 
 The local source-account sync endpoint is enough for beta local app integrations, MCP bridges, and connector processes. Production ChatGPT/Claude and cloud-service connectors should add full remote MCP/OAuth flows on top of the same account, cursor, citation, and review contracts.
 

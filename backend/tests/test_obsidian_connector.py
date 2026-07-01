@@ -39,6 +39,145 @@ class ObsidianConnectorTests(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
+    def test_parse_note_fixture_handles_obsidian_markdown_edges(self) -> None:
+        note_text = """---
+title: Research Hub
+tags:
+  - #cortex
+  - project/atlas
+aliases:
+  - Atlas Hub
+published: false
+---
+# [[Projects/Atlas|Atlas]] #heading/tag
+
+> [!TIP]- Import template
+> This callout body should be removed.
+> #noise/tag should not become note text.
+
+```dataviewjs
+dv.table(["File"], dv.pages("cortex"))
+```
+
+```python
+print("Decision: bogus code should not be memory")
+```
+
+Decision: Ask [[People/Zoe#Notes|Zoe]] about [[March OKR]] and ![[Atlas Diagram.png]].
+I prefer #project/launch notes with [web citations](https://example.com).
+"""
+
+        parsed = parse_note(note_text, fallback_title="Research.md")
+
+        self.assertEqual(parsed.title, "Research Hub")
+        self.assertEqual(
+            parsed.frontmatter,
+            {
+                "title": "Research Hub",
+                "tags": ["#cortex", "project/atlas"],
+                "aliases": ["Atlas Hub"],
+                "published": False,
+            },
+        )
+        self.assertEqual(parsed.tags, ["cortex", "heading/tag", "project/atlas", "project/launch"])
+        self.assertEqual(
+            parsed.wikilinks,
+            [
+                {"target": "Projects/Atlas", "display": "Atlas", "embedded": "false"},
+                {"target": "People/Zoe", "display": "Zoe", "embedded": "false"},
+                {"target": "March OKR", "display": "March OKR", "embedded": "false"},
+                {"target": "Atlas Diagram.png", "display": "Atlas Diagram.png", "embedded": "true"},
+            ],
+        )
+        self.assertEqual(parsed.callouts, [{"type": "tip", "title": "Import template"}])
+        self.assertEqual(parsed.removed_blocks["code_blocks"], 2)
+        self.assertEqual(parsed.removed_blocks["code_languages"], ["dataviewjs", "python"])
+        self.assertEqual(parsed.removed_blocks["callout_blocks"], 1)
+        self.assertIn("Decision: Ask Zoe about March OKR", parsed.content)
+        self.assertIn("I prefer project launch notes with web citations.", parsed.content)
+        for leaked in (
+            "---",
+            "[[",
+            "]]",
+            "![[Atlas Diagram.png]]",
+            "#project/launch",
+            "This callout body should be removed.",
+            "#noise/tag",
+            "dataviewjs",
+            "bogus code",
+            "https://example.com",
+        ):
+            self.assertNotIn(leaked, parsed.content)
+
+    def test_scan_fixture_keeps_stable_citation_source_url_across_obsidian_noise_edits(self) -> None:
+        note = self.write_note(
+            "Sources/Stable.md",
+            """---
+title: Stable Source Fixture
+tags: [cortex, stable/citation]
+---
+# Capture Plan
+
+> [!NOTE] Changelog
+> Newly imported template text should not shift citation identity.
+
+```dataview
+LIST FROM cortex
+```
+
+Decision: Cortex should cite the stable-source fixture from its note URI.
+""",
+        )
+        expected_external_id = stable_section_external_id(self.vault, note, "capture-plan")
+        expected_source_url = note.resolve().as_uri()
+
+        first = scan_vault(self.vault, max_records=20).records[0].to_source_account_record()
+
+        self.assertEqual(first["external_id"], expected_external_id)
+        self.assertEqual(first["source_url"], expected_source_url)
+        self.assertEqual(first["metadata"]["record_scope"], "section")
+        self.assertEqual(first["metadata"]["note_external_id"], stable_external_id(self.vault, note))
+        self.assertEqual(first["metadata"]["callouts"], [{"type": "note", "title": "Changelog"}])
+        self.assertEqual(first["metadata"]["removed_blocks"]["code_languages"], ["dataview"])
+        self.assertIn("stable-source fixture", first["content"])
+        self.assertNotIn("Newly imported template text", first["content"])
+        self.assertNotIn("LIST FROM cortex", first["content"])
+
+        note.write_text(
+            """---
+title: Stable Source Fixture
+tags:
+  - cortex
+  - stable/citation
+aliases:
+  - Stable Citation Fixture
+---
+# Capture Plan
+
+> [!WARNING]+ Updated template
+> Metadata-only import noise should not change source identity.
+
+```dataview
+TABLE file.mtime
+FROM "Sources"
+```
+
+Decision: Cortex should cite the stable-source fixture from its note URI.
+""",
+            encoding="utf-8",
+        )
+
+        second = scan_vault(self.vault, max_records=20).records[0].to_source_account_record()
+
+        self.assertEqual(second["external_id"], expected_external_id)
+        self.assertEqual(second["source_url"], expected_source_url)
+        self.assertEqual(second["metadata"]["note_external_id"], stable_external_id(self.vault, note))
+        self.assertEqual(second["metadata"]["callouts"], [{"type": "warning", "title": "Updated template"}])
+        self.assertEqual(second["metadata"]["removed_blocks"]["code_languages"], ["dataview"])
+        self.assertIn("stable-source fixture", second["content"])
+        self.assertNotIn("Metadata-only import noise", second["content"])
+        self.assertNotIn("TABLE file.mtime", second["content"])
+
     def test_scan_vault_cleans_obsidian_markdown_and_keeps_file_citations(self) -> None:
         note_text = """---
 title: Project Atlas

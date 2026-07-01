@@ -63,6 +63,7 @@ private struct ConnectionsPrivacyOverview: View {
     @State private var advancedExpanded = false
     @State private var aiToolsExpanded = false
     @State private var sourceAuditExpanded = false
+    @State private var recoveryToolsExpanded = false
     @State private var developerDetailsExpanded = false
 
     private var connectedNotesConnectionCount: Int {
@@ -156,7 +157,7 @@ private struct ConnectionsPrivacyOverview: View {
             ConnectionsDisclosureLabel(
                 systemImage: "shield.lefthalf.filled",
                 title: "Memory permissions",
-                detail: "Review before use, approved AI reads, redaction"
+                detail: "Reviewed memory reads, new AI saves go to Review"
             )
         }
         .padding(14)
@@ -185,9 +186,19 @@ private struct ConnectionsPrivacyOverview: View {
     private func advancedControls(summary: TrustSummaryResponse) -> some View {
         DisclosureGroup(isExpanded: $advancedExpanded) {
             VStack(alignment: .leading, spacing: 16) {
-                SettingsDataRecoverySection(state: state)
-                Divider()
-                SettingsReliabilitySection(state: state)
+                Text("Create a local backup from the main privacy card. Recovery, repair, and support tools stay here for setup help and incident response.")
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                DisclosureGroup("Recovery and support tools", isExpanded: $recoveryToolsExpanded) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        SettingsDataRecoverySection(state: state)
+                        Divider()
+                        SettingsReliabilitySection(state: state)
+                    }
+                    .padding(.top, 8)
+                }
 
                 DisclosureGroup("Advanced support details", isExpanded: $developerDetailsExpanded) {
                     VStack(alignment: .leading, spacing: 14) {
@@ -247,8 +258,8 @@ private struct ConnectionsPrivacyOverview: View {
         } label: {
             ConnectionsDisclosureLabel(
                 systemImage: "wrench.and.screwdriver",
-                title: "Backup & recovery",
-                detail: "Backups, repair, support details"
+                title: "Advanced",
+                detail: "Recovery, diagnostics, support details"
             )
         }
         .padding(14)
@@ -706,7 +717,7 @@ private struct ConnectionsPrivacyDefaultsSection: View {
             HStack(alignment: .center) {
                 SectionHeader(
                     title: "Backup & privacy",
-                    detail: "Review first, approved AI reads, and local backups."
+                    detail: "Review first, reviewed AI reads, AI saves to Review, and local backups."
                 )
                 Spacer(minLength: 12)
                 Button {
@@ -728,7 +739,7 @@ private struct ConnectionsPrivacyDefaultsSection: View {
                 )
                 ConnectionsTrustTile(
                     title: settings.allow_agent_reads ? "AI access on" : "AI access off",
-                    detail: settings.allow_agent_reads ? (settings.allow_pending_in_context ? "pending memory allowed" : "reviewed memory only") : "tools cannot read memory",
+                    detail: aiAccessDetail(settings),
                     systemImage: settings.allow_agent_reads ? "eye.fill" : "eye.slash.fill",
                     color: settings.allow_agent_reads ? .accentColor : .secondary
                 )
@@ -744,6 +755,12 @@ private struct ConnectionsPrivacyDefaultsSection: View {
         .background(connectionsPanelBackground)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func aiAccessDetail(_ settings: AppSettingsResponse) -> String {
+        guard settings.allow_agent_reads else { return "tools cannot read memory" }
+        let readText = settings.allow_pending_in_context ? "pending reads allowed" : "reviewed memory reads"
+        return settings.allow_agent_writes ? "\(readText), saves to Review" : readText
     }
 }
 
