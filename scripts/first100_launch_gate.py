@@ -194,8 +194,21 @@ def check_release_manifest() -> dict[str, Any]:
     provenance = manifest.get("source_provenance") if isinstance(manifest.get("source_provenance"), dict) else {}
     if provenance.get("git_dirty") is not False:
         errors.append("latest.json source_provenance.git_dirty is not false")
-    if not provenance.get("git_commit"):
+    provenance_commit = str(provenance.get("git_commit") or "")
+    if not provenance_commit:
         errors.append("latest.json source_provenance.git_commit is missing")
+    else:
+        changed_after_package = git_output(["diff", "--name-only", f"{provenance_commit}..HEAD"])
+        stale_paths = [
+            path
+            for path in changed_after_package.splitlines()
+            if path.strip() and not path.startswith("site/downloads/")
+        ]
+        if stale_paths:
+            errors.append(
+                "latest.json source_provenance.git_commit is stale; non-release changes exist after packaging: "
+                + ", ".join(stale_paths[:8])
+            )
 
     checksum_filename = f"Cortex-{manifest.get('version')}-{manifest.get('build')}.checksums.txt"
     checksum_path = ROOT / "site/downloads" / checksum_filename
