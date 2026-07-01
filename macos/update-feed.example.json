@@ -9,7 +9,7 @@
   "mandatory": false,
   "release_notes": [
     "Local-first macOS beta.",
-    "Bundled backend, local vault, MCP tools, capture surfaces, and trust controls."
+    "Bundled local service, MCP/Obsidian sync, Review, cited Ask, and trust controls."
   ],
   "artifacts": []
 }

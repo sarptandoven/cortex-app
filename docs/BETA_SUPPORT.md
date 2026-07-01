@@ -13,7 +13,7 @@ Good first-100 candidates:
 - use macOS 13 or newer;
 - are comfortable installing a local beta app from a direct build;
 - can spend 30 to 45 minutes on first-run setup, sync, review, Ask, Connections & Privacy, backup, and support-bundle checks;
-- can connect MCP AI tools or an Obsidian/local notes vault;
+- can connect an MCP AI tool or Obsidian/local notes source and let it sync;
 - can explain expected behavior when filing a bug;
 - agree to keep sensitive, regulated, or third-party-confidential material out of early testing unless they intentionally choose to manage that risk locally;
 - understand that Cortex is local-first beta software, not a hosted account service or managed enterprise product.
@@ -49,23 +49,23 @@ Do not expand the batch if any current tester has an unresolved SEV 0 possible-d
 Read or send this before the user installs the beta. Keep the wording intact unless the product behavior changes.
 
 ```text
-Cortex is a local-first beta for personal memory. Your synced sources and approved memory are stored on your Mac in your Cortex vault. Cortex does not create a hosted account for this beta, and operators cannot remotely inspect your vault.
+Cortex is a local-first beta for personal memory. Your synced sources and approved memory are stored on your Mac in your Cortex memory folder. Cortex does not create a hosted account for this beta, and operators cannot remotely inspect that folder.
 
 You choose what to connect or sync. For early testing, avoid sensitive, regulated, employer-confidential, or third-party private data unless you have decided that storing it locally in Cortex is appropriate.
 
-Support may ask for a sanitized support bundle. The support bundle is designed to omit raw capture text, memory content, task content, exported user files, context packs, and raw MCP query values. You should review the bundle before sending it.
+Support may ask for a sanitized support bundle. The support bundle is designed to omit raw capture text, memory content, task content, exported user files, copied-context payloads, and raw MCP query values. You should review the bundle before sending it.
 
 Support will not ask you to paste private memory content. If a bug depends on exact content, send a short redacted example that you are comfortable sharing, or describe the source type and visible behavior without the private text.
 
-You can export your memory and delete local Cortex data from this beta. Deletion is local to your Mac and covers the current Cortex vault/index data and, by default, local Cortex backup archives. If you previously sent a support bundle or redacted example to operators, ask support to delete their copy too.
+You can export your memory and delete local Cortex data from this beta. Deletion is local to your Mac and covers the current Cortex memory folder and index data and, by default, local Cortex backup archives. If you previously sent a support bundle or redacted example to operators, ask support to delete their copy too.
 
-This is beta software. Import quality, citations, search, MCP handoffs, packaging, and recovery flows may have bugs. Do not rely on Cortex as the only copy of important data.
+This is beta software. Source sync, Advanced/Fallback import quality, citations, search, MCP handoffs, packaging, and recovery flows may have bugs. Do not rely on Cortex as the only copy of important data.
 ```
 
 Record consent before sending the build:
 
 - user confirmed they understand local-first storage;
-- user confirmed they choose what to import;
+- user confirmed they choose what to connect or sync;
 - user confirmed they know support bundles should be reviewed before sending;
 - user confirmed support will not request private memory content;
 - user confirmed they can export and delete local beta data;
@@ -76,7 +76,7 @@ Record consent before sending the build:
 Use this guarantee in beta support conversations:
 
 ```text
-You own the local Cortex vault on your Mac. Before you leave the beta, we will help you export your Cortex data and delete local Cortex beta data from the app. We cannot remotely delete data from your Mac because we do not operate a hosted account for this beta. If you sent us a support bundle or redacted example, we will delete our support copy when you ask.
+You own the local Cortex memory folder on your Mac. Before you leave the beta, we will help you export your Cortex data and delete local Cortex beta data from the app. We cannot remotely delete data from your Mac because we do not operate a hosted account for this beta. If you sent us a support bundle or redacted example, we will delete our support copy when you ask.
 ```
 
 Operator actions for export:
@@ -100,7 +100,7 @@ Operator actions for deletion:
 Support-bundle handling:
 
 - Use `scripts/export_support_bundle.py` in live or offline mode when possible; it validates the privacy flags and rejects content-bearing fields before writing the JSON file.
-- A support bundle is acceptable only when it omits raw capture text, memory content, task content, exported user files, context packs, and raw MCP query values.
+- A support bundle is acceptable only when it omits raw capture text, memory content, task content, exported user files, copied-context payloads, and raw MCP query values.
 - If the exporter exits with a content-free validation error, do not ask the user to send the file. Escalate as a privacy issue for that build.
 
 Support copy retention:
@@ -118,7 +118,7 @@ Start every support case with this intake:
 - macOS version and device type;
 - install path, usually `/Applications/Cortex.app`;
 - whether first-run setup completed;
-- source type involved, such as ChatGPT export, Slack export, folder, PDF, notes, bookmarks, or calendar;
+- source type involved, such as MCP AI tool sync, Obsidian/local notes sync, notes, bookmarks, calendar, or an Advanced/Fallback import source;
 - rough source size, file count, or date range;
 - Trust posture: pending captures allowed in context, redaction enabled, MCP reads/writes/exports enabled or disabled;
 - what the user expected;
@@ -129,11 +129,11 @@ Start every support case with this intake:
 
 Do not request:
 
-- raw imported files;
+- raw synced or imported files;
 - full chat exports;
 - full memory records;
 - screenshots that reveal private memory;
-- context packs;
+- copied-context payloads;
 - MCP prompts containing private content;
 - API keys, local tokens, or secrets.
 
@@ -169,7 +169,7 @@ Response:
 4. Prefer replacing the app over touching the vault.
 5. Escalate if the issue affects more than one tester on the same build.
 
-SEV 2: import, review, search, citation, MCP, context-pack, backup, or export behavior is wrong but data remains accessible.
+SEV 2: sync, Advanced/Fallback import, review, search, citation, MCP, copied-context fallback, backup, or export behavior is wrong but data remains accessible.
 
 Response:
 
@@ -196,7 +196,7 @@ Escalate immediately when any of these happen:
 - the support bundle includes raw memory content;
 - an operator accidentally requests or receives private memory content;
 - a build is sent with a known delete/export regression;
-- two or more users hit the same launch, import, or backend startup failure;
+- two or more users hit the same launch, source sync, Advanced/Fallback import, or local service startup failure;
 - a user cannot access local data after an app replacement.
 
 Escalation steps:
@@ -223,8 +223,8 @@ Privacy incident handling:
 Use this list in handoff notes and support replies:
 
 - Cortex is local-first beta software for macOS, not a hosted account service.
-- The first-100 workflow is MCP AI tools or Obsidian/local notes sync. Advanced fallback imports are only for unsupported sources, migration, or support recovery.
-- The app does not provide cloud backup or remote vault recovery.
+- The first-100 workflow is MCP AI tools or Obsidian/local notes sync, then Review and cited Ask. Advanced fallback imports are only for unsupported sources, migration, or support recovery.
+- The app does not provide cloud backup or remote memory-folder recovery.
 - Source sync and fallback importers may miss, duplicate, or misclassify content from large or unusual sources.
 - Review is the trust boundary; unreviewed or archived content may not appear in Ask results depending on settings.
 - Citations should be checked by the user before relying on an answer.
@@ -232,7 +232,7 @@ Use this list in handoff notes and support replies:
 - MCP access is controlled by local Trust toggles and scoped local tokens, but connected tools are still user-managed.
 - Support bundles are designed to be content-free, but users should review them before sending.
 - The beta is not intended for regulated, legal, medical, financial, HR, child-safety, or enterprise compliance workflows.
-- Reinstalling the app should not be used as a recovery step until the vault is backed up.
+- Reinstalling the app should not be used as a recovery step until the memory folder is backed up.
 - Public launch items such as hosted accounts, broad telemetry, enterprise policy, notarized public distribution, and formal production incident response may still be incomplete for a given build.
 
 ## Useful Bug Reports Without Private Content
@@ -258,17 +258,17 @@ Redacted example attached: optional
 
 Good report examples:
 
-- "ChatGPT export, about 250 conversations, import preview finished, Review showed 0 candidates, support bundle attached."
-- "Slack export, 18 channels, Ask result cited an archived capture, pending context disabled, no raw messages attached."
-- "Folder import with 42 Markdown files, duplicate-safe history showed two batches after one import, screenshot redacted."
+- "Claude Desktop MCP sync completed, Review showed 0 candidates, support bundle attached."
+- "Obsidian/local notes sync found 42 Markdown files, Ask result cited an archived note, pending context disabled, screenshot redacted."
 - "MCP search returned empty results after approving 12 captures, MCP reads enabled, support bundle attached."
+- "Advanced/Fallback folder import with 42 Markdown files duplicated two batches after one import, screenshot redacted."
 
 Poor report requests to avoid:
 
 - "Send the chat export that caused this."
 - "Paste the memory record that looks wrong."
 - "Send a screenshot of the full Ask answer."
-- "Send your context pack."
+- "Send your copied context payload."
 - "Send your MCP prompt and response."
 
 If exact text seems necessary, ask the user to reproduce with dummy data or to provide a redacted minimal example that preserves only the shape of the bug.

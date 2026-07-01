@@ -397,7 +397,7 @@ private struct ConnectionsObsidianSection: View {
                 detail: "Connect notes once. Cortex keeps them synced locally with stable citations."
             )
             if state.sourceConnectorCatalog.isEmpty {
-                QuietState(title: "Checking connectors", detail: "Cortex is reading the local source registry.")
+                QuietState(title: "Checking note connections", detail: "Cortex is checking available local note connections.")
             } else if let connector = obsidianConnector {
                 SourceConnectorStatusCard(
                     state: state,
@@ -406,7 +406,7 @@ private struct ConnectionsObsidianSection: View {
                     needsContent: needsContent(connector)
                 )
             } else {
-                QuietState(title: "Notes connector unavailable", detail: "Restart Cortex after the local backend is healthy.")
+                QuietState(title: "Notes connection unavailable", detail: "Restart Cortex after the local memory engine is healthy.")
             }
         }
     }

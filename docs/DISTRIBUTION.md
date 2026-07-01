@@ -170,9 +170,9 @@ Recommended beta structure:
 11. Deploy `site/`.
 12. Download the DMG from the deployed page.
 13. Install on a clean Mac profile.
-14. Verify first-run onboarding, Home/Review/Ask flow, Connections & Privacy, source readiness, cited Ask results, MCP setup, backup, support bundle export, and update feed.
-15. Update over the previous beta and confirm the vault remains intact.
-16. Roll back to the previous beta and confirm the vault remains intact.
+14. Verify first-run onboarding, Home/Review/Ask flow, Connections & Privacy, source readiness, MCP or Obsidian sync, cited Ask results, backup, support bundle export, and update feed.
+15. Update over the previous beta and confirm the memory folder remains intact.
+16. Roll back to the previous beta and confirm the memory folder remains intact.
 
 ## Update And Rollback Notes
 
@@ -182,12 +182,12 @@ For first-100 testers, updates are manual:
 2. Verify the DMG checksum.
 3. Quit Cortex.
 4. Replace `Cortex.app` in Applications.
-5. Reopen Cortex and confirm Connections & Privacy shows backend health and the expected vault path.
+5. Reopen Cortex and confirm Connections & Privacy shows local service health and the expected memory folder path.
 6. Create a fresh backup.
 
 Rollback is also manual:
 
-1. Keep the vault folder unchanged.
+1. Keep the memory folder unchanged.
 2. Quit Cortex.
 3. Replace `Cortex.app` with the previous beta build.
 4. Reopen Cortex, run the reliability report, and create a fresh backup.
@@ -212,13 +212,13 @@ You, but AI.
 Short description:
 
 ```text
-Cortex gives ChatGPT, Claude, Cursor, and MCP agents your memory, preferences, decisions, and open loops so they can work with context instead of starting from zero.
+Cortex connects MCP tools and Obsidian/local notes, syncs useful context on your Mac, and lets you ask questions that return reviewed memory with citations.
 ```
 
 Positioning:
 
 ```text
-Cortex is not just AI memory. It is your personal operating model for agents.
+Cortex is not just AI memory. It is your personal operating model for the AI tools you already use.
 ```
 
 ## Public Distribution Blockers
@@ -259,7 +259,7 @@ The beta is ready to share with a small group when:
 - the app opens from Applications
 - first-run setup completes without docs
 - Home explains readiness and the next useful action
-- Connections & Privacy can connect MCP or Obsidian and show sync health
+- Connections & Privacy can connect MCP or Obsidian/local notes and show sync health
 - Review can approve or archive pending memory
 - Ask returns cited memory from a connected source
 - fallback import/export tools stay available in Advanced for migration and support
@@ -267,4 +267,4 @@ The beta is ready to share with a small group when:
 - the user can create a backup
 - the user can read the privacy page
 - the team can replace the DMG and update `latest.json` repeatably
-- the team can roll back to the previous DMG without touching the user's vault
+- the team can roll back to the previous DMG without touching the user's memory folder

@@ -43,11 +43,43 @@ FORBIDDEN_PHRASES: dict[str, tuple[str, ...]] = {
         "first-run Connect step",
         "/absolute/path/to/second-brain",
         "copies a context pack",
+        "build a paste-ready Markdown context pack",
     ),
     "docs/INSTALLER_AND_UPDATES.md": (
         "More ->",
         "Cortex Settings",
         "import one real user-selected local source",
+        "Local-first Cortex beta with installer, update manifest, capture, MCP, and trust controls.",
+        "Connect MCP or an Obsidian/local notes vault",
+        "Those are appropriate for the public-beta release track, not the local-first MVP package.",
+    ),
+    "docs/OPERATIONAL_READINESS.md": (
+        "context pack contains stale content",
+        "number of users who copied one context pack",
+    ),
+    "docs/DISTRIBUTION.md": (
+        "Cortex gives ChatGPT, Claude, Cursor, and MCP agents your memory",
+        "personal operating model for agents",
+    ),
+    "docs/APPLE_RELEASE.md": (
+        "local-first MCP/vault beta",
+        "Public beta with local vault, Cortex memory, MCP integrations, and support bundle export.",
+        "import one real source",
+    ),
+    "docs/BETA_SUPPORT.md": (
+        "user confirmed they choose what to import",
+        "Send your context pack.",
+    ),
+    "macos/update-feed.example.json": (
+        "Bundled backend, local vault, MCP tools, capture surfaces, and trust controls.",
+    ),
+    "site/downloads/latest.json": (
+        "Complete first-run setup with a local vault, MCP or Obsidian connection",
+        "Local-first Cortex beta with bundled backend, capture, MCP, and trust controls.",
+    ),
+    "outputs/Cortex-0.1.0-1/latest.json": (
+        "Complete first-run setup with a local vault, MCP or Obsidian connection",
+        "Local-first Cortex beta with bundled backend, capture, MCP, and trust controls.",
     ),
     "PUBLISH_MANIFEST.md": (
         "uploaded through Transporter",

@@ -112,7 +112,7 @@ The support bundle intentionally omits:
 - memory content
 - task content
 - entity bodies
-- context packs
+- copied-context payloads
 - exported user files
 - raw MCP query values
 
@@ -171,12 +171,12 @@ Immediate response:
 5. Generate an offline support bundle.
 6. If a new release exists, ask the user to replace the app, not the vault.
 
-### SEV 2: Search, MCP, or Context Packs Are Wrong
+### SEV 2: Search, Citations, or Connected AI Tools Are Wrong
 
 Examples:
 
 - search misses known approved memory
-- context pack contains stale content
+- Ask or copied context shows stale approved memory
 - MCP tool returns unexpected empty results
 
 Immediate response:
@@ -237,7 +237,7 @@ Support must not ask users for:
 - full vault zips
 - Markdown exports
 - raw captures
-- context packs
+- copied-context payloads
 - screenshots containing memory content
 
 Ask for the support bundle first. Escalate to full vault sharing only if the user explicitly consents and the issue is a true data-recovery case.
@@ -248,8 +248,10 @@ Until analytics exists, track launch readiness manually:
 
 - number of users invited
 - number of users who installed successfully
-- number of users who saved one memory
-- number of users who copied one context pack
+- number of users who connected MCP or Obsidian/local notes
+- number of users whose connected source synced automatically
+- number of users who reviewed one memory
+- number of users who asked one cited question
 - number of support bundles received
 - number of backup/rebuild incidents
 - number of users who returned the next day

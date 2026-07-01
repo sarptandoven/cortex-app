@@ -243,18 +243,18 @@ class LiveSmokeRunner:
         expected = {
             "search_memory",
             "get_memory_inbox",
-            "approve_memory_capture",
             "get_product_loop",
             "list_source_connectors",
-            "connect_source_account",
-            "sync_source_records",
             "get_style_profile",
             "get_project_context",
             "get_procedure",
         }
         missing = sorted(expected - tools)
         ensure(not missing, "Packaged MCP tool surface is missing first-100 tools", {"missing": missing, "tools": sorted(tools)})
-        return {"detail": "MCP tool surface includes first-100 memory and connector tools.", "payload": {"tool_count": len(tools)}}
+        blocked = {"approve_memory_capture", "connect_source_account", "sync_source_records", "delete_all_user_data"}
+        exposed = sorted(blocked & tools)
+        ensure(not exposed, "Read-only MCP token exposed write or destructive tools", {"exposed": exposed, "tools": sorted(tools)})
+        return {"detail": "Read-only MCP tool surface includes retrieval tools without write actions.", "payload": {"tool_count": len(tools)}}
 
     def obsidian_review_ask(self) -> dict[str, Any]:
         def step_status(loop: dict[str, Any], key: str) -> str:
@@ -284,6 +284,15 @@ class LiveSmokeRunner:
 
         pending_search = self.request(f"/v1/search?query={quoted}&limit=5")
         ensure(pending_search["results"] == [], "Pending synced memory leaked into search", pending_search)
+
+        pending_ask = self.request(f"/v1/ask?query={quoted}%20packaged%20app&limit=5")
+        ensure(pending_ask["citations"] == [], "Pending synced memory leaked citations into Ask", pending_ask)
+        ensure(pending_ask["results"] == [], "Pending synced memory leaked results into Ask", pending_ask)
+        ensure(
+            "Decision: Live Cortex smoke marker" not in pending_ask["answer"],
+            "Pending synced memory leaked fixture content into Ask answer",
+            pending_ask,
+        )
 
         review = self.request("/v1/review/today")
         pending_ids = {item["id"] for item in review["pending"]}

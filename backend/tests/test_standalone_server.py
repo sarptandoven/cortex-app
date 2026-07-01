@@ -1311,6 +1311,38 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(context.exception.code, 403)
         self.assertIn("sharded mode", context.exception.read().decode("utf-8"))
 
+    def test_mcp_tools_list_filters_read_only_scoped_token(self) -> None:
+        scoped_request = request.Request(
+            self.base_url + "/mcp",
+            data=json.dumps({"jsonrpc": "2.0", "id": "read-tools", "method": "tools/list", "params": {}}).encode("utf-8"),
+            headers={"Authorization": "Bearer cxm-standalone-token", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with request.urlopen(scoped_request, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        tool_names = {tool["name"] for tool in payload["result"]["tools"]}
+        self.assertIn("search_memory", tool_names)
+        self.assertIn("list_source_connectors", tool_names)
+        self.assertNotIn("connect_source_account", tool_names)
+        self.assertNotIn("sync_source_records", tool_names)
+        self.assertNotIn("approve_memory_capture", tool_names)
+        self.assertNotIn("delete_all_user_data", tool_names)
+
+        admin_request = request.Request(
+            self.base_url + "/mcp",
+            data=json.dumps({"jsonrpc": "2.0", "id": "admin-tools", "method": "tools/list", "params": {}}).encode("utf-8"),
+            headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with request.urlopen(admin_request, timeout=5) as response:
+            admin_payload = json.loads(response.read().decode("utf-8"))
+
+        admin_tool_names = {tool["name"] for tool in admin_payload["result"]["tools"]}
+        self.assertIn("connect_source_account", admin_tool_names)
+        self.assertIn("sync_source_records", admin_tool_names)
+        self.assertIn("approve_memory_capture", admin_tool_names)
+
     def test_integration_tokens_can_be_listed_and_revoked(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "alice"}
         with request.urlopen(request.Request(self.base_url + "/v1/integrations/tokens?audience=api", headers=headers), timeout=5) as response:

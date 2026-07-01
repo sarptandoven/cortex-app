@@ -14,7 +14,7 @@ Use Developer ID distribution:
 - stapled DMG
 - manual updates through the static `latest.json` feed
 
-The Mac App Store path is possible later, but it adds sandboxing, review, and entitlement constraints that are not ideal for this local-first MCP/vault beta.
+The Mac App Store path is possible later, but it adds sandboxing, review, and entitlement constraints that are not ideal for this connection-first local memory beta.
 
 ## What I Need From You
 
@@ -129,7 +129,7 @@ Package:
 ./macos/package_release.sh \
   --channel public-beta \
   --base-url https://YOUR_DOMAIN/downloads \
-  --note "Public beta with local vault, Cortex memory, MCP integrations, and support bundle export."
+  --note "Public beta with MCP/Obsidian sync, Review, cited Ask, and support bundle export."
 ```
 
 The script will:
@@ -181,15 +181,15 @@ Then:
 - drag Cortex to Applications
 - launch from Applications
 - complete first-run setup
-- import one real source
+- connect MCP or Obsidian/local notes and complete one sync
 - approve one useful memory
 - ask Cortex and verify cited memory appears
 - create one backup
 - export one support bundle
-- verify context handoff remains available for ChatGPT or Claude
-- connect one MCP client
+- verify copied context remains available as an Advanced/Fallback handoff for ChatGPT or Claude
+- connect one MCP client or Obsidian/local notes source
 - quit and relaunch
-- verify the vault remains intact
+- verify the memory folder remains intact
 
 ## Current Public Release Blockers
 

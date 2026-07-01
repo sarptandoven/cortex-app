@@ -386,6 +386,17 @@ def tool_required_capabilities(name: str) -> list[str]:
     return list(dict.fromkeys(capabilities))
 
 
+def tools_for_scopes(token_scopes: list[str] | None = None) -> list[dict[str, Any]]:
+    if token_scopes is None:
+        return TOOLS
+    scope_set = set(token_scopes)
+    return [
+        tool
+        for tool in TOOLS
+        if all(capability in scope_set for capability in tool_required_capabilities(str(tool.get("name") or "")))
+    ]
+
+
 def _require_tool_access(store: CortexStore, user_id: str, name: str, token_scopes: list[str] | None = None) -> None:
     for capability in tool_required_capabilities(name):
         if token_scopes is not None and capability not in token_scopes:

@@ -151,6 +151,12 @@ class SmokeRunner:
         if not condition:
             raise SmokeFailure(message, payload)
 
+    def step_status(self, loop: dict[str, Any], key: str) -> str:
+        for item in loop.get("steps") or []:
+            if item.get("key") == key:
+                return str(item.get("status") or "")
+        return ""
+
     def startup_health(self) -> dict[str, Any]:
         health = self.request("GET", "/health", headers={}).json()
         ready = self.request("GET", "/ready", headers={}).json()
@@ -246,8 +252,23 @@ class SmokeRunner:
         self.ensure(synced["source_account"]["connection_type"] == "local-folder", "Obsidian account was not local-folder", synced)
         self.ensure(bool(self.capture_ids), "Obsidian sync returned no capture IDs", synced)
 
+        loop_after_sync = self.request("GET", "/v1/loop").json()
+        self.ensure(loop_after_sync["primary_action"]["action"] == "review", "Product loop did not move to Review after sync", loop_after_sync)
+        self.ensure(
+            loop_after_sync["counts"]["pending_captures"] >= len(self.capture_ids),
+            "Product loop did not count pending synced captures",
+            loop_after_sync,
+        )
+        self.ensure(self.step_status(loop_after_sync, "capture") == "done", "Product loop capture step was not done after sync", loop_after_sync)
+        self.ensure(self.step_status(loop_after_sync, "review") == "current", "Product loop review step was not current after sync", loop_after_sync)
+
         search_pending = self.request("GET", "/v1/search", params={"query": self.marker, "limit": 5}).json()
         self.ensure(search_pending["results"] == [], "Pending Obsidian sync leaked into search", search_pending)
+
+        ask_pending = self.request("GET", "/v1/ask", params={"query": f"{self.marker} beta invite checklist", "limit": 5}).json()
+        self.ensure(ask_pending["citations"] == [], "Pending Obsidian sync leaked citations into Ask", ask_pending)
+        self.ensure(ask_pending["results"] == [], "Pending Obsidian sync leaked results into Ask", ask_pending)
+        self.ensure("Mira" not in ask_pending["answer"], "Pending Obsidian sync leaked fixture content into Ask answer", ask_pending)
 
         review = self.request("GET", "/v1/review/today").json()
         pending_ids = {item["id"] for item in review["pending"]}
@@ -271,6 +292,12 @@ class SmokeRunner:
         self.ensure(obsidian_after["approved"] >= len(self.capture_ids), "Obsidian readiness did not count approved captures", obsidian_after)
         self.ensure(obsidian_after["active_memories"] >= 1, "Obsidian readiness did not count active memories", obsidian_after)
         self.ensure(obsidian_after["citation_coverage"] == 1.0, "Obsidian readiness did not report full citation coverage", obsidian_after)
+
+        loop_after_approval = self.request("GET", "/v1/loop").json()
+        self.ensure(loop_after_approval["primary_action"]["action"] == "reuse", "Product loop did not move to Ask after approval", loop_after_approval)
+        self.ensure(loop_after_approval["counts"]["pending_captures"] == 0, "Product loop still counted pending captures after approval", loop_after_approval)
+        self.ensure(loop_after_approval["counts"]["approved_today"] >= len(self.capture_ids), "Product loop did not count approved captures", loop_after_approval)
+        self.ensure(self.step_status(loop_after_approval, "review") == "done", "Product loop review step was not done after approval", loop_after_approval)
 
         search_approved = self.request("GET", "/v1/search", params={"query": self.marker, "limit": 5}).json()
         self.ensure(search_approved["results"], "Approved Obsidian memory was not searchable", search_approved)
@@ -321,6 +348,11 @@ class SmokeRunner:
         encoded_ask = json.dumps(asked)
         self.ensure(str(self.tmp) not in encoded_ask, "Ask leaked the temp vault path", asked)
         self.ensure("file:///Users/" not in encoded_ask, "Ask leaked a raw local file URL", asked)
+
+        loop_after_ask = self.request("GET", "/v1/loop").json()
+        self.ensure(loop_after_ask["primary_action"]["action"] == "done", "Product loop did not complete after cited Ask", loop_after_ask)
+        self.ensure(loop_after_ask["counts"]["used_today"] >= 1, "Product loop did not count cited Ask use", loop_after_ask)
+        self.ensure(self.step_status(loop_after_ask, "reuse") == "done", "Product loop reuse step was not done after cited Ask", loop_after_ask)
 
         exported = self.request("GET", "/v1/export.json").json()
         self.ensure(exported["stats"]["memories"] >= 1, "JSON export did not include memory stats", exported.get("stats"))

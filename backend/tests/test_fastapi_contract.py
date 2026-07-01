@@ -1186,7 +1186,13 @@ class FastAPIContractTests(unittest.TestCase):
             headers={"Authorization": f"Bearer {scoped_token}"},
         )
         self.assertEqual(mcp.status_code, 200)
-        self.assertIn("tools", mcp.json()["result"])
+        tool_names = {tool["name"] for tool in mcp.json()["result"]["tools"]}
+        self.assertIn("search_memory", tool_names)
+        self.assertIn("list_source_connectors", tool_names)
+        self.assertNotIn("connect_source_account", tool_names)
+        self.assertNotIn("sync_source_records", tool_names)
+        self.assertNotIn("approve_memory_capture", tool_names)
+        self.assertNotIn("delete_all_user_data", tool_names)
 
     def test_mcp_token_registration_uses_user_scoped_token_ids(self) -> None:
         alice = self.client.post(
@@ -1301,8 +1307,9 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(tools.status_code, 200)
         tool_names = {tool["name"] for tool in tools.json()["result"]["tools"]}
         self.assertIn("list_source_connectors", tool_names)
-        self.assertIn("connect_source_account", tool_names)
-        self.assertIn("sync_source_records", tool_names)
+        self.assertNotIn("connect_source_account", tool_names)
+        self.assertNotIn("sync_source_records", tool_names)
+        self.assertNotIn("approve_memory_capture", tool_names)
 
         blocked = self.client.post(
             "/mcp",
@@ -1326,6 +1333,19 @@ class FastAPIContractTests(unittest.TestCase):
             headers=headers,
         )
         self.assertEqual(write_registered.status_code, 200)
+
+        write_tools = self.client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": "write-tools", "method": "tools/list", "params": {}},
+            headers={"Authorization": f"Bearer {write_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(write_tools.status_code, 200)
+        write_tool_names = {tool["name"] for tool in write_tools.json()["result"]["tools"]}
+        self.assertIn("list_source_connectors", write_tool_names)
+        self.assertIn("connect_source_account", write_tool_names)
+        self.assertIn("sync_source_records", write_tool_names)
+        self.assertIn("approve_memory_capture", write_tool_names)
+        self.assertNotIn("delete_all_user_data", write_tool_names)
 
         connected = self.client.post(
             "/mcp",

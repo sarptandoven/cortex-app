@@ -31,7 +31,7 @@ manual QA checklist.
 ```bash
 ./macos/package_release.sh \
   --channel local-beta \
-  --note "Local-first Cortex beta with installer, update manifest, capture, MCP, and trust controls."
+  --note "Local-first Cortex beta with installer, update manifest, MCP/Obsidian sync, Review, cited Ask, and trust controls."
 ```
 
 For a hosted beta feed:
@@ -146,10 +146,10 @@ For the local beta, updates are manual:
 3. Quit Cortex.
 4. Replace `Cortex.app` in `/Applications`.
 5. Reopen Cortex.
-6. Confirm Trust shows backend health and the expected vault path.
+6. Confirm Connections & Privacy shows local service health and the expected memory folder path.
 7. Create a fresh backup after the new build opens.
 
-The user vault remains at:
+The default memory folder remains at:
 
 ```text
 ~/Library/Application Support/Cortex/Cortex.vault
@@ -157,7 +157,7 @@ The user vault remains at:
 
 Rollback is manual too:
 
-1. Keep the local vault folder unchanged.
+1. Keep the local memory folder unchanged.
 2. Download or retain the previous beta DMG and ZIP.
 3. Quit Cortex.
 4. Replace `Cortex.app` in `/Applications` with the previous build.
@@ -172,10 +172,10 @@ manual QA.
 
 Manual updates are acceptable for early local beta because:
 
-- there is no hosted backend yet
+- there is no hosted account service yet
 - the app is ad-hoc signed in local builds
 - automatic updates require a signing/notarization/key-management decision
-- users must retain confidence that their local vault is not touched by app replacement
+- users must retain confidence that their local memory folder is not touched by app replacement
 
 ## Production Upgrade Path
 
@@ -200,9 +200,9 @@ Sparkle is the likely production path for background update download/install. Th
 - Run `python3 scripts/adaptation_eval.py`.
 - Run `./macos/build.sh`.
 - Run `codesign --verify --deep --strict --verbose=2 macos/build/Cortex.app`.
-- Launch the app and verify the bundled backend starts.
+- Launch the app and verify the bundled local service starts.
 - Run `python3 scripts/first100_live_smoke.py` after launching the packaged app. It reads the local API token from `~/Library/Application Support/Cortex/credentials.json` with legacy defaults fallback, uses an isolated smoke user, and cleans up after itself.
-- Keep `python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"` for deeper backend lifecycle QA because it writes broader test data into the target vault.
+- Keep `python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"` for deeper service lifecycle QA because it writes broader test data into the target memory folder.
 - Run `./macos/package_release.sh`.
 - Confirm the generated release directory includes `BETA_HANDOFF.md`.
 - Run `(cd <release> && shasum -a 256 -c Cortex-<version>-<build>.checksums.txt)`.
@@ -223,13 +223,13 @@ or newer user profile:
 
 - install from the DMG and launch from Applications
 - complete first-run setup without source-code instructions
-- connect MCP AI tools or an Obsidian vault from Connections & Privacy
+- connect MCP AI tools or Obsidian/local notes from Connections & Privacy and confirm sync health
 - approve at least one useful memory and archive obvious noise in Review
 - ask a question that returns cited memory from the approved source
-- confirm Connections & Privacy shows vault path, backend health, backup, export, support bundle, and update feed controls
+- confirm Connections & Privacy shows memory folder path, local service health, backup, export, support bundle, and update feed controls
 - create a backup and confirm the support bundle does not include raw memory content
-- update over a previous beta and confirm the vault remains intact
-- roll back to the previous beta and confirm the vault remains intact
+- update over a previous beta and confirm the memory folder remains intact
+- roll back to the previous beta and confirm the memory folder remains intact
 
 ## Current Boundaries
 
@@ -243,4 +243,4 @@ This system does not yet:
 - provide rollback from inside the app
 - provide hosted accounts, cloud backup, live OAuth/API sync, remote MCP/OAuth, billing, teams, or production telemetry
 
-Those are appropriate for the public-beta release track, not the local-first MVP package.
+Those are appropriate for the public-beta release track, not the local-first beta package.

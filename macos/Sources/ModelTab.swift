@@ -249,7 +249,7 @@ struct HomeHeroSection: View {
             state.selectedTab = .ask
             state.status = "Ask Cortex"
         } else {
-            state.openConnectionsPrivacy(statusMessage: "Check source health and privacy")
+            state.openConnectionsPrivacy(statusMessage: "Check notes and privacy")
         }
     }
 }

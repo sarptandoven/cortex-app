@@ -186,7 +186,7 @@ struct SourceReadinessItem: Codable, Identifiable, Hashable {
         case "synced": return "Synced"
         case "connected": return "Connected"
         case "imported": return "Synced"
-        case "import_ready": return "Local connector"
+        case "import_ready": return "Ready to connect"
         case "planned": return "Planned"
         case "advanced_fallback": return "Advanced only"
         case "connector_needed": return "Connector needed"
@@ -1161,7 +1161,7 @@ enum AIIntegrationCatalog {
             configTargets: [
                 IntegrationConfigTarget(label: "Claude Desktop", root: .applicationSupport, relativePath: "Claude/claude_desktop_config.json")
             ],
-            setupHint: "Use Claude Desktop to search approved memory, review new items, and sync useful source records.",
+            setupHint: "Use Claude Desktop to search approved memory and save useful updates for Review.",
             browserURL: "https://claude.ai"
         ),
         AIIntegration(
@@ -1189,7 +1189,7 @@ enum AIIntegrationCatalog {
             configTargets: [
                 IntegrationConfigTarget(label: "Windsurf connection", root: .home, relativePath: ".codeium/windsurf/mcp_config.json")
             ],
-            setupHint: "Use Cortex in Cascade to retrieve decisions, previous implementation context, and daily follow-ups.",
+            setupHint: "Use Cortex in Cascade to retrieve saved decisions, project memory, and daily follow-ups.",
             browserURL: "https://windsurf.com"
         ),
         AIIntegration(
@@ -1219,7 +1219,7 @@ enum AIIntegrationCatalog {
                 IntegrationConfigTarget(label: "Roo Code connection settings", root: .applicationSupport, relativePath: "Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json")
             ],
             requiresExistingConfigTarget: true,
-            setupHint: "Use Roo Code with Cortex to retrieve saved decisions, source context, and open questions.",
+            setupHint: "Use Roo Code with Cortex to retrieve saved decisions, project memory, and open questions.",
             browserURL: nil
         ),
         AIIntegration(
@@ -1228,10 +1228,10 @@ enum AIIntegrationCatalog {
             category: .developer,
             systemImage: "rectangle.connected.to.line.below",
             summary: "Connect Cortex to VS Code user or workspace AI tools.",
-            restartHint: "Add the copied setup to VS Code, then reload the window.",
+            restartHint: "Add the connection details to VS Code, then reload the window.",
             bundleIdentifiers: ["com.microsoft.VSCode"],
             configTargets: [],
-            setupHint: "Use connection details only if VS Code asks for pasted setup.",
+            setupHint: "Use connection details only if VS Code asks for them.",
             browserURL: "https://code.visualstudio.com"
         ),
         AIIntegration(
@@ -1240,10 +1240,10 @@ enum AIIntegrationCatalog {
             category: .developer,
             systemImage: "terminal",
             summary: "Connect Cortex memory tools to Claude Code.",
-            restartHint: "Run the copied setup from a terminal, then restart the Claude Code session.",
+            restartHint: "Run the connection command from a terminal, then restart the Claude Code session.",
             bundleIdentifiers: [],
             configTargets: [],
-            setupHint: "Use the setup command to connect Cortex to Claude Code.",
+            setupHint: "Use the connection command to connect Cortex to Claude Code.",
             browserURL: "https://docs.anthropic.com"
         ),
         AIIntegration(
@@ -3120,7 +3120,7 @@ final class AppState: ObservableObject {
             "args": [scriptPath],
             "env": [
                 "CORTEX_BASE_URL": endpoint,
-                "CORTEX_API_KEY": redactToken ? "<copy-secret-setup-details>" : mcpAPIKey
+                "CORTEX_API_KEY": redactToken ? "<copy-secret-connection-details>" : mcpAPIKey
             ]
         ]
     }
@@ -3137,7 +3137,7 @@ final class AppState: ObservableObject {
 
     private func integrationGuide(for integration: AIIntegration) -> String {
         let targetPaths = integration.configTargets.isEmpty
-            ? "This app needs pasted setup details."
+            ? "This app uses connection details from Cortex."
             : integration.configTargets.map { "- \($0.label): \($0.url.path)" }.joined(separator: "\n")
         return """
         Cortex integration: \(integration.name)
@@ -3145,23 +3145,23 @@ final class AppState: ObservableObject {
         What this does:
         \(integration.summary)
 
-        Recommended setup:
+        Recommended connection:
         \(integration.setupHint)
 
-        Config targets:
+        Connection targets:
         \(targetPaths)
 
-        Setup details preview:
+        Connection details preview:
         \(mcpConfigJSON(redactToken: true))
 
         Local Cortex service:
         Base URL: \(endpoint)
-        Token: use Copy setup details from Connection details only if this app asks for pasted setup.
+        Token: use Copy connection details from Connection details only if this app asks for them.
 
         Assistant rule:
-        Search Cortex memory before asking the user to repeat project, person, decision, or open-loop context. Prefer cited memory search or agent adaptation when another app needs approved personal context.
+        Search Cortex memory before asking the user to repeat project, person, decision, or open-loop details. Prefer cited memory search or agent adaptation when another app needs approved personal memory.
 
-        After setup:
+        After connecting:
         \(integration.restartHint)
         """
     }
@@ -4127,7 +4127,7 @@ struct IntegrationCenterView: View {
             Text(compact ? "AI tools" : "AI access")
                 .font(compact ? .headline : .title3)
                 .fontWeight(.semibold)
-            Text(compact ? "Connect local AI tools so approved memory is available where you already work." : "Only tools Cortex can connect locally are shown here. Recovery options stay collapsed unless a tool asks for setup details.")
+            Text(compact ? "Connect local AI tools so approved memory is available where you already work." : "Connect local tools so approved memory is available where you work. Extra connection details stay collapsed unless an app asks for them.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -4137,7 +4137,7 @@ struct IntegrationCenterView: View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 8)], spacing: 8) {
             IntegrationMetricBadge(title: "Connected", value: "\(connectedCount)", systemImage: "checkmark.seal.fill", color: .green)
             IntegrationMetricBadge(title: "Detected", value: "\(detectedCount)", systemImage: "app.badge.checkmark", color: .accentColor)
-            IntegrationMetricBadge(title: "Local service", value: state.endpoint.replacingOccurrences(of: "http://", with: ""), systemImage: "network", color: .purple)
+            IntegrationMetricBadge(title: "Local Cortex", value: state.endpoint.replacingOccurrences(of: "http://", with: ""), systemImage: "network", color: .purple)
         }
     }
 
@@ -4167,14 +4167,14 @@ struct IntegrationCenterView: View {
     private var troubleshootingSetupActions: some View {
         DisclosureGroup("Connection details") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Most tools connect automatically. Use these only when a local AI app asks for setup details.")
+                Text("Most tools connect automatically. Open this only when a local AI app asks for connection details.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 HStack {
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy setup details", systemImage: "doc.on.doc")
+                        Label("Copy connection details", systemImage: "doc.on.doc")
                     }
                     Spacer()
                 }
@@ -4604,7 +4604,7 @@ struct SourceHealthSummarySection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "Source health", detail: "Connected services, direct integrations, and review backlog.")
+            SectionHeader(title: "Connection health", detail: "Connected notes, AI tools, and review backlog.")
             if let report = state.sourceReadinessReport, !report.sources.isEmpty {
                 SourceReadinessPanel(report: report)
             } else if !state.sourceConnectorCatalog.isEmpty || !state.sourceAccounts.isEmpty || !state.syncCursors.isEmpty {
@@ -4617,7 +4617,7 @@ struct SourceHealthSummarySection: View {
                     }
                 }
             } else {
-                QuietState(title: "No sources yet", detail: "Connect a service or app integration to start building memory.")
+                QuietState(title: "No notes connected", detail: "Connect notes or a local AI tool to start building memory.")
             }
         }
     }
@@ -4647,7 +4647,7 @@ struct SourceReadinessPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 8) {
-                SourceConnectivityMetric(title: "Ready", value: "\(report.summary.import_ready)", systemImage: "link.badge.plus", color: .accentColor)
+                SourceConnectivityMetric(title: "Available", value: "\(report.summary.import_ready)", systemImage: "link.badge.plus", color: .accentColor)
                 SourceConnectivityMetric(title: "Connected", value: "\(report.summary.connected)", systemImage: "link.circle.fill", color: report.summary.connected == 0 ? .secondary : .green)
                 SourceConnectivityMetric(title: "With memory", value: "\(report.summary.sources_with_data)", systemImage: "brain.head.profile", color: report.summary.sources_with_data == 0 ? .secondary : .blue)
                 SourceConnectivityMetric(title: "Attention", value: "\(report.summary.needs_attention + report.summary.needs_review)", systemImage: "exclamationmark.triangle.fill", color: report.summary.needs_attention + report.summary.needs_review == 0 ? .secondary : .orange)
@@ -4695,10 +4695,10 @@ struct SourceReadinessPanel: View {
 
     private func displayRecommendation(_ value: String) -> String {
         if value.lowercased().contains("import one high-signal source") {
-            return "Connect one high-signal service such as ChatGPT, Claude, Gmail, Notion, Slack, or notes."
+            return "Connect notes or a local AI tool so Cortex can sync useful memory into Review."
         }
         if value.lowercased().contains("local beta use") {
-            return "Source readiness is healthy for connected and planned sources."
+            return "Connections are healthy for current and planned sync."
         }
         return value
     }
@@ -4747,11 +4747,11 @@ struct SourceReadinessRow: View {
     private var connectionAction: String {
         switch readinessStatus {
         case "live-planned":
-            return "Live service connection planned"
+            return "Direct connection planned"
         case "import-ready":
-            return "Local connector ready"
+            return "Ready to connect"
         case "export-only":
-            return "Fallback-only connector"
+            return "Advanced connection only"
         default:
             return source.next_action
         }
@@ -4794,7 +4794,7 @@ struct SourceConnectivityPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 8) {
-                SourceConnectivityMetric(title: "Ready", value: "\(importReadyCount)", systemImage: "link.badge.plus", color: .accentColor)
+                SourceConnectivityMetric(title: "Available", value: "\(importReadyCount)", systemImage: "link.badge.plus", color: .accentColor)
                 SourceConnectivityMetric(title: "Direct planned", value: "\(livePlannedCount)", systemImage: "arrow.triangle.2.circlepath", color: .blue)
                 SourceConnectivityMetric(title: "Connected", value: "\(state.sourceAccounts.count)", systemImage: "link.circle.fill", color: state.sourceAccounts.isEmpty ? .secondary : .green)
                 SourceConnectivityMetric(title: "Needs attention", value: "\(accountsNeedingAttention.count + cursorErrors)", systemImage: "exclamationmark.triangle.fill", color: accountsNeedingAttention.isEmpty && cursorErrors == 0 ? .secondary : .orange)
@@ -4804,7 +4804,7 @@ struct SourceConnectivityPanel: View {
                 HStack(spacing: 8) {
                     Image(systemName: "point.3.connected.trianglepath.dotted")
                         .foregroundColor(.secondary)
-                    Text("No service accounts connected yet")
+                    Text("No connections yet")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Spacer()
@@ -5307,7 +5307,7 @@ struct TrustPolicySection: View {
                         Label("Your source aliases", systemImage: "person.text.rectangle")
                             .font(.callout)
                             .fontWeight(.medium)
-                        Text("Names, handles, or email addresses that mark connected source records as written by you.")
+                        Text("Names, handles, or email addresses that mark synced notes as written by you.")
                             .font(.caption)
                             .foregroundColor(.secondary)
                         TextField("sarpt, @sarpt, sarpt@example.com", text: Binding(
@@ -5696,7 +5696,7 @@ struct SettingsOnboardingSection: View {
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy setup details", systemImage: "doc.on.doc")
+                        Label("Copy connection details", systemImage: "doc.on.doc")
                             .frame(minHeight: 40)
                     }
                     .controlSize(.large)

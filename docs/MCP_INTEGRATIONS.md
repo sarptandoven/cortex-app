@@ -109,7 +109,7 @@ Development repo shape:
 Browser assistants do not all expose a stable local MCP config. For those, Cortex copies scoped chat context with instructions:
 
 - search/use pasted Cortex memory before asking the user to repeat context
-- treat saved decisions and open loops as high-priority
+- treat saved decisions and follow-ups as high-priority
 - ask focused follow-ups when context is missing or stale
 - preserve the user's local-first privacy constraints
 
@@ -119,9 +119,9 @@ Browser assistants do not all expose a stable local MCP config. For those, Corte
 - `search_memory`: search active memories, optionally filtered by `kind` or memory `layer` (`semantic`, `episodic`, `style`, `decision`, `preference`, `negative`, `procedural`)
 - `get_recent_context`: retrieve recent active memories
 - `get_memory_graph`: retrieve the active graph
-- `get_daily_review`: retrieve today's pending captures, open loops, decisions, topics, and recommended actions
-- `build_context_pack`: build a paste-ready Markdown context pack for ChatGPT, Claude, Cursor, or another assistant
-- `get_personal_profile`: retrieve a cited profile grouped by memory layer, coverage, source health, open loops, and limitations
+- `get_daily_review`: retrieve today's pending captures, follow-ups, decisions, topics, and recommended actions
+- `build_context_pack`: build an Advanced/Fallback copied-context payload for ChatGPT, Claude, Cursor, or another assistant when direct connection is not available
+- `get_personal_profile`: retrieve a cited profile grouped by memory layer, coverage, source health, follow-ups, and limitations
 - `get_agent_adaptation`: retrieve cited operating instructions that adapt an AI assistant to the user's preferences, style, decisions, limits, and current memory coverage
 - `get_decisions`: retrieve saved decisions
 - `get_open_questions`: retrieve open questions and tasks
@@ -152,7 +152,7 @@ Diagnostics and reliability reports require the MCP token `maintenance` scope an
 
 ## Product Rule
 
-Agents should search before asking users to repeat context, cite source memory text when making claims, and use archive/delete/forget tools only when the user explicitly asks to remove memory.
+Connected AI tools should search before asking users to repeat context, cite source memory text when making claims, and use archive/delete/forget tools only when the user explicitly asks to remove memory.
 
 ## Reliability Notes
 
@@ -163,6 +163,6 @@ Agents should search before asking users to repeat context, cite source memory t
 - Browser integrations are intentionally copy-based until the target service exposes a safe local config or remote OAuth/MCP flow.
 - MCP maintenance tools still respect Trust controls.
 - The app and MCP clients can verify the backend through `health_contract >= 3`, the `reliability-hardening` feature flag, and the `operational-readiness` feature flag.
-- `build_context_pack` records reuse in the loop because generated context means Cortex memory was used in an AI workflow.
+- `build_context_pack` records reuse in the loop because fallback copied context still means Cortex memory was used in an AI workflow.
 - `get_agent_adaptation` records reuse in the loop because agent instructions are a higher-trust AI workflow and should be visible in review/audit surfaces.
 - `get_support_bundle` is intended for support triage; users should still review the JSON before sharing it.

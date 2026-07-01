@@ -57,7 +57,7 @@ struct SourceConnectorStatusCard: View {
                 HStack(spacing: 8) {
                     Image(systemName: "clock")
                         .foregroundColor(.secondary)
-                    Text("Direct connector not active in this beta")
+                    Text("This connection is not available in this beta")
                         .font(.callout)
                         .fontWeight(.medium)
                     Spacer()

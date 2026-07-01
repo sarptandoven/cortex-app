@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from .config import load_settings
 from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
-from .mcp_tools import TOOLS, call_tool, tool_result_text
+from .mcp_tools import TOOLS, call_tool, tool_result_text, tools_for_scopes
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
 
@@ -861,7 +861,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     "capabilities": {"tools": {}},
                 }
             elif method == "tools/list":
-                result = {"tools": TOOLS}
+                result = {"tools": tools_for_scopes(token_scopes)}
             elif method == "tools/call":
                 params = request.get("params") or {}
                 tool_name = params.get("name", "")

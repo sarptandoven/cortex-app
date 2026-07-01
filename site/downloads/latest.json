@@ -28,28 +28,28 @@
       "Open the DMG and drag Cortex.app to Applications.",
       "Launch Cortex from Applications.",
       "If macOS blocks an unnotarized local beta, Control-click Cortex.app and choose Open.",
-      "Complete first-run setup with a local vault, MCP or Obsidian connection, memory review, cited Ask result, and backup decision."
+      "Complete first-run setup by connecting MCP or Obsidian/local notes, letting sync run, reviewing one memory, asking a cited question, and deciding on backup."
     ],
     "known_limitations": [
       "Manual app replacement is the only update path for this local beta.",
       "Live OAuth/API sync, hosted accounts, cloud backup, and remote MCP/OAuth are not enabled.",
-      "Support starts from the sanitized support bundle, not raw vault data.",
+      "Support starts from the sanitized support bundle, not raw memory folder data.",
       "Developer ID signing, notarization, hosted HTTPS downloads, and a support process are required before broad public distribution."
     ],
     "manual_qa_checklist": [
       "Install from the DMG on a clean macOS 13 or newer user profile.",
       "Launch from Applications and complete first-run setup.",
-      "Connect MCP or an Obsidian/local notes vault through Connections & Privacy.",
+      "Connect MCP or Obsidian/local notes through Connections & Privacy and confirm sync health.",
       "Approve at least one useful memory and archive obvious noise in Review.",
       "Ask a question that returns cited memory from the approved connected source.",
-      "Verify Connections & Privacy shows vault path, backend health, backup, export, support bundle, and update feed controls.",
+      "Verify Connections & Privacy shows memory folder path, local service health, backup, export, support bundle, and update feed controls.",
       "Create a backup and confirm the support bundle contains no raw memory content.",
-      "Replace the app with this build over a previous build and confirm the vault remains intact.",
-      "Roll back to the previous build and confirm the vault remains intact."
+      "Replace the app with this build over a previous build and confirm the memory folder remains intact.",
+      "Roll back to the previous build and confirm the memory folder remains intact."
     ],
     "manual_qa_required": true,
     "rollback_steps": [
-      "Keep the user's local vault folder unchanged.",
+      "Keep the user's local memory folder unchanged.",
       "Quit Cortex.",
       "Replace Cortex.app in Applications with the previous beta build.",
       "Relaunch, run the reliability report, and create a fresh backup."
@@ -57,8 +57,8 @@
     "update_steps": [
       "Quit Cortex before replacing the app.",
       "Install the new Cortex.app over the old app in Applications.",
-      "Keep the local vault folder unchanged.",
-      "Relaunch, confirm backend health, and run the reliability report."
+      "Keep the local memory folder unchanged.",
+      "Relaunch, confirm local service health, and run the reliability report."
     ]
   },
   "build": "1",
@@ -67,7 +67,7 @@
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "Local-first Cortex beta with bundled backend, capture, MCP, and trust controls."
+    "Local-first Cortex beta with bundled local service, MCP/Obsidian sync, Review, cited Ask, and trust controls."
   ],
   "released_at": "2026-06-30T21:40:24Z",
   "version": "0.1.0"

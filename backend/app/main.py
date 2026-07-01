@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import load_settings
 from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
-from .mcp_tools import TOOLS, call_tool, tool_result_text
+from .mcp_tools import TOOLS, call_tool, tool_result_text, tools_for_scopes
 from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GraphResponse, JobRunResponse, ListResponse, MaintenanceResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, ProductLoopResponse, QueuedCaptureResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
@@ -976,7 +976,7 @@ def mcp(request: MCPRequest, context: dict[str, Any] = Depends(mcp_auth)) -> dic
                 "capabilities": {"tools": {}},
             }
         elif request.method == "tools/list":
-            result = {"tools": TOOLS}
+            result = {"tools": tools_for_scopes(token_scopes)}
         elif request.method == "tools/call":
             params = request.params or {}
             tool_name = params.get("name", "")

@@ -390,7 +390,7 @@ struct OnboardingReviewMemoryStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Review one synced item before Cortex can use it. Approve only memory with enough context to cite later.")
+            Text("Review one synced item before Cortex can use it. Approve only memory with a clear citation.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -415,13 +415,18 @@ struct OnboardingReviewMemoryStep: View {
                     }
                 } label: {
                     Label("Refresh Review", systemImage: "arrow.clockwise")
+                        .frame(minHeight: 42)
                 }
+                .controlSize(.large)
                 Button {
                     state.selectedTab = .review
                     state.dismissOnboardingForSession()
                 } label: {
                     Label("Open Full Review", systemImage: "checklist")
+                        .frame(minHeight: 42)
                 }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
                 Spacer()
             }
 
@@ -485,8 +490,10 @@ struct OnboardingAskUseStep: View {
                         state.runSearch()
                     } label: {
                         Label("Ask Cortex", systemImage: "magnifyingglass")
+                            .frame(minWidth: 150, minHeight: 44)
                     }
                     .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
                     Spacer()
                 }
             }
