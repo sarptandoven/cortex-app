@@ -38,6 +38,7 @@ BACKEND_FEATURES = (
     "obsidian-connector",
     "github-token-connector",
     "slack-token-connector",
+    "readwise-token-connector",
     "sync-device-manifests",
     "sync-receipts",
 )
@@ -397,7 +398,7 @@ SOURCE_CONNECTOR_CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "zoom", "name": "Zoom", "category": "Meetings", "auth": "oauth", "live_status": "planned", "scopes": ["recording:read"], "notes": "Zoom account sync is the intended connector path."},
     {"id": "browser-bookmarks", "name": "Browser bookmarks", "category": "Research", "auth": "local_file", "live_status": "import_ready", "scopes": [], "notes": "Local browser integration covers bookmarks and history with explicit app data access."},
     {"id": "browser-history", "name": "Browser history", "category": "Research", "auth": "local_file", "live_status": "import_ready", "scopes": [], "notes": "Local browser history integration requires explicit app data access; no background browser collection."},
-    {"id": "readwise", "name": "Readwise", "category": "Research", "auth": "api_token", "live_status": "planned", "scopes": ["read"], "notes": "Readwise account token sync is the intended connector path."},
+    {"id": "readwise", "name": "Readwise", "category": "Research", "auth": "api_token", "live_status": "api_token", "scopes": ["read"], "notes": "Read-only Readwise highlight export sync works with a user access token."},
     {"id": "knowledge-base", "name": "Knowledge base", "category": "Research", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Knowledge base connector coverage for local notes and read-later services."},
     {"id": "twitter-x", "name": "Twitter/X", "category": "Social", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Twitter/X account connector is required before this can be a primary source."},
     {"id": "apple-notes", "name": "Apple Notes", "category": "Notes", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Local Apple Notes integration is the intended source path."},
@@ -3085,6 +3086,135 @@ class CortexStore:
             return {
                 "source_account_id": account["id"],
                 "source": SLACK_SOURCE,
+                "status": "partial" if error_message else "empty",
+                "processing": processing,
+                "received": 0,
+                "queued": 0,
+                "saved": 0,
+                "skipped": 0,
+                "failed": len(sync.errors),
+                "archived_missing": 0,
+                "capture_ids": [],
+                "records": [],
+                "errors": sync.errors,
+                "cursor": cursor,
+                "source_account": updated_account,
+                "sync": sync_summary,
+            }
+
+        result = self.sync_source_account_records(
+            user_id,
+            account["id"],
+            records=records,
+            cursor_name=cursor_name,
+            cursor_value=sync.cursor_value,
+            high_water_mark=sync.high_water_mark,
+            state=state,
+            processing=processing,
+        )
+        if sync.errors:
+            result["errors"] = [*(result.get("errors") or []), *sync.errors]
+            result["failed"] = int(result.get("failed") or 0) + len(sync.errors)
+            if result.get("status") == "complete":
+                result["status"] = "partial"
+        result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
+        result["sync"] = sync_summary
+        return result
+
+    def sync_readwise_account(
+        self,
+        user_id: str,
+        *,
+        token: str,
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        since: str | None = None,
+        page_cursor: str | None = None,
+        processing: str = "sync",
+        max_records: int = 100,
+        cursor_name: str = "highlights",
+        api_base_url: str | None = None,
+        request_json: Any | None = None,
+    ) -> dict[str, Any]:
+        from .connectors.readwise import READWISE_SOURCE, fetch_readwise_records
+
+        if processing not in {"sync", "async"}:
+            raise ValueError("processing must be sync or async")
+        try:
+            capped_max_records = int(max_records or 100)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_records must be an integer") from exc
+        if capped_max_records < 1 or capped_max_records > 500:
+            raise ValueError("max_records must be between 1 and 500")
+
+        sync = fetch_readwise_records(
+            token=token,
+            since=since,
+            page_cursor=page_cursor,
+            max_records=capped_max_records,
+            api_base_url=api_base_url or "https://readwise.io/api/v2",
+            request_json=request_json,
+        )
+        identifier = (account_identifier or "readwise").strip()[:240]
+        resolved_account_id = (source_account_id or "").strip() or stable_id("sacct_", f"{user_id}:{READWISE_SOURCE}:{identifier}")
+        label = (account_label or "Readwise Highlights").strip()[:160]
+        sync_summary = sync.to_summary()
+        error_message = sync.errors[0]["error"] if sync.errors else None
+        metadata = {
+            "connector": READWISE_SOURCE,
+            "connector_version": sync_summary["connector_version"],
+            "records_found": sync.records_found,
+            "records_returned": sync.records_returned,
+            "token_configured": True,
+            "api_base_url": sync.api_base_url,
+        }
+        account = self.upsert_source_account(
+            user_id,
+            source=READWISE_SOURCE,
+            account_label=label,
+            account_identifier=identifier,
+            connection_type="api_token",
+            status="needs_attention" if error_message else "connected",
+            auth_state="error" if error_message else "healthy",
+            policy={"review_required": True, "allow_ai_context": True},
+            metadata=metadata,
+            last_error=error_message,
+            account_id=resolved_account_id,
+        )
+        state = {
+            "connector": READWISE_SOURCE,
+            "connector_version": sync_summary["connector_version"],
+            "records_found": sync.records_found,
+            "records_returned": sync.records_returned,
+            "sync_errors": sync.errors,
+            "next_page_cursor": sync.next_page_cursor,
+            "api_base_url": sync.api_base_url,
+        }
+        records = [record.to_source_account_record() for record in sync.records]
+        if not records:
+            cursor = self.upsert_sync_cursor(
+                user_id,
+                source=READWISE_SOURCE,
+                source_account_id=account["id"],
+                cursor_name=cursor_name,
+                cursor_value=sync.cursor_value,
+                high_water_mark=sync.high_water_mark,
+                state={
+                    **state,
+                    "last_batch_received": 0,
+                    "last_batch_saved": 0,
+                    "last_batch_queued": 0,
+                    "last_batch_skipped": 0,
+                    "last_batch_failed": 0,
+                },
+                last_error=error_message,
+                completed=not bool(error_message),
+            )
+            updated_account = self._source_account_by_id(user_id, account["id"]) or account
+            return {
+                "source_account_id": account["id"],
+                "source": READWISE_SOURCE,
                 "status": "partial" if error_message else "empty",
                 "processing": processing,
                 "received": 0,

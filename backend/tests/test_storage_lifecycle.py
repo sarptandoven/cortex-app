@@ -1343,6 +1343,120 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertNotIn("xoxb_mcp_test", json.dumps(synced))
         self.assertEqual(synced["records"][0]["source_url"], "https://doppl.slack.com/archives/C123ABC/p1782739200000300")
 
+    def test_readwise_account_sync_fetches_highlights_with_stable_citations(self) -> None:
+        def fake_request(url: str, headers: dict[str, str]):
+            self.assertIn("/export/", url)
+            self.assertEqual(headers["Authorization"], "Token readwise_test")
+            return {
+                "results": [
+                    {
+                        "user_book_id": 111,
+                        "title": "Retrieval Systems",
+                        "author": "A. Researcher",
+                        "category": "books",
+                        "source_url": "https://readwise.io/bookreview/111",
+                        "highlights": [
+                            {
+                                "id": 222,
+                                "text": "We decided Cortex should retrieve Readwise highlights with exact source citations.",
+                                "note": "Useful for the first 100 user memory loop.",
+                                "highlighted_at": "2026-06-29T10:00:00Z",
+                                "updated": "2026-06-30T10:30:00Z",
+                                "tags": [{"name": "retrieval"}],
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        result = self.store.sync_readwise_account(
+            self.user_id,
+            token="readwise_test",
+            processing="sync",
+            max_records=20,
+            request_json=fake_request,
+        )
+
+        self.assertEqual(result["source"], "readwise")
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["saved"], 1)
+        self.assertEqual(result["source_account"]["source"], "readwise")
+        self.assertEqual(result["source_account"]["connection_type"], "api-token")
+        self.assertEqual(result["source_account"]["metadata"]["token_configured"], True)
+        self.assertNotIn("readwise_test", json.dumps(result))
+        self.assertEqual(result["records"][0]["source_url"], "https://readwise.io/bookreview/111")
+        capture_id = result["capture_ids"][0]
+        self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+
+        search = self.store.search(self.user_id, "Readwise highlights exact source citations", limit=3)
+        self.assertTrue(search)
+        self.assertEqual(search[0]["source"], "readwise")
+        self.assertTrue(search[0]["source_url"].startswith("https://readwise.io/bookreview/111"))
+        self.assertIn("line=", search[0]["source_url"])
+        self.assertIn("excerpt=", search[0]["source_url"])
+        self.assertEqual(search[0]["provenance"]["record_metadata"]["highlight_id"], "222")
+        answer = self.store.answer_query(self.user_id, "What did we decide about Readwise highlights?", limit=3)
+        self.assertTrue(answer["citations"])
+        self.assertTrue(answer["citations"][0]["source_url"].startswith("https://readwise.io/bookreview/111"))
+
+        duplicate = self.store.sync_readwise_account(
+            self.user_id,
+            token="readwise_test",
+            processing="sync",
+            max_records=20,
+            request_json=fake_request,
+        )
+        self.assertEqual(duplicate["saved"], 0)
+        self.assertEqual(duplicate["skipped"], 1)
+        self.assertEqual(duplicate["records"][0]["status"], "duplicate")
+
+    def test_mcp_readwise_sync_tool_fetches_records_without_exposing_token(self) -> None:
+        def fake_request(url: str, headers: dict[str, str]):
+            self.assertIn("/export/", url)
+            self.assertEqual(headers["Authorization"], "Token readwise_mcp_test")
+            return {
+                "results": [
+                    {
+                        "user_book_id": 333,
+                        "title": "Cortex Field Notes",
+                        "highlights": [
+                            {
+                                "id": 444,
+                                "text": "We decided MCP Readwise sync should write source-account records.",
+                                "updated": "2026-06-30T10:00:00Z",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        with self.assertRaises(PermissionError):
+            call_tool(
+                self.store,
+                self.user_id,
+                "sync_readwise",
+                {"token": "readwise_mcp_test"},
+                token_scopes=["read"],
+            )
+
+        with patch("backend.app.connectors.readwise._request_json", side_effect=fake_request):
+            synced = call_tool(
+                self.store,
+                self.user_id,
+                "sync_readwise",
+                {
+                    "token": "readwise_mcp_test",
+                    "processing": "sync",
+                    "max_records": 10,
+                },
+                token_scopes=["write"],
+            )
+
+        self.assertEqual(synced["source"], "readwise")
+        self.assertEqual(synced["saved"], 1)
+        self.assertNotIn("readwise_mcp_test", json.dumps(synced))
+        self.assertEqual(synced["records"][0]["source_url"], "readwise://book/333/highlight/444")
+
     def test_source_account_policy_blocks_ai_context_after_approval(self) -> None:
         account = self.store.upsert_source_account(
             self.user_id,

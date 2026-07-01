@@ -237,6 +237,26 @@ TOOLS = [
         },
     },
     {
+        "name": "sync_readwise",
+        "description": "Fetch Readwise highlights with a read-only token, then sync them into Cortex with stable citations.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "token": {"type": "string"},
+                "source_account_id": {"type": "string"},
+                "account_label": {"type": "string"},
+                "account_identifier": {"type": "string"},
+                "since": {"type": "string"},
+                "page_cursor": {"type": "string"},
+                "processing": {"type": "string", "default": "sync", "enum": ["sync", "async"]},
+                "max_records": {"type": "integer", "default": 100},
+                "cursor_name": {"type": "string", "default": "highlights"},
+                "api_base_url": {"type": "string"},
+            },
+            "required": ["token"],
+        },
+    },
+    {
         "name": "build_context_pack",
         "description": "Build a scoped Cortex memory view for ChatGPT, Claude, Cursor, or another assistant.",
         "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "default": ""}, "limit": {"type": "integer", "default": 12}, "target": {"type": "string", "default": "mcp-agent"}, "sector": {"type": "string"}}},
@@ -400,6 +420,7 @@ WRITE_TOOLS = {
     "sync_source_records",
     "sync_github",
     "sync_slack",
+    "sync_readwise",
     "approve_memory_capture",
     "archive_memory_capture",
     "forget_memory",
@@ -648,6 +669,21 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             max_records=int(args.get("max_records", 100)),
             cursor_name=args.get("cursor_name", "messages"),
             workspace_url=args.get("workspace_url"),
+            api_base_url=args.get("api_base_url"),
+        )
+        return store.agent_payload(user_id, result)
+    if name == "sync_readwise":
+        result = store.sync_readwise_account(
+            user_id,
+            token=args.get("token", ""),
+            source_account_id=args.get("source_account_id"),
+            account_label=args.get("account_label"),
+            account_identifier=args.get("account_identifier"),
+            since=args.get("since"),
+            page_cursor=args.get("page_cursor"),
+            processing=args.get("processing", "sync"),
+            max_records=int(args.get("max_records", 100)),
+            cursor_name=args.get("cursor_name", "highlights"),
             api_base_url=args.get("api_base_url"),
         )
         return store.agent_payload(user_id, result)

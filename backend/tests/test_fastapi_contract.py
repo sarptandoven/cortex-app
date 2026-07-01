@@ -1110,6 +1110,63 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertIn("line=", search.json()["results"][0]["source_url"])
         self.assertIn("excerpt=", search.json()["results"][0]["source_url"])
 
+    def test_readwise_connector_endpoint_syncs_highlights_with_citations(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "readwise-endpoint-contract"}
+
+        def fake_request(url: str, request_headers: dict[str, str]):
+            self.assertIn("/export/", url)
+            self.assertEqual(request_headers["Authorization"], "Token readwise_test")
+            return {
+                "results": [
+                    {
+                        "user_book_id": 111,
+                        "title": "Retrieval Systems",
+                        "author": "A. Researcher",
+                        "source_url": "https://readwise.io/bookreview/111",
+                        "highlights": [
+                            {
+                                "id": 222,
+                                "text": "We decided the FastAPI Readwise connector should preserve highlight URLs.",
+                                "updated": "2026-06-30T10:00:00Z",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+        with patch("backend.app.connectors.readwise._request_json", side_effect=fake_request):
+            response = self.client.post(
+                "/v1/connectors/readwise/sync",
+                json={
+                    "token": "readwise_test",
+                    "processing": "sync",
+                    "max_records": 25,
+                },
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["source"], "readwise")
+        self.assertEqual(payload["status"], "complete")
+        self.assertEqual(payload["saved"], 1)
+        self.assertEqual(payload["records"][0]["source_url"], "https://readwise.io/bookreview/111")
+        self.assertEqual(payload["source_account"]["source"], "readwise")
+        self.assertEqual(payload["source_account"]["connection_type"], "api-token")
+        self.assertNotIn("readwise_test", json.dumps(payload))
+        approved = self.client.post(f"/v1/captures/{payload['capture_ids'][0]}/approve", headers=headers)
+        self.assertEqual(approved.status_code, 200)
+        search = self.client.get(
+            "/v1/search",
+            params={"query": "FastAPI Readwise connector preserve highlight URLs"},
+            headers=headers,
+        )
+        self.assertEqual(search.status_code, 200)
+        self.assertTrue(search.json()["results"])
+        self.assertTrue(search.json()["results"][0]["source_url"].startswith("https://readwise.io/bookreview/111"))
+        self.assertIn("line=", search.json()["results"][0]["source_url"])
+        self.assertIn("excerpt=", search.json()["results"][0]["source_url"])
+
     def test_rebuild_vectors_endpoint_exposes_queue_contract(self) -> None:
         response = self.client.post("/v1/maintenance/rebuild-vectors", headers={"Authorization": "Bearer test-token"})
 
@@ -1260,6 +1317,7 @@ class FastAPIContractTests(unittest.TestCase):
             "notion": ("live-planned", ["read_content"], "account sign-in"),
             "slack": ("token-ready", ["channels:history", "groups:history", "channels:read", "groups:read"], "read-only token sync"),
             "github": ("token-ready", ["repo:read"], "read-only token sync"),
+            "readwise": ("token-ready", ["read"], "read-only token sync"),
             "obsidian": ("import-ready", [], "direct local integration"),
         }
 
@@ -1286,6 +1344,9 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertFalse(catalog["slack"]["primary_beta"])
         self.assertEqual(catalog["slack"]["beta_status"], "ready")
         self.assertFalse(catalog["slack"]["show_in_primary_ui"])
+        self.assertFalse(catalog["readwise"]["primary_beta"])
+        self.assertEqual(catalog["readwise"]["beta_status"], "ready")
+        self.assertFalse(catalog["readwise"]["show_in_primary_ui"])
         self.assertTrue(catalog["obsidian"]["primary_beta"])
         self.assertEqual(catalog["obsidian"]["beta_status"], "ready")
         self.assertTrue(catalog["obsidian"]["show_in_primary_ui"])
