@@ -120,6 +120,11 @@ FORBIDDEN_PHRASES: dict[str, tuple[str, ...]] = {
         "open loops",
     ),
     "macos/Sources/OnboardingView.swift": (
+        "Cortex first run",
+        "First run",
+        "first run",
+        "Memory layer",
+        "memory layer",
         "See source layer",
         "View source connection layer",
         "private local vault",
