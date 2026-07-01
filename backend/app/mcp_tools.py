@@ -24,7 +24,7 @@ TOOLS = [
     },
     {
         "name": "search_memory",
-        "description": "Search Cortex memory across saved context.",
+        "description": "Search Cortex memory across saved context and return results with retrieval diagnostics.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -445,7 +445,16 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             extracted=extracted,
         ))
     if name == "search_memory":
-        return store.agent_payload(user_id, store.search(user_id, args.get("query", ""), int(args.get("top_k", 8)), kind=args.get("kind"), layer=args.get("layer"), sector=args.get("sector")))
+        query = args.get("query", "")
+        limit = int(args.get("top_k", 8))
+        if hasattr(store, "public_search_payload"):
+            return store.public_search_payload(user_id, query, limit, kind=args.get("kind"), layer=args.get("layer"), sector=args.get("sector"))
+        return {
+            "query": query,
+            "sector": args.get("sector"),
+            "results": store.agent_payload(user_id, store.search(user_id, query, limit, kind=args.get("kind"), layer=args.get("layer"), sector=args.get("sector"))),
+            "retrieval": {"diagnostics_unavailable": True},
+        }
     if name == "get_recent_context":
         return store.agent_payload(user_id, store.recent(user_id, int(args.get("limit", 10))))
     if name == "get_memory_graph":

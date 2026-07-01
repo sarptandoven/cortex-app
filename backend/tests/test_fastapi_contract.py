@@ -300,6 +300,11 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(search.status_code, 200)
         search_payload = search.json()
         self.assertEqual(search_payload["sector"], "Project Atlas")
+        self.assertIn("retrieval", search_payload)
+        self.assertEqual(search_payload["retrieval"]["candidate_limit"], 50)
+        self.assertIn("fts", search_payload["retrieval"]["mode_counts"])
+        self.assertIn("embedding_provider", search_payload["retrieval"])
+        self.assertIn("degraded_reasons", search_payload["retrieval"])
         search_text = json.dumps(search_payload)
         self.assertIn("Project Atlas runs backend tests", search_text)
         self.assertNotIn("Project Boreal runs web smoke tests", search_text)
@@ -1290,8 +1295,11 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertIn("content", search_result)
         self.assertIn("structuredContent", search_result)
         self.assertEqual(json.loads(search_result["content"][0]["text"]), search_result["structuredContent"])
-        self.assertEqual(search_result["structuredContent"][0]["source"], "github")
-        self.assertIn("line=31", search_result["structuredContent"][0]["source_url"])
+        self.assertEqual(search_result["structuredContent"]["results"][0]["source"], "github")
+        self.assertIn("line=31", search_result["structuredContent"]["results"][0]["source_url"])
+        self.assertIn("retrieval", search_result["structuredContent"])
+        self.assertIn("used_modes", search_result["structuredContent"]["retrieval"])
+        self.assertIn("embedding_provider", search_result["structuredContent"]["retrieval"])
 
         catalog = self.client.post(
             "/mcp",
@@ -1341,7 +1349,9 @@ class FastAPIContractTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             payload = response.json()
             self.assertNotIn("error", payload)
-            return json.loads(payload["result"]["content"][0]["text"])
+            search_payload = json.loads(payload["result"]["content"][0]["text"])
+            self.assertIn("retrieval", search_payload)
+            return search_payload["results"]
 
         with tempfile.TemporaryDirectory() as tmp:
             vault = Path(tmp) / "Review Vault"

@@ -88,7 +88,7 @@ I prefer Cortex answers that include citations back to the originating note.
         self.assertEqual(loop_after_sync["counts"]["pending_captures"], 1)
         self.assertEqual({step["key"]: step["status"] for step in loop_after_sync["steps"]}["capture"], "done")
         self.assertEqual(
-            call_tool(self.store, self.user_id, "search_memory", {"query": "primary local connector", "top_k": 5}),
+            call_tool(self.store, self.user_id, "search_memory", {"query": "primary local connector", "top_k": 5})["results"],
             [],
         )
 
@@ -121,13 +121,15 @@ I prefer Cortex answers that cite the edited Obsidian note when memory changes.
         self.assertEqual(approved, {"approved": True})
         self.assertEqual(call_tool(self.store, self.user_id, "get_memory_inbox", {"limit": 10}), [])
 
-        search_results = call_tool(
+        search_payload = call_tool(
             self.store,
             self.user_id,
             "search_memory",
             {"query": "edited Obsidian note approved cited memory", "top_k": 5},
         )
+        search_results = search_payload["results"]
         self.assertTrue(search_results)
+        self.assertIn("retrieval", search_payload)
         self.assertTrue(any("edited Obsidian" in item["content"] for item in search_results))
         self.assertTrue(all(item["source"] == "obsidian" for item in search_results))
         self.assertTrue(all((item["source_url"] or "").startswith("local-file://Memory%20Loop.md#") for item in search_results))

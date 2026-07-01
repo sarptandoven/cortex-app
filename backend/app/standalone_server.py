@@ -623,11 +623,15 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 layer = (params.get("layer") or [None])[0]
                 sector = (params.get("sector") or [None])[0]
                 limit = _int_param(params, "limit", 10, 1, 50)
-                if hasattr(store, "public_search"):
+                if hasattr(store, "public_search_payload"):
+                    payload = store.public_search_payload(user_id, query, limit, kind, layer, sector=sector)
+                elif hasattr(store, "public_search"):
                     results = store.public_search(user_id, query, limit, kind, layer, sector=sector)
+                    payload = {"query": query, "sector": sector, "results": results, "retrieval": {"diagnostics_unavailable": True}}
                 else:
                     results = store.search(user_id, query, limit, kind, layer, sector=sector)
-                self._send_json({"query": query, "sector": sector, "results": results})
+                    payload = {"query": query, "sector": sector, "results": results, "retrieval": {"diagnostics_unavailable": True}}
+                self._send_json(payload)
                 return
             if method == "GET" and path == "/v1/ask":
                 query = (params.get("query") or [""])[0]

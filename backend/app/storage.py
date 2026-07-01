@@ -4176,20 +4176,38 @@ class CortexStore:
         *,
         sector: str | None = None,
         include_related: bool = False,
+        _diagnostics: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         query = query.strip()
         if not query:
-            return self.recent(user_id, limit, kind=kind, layer=layer, sector=sector)
+            results = self.recent(user_id, limit, kind=kind, layer=layer, sector=sector)
+            if _diagnostics is not None:
+                _diagnostics.update(self._search_diagnostics_snapshot(user_id, limit=limit, returned=len(results), query_empty=True))
+            return results
 
         fts_query = self._fts_query(query)
-        candidate_limit = max(limit * 4, 12)
+        candidate_limit = max(limit * 8, 50)
         task_intent = self._query_has_task_intent(query)
         task_rows = []
+        mode_counts: dict[str, int] = {
+            "fts": 0,
+            "vector": 0,
+            "temporal": 0,
+            "intent": 0,
+            "fallback_like": 0,
+            "lexical_fallback": 0,
+            "related": 0,
+            "task": 0,
+        }
+        vector_available = False
+        vector_count = 0
+        active_memory_count = 0
 
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
             filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer, sector=sector)
             where = " AND ".join(filters)
+            active_memory_count = conn.execute("SELECT COUNT(*) FROM memories WHERE user_id = ? AND status = 'active'", (user_id,)).fetchone()[0]
             rows = []
             fts_rows = []
             if fts_query:
@@ -4205,11 +4223,16 @@ class CortexStore:
                     [fts_query, *params, candidate_limit],
                 ).fetchall()
             vector_available = self._vector_ready(conn)
+            vector_count = self._vector_count(conn, user_id)
             vector_rows = self._vector_search(conn, user_id, query, candidate_limit, kind, layer, user_settings, sector=sector)
             temporal_rows = self._temporal_search(conn, user_id, query, candidate_limit, kind, layer, user_settings, sector=sector)
+            mode_counts["fts"] = len(fts_rows)
+            mode_counts["vector"] = len(vector_rows)
+            mode_counts["temporal"] = len(temporal_rows)
             intent_rows = []
             if not fts_rows and not temporal_rows:
                 intent_rows = self._intent_search(conn, user_id, query, candidate_limit, kind, layer, user_settings, sector=sector)
+                mode_counts["intent"] = len(intent_rows)
             rows = self._fuse_search_rows(
                 query,
                 fts_rows,
@@ -4230,14 +4253,17 @@ class CortexStore:
                     """,
                     [*params, like, like, like, candidate_limit],
                 ).fetchall()
+                mode_counts["fallback_like"] = len(fallback_rows)
                 rows = self._rank_rows_with_layer_boosts(query, fallback_rows, limit, user_settings=user_settings)
             if not vector_available and not rows:
                 existing_ids = {row["id"] for row in rows}
                 lexical_rows = self._lexical_fallback_search(conn, user_id, query, candidate_limit, kind, layer, user_settings, sector=sector)
+                mode_counts["lexical_fallback"] = len(lexical_rows)
                 rows.extend(row for row in lexical_rows if row["id"] not in existing_ids)
                 rows = rows[:limit]
             if sector is None and layer is None and (task_intent or not rows):
                 task_rows = self._task_search_rows(conn, user_id, query, candidate_limit, kind, user_settings)
+                mode_counts["task"] = len(task_rows)
 
         memory_results = [self._memory_from_row(row) for row in rows]
         if include_related and memory_results and len(memory_results) < limit:
@@ -4253,6 +4279,7 @@ class CortexStore:
                     sector=sector,
                     user_settings=user_settings,
                 )
+            mode_counts["related"] = len(related_rows)
             seen_memory_ids = {item["id"] for item in memory_results}
             for row in related_rows:
                 item = self._memory_from_row(row)
@@ -4270,10 +4297,25 @@ class CortexStore:
         task_results = [self._task_search_result_from_row(row) for row in task_rows]
         if task_intent:
             task_ids = {item["id"] for item in task_results}
-            return [*task_results, *(item for item in memory_results if item["id"] not in task_ids)][:limit]
-        if not memory_results:
-            return task_results[:limit]
-        return memory_results
+            final_results = [*task_results, *(item for item in memory_results if item["id"] not in task_ids)][:limit]
+        elif not memory_results:
+            final_results = task_results[:limit]
+        else:
+            final_results = memory_results
+        if _diagnostics is not None:
+            _diagnostics.update(
+                self._search_diagnostics_payload(
+                    limit=limit,
+                    candidate_limit=candidate_limit,
+                    returned=len(final_results),
+                    mode_counts=mode_counts,
+                    vector_available=vector_available,
+                    vector_indexed_memories=vector_count,
+                    active_memories=active_memory_count,
+                    query_empty=False,
+                )
+            )
+        return final_results
 
     def public_search(
         self,
@@ -4288,6 +4330,91 @@ class CortexStore:
     ) -> list[dict[str, Any]]:
         results = self.search(user_id, query, limit, kind, layer, sector=sector, include_related=include_related)
         return self._shared_payload(results, redact_sensitive=bool(self.settings(user_id)["redact_sensitive_context"]))
+
+    def public_search_payload(
+        self,
+        user_id: str,
+        query: str,
+        limit: int = 10,
+        kind: str | None = None,
+        layer: str | None = None,
+        *,
+        sector: str | None = None,
+        include_related: bool = False,
+    ) -> dict[str, Any]:
+        diagnostics: dict[str, Any] = {}
+        results = self.search(
+            user_id,
+            query,
+            limit,
+            kind,
+            layer,
+            sector=sector,
+            include_related=include_related,
+            _diagnostics=diagnostics,
+        )
+        return {
+            "query": query,
+            "sector": sector,
+            "results": self._shared_payload(results, redact_sensitive=bool(self.settings(user_id)["redact_sensitive_context"])),
+            "retrieval": diagnostics,
+        }
+
+    def _search_diagnostics_snapshot(self, user_id: str, *, limit: int, returned: int, query_empty: bool) -> dict[str, Any]:
+        with connect(self.db_path) as conn:
+            return self._search_diagnostics_payload(
+                limit=limit,
+                candidate_limit=limit,
+                returned=returned,
+                mode_counts={"recent": returned},
+                vector_available=self._vector_ready(conn),
+                vector_indexed_memories=self._vector_count(conn, user_id),
+                active_memories=conn.execute("SELECT COUNT(*) FROM memories WHERE user_id = ? AND status = 'active'", (user_id,)).fetchone()[0],
+                query_empty=query_empty,
+            )
+
+    def _search_diagnostics_payload(
+        self,
+        *,
+        limit: int,
+        candidate_limit: int,
+        returned: int,
+        mode_counts: dict[str, int],
+        vector_available: bool,
+        vector_indexed_memories: int,
+        active_memories: int,
+        query_empty: bool,
+    ) -> dict[str, Any]:
+        embedding = embedding_status()
+        degraded_reasons: list[str] = []
+        if active_memories and not vector_available:
+            degraded_reasons.append("vector_index_unavailable")
+        elif active_memories and vector_available and vector_indexed_memories == 0:
+            degraded_reasons.append("no_vector_embeddings_indexed")
+        if active_memories and embedding.get("provider") == "hash":
+            degraded_reasons.append("hash_embedding_provider")
+        fallback_modes = [
+            mode
+            for mode in ("fallback_like", "lexical_fallback", "recent")
+            if int(mode_counts.get(mode) or 0) > 0
+        ]
+        return {
+            "query_empty": query_empty,
+            "limit": limit,
+            "candidate_limit": candidate_limit,
+            "returned": returned,
+            "used_modes": [mode for mode, count in mode_counts.items() if int(count or 0) > 0],
+            "mode_counts": {mode: int(count or 0) for mode, count in mode_counts.items()},
+            "fallback_modes": fallback_modes,
+            "degraded": bool(degraded_reasons),
+            "degraded_reasons": degraded_reasons,
+            "vector_available": vector_available,
+            "vector_indexed_memories": int(vector_indexed_memories or 0),
+            "active_memories": int(active_memories or 0),
+            "embedding_provider": embedding.get("provider"),
+            "embedding_model": embedding.get("model"),
+            "embedding_dimensions": embedding.get("dimensions"),
+        }
 
     def answer_query(self, user_id: str, query: str, limit: int = 8, *, sector: str | None = None) -> dict[str, Any]:
         query = query.strip()

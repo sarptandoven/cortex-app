@@ -478,6 +478,117 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertEqual(results[0]["id"], "quality_decision_intent")
         self.assertEqual(results[0]["layer"], "decision")
 
+    def test_search_diagnostics_reports_degraded_vector_path_and_candidate_depth(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+        self.store._vector_ready = lambda conn: False
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Project Diagnostic retrieval should report when vector search is unavailable.",
+            source="github",
+            source_url="cortex-source://github#service=github&file=issues.json&line=8&excerpt=diagnostic",
+            title="Diagnostics seed",
+            extracted={
+                "_timestamp": "2026-05-01T00:00:00+00:00",
+                "summary": "Diagnostics seed.",
+                "records": [
+                    {
+                        "id": "diagnostic_vector_unavailable",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "Project Diagnostic retrieval should report when vector search is unavailable.",
+                        "summary": "Search diagnostics report vector unavailability.",
+                        "confidence": "confirmed",
+                        "importance": 3,
+                        "topics": ["diagnostic", "retrieval", "vector"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+        diagnostics: dict[str, object] = {}
+
+        results = self.store.search(self.user_id, "Project Diagnostic retrieval vector unavailable", limit=3, _diagnostics=diagnostics)
+
+        self.assertEqual(results[0]["id"], "diagnostic_vector_unavailable")
+        self.assertEqual(diagnostics["candidate_limit"], 50)
+        self.assertTrue(diagnostics["degraded"])
+        self.assertIn("vector_index_unavailable", diagnostics["degraded_reasons"])
+        self.assertIn("embedding_provider", diagnostics)
+        self.assertIn("fts", diagnostics["mode_counts"])
+
+    def test_large_noisy_corpus_retrieves_cited_service_record(self) -> None:
+        self.store.update_settings(
+            self.user_id,
+            {
+                "review_new_captures": False,
+                "allow_pending_in_context": True,
+                "source_policies": {"github": {"mode": "trusted"}},
+            },
+        )
+        distractors = [
+            {
+                "id": f"scale_noise_{index:03d}",
+                "kind": "claim",
+                "layer": "semantic",
+                "content": (
+                    f"Project Cascade retrieval scale note {index}: latency budget discussion mentions "
+                    "launch planning, archive cleanup, and unrelated source reviews."
+                ),
+                "summary": f"Project Cascade noisy scale note {index}.",
+                "confidence": "confirmed",
+                "importance": 2,
+                "topics": ["cascade", "retrieval", "scale", "noise"],
+                "entity_ids": [],
+            }
+            for index in range(360)
+        ]
+        target = {
+            "id": "scale_cited_service_target",
+            "kind": "decision",
+            "layer": "decision",
+            "content": (
+                "Project Cascade retrieval scale source truth decision: use the GitHub issue as the canonical "
+                "latency budget and cite it before any generic archive note."
+            ),
+            "summary": "GitHub issue is the canonical Project Cascade latency budget.",
+            "confidence": "confirmed",
+            "importance": 4,
+            "topics": ["cascade", "retrieval", "scale", "latency"],
+            "entity_ids": ["project:cascade"],
+            "metadata": {"source_quality": "canonical", "verified": True},
+        }
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="\n".join([*(record["content"] for record in distractors), target["content"]]),
+            source="github",
+            source_url="cortex-source://github#service=github&repository=Cortex&file=issues.json&line=412&row=17&excerpt=cascade-latency",
+            title="Large noisy corpus",
+            extracted={
+                "_timestamp": "2026-05-01T00:00:00+00:00",
+                "summary": "Large noisy retrieval corpus.",
+                "records": [*distractors, target],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+        diagnostics: dict[str, object] = {}
+
+        results = self.store.search(
+            self.user_id,
+            "Project Cascade canonical latency budget GitHub source truth decision",
+            limit=3,
+            _diagnostics=diagnostics,
+        )
+
+        self.assertEqual(results[0]["id"], "scale_cited_service_target")
+        self.assertEqual(results[0]["layer"], "decision")
+        self.assertIn("line=412", results[0]["source_url"])
+        self.assertEqual(diagnostics["candidate_limit"], 50)
+        self.assertGreaterEqual(diagnostics["mode_counts"]["fts"], 1)
+        self.assertLessEqual(len(results), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

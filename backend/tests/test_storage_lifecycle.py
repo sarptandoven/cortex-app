@@ -2438,7 +2438,7 @@ Never use [[Templates/Marketing]] boilerplate in memory.
         filtered = self.store.search(self.user_id, "fluffy introductions", limit=5, layer="negative")
         self.assertTrue(filtered)
         self.assertTrue(all(item["layer"] == "negative" for item in filtered))
-        mcp_filtered = call_tool(self.store, self.user_id, "search_memory", {"query": "short direct sentences", "layer": "style"})
+        mcp_filtered = call_tool(self.store, self.user_id, "search_memory", {"query": "short direct sentences", "layer": "style"})["results"]
         self.assertTrue(mcp_filtered)
         self.assertTrue(all(item["layer"] == "style" for item in mcp_filtered))
 

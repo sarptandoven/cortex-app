@@ -664,7 +664,7 @@ def search(
     sector: str | None = Query(default=None, max_length=120),
     user_id: str = Depends(auth),
 ) -> dict[str, Any]:
-    return {"query": query, "sector": sector, "results": store.public_search(user_id, query, limit, kind, layer, sector=sector)}
+    return store.public_search_payload(user_id, query, limit, kind, layer, sector=sector)
 
 
 @app.get("/v1/ask", response_model=AskResponse)

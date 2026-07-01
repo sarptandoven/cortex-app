@@ -285,6 +285,7 @@ class SearchResponse(BaseModel):
     query: str
     sector: str | None = None
     results: list[dict[str, Any]]
+    retrieval: dict[str, Any] | None = None
 
 
 class AskResponse(BaseModel):
