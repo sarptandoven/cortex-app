@@ -21,6 +21,7 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8766"
 DEFAULT_APP_DOMAIN = "com.cortex.doppl"
 DEFAULT_TOKEN_KEY = "localBetaAPIKey.v1"
 DEFAULT_CREDENTIALS_PATH = Path.home() / "Library" / "Application Support" / "Cortex" / "credentials.json"
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class LiveSmokeFailure(AssertionError):
@@ -51,6 +52,13 @@ def read_default_token() -> str:
     if result.returncode != 0:
         return ""
     return result.stdout.strip()
+
+
+def default_mcp_stdio_path() -> Path:
+    built_app_script = ROOT / "macos" / "build" / "Cortex.app" / "Contents" / "Resources" / "scripts" / "cortex_mcp_stdio.py"
+    if built_app_script.exists():
+        return built_app_script
+    return Path(__file__).resolve().with_name("cortex_mcp_stdio.py")
 
 
 def request(
@@ -532,8 +540,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--mcp-stdio-path",
         type=Path,
-        default=Path(__file__).resolve().with_name("cortex_mcp_stdio.py"),
-        help="Path to the MCP stdio proxy script to verify. Defaults to the repo script bundled into the macOS app.",
+        default=None,
+        help="Path to the MCP stdio proxy script to verify. Defaults to the built app script, with repo fallback when no app build exists.",
     )
     args = parser.parse_args(argv)
 
@@ -543,13 +551,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     tmp = Path(tempfile.mkdtemp(prefix="cortex-first100-live-smoke-"))
+    mcp_stdio_path = args.mcp_stdio_path or default_mcp_stdio_path()
     runner = LiveSmokeRunner(
         base_url=args.base_url,
         token=token,
         user_id=args.user_id,
         tmp=tmp,
         include_backup=args.include_backup,
-        mcp_stdio_path=args.mcp_stdio_path,
+        mcp_stdio_path=mcp_stdio_path,
     )
     cleanup: dict[str, Any] | None = None
     try:
