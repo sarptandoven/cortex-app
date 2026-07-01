@@ -13,12 +13,40 @@ class GitHubConnectorTests(unittest.TestCase):
         def fake_request(url: str, headers: dict[str, str]):
             calls.append((url, headers))
             parsed = urlparse(url)
+            self.assertEqual(headers["Authorization"], "Bearer ghp_test")
+            if parsed.path == "/repos/doppl-tech/cortex-app/pulls/43/reviews":
+                query = parse_qs(parsed.query)
+                self.assertEqual(query["per_page"], ["10"])
+                return [
+                    {
+                        "id": 9001,
+                        "state": "CHANGES_REQUESTED",
+                        "user": {"login": "reviewer"},
+                        "submitted_at": "2026-06-30T12:45:00Z",
+                        "html_url": "https://github.com/doppl-tech/cortex-app/pull/43#pullrequestreview-9001",
+                        "body": "Please tighten the source-account retrieval tests.",
+                    }
+                ]
+            if parsed.path == "/repos/doppl-tech/cortex-app/pulls/43/comments":
+                query = parse_qs(parsed.query)
+                self.assertEqual(query["per_page"], ["10"])
+                return [
+                    {
+                        "id": 9101,
+                        "user": {"login": "reviewer"},
+                        "path": "backend/app/storage.py",
+                        "line": 42,
+                        "created_at": "2026-06-30T12:46:00Z",
+                        "updated_at": "2026-06-30T12:47:00Z",
+                        "html_url": "https://github.com/doppl-tech/cortex-app/pull/43#discussion_r9101",
+                        "body": "This PR review comment should be part of Cortex memory.",
+                    }
+                ]
             self.assertEqual(parsed.path, "/repos/doppl-tech/cortex-app/issues")
             query = parse_qs(parsed.query)
             self.assertEqual(query["state"], ["all"])
             self.assertEqual(query["sort"], ["updated"])
             self.assertEqual(query["direction"], ["desc"])
-            self.assertEqual(headers["Authorization"], "Bearer ghp_test")
             return [
                 {
                     "number": 42,
@@ -54,10 +82,14 @@ class GitHubConnectorTests(unittest.TestCase):
             request_json=fake_request,
         )
 
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 3)
         self.assertEqual(sync.repositories, ["doppl-tech/cortex-app"])
         self.assertEqual(sync.records_found, 2)
         self.assertEqual(sync.records_returned, 2)
+        self.assertEqual(sync.reviews_found, 1)
+        self.assertEqual(sync.reviews_returned, 1)
+        self.assertEqual(sync.review_comments_found, 1)
+        self.assertEqual(sync.review_comments_returned, 1)
         self.assertEqual(sync.high_water_mark, "2026-06-30T12:30:00Z")
         issue = sync.records[0].to_source_account_record()
         self.assertEqual(issue["external_id"], "github:doppl-tech/cortex-app:issue:42")
@@ -70,6 +102,12 @@ class GitHubConnectorTests(unittest.TestCase):
         pull = sync.records[1].to_source_account_record()
         self.assertEqual(pull["external_id"], "github:doppl-tech/cortex-app:pull_request:43")
         self.assertEqual(pull["metadata"]["record_scope"], "pull_request")
+        self.assertEqual(pull["metadata"]["reviews_returned"], 1)
+        self.assertEqual(pull["metadata"]["review_comments_returned"], 1)
+        self.assertIn("Pull request reviews:", pull["content"])
+        self.assertIn("Please tighten the source-account retrieval tests.", pull["content"])
+        self.assertIn("Review comment 1 on backend/app/storage.py:42", pull["content"])
+        self.assertIn("This PR review comment should be part of Cortex memory.", pull["content"])
 
     def test_fetch_github_records_does_not_advance_cursor_on_partial_error(self) -> None:
         calls: list[str] = []
@@ -140,6 +178,40 @@ class GitHubConnectorTests(unittest.TestCase):
         self.assertEqual(sync.comments_found, 0)
         self.assertEqual(sync.comments_returned, 0)
         self.assertNotIn("Comments:", sync.records[0].content)
+
+    def test_fetch_github_records_comment_opt_out_skips_pull_request_reviews(self) -> None:
+        calls: list[str] = []
+
+        def fake_request(url: str, headers: dict[str, str]):
+            calls.append(url)
+            parsed = urlparse(url)
+            self.assertEqual(parsed.path, "/repos/doppl-tech/cortex-app/issues")
+            return [
+                {
+                    "number": 43,
+                    "title": "PR enrichment disabled",
+                    "state": "open",
+                    "html_url": "https://github.com/doppl-tech/cortex-app/pull/43",
+                    "created_at": "2026-06-30T10:00:00Z",
+                    "updated_at": "2026-06-30T11:00:00Z",
+                    "user": {"login": "sarp"},
+                    "pull_request": {"url": "https://api.github.com/repos/doppl-tech/cortex-app/pulls/43"},
+                    "body": "Pull request body only.",
+                }
+            ]
+
+        sync = fetch_github_records(
+            token="ghp_test",
+            repositories=["doppl-tech/cortex-app"],
+            include_comments=False,
+            max_records=10,
+            request_json=fake_request,
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(sync.reviews_found, 0)
+        self.assertEqual(sync.review_comments_found, 0)
+        self.assertNotIn("Pull request reviews:", sync.records[0].content)
 
     def test_fetch_github_records_bounds_issue_comments(self) -> None:
         calls: list[str] = []

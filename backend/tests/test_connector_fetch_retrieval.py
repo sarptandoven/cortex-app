@@ -296,6 +296,92 @@ class ConnectorFetchRetrievalTests(unittest.TestCase):
         self.assertTrue(citation["source_url"].startswith("https://github.com/doppl-tech/cortex-app/issues/42"))
         self.assertEqual(citation["source_record_id"], "github:doppl-tech/cortex-app:issue:42")
 
+    def test_github_pr_reviews_reach_search_and_ask_citations(self) -> None:
+        calls: list[str] = []
+
+        def fake_request(url: str, headers: dict[str, str]):
+            calls.append(url)
+            self.assertEqual(headers["Authorization"], "Bearer ghp_review_test")
+            if "/issues?" in url:
+                return [
+                    {
+                        "number": 88,
+                        "title": "Ship PR review memory",
+                        "state": "open",
+                        "html_url": "https://github.com/doppl-tech/cortex-app/pull/88",
+                        "created_at": "2026-06-30T10:00:00Z",
+                        "updated_at": "2026-06-30T11:00:00Z",
+                        "user": {"login": "sarp"},
+                        "labels": [{"name": "backend"}],
+                        "pull_request": {"url": "https://api.github.test/repos/doppl-tech/cortex-app/pulls/88"},
+                        "body": "Pull request body without the unique review marker.",
+                    }
+                ]
+            if "/pulls/88/reviews" in url:
+                self.assertIn("per_page=10", url)
+                return [
+                    {
+                        "id": 9001,
+                        "state": "CHANGES_REQUESTED",
+                        "user": {"login": "reviewer"},
+                        "submitted_at": "2026-06-30T11:15:00Z",
+                        "html_url": "https://github.com/doppl-tech/cortex-app/pull/88#pullrequestreview-9001",
+                        "body": "We decided githubreviewtest retrieval should preserve requested changes from PR reviews.",
+                    }
+                ]
+            if "/pulls/88/comments" in url:
+                self.assertIn("per_page=10", url)
+                return [
+                    {
+                        "id": 9101,
+                        "user": {"login": "reviewer"},
+                        "path": "backend/app/storage.py",
+                        "line": 42,
+                        "created_at": "2026-06-30T11:16:00Z",
+                        "updated_at": "2026-06-30T11:17:00Z",
+                        "html_url": "https://github.com/doppl-tech/cortex-app/pull/88#discussion_r9101",
+                        "body": "The githubreviewtest line comment should also be searchable with citations.",
+                    }
+                ]
+            self.fail(f"unexpected GitHub URL {url}")
+
+        result = self.store.sync_github_account(
+            self.user_id,
+            token="ghp_review_test",
+            repositories=["doppl-tech/cortex-app"],
+            max_records=1,
+            processing="sync",
+            api_base_url="https://api.github.test",
+            request_json=fake_request,
+        )
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["received"], 1)
+        self.assertEqual(result["saved"], 1)
+        self.assertEqual(result["sync"]["reviews_found"], 1)
+        self.assertEqual(result["sync"]["reviews_returned"], 1)
+        self.assertEqual(result["sync"]["review_comments_found"], 1)
+        self.assertEqual(result["sync"]["review_comments_returned"], 1)
+        self.assertTrue(any("/pulls/88/reviews" in url for url in calls))
+        self.assertTrue(any("/pulls/88/comments" in url for url in calls))
+        self.assertEqual(self.store.search(self.user_id, "githubreviewtest requested changes", limit=5), [])
+
+        self.assertTrue(self.store.approve_capture(self.user_id, result["capture_ids"][0]))
+
+        hits = self.store.search(self.user_id, "githubreviewtest requested changes", limit=5)
+        hit = self._first_result_with_marker(hits, "github", "githubreviewtest")
+        self.assertIsNotNone(hit)
+        self.assertTrue(hit["source_url"].startswith("https://github.com/doppl-tech/cortex-app/pull/88"))
+        self.assertEqual(hit["provenance"]["external_id"], "github:doppl-tech/cortex-app:pull_request:88")
+        self.assertEqual(hit["provenance"]["record_metadata"]["reviews_returned"], 1)
+        self.assertEqual(hit["provenance"]["record_metadata"]["review_comments_returned"], 1)
+
+        answer = self.store.answer_query(self.user_id, "githubreviewtest requested changes", limit=5)
+        citation = self._first_citation_with_marker(answer["citations"], "github", "githubreviewtest")
+        self.assertIsNotNone(citation)
+        self.assertTrue(citation["source_url"].startswith("https://github.com/doppl-tech/cortex-app/pull/88"))
+        self.assertEqual(citation["source_record_id"], "github:doppl-tech/cortex-app:pull_request:88")
+
     def test_search_and_ask_can_scope_to_source_account_and_connector_facets(self) -> None:
         def fake_github_request(url: str, headers: dict[str, str]):
             self.assertEqual(headers["Authorization"], "Bearer ghp_scope_test")

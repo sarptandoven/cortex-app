@@ -47,6 +47,10 @@ class GitHubSync:
     records_returned: int
     comments_found: int
     comments_returned: int
+    reviews_found: int
+    reviews_returned: int
+    review_comments_found: int
+    review_comments_returned: int
     include_comments: bool
     max_comments_per_item: int
     high_water_mark: str | None
@@ -63,6 +67,10 @@ class GitHubSync:
             "records_returned": self.records_returned,
             "comments_found": self.comments_found,
             "comments_returned": self.comments_returned,
+            "reviews_found": self.reviews_found,
+            "reviews_returned": self.reviews_returned,
+            "review_comments_found": self.review_comments_found,
+            "review_comments_returned": self.review_comments_returned,
             "include_comments": self.include_comments,
             "max_comments_per_item": self.max_comments_per_item,
             "high_water_mark": self.high_water_mark,
@@ -107,6 +115,10 @@ def fetch_github_records(
     high_water_mark: str | None = None
     comments_found = 0
     comments_returned = 0
+    reviews_found = 0
+    reviews_returned = 0
+    review_comments_found = 0
+    review_comments_returned = 0
     try:
         capped_comments_per_item = max(0, min(int(max_comments_per_item or 0), 50))
     except (TypeError, ValueError):
@@ -145,6 +157,8 @@ def fetch_github_records(
                 if not isinstance(item, dict):
                     continue
                 comments: list[dict[str, str]] = []
+                reviews: list[dict[str, str]] = []
+                review_comments: list[dict[str, str]] = []
                 if comment_enrichment_remaining > 0:
                     comments, found, returned = _fetch_issue_comments(
                         requester,
@@ -158,8 +172,33 @@ def fetch_github_records(
                     )
                     comments_found += found
                     comments_returned += returned
+                    if isinstance(item.get("pull_request"), dict):
+                        reviews, found, returned = _fetch_pull_request_reviews(
+                            requester,
+                            base_url=base_url,
+                            headers=headers,
+                            token=cleaned_token,
+                            repository=repository,
+                            pull_request=item,
+                            limit=capped_comments_per_item,
+                            errors=errors,
+                        )
+                        reviews_found += found
+                        reviews_returned += returned
+                        review_comments, found, returned = _fetch_pull_request_review_comments(
+                            requester,
+                            base_url=base_url,
+                            headers=headers,
+                            token=cleaned_token,
+                            repository=repository,
+                            pull_request=item,
+                            limit=capped_comments_per_item,
+                            errors=errors,
+                        )
+                        review_comments_found += found
+                        review_comments_returned += returned
                     comment_enrichment_remaining -= 1
-                record = _record_from_issue(repository, item, comments=comments)
+                record = _record_from_issue(repository, item, comments=comments, reviews=reviews, review_comments=review_comments)
                 if record is None:
                     continue
                 high_water_mark = _max_iso(high_water_mark, record.captured_at)
@@ -177,6 +216,10 @@ def fetch_github_records(
         records_returned=len(records),
         comments_found=comments_found,
         comments_returned=comments_returned,
+        reviews_found=reviews_found,
+        reviews_returned=reviews_returned,
+        review_comments_found=review_comments_found,
+        review_comments_returned=review_comments_returned,
         include_comments=bool(include_comments),
         max_comments_per_item=capped_comments_per_item,
         high_water_mark=high_water_mark,
@@ -256,6 +299,111 @@ def _fetch_issue_comments(
     return comments, len(payload), len(comments)
 
 
+def _fetch_pull_request_reviews(
+    requester: RequestJSON,
+    *,
+    base_url: str,
+    headers: dict[str, str],
+    token: str,
+    repository: str,
+    pull_request: dict[str, Any],
+    limit: int,
+    errors: list[dict[str, Any]],
+) -> tuple[list[dict[str, str]], int, int]:
+    number = pull_request.get("number")
+    if limit <= 0 or not number:
+        return [], 0, 0
+    query = {"per_page": str(limit), "page": "1"}
+    url = f"{base_url}/repos/{repository}/pulls/{number}/reviews?{urlencode(query)}"
+    try:
+        payload = requester(url, headers)
+    except Exception as exc:
+        errors.append(
+            {
+                "repository": repository,
+                "pull_request": str(number),
+                "scope": "pull_request_reviews",
+                "error": redact_error_message(exc, [token, headers.get("Authorization")]),
+            }
+        )
+        return [], 0, 0
+    if not isinstance(payload, list):
+        errors.append({"repository": repository, "pull_request": str(number), "scope": "pull_request_reviews", "error": "GitHub pull request reviews response was not a list"})
+        return [], 0, 0
+    reviews: list[dict[str, str]] = []
+    for item in payload[:limit]:
+        if not isinstance(item, dict):
+            continue
+        body = _clean_body(item.get("body"))
+        state = _text(item.get("state"))
+        if not body and not state:
+            continue
+        reviews.append(
+            {
+                "id": _text(item.get("id")),
+                "author": _login(item.get("user")) or "unknown",
+                "state": state,
+                "submitted_at": _text(item.get("submitted_at")),
+                "url": _text(item.get("html_url")),
+                "body": body,
+            }
+        )
+    return reviews, len(payload), len(reviews)
+
+
+def _fetch_pull_request_review_comments(
+    requester: RequestJSON,
+    *,
+    base_url: str,
+    headers: dict[str, str],
+    token: str,
+    repository: str,
+    pull_request: dict[str, Any],
+    limit: int,
+    errors: list[dict[str, Any]],
+) -> tuple[list[dict[str, str]], int, int]:
+    number = pull_request.get("number")
+    if limit <= 0 or not number:
+        return [], 0, 0
+    query = {"per_page": str(limit), "page": "1"}
+    url = f"{base_url}/repos/{repository}/pulls/{number}/comments?{urlencode(query)}"
+    try:
+        payload = requester(url, headers)
+    except Exception as exc:
+        errors.append(
+            {
+                "repository": repository,
+                "pull_request": str(number),
+                "scope": "pull_request_review_comments",
+                "error": redact_error_message(exc, [token, headers.get("Authorization")]),
+            }
+        )
+        return [], 0, 0
+    if not isinstance(payload, list):
+        errors.append({"repository": repository, "pull_request": str(number), "scope": "pull_request_review_comments", "error": "GitHub pull request review comments response was not a list"})
+        return [], 0, 0
+    comments: list[dict[str, str]] = []
+    for item in payload[:limit]:
+        if not isinstance(item, dict):
+            continue
+        body = _clean_body(item.get("body"))
+        if not body:
+            continue
+        comments.append(
+            {
+                "id": _text(item.get("id")),
+                "author": _login(item.get("user")) or "unknown",
+                "created_at": _text(item.get("created_at")),
+                "updated_at": _text(item.get("updated_at")),
+                "url": _text(item.get("html_url")),
+                "path": _text(item.get("path")),
+                "line": _text(item.get("line")) or _text(item.get("original_line")),
+                "body": body,
+            }
+        )
+    return comments, len(payload), len(comments)
+
+
 def _normalize_repositories(values: list[str]) -> list[str]:
     repositories: list[str] = []
     seen: set[str] = set()
@@ -285,7 +433,14 @@ def _normalize_repository(value: str) -> str:
     return f"{owner}/{repo}"
 
 
-def _record_from_issue(repository: str, item: dict[str, Any], *, comments: list[dict[str, str]] | None = None) -> GitHubSyncRecord | None:
+def _record_from_issue(
+    repository: str,
+    item: dict[str, Any],
+    *,
+    comments: list[dict[str, str]] | None = None,
+    reviews: list[dict[str, str]] | None = None,
+    review_comments: list[dict[str, str]] | None = None,
+) -> GitHubSyncRecord | None:
     number = item.get("number")
     title = str(item.get("title") or "").strip()
     if not number or not title:
@@ -339,6 +494,33 @@ def _record_from_issue(repository: str, item: dict[str, Any], *, comments: list[
             if comment.get("updated_at") or comment.get("created_at"):
                 comment_header += f" at {comment.get('updated_at') or comment.get('created_at')}"
             lines.extend([comment_header + ":", comment["body"]])
+    pr_reviews = reviews or []
+    if pr_reviews:
+        lines.extend(["", "Pull request reviews:"])
+        for index, review in enumerate(pr_reviews, start=1):
+            review_header = f"Review {index}"
+            if review.get("state"):
+                review_header += f" {review['state']}"
+            if review.get("author"):
+                review_header += f" by {review['author']}"
+            if review.get("submitted_at"):
+                review_header += f" at {review['submitted_at']}"
+            lines.append(review_header + ":")
+            if review.get("body"):
+                lines.append(review["body"])
+    pr_review_comments = review_comments or []
+    if pr_review_comments:
+        lines.extend(["", "Pull request review comments:"])
+        for index, comment in enumerate(pr_review_comments, start=1):
+            comment_header = f"Review comment {index}"
+            location = _review_comment_location(comment)
+            if location:
+                comment_header += f" on {location}"
+            if comment.get("author"):
+                comment_header += f" by {comment['author']}"
+            if comment.get("updated_at") or comment.get("created_at"):
+                comment_header += f" at {comment.get('updated_at') or comment.get('created_at')}"
+            lines.extend([comment_header + ":", comment["body"]])
 
     return GitHubSyncRecord(
         content="\n".join(lines).strip(),
@@ -357,11 +539,21 @@ def _record_from_issue(repository: str, item: dict[str, Any], *, comments: list[
             "state": _text(item.get("state")),
             "labels": labels,
             "comments_returned": len(issue_comments),
+            "reviews_returned": len(pr_reviews),
+            "review_comments_returned": len(pr_review_comments),
             "url": source_url,
             "source_type": "github_pull_request" if is_pull_request else "github_issue",
             "source_quality": "canonical",
         },
     )
+
+
+def _review_comment_location(comment: dict[str, str]) -> str:
+    path = _text(comment.get("path"))
+    line = _text(comment.get("line"))
+    if path and line:
+        return f"{path}:{line}"
+    return path or line
 
 
 def _login(value: Any) -> str:
