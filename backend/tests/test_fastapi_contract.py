@@ -1696,7 +1696,11 @@ END:VCALENDAR
             "slack": ("token-ready", ["channels:history", "groups:history", "channels:read", "groups:read"], "read-only token sync"),
             "github": ("token-ready", ["repo:read"], "read-only token sync"),
             "readwise": ("token-ready", ["read"], "read-only token sync"),
+            "raindrop": ("token-ready", ["read"], "read-only token sync"),
+            "calendar": ("import-ready", [], "direct local integration"),
             "linear": ("token-ready", ["read"], "read-only token sync"),
+            "jira": ("token-ready", ["read:jira-work"], "read-only token sync"),
+            "zotero": ("import-ready", ["read"], "direct local integration"),
             "obsidian": ("import-ready", [], "direct local integration"),
         }
 
@@ -1732,6 +1736,18 @@ END:VCALENDAR
         self.assertFalse(catalog["linear"]["primary_beta"])
         self.assertEqual(catalog["linear"]["beta_status"], "ready")
         self.assertFalse(catalog["linear"]["show_in_primary_ui"])
+        self.assertFalse(catalog["jira"]["primary_beta"])
+        self.assertEqual(catalog["jira"]["beta_status"], "ready")
+        self.assertFalse(catalog["jira"]["show_in_primary_ui"])
+        self.assertFalse(catalog["raindrop"]["primary_beta"])
+        self.assertEqual(catalog["raindrop"]["beta_status"], "ready")
+        self.assertFalse(catalog["raindrop"]["show_in_primary_ui"])
+        self.assertFalse(catalog["calendar"]["primary_beta"])
+        self.assertEqual(catalog["calendar"]["beta_status"], "advanced-fallback")
+        self.assertFalse(catalog["calendar"]["show_in_primary_ui"])
+        self.assertFalse(catalog["zotero"]["primary_beta"])
+        self.assertEqual(catalog["zotero"]["beta_status"], "advanced-fallback")
+        self.assertFalse(catalog["zotero"]["show_in_primary_ui"])
         self.assertTrue(catalog["obsidian"]["primary_beta"])
         self.assertEqual(catalog["obsidian"]["beta_status"], "ready")
         self.assertTrue(catalog["obsidian"]["show_in_primary_ui"])

@@ -683,6 +683,8 @@ def _connector_service_baseline(item: dict[str, Any], source_ids: list[str], *, 
         path = "native-local-sync"
     elif live_status == "api_token":
         path = "native-token-sync"
+    elif live_status in {"local_api", "local_only"}:
+        path = "native-local-sync"
     elif live_status == "planned":
         path = "normalized-record-sync-now-account-sign-in-planned"
     elif supports_import:
@@ -692,7 +694,7 @@ def _connector_service_baseline(item: dict[str, Any], source_ids: list[str], *, 
     return {
         "included": connector_id in BASELINE_10K_CONNECTOR_IDS,
         "records_supported": bool(supports_import),
-        "live_sync": bool(primary_beta or live_status == "api_token"),
+        "live_sync": bool(primary_beta or live_status in {"api_token", "local_api", "local_only"}),
         "primary_ui": primary_beta,
         "path": path,
         "source_ids": source_ids,
@@ -705,7 +707,7 @@ def _connector_readiness_status(item: dict[str, Any]) -> str:
         return "live-planned"
     if live_status == "api_token":
         return "token-ready"
-    if live_status in {"import_ready", "local_only", "imported"}:
+    if live_status in {"import_ready", "local_api", "local_only", "imported"}:
         return "import-ready"
     return "export-only"
 
