@@ -33,7 +33,7 @@ struct ConnectionsPrivacySheet: View {
                 Text("Connections & Privacy")
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text("Connect notes, share approved memory with AI tools, and keep a local backup.")
+                Text("Connect notes, keep review-first memory private, and choose where approved memory can be used.")
                     .font(.callout)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -79,15 +79,12 @@ private struct ConnectionsPrivacyOverview: View {
         NotesConnectionHealth(state: state)
     }
 
-    private var hasActionableAIToolState: Bool {
-        if state.connectedAIIntegrationCount > 0 {
-            return true
-        }
-        return state.integrations.contains { integration in
+    private var detectedAIToolCount: Int {
+        state.integrations.filter { integration in
             guard integration.supportsInstall else { return false }
             let integrationState = state.integrationState(for: integration)
             return integrationState.appInstalled && !integrationState.configured
-        }
+        }.count
     }
 
     var body: some View {
@@ -96,7 +93,7 @@ private struct ConnectionsPrivacyOverview: View {
                 ConnectionsOverviewHero(state: state)
 
                 ConnectionsObsidianSection(state: state)
-                if hasActionableAIToolState {
+                if state.connectedAIIntegrationCount > 0 {
                     ConnectionsAIToolsSection(state: state)
                 } else {
                     optionalAITools
@@ -132,14 +129,21 @@ private struct ConnectionsPrivacyOverview: View {
         } label: {
             ConnectionsDisclosureLabel(
                 systemImage: "wand.and.stars",
-                title: "AI tools",
-                detail: "Optional after Ask is useful"
+                title: "Use memory elsewhere",
+                detail: aiToolsDisclosureDetail
             )
         }
         .padding(14)
         .background(connectionsPanelBackground)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var aiToolsDisclosureDetail: String {
+        if detectedAIToolCount > 0 {
+            return "\(detectedAIToolCount) app\(detectedAIToolCount == 1 ? "" : "s") detected, optional after Ask works"
+        }
+        return "Optional after Ask is useful"
     }
 
     private func privacySettings(summary: TrustSummaryResponse) -> some View {
@@ -566,8 +570,8 @@ private struct ConnectionsAIToolsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
-                title: "Use memory in AI tools",
-                detail: "Ask works in Cortex first. Connected tools can read approved memory when you want it elsewhere."
+                title: "Use approved memory outside Cortex",
+                detail: "Optional. Ask in Cortex first, then enable this when another AI app should read approved memory."
             )
 
             HStack(alignment: .center, spacing: 14) {
@@ -581,7 +585,7 @@ private struct ConnectionsAIToolsSection: View {
                 .frame(width: 56, height: 56)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("AI tools")
+                    Text("AI apps")
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundColor(.secondary)
@@ -600,8 +604,8 @@ private struct ConnectionsAIToolsSection: View {
                     Button {
                         state.installDetectedIntegrations()
                     } label: {
-                        Label("Connect tools", systemImage: "link.circle")
-                            .frame(minWidth: 118, minHeight: 46)
+                        Label("Enable in apps", systemImage: "link.circle")
+                            .frame(minWidth: 138, minHeight: 46)
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
@@ -609,7 +613,7 @@ private struct ConnectionsAIToolsSection: View {
                     Button {
                         state.refreshIntegrationStates()
                     } label: {
-                        Label("Check", systemImage: "arrow.clockwise")
+                        Label("Refresh", systemImage: "arrow.clockwise")
                             .frame(minWidth: 108, minHeight: 46)
                     }
                     .buttonStyle(.bordered)
@@ -632,7 +636,7 @@ private struct ConnectionsAIToolsSection: View {
                                 .font(.callout)
                                 .fontWeight(.medium)
                             Spacer(minLength: 0)
-                            Text("Connected")
+                            Text("Enabled")
                                 .font(.caption)
                                 .fontWeight(.semibold)
                                 .foregroundColor(.green)
@@ -660,20 +664,20 @@ private struct ConnectionsAIToolsSection: View {
 
     private var statusTitle: String {
         if connectedCount > 0 {
-            return "\(connectedCount) tool\(connectedCount == 1 ? "" : "s") connected"
+            return "Enabled in \(connectedCount) app\(connectedCount == 1 ? "" : "s")"
         }
         if !detectedConnectable.isEmpty {
-            return "\(detectedConnectable.count) tool\(detectedConnectable.count == 1 ? "" : "s") ready"
+            return "\(detectedConnectable.count) app\(detectedConnectable.count == 1 ? "" : "s") detected"
         }
-        return "Use Ask first"
+        return "No app needed"
     }
 
     private var statusDetail: String {
         if connectedCount > 0 {
-            return "Connected tools can read approved memory."
+            return "These apps can read approved memory with citations."
         }
         if !detectedConnectable.isEmpty {
-            return "Connect detected tools when you want approved memory outside Cortex."
+            return "Enable this only when you want approved memory available outside Cortex."
         }
         return "Cortex works without another app. Ask uses approved memory with citations."
     }
