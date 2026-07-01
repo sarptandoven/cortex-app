@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from backend.app.connectors.obsidian import (
     MAX_NOTE_BYTES,
@@ -291,6 +293,25 @@ I prefer Cortex note imports that cite {preference_marker}.
             self.assertNotIn(leaked, active_excerpts)
         self.assertTrue(all(row["source_url"].startswith(note.resolve().as_uri()) for row in active_memories))
         self.assertTrue(all("line=" in row["source_url"] and "excerpt=" in row["source_url"] for row in active_memories))
+
+    def test_obsidian_sync_uses_deterministic_extraction_even_with_anthropic_key(self) -> None:
+        self.write_note(
+            "Local First.md",
+            "Decision: Cortex local-first connector sync must not call hosted model extraction.",
+        )
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), patch(
+            "backend.app.extractor._extract_with_claude",
+            side_effect=AssertionError("connector sync must stay local"),
+        ):
+            synced = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+
+        self.assertEqual(synced["status"], "complete")
+        self.assertEqual(synced["saved"], 1)
+        self.assertTrue(self.store.approve_capture(self.user_id, synced["capture_ids"][0]))
+        found = self.store.search(self.user_id, "local-first connector sync hosted model extraction", limit=5)
+        self.assertTrue(found)
+        self.assertEqual(found[0]["source"], "obsidian")
 
     def test_empty_vault_does_not_count_as_synced_source(self) -> None:
         empty = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")

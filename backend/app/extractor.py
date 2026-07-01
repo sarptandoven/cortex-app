@@ -164,7 +164,7 @@ def extract_context(
     extraction_mode: str | None = None,
 ) -> dict[str, Any]:
     mode = (extraction_mode or os.environ.get("CORTEX_EXTRACTION_MODE") or "auto").strip().lower()
-    if mode in {"local", "deterministic"}:
+    if mode in {"local", "deterministic", "connector"}:
         return _extract_locally(raw_text, source, author_aliases=author_aliases)
     if os.environ.get("ANTHROPIC_API_KEY"):
         try:
