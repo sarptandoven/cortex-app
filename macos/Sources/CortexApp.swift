@@ -80,6 +80,13 @@ struct SourceConnectorCatalogItem: Codable, Identifiable, Hashable {
     let primary_beta_path: String?
     let show_in_primary_ui: Bool?
 
+    var showInPrimaryUI: Bool {
+        if let show_in_primary_ui {
+            return show_in_primary_ui
+        }
+        return id == "obsidian" && primary_beta != false
+    }
+
     var isImportReady: Bool {
         if supports_import == true {
             return true
@@ -144,6 +151,148 @@ struct SourceReadinessSummary: Codable, Hashable {
     let connector_needed: Int?
 }
 
+struct SourceSyncPlan: Codable, Hashable {
+    let mode: String
+    let credential_ref: String?
+    let hosted_credential_ref: String?
+    let managed_sync_status: String
+    let next_sync_due_at: String?
+    let sync_interval_seconds: Int?
+    let due_now: Bool?
+    let last_attempt_at: String?
+    let last_completed_at: String?
+    let retry_after: String?
+
+    var modeTitle: String {
+        switch normalizedMode {
+        case "hosted_managed_sync":
+            return hasHostedSyncEvidence ? "Hosted sync" : "Planned sign-in"
+        case "local_app_autosync":
+            return "Local sync"
+        case "planned_account_sync":
+            return "Planned sign-in"
+        case "manual_direct_sync":
+            return "Advanced sync"
+        case "direct_connector_needed":
+            return "Connector needed"
+        default:
+            return Self.humanized(mode)
+        }
+    }
+
+    var displayTitle: String {
+        guard let statusTitle else {
+            return modeTitle
+        }
+        return "\(modeTitle) · \(statusTitle)"
+    }
+
+    var statusIcon: String {
+        switch normalizedManagedSyncStatus {
+        case "needs_attention":
+            return "exclamationmark.circle.fill"
+        case "due":
+            return "arrow.triangle.2.circlepath.circle.fill"
+        case "backing_off":
+            return "pause.circle.fill"
+        case "healthy":
+            return "checkmark.circle.fill"
+        case "waiting_for_first_sync":
+            return "clock.arrow.circlepath"
+        case "planned":
+            return "calendar.badge.clock"
+        case "connector_needed":
+            return "puzzlepiece.extension"
+        default:
+            switch normalizedMode {
+            case "hosted_managed_sync", "planned_account_sync":
+                return "person.crop.circle.badge.clock"
+            case "local_app_autosync":
+                return "arrow.triangle.2.circlepath"
+            case "manual_direct_sync":
+                return "slider.horizontal.3"
+            default:
+                return "link.circle"
+            }
+        }
+    }
+
+    var statusColor: Color {
+        switch normalizedManagedSyncStatus {
+        case "needs_attention":
+            return .orange
+        case "due":
+            return .accentColor
+        case "backing_off":
+            return .orange
+        case "healthy":
+            return .green
+        case "waiting_for_first_sync":
+            return .accentColor
+        default:
+            switch normalizedMode {
+            case "local_app_autosync", "hosted_managed_sync":
+                return .accentColor
+            default:
+                return .secondary
+            }
+        }
+    }
+
+    private var normalizedMode: String {
+        mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private var normalizedManagedSyncStatus: String {
+        managed_sync_status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private var statusTitle: String? {
+        switch normalizedManagedSyncStatus {
+        case "healthy":
+            return "Synced"
+        case "due":
+            return "Due"
+        case "backing_off":
+            return "Paused"
+        case "waiting_for_first_sync":
+            return "Waiting"
+        case "needs_attention":
+            return "Needs attention"
+        case "available_advanced", "planned", "connector_needed", "not_configured":
+            return nil
+        case "":
+            return nil
+        default:
+            return Self.humanized(managed_sync_status)
+        }
+    }
+
+    private var hasHostedSyncEvidence: Bool {
+        if normalizedManagedSyncStatus == "healthy" || normalizedManagedSyncStatus == "waiting_for_first_sync" {
+            return true
+        }
+        return hasValue(hosted_credential_ref)
+            || hasValue(credential_ref)
+            || hasValue(last_attempt_at)
+            || hasValue(last_completed_at)
+            || hasValue(next_sync_due_at)
+    }
+
+    private func hasValue(_ value: String?) -> Bool {
+        guard let value else { return false }
+        return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private static func humanized(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .capitalized
+    }
+}
+
 struct SourceReadinessItem: Codable, Identifiable, Hashable {
     var id: String { source }
     let source: String
@@ -168,6 +317,7 @@ struct SourceReadinessItem: Codable, Identifiable, Hashable {
     let auth: String?
     let scopes: [String]?
     let formats: [String]
+    let sync_plan: SourceSyncPlan?
     let accounts: Int
     let cursors: Int
     let captures: Int
@@ -178,6 +328,55 @@ struct SourceReadinessItem: Codable, Identifiable, Hashable {
     let citation_coverage: Double
     let last_seen_at: String?
     let warnings: [String]
+
+    var showInPrimaryUI: Bool {
+        if let show_in_primary_ui {
+            return show_in_primary_ui
+        }
+        return source == "obsidian" && primary_beta != false
+    }
+
+    var syncPlanModeTitle: String {
+        if let sync_plan {
+            return sync_plan.modeTitle
+        }
+        switch connectorReadinessStatus {
+        case "live-planned":
+            return "Planned sign-in"
+        case "token-ready", "import-ready":
+            return "Local sync"
+        case "export-only":
+            return "Advanced sync"
+        default:
+            return "Source sync"
+        }
+    }
+
+    var syncPlanDisplayTitle: String {
+        sync_plan?.displayTitle ?? syncPlanModeTitle
+    }
+
+    var syncPlanIcon: String {
+        sync_plan?.statusIcon ?? statusIcon
+    }
+
+    var syncPlanColor: Color {
+        sync_plan?.statusColor ?? statusColor
+    }
+
+    var connectorReadinessStatus: String {
+        let explicit = (readiness_status ?? "").lowercased()
+        if ["export-only", "import-ready", "live-planned", "token-ready"].contains(explicit) {
+            return explicit
+        }
+        if live_status.lowercased() == "planned" {
+            return "live-planned"
+        }
+        if supports_import == true || ["native", "generic", "import_ready"].contains(import_status.lowercased()) || !formats.isEmpty {
+            return "import-ready"
+        }
+        return "export-only"
+    }
 
     var needsAttention: Bool {
         status == "needs_attention"
@@ -5133,37 +5332,11 @@ struct SourceReadinessRow: View {
         let memoryText = "\(source.active_memories) memories"
         let reviewText = source.pending > 0 ? "\(source.pending) review" : "\(source.approved) approved"
         if source.needsAttention, let warning = source.warnings.first {
-            return "\(warning) · \(memoryText) · \(reviewText)"
+            return "\(warning) · \(source.syncPlanModeTitle) · \(memoryText) · \(reviewText)"
         }
-        return "\(connectionAction) · \(memoryText) · \(reviewText)"
+        return "\(source.syncPlanDisplayTitle) · \(memoryText) · \(reviewText)"
     }
 
-    private var connectionAction: String {
-        switch readinessStatus {
-        case "live-planned":
-            return "Direct connection planned"
-        case "import-ready":
-            return "Ready to connect"
-        case "export-only":
-            return "Advanced connection only"
-        default:
-            return source.next_action
-        }
-    }
-
-    private var readinessStatus: String {
-        let explicit = (source.readiness_status ?? "").lowercased()
-        if ["export-only", "import-ready", "live-planned"].contains(explicit) {
-            return explicit
-        }
-        if source.live_status.lowercased() == "planned" {
-            return "live-planned"
-        }
-        if source.supports_import == true || ["native", "generic", "import_ready"].contains(source.import_status.lowercased()) || !source.formats.isEmpty {
-            return "import-ready"
-        }
-        return "export-only"
-    }
 }
 
 struct SourceConnectivityPanel: View {

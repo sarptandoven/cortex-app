@@ -68,8 +68,17 @@ private struct ConnectionsPrivacyOverview: View {
     @State private var recoveryToolsExpanded = false
     @State private var developerDetailsExpanded = false
 
+    private var primaryActiveSourceAccounts: [SourceAccountItem] {
+        state.activeSourceAccounts.filter { account in
+            guard let readiness = readiness(for: account.source) else {
+                return account.source == "obsidian"
+            }
+            return readiness.showInPrimaryUI
+        }
+    }
+
     private var connectedSourceCount: Int {
-        max(state.activeSourceAccounts.count, notesHealth == .healthy ? 1 : 0)
+        max(primaryActiveSourceAccounts.count, notesHealth == .healthy ? 1 : 0)
     }
 
     private var connectionStatusDetail: String {
@@ -81,6 +90,12 @@ private struct ConnectionsPrivacyOverview: View {
 
     private var notesHealth: NotesConnectionHealth {
         NotesConnectionHealth(state: state)
+    }
+
+    private func readiness(for sourceID: String) -> SourceReadinessItem? {
+        state.sourceReadinessReport?.sources.first { source in
+            source.source == sourceID || (source.source_ids ?? []).contains(sourceID)
+        }
     }
 
     private var detectedAIToolCount: Int {
@@ -329,7 +344,7 @@ private struct ConnectionsOverviewHero: View {
     }
 
     private var obsidianConnector: SourceConnectorCatalogItem? {
-        state.sourceConnectorCatalog.first { $0.id == "obsidian" }
+        state.sourceConnectorCatalog.first { $0.id == "obsidian" && $0.showInPrimaryUI }
     }
 
     var body: some View {
@@ -477,14 +492,25 @@ private struct ConnectionsObsidianSection: View {
     }
 
     private var obsidianConnector: SourceConnectorCatalogItem? {
-        state.sourceConnectorCatalog.first { $0.id == "obsidian" }
+        state.sourceConnectorCatalog.first { $0.id == "obsidian" && $0.showInPrimaryUI }
+    }
+
+    private var obsidianReadiness: SourceReadinessItem? {
+        state.sourceReadinessReport?.sources.first { $0.source == "obsidian" }
+    }
+
+    private var primarySourceDetail: String {
+        if let obsidianReadiness {
+            return "\(obsidianReadiness.syncPlanDisplayTitle). Choose the local source Cortex should keep synced automatically."
+        }
+        return "Choose the local source Cortex should keep synced automatically."
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
                 title: "Primary source connection",
-                detail: "Choose the local source Cortex should keep synced automatically."
+                detail: primarySourceDetail
             )
 
             if state.sourceConnectorCatalog.isEmpty {
@@ -697,6 +723,7 @@ private struct ConnectionsDirectSourceRow: View {
     private var statusTitle: String {
         if activeAccount?.needsAttention == true { return "Needs attention" }
         if let readiness, readiness.pending > 0 { return "Review" }
+        if let readiness { return readiness.syncPlanModeTitle }
         if connected { return "Connected" }
         if hasStoredConfig { return "Configured" }
         if connector.connectorReadinessStatus == "token-ready" { return "Token sync" }
@@ -708,6 +735,7 @@ private struct ConnectionsDirectSourceRow: View {
     private var statusChipIcon: String {
         if activeAccount?.needsAttention == true { return "exclamationmark.circle.fill" }
         if let readiness, readiness.pending > 0 { return "tray.full.fill" }
+        if let readiness { return readiness.syncPlanIcon }
         if connected { return "checkmark.circle.fill" }
         if hasStoredConfig { return "checkmark.circle" }
         if connector.connectorReadinessStatus == "token-ready" { return "key.fill" }
@@ -717,6 +745,7 @@ private struct ConnectionsDirectSourceRow: View {
     private var statusColor: Color {
         if activeAccount?.needsAttention == true { return .orange }
         if let readiness, readiness.pending > 0 { return .orange }
+        if let readiness { return readiness.syncPlanColor }
         if connected { return .green }
         if hasStoredConfig { return .green }
         if connector.connectorReadinessStatus == "token-ready" { return .accentColor }
@@ -763,15 +792,15 @@ private struct ConnectionsDirectSourceRow: View {
             return nil
         }
         if readiness.pending > 0 {
-            return "\(readiness.pending) item\(readiness.pending == 1 ? "" : "s") waiting in Review"
+            return "\(readiness.pending) item\(readiness.pending == 1 ? "" : "s") waiting in Review · \(readiness.syncPlanModeTitle)"
         }
         if readiness.active_memories > 0 {
-            return "\(readiness.active_memories) reviewed memor\(readiness.active_memories == 1 ? "y" : "ies") with \(Int((readiness.citation_coverage * 100).rounded()))% citation coverage"
+            return "\(readiness.syncPlanDisplayTitle) · \(readiness.active_memories) reviewed memor\(readiness.active_memories == 1 ? "y" : "ies") with \(Int((readiness.citation_coverage * 100).rounded()))% citation coverage"
         }
         if let lastSeen = readiness.last_seen_at {
-            return "Last sync \(shortTimestamp(lastSeen))"
+            return "\(readiness.syncPlanDisplayTitle) · Last sync \(shortTimestamp(lastSeen))"
         }
-        return nil
+        return readiness.syncPlanDisplayTitle
     }
 
     private var sourceHealthColor: Color {
@@ -1346,6 +1375,7 @@ private struct ConnectionsActiveSourcesSection: View {
             account.disconnected_at == nil
                 && account.status.lowercased() != "empty"
                 && account.auth_state.lowercased() != "needs-content"
+                && shouldShowInPrimaryUI(account)
         }
     }
 
@@ -1353,6 +1383,20 @@ private struct ConnectionsActiveSourcesSection: View {
         state.sourceAccounts.filter { account in
             account.disconnected_at == nil
                 && (account.status.lowercased() == "empty" || account.auth_state.lowercased() == "needs-content")
+                && shouldShowInPrimaryUI(account)
+        }
+    }
+
+    private func shouldShowInPrimaryUI(_ account: SourceAccountItem) -> Bool {
+        guard let readiness = readiness(for: account.source) else {
+            return account.source == "obsidian"
+        }
+        return readiness.showInPrimaryUI
+    }
+
+    private func readiness(for sourceID: String) -> SourceReadinessItem? {
+        state.sourceReadinessReport?.sources.first { source in
+            source.source == sourceID || (source.source_ids ?? []).contains(sourceID)
         }
     }
 

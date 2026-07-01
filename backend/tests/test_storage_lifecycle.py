@@ -1059,6 +1059,51 @@ class CortexStorageLifecycleTests(unittest.TestCase):
                 self.assertNotEqual(entry["status"], "advanced_fallback")
                 self.assertNotIn("Advanced/Fallback", entry["next_action"])
 
+    def test_source_sync_plan_marks_due_and_backing_off_accounts(self) -> None:
+        account = self.store.upsert_source_account(
+            self.user_id,
+            source="github",
+            account_label="Doppl GitHub",
+            account_identifier="doppl-tech/cortex-app",
+            connection_type="api_token",
+            status="connected",
+            auth_state="healthy",
+            metadata={
+                "sync_interval_seconds": 900,
+                "next_sync_due_at": "2000-01-01T00:00:00Z",
+            },
+        )
+
+        readiness = self.store.source_readiness_report(self.user_id)
+        github = next(item for item in readiness["sources"] if item["source"] == "github")
+        self.assertEqual(github["sync_plan"]["mode"], "local_app_autosync")
+        self.assertEqual(github["sync_plan"]["credential_ref"], f"source_account:{account['id']}")
+        self.assertEqual(github["sync_plan"]["managed_sync_status"], "due")
+        self.assertEqual(github["sync_plan"]["sync_interval_seconds"], 900)
+        self.assertTrue(github["sync_plan"]["due_now"])
+        self.assertEqual(github["sync_plan"]["next_sync_due_at"], "2000-01-01T00:00:00Z")
+
+        self.store.upsert_source_account(
+            self.user_id,
+            source="github",
+            account_label="Doppl GitHub",
+            account_identifier="doppl-tech/cortex-app",
+            connection_type="api_token",
+            status="connected",
+            auth_state="healthy",
+            metadata={
+                "sync_interval_seconds": 900,
+                "next_sync_due_at": "2000-01-01T00:00:00Z",
+                "retry_after": "2999-01-01T00:00:00Z",
+            },
+            account_id=account["id"],
+        )
+        backoff_readiness = self.store.source_readiness_report(self.user_id)
+        backed_off = next(item for item in backoff_readiness["sources"] if item["source"] == "github")
+        self.assertEqual(backed_off["sync_plan"]["managed_sync_status"], "backing_off")
+        self.assertFalse(backed_off["sync_plan"]["due_now"])
+        self.assertEqual(backed_off["sync_plan"]["retry_after"], "2999-01-01T00:00:00Z")
+
     def test_mcp_connected_source_tools_register_and_sync_cited_records(self) -> None:
         connectors = call_tool(self.store, self.user_id, "list_source_connectors", {"include_accounts": False})
         connector_ids = {item["id"] for item in connectors["results"]}

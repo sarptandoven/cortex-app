@@ -9,7 +9,7 @@ import re
 import secrets
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import parse_qsl, quote, unquote, urlsplit, urlunsplit
@@ -710,13 +710,84 @@ def _latest_nonempty_iso(values: Iterable[Any]) -> str | None:
     return normalized[-1] if normalized else None
 
 
+def _earliest_nonempty_iso(values: Iterable[Any]) -> str | None:
+    normalized = [str(value or "").strip() for value in values if str(value or "").strip()]
+    parsed_values = [
+        parsed
+        for parsed in (_parse_iso_timestamp(value) for value in normalized)
+        if parsed is not None
+    ]
+    if parsed_values:
+        return _isoformat_z(min(parsed_values))
+    return sorted(normalized)[0] if normalized else None
+
+
+def _isoformat_z(value: datetime) -> str:
+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _bounded_int(value: Any, *, minimum: int, maximum: int) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed < minimum or parsed > maximum:
+        return None
+    return parsed
+
+
+def _source_sync_interval_seconds(
+    active_accounts: list[dict[str, Any]],
+    source_cursors: list[dict[str, Any]],
+    *,
+    default: int = 1800,
+) -> int:
+    candidates: list[int] = []
+    for account in active_accounts:
+        metadata = account.get("metadata") or {}
+        seconds = _bounded_int(metadata.get("sync_interval_seconds"), minimum=60, maximum=86_400)
+        if seconds is not None:
+            candidates.append(seconds)
+        minutes = _bounded_int(metadata.get("sync_interval_minutes"), minimum=1, maximum=1_440)
+        if minutes is not None:
+            candidates.append(minutes * 60)
+    for cursor in source_cursors:
+        state = cursor.get("state") or {}
+        seconds = _bounded_int(state.get("sync_interval_seconds"), minimum=60, maximum=86_400)
+        if seconds is not None:
+            candidates.append(seconds)
+        minutes = _bounded_int(state.get("sync_interval_minutes"), minimum=1, maximum=1_440)
+        if minutes is not None:
+            candidates.append(minutes * 60)
+    return min(candidates) if candidates else default
+
+
+def _source_sync_due_at(last_completed_at: str | None, *, interval_seconds: int) -> str | None:
+    completed = _parse_iso_timestamp(last_completed_at)
+    if completed is None:
+        return None
+    return _isoformat_z(completed + timedelta(seconds=interval_seconds))
+
+
+def _timestamp_due(value: str | None, *, now: datetime) -> bool:
+    parsed = _parse_iso_timestamp(value)
+    return bool(parsed and parsed <= now)
+
+
+def _timestamp_in_future(value: str | None, *, now: datetime) -> bool:
+    parsed = _parse_iso_timestamp(value)
+    return bool(parsed and parsed > now)
+
+
 def _source_readiness_sync_plan(
     *,
     service_baseline: dict[str, Any],
     live_status: str,
     active_accounts: list[dict[str, Any]],
     source_cursors: list[dict[str, Any]],
+    now: datetime | None = None,
 ) -> dict[str, Any]:
+    now = now or datetime.now(timezone.utc)
     if service_baseline.get("hosted_managed_sync"):
         mode = "hosted_managed_sync"
     elif service_baseline.get("local_app_autosync"):
@@ -740,16 +811,32 @@ def _source_readiness_sync_plan(
         [cursor.get("last_completed_at") for cursor in source_cursors]
         + [account.get("last_sync_at") for account in active_accounts]
     )
-    next_sync_due_at = _latest_nonempty_iso(
+    interval_seconds = _source_sync_interval_seconds(active_accounts, source_cursors)
+    explicit_next_sync_due_at = _earliest_nonempty_iso(
         [(account.get("metadata") or {}).get("next_sync_due_at") for account in active_accounts]
+        + [(cursor.get("state") or {}).get("next_sync_due_at") for cursor in source_cursors]
     )
+    next_sync_due_at = explicit_next_sync_due_at
+    if not next_sync_due_at and active_accounts and mode in {"hosted_managed_sync", "local_app_autosync"}:
+        next_sync_due_at = _source_sync_due_at(last_completed_at, interval_seconds=interval_seconds)
     retry_after = _latest_nonempty_iso(
         [(cursor.get("state") or {}).get("retry_after") for cursor in source_cursors]
         + [(account.get("metadata") or {}).get("retry_after") for account in active_accounts]
     )
+    backing_off = _timestamp_in_future(retry_after, now=now)
+    due_now = (
+        bool(active_accounts)
+        and mode in {"hosted_managed_sync", "local_app_autosync"}
+        and not backing_off
+        and (_timestamp_due(next_sync_due_at, now=now) if next_sync_due_at else not bool(last_completed_at))
+    )
 
     if account_errors or cursor_errors:
         managed_sync_status = "needs_attention"
+    elif backing_off:
+        managed_sync_status = "backing_off"
+    elif due_now:
+        managed_sync_status = "due"
     elif last_completed_at:
         managed_sync_status = "healthy"
     elif active_accounts and mode in {"hosted_managed_sync", "local_app_autosync"}:
@@ -769,6 +856,8 @@ def _source_readiness_sync_plan(
         "hosted_credential_ref": None,
         "managed_sync_status": managed_sync_status,
         "next_sync_due_at": next_sync_due_at,
+        "sync_interval_seconds": interval_seconds,
+        "due_now": due_now,
         "last_attempt_at": last_attempt_at,
         "last_completed_at": last_completed_at,
         "retry_after": retry_after,
