@@ -37,6 +37,14 @@ python3 scripts/first100_launch_gate.py \
   --require-clean-profile-qa
 ```
 
+To generate private support and QA packet templates with the current release hashes filled in, run:
+
+```bash
+python3 scripts/prepare_first100_launch_packets.py
+```
+
+The generated files stay under `.context/` by default and must not be committed.
+
 ## Required Pass
 
 1. Download the exact DMG from the planned tester URL or hosted artifact path.

@@ -57,6 +57,14 @@ python3 scripts/first100_launch_gate.py \
 
 Use `docs/FIRST100_CLEAN_PROFILE_QA.md` for the clean-profile packet format. The default summary command exits 0 with `needs_human`; only the strict command above should be treated as invite-blocking.
 
+To generate private packet templates with the current release hashes already filled, run:
+
+```bash
+python3 scripts/prepare_first100_launch_packets.py
+```
+
+The generated files stay under `.context/` by default and must not be committed.
+
 ## 2. Invite The Right Testers
 
 Good first-100 users:

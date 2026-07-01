@@ -74,6 +74,7 @@ QA_BOOLEAN_FIELDS = {
 }
 
 YES_VALUES = {"yes", "true", "pass", "passed", "ok", "done", "verified"}
+PLACEHOLDER_VALUES = {"fill_me", "todo", "tbd", "n/a", "na", "unknown", "unset"}
 
 
 def sha256(path: Path) -> str:
@@ -217,6 +218,13 @@ def parse_field_packet(path: Path, allowed_fields: list[str]) -> dict[str, str]:
     return values
 
 
+def field_is_filled(value: str | None) -> bool:
+    if value is None:
+        return False
+    normalized = value.strip().lower()
+    return bool(normalized) and normalized not in PLACEHOLDER_VALUES
+
+
 def check_support_packet(path: Path | None) -> dict[str, Any]:
     if path is None:
         return {
@@ -226,13 +234,13 @@ def check_support_packet(path: Path | None) -> dict[str, Any]:
             "detail": "No support packet file was provided. Use --support-packet with filled field values before inviting testers.",
         }
     values = parse_field_packet(path, SUPPORT_FIELDS)
-    missing = [field for field in SUPPORT_FIELDS if not values.get(field)]
+    missing = [field for field in SUPPORT_FIELDS if not field_is_filled(values.get(field))]
     return {
         "ok": not missing,
         "provided": True,
         "path": str(path),
         "missing_fields": missing,
-        "filled_fields": sorted(values),
+        "filled_fields": sorted(field for field, value in values.items() if field_is_filled(value)),
     }
 
 
@@ -246,11 +254,11 @@ def check_clean_profile_qa(path: Path | None) -> dict[str, Any]:
             "detail": "No clean-profile QA packet was provided. Use --clean-profile-qa with filled field values before inviting testers.",
         }
     values = parse_field_packet(path, CLEAN_PROFILE_QA_FIELDS)
-    missing = [field for field in CLEAN_PROFILE_QA_FIELDS if not values.get(field)]
+    missing = [field for field in CLEAN_PROFILE_QA_FIELDS if not field_is_filled(values.get(field))]
     failed = [
         field
         for field in QA_BOOLEAN_FIELDS
-        if values.get(field) and values[field].strip().lower() not in YES_VALUES
+        if field_is_filled(values.get(field)) and values[field].strip().lower() not in YES_VALUES
     ]
     return {
         "ok": not missing and not failed,
@@ -258,7 +266,7 @@ def check_clean_profile_qa(path: Path | None) -> dict[str, Any]:
         "path": str(path),
         "missing_fields": missing,
         "failed_fields": sorted(failed),
-        "filled_fields": sorted(values),
+        "filled_fields": sorted(field for field, value in values.items() if field_is_filled(value)),
     }
 
 
