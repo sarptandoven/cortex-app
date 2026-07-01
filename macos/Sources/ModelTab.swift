@@ -24,7 +24,7 @@ struct ModelTab: View {
                         ModelDisclosureLabel(
                             systemImage: "square.stack.3d.up",
                             title: "Memory snapshot",
-                            detail: "Approved memory, review queue, and connected notes"
+                            detail: "Quality, sources, topics"
                         )
                     }
                     .padding(12)
@@ -226,10 +226,46 @@ struct HomeHeroSection: View {
 
                 Spacer(minLength: 0)
             }
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 10)], spacing: 10) {
+                HomeStatusTile(
+                    title: "Notes",
+                    detail: notesStatus.detail,
+                    systemImage: notesStatus.systemImage,
+                    color: notesStatus.color
+                )
+                HomeStatusTile(
+                    title: "Memory",
+                    detail: memoryStatus.detail,
+                    systemImage: memoryStatus.systemImage,
+                    color: memoryStatus.color
+                )
+            }
+            .frame(maxWidth: 620, alignment: .leading)
         }
         .padding(.vertical, 30)
         .padding(.horizontal, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var notesStatus: (detail: String, systemImage: String, color: Color) {
+        if activeSources > 0 {
+            return ("\(activeSources) connected", "folder.fill.badge.checkmark", .green)
+        }
+        if hasEmptySource {
+            return ("Choose a folder with notes", "folder.badge.questionmark", .orange)
+        }
+        return ("Not connected yet", "folder.badge.plus", .accentColor)
+    }
+
+    private var memoryStatus: (detail: String, systemImage: String, color: Color) {
+        if pendingCount > 0 {
+            return ("\(pendingCount) waiting for Review", "tray.full.fill", .orange)
+        }
+        if memoryCount > 0 {
+            return ("\(memoryCount) approved", "brain.head.profile", .green)
+        }
+        return ("No approved memory yet", "checklist", .secondary)
     }
 
     private func runNextAction() {
@@ -251,6 +287,37 @@ struct HomeHeroSection: View {
         } else {
             state.openConnectionsPrivacy(statusMessage: "Check notes and privacy")
         }
+    }
+}
+
+struct HomeStatusTile: View {
+    let title: String
+    let detail: String
+    let systemImage: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.title3)
+                .foregroundColor(color)
+                .frame(width: 28, height: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
+                Text(detail)
+                    .font(.callout)
+                    .fontWeight(.medium)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(minHeight: 68, alignment: .leading)
+        .background(CortexDesign.panelBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -414,13 +481,13 @@ struct ModelSignalSummarySection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "Current snapshot", detail: "A quick read on approved memory, pending review, topics, people, and decisions.")
+            SectionHeader(title: "Current snapshot", detail: "Approved memory, pending review, topics, people, and decisions.")
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 8)], spacing: 8) {
                 ModelMetricPill(label: "Memories", value: "\(review.stats.memories)", systemImage: "brain.head.profile")
                 ModelMetricPill(label: "Pending review", value: "\(review.stats.pending_captures)", systemImage: "tray.full")
                 ModelMetricPill(label: "Topics", value: "\(review.top_topics.count)", systemImage: "number")
                 ModelMetricPill(label: "People & projects", value: "\(review.top_entities.count)", systemImage: "person.2")
-                ModelMetricPill(label: "Open loops", value: "\(review.open_tasks.count)", systemImage: "circle.dashed")
+                ModelMetricPill(label: "Open tasks", value: "\(review.open_tasks.count)", systemImage: "circle.dashed")
                 ModelMetricPill(label: "Decisions", value: "\(review.recent_decisions.count)", systemImage: "checkmark.seal")
             }
             if review.top_topics.isEmpty && review.top_entities.isEmpty {
