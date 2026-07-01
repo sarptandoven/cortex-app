@@ -1167,6 +1167,64 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertIn("line=", search.json()["results"][0]["source_url"])
         self.assertIn("excerpt=", search.json()["results"][0]["source_url"])
 
+    def test_linear_connector_endpoint_syncs_issues_with_citations(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "linear-endpoint-contract"}
+
+        def fake_request(url: str, request_headers: dict[str, str], body: dict):
+            self.assertEqual(request_headers["Authorization"], "lin_api_test")
+            self.assertIn("issues", body["query"])
+            return {
+                "data": {
+                    "issues": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [
+                            {
+                                "id": "lin-1",
+                                "identifier": "COR-42",
+                                "title": "Endpoint sync should cite Linear",
+                                "description": "We decided the FastAPI Linear connector should preserve issue URLs.",
+                                "url": "https://linear.app/doppl/issue/COR-42/endpoint-sync-should-cite-linear",
+                                "createdAt": "2026-06-30T09:00:00Z",
+                                "updatedAt": "2026-06-30T10:00:00Z",
+                            }
+                        ],
+                    }
+                }
+            }
+
+        with patch("backend.app.connectors.linear._request_json", side_effect=fake_request):
+            response = self.client.post(
+                "/v1/connectors/linear/sync",
+                json={
+                    "token": "lin_api_test",
+                    "processing": "sync",
+                    "max_records": 25,
+                },
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["source"], "linear")
+        self.assertEqual(payload["status"], "complete")
+        self.assertEqual(payload["saved"], 1)
+        self.assertEqual(payload["records"][0]["source_url"], "https://linear.app/doppl/issue/COR-42/endpoint-sync-should-cite-linear")
+        self.assertEqual(payload["source_account"]["source"], "linear")
+        self.assertEqual(payload["source_account"]["connection_type"], "api-token")
+        self.assertNotIn("lin_api_test", json.dumps(payload))
+        approved = self.client.post(f"/v1/captures/{payload['capture_ids'][0]}/approve", headers=headers)
+        self.assertEqual(approved.status_code, 200)
+        search = self.client.get(
+            "/v1/search",
+            params={"query": "FastAPI Linear connector preserve issue URLs"},
+            headers=headers,
+        )
+        self.assertEqual(search.status_code, 200)
+        self.assertTrue(search.json()["results"])
+        self.assertTrue(search.json()["results"][0]["source_url"].startswith("https://linear.app/doppl/issue/COR-42/endpoint-sync-should-cite-linear"))
+        self.assertIn("line=", search.json()["results"][0]["source_url"])
+        self.assertIn("excerpt=", search.json()["results"][0]["source_url"])
+
     def test_rebuild_vectors_endpoint_exposes_queue_contract(self) -> None:
         response = self.client.post("/v1/maintenance/rebuild-vectors", headers={"Authorization": "Bearer test-token"})
 
@@ -1318,6 +1376,7 @@ class FastAPIContractTests(unittest.TestCase):
             "slack": ("token-ready", ["channels:history", "groups:history", "channels:read", "groups:read"], "read-only token sync"),
             "github": ("token-ready", ["repo:read"], "read-only token sync"),
             "readwise": ("token-ready", ["read"], "read-only token sync"),
+            "linear": ("token-ready", ["read"], "read-only token sync"),
             "obsidian": ("import-ready", [], "direct local integration"),
         }
 
@@ -1347,6 +1406,9 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertFalse(catalog["readwise"]["primary_beta"])
         self.assertEqual(catalog["readwise"]["beta_status"], "ready")
         self.assertFalse(catalog["readwise"]["show_in_primary_ui"])
+        self.assertFalse(catalog["linear"]["primary_beta"])
+        self.assertEqual(catalog["linear"]["beta_status"], "ready")
+        self.assertFalse(catalog["linear"]["show_in_primary_ui"])
         self.assertTrue(catalog["obsidian"]["primary_beta"])
         self.assertEqual(catalog["obsidian"]["beta_status"], "ready")
         self.assertTrue(catalog["obsidian"]["show_in_primary_ui"])

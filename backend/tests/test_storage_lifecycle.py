@@ -1457,6 +1457,117 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertNotIn("readwise_mcp_test", json.dumps(synced))
         self.assertEqual(synced["records"][0]["source_url"], "readwise://book/333/highlight/444")
 
+    def test_linear_account_sync_fetches_issues_with_stable_citations(self) -> None:
+        def fake_request(url: str, headers: dict[str, str], body: dict):
+            self.assertEqual(headers["Authorization"], "lin_api_test")
+            self.assertIn("issues", body["query"])
+            return {
+                "data": {
+                    "issues": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [
+                            {
+                                "id": "lin-1",
+                                "identifier": "COR-42",
+                                "title": "Linear exact citations",
+                                "description": "We decided Cortex should retrieve Linear issues with exact source citations.",
+                                "url": "https://linear.app/doppl/issue/COR-42/linear-exact-citations",
+                                "createdAt": "2026-06-29T10:00:00Z",
+                                "updatedAt": "2026-06-30T10:30:00Z",
+                                "state": {"name": "In Progress", "type": "started"},
+                                "team": {"key": "COR", "name": "Cortex"},
+                                "labels": {"nodes": [{"name": "retrieval"}]},
+                            }
+                        ],
+                    }
+                }
+            }
+
+        result = self.store.sync_linear_account(
+            self.user_id,
+            token="lin_api_test",
+            processing="sync",
+            max_records=20,
+            request_json=fake_request,
+        )
+
+        self.assertEqual(result["source"], "linear")
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["saved"], 1)
+        self.assertEqual(result["source_account"]["source"], "linear")
+        self.assertEqual(result["source_account"]["connection_type"], "api-token")
+        self.assertEqual(result["source_account"]["metadata"]["token_configured"], True)
+        self.assertNotIn("lin_api_test", json.dumps(result))
+        self.assertEqual(result["records"][0]["source_url"], "https://linear.app/doppl/issue/COR-42/linear-exact-citations")
+        capture_id = result["capture_ids"][0]
+        self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+
+        search = self.store.search(self.user_id, "Linear issues exact source citations", limit=3)
+        self.assertTrue(search)
+        self.assertEqual(search[0]["source"], "linear")
+        self.assertTrue(search[0]["source_url"].startswith("https://linear.app/doppl/issue/COR-42/linear-exact-citations"))
+        self.assertIn("line=", search[0]["source_url"])
+        self.assertIn("excerpt=", search[0]["source_url"])
+        self.assertEqual(search[0]["provenance"]["record_metadata"]["identifier"], "COR-42")
+
+        duplicate = self.store.sync_linear_account(
+            self.user_id,
+            token="lin_api_test",
+            processing="sync",
+            max_records=20,
+            request_json=fake_request,
+        )
+        self.assertEqual(duplicate["saved"], 0)
+        self.assertEqual(duplicate["skipped"], 1)
+        self.assertEqual(duplicate["records"][0]["status"], "duplicate")
+
+    def test_mcp_linear_sync_tool_fetches_records_without_exposing_token(self) -> None:
+        def fake_request(url: str, headers: dict[str, str], body: dict):
+            self.assertEqual(headers["Authorization"], "lin_mcp_test")
+            return {
+                "data": {
+                    "issues": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [
+                            {
+                                "id": "lin-mcp",
+                                "identifier": "COR-99",
+                                "title": "MCP Linear sync",
+                                "description": "We decided MCP Linear sync should write source-account records.",
+                                "updatedAt": "2026-06-30T10:00:00Z",
+                            }
+                        ],
+                    }
+                }
+            }
+
+        with self.assertRaises(PermissionError):
+            call_tool(
+                self.store,
+                self.user_id,
+                "sync_linear",
+                {"token": "lin_mcp_test"},
+                token_scopes=["read"],
+            )
+
+        with patch("backend.app.connectors.linear._request_json", side_effect=fake_request):
+            synced = call_tool(
+                self.store,
+                self.user_id,
+                "sync_linear",
+                {
+                    "token": "lin_mcp_test",
+                    "processing": "sync",
+                    "max_records": 10,
+                },
+                token_scopes=["write"],
+            )
+
+        self.assertEqual(synced["source"], "linear")
+        self.assertEqual(synced["saved"], 1)
+        self.assertNotIn("lin_mcp_test", json.dumps(synced))
+        self.assertEqual(synced["records"][0]["source_url"], "linear://issue/COR-99")
+
     def test_source_account_policy_blocks_ai_context_after_approval(self) -> None:
         account = self.store.upsert_source_account(
             self.user_id,
