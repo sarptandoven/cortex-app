@@ -67,25 +67,17 @@ private struct ConnectionsPrivacyOverview: View {
     @State private var developerDetailsExpanded = false
 
     private var connectedNotesConnectionCount: Int {
-        if state.hasConnectedObsidianVault {
-            return 1
-        }
-        if let report = state.sourceReadinessReport {
-            return report.sources.contains { source in
-                source.source == "obsidian" && source.status.lowercased() != "empty"
-            } ? 1 : 0
-        }
-        return state.activeSourceAccounts.filter { account in
-            account.source == "obsidian"
-                && account.status.lowercased() != "empty"
-                && account.auth_state.lowercased() != "needs-content"
-        }.count
+        notesHealth == .healthy ? 1 : 0
     }
 
     private var connectionStatusDetail: String {
-        let notes = "\(connectedNotesConnectionCount) notes folder\(connectedNotesConnectionCount == 1 ? "" : "s")"
+        let notes = notesHealth.isNeedsAttention ? "notes need attention" : "\(connectedNotesConnectionCount) notes folder\(connectedNotesConnectionCount == 1 ? "" : "s")"
         let tools = "\(state.connectedAIIntegrationCount) AI tool\(state.connectedAIIntegrationCount == 1 ? "" : "s")"
         return "\(notes) · \(tools)"
+    }
+
+    private var notesHealth: NotesConnectionHealth {
+        NotesConnectionHealth(state: state)
     }
 
     var body: some View {
@@ -246,30 +238,20 @@ private struct ConnectionsPrivacyOverview: View {
 private struct ConnectionsOverviewHero: View {
     @ObservedObject var state: AppState
 
+    private var notesHealth: NotesConnectionHealth {
+        NotesConnectionHealth(state: state)
+    }
+
     private var notesConnected: Bool {
-        if state.hasConnectedObsidianVault {
-            return true
-        }
-        if let report = state.sourceReadinessReport {
-            return report.sources.contains { source in
-                source.source == "obsidian" && source.status.lowercased() != "empty"
-            }
-        }
-        return state.activeSourceAccounts.contains { account in
-            account.source == "obsidian"
-                && account.status.lowercased() != "empty"
-                && account.auth_state.lowercased() != "needs-content"
-        }
+        notesHealth == .healthy
     }
 
     private var notesNeedContent: Bool {
-        if let report = state.sourceReadinessReport {
-            return report.sources.contains { $0.source == "obsidian" && $0.status == "empty" }
-        }
-        return state.activeSourceAccounts.contains { account in
-            account.source == "obsidian"
-                && (account.status.lowercased() == "empty" || account.auth_state.lowercased() == "needs-content")
-        }
+        notesHealth == .empty
+    }
+
+    private var notesNeedAttention: Bool {
+        notesHealth.isNeedsAttention
     }
 
     private var obsidianConnector: SourceConnectorCatalogItem? {
@@ -338,6 +320,7 @@ private struct ConnectionsOverviewHero: View {
 
     private var primaryActionTitle: String {
         if !notesConnected, let _ = obsidianConnector {
+            if notesNeedAttention { return "Fix notes" }
             return notesNeedContent ? "Choose notes" : "Connect notes"
         }
         if !notesConnected {
@@ -348,6 +331,7 @@ private struct ConnectionsOverviewHero: View {
 
     private var primaryActionIcon: String {
         if !notesConnected, obsidianConnector != nil {
+            if notesNeedAttention { return "exclamationmark.triangle.fill" }
             return notesNeedContent ? "folder.badge.questionmark" : "folder.badge.plus"
         }
         return "arrow.clockwise"
@@ -356,6 +340,9 @@ private struct ConnectionsOverviewHero: View {
     private var title: String {
         if notesConnected {
             return "Notes are connected"
+        }
+        if notesNeedAttention {
+            return "Notes need attention"
         }
         if notesNeedContent {
             return "Choose a folder with notes"
@@ -367,6 +354,9 @@ private struct ConnectionsOverviewHero: View {
         if notesConnected {
             return "New notes go to Review first. Ask and connected AI tools use approved memory with citations."
         }
+        if notesNeedAttention {
+            return notesHealth.detail ?? "Cortex needs attention before these notes can keep syncing."
+        }
         if notesNeedContent {
             return "Cortex could not find usable notes there. Choose a notes library with real content."
         }
@@ -375,12 +365,14 @@ private struct ConnectionsOverviewHero: View {
 
     private var statusIcon: String {
         if notesConnected { return "checkmark.seal.fill" }
+        if notesNeedAttention { return "exclamationmark.triangle.fill" }
         if notesNeedContent { return "folder.badge.questionmark" }
         return "link.circle.fill"
     }
 
     private var statusColor: Color {
         if notesConnected { return .green }
+        if notesNeedAttention { return .orange }
         if notesNeedContent { return .orange }
         return .accentColor
     }
@@ -400,6 +392,10 @@ private struct ConnectionsOverviewHero: View {
 private struct ConnectionsObsidianSection: View {
     @ObservedObject var state: AppState
 
+    private var notesHealth: NotesConnectionHealth {
+        NotesConnectionHealth(state: state)
+    }
+
     private var obsidianConnector: SourceConnectorCatalogItem? {
         state.sourceConnectorCatalog.first { $0.id == "obsidian" }
     }
@@ -418,7 +414,9 @@ private struct ConnectionsObsidianSection: View {
                     state: state,
                     connector: connector,
                     connected: isConnected(connector),
-                    needsContent: needsContent(connector)
+                    needsContent: notesHealth.isEmpty,
+                    needsAttention: notesHealth.isNeedsAttention,
+                    attentionDetail: notesHealth.detail
                 )
             } else {
                 QuietState(title: "Notes connection unavailable", detail: "Restart Cortex after the local memory engine is healthy.")
@@ -440,12 +438,82 @@ private struct ConnectionsObsidianSection: View {
         if needsContent(connector) {
             return false
         }
+        if notesHealth.isNeedsAttention {
+            return false
+        }
         if connector.id == "obsidian", state.hasConnectedObsidianVault {
             return true
         }
         return state.activeSourceAccounts.contains { account in
             account.source == connector.id || (connector.source_ids ?? []).contains(account.source)
         }
+    }
+}
+
+private enum NotesConnectionHealth: Equatable {
+    case healthy
+    case needsAttention(String?)
+    case empty
+    case disconnected
+
+    @MainActor init(state: AppState) {
+        if let readiness = state.sourceReadinessReport?.sources.first(where: { $0.source == "obsidian" }) {
+            let status = readiness.status.lowercased()
+            if readiness.needsAttention || !readiness.warnings.isEmpty {
+                self = .needsAttention(readiness.warnings.first)
+                return
+            }
+            if status == "empty" {
+                self = .empty
+                return
+            }
+            if ["connected", "synced", "needs_review", "imported"].contains(status) {
+                self = .healthy
+                return
+            }
+        }
+
+        if let account = state.activeSourceAccounts.first(where: { $0.source == "obsidian" }) {
+            if account.needsAttention {
+                self = .needsAttention(account.last_error)
+                return
+            }
+            if account.status.lowercased() == "empty" || account.auth_state.lowercased() == "needs-content" {
+                self = .empty
+                return
+            }
+            self = .healthy
+            return
+        }
+
+        self = state.hasConnectedObsidianVault ? .healthy : .disconnected
+    }
+
+    static func == (lhs: NotesConnectionHealth, rhs: NotesConnectionHealth) -> Bool {
+        switch (lhs, rhs) {
+        case (.healthy, .healthy), (.empty, .empty), (.disconnected, .disconnected), (.needsAttention, .needsAttention):
+            return true
+        default:
+            return false
+        }
+    }
+
+    var detail: String? {
+        if case .needsAttention(let detail) = self {
+            return detail
+        }
+        return nil
+    }
+
+    var isNeedsAttention: Bool {
+        if case .needsAttention = self {
+            return true
+        }
+        return false
+    }
+
+    var isEmpty: Bool {
+        self == .empty
     }
 }
 

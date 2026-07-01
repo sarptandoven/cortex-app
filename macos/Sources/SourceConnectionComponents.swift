@@ -5,6 +5,8 @@ struct SourceConnectorStatusCard: View {
     let connector: SourceConnectorCatalogItem
     let connected: Bool
     var needsContent: Bool = false
+    var needsAttention: Bool = false
+    var attentionDetail: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -79,24 +81,28 @@ struct SourceConnectorStatusCard: View {
     }
 
     private var statusTitle: String {
+        if needsAttention { return "Needs attention" }
         if needsContent { return "No notes found" }
         if connector.id != "obsidian" { return "Later" }
         return connected ? "Connected" : "Local"
     }
 
     private var statusIcon: String {
+        if needsAttention { return "exclamationmark.triangle.fill" }
         if needsContent { return "folder.badge.questionmark" }
         if connector.id != "obsidian" { return "clock" }
         return connected ? "checkmark.seal.fill" : "link.badge.plus"
     }
 
     private var statusChipIcon: String {
+        if needsAttention { return "exclamationmark.circle.fill" }
         if needsContent { return "exclamationmark.circle.fill" }
         if connector.id != "obsidian" { return "clock" }
         return connected ? "checkmark.circle.fill" : "folder.badge.plus"
     }
 
     private var statusColor: Color {
+        if needsAttention { return .orange }
         if needsContent { return .orange }
         if connector.id != "obsidian" { return .secondary }
         return connected ? .green : .accentColor
@@ -105,6 +111,9 @@ struct SourceConnectorStatusCard: View {
     private var statusDetail: String {
         if connector.id != "obsidian" {
             return "Use the notes folder connection here."
+        }
+        if needsAttention {
+            return attentionDetail ?? "Cortex needs attention before these notes can keep syncing."
         }
         if needsContent {
             return "Cortex could not find usable notes there. Choose a notes library with real content."
@@ -116,11 +125,13 @@ struct SourceConnectorStatusCard: View {
     }
 
     private var primaryButtonTitle: String {
+        if needsAttention { return "Fix notes" }
         if needsContent { return "Choose notes" }
         return connected ? "Check status" : "Connect notes"
     }
 
     private var primaryButtonIcon: String {
+        if needsAttention { return "exclamationmark.triangle.fill" }
         if needsContent { return "folder.badge.questionmark" }
         return connected ? "checkmark.seal" : "folder.badge.plus"
     }
