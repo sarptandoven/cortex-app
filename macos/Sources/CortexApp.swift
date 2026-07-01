@@ -1982,6 +1982,7 @@ final class AppState: ObservableObject {
     private static let apiKeyDefaultsKey = "localBetaAPIKey.v1"
     private static let mcpAPIKeyDefaultsKey = "localBetaMCPAPIKey.v1"
     private static let obsidianVaultPathDefaultsKey = "connectedObsidianVaultPath.v1"
+    private static let obsidianVaultBookmarkDefaultsKey = "connectedObsidianVaultBookmark.v1"
 
     private static func loadOrCreateAPIKey() -> String {
         if let existing = CortexCredentialStore.loadSecret(forKey: apiKeyDefaultsKey),
@@ -2817,6 +2818,14 @@ final class AppState: ObservableObject {
     }
 
     private func storedObsidianVaultURL() -> URL? {
+        if let bookmarkedURL = storedObsidianVaultBookmarkURL() {
+            let path = bookmarkedURL.standardizedFileURL.path
+            if obsidianVaultPath != path {
+                obsidianVaultPath = path
+                UserDefaults.standard.set(path, forKey: Self.obsidianVaultPathDefaultsKey)
+            }
+            return bookmarkedURL
+        }
         let path = resolvedObsidianVaultPath()
         guard !path.isEmpty else { return nil }
         return URL(fileURLWithPath: path, isDirectory: true)
@@ -2826,6 +2835,46 @@ final class AppState: ObservableObject {
         let path = url.standardizedFileURL.path
         obsidianVaultPath = path
         UserDefaults.standard.set(path, forKey: Self.obsidianVaultPathDefaultsKey)
+        do {
+            let bookmark = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+            UserDefaults.standard.set(bookmark, forKey: Self.obsidianVaultBookmarkDefaultsKey)
+        } catch {
+            UserDefaults.standard.removeObject(forKey: Self.obsidianVaultBookmarkDefaultsKey)
+            NSLog("Cortex notes folder bookmark failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func storedObsidianVaultBookmarkURL() -> URL? {
+        guard let bookmark = UserDefaults.standard.data(forKey: Self.obsidianVaultBookmarkDefaultsKey) else {
+            return nil
+        }
+        var isStale = false
+        do {
+            let url = try URL(
+                resolvingBookmarkData: bookmark,
+                options: [.withSecurityScope, .withoutUI],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+            let securityScopeStarted = url.startAccessingSecurityScopedResource()
+            defer {
+                if securityScopeStarted {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                return nil
+            }
+            if isStale {
+                rememberObsidianVaultPath(url)
+            }
+            return url
+        } catch {
+            UserDefaults.standard.removeObject(forKey: Self.obsidianVaultBookmarkDefaultsKey)
+            NSLog("Cortex notes folder bookmark restore failed: \(error.localizedDescription)")
+            return nil
+        }
     }
 
     private func syncLocalNotesFolder(_ connector: SourceConnectorCatalogItem, folderURL: URL, rememberPath: Bool, automatic: Bool = false) async {
@@ -2849,6 +2898,12 @@ final class AppState: ObservableObject {
         do {
             if !automatic {
                 status = "Syncing \(connector.name)..."
+            }
+            let securityScopeStarted = folderURL.startAccessingSecurityScopedResource()
+            defer {
+                if securityScopeStarted {
+                    folderURL.stopAccessingSecurityScopedResource()
+                }
             }
             let syncData = try await request(
                 path: "/v1/connectors/obsidian/sync",

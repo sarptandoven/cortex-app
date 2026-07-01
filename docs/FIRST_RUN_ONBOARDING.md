@@ -77,6 +77,7 @@ UserDefaults.onboardingFirstMemoryReviewed.v1
 UserDefaults.onboardingCortexUsed.v1
 UserDefaults.onboardingBackupDecision.v1
 UserDefaults.connectedObsidianVaultPath.v1
+UserDefaults.connectedObsidianVaultBookmark.v1
 UserDefaults.vaultPath
 ```
 
