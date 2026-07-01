@@ -61,6 +61,7 @@ private struct ConnectionsPrivacyOverview: View {
     @State private var privacySettingsExpanded = false
     @State private var connectedExpanded = false
     @State private var advancedExpanded = false
+    @State private var aiToolsExpanded = false
     @State private var sourceAuditExpanded = false
     @State private var developerDetailsExpanded = false
 
@@ -78,13 +79,28 @@ private struct ConnectionsPrivacyOverview: View {
         NotesConnectionHealth(state: state)
     }
 
+    private var hasActionableAIToolState: Bool {
+        if state.connectedAIIntegrationCount > 0 {
+            return true
+        }
+        return state.integrations.contains { integration in
+            guard integration.supportsInstall else { return false }
+            let integrationState = state.integrationState(for: integration)
+            return integrationState.appInstalled && !integrationState.configured
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 ConnectionsOverviewHero(state: state)
 
                 ConnectionsObsidianSection(state: state)
-                ConnectionsAIToolsSection(state: state)
+                if hasActionableAIToolState {
+                    ConnectionsAIToolsSection(state: state)
+                } else {
+                    optionalAITools
+                }
 
                 if let summary = state.trustSummary {
                     ConnectionsPrivacyDefaultsSection(state: state, summary: summary)
@@ -107,6 +123,23 @@ private struct ConnectionsPrivacyOverview: View {
                 await state.loadSourceConnectivity()
             }
         }
+    }
+
+    private var optionalAITools: some View {
+        DisclosureGroup(isExpanded: $aiToolsExpanded) {
+            ConnectionsAIToolsSection(state: state)
+                .padding(.top, 10)
+        } label: {
+            ConnectionsDisclosureLabel(
+                systemImage: "wand.and.stars",
+                title: "AI tools",
+                detail: "Optional after Ask is useful"
+            )
+        }
+        .padding(14)
+        .background(connectionsPanelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private func privacySettings(summary: TrustSummaryResponse) -> some View {

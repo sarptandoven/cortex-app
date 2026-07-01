@@ -1062,7 +1062,7 @@ extension Notification.Name {
 
 enum IntegrationCategory: String, CaseIterable, Hashable {
     case oneClick = "One-click tools"
-    case developer = "Developer tools"
+    case developer = "Coding tools"
     case browser = "Browser assistants"
     case local = "Local and team stacks"
 }
@@ -1229,10 +1229,10 @@ enum AIIntegrationCatalog {
             category: .developer,
             systemImage: "rectangle.connected.to.line.below",
             summary: "Connect Cortex to VS Code user or workspace AI tools.",
-            restartHint: "Add the manual setup to VS Code, then reload the window.",
+            restartHint: "Add the fallback connection details to VS Code, then reload the window.",
             bundleIdentifiers: ["com.microsoft.VSCode"],
             configTargets: [],
-            setupHint: "Use manual setup only if VS Code asks for it.",
+            setupHint: "Use fallback connection details only if VS Code asks for them.",
             browserURL: "https://code.visualstudio.com"
         ),
         AIIntegration(
@@ -1553,7 +1553,7 @@ enum CortexRecoveryText {
             return "The local memory endpoint is invalid. Check the endpoint, then reconnect."
         }
         if lowered.contains("existing config") || lowered.contains("config is not a json") {
-            return "That tool connection could not be updated automatically. Open Troubleshooting, then Fallback connection details."
+            return "That tool connection could not be updated automatically. Open Backup & recovery, then Fallback connection details."
         }
         if lowered.contains("data couldn") || lowered.contains("correct format") || lowered.contains("decoding") {
             return "Cortex received an unexpected response. Click Reconnect, then try again."
@@ -2327,7 +2327,7 @@ final class AppState: ObservableObject {
                 method: "POST",
                 body: [
                     "token": mcpAPIKey,
-                    "label": "Local AI tool access",
+                    "label": "Connected AI tools",
                     "scopes": ["read", "write", "export", "maintenance"]
                 ]
             )
@@ -3145,7 +3145,7 @@ final class AppState: ObservableObject {
 
     private func integrationGuide(for integration: AIIntegration) -> String {
         let targetPaths = integration.configTargets.isEmpty
-            ? "This app uses manual setup from Cortex."
+            ? "This app uses fallback connection details from Cortex."
             : integration.configTargets.map { "- \($0.label): \($0.url.path)" }.joined(separator: "\n")
         return """
         Cortex integration: \(integration.name)
@@ -3164,7 +3164,7 @@ final class AppState: ObservableObject {
 
         Local Cortex service:
         Base URL: \(endpoint)
-        Token: copy fallback connection details from Troubleshooting only if this app asks for them.
+        Token: copy fallback connection details from Backup & recovery only if this app asks for them.
 
         Assistant rule:
         Search Cortex memory before asking the user to repeat project, person, decision, or open-loop details. Prefer cited memory search or agent adaptation when another app needs approved personal memory.
@@ -4286,7 +4286,7 @@ struct IntegrationCompactHero: View {
         if connectedCount > 0 {
             return "Approved memory is available to connected AI tools."
         }
-        return "Open a supported local AI tool, then check again. Recovery controls stay in Troubleshooting."
+        return "Open a supported local AI tool, then check again. Recovery controls stay in Backup & recovery."
     }
 }
 
