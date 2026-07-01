@@ -1,7 +1,7 @@
 import SwiftUI
 
-private let connectionsSheetBackground = Color(red: 0.985, green: 0.98, blue: 0.955)
-private let connectionsPanelBackground = Color.white.opacity(0.88)
+private let connectionsSheetBackground = CortexDesign.appBackground
+private let connectionsPanelBackground = CortexDesign.panelBackground
 
 struct ConnectionsPrivacySheet: View {
     @ObservedObject var state: AppState
@@ -503,7 +503,7 @@ private struct ConnectionsAIToolsSection: View {
                 }
             }
             .padding(14)
-            .background(Color(nsColor: .controlBackgroundColor).opacity(0.70))
+            .background(CortexDesign.cardBackground)
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
             if !connectedIntegrations.isEmpty {
@@ -523,7 +523,7 @@ private struct ConnectionsAIToolsSection: View {
                                 .foregroundColor(.green)
                         }
                         .padding(10)
-                        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+                        .background(CortexDesign.cardBackground)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                 }
@@ -654,7 +654,7 @@ private struct ConnectionsTrustTile: View {
         }
         .padding(12)
         .frame(minHeight: 72, alignment: .leading)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.72))
+        .background(CortexDesign.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }

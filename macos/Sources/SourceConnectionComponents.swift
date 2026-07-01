@@ -64,13 +64,13 @@ struct SourceConnectorStatusCard: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
-                .background(Color(nsColor: .windowBackgroundColor))
+                .background(CortexDesign.cardBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             }
         }
         .padding(16)
         .frame(maxWidth: .infinity, minHeight: 210, alignment: .topLeading)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(CortexDesign.panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 

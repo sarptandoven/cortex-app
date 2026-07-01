@@ -18,6 +18,7 @@ struct ReviewTab: View {
             await state.loadReview()
             await state.loadProductLoop()
         }
+        .background(CortexDesign.appBackground)
     }
 }
 
@@ -57,7 +58,7 @@ struct ReviewPendingBadge: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(CortexDesign.panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
@@ -173,8 +174,8 @@ struct ReviewQueueCaptureCard: View {
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+        .background(CortexDesign.panelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.softBorder))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -237,7 +238,7 @@ struct ReviewQueuePreviewList: View {
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(nsColor: .textBackgroundColor))
+            .background(CortexDesign.cardBackground)
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
     }
@@ -291,7 +292,7 @@ struct ReviewQueueSourceBox: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(CortexDesign.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -368,8 +369,8 @@ struct ReviewCaptureCard: View {
             }
         }
         .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
+        .background(CortexDesign.panelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.softBorder))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -523,7 +524,7 @@ struct ReviewCountPill: View {
             .foregroundColor(.secondary)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(Color(nsColor: .textBackgroundColor))
+            .background(CortexDesign.cardBackground)
             .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }

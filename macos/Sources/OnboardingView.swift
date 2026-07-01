@@ -17,7 +17,7 @@ struct OnboardingView: View {
             Divider()
             footer
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(CortexDesign.appBackground)
     }
 
     private var header: some View {
@@ -174,7 +174,7 @@ struct OnboardingStepRow: View {
         .foregroundColor(selected || completed ? .accentColor : .secondary)
         .padding(.horizontal, 9)
         .padding(.vertical, 7)
-        .background((selected ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor)))
+        .background((selected ? Color.accentColor.opacity(0.12) : CortexDesign.panelBackground))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
@@ -210,17 +210,17 @@ struct OnboardingVaultStep: View {
                         Button {
                             state.useDefaultVaultFolder()
                         } label: {
-                            Label("Use Default Location", systemImage: "house")
+                            Label("Use Default", systemImage: "house")
                         }
                         Button {
                             state.chooseVaultFolder()
                         } label: {
-                            Label("Change Location", systemImage: "folder")
+                            Label("Change", systemImage: "folder")
                         }
                         Button {
                             state.openVaultFolder()
                         } label: {
-                            Label("Reveal Location", systemImage: "arrow.up.right.square")
+                            Label("Reveal", systemImage: "arrow.up.right.square")
                         }
                         Spacer()
                     }
@@ -235,7 +235,7 @@ struct OnboardingVaultStep: View {
                 .padding(.top, 6)
             }
             .padding(12)
-            .background(Color(nsColor: .controlBackgroundColor))
+            .background(CortexDesign.panelBackground)
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
     }
@@ -275,7 +275,7 @@ struct OnboardingFirstSourceStep: View {
 
             if !state.onboardingFirstSourceNames.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Connected source")
+                    Text("Connected notes")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Text(state.onboardingFirstSourceNames.joined(separator: ", "))
@@ -312,7 +312,7 @@ struct OnboardingFirstSourceStep: View {
 
     private var connectionCheckDetail: String {
         if state.onboardingHasSource {
-            return "Review has memory from a connected source."
+            return "Review has memory from connected notes."
         }
         if state.onboardingHasConnectedMemoryLayer {
             return "Cortex is checking notes so useful memory appears in Review."
@@ -360,7 +360,7 @@ struct OnboardingConnectionCard: View {
         .padding(16)
         .frame(maxWidth: .infinity, minHeight: 186, alignment: .topLeading)
         .foregroundColor(.primary)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(isPrimary ? 0.92 : 0.72))
+        .background(isPrimary ? CortexDesign.panelBackground : CortexDesign.cardBackground)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke((isPrimary ? Color.accentColor : Color(nsColor: .separatorColor)).opacity(isPrimary ? 0.32 : 0.35)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
@@ -463,7 +463,7 @@ struct OnboardingReviewMemoryStep: View {
         if state.onboardingHasSource {
             return "Approve one useful memory to let Cortex cite it in Ask."
         }
-        return "Review unlocks after a connected source syncs memory."
+        return "Review unlocks after connected notes sync memory."
     }
 }
 
@@ -491,7 +491,7 @@ struct OnboardingAskUseStep: View {
                 }
             }
             .padding(12)
-            .background(Color(nsColor: .controlBackgroundColor))
+            .background(CortexDesign.panelBackground)
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
             if !state.onboardingAskSuggestions.isEmpty {

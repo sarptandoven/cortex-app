@@ -26,6 +26,7 @@ struct AskTab: View {
             .padding(16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(CortexDesign.appBackground)
     }
 }
 
@@ -70,7 +71,8 @@ struct AskQuerySection: View {
             }
         }
         .padding(16)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(CortexDesign.panelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.softBorder))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -187,7 +189,7 @@ struct AskSourceDetailRow: View {
             }
         }
         .padding(12)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(CortexDesign.panelBackground)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.32)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
@@ -239,7 +241,7 @@ struct AskAnswerPanel: View {
             }
         }
         .padding(12)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(CortexDesign.panelBackground)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }

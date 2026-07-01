@@ -28,12 +28,14 @@ struct ModelTab: View {
                         )
                     }
                     .padding(12)
-                    .background(Color(nsColor: .controlBackgroundColor).opacity(0.42))
+                    .background(CortexDesign.panelBackground)
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.softBorder))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
             }
             .padding(16)
         }
+        .background(CortexDesign.appBackground)
     }
 
     private var loadingDetail: String {
@@ -274,7 +276,7 @@ struct ModelMetricPill: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.65))
+        .background(CortexDesign.cardBackground)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
@@ -386,7 +388,7 @@ struct ModelSourceCoverageSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "Sources", detail: "Where approved memory is coming from.")
+            SectionHeader(title: "Connected memory", detail: "Where approved memory is coming from.")
             if let summary = state.trustSummary, !summary.source_counts.isEmpty {
                 HStack(spacing: 8) {
                     ForEach(summary.source_counts.prefix(4)) { source in
@@ -490,7 +492,7 @@ struct LayerCoverageTile: View {
             Spacer(minLength: 0)
         }
         .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(count > 0 ? 0.78 : 0.45))
+        .background(CortexDesign.cardBackground)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
@@ -513,7 +515,7 @@ struct SourceCoveragePill: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .frame(minWidth: 112, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.72))
+        .background(CortexDesign.cardBackground)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }

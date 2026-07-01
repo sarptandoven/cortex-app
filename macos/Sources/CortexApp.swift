@@ -3908,14 +3908,20 @@ struct CortexView: View {
             }
             footer
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(CortexDesign.appBackground)
+        .preferredColorScheme(.light)
+        .accentColor(CortexDesign.accent)
         .frame(minWidth: 560, minHeight: 640)
         .sheet(isPresented: $state.showOnboarding) {
             OnboardingView(state: state)
+                .preferredColorScheme(.light)
+                .accentColor(CortexDesign.accent)
                 .frame(width: 760, height: 660)
         }
         .sheet(isPresented: $state.showConnectionsPrivacy) {
             ConnectionsPrivacySheet(state: state)
+                .preferredColorScheme(.light)
+                .accentColor(CortexDesign.accent)
                 .frame(width: 840, height: 720)
         }
     }
@@ -3946,7 +3952,7 @@ struct CortexView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(CortexDesign.appBackground)
     }
 
     private var footer: some View {
@@ -3964,7 +3970,7 @@ struct CortexView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
-                .background(Color(nsColor: .controlBackgroundColor))
+                .background(CortexDesign.panelBackground)
             }
         }
     }
@@ -4026,7 +4032,7 @@ struct CortexLayerStatusPill: View {
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 5)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(CortexDesign.panelBackground)
         .clipShape(Capsule())
     }
 }
@@ -4249,7 +4255,7 @@ struct IntegrationCompactHero: View {
             }
         }
         .padding(14)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(CortexDesign.panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -4355,7 +4361,7 @@ struct IntegrationMetricBadge: View {
             Spacer(minLength: 0)
         }
         .padding(9)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(CortexDesign.panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
@@ -4725,7 +4731,7 @@ struct SourceReadinessRow: View {
             Spacer(minLength: 0)
         }
         .padding(8)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(CortexDesign.panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -4844,7 +4850,7 @@ struct SourceConnectivityMetric: View {
             Spacer(minLength: 0)
         }
         .padding(8)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(CortexDesign.panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
@@ -4871,7 +4877,7 @@ struct SourceAccountHealthRow: View {
             Spacer(minLength: 0)
         }
         .padding(8)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(CortexDesign.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -5060,7 +5066,7 @@ struct TrustScoreSection: View {
             }
         }
         .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(CortexDesign.panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
@@ -5120,7 +5126,7 @@ struct TrustLifecycleSection: View {
             }
         }
         .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(CortexDesign.panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -6298,7 +6304,7 @@ struct QuietState: View {
         }
         .frame(maxWidth: .infinity)
         .padding(18)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(CortexDesign.panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
@@ -6318,7 +6324,7 @@ struct StatBox: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(8)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(CortexDesign.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
@@ -6359,7 +6365,7 @@ struct CaptureCard: View {
             }
         }
         .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(CortexDesign.panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
@@ -6426,7 +6432,7 @@ struct MemoryCard: View {
             }
         }
         .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(CortexDesign.panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
