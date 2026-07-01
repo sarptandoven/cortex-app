@@ -43,7 +43,7 @@ To generate private support and QA packet templates with the current release has
 python3 scripts/prepare_first100_launch_packets.py
 ```
 
-The generated files stay under `.context/` by default and must not be committed.
+The generated files stay under `.context/` by default, include the exact strict gate command to run after filling both packets, and must not be committed.
 
 ## Required Pass
 

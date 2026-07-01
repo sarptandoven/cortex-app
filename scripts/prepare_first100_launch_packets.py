@@ -76,7 +76,8 @@ def support_packet(summary: dict[str, str]) -> str:
         f"ZIP: {summary['zip_name']} {summary['zip_sha256']}\n\n"
         "```text\n"
         f"{body}"
-        "```\n"
+        "```\n\n"
+        "After both packets are filled, run the strict launch gate command printed by this generator.\n"
     )
 
 
@@ -110,7 +111,21 @@ def clean_profile_packet(summary: dict[str, str]) -> str:
         f"DMG SHA-256: {summary['dmg_sha256']}\n\n"
         "```text\n"
         f"{body}"
-        "```\n"
+        "```\n\n"
+        "After both packets are filled, run the strict launch gate command printed by this generator.\n"
+    )
+
+
+def append_strict_command(packet: str, command: str) -> str:
+    return (
+        packet
+        + "\n"
+        + "## Strict Launch Gate\n\n"
+        + "Run this exact command from the repository root after both packet files are filled. The first tester invite should not go out until it passes.\n\n"
+        + "```bash\n"
+        + command
+        + "\n"
+        + "```\n"
     )
 
 
@@ -139,15 +154,16 @@ def main() -> int:
     summary = release_summary(manifest)
     support_path = output_dir / "support-packet.txt"
     qa_path = output_dir / "clean-profile-qa.txt"
-    support_path.write_text(support_packet(summary), encoding="utf-8")
-    qa_path.write_text(clean_profile_packet(summary), encoding="utf-8")
+    command = strict_command(output_dir)
+    support_path.write_text(append_strict_command(support_packet(summary), command), encoding="utf-8")
+    qa_path.write_text(append_strict_command(clean_profile_packet(summary), command), encoding="utf-8")
 
     payload = {
         "status": "ok",
         "output_dir": str(output_dir),
         "support_packet": str(support_path),
         "clean_profile_qa": str(qa_path),
-        "strict_launch_gate_command": strict_command(output_dir),
+        "strict_launch_gate_command": command,
         "release": summary,
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
