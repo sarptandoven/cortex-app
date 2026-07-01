@@ -1145,6 +1145,14 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(disconnected.json()["retention"]["disconnect_action"], "pause_sync")
         self.assertIn("memories", disconnected.json()["retention"]["disconnect_retains"])
 
+        disconnected_sync = self.client.post(
+            f"/v1/source-accounts/{account['id']}/sync",
+            json=sync_payload,
+            headers=headers,
+        )
+        self.assertEqual(disconnected_sync.status_code, 422)
+        self.assertIn("source account is disconnected", disconnected_sync.json()["detail"])
+
         active_after_disconnect = self.client.get("/v1/source-accounts", headers=headers)
         self.assertEqual(active_after_disconnect.status_code, 200)
         self.assertEqual(active_after_disconnect.json()["results"], [])
@@ -1412,6 +1420,70 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(search.status_code, 200)
         self.assertTrue(search.json()["results"])
         self.assertTrue(search.json()["results"][0]["source_url"].startswith("https://docs.google.com/document/d/fastapi-drive-doc/edit"))
+        self.assertIn("line=", search.json()["results"][0]["source_url"])
+        self.assertIn("excerpt=", search.json()["results"][0]["source_url"])
+
+    def test_outlook_connector_endpoint_syncs_messages_with_citations(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "outlook-endpoint-contract"}
+
+        def fake_request(url: str, request_headers: dict[str, str]):
+            self.assertEqual(request_headers["Authorization"], "Bearer outlook_test")
+            if url.endswith("/me?%24select=mail%2CuserPrincipalName%2CdisplayName"):
+                return {"mail": "sarp@example.com", "displayName": "Sarp Doven"}
+            if "/me/messages?" in url:
+                return {
+                    "value": [
+                        {
+                            "id": "fastapi-outlook-msg",
+                            "conversationId": "conversation-fastapi-outlook-msg",
+                            "internetMessageId": "<fastapi-outlook-msg@example.com>",
+                            "subject": "Outlook endpoint contract",
+                            "from": {"emailAddress": {"address": "sarp@example.com", "name": "Sarp Doven"}},
+                            "toRecipients": [{"emailAddress": {"address": "sarp@example.com", "name": "Sarp Doven"}}],
+                            "ccRecipients": [],
+                            "receivedDateTime": "2026-06-29T17:00:00Z",
+                            "sentDateTime": "2026-06-29T17:00:00Z",
+                            "bodyPreview": "We decided the FastAPI Outlook connector should preserve message URLs.",
+                            "body": {
+                                "contentType": "text",
+                                "content": "We decided the FastAPI Outlook connector should preserve message URLs.",
+                            },
+                            "webLink": "https://outlook.office.com/mail/id/fastapi-outlook-msg",
+                        }
+                    ]
+                }
+            raise AssertionError(f"Unexpected URL {url}")
+
+        with patch("backend.app.connectors.outlook._request_json", side_effect=fake_request):
+            response = self.client.post(
+                "/v1/connectors/outlook/sync",
+                json={
+                    "access_token": "outlook_test",
+                    "processing": "sync",
+                    "max_records": 25,
+                },
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["source"], "outlook")
+        self.assertEqual(payload["status"], "complete")
+        self.assertEqual(payload["saved"], 1)
+        self.assertEqual(payload["records"][0]["source_url"], "https://outlook.office.com/mail/id/fastapi-outlook-msg")
+        self.assertEqual(payload["source_account"]["source"], "outlook")
+        self.assertEqual(payload["source_account"]["connection_type"], "oauth-token")
+        self.assertNotIn("outlook_test", json.dumps(payload))
+        approved = self.client.post(f"/v1/captures/{payload['capture_ids'][0]}/approve", headers=headers)
+        self.assertEqual(approved.status_code, 200)
+        search = self.client.get(
+            "/v1/search",
+            params={"query": "FastAPI Outlook connector preserve message URLs"},
+            headers=headers,
+        )
+        self.assertEqual(search.status_code, 200)
+        self.assertTrue(search.json()["results"])
+        self.assertTrue(search.json()["results"][0]["source_url"].startswith("https://outlook.office.com/mail/id/fastapi-outlook-msg"))
         self.assertIn("line=", search.json()["results"][0]["source_url"])
         self.assertIn("excerpt=", search.json()["results"][0]["source_url"])
 
@@ -2009,6 +2081,7 @@ END:VCALENDAR
             "chatgpt": ("export-only", [], "direct connector"),
             "apple-mail": ("import-ready", [], "direct local integration"),
             "gmail": ("token-ready", ["gmail.readonly"], "read-only token sync"),
+            "outlook": ("token-ready", ["Mail.Read", "User.Read"], "read-only token sync"),
             "google-drive": ("token-ready", ["drive.readonly"], "read-only token sync"),
             "notion": ("token-ready", ["read_content"], "read-only token sync"),
             "slack": ("token-ready", ["channels:history", "groups:history", "channels:read", "groups:read"], "read-only token sync"),
@@ -2038,6 +2111,9 @@ END:VCALENDAR
         self.assertFalse(catalog["gmail"]["primary_beta"])
         self.assertEqual(catalog["gmail"]["beta_status"], "ready")
         self.assertFalse(catalog["gmail"]["show_in_primary_ui"])
+        self.assertFalse(catalog["outlook"]["primary_beta"])
+        self.assertEqual(catalog["outlook"]["beta_status"], "ready")
+        self.assertFalse(catalog["outlook"]["show_in_primary_ui"])
         self.assertFalse(catalog["google-drive"]["primary_beta"])
         self.assertEqual(catalog["google-drive"]["beta_status"], "ready")
         self.assertFalse(catalog["google-drive"]["show_in_primary_ui"])

@@ -375,7 +375,7 @@ SOURCE_CONNECTOR_CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "notebooklm", "name": "NotebookLM", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct NotebookLM account connector is required before this can be a primary source."},
     {"id": "gmail", "name": "Gmail", "category": "Email", "auth": "oauth", "live_status": "api_token", "scopes": ["gmail.readonly"], "notes": "Backend read-only Gmail sync works when a trusted OAuth token is already available; consumer Google sign-in remains planned."},
     {"id": "apple-mail", "name": "Apple Mail", "category": "Email", "auth": "local_file", "live_status": "import_ready", "scopes": [], "notes": "Local Mail integration requires explicit app data access."},
-    {"id": "outlook", "name": "Outlook", "category": "Email", "auth": "oauth", "live_status": "planned", "scopes": ["Mail.Read", "Calendars.Read", "Contacts.Read", "Files.Read"], "notes": "Microsoft Graph account sync is the intended connector path."},
+    {"id": "outlook", "name": "Outlook", "category": "Email", "auth": "oauth", "live_status": "api_token", "scopes": ["Mail.Read", "User.Read"], "notes": "Backend read-only Outlook mail sync works when a trusted Microsoft Graph token is already available; consumer Microsoft sign-in remains planned."},
     {"id": "email", "name": "Email", "category": "Email", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Email connector coverage for local and account-backed mail sources."},
     {"id": "docs", "name": "Docs and writing", "category": "Docs", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Document connector coverage for notes, drafts, and writing."},
     {"id": "pdfs", "name": "PDFs", "category": "Docs", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "PDF connector coverage for readable documents."},
@@ -466,6 +466,7 @@ BASELINE_10K_CONNECTOR_IDS: frozenset[str] = frozenset(
     {
         "obsidian",
         "gmail",
+        "outlook",
         "google-drive",
         "slack",
         "github",
@@ -786,10 +787,11 @@ def _bounded_int(value: Any, *, minimum: int, maximum: int) -> int | None:
     return parsed
 
 
-SCHEDULED_CREDENTIAL_SYNC_SOURCES = {"github", "gmail", "google-drive", "readwise", "raindrop", "zotero", "linear", "notion", "slack", "calendar", "jira"}
+SCHEDULED_CREDENTIAL_SYNC_SOURCES = {"github", "gmail", "outlook", "google-drive", "readwise", "raindrop", "zotero", "linear", "notion", "slack", "calendar", "jira"}
 SOURCE_SYNC_CURSOR_NAMES = {
     "obsidian": "local-folder",
     "gmail": "messages",
+    "outlook": "messages",
     "google-drive": "files",
     "github": "issues",
     "slack": "messages",
@@ -3356,6 +3358,7 @@ class CortexStore:
         bounded_max_comments = _bounded_int(max_comments_per_item, minimum=0, maximum=50)
         if bounded_max_comments is None:
             raise ValueError("max_comments_per_item must be between 0 and 50")
+        self._ensure_source_account_can_sync(user_id, source_account_id, expected_source=GITHUB_SOURCE)
 
         sync = fetch_github_records(
             token=token,
@@ -3522,6 +3525,7 @@ class CortexStore:
             raise ValueError("max_records must be an integer") from exc
         if capped_max_records < 1 or capped_max_records > 200:
             raise ValueError("max_records must be between 1 and 200")
+        self._ensure_source_account_can_sync(user_id, source_account_id, expected_source=GMAIL_SOURCE)
 
         sync = fetch_gmail_records(
             access_token=access_token,
@@ -3681,6 +3685,7 @@ class CortexStore:
             raise ValueError("max_records must be an integer") from exc
         if capped_max_records < 1 or capped_max_records > 200:
             raise ValueError("max_records must be between 1 and 200")
+        self._ensure_source_account_can_sync(user_id, source_account_id, expected_source=GOOGLE_DRIVE_SOURCE)
 
         sync = fetch_google_drive_records(
             access_token=access_token,
@@ -3814,6 +3819,161 @@ class CortexStore:
         result["sync"] = sync_summary
         return result
 
+    def sync_outlook_account(
+        self,
+        user_id: str,
+        *,
+        access_token: str,
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        query: str | None = None,
+        since: str | None = None,
+        page_token: str | None = None,
+        processing: str = "sync",
+        max_records: int = 50,
+        cursor_name: str = "messages",
+        include_body: bool = True,
+        api_base_url: str | None = None,
+        request_json: Any | None = None,
+    ) -> dict[str, Any]:
+        from .connectors.outlook import OUTLOOK_SOURCE, fetch_outlook_records
+
+        if processing not in {"sync", "async"}:
+            raise ValueError("processing must be sync or async")
+        try:
+            capped_max_records = int(max_records or 50)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_records must be an integer") from exc
+        if capped_max_records < 1 or capped_max_records > 200:
+            raise ValueError("max_records must be between 1 and 200")
+        self._ensure_source_account_can_sync(user_id, source_account_id, expected_source=OUTLOOK_SOURCE)
+
+        sync = fetch_outlook_records(
+            access_token=access_token,
+            query=query,
+            since=since,
+            page_token=page_token,
+            max_records=capped_max_records,
+            include_body=bool(include_body),
+            api_base_url=api_base_url or "https://graph.microsoft.com/v1.0",
+            request_json=request_json,
+        )
+        identifier = (account_identifier or sync.user_email or "outlook").strip()[:240]
+        resolved_account_id = (source_account_id or "").strip() or stable_id("sacct_", f"{user_id}:{OUTLOOK_SOURCE}:{identifier}")
+        label = (account_label or f"Outlook: {identifier}").strip()[:160]
+        sync_summary = sync.to_summary()
+        error_message = sync.errors[0]["error"] if sync.errors else None
+        metadata = {
+            "connector": OUTLOOK_SOURCE,
+            "connector_version": sync_summary["connector_version"],
+            "records_found": sync.records_found,
+            "records_returned": sync.records_returned,
+            "token_configured": True,
+            "content_sync_enabled": bool(include_body),
+            "query_configured": bool(str(query or "").strip()),
+            "api_base_url": sync.api_base_url,
+        }
+        if sync.user_email:
+            metadata["email"] = sync.user_email
+            metadata["user_email"] = sync.user_email
+        if sync.query:
+            metadata["query"] = sync.query
+        metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(access_token or "").strip()))
+        account = self.upsert_source_account(
+            user_id,
+            source=OUTLOOK_SOURCE,
+            account_label=label,
+            account_identifier=identifier,
+            connection_type="oauth_token",
+            status="needs_attention" if error_message else "connected",
+            auth_state="error" if error_message else "healthy",
+            policy={"review_required": True, "allow_ai_context": True},
+            metadata=metadata,
+            last_error=error_message,
+            account_id=resolved_account_id,
+        )
+        if str(access_token or "").strip():
+            self.store_source_account_credential(
+                user_id,
+                account["id"],
+                source=OUTLOOK_SOURCE,
+                payload={
+                    "access_token": access_token,
+                    "query": query or "",
+                    "include_body": bool(include_body),
+                    "api_base_url": sync.api_base_url,
+                },
+            )
+        state = {
+            "connector": OUTLOOK_SOURCE,
+            "connector_version": sync_summary["connector_version"],
+            "records_found": sync.records_found,
+            "records_returned": sync.records_returned,
+            "sync_errors": sync.errors,
+            "next_page_token": sync.next_page_token,
+            "query": sync.query,
+            "api_base_url": sync.api_base_url,
+        }
+        records = [record.to_source_account_record() for record in sync.records]
+        if not records:
+            cursor = self.upsert_sync_cursor(
+                user_id,
+                source=OUTLOOK_SOURCE,
+                source_account_id=account["id"],
+                cursor_name=cursor_name,
+                cursor_value=sync.cursor_value,
+                high_water_mark=sync.high_water_mark,
+                state={
+                    **state,
+                    "last_batch_received": 0,
+                    "last_batch_saved": 0,
+                    "last_batch_queued": 0,
+                    "last_batch_skipped": 0,
+                    "last_batch_failed": len(sync.errors),
+                },
+                last_error=error_message,
+                completed=not bool(error_message),
+            )
+            updated_account = self._source_account_by_id(user_id, account["id"]) or account
+            return {
+                "source_account_id": account["id"],
+                "source": OUTLOOK_SOURCE,
+                "status": "partial" if error_message else "empty",
+                "processing": processing,
+                "received": 0,
+                "queued": 0,
+                "saved": 0,
+                "skipped": 0,
+                "failed": len(sync.errors),
+                "archived_missing": 0,
+                "capture_ids": [],
+                "records": [],
+                "errors": sync.errors,
+                "cursor": cursor,
+                "source_account": updated_account,
+                "sync": sync_summary,
+            }
+
+        result = self.sync_source_account_records(
+            user_id,
+            account["id"],
+            records=records,
+            cursor_name=cursor_name,
+            cursor_value=sync.cursor_value,
+            high_water_mark=sync.high_water_mark,
+            state=state,
+            processing=processing,
+        )
+        if sync.errors:
+            result["errors"] = [*(result.get("errors") or []), *sync.errors]
+            result["failed"] = int(result.get("failed") or 0) + len(sync.errors)
+            if result.get("status") == "complete":
+                result["status"] = "partial"
+        result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
+        result["sync"] = sync_summary
+        return result
+
     def sync_slack_account(
         self,
         user_id: str,
@@ -3842,6 +4002,7 @@ class CortexStore:
             raise ValueError("max_records must be an integer") from exc
         if capped_max_records < 1 or capped_max_records > 200:
             raise ValueError("max_records must be between 1 and 200")
+        self._ensure_source_account_can_sync(user_id, source_account_id, expected_source=SLACK_SOURCE)
 
         sync = fetch_slack_records(
             token=token,
@@ -4002,6 +4163,7 @@ class CortexStore:
             raise ValueError("max_records must be an integer") from exc
         if capped_max_records < 1 or capped_max_records > 500:
             raise ValueError("max_records must be between 1 and 500")
+        self._ensure_source_account_can_sync(user_id, source_account_id, expected_source=READWISE_SOURCE)
 
         sync = fetch_readwise_records(
             token=token,
@@ -4142,6 +4304,7 @@ class CortexStore:
             raise ValueError("max_records must be an integer") from exc
         if capped_max_records < 1 or capped_max_records > 500:
             raise ValueError("max_records must be between 1 and 500")
+        self._ensure_source_account_can_sync(user_id, source_account_id, expected_source=CALENDAR_SOURCE)
 
         sync = fetch_calendar_records(
             ics_path=ics_path,
@@ -4291,6 +4454,7 @@ class CortexStore:
             raise ValueError("max_records must be an integer") from exc
         if capped_max_records < 1 or capped_max_records > 500:
             raise ValueError("max_records must be between 1 and 500")
+        self._ensure_source_account_can_sync(user_id, source_account_id, expected_source=RAINDROP_SOURCE)
 
         sync = fetch_raindrop_records(
             token=token,
@@ -4442,6 +4606,7 @@ class CortexStore:
             raise ValueError("max_records must be an integer") from exc
         if capped_max_records < 1 or capped_max_records > 500:
             raise ValueError("max_records must be between 1 and 500")
+        self._ensure_source_account_can_sync(user_id, source_account_id, expected_source=ZOTERO_SOURCE)
 
         sync = fetch_zotero_records(
             token=token,
@@ -4599,6 +4764,7 @@ class CortexStore:
             raise ValueError("max_records must be an integer") from exc
         if capped_max_records < 1 or capped_max_records > 500:
             raise ValueError("max_records must be between 1 and 500")
+        self._ensure_source_account_can_sync(user_id, source_account_id, expected_source=LINEAR_SOURCE)
 
         sync = fetch_linear_records(
             token=token,
@@ -4740,6 +4906,7 @@ class CortexStore:
             raise ValueError("max_records must be an integer") from exc
         if capped_max_records < 1 or capped_max_records > 500:
             raise ValueError("max_records must be between 1 and 500")
+        self._ensure_source_account_can_sync(user_id, source_account_id, expected_source=JIRA_SOURCE)
 
         sync = fetch_jira_records(
             email=email,
@@ -4889,6 +5056,7 @@ class CortexStore:
             raise ValueError("max_records must be an integer") from exc
         if capped_max_records < 1 or capped_max_records > 200:
             raise ValueError("max_records must be between 1 and 200")
+        self._ensure_source_account_can_sync(user_id, source_account_id, expected_source=NOTION_SOURCE)
 
         sync = fetch_notion_records(
             token=token,
@@ -5040,6 +5208,20 @@ class CortexStore:
                 (user_id, account_id),
             ).fetchone()
         return self._source_account_from_row(row) if row else None
+
+    def _ensure_source_account_can_sync(self, user_id: str, account_id: str | None, *, expected_source: str | None = None) -> None:
+        resolved_id = str(account_id or "").strip()
+        if not resolved_id:
+            return
+        account = self._source_account_by_id(user_id, resolved_id)
+        if not account:
+            return
+        source = _normalize_source_key(str(account.get("source") or ""))
+        expected = _normalize_source_key(str(expected_source or ""))
+        if expected and source != expected:
+            raise ValueError(f"source account belongs to {source or 'another source'}, not {expected}")
+        if account.get("disconnected_at"):
+            raise ValueError("source account is disconnected; reconnect before syncing")
 
     def disconnect_source_account(self, user_id: str, account_id: str) -> dict[str, Any] | None:
         timestamp = now_iso()
@@ -10600,6 +10782,26 @@ class CortexStore:
                 cursor_name=cursor_name,
                 include_body=bool(credential_payload.get("include_body", metadata.get("content_sync_enabled", True))),
                 api_base_url=str(credential_payload.get("api_base_url") or metadata.get("api_base_url") or "https://gmail.googleapis.com/gmail/v1"),
+            )
+        elif source == "outlook":
+            access_token = str(credential_payload.get("access_token") or "").strip()
+            if not access_token:
+                raise ValueError("outlook source account is missing stored access token")
+            next_page_token = cursor_state_value("next_page_token")
+            result = self.sync_outlook_account(
+                user_id,
+                access_token=access_token,
+                source_account_id=account_id,
+                account_label=account_label,
+                account_identifier=account_identifier,
+                query=str(credential_payload.get("query") or metadata.get("query") or "").strip() or None,
+                since=None if next_page_token else (high_water_mark or cursor_value),
+                page_token=next_page_token,
+                processing=processing,
+                max_records=min(max_records, 200),
+                cursor_name=cursor_name,
+                include_body=bool(credential_payload.get("include_body", metadata.get("content_sync_enabled", True))),
+                api_base_url=str(credential_payload.get("api_base_url") or metadata.get("api_base_url") or "https://graph.microsoft.com/v1.0"),
             )
         elif source == "google-drive":
             access_token = str(credential_payload.get("access_token") or "").strip()

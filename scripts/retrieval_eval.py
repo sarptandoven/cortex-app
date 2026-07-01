@@ -25,6 +25,7 @@ NOISY_IMPORT_SOURCES = {"chatgpt", "claude", "slack", "email", "docs", "notion",
 DIRECT_CONNECTOR_SOURCES = {
     "calendar",
     "gmail",
+    "outlook",
     "google-drive",
     "github",
     "jira",
@@ -105,6 +106,14 @@ DIRECT_CONNECTOR_FIXTURES: tuple[dict[str, Any], ...] = (
         "content": "We decided Project Mailbox Gmail direct sync preserves cited message memory from email threads.",
         "expected_layer": "decision",
         "expected_phrase": "cited message memory",
+    },
+    {
+        "source": "outlook",
+        "project": "Project Exchange",
+        "query": "Project Exchange Outlook direct sync cited message memory",
+        "content": "We decided Project Exchange Outlook direct sync preserves cited message memory from Microsoft Graph mail.",
+        "expected_layer": "decision",
+        "expected_phrase": "Microsoft Graph mail",
     },
     {
         "source": "google-drive",
@@ -932,6 +941,8 @@ def seed_direct_connector_memories(store: CortexStore, user_id: str = USER_ID) -
         elif source == "calendar":
             connection_type = "local-file"
         elif source == "gmail":
+            connection_type = "oauth-token"
+        elif source == "outlook":
             connection_type = "oauth-token"
         elif source == "google-drive":
             connection_type = "oauth-token"

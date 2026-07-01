@@ -71,6 +71,14 @@ class ConnectorFetchRetrievalTests(unittest.TestCase):
                 "sync": self._sync_gmail,
             },
             {
+                "source": "outlook",
+                "marker": "outlookcitetest",
+                "query": "outlookcitetest retrieval Outlook citations",
+                "search_url_prefix": "https://outlook.office.com/mail/id/outlook-citation-msg",
+                "ask_url_prefix": "https://outlook.office.com/mail/id/outlook-citation-msg",
+                "sync": self._sync_outlook,
+            },
+            {
                 "source": "google-drive",
                 "marker": "drivecitetest",
                 "query": "drivecitetest retrieval Drive citations",
@@ -715,6 +723,43 @@ END:VCALENDAR
         return self.store.sync_gmail_account(
             self.user_id,
             access_token="gmail-test",
+            max_records=1,
+            processing="sync",
+            request_json=fake_request,
+        )
+
+    def _sync_outlook(self) -> dict:
+        def fake_request(url: str, headers: dict[str, str]):
+            self.assertEqual(headers["Authorization"], "Bearer outlook-test")
+            if url.endswith("/me?%24select=mail%2CuserPrincipalName%2CdisplayName"):
+                return {"mail": "sarp@example.com"}
+            if "/me/messages?" in url:
+                return {
+                    "value": [
+                        {
+                            "id": "outlook-citation-msg",
+                            "conversationId": "conversation-outlook-citation-msg",
+                            "internetMessageId": "<outlook-citation-msg@example.com>",
+                            "subject": "Outlook retrieval citation",
+                            "from": {"emailAddress": {"address": "sarp@example.com", "name": "Sarp Doven"}},
+                            "toRecipients": [{"emailAddress": {"address": "sarp@example.com", "name": "Sarp Doven"}}],
+                            "ccRecipients": [],
+                            "receivedDateTime": "2026-06-29T17:00:00Z",
+                            "sentDateTime": "2026-06-29T17:00:00Z",
+                            "bodyPreview": "We decided outlookcitetest retrieval should preserve Outlook message citations.",
+                            "body": {
+                                "contentType": "text",
+                                "content": "We decided outlookcitetest retrieval should preserve Outlook message citations.",
+                            },
+                            "webLink": "https://outlook.office.com/mail/id/outlook-citation-msg",
+                        }
+                    ]
+                }
+            raise AssertionError(f"Unexpected URL {url}")
+
+        return self.store.sync_outlook_account(
+            self.user_id,
+            access_token="outlook-test",
             max_records=1,
             processing="sync",
             request_json=fake_request,

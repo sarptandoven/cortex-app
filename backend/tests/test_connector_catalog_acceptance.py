@@ -36,7 +36,7 @@ class ConnectorCatalogAcceptanceTests(unittest.TestCase):
         self.assertEqual(catalog["obsidian"]["live_status"], "import_ready")
         self.assertTrue(catalog["obsidian"]["supports_import"])
 
-        for source_id in ("gmail", "notion", "slack", "github", "google-drive"):
+        for source_id in ("gmail", "outlook", "notion", "slack", "github", "google-drive"):
             with self.subTest(source_id=source_id):
                 catalog_entry = catalog[source_id]
                 readiness_entry = readiness_by_source[source_id]

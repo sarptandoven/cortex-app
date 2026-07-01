@@ -586,6 +586,10 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(catalog["gmail"]["beta_status"], "ready")
         self.assertEqual(catalog["gmail"]["primary_beta_path"], "native-token-connector")
         self.assertFalse(catalog["gmail"]["show_in_primary_ui"])
+        self.assertEqual(catalog["outlook"]["live_status"], "api_token")
+        self.assertEqual(catalog["outlook"]["beta_status"], "ready")
+        self.assertEqual(catalog["outlook"]["primary_beta_path"], "native-token-connector")
+        self.assertFalse(catalog["outlook"]["show_in_primary_ui"])
         self.assertTrue(catalog["obsidian"]["primary_beta"])
         self.assertEqual(catalog["obsidian"]["beta_status"], "ready")
         self.assertEqual(catalog["obsidian"]["primary_beta_path"], "native-local-connector")
@@ -1328,7 +1332,23 @@ class CortexStorageLifecycleTests(unittest.TestCase):
                 processing="sync",
             )
         with self.assertRaisesRegex(ValueError, "source account is disconnected"):
+            call_tool(
+                self.store,
+                self.user_id,
+                "sync_source_records",
+                {"source_account_id": account["id"], "records": [{"content": "MCP should not sync after disconnect."}]},
+                token_scopes=["write"],
+            )
+        with self.assertRaisesRegex(ValueError, "source account is disconnected"):
             self.store.enqueue_source_account_sync(self.user_id, account["id"], cursor_name="issues")
+        with self.assertRaisesRegex(ValueError, "source account is disconnected"):
+            self.store.sync_github_account(
+                self.user_id,
+                token="github_disconnect_secret",
+                repositories=["doppl-tech/cortex-app"],
+                source_account_id=account["id"],
+                request_json=lambda url, headers: self.fail(f"Disconnected account should not fetch {url}"),
+            )
 
         scheduled = self.store.enqueue_due_source_syncs(self.user_id, limit=10)
         self.assertEqual(scheduled["scheduled"], 0)
@@ -1438,6 +1458,7 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         wired_source_paths = {
             "obsidian": "native-local-connector",
             "gmail": "native-token-connector",
+            "outlook": "native-token-connector",
             "google-drive": "native-token-connector",
             "slack": "native-token-connector",
             "github": "native-token-connector",
@@ -1451,7 +1472,7 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         }
         wired_source_ids = tuple(wired_source_paths)
 
-        self.assertEqual(len(wired_source_ids), 12)
+        self.assertEqual(len(wired_source_ids), 13)
         for source_id, primary_beta_path in wired_source_paths.items():
             with self.subTest(source_id=source_id):
                 entry = catalog[source_id]

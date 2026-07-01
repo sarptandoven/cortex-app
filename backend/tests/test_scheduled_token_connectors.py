@@ -13,13 +13,14 @@ from backend.app.storage import CortexStore
 
 READWISE_TOKEN = "readwise_scheduled_secret_123"
 GMAIL_TOKEN = "gmail_scheduled_secret_123"
+OUTLOOK_TOKEN = "outlook_scheduled_secret_123"
 GOOGLE_DRIVE_TOKEN = "google_drive_scheduled_secret_123"
 RAINDROP_TOKEN = "raindrop_scheduled_secret_123"
 ZOTERO_TOKEN = "zotero_scheduled_secret_123"
 LINEAR_TOKEN = "linear_scheduled_secret_123"
 NOTION_TOKEN = "notion_scheduled_secret_123"
 
-SECRET_VALUES = (READWISE_TOKEN, GMAIL_TOKEN, GOOGLE_DRIVE_TOKEN, RAINDROP_TOKEN, ZOTERO_TOKEN, LINEAR_TOKEN, NOTION_TOKEN)
+SECRET_VALUES = (READWISE_TOKEN, GMAIL_TOKEN, OUTLOOK_TOKEN, GOOGLE_DRIVE_TOKEN, RAINDROP_TOKEN, ZOTERO_TOKEN, LINEAR_TOKEN, NOTION_TOKEN)
 
 
 class ScheduledTokenConnectorTests(unittest.TestCase):
@@ -76,6 +77,21 @@ class ScheduledTokenConnectorTests(unittest.TestCase):
                 "mime_types": ["application/vnd.google-apps.document"],
                 "include_content": False,
                 "cursor_name": "files",
+                "max_records": 200,
+            },
+        )
+
+    def test_outlook_dispatches_from_local_credentials(self) -> None:
+        self._assert_credential_backed_dispatch(
+            "outlook",
+            self._connect_outlook_account,
+            "sync_outlook_account",
+            {
+                "access_token": OUTLOOK_TOKEN,
+                "api_base_url": "https://graph.invalid/v1.0",
+                "query": "from/emailAddress/address eq 'sarp@example.com'",
+                "include_body": False,
+                "cursor_name": "messages",
                 "max_records": 200,
             },
         )
@@ -231,6 +247,28 @@ class ScheduledTokenConnectorTests(unittest.TestCase):
             processing="sync",
             max_records=10,
             request_value=fake_request_value,
+        )
+        self.assertEqual(result["status"], "empty")
+        return result["source_account"]
+
+    def _connect_outlook_account(self) -> dict[str, Any]:
+        def fake_request_json(url: str, headers: dict[str, str]) -> dict[str, Any]:
+            self.assertEqual(headers["Authorization"], f"Bearer {OUTLOOK_TOKEN}")
+            if url.endswith("/me?%24select=mail%2CuserPrincipalName%2CdisplayName"):
+                return {"mail": "sarp@example.com"}
+            self.assertTrue(url.startswith("https://graph.invalid/v1.0/me/messages?"))
+            self.assertIn("from%2FemailAddress%2Faddress+eq+%27sarp%40example.com%27", url)
+            return {"value": [], "@odata.nextLink": None}
+
+        result = self.store.sync_outlook_account(
+            self.user_id,
+            access_token=OUTLOOK_TOKEN,
+            query="from/emailAddress/address eq 'sarp@example.com'",
+            include_body=False,
+            api_base_url="https://graph.invalid/v1.0",
+            processing="sync",
+            max_records=10,
+            request_json=fake_request_json,
         )
         self.assertEqual(result["status"], "empty")
         return result["source_account"]
