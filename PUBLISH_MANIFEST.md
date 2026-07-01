@@ -17,10 +17,10 @@ This repository contains the local-first Cortex by Doppl macOS app source, packa
   - Checksums for archived binary artifacts in `release-artifacts/`.
 - `site/downloads/Cortex-0.1.0-1.dmg`
   - Canonical direct-distribution local beta DMG artifact.
-  - Package SHA-256: `9733fea8a5988b667bee1bf6ea808ce1b4b5d82a820d35ba3f6d020cf68322c8`
+  - Package SHA-256 is recorded in `site/downloads/latest.json` and `site/downloads/Cortex-0.1.0-1.checksums.txt`.
 - `site/downloads/Cortex-0.1.0-1.app.zip`
   - Canonical direct-distribution local beta app zip artifact.
-  - Package SHA-256: `6df689894bc2511b94413c94acf7f39d0f44008a9afcc95b37f360b2ceb8e312`
+  - Package SHA-256 is recorded in `site/downloads/latest.json` and `site/downloads/Cortex-0.1.0-1.checksums.txt`.
 - `site/downloads/latest.json`
   - Update-feed manifest for the canonical direct-download artifacts.
 
