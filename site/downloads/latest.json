@@ -4,15 +4,15 @@
     {
       "filename": "Cortex-0.1.0-1.dmg",
       "kind": "dmg",
-      "sha256": "0947f8669a5a44c44af264b52496e5e3d0fa727bf0c4696d63ec46d0eeb0a612",
-      "size_bytes": 21055522,
+      "sha256": "9c680bf5a5cd8a07d2c6a1b96e5b931c48f6b76a6ec8c537378634bc87daea6c",
+      "size_bytes": 21054276,
       "url": "downloads/Cortex-0.1.0-1.dmg"
     },
     {
       "filename": "Cortex-0.1.0-1.app.zip",
       "kind": "zip",
-      "sha256": "33f579168ac2e198bd4f58713e86407dac29a3fb0a8403e7ed382624743d7aa1",
-      "size_bytes": 16639309,
+      "sha256": "c9b93f2c0c30670955fa9fa7c7db09a28241c2a1dcd532cfff79659f59f114e1",
+      "size_bytes": 16638457,
       "url": "downloads/Cortex-0.1.0-1.app.zip"
     }
   ],
@@ -67,13 +67,13 @@
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "First-100 checkpoint: simpler onboarding, reviewed-memory MCP retrieval, rollout gates, and launch gate automation."
+    "First-100 checkpoint: simpler onboarding, reviewed-memory MCP retrieval, rollout gates, launch gate automation, and cleaner MVP copy."
   ],
-  "released_at": "2026-07-01T04:39:29Z",
+  "released_at": "2026-07-01T04:44:01Z",
   "source_provenance": {
-    "built_at": "2026-07-01T04:39:29Z",
+    "built_at": "2026-07-01T04:44:01Z",
     "git_branch": "mass-scale-app-redesign",
-    "git_commit": "687e772f1daac2745a6d98a66944d3f2a4559905",
+    "git_commit": "fc8a653ce44f4c14262658439a2434521eead4db",
     "git_dirty": false
   },
   "version": "0.1.0"
