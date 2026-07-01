@@ -117,6 +117,9 @@ def fetch_notion_records(
         if not isinstance(payload, dict):
             errors.append({"error": "Notion search response was not an object"})
             break
+        if payload.get("object") == "error":
+            errors.append(connector_error_payload(_NotionErrorObject(payload), _request_secrets(cleaned_token, headers)))
+            break
         results = payload.get("results") if isinstance(payload.get("results"), list) else []
         records_found += len(results)
         for page in results:
@@ -159,6 +162,26 @@ def _request_json(url: str, headers: dict[str, str], body: dict[str, Any] | None
     request = Request(url, data=data, headers=headers, method=method)
     with urlopen(request, timeout=30) as response:  # noqa: S310 - trusted Notion API URL by default.
         return json.loads(response.read().decode("utf-8"))
+
+
+class _NotionErrorObject(Exception):
+    """Notion error-object response ({"object": "error", ...}) shaped for connector_error_payload.
+
+    Carries the numeric "status" field as a `status` attribute so the shared error
+    helper categorizes it (401/403 auth, 429 rate_limited, 5xx server, other 4xx
+    client); without a status, the "code"-prefixed message drives classification.
+    """
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        code = _clean_text(payload.get("code"))
+        message = _clean_text(payload.get("message")) or "Notion API returned an error"
+        super().__init__(f"{code}: {message}" if code else message)
+        try:
+            status = int(payload.get("status"))
+        except (TypeError, ValueError):
+            status = 0
+        if status > 0:
+            self.status = status
 
 
 def _fetch_page_blocks(
@@ -218,6 +241,9 @@ def _append_child_blocks(
             break
         if not isinstance(payload, dict):
             errors.append({"block_id": parent_id, "error": "Notion block children response was not an object"})
+            break
+        if payload.get("object") == "error":
+            errors.append({"block_id": parent_id, **connector_error_payload(_NotionErrorObject(payload), secrets)})
             break
         results = payload.get("results") if isinstance(payload.get("results"), list) else []
         for item in results:

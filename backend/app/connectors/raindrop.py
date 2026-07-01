@@ -97,6 +97,7 @@ def fetch_raindrop_records(
     errors: list[dict[str, Any]] = []
     high_water_mark: str | None = None
     next_page: str | None = None
+    truncated_mid_page = False
     since_normalized = _text(since)
 
     while len(records) < capped_max:
@@ -121,7 +122,7 @@ def fetch_raindrop_records(
             break
         items = payload.get("items") if isinstance(payload.get("items"), list) else []
         records_found += len(items)
-        for item in items:
+        for index, item in enumerate(items):
             if not isinstance(item, dict):
                 continue
             record = _record_from_item(item, normalized_collection_id, include_highlights=include_highlights)
@@ -132,12 +133,28 @@ def fetch_raindrop_records(
             high_water_mark = _max_iso(high_water_mark, record.captured_at)
             records.append(record)
             if len(records) >= capped_max:
+                truncated_mid_page = index < len(items) - 1
                 break
         if len(items) < per_page or len(records) >= capped_max:
-            next_page = str(current_page + 1) if len(items) == per_page and len(records) >= capped_max else None
+            next_page = (
+                str(current_page + 1)
+                if len(items) == per_page and len(records) >= capped_max and not truncated_mid_page
+                else None
+            )
             break
         current_page += 1
         next_page = str(current_page)
+
+    if truncated_mid_page:
+        # Items arrive sorted by -lastUpdate, so any items left unconsumed when the
+        # record cap fires mid-page are OLDER than the high-water mark set from the
+        # first (newest) record. Advancing the cursor past them would make the next
+        # sync's `captured_at <= since` filter skip them permanently, and a page
+        # continuation cannot resume mid-page. Keep the watermark at the input
+        # `since` so the next sync re-covers the unconsumed range; the records
+        # consumed here are re-fetched then but deduplicated downstream by their
+        # stable external ids.
+        high_water_mark = since_normalized or None
 
     return RaindropSync(
         records=records,

@@ -115,6 +115,30 @@ class NotionConnectorTests(unittest.TestCase):
         self.assertEqual(sync.records_returned, 0)
         self.assertEqual(sync.records, [])
 
+    def test_fetch_notion_records_reports_error_object_responses(self) -> None:
+        calls: list[str] = []
+
+        def fake_request(url: str, headers: dict[str, str], body: dict | None, method: str):
+            calls.append(url)
+            return {
+                "object": "error",
+                "status": 429,
+                "code": "rate_limited",
+                "message": "Rate limited, retry later. Rejected Authorization: Bearer notion-test",
+            }
+
+        sync = fetch_notion_records(token="notion-test", include_content=False, request_json=fake_request)
+
+        # Pagination stops on the first error object instead of looping.
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(sync.records, [])
+        self.assertEqual(sync.records_returned, 0)
+        self.assertEqual(len(sync.errors), 1)
+        self.assertEqual(sync.errors[0]["category"], "rate_limited")
+        self.assertEqual(sync.errors[0]["status_code"], 429)
+        self.assertIn("rate_limited", sync.errors[0]["error"])
+        self.assertNotIn("notion-test", sync.errors[0]["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

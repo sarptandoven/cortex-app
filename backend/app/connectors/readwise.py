@@ -7,7 +7,7 @@ from typing import Any, Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from ._redaction import connector_error_payload
+from ._redaction import classify_error_message, connector_error_payload, redact_error_message
 
 
 READWISE_SOURCE = "readwise"
@@ -108,7 +108,17 @@ def fetch_readwise_records(
         if not isinstance(payload, dict):
             errors.append({"error": "Readwise export response was not an object"})
             break
-        results = payload.get("results") if isinstance(payload.get("results"), list) else []
+        results = payload.get("results") if isinstance(payload.get("results"), list) else None
+        if results is None:
+            detail = _clean_text(payload.get("detail"))
+            if detail:
+                # Django REST style error body (e.g. {"detail": "Request was throttled. ..."})
+                # must surface as a categorized error instead of silently reading as zero results.
+                message = redact_error_message(detail, [cleaned_token, headers.get("Authorization")])
+                category = "rate_limited" if "throttl" in detail.lower() else classify_error_message(message, default="client")
+                errors.append({"error": message, "category": category})
+                break
+            results = []
         for book in results:
             if not isinstance(book, dict):
                 continue

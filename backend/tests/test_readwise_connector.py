@@ -92,6 +92,34 @@ class ReadwiseConnectorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "token"):
             fetch_readwise_records(token="")
 
+    def test_fetch_readwise_records_reports_throttled_detail_as_rate_limited(self) -> None:
+        calls: list[str] = []
+
+        def fake_request(url: str, headers: dict[str, str]):
+            calls.append(url)
+            return {"detail": "Request was throttled. Expected available in 60 seconds."}
+
+        sync = fetch_readwise_records(token="readwise-test", max_records=5, request_json=fake_request)
+
+        # A Django REST style error body must not be silently treated as zero results.
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(sync.records, [])
+        self.assertEqual(sync.records_returned, 0)
+        self.assertEqual(len(sync.errors), 1)
+        self.assertEqual(sync.errors[0]["category"], "rate_limited")
+        self.assertIn("throttled", sync.errors[0]["error"])
+
+    def test_fetch_readwise_records_errors_on_non_object_response(self) -> None:
+        sync = fetch_readwise_records(
+            token="readwise-test",
+            max_records=5,
+            request_json=lambda url, headers: ["not", "an", "object"],
+        )
+
+        self.assertEqual(sync.records_returned, 0)
+        self.assertEqual(len(sync.errors), 1)
+        self.assertIn("not an object", sync.errors[0]["error"])
+
 
 if __name__ == "__main__":
     unittest.main()
