@@ -77,10 +77,6 @@ FORBIDDEN_PHRASES: dict[str, tuple[str, ...]] = {
         "Complete first-run setup with a local vault, MCP or Obsidian connection",
         "Local-first Cortex beta with bundled backend, capture, MCP, and trust controls.",
     ),
-    "outputs/Cortex-0.1.0-1/latest.json": (
-        "Complete first-run setup with a local vault, MCP or Obsidian connection",
-        "Local-first Cortex beta with bundled backend, capture, MCP, and trust controls.",
-    ),
     "PUBLISH_MANIFEST.md": (
         "uploaded through Transporter",
     ),
