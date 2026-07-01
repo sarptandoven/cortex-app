@@ -7482,7 +7482,7 @@ class CortexStore:
         source_backed = [*primary_source_backed, *related_source_backed]
         uncited = [item for item in candidates if not self._has_source_citation(item)]
         results = [*source_backed, *uncited][:limit]
-        cited_results = source_backed[:limit] if source_backed else results
+        cited_results = source_backed[:limit]
         citations: list[dict[str, Any]] = []
         for index, item in enumerate(cited_results, start=1):
             result_type = item.get("result_type") or "memory"

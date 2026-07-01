@@ -4464,9 +4464,17 @@ Never use [[Templates/Marketing]] boilerplate in memory.
         self.assertEqual(empty_loop["primary_action"]["action"], "capture")
         self.assertEqual(empty_loop["counts"]["pending_captures"], 0)
 
-        capture = self.capture(
+        content = (
             "Cortex should make the daily loop obvious: capture, review, reuse, and return. "
             "The next step is to copy context into Claude before planning."
+        )
+        capture = self.store.save_capture(
+            user_id=self.user_id,
+            content=content,
+            source="unit-test",
+            source_url="cortex-source://unit-test#line=1&excerpt=daily-loop",
+            title="Unit test capture",
+            extracted=extract_context(content, "unit-test"),
         )
         pending_loop = self.store.product_loop(self.user_id)
         self.assertEqual(pending_loop["primary_action"]["action"], "review")

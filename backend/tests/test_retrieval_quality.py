@@ -683,6 +683,42 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertEqual(answer["citations"][0]["line_start"], "71")
         self.assertEqual(answer["citations"][0]["source_excerpt"], "anchor-citation")
 
+    def test_answer_query_does_not_present_uncited_matches_as_citations(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Atlas unsupported reimbursement owner appears only in an uncited scratch note.",
+            source="scratch-note",
+            source_url=None,
+            title="Uncited scratch note",
+            extracted={
+                "_timestamp": "2026-05-01T00:00:00+00:00",
+                "summary": "Uncited scratch note.",
+                "records": [
+                    {
+                        "id": "ask_uncited_match_only",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "Atlas unsupported reimbursement owner appears only in an uncited scratch note.",
+                        "summary": "Uncited reimbursement owner scratch note.",
+                        "confidence": "confirmed",
+                        "importance": 5,
+                        "topics": ["atlas", "reimbursement"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+
+        answer = self.store.answer_query(self.user_id, "Atlas unsupported reimbursement owner", limit=3)
+
+        self.assertEqual(answer["citations"], [])
+        self.assertIn("did not find a cited item", answer["answer"])
+        self.assertEqual(answer["results"][0]["id"], "ask_uncited_match_only")
+        self.assertIsNone(answer["results"][0]["source_url"])
+
     def test_source_filter_uses_service_family_aliases_without_overexpanding(self) -> None:
         self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
         records = [
