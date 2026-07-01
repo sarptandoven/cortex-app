@@ -157,7 +157,19 @@ def scan_obsidian_vault(vault_path: str | Path, *, limit: int = 200, cursor_valu
                 errors.append({"path": _safe_relative(root, path), "error": str(exc)})
                 skipped += 1
                 continue
-            if stat.st_size <= 0 or stat.st_size > MAX_NOTE_BYTES:
+            if stat.st_size <= 0:
+                skipped += 1
+                continue
+            if stat.st_size > MAX_NOTE_BYTES:
+                errors.append(
+                    {
+                        "path": _safe_relative(root, path),
+                        "error": f"Note is larger than the {MAX_NOTE_BYTES} byte beta limit",
+                        "reason": "oversized_note",
+                        "size_bytes": stat.st_size,
+                        "max_bytes": MAX_NOTE_BYTES,
+                    }
+                )
                 skipped += 1
                 continue
             seen_extensions.add(suffix)

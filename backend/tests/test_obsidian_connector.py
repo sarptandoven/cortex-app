@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from backend.app.connectors.obsidian import (
+    MAX_NOTE_BYTES,
     parse_note,
     scan_vault,
     stable_block_external_id,
@@ -187,6 +188,32 @@ I prefer #cortex notes that preserve citations.
         self.assertEqual(obsidian["active_memories"], 0)
         self.assertEqual(readiness["summary"]["synced"], 0)
         self.assertEqual(readiness["summary"]["sources_with_data"], 0)
+
+    def test_oversized_note_reports_actionable_scan_error(self) -> None:
+        self.write_note("Large/Oversized.md", "A" * (MAX_NOTE_BYTES + 1))
+
+        scan = scan_vault(self.vault, max_records=20)
+
+        self.assertEqual(scan.files_seen, 1)
+        self.assertEqual(scan.records_found, 0)
+        self.assertEqual(scan.records_returned, 0)
+        self.assertEqual(scan.skipped, 1)
+        self.assertEqual(len(scan.errors), 1)
+        self.assertEqual(scan.errors[0]["path"], "Large/Oversized.md")
+        self.assertEqual(scan.errors[0]["reason"], "oversized_note")
+        self.assertEqual(scan.errors[0]["max_bytes"], MAX_NOTE_BYTES)
+        self.assertIn("larger than", scan.errors[0]["error"])
+
+        synced = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+        self.assertEqual(synced["status"], "partial")
+        self.assertEqual(synced["skipped"], 1)
+        self.assertEqual(synced["failed"], 1)
+        self.assertEqual(synced["errors"][0]["reason"], "oversized_note")
+
+        readiness = self.store.source_readiness_report(self.user_id)
+        obsidian = next(item for item in readiness["sources"] if item["source"] == "obsidian")
+        self.assertEqual(obsidian["status"], "needs_attention")
+        self.assertIn("larger than", " ".join(obsidian["warnings"]))
 
     def test_long_note_keeps_late_explicit_decision_and_procedure(self) -> None:
         low_value_lines = "\n".join(

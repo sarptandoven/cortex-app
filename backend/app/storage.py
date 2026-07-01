@@ -2591,7 +2591,7 @@ class CortexStore:
                 "received": 0,
                 "queued": 0,
                 "saved": 0,
-                "skipped": 0,
+                "skipped": scan.skipped,
                 "failed": len(scan.errors),
                 "archived_missing": archived_missing,
                 "capture_ids": [],
