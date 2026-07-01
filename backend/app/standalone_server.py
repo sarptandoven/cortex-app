@@ -568,6 +568,34 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError) as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
+            if method == "POST" and path == "/v1/connectors/notion/sync":
+                body = self._json_body()
+                try:
+                    try:
+                        max_records = int(body.get("max_records") or 50)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError("max_records must be an integer") from exc
+                    if max_records < 1 or max_records > 200:
+                        raise ValueError("max_records must be between 1 and 200")
+                    result = store.sync_notion_account(
+                        user_id,
+                        token=str(body.get("token") or ""),
+                        source_account_id=str(body.get("source_account_id") or "") or None,
+                        account_label=str(body.get("account_label") or "") or None,
+                        account_identifier=str(body.get("account_identifier") or "") or None,
+                        since=str(body.get("since") or "") or None,
+                        cursor=str(body.get("cursor") or "") or None,
+                        processing=str(body.get("processing") or "sync"),
+                        max_records=max_records,
+                        cursor_name=str(body.get("cursor_name") or "pages"),
+                        include_content=_bool_value(body.get("include_content"), default=True),
+                        api_base_url=str(body.get("api_base_url") or "") or None,
+                        notion_version=str(body.get("notion_version") or "") or None,
+                    )
+                    self._send_json(store.public_payload(user_id, result) if hasattr(store, "public_payload") else result)
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
             if method == "GET" and path == "/v1/sync-cursors":
                 source_account_id = (params.get("source_account_id") or [None])[0]
                 self._send_json({"results": store.list_sync_cursors(user_id, source_account_id=source_account_id)})

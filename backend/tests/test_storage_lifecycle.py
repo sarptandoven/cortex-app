@@ -1032,32 +1032,32 @@ class CortexStorageLifecycleTests(unittest.TestCase):
     def test_mcp_connected_source_tools_register_and_sync_cited_records(self) -> None:
         connectors = call_tool(self.store, self.user_id, "list_source_connectors", {"include_accounts": False})
         connector_ids = {item["id"] for item in connectors["results"]}
-        self.assertIn("notion", connector_ids)
+        self.assertIn("google-drive", connector_ids)
 
         account_payload = call_tool(
             self.store,
             self.user_id,
             "connect_source_account",
             {
-                "source": "notion",
-                "account_label": "Demo Notion",
-                "account_identifier": "workspace-demo",
+                "source": "google-drive",
+                "account_label": "Demo Drive",
+                "account_identifier": "drive-demo",
                 "connection_type": "mcp",
-                "policy": {"sync": "pages_and_comments"},
+                "policy": {"sync": "docs_and_files"},
                 "metadata": {"workspace": "first-100"},
             },
             token_scopes=["write"],
         )
         account = account_payload["account"]
-        self.assertEqual(account["source"], "notion")
+        self.assertEqual(account["source"], "google-drive")
         self.assertEqual(account["status"], "planned")
         self.assertEqual(account["auth_state"], "not_configured")
         self.assertEqual(account["metadata"]["requested_status"], "connected")
 
         readiness_before_records = self.store.source_readiness_report(self.user_id)
-        notion_before_records = next(item for item in readiness_before_records["sources"] if item["source"] == "notion")
-        self.assertEqual(notion_before_records["status"], "planned")
-        self.assertEqual(notion_before_records["beta_status"], "planned")
+        drive_before_records = next(item for item in readiness_before_records["sources"] if item["source"] == "google-drive")
+        self.assertEqual(drive_before_records["status"], "planned")
+        self.assertEqual(drive_before_records["beta_status"], "planned")
 
         with self.assertRaises(PermissionError):
             call_tool(
@@ -1076,13 +1076,13 @@ class CortexStorageLifecycleTests(unittest.TestCase):
                 "source_account_id": account["id"],
                 "records": [
                     {
-                        "content": "I decided Notion should become the canonical project memory source for Project Helix.",
+                        "content": "I decided Google Drive should become the canonical project memory source for Project Helix.",
                         "title": "Project Helix memory decision",
-                        "external_id": "page-helix",
+                        "external_id": "drive-doc-helix",
                         "captured_at": "2026-06-30T09:30:00Z",
                         "metadata": {
                             "workspace": "first-100",
-                            "page_id": "page-helix",
+                            "document_id": "drive-doc-helix",
                             "tags": ["project-helix", "memory-source"],
                             "wikilinks": [{"target": "Project Helix", "display": "Project Helix"}],
                         },
@@ -1098,34 +1098,34 @@ class CortexStorageLifecycleTests(unittest.TestCase):
 
         self.assertEqual(synced["status"], "complete")
         self.assertEqual(synced["saved"], 1)
-        self.assertTrue(synced["records"][0]["source_url"].startswith(f"source-account://notion/{account['id']}/page-helix"))
+        self.assertTrue(synced["records"][0]["source_url"].startswith(f"source-account://google-drive/{account['id']}/drive-doc-helix"))
         self.assertEqual(synced["cursor"]["cursor_name"], "pages")
         self.assertTrue(account["policy"]["review_required"])
         readiness_after_records = self.store.source_readiness_report(self.user_id)
-        notion_after_records = next(item for item in readiness_after_records["sources"] if item["source"] == "notion")
-        self.assertEqual(notion_after_records["status"], "needs_review")
-        self.assertEqual(notion_after_records["beta_status"], "planned")
+        drive_after_records = next(item for item in readiness_after_records["sources"] if item["source"] == "google-drive")
+        self.assertEqual(drive_after_records["status"], "needs_review")
+        self.assertEqual(drive_after_records["beta_status"], "planned")
 
         capture_id = synced["capture_ids"][0]
         self.assertEqual([item["id"] for item in self.store.inbox(self.user_id, limit=10)], [capture_id])
         inbox = self.store.inbox(self.user_id)
         self.assertEqual(len(inbox), 1)
-        self.assertEqual(inbox[0]["source"], "notion")
+        self.assertEqual(inbox[0]["source"], "google-drive")
         self.assertTrue(inbox[0]["preview_memories"])
         self.assertTrue(any("canonical project memory source" in item["content"] for item in inbox[0]["preview_memories"]))
         self.assertEqual(self.store.search(self.user_id, "canonical project memory source", limit=5), [])
         self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
         readiness_after_review = self.store.source_readiness_report(self.user_id)
-        notion_after_review = next(item for item in readiness_after_review["sources"] if item["source"] == "notion")
-        self.assertEqual(notion_after_review["status"], "synced")
-        self.assertEqual(notion_after_review["beta_status"], "planned")
+        drive_after_review = next(item for item in readiness_after_review["sources"] if item["source"] == "google-drive")
+        self.assertEqual(drive_after_review["status"], "synced")
+        self.assertEqual(drive_after_review["beta_status"], "planned")
 
         found = self.store.search(self.user_id, "canonical project memory source", limit=5)
         self.assertTrue(found)
-        self.assertEqual(found[0]["source"], "notion")
-        self.assertTrue(found[0]["source_url"].startswith(f"source-account://notion/{account['id']}/page-helix"))
+        self.assertEqual(found[0]["source"], "google-drive")
+        self.assertTrue(found[0]["source_url"].startswith(f"source-account://google-drive/{account['id']}/drive-doc-helix"))
         self.assertEqual(found[0]["sector"], "first-100")
-        self.assertEqual(found[0]["provenance"]["record_metadata"]["page_id"], "page-helix")
+        self.assertEqual(found[0]["provenance"]["record_metadata"]["document_id"], "drive-doc-helix")
         self.assertIn("project helix", [topic.casefold() for topic in found[0]["topics"]])
         self.assertIn("memory source", [topic.casefold() for topic in found[0]["topics"]])
 
@@ -1567,6 +1567,122 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(synced["saved"], 1)
         self.assertNotIn("lin_mcp_test", json.dumps(synced))
         self.assertEqual(synced["records"][0]["source_url"], "linear://issue/COR-99")
+
+    def test_notion_account_sync_fetches_pages_with_stable_citations(self) -> None:
+        def fake_request(url: str, headers: dict[str, str], body: dict | None, method: str):
+            self.assertEqual(headers["Authorization"], "Bearer notion_test")
+            if method == "POST":
+                return {
+                    "has_more": False,
+                    "results": [
+                        {
+                            "object": "page",
+                            "id": "page-1",
+                            "created_time": "2026-06-29T10:00:00Z",
+                            "last_edited_time": "2026-06-30T10:30:00Z",
+                            "url": "https://www.notion.so/doppl/page-1",
+                            "properties": {
+                                "Name": {"type": "title", "title": [{"plain_text": "Notion exact citations"}]},
+                                "Status": {"type": "status", "status": {"name": "Ready"}},
+                            },
+                        }
+                    ],
+                }
+            return {
+                "has_more": False,
+                "results": [
+                    {
+                        "type": "paragraph",
+                        "paragraph": {
+                            "rich_text": [
+                                {"plain_text": "We decided Cortex should retrieve Notion pages with exact source citations."}
+                            ]
+                        },
+                    }
+                ],
+            }
+
+        result = self.store.sync_notion_account(
+            self.user_id,
+            token="notion_test",
+            processing="sync",
+            max_records=20,
+            request_json=fake_request,
+        )
+
+        self.assertEqual(result["source"], "notion")
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["saved"], 1)
+        self.assertEqual(result["source_account"]["source"], "notion")
+        self.assertEqual(result["source_account"]["connection_type"], "api-token")
+        self.assertEqual(result["source_account"]["metadata"]["token_configured"], True)
+        self.assertNotIn("notion_test", json.dumps(result))
+        self.assertEqual(result["records"][0]["source_url"], "https://www.notion.so/doppl/page-1")
+        capture_id = result["capture_ids"][0]
+        self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+
+        search = self.store.search(self.user_id, "Notion pages exact source citations", limit=3)
+        self.assertTrue(search)
+        self.assertEqual(search[0]["source"], "notion")
+        self.assertTrue(search[0]["source_url"].startswith("https://www.notion.so/doppl/page-1"))
+        self.assertIn("line=", search[0]["source_url"])
+        self.assertIn("excerpt=", search[0]["source_url"])
+        self.assertEqual(search[0]["provenance"]["record_metadata"]["page_id"], "page-1")
+
+        duplicate = self.store.sync_notion_account(
+            self.user_id,
+            token="notion_test",
+            processing="sync",
+            max_records=20,
+            request_json=fake_request,
+        )
+        self.assertEqual(duplicate["saved"], 0)
+        self.assertEqual(duplicate["skipped"], 1)
+        self.assertEqual(duplicate["records"][0]["status"], "duplicate")
+
+    def test_mcp_notion_sync_tool_fetches_records_without_exposing_token(self) -> None:
+        def fake_request(url: str, headers: dict[str, str], body: dict | None, method: str):
+            self.assertEqual(headers["Authorization"], "Bearer notion_mcp_test")
+            if method == "POST":
+                return {
+                    "has_more": False,
+                    "results": [
+                        {
+                            "object": "page",
+                            "id": "page-mcp",
+                            "last_edited_time": "2026-06-30T10:00:00Z",
+                            "properties": {"Name": {"type": "title", "title": [{"plain_text": "MCP Notion sync"}]}},
+                        }
+                    ],
+                }
+            return {"has_more": False, "results": []}
+
+        with self.assertRaises(PermissionError):
+            call_tool(
+                self.store,
+                self.user_id,
+                "sync_notion",
+                {"token": "notion_mcp_test"},
+                token_scopes=["read"],
+            )
+
+        with patch("backend.app.connectors.notion._request_json", side_effect=fake_request):
+            synced = call_tool(
+                self.store,
+                self.user_id,
+                "sync_notion",
+                {
+                    "token": "notion_mcp_test",
+                    "processing": "sync",
+                    "max_records": 10,
+                },
+                token_scopes=["write"],
+            )
+
+        self.assertEqual(synced["source"], "notion")
+        self.assertEqual(synced["saved"], 1)
+        self.assertNotIn("notion_mcp_test", json.dumps(synced))
+        self.assertEqual(synced["records"][0]["source_url"], "notion://page/page-mcp")
 
     def test_source_account_policy_blocks_ai_context_after_approval(self) -> None:
         account = self.store.upsert_source_account(

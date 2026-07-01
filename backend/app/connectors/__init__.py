@@ -2,6 +2,7 @@
 
 from .github import GitHubSync, GitHubSyncRecord, fetch_github_records
 from .linear import LinearSync, LinearSyncRecord, fetch_linear_records
+from .notion import NotionSync, NotionSyncRecord, fetch_notion_records
 from .obsidian import ObsidianVaultScan, scan_obsidian_vault
 from .readwise import ReadwiseSync, ReadwiseSyncRecord, fetch_readwise_records
 from .slack import SlackSync, SlackSyncRecord, fetch_slack_records
@@ -11,6 +12,8 @@ __all__ = [
     "GitHubSyncRecord",
     "LinearSync",
     "LinearSyncRecord",
+    "NotionSync",
+    "NotionSyncRecord",
     "ObsidianVaultScan",
     "ReadwiseSync",
     "ReadwiseSyncRecord",
@@ -18,6 +21,7 @@ __all__ = [
     "SlackSyncRecord",
     "fetch_github_records",
     "fetch_linear_records",
+    "fetch_notion_records",
     "fetch_readwise_records",
     "fetch_slack_records",
     "scan_obsidian_vault",

@@ -40,6 +40,7 @@ BACKEND_FEATURES = (
     "slack-token-connector",
     "readwise-token-connector",
     "linear-token-connector",
+    "notion-token-connector",
     "sync-device-manifests",
     "sync-receipts",
 )
@@ -376,7 +377,7 @@ SOURCE_CONNECTOR_CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "docs", "name": "Docs and writing", "category": "Docs", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Document connector coverage for notes, drafts, and writing."},
     {"id": "pdfs", "name": "PDFs", "category": "Docs", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "PDF connector coverage for readable documents."},
     {"id": "cloud-docs", "name": "Cloud docs", "category": "Docs", "auth": "export", "live_status": "import_ready", "scopes": [], "notes": "Cloud document connector coverage for Drive, OneDrive, and Dropbox Paper account sources."},
-    {"id": "notion", "name": "Notion", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["read_content"], "notes": "Notion account sync is the intended connector path."},
+    {"id": "notion", "name": "Notion", "category": "Docs", "auth": "api_token", "live_status": "api_token", "scopes": ["read_content"], "notes": "Read-only Notion page sync works with an internal integration token shared into selected pages."},
     {"id": "google-drive", "name": "Google Drive", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["drive.readonly"], "notes": "Drive account sync is the intended connector path."},
     {"id": "google-docs", "name": "Google Docs", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["drive.readonly", "documents.readonly"], "notes": "Drive and Docs account sync is the intended connector path."},
     {"id": "google-keep", "name": "Google Keep", "category": "Notes", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Google Keep account connector is required before this can be a primary source."},
@@ -3344,6 +3345,140 @@ class CortexStore:
             return {
                 "source_account_id": account["id"],
                 "source": LINEAR_SOURCE,
+                "status": "partial" if error_message else "empty",
+                "processing": processing,
+                "received": 0,
+                "queued": 0,
+                "saved": 0,
+                "skipped": 0,
+                "failed": len(sync.errors),
+                "archived_missing": 0,
+                "capture_ids": [],
+                "records": [],
+                "errors": sync.errors,
+                "cursor": cursor_payload,
+                "source_account": updated_account,
+                "sync": sync_summary,
+            }
+
+        result = self.sync_source_account_records(
+            user_id,
+            account["id"],
+            records=records,
+            cursor_name=cursor_name,
+            cursor_value=sync.cursor_value,
+            high_water_mark=sync.high_water_mark,
+            state=state,
+            processing=processing,
+        )
+        if sync.errors:
+            result["errors"] = [*(result.get("errors") or []), *sync.errors]
+            result["failed"] = int(result.get("failed") or 0) + len(sync.errors)
+            if result.get("status") == "complete":
+                result["status"] = "partial"
+        result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
+        result["sync"] = sync_summary
+        return result
+
+    def sync_notion_account(
+        self,
+        user_id: str,
+        *,
+        token: str,
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        since: str | None = None,
+        cursor: str | None = None,
+        processing: str = "sync",
+        max_records: int = 50,
+        cursor_name: str = "pages",
+        include_content: bool = True,
+        api_base_url: str | None = None,
+        notion_version: str | None = None,
+        request_json: Any | None = None,
+    ) -> dict[str, Any]:
+        from .connectors.notion import NOTION_SOURCE, fetch_notion_records
+
+        if processing not in {"sync", "async"}:
+            raise ValueError("processing must be sync or async")
+        try:
+            capped_max_records = int(max_records or 50)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_records must be an integer") from exc
+        if capped_max_records < 1 or capped_max_records > 200:
+            raise ValueError("max_records must be between 1 and 200")
+
+        sync = fetch_notion_records(
+            token=token,
+            since=since,
+            cursor=cursor,
+            max_records=capped_max_records,
+            include_content=bool(include_content),
+            api_base_url=api_base_url or "https://api.notion.com/v1",
+            notion_version=notion_version or "2026-03-11",
+            request_json=request_json,
+        )
+        identifier = (account_identifier or "notion").strip()[:240]
+        resolved_account_id = (source_account_id or "").strip() or stable_id("sacct_", f"{user_id}:{NOTION_SOURCE}:{identifier}")
+        label = (account_label or "Notion Pages").strip()[:160]
+        sync_summary = sync.to_summary()
+        error_message = sync.errors[0]["error"] if sync.errors else None
+        metadata = {
+            "connector": NOTION_SOURCE,
+            "connector_version": sync_summary["connector_version"],
+            "records_found": sync.records_found,
+            "records_returned": sync.records_returned,
+            "token_configured": True,
+            "content_sync_enabled": bool(include_content),
+            "notion_version": sync.notion_version,
+        }
+        account = self.upsert_source_account(
+            user_id,
+            source=NOTION_SOURCE,
+            account_label=label,
+            account_identifier=identifier,
+            connection_type="api_token",
+            status="needs_attention" if error_message else "connected",
+            auth_state="error" if error_message else "healthy",
+            policy={"review_required": True, "allow_ai_context": True},
+            metadata=metadata,
+            last_error=error_message,
+            account_id=resolved_account_id,
+        )
+        state = {
+            "connector": NOTION_SOURCE,
+            "connector_version": sync_summary["connector_version"],
+            "records_found": sync.records_found,
+            "records_returned": sync.records_returned,
+            "sync_errors": sync.errors,
+            "next_cursor": sync.next_cursor,
+            "notion_version": sync.notion_version,
+        }
+        records = [record.to_source_account_record() for record in sync.records]
+        if not records:
+            cursor_payload = self.upsert_sync_cursor(
+                user_id,
+                source=NOTION_SOURCE,
+                source_account_id=account["id"],
+                cursor_name=cursor_name,
+                cursor_value=sync.cursor_value,
+                high_water_mark=sync.high_water_mark,
+                state={
+                    **state,
+                    "last_batch_received": 0,
+                    "last_batch_saved": 0,
+                    "last_batch_queued": 0,
+                    "last_batch_skipped": 0,
+                    "last_batch_failed": 0,
+                },
+                last_error=error_message,
+                completed=not bool(error_message),
+            )
+            updated_account = self._source_account_by_id(user_id, account["id"]) or account
+            return {
+                "source_account_id": account["id"],
+                "source": NOTION_SOURCE,
                 "status": "partial" if error_message else "empty",
                 "processing": processing,
                 "received": 0,

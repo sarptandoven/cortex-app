@@ -228,6 +228,26 @@ class LinearSyncResponse(SourceAccountSyncResponse):
     sync: dict[str, Any]
 
 
+class NotionSyncRequest(BaseModel):
+    token: str = Field(..., min_length=1, max_length=4000)
+    source_account_id: str | None = Field(default=None, max_length=80)
+    account_label: str | None = Field(default=None, max_length=160)
+    account_identifier: str | None = Field(default=None, max_length=240)
+    since: str | None = Field(default=None, max_length=80)
+    cursor: str | None = Field(default=None, max_length=2000)
+    processing: Literal["sync", "async"] = "sync"
+    max_records: int = Field(default=50, ge=1, le=200)
+    cursor_name: str = Field(default="pages", min_length=1, max_length=120)
+    include_content: bool = True
+    api_base_url: str | None = Field(default=None, max_length=500)
+    notion_version: str | None = Field(default=None, max_length=80)
+
+
+class NotionSyncResponse(SourceAccountSyncResponse):
+    source_account: SourceAccountResponse
+    sync: dict[str, Any]
+
+
 class SourceReadinessResponse(BaseModel):
     generated_at: str
     summary: dict[str, int]

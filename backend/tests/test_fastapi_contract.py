@@ -1225,6 +1225,68 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertIn("line=", search.json()["results"][0]["source_url"])
         self.assertIn("excerpt=", search.json()["results"][0]["source_url"])
 
+    def test_notion_connector_endpoint_syncs_pages_with_citations(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "notion-endpoint-contract"}
+
+        def fake_request(url: str, request_headers: dict[str, str], body: dict | None, method: str):
+            self.assertEqual(request_headers["Authorization"], "Bearer notion_test")
+            if method == "POST":
+                return {
+                    "has_more": False,
+                    "results": [
+                        {
+                            "object": "page",
+                            "id": "page-1",
+                            "created_time": "2026-06-30T09:00:00Z",
+                            "last_edited_time": "2026-06-30T10:00:00Z",
+                            "url": "https://www.notion.so/doppl/page-1",
+                            "properties": {"Name": {"type": "title", "title": [{"plain_text": "Endpoint sync should cite Notion"}]}},
+                        }
+                    ],
+                }
+            return {
+                "has_more": False,
+                "results": [
+                    {
+                        "type": "paragraph",
+                        "paragraph": {"rich_text": [{"plain_text": "We decided the FastAPI Notion connector should preserve page URLs."}]},
+                    }
+                ],
+            }
+
+        with patch("backend.app.connectors.notion._request_json", side_effect=fake_request):
+            response = self.client.post(
+                "/v1/connectors/notion/sync",
+                json={
+                    "token": "notion_test",
+                    "processing": "sync",
+                    "max_records": 25,
+                },
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["source"], "notion")
+        self.assertEqual(payload["status"], "complete")
+        self.assertEqual(payload["saved"], 1)
+        self.assertEqual(payload["records"][0]["source_url"], "https://www.notion.so/doppl/page-1")
+        self.assertEqual(payload["source_account"]["source"], "notion")
+        self.assertEqual(payload["source_account"]["connection_type"], "api-token")
+        self.assertNotIn("notion_test", json.dumps(payload))
+        approved = self.client.post(f"/v1/captures/{payload['capture_ids'][0]}/approve", headers=headers)
+        self.assertEqual(approved.status_code, 200)
+        search = self.client.get(
+            "/v1/search",
+            params={"query": "FastAPI Notion connector preserve page URLs"},
+            headers=headers,
+        )
+        self.assertEqual(search.status_code, 200)
+        self.assertTrue(search.json()["results"])
+        self.assertTrue(search.json()["results"][0]["source_url"].startswith("https://www.notion.so/doppl/page-1"))
+        self.assertIn("line=", search.json()["results"][0]["source_url"])
+        self.assertIn("excerpt=", search.json()["results"][0]["source_url"])
+
     def test_rebuild_vectors_endpoint_exposes_queue_contract(self) -> None:
         response = self.client.post("/v1/maintenance/rebuild-vectors", headers={"Authorization": "Bearer test-token"})
 
@@ -1372,7 +1434,7 @@ class FastAPIContractTests(unittest.TestCase):
             "chatgpt": ("export-only", [], "direct connector"),
             "apple-mail": ("import-ready", [], "direct local integration"),
             "gmail": ("live-planned", ["gmail.readonly"], "account sign-in"),
-            "notion": ("live-planned", ["read_content"], "account sign-in"),
+            "notion": ("token-ready", ["read_content"], "read-only token sync"),
             "slack": ("token-ready", ["channels:history", "groups:history", "channels:read", "groups:read"], "read-only token sync"),
             "github": ("token-ready", ["repo:read"], "read-only token sync"),
             "readwise": ("token-ready", ["read"], "read-only token sync"),
@@ -1397,6 +1459,9 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertFalse(catalog["gmail"]["primary_beta"])
         self.assertEqual(catalog["gmail"]["beta_status"], "planned")
         self.assertFalse(catalog["gmail"]["show_in_primary_ui"])
+        self.assertFalse(catalog["notion"]["primary_beta"])
+        self.assertEqual(catalog["notion"]["beta_status"], "ready")
+        self.assertFalse(catalog["notion"]["show_in_primary_ui"])
         self.assertFalse(catalog["github"]["primary_beta"])
         self.assertEqual(catalog["github"]["beta_status"], "ready")
         self.assertFalse(catalog["github"]["show_in_primary_ui"])
