@@ -196,6 +196,26 @@ TOOLS = [
         },
     },
     {
+        "name": "sync_github",
+        "description": "Fetch GitHub issues and pull requests with a read-only token, then sync them into Cortex with stable citations.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "token": {"type": "string"},
+                "repositories": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 25},
+                "source_account_id": {"type": "string"},
+                "account_label": {"type": "string"},
+                "account_identifier": {"type": "string"},
+                "since": {"type": "string"},
+                "processing": {"type": "string", "default": "sync", "enum": ["sync", "async"]},
+                "max_records": {"type": "integer", "default": 100},
+                "cursor_name": {"type": "string", "default": "issues"},
+                "api_base_url": {"type": "string"},
+            },
+            "required": ["token", "repositories"],
+        },
+    },
+    {
         "name": "build_context_pack",
         "description": "Build a scoped Cortex memory view for ChatGPT, Claude, Cursor, or another assistant.",
         "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "default": ""}, "limit": {"type": "integer", "default": 12}, "target": {"type": "string", "default": "mcp-agent"}, "sector": {"type": "string"}}},
@@ -357,6 +377,7 @@ WRITE_TOOLS = {
     "remember_this",
     "connect_source_account",
     "sync_source_records",
+    "sync_github",
     "approve_memory_capture",
     "archive_memory_capture",
     "forget_memory",
@@ -575,6 +596,21 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             processing=args.get("processing", "sync"),
             archive_missing=_bool_arg(args, "archive_missing"),
             complete_snapshot=_bool_arg(args, "complete_snapshot"),
+        )
+        return store.agent_payload(user_id, result)
+    if name == "sync_github":
+        result = store.sync_github_account(
+            user_id,
+            token=args.get("token", ""),
+            repositories=args.get("repositories") or [],
+            source_account_id=args.get("source_account_id"),
+            account_label=args.get("account_label"),
+            account_identifier=args.get("account_identifier"),
+            since=args.get("since"),
+            processing=args.get("processing", "sync"),
+            max_records=int(args.get("max_records", 100)),
+            cursor_name=args.get("cursor_name", "issues"),
+            api_base_url=args.get("api_base_url"),
         )
         return store.agent_payload(user_id, result)
     if name == "build_context_pack":

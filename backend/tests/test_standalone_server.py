@@ -40,6 +40,7 @@ class FakeStore:
         self.source_account_calls: list[tuple[str, str]] = []
         self.source_account_sync_calls: list[tuple[str, str, int, str, bool]] = []
         self.obsidian_sync_calls: list[dict] = []
+        self.github_sync_calls: list[dict] = []
         self.sync_cursor_calls: list[tuple[str, str, str | None]] = []
         self.sync_device_calls: list[tuple[str, str]] = []
         self.sync_receipt_calls: list[tuple[str, str, str, str]] = []
@@ -496,6 +497,103 @@ class FakeStore:
                 "records_found": 1,
                 "records_returned": 1,
                 "truncated": False,
+            },
+        }
+
+    def sync_github_account(
+        self,
+        user_id: str,
+        *,
+        token: str,
+        repositories: list[str],
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        since: str | None = None,
+        processing: str = "sync",
+        max_records: int = 100,
+        cursor_name: str = "issues",
+        api_base_url: str | None = None,
+    ) -> dict:
+        if not token:
+            raise ValueError("GitHub token is required")
+        if not repositories:
+            raise ValueError("At least one GitHub repository is required")
+        call = {
+            "user_id": user_id,
+            "token": token,
+            "repositories": repositories,
+            "source_account_id": source_account_id,
+            "account_label": account_label,
+            "account_identifier": account_identifier,
+            "since": since,
+            "processing": processing,
+            "max_records": max_records,
+            "cursor_name": cursor_name,
+            "api_base_url": api_base_url,
+        }
+        self.github_sync_calls.append(call)
+        account_id = source_account_id or "sacct_github_test"
+        repository = repositories[0]
+        return {
+            "source_account_id": account_id,
+            "source": "github",
+            "status": "complete",
+            "processing": processing,
+            "received": 1,
+            "queued": 0 if processing == "sync" else 1,
+            "saved": 1 if processing == "sync" else 0,
+            "skipped": 0,
+            "failed": 0,
+            "archived_missing": 0,
+            "capture_ids": ["cap_github_test"],
+            "records": [
+                {
+                    "capture_id": "cap_github_test",
+                    "status": "saved" if processing == "sync" else "queued",
+                    "source": "github",
+                    "source_url": f"https://github.com/{repository}/issues/42",
+                    "title": f"{repository} Issue #42: Test issue",
+                }
+            ],
+            "errors": [],
+            "cursor": {
+                "id": "sync_github_test",
+                "user_id": user_id,
+                "source_account_id": account_id,
+                "source": "github",
+                "cursor_name": cursor_name,
+                "cursor_value": "2026-01-01T00:00:00Z",
+                "high_water_mark": "2026-01-01T00:00:00Z",
+                "state": {"repositories": repositories, "records_returned": 1},
+                "last_error": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+            "source_account": {
+                "id": account_id,
+                "user_id": user_id,
+                "source": "github",
+                "account_label": account_label or f"GitHub: {repository}",
+                "account_identifier": account_identifier or repository,
+                "connection_type": "api_token",
+                "status": "connected",
+                "auth_state": "healthy",
+                "policy": {"review_required": True, "allow_ai_context": True},
+                "metadata": {"repositories": repositories, "records_returned": 1, "token_configured": True},
+                "last_sync_at": "2026-01-01T00:00:00Z",
+                "last_error": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "disconnected_at": None,
+            },
+            "sync": {
+                "connector": "github",
+                "connector_version": "test",
+                "repositories": repositories,
+                "records_found": 1,
+                "records_returned": 1,
+                "errors": [],
             },
         }
 
@@ -1268,6 +1366,61 @@ class StandaloneServerTests(unittest.TestCase):
             )
         self.assertEqual(context.exception.code, 422)
         self.assertEqual(len(self.fake_store.obsidian_sync_calls), 1)
+
+    def test_github_connector_route_forwards_to_store(self) -> None:
+        with self.post_json(
+            "/v1/connectors/github/sync",
+            {
+                "token": "ghp_test",
+                "repositories": ["doppl-tech/cortex-app"],
+                "source_account_id": "sacct_github_existing",
+                "account_label": "Cortex GitHub",
+                "account_identifier": "doppl-tech/cortex-app",
+                "since": "2026-01-01T00:00:00Z",
+                "processing": "sync",
+                "max_records": 50,
+                "cursor_name": "issues",
+                "api_base_url": "https://api.github.test",
+            },
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["source"], "github")
+        self.assertEqual(payload["source_account_id"], "sacct_github_existing")
+        self.assertEqual(payload["processing"], "sync")
+        self.assertEqual(payload["source_account"]["account_label"], "Cortex GitHub")
+        self.assertEqual(payload["records"][0]["source_url"], "https://github.com/doppl-tech/cortex-app/issues/42")
+        self.assertEqual(
+            self.fake_store.github_sync_calls,
+            [
+                {
+                    "user_id": "local",
+                    "token": "ghp_test",
+                    "repositories": ["doppl-tech/cortex-app"],
+                    "source_account_id": "sacct_github_existing",
+                    "account_label": "Cortex GitHub",
+                    "account_identifier": "doppl-tech/cortex-app",
+                    "since": "2026-01-01T00:00:00Z",
+                    "processing": "sync",
+                    "max_records": 50,
+                    "cursor_name": "issues",
+                    "api_base_url": "https://api.github.test",
+                }
+            ],
+        )
+
+        with self.assertRaises(error.HTTPError) as context:
+            self.post_json(
+                "/v1/connectors/github/sync",
+                {
+                    "token": "ghp_test",
+                    "repositories": ["doppl-tech/cortex-app"],
+                    "max_records": 501,
+                },
+            )
+        self.assertEqual(context.exception.code, 422)
+        self.assertEqual(len(self.fake_store.github_sync_calls), 1)
 
     def test_delete_user_data_forwards_include_backups_flag(self) -> None:
         with self.delete("/v1/user-data?include_backups=false") as response:

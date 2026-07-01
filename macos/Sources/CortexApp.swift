@@ -1553,16 +1553,16 @@ enum CortexRecoveryText {
             return "The local memory endpoint is invalid. Check the endpoint, then reconnect."
         }
         if lowered.contains("existing config") || lowered.contains("config is not a json") {
-            return "That tool connection could not be updated automatically. Open Backup & recovery, then Fallback connection details."
+            return "That tool connection could not be updated automatically. Open Advanced settings, then MCP config."
         }
         if lowered.contains("data couldn") || lowered.contains("correct format") || lowered.contains("decoding") {
             return "Cortex received an unexpected response. Click Reconnect, then try again."
         }
         if lowered.contains("operation not permitted") || lowered.contains("permission denied") || lowered.contains("not authorized") || lowered.contains("sandbox") {
-            return "Cortex needs permission for that source. Choose it again from Connections & Privacy."
+            return "Cortex needs permission for those notes. Choose the folder again from Advanced settings."
         }
         if lowered.contains("no such file") || lowered.contains("file doesn") || lowered.contains("file not found") {
-            return "That file is no longer available. Choose it again or refresh Connections & Privacy."
+            return "That file is no longer available. Choose it again or refresh Advanced settings."
         }
         return "Refresh and try again. If it repeats, click Reconnect."
     }
@@ -1608,9 +1608,9 @@ enum CortexRecoveryText {
     private static func cocoaRecoveryText(_ code: Int) -> String {
         switch code {
         case NSFileReadNoPermissionError, NSFileWriteNoPermissionError:
-            return "Cortex needs permission for that source. Choose it again from Connections & Privacy."
+            return "Cortex needs permission for those notes. Choose the folder again from Advanced settings."
         case NSFileNoSuchFileError:
-            return "That file is no longer available. Choose it again or refresh Connections & Privacy."
+            return "That file is no longer available. Choose it again or refresh Advanced settings."
         default:
             return "Refresh and try again. If it repeats, click Reconnect."
         }
@@ -2581,7 +2581,7 @@ final class AppState: ObservableObject {
     func performProductLoopAction(_ action: ProductLoopAction) {
         switch action.action {
         case "capture":
-            openConnectionsPrivacy(statusMessage: "Connect a source to start memory sync")
+            openConnectionsPrivacy(statusMessage: "Start notes sync")
         case "review":
             selectedTab = .review
             status = "Review new signals below"
@@ -2797,9 +2797,9 @@ final class AppState: ObservableObject {
         }
 
         let panel = NSOpenPanel()
-        panel.title = "Choose Source Folder"
-        panel.message = "Choose the local source Cortex should sync into Review."
-        panel.prompt = "Choose Folder"
+        panel.title = "Select Notes Folder"
+        panel.message = "Allow Cortex to keep this notes folder synced into Review."
+        panel.prompt = "Use This Folder"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
@@ -3058,7 +3058,7 @@ final class AppState: ObservableObject {
 
     func installDetectedIntegrations() {
         if DistributionMode.isAppStore {
-            status = "App Store builds require manual AI tool setup"
+            status = "App Store builds require advanced AI tool setup"
             return
         }
         let detected = integrations.filter { integration in
@@ -3437,7 +3437,7 @@ final class AppState: ObservableObject {
             case .privateVault:
                 status = "Start the local memory engine before continuing"
             case .firstSource:
-                status = "Connect a source, then sync memory into Review"
+                status = "Start notes sync, then review memory"
             case .reviewMemory:
                 status = "Approve one review item before asking Cortex"
             case .askUse:
@@ -4022,16 +4022,6 @@ struct CortexView: View {
                         .fontWeight(.semibold)
                 }
                 Spacer()
-                Button {
-                    state.openConnectionsPrivacy(statusMessage: "Connections")
-                } label: {
-                    Label("Connections", systemImage: "lock.shield")
-                        .font(.callout.weight(.semibold))
-                        .frame(minHeight: 40)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                .help("Connections & Privacy")
                 CortexLayerStatusPill(state: state)
             }
             .padding(.horizontal, 16)
@@ -4212,7 +4202,7 @@ struct IntegrationCenterView: View {
             Text(compact ? "AI tools" : "AI access")
                 .font(compact ? .headline : .title3)
                 .fontWeight(.semibold)
-            Text(compact ? "Connect local AI tools so reviewed memory is available where you already work." : "Connect local tools so reviewed memory is available where you work. Fallback connection details stay collapsed unless an app asks for them.")
+            Text(compact ? "Connect local AI tools so reviewed memory is available where you already work." : "Connect local tools so reviewed memory is available where you work. Advanced MCP config stays collapsed unless an app asks for it.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -4250,7 +4240,7 @@ struct IntegrationCenterView: View {
     }
 
     private var troubleshootingSetupActions: some View {
-        DisclosureGroup("Fallback connection details") {
+        DisclosureGroup("Advanced MCP config") {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Most tools connect automatically. Open this only when a local AI app asks for connection details.")
                     .font(.caption)
@@ -4259,7 +4249,7 @@ struct IntegrationCenterView: View {
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy connection details", systemImage: "doc.on.doc")
+                        Label("Copy MCP config", systemImage: "doc.on.doc")
                     }
                     Spacer()
                 }

@@ -18,10 +18,10 @@ enum OnboardingStep: Int, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .privateVault: return "Private"
-        case .firstSource: return "Sources"
+        case .firstSource: return "Notes"
         case .reviewMemory: return "Review"
         case .askUse: return "Ask"
-        case .trustBackup: return "Backup"
+        case .trustBackup: return "Trust"
         }
     }
 
@@ -30,7 +30,7 @@ enum OnboardingStep: Int, CaseIterable, Identifiable {
         case .privateVault:
             return "Cortex keeps memory private on this Mac."
         case .firstSource:
-            return "Connect a memory source. AI tools use reviewed memory after setup."
+            return "Sync notes once. AI tools use reviewed memory after setup."
         case .reviewMemory:
             return "Approve one useful item before Cortex uses it."
         case .askUse:

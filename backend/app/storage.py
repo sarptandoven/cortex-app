@@ -36,6 +36,7 @@ BACKEND_FEATURES = (
     "source-account-registry",
     "source-account-sync",
     "obsidian-connector",
+    "github-token-connector",
     "sync-device-manifests",
     "sync-receipts",
 )
@@ -388,7 +389,7 @@ SOURCE_CONNECTOR_CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "calendar", "name": "Calendar", "category": "Calendar", "auth": "oauth", "live_status": "planned", "scopes": ["calendar.readonly"], "notes": "Calendar account sync is the intended connector path."},
     {"id": "contacts", "name": "Contacts", "category": "People", "auth": "oauth", "live_status": "planned", "scopes": ["contacts.readonly"], "notes": "Contacts account sync is the intended connector path."},
     {"id": "work-tools", "name": "Work tools", "category": "Work tools", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Work tool connector coverage for issues, pull requests, tasks, and projects."},
-    {"id": "github", "name": "GitHub", "category": "Work tools", "auth": "oauth", "live_status": "planned", "scopes": ["repo:read", "read:org"], "notes": "GitHub account sync is the intended connector path."},
+    {"id": "github", "name": "GitHub", "category": "Work tools", "auth": "api_token", "live_status": "api_token", "scopes": ["repo:read"], "notes": "Read-only GitHub issue and pull request sync works with a fine-grained personal access token."},
     {"id": "linkedin", "name": "LinkedIn", "category": "Work tools", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct LinkedIn account connector is required before this can be a primary source."},
     {"id": "linear", "name": "Linear", "category": "Work tools", "auth": "oauth", "live_status": "planned", "scopes": ["read"], "notes": "Linear account sync is the intended connector path."},
     {"id": "jira", "name": "Jira", "category": "Work tools", "auth": "oauth", "live_status": "planned", "scopes": ["read:jira-work"], "notes": "Jira account sync is the intended connector path."},
@@ -669,6 +670,8 @@ def _connector_service_baseline(item: dict[str, Any], source_ids: list[str], *, 
     primary_beta = _connector_primary_beta(item)
     if primary_beta:
         path = "native-local-sync"
+    elif live_status == "api_token":
+        path = "native-token-sync"
     elif live_status == "planned":
         path = "normalized-record-sync-now-account-sign-in-planned"
     elif supports_import:
@@ -678,7 +681,7 @@ def _connector_service_baseline(item: dict[str, Any], source_ids: list[str], *, 
     return {
         "included": connector_id in BASELINE_10K_CONNECTOR_IDS,
         "records_supported": bool(supports_import),
-        "live_sync": primary_beta,
+        "live_sync": bool(primary_beta or live_status == "api_token"),
         "primary_ui": primary_beta,
         "path": path,
         "source_ids": source_ids,
@@ -689,6 +692,8 @@ def _connector_readiness_status(item: dict[str, Any]) -> str:
     live_status = str(item.get("live_status") or "").lower()
     if live_status == "planned":
         return "live-planned"
+    if live_status == "api_token":
+        return "token-ready"
     if live_status in {"import_ready", "local_only", "imported"}:
         return "import-ready"
     return "export-only"
@@ -712,7 +717,7 @@ def _connector_permission_requirements(item: dict[str, Any]) -> list[str]:
     elif auth == "export":
         requirements = ["First-100: direct connector required for the primary path."]
     elif auth == "api_token":
-        requirements = ["First-100: account token sign-in planned."]
+        requirements = ["First-100: read-only account token required for direct sync."]
     elif auth == "oauth":
         requirements = ["First-100: account sign-in planned."]
     else:
@@ -732,6 +737,8 @@ def _connector_first_100_note(item: dict[str, Any]) -> str:
     readiness_status = _connector_readiness_status(item)
     if readiness_status == "live-planned":
         prefix = "First-100: account sign-in is the intended source path; recovery intake is not primary."
+    elif readiness_status == "token-ready":
+        prefix = "First-100: read-only token sync is available from advanced connector settings; not primary UI."
     elif readiness_status == "import-ready":
         prefix = "First-100: connect through a direct local integration when available."
     else:
@@ -749,6 +756,8 @@ def _connector_primary_beta_path(item: dict[str, Any]) -> str:
     readiness_status = _connector_readiness_status(item)
     if readiness_status == "live-planned":
         return "account-sign-in-planned"
+    if readiness_status == "token-ready":
+        return "native-token-connector"
     if readiness_status == "import-ready":
         return "advanced-fallback-only"
     return "direct-connector-needed"
@@ -758,6 +767,8 @@ def _connector_beta_status(item: dict[str, Any]) -> str:
     if _connector_primary_beta(item):
         return "ready"
     readiness_status = _connector_readiness_status(item)
+    if readiness_status == "token-ready":
+        return "ready"
     if readiness_status == "live-planned":
         return "planned"
     if readiness_status == "import-ready":
@@ -2840,6 +2851,137 @@ class CortexStore:
             result["status"] = "partial"
         result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
         result["scan"] = scan_summary
+        return result
+
+    def sync_github_account(
+        self,
+        user_id: str,
+        *,
+        token: str,
+        repositories: list[str],
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        since: str | None = None,
+        processing: str = "sync",
+        max_records: int = 100,
+        cursor_name: str = "issues",
+        api_base_url: str | None = None,
+        request_json: Any | None = None,
+    ) -> dict[str, Any]:
+        from .connectors.github import GITHUB_SOURCE, fetch_github_records
+
+        if processing not in {"sync", "async"}:
+            raise ValueError("processing must be sync or async")
+        try:
+            capped_max_records = int(max_records or 100)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_records must be an integer") from exc
+        if capped_max_records < 1 or capped_max_records > 500:
+            raise ValueError("max_records must be between 1 and 500")
+
+        sync = fetch_github_records(
+            token=token,
+            repositories=repositories,
+            since=since,
+            max_records=capped_max_records,
+            api_base_url=api_base_url or "https://api.github.com",
+            request_json=request_json,
+        )
+        repository_key = ",".join(sync.repositories)
+        resolved_account_id = (source_account_id or "").strip() or stable_id("sacct_", f"{user_id}:{GITHUB_SOURCE}:{repository_key}")
+        label = (account_label or f"GitHub: {repository_key}").strip()[:160]
+        identifier = (account_identifier or repository_key or "github").strip()[:240]
+        sync_summary = sync.to_summary()
+        error_message = sync.errors[0]["error"] if sync.errors else None
+        metadata = {
+            "connector": GITHUB_SOURCE,
+            "connector_version": sync_summary["connector_version"],
+            "repositories": sync.repositories,
+            "records_found": sync.records_found,
+            "records_returned": sync.records_returned,
+            "token_configured": True,
+            "api_base_url": sync.api_base_url,
+        }
+        account = self.upsert_source_account(
+            user_id,
+            source=GITHUB_SOURCE,
+            account_label=label,
+            account_identifier=identifier,
+            connection_type="api_token",
+            status="needs_attention" if error_message else "connected",
+            auth_state="error" if error_message else "healthy",
+            policy={"review_required": True, "allow_ai_context": True},
+            metadata=metadata,
+            last_error=error_message,
+            account_id=resolved_account_id,
+        )
+        state = {
+            "connector": GITHUB_SOURCE,
+            "connector_version": sync_summary["connector_version"],
+            "repositories": sync.repositories,
+            "records_found": sync.records_found,
+            "records_returned": sync.records_returned,
+            "sync_errors": sync.errors,
+            "api_base_url": sync.api_base_url,
+        }
+        records = [record.to_source_account_record() for record in sync.records]
+        if not records:
+            cursor = self.upsert_sync_cursor(
+                user_id,
+                source=GITHUB_SOURCE,
+                source_account_id=account["id"],
+                cursor_name=cursor_name,
+                cursor_value=sync.cursor_value,
+                high_water_mark=sync.high_water_mark,
+                state={
+                    **state,
+                    "last_batch_received": 0,
+                    "last_batch_saved": 0,
+                    "last_batch_queued": 0,
+                    "last_batch_skipped": 0,
+                    "last_batch_failed": 0,
+                },
+                last_error=error_message,
+                completed=not bool(error_message),
+            )
+            updated_account = self._source_account_by_id(user_id, account["id"]) or account
+            return {
+                "source_account_id": account["id"],
+                "source": GITHUB_SOURCE,
+                "status": "partial" if error_message else "empty",
+                "processing": processing,
+                "received": 0,
+                "queued": 0,
+                "saved": 0,
+                "skipped": 0,
+                "failed": len(sync.errors),
+                "archived_missing": 0,
+                "capture_ids": [],
+                "records": [],
+                "errors": sync.errors,
+                "cursor": cursor,
+                "source_account": updated_account,
+                "sync": sync_summary,
+            }
+
+        result = self.sync_source_account_records(
+            user_id,
+            account["id"],
+            records=records,
+            cursor_name=cursor_name,
+            cursor_value=sync.cursor_value,
+            high_water_mark=sync.high_water_mark,
+            state=state,
+            processing=processing,
+        )
+        if sync.errors:
+            result["errors"] = [*(result.get("errors") or []), *sync.errors]
+            result["failed"] = int(result.get("failed") or 0) + len(sync.errors)
+            if result.get("status") == "complete":
+                result["status"] = "partial"
+        result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
+        result["sync"] = sync_summary
         return result
 
     def _latest_sync_cursor_value(self, user_id: str, account_id: str, cursor_name: str) -> str | None:

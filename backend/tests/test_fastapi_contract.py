@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 MODULE_TMP = tempfile.TemporaryDirectory()
 os.environ["CORTEX_DB_PATH"] = str(Path(MODULE_TMP.name) / "fastapi.sqlite")
@@ -1001,6 +1002,60 @@ class FastAPIContractTests(unittest.TestCase):
             self.assertEqual(duplicate_payload["skipped"], 1)
             self.assertEqual(duplicate_payload["records"][0]["status"], "duplicate")
 
+    def test_github_connector_endpoint_syncs_issues_with_citations(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "github-endpoint-contract"}
+
+        def fake_request(url: str, request_headers: dict[str, str]):
+            self.assertIn("/repos/doppl-tech/cortex-app/issues", url)
+            self.assertEqual(request_headers["Authorization"], "Bearer ghp_test")
+            return [
+                {
+                    "number": 88,
+                    "title": "Endpoint sync should cite GitHub",
+                    "state": "open",
+                    "html_url": "https://github.com/doppl-tech/cortex-app/issues/88",
+                    "created_at": "2026-06-30T09:00:00Z",
+                    "updated_at": "2026-06-30T10:00:00Z",
+                    "user": {"login": "sarp"},
+                    "labels": [{"name": "first-100"}],
+                    "body": "We decided the FastAPI GitHub connector should preserve GitHub issue URLs.",
+                }
+            ]
+
+        with patch("backend.app.connectors.github._request_json", side_effect=fake_request):
+            response = self.client.post(
+                "/v1/connectors/github/sync",
+                json={
+                    "token": "ghp_test",
+                    "repositories": ["doppl-tech/cortex-app"],
+                    "processing": "sync",
+                    "max_records": 25,
+                },
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["source"], "github")
+        self.assertEqual(payload["status"], "complete")
+        self.assertEqual(payload["saved"], 1)
+        self.assertEqual(payload["records"][0]["source_url"], "https://github.com/doppl-tech/cortex-app/issues/88")
+        self.assertEqual(payload["source_account"]["source"], "github")
+        self.assertEqual(payload["source_account"]["connection_type"], "api-token")
+        self.assertNotIn("ghp_test", json.dumps(payload))
+        approved = self.client.post(f"/v1/captures/{payload['capture_ids'][0]}/approve", headers=headers)
+        self.assertEqual(approved.status_code, 200)
+        search = self.client.get(
+            "/v1/search",
+            params={"query": "FastAPI GitHub connector preserve issue URLs"},
+            headers=headers,
+        )
+        self.assertEqual(search.status_code, 200)
+        self.assertTrue(search.json()["results"])
+        self.assertTrue(search.json()["results"][0]["source_url"].startswith("https://github.com/doppl-tech/cortex-app/issues/88"))
+        self.assertIn("line=", search.json()["results"][0]["source_url"])
+        self.assertIn("excerpt=", search.json()["results"][0]["source_url"])
+
     def test_rebuild_vectors_endpoint_exposes_queue_contract(self) -> None:
         response = self.client.post("/v1/maintenance/rebuild-vectors", headers={"Authorization": "Bearer test-token"})
 
@@ -1150,7 +1205,7 @@ class FastAPIContractTests(unittest.TestCase):
             "gmail": ("live-planned", ["gmail.readonly"], "account sign-in"),
             "notion": ("live-planned", ["read_content"], "account sign-in"),
             "slack": ("live-planned", ["channels:history", "groups:history", "im:history"], "account sign-in"),
-            "github": ("live-planned", ["repo:read", "read:org"], "account sign-in"),
+            "github": ("token-ready", ["repo:read"], "read-only token sync"),
             "obsidian": ("import-ready", [], "direct local integration"),
         }
 
@@ -1163,7 +1218,7 @@ class FastAPIContractTests(unittest.TestCase):
             self.assertTrue(entry["permissions_required"])
             self.assertIn(first_100_note, entry["first_100_note"])
             self.assertIn(entry["beta_status"], {"ready", "planned", "advanced-fallback", "needs-connector"})
-            self.assertIn(entry["primary_beta_path"], {"native-local-connector", "account-sign-in-planned", "advanced-fallback-only", "direct-connector-needed"})
+            self.assertIn(entry["primary_beta_path"], {"native-local-connector", "native-token-connector", "account-sign-in-planned", "advanced-fallback-only", "direct-connector-needed"})
 
         self.assertTrue(any("account sign-in planned" in item for item in catalog["gmail"]["permissions_required"]))
         self.assertTrue(any("account consent for gmail.readonly" in item for item in catalog["gmail"]["permissions_required"]))
@@ -1171,6 +1226,9 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertFalse(catalog["gmail"]["primary_beta"])
         self.assertEqual(catalog["gmail"]["beta_status"], "planned")
         self.assertFalse(catalog["gmail"]["show_in_primary_ui"])
+        self.assertFalse(catalog["github"]["primary_beta"])
+        self.assertEqual(catalog["github"]["beta_status"], "ready")
+        self.assertFalse(catalog["github"]["show_in_primary_ui"])
         self.assertTrue(catalog["obsidian"]["primary_beta"])
         self.assertEqual(catalog["obsidian"]["beta_status"], "ready")
         self.assertTrue(catalog["obsidian"]["show_in_primary_ui"])

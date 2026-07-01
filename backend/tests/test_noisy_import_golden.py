@@ -103,6 +103,36 @@ class NoisyImportGoldenTests(unittest.TestCase):
                     self.assertIn(fragment, top["source_url"])
                 self.assertTrue(top["raw_excerpt"])
 
+        expected_by_name = {item["name"]: item for item in manifest["expected"]}
+        citation_matrix = [
+            "github_decision",
+            "email_forwarded_decision",
+            "slack_thread_preference",
+            "notion_decision",
+            "docs_negative",
+            "cloud_docs_decision",
+        ]
+        for name in citation_matrix:
+            expected = expected_by_name[name]
+            with self.subTest(ask_context_citation=name):
+                search_results = self.store.search("test-user", expected["query"], limit=8)
+                top = search_results[0]
+                self.assertEqual(top["source"], expected["source"])
+                self.assertEqual(top["layer"], expected["layer"])
+                self.assertEqual(top["kind"], expected["kind"])
+                self.assertIn(expected["must_include"], top["content"])
+                self.assertTrue(top["raw_excerpt"])
+
+                answer = self.store.answer_query("test-user", expected["query"], limit=8)
+                context = self.store.context_pack("test-user", query=expected["query"], limit=8)
+                combined = json.dumps(answer, sort_keys=True) + "\n" + context
+                self.assertIn(expected["must_include"], combined)
+                for fragment in expected["source_url_contains"]:
+                    self.assertIn(fragment, combined)
+                if expected["source"] == "docs":
+                    self.assertNotIn(str(FIXTURE_ROOT), combined)
+                    self.assertIn("local-file://Voice.md", combined)
+
         sanitization = manifest.get("local_file_citation_sanitization")
         if sanitization:
             answer = self.store.answer_query("test-user", sanitization["query"], limit=3)

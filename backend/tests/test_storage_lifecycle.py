@@ -1027,7 +1027,7 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         readiness = self.store.source_readiness_report(self.user_id)
         self.assertGreaterEqual(readiness["summary"]["baseline_10k_services"], len(baseline_ids))
         self.assertGreaterEqual(readiness["summary"]["baseline_10k_records_supported"], len(baseline_ids))
-        self.assertEqual(readiness["summary"]["baseline_10k_live_sync"], 1)
+        self.assertGreaterEqual(readiness["summary"]["baseline_10k_live_sync"], 1)
 
     def test_mcp_connected_source_tools_register_and_sync_cited_records(self) -> None:
         connectors = call_tool(self.store, self.user_id, "list_source_connectors", {"include_accounts": False})
@@ -1128,6 +1128,114 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(found[0]["provenance"]["record_metadata"]["page_id"], "page-helix")
         self.assertIn("project helix", [topic.casefold() for topic in found[0]["topics"]])
         self.assertIn("memory source", [topic.casefold() for topic in found[0]["topics"]])
+
+    def test_github_account_sync_fetches_records_with_stable_citations(self) -> None:
+        def fake_request(url: str, headers: dict[str, str]):
+            self.assertIn("/repos/doppl-tech/cortex-app/issues", url)
+            self.assertEqual(headers["Authorization"], "Bearer ghp_test")
+            return [
+                {
+                    "number": 17,
+                    "title": "Ship cited Ask for GitHub memory",
+                    "state": "open",
+                    "html_url": "https://github.com/doppl-tech/cortex-app/issues/17",
+                    "created_at": "2026-06-30T09:00:00Z",
+                    "updated_at": "2026-06-30T10:00:00Z",
+                    "user": {"login": "sarp"},
+                    "labels": [{"name": "first-100"}],
+                    "body": "We decided Cortex should retrieve GitHub issue memory with exact citations.",
+                }
+            ]
+
+        result = self.store.sync_github_account(
+            self.user_id,
+            token="ghp_test",
+            repositories=["doppl-tech/cortex-app"],
+            processing="sync",
+            max_records=20,
+            request_json=fake_request,
+        )
+
+        self.assertEqual(result["source"], "github")
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["saved"], 1)
+        self.assertEqual(result["source_account"]["source"], "github")
+        self.assertEqual(result["source_account"]["connection_type"], "api-token")
+        self.assertEqual(result["source_account"]["status"], "connected")
+        self.assertEqual(result["source_account"]["metadata"]["token_configured"], True)
+        self.assertEqual(result["records"][0]["source_url"], "https://github.com/doppl-tech/cortex-app/issues/17")
+        capture_id = result["capture_ids"][0]
+        self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+
+        search = self.store.search(self.user_id, "GitHub issue exact citations", limit=3)
+        self.assertTrue(search)
+        self.assertEqual(search[0]["source"], "github")
+        self.assertTrue(search[0]["source_url"].startswith("https://github.com/doppl-tech/cortex-app/issues/17"))
+        self.assertIn("line=", search[0]["source_url"])
+        self.assertIn("excerpt=", search[0]["source_url"])
+        self.assertIn("doppl-tech", search[0]["topics"])
+        self.assertIn("cortex-app", search[0]["topics"])
+        answer = self.store.answer_query(self.user_id, "What did we decide about GitHub issue memory?", limit=3)
+        self.assertTrue(answer["citations"])
+        self.assertTrue(answer["citations"][0]["source_url"].startswith("https://github.com/doppl-tech/cortex-app/issues/17"))
+
+        duplicate = self.store.sync_github_account(
+            self.user_id,
+            token="ghp_test",
+            repositories=["doppl-tech/cortex-app"],
+            processing="sync",
+            max_records=20,
+            request_json=fake_request,
+        )
+        self.assertEqual(duplicate["saved"], 0)
+        self.assertEqual(duplicate["skipped"], 1)
+        self.assertEqual(duplicate["records"][0]["status"], "duplicate")
+
+    def test_mcp_github_sync_tool_fetches_records_without_exposing_token(self) -> None:
+        def fake_request(url: str, headers: dict[str, str]):
+            self.assertIn("/repos/doppl-tech/cortex-app/issues", url)
+            self.assertEqual(headers["Authorization"], "Bearer ghp_mcp_test")
+            return [
+                {
+                    "number": 31,
+                    "title": "MCP GitHub sync keeps citations",
+                    "state": "open",
+                    "html_url": "https://github.com/doppl-tech/cortex-app/issues/31",
+                    "created_at": "2026-06-30T09:00:00Z",
+                    "updated_at": "2026-06-30T10:00:00Z",
+                    "user": {"login": "sarp"},
+                    "labels": [{"name": "mcp"}],
+                    "body": "We decided MCP GitHub sync should write source-account records.",
+                }
+            ]
+
+        with self.assertRaises(PermissionError):
+            call_tool(
+                self.store,
+                self.user_id,
+                "sync_github",
+                {"token": "ghp_mcp_test", "repositories": ["doppl-tech/cortex-app"]},
+                token_scopes=["read"],
+            )
+
+        with patch("backend.app.connectors.github._request_json", side_effect=fake_request):
+            synced = call_tool(
+                self.store,
+                self.user_id,
+                "sync_github",
+                {
+                    "token": "ghp_mcp_test",
+                    "repositories": ["doppl-tech/cortex-app"],
+                    "processing": "sync",
+                    "max_records": 10,
+                },
+                token_scopes=["write"],
+            )
+
+        self.assertEqual(synced["source"], "github")
+        self.assertEqual(synced["saved"], 1)
+        self.assertNotIn("ghp_mcp_test", json.dumps(synced))
+        self.assertEqual(synced["records"][0]["source_url"], "https://github.com/doppl-tech/cortex-app/issues/31")
 
     def test_source_account_policy_blocks_ai_context_after_approval(self) -> None:
         account = self.store.upsert_source_account(

@@ -129,6 +129,18 @@ struct AskEmptyGuidance: View {
         state.review?.stats.memories ?? state.stats?.memories ?? 0
     }
 
+    private var obsidianConnector: SourceConnectorCatalogItem? {
+        state.sourceConnectorCatalog.first { $0.id == "obsidian" }
+    }
+
+    private func startNotesSync() {
+        if let connector = obsidianConnector {
+            state.connectLocalNotesFolder(connector)
+        } else {
+            state.openConnectionsPrivacy(statusMessage: "Notes sync")
+        }
+    }
+
     var body: some View {
         VStack(spacing: 12) {
             QuietState(title: title, detail: detail)
@@ -137,10 +149,10 @@ struct AskEmptyGuidance: View {
                 HStack(spacing: 10) {
                     if approvedMemoryCount == 0 {
                         Button {
-                            state.openConnectionsPrivacy(statusMessage: "Connect a source")
+                            startNotesSync()
                         } label: {
-                            Label("Connect source", systemImage: "folder.badge.plus")
-                                .frame(minWidth: 150, minHeight: 46)
+                            Label("Start notes sync", systemImage: "folder.badge.plus")
+                                .frame(minWidth: 172, minHeight: 46)
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.large)
@@ -166,9 +178,9 @@ struct AskEmptyGuidance: View {
                         .controlSize(.large)
 
                         Button {
-                            state.openConnectionsPrivacy(statusMessage: "Connect another source")
+                            startNotesSync()
                         } label: {
-                            Label("Connect source", systemImage: "folder.badge.plus")
+                            Label("Sync more notes", systemImage: "folder.badge.plus")
                                 .frame(minWidth: 168, minHeight: 46)
                         }
                         .buttonStyle(.bordered)

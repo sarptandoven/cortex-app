@@ -155,6 +155,24 @@ class ObsidianVaultSyncResponse(SourceAccountSyncResponse):
     scan: dict[str, Any]
 
 
+class GitHubSyncRequest(BaseModel):
+    token: str = Field(..., min_length=1, max_length=4000)
+    repositories: list[str] = Field(..., min_length=1, max_length=25)
+    source_account_id: str | None = Field(default=None, max_length=80)
+    account_label: str | None = Field(default=None, max_length=160)
+    account_identifier: str | None = Field(default=None, max_length=240)
+    since: str | None = Field(default=None, max_length=80)
+    processing: Literal["sync", "async"] = "sync"
+    max_records: int = Field(default=100, ge=1, le=500)
+    cursor_name: str = Field(default="issues", min_length=1, max_length=120)
+    api_base_url: str | None = Field(default=None, max_length=500)
+
+
+class GitHubSyncResponse(SourceAccountSyncResponse):
+    source_account: SourceAccountResponse
+    sync: dict[str, Any]
+
+
 class SourceReadinessResponse(BaseModel):
     generated_at: str
     summary: dict[str, int]

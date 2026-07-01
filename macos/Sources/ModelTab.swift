@@ -48,6 +48,10 @@ struct HomeHeroSection: View {
         memoryCount > 0
     }
 
+    private var obsidianConnector: SourceConnectorCatalogItem? {
+        state.sourceConnectorCatalog.first { $0.id == "obsidian" }
+    }
+
     private var statusSummary: (label: String, systemImage: String, color: Color) {
         if !state.isLocalServiceReady {
             if CortexRecoveryText.needsAttention(state.displayStatus) {
@@ -84,15 +88,15 @@ struct HomeHeroSection: View {
             return "Ask about your memory"
         }
         if activeSources > 0 {
-            return "Your source is syncing"
+            return "Your notes are syncing"
         }
         if hasEmptySource {
-            return "Choose source with content"
+            return "Choose notes with content"
         }
         if state.connectedAIIntegrationCount > 0 {
-            return "Connect a memory source"
+            return "Start notes sync"
         }
-        return "Connect your memory source"
+        return "Start notes sync"
     }
 
     private var detail: String {
@@ -115,14 +119,14 @@ struct HomeHeroSection: View {
             return "Cortex could not find usable notes there. Pick a folder or app that has real notes."
         }
         if state.connectedAIIntegrationCount > 0 {
-            return "Your AI tool is connected. Add a memory source so Ask can answer with citations."
+            return "Your AI tool is connected. Sync notes so Ask can answer with citations."
         }
-        return "Choose a memory source once. Cortex keeps it in sync and brings new memory to Review."
+        return "Choose a notes folder once. Cortex keeps it in sync and brings new memory to Review."
     }
 
     private var actionTitle: String {
         if !state.isLocalServiceReady { return "Start Cortex" }
-        if activeSources == 0 { return hasEmptySource ? "Choose source" : "Connect source" }
+        if activeSources == 0 { return hasEmptySource ? "Choose notes" : "Start notes sync" }
         if pendingCount > 0 { return "Review memory" }
         if hasMemory { return "Ask a question" }
         return "View sync status"
@@ -132,12 +136,12 @@ struct HomeHeroSection: View {
         if !state.isLocalServiceReady { return "Start Cortex on this Mac." }
         if activeSources == 0 {
             if hasEmptySource {
-                return "Pick a different folder or app with useful memory."
+                return "Pick a different folder with useful notes."
             }
             if state.connectedAIIntegrationCount > 0 {
-                return "A memory source gives Ask something to cite."
+                return "Synced notes give Ask something to cite."
             }
-            return "Cortex syncs automatically after a source connects."
+            return "Cortex syncs automatically after notes are selected."
         }
         if pendingCount > 0 {
             return "\(pendingCount) item\(pendingCount == 1 ? "" : "s") waiting"
@@ -224,7 +228,7 @@ struct HomeHeroSection: View {
         if hasEmptySource {
             return ("No usable notes found", "folder.badge.questionmark", .orange)
         }
-        return ("Not connected yet", "folder.badge.plus", .accentColor)
+        return ("Notes sync not set up", "folder.badge.plus", .accentColor)
     }
 
     private var memoryStatus: (detail: String, systemImage: String, color: Color) {
@@ -246,7 +250,11 @@ struct HomeHeroSection: View {
                 await state.loadStats()
             }
         } else if activeSources == 0 {
-            state.openConnectionsPrivacy(statusMessage: "Connections")
+            if let connector = obsidianConnector {
+                state.connectLocalNotesFolder(connector, chooseNew: hasEmptySource)
+            } else {
+                state.openConnectionsPrivacy(statusMessage: "Notes sync")
+            }
         } else if pendingCount > 0 {
             state.selectedTab = .review
             state.status = "Review memory"
@@ -430,7 +438,7 @@ struct ModelSourceCoverageSection: View {
                     Spacer(minLength: 0)
                 }
             } else if review.stats.memories == 0 {
-                QuietState(title: "No reviewed memory yet", detail: "Connect a memory source, then approve useful memory in Review before expecting Ask to answer.")
+                QuietState(title: "No reviewed memory yet", detail: "Start notes sync, then approve useful memory in Review before expecting Ask to answer.")
             } else {
                 HStack(spacing: 8) {
                     ModelMetricPill(label: "Topics", value: "\(review.top_topics.count)", systemImage: "number")
