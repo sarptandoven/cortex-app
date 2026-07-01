@@ -36,7 +36,7 @@ struct AskHeaderSection: View {
             Text("Ask Cortex")
                 .font(.title3)
                 .fontWeight(.semibold)
-            Text("Ask about approved memory and get an answer with clear citations.")
+            Text("Cortex answers from approved memory and shows sources.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -49,7 +49,7 @@ struct AskQuerySection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
-                TextField("Ask about approved memory, a project, a person, or an exact phrase", text: $state.searchQuery)
+                TextField("Ask about a project, person, decision, or phrase", text: $state.searchQuery)
                     .textFieldStyle(.roundedBorder)
                     .font(.title3)
                     .frame(minHeight: 52)
@@ -63,12 +63,6 @@ struct AskQuerySection: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
             }
-
-            if state.hasSearched {
-                Text(citationSummary)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
         }
         .padding(16)
         .background(CortexDesign.panelBackground)
@@ -76,12 +70,6 @@ struct AskQuerySection: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
-    private var citationSummary: String {
-        if state.askCitations.isEmpty {
-            return state.searchResults.isEmpty ? "No citations yet" : "\(state.searchResults.count) memory match\(state.searchResults.count == 1 ? "" : "es")"
-        }
-        return "\(state.askCitations.count) citation\(state.askCitations.count == 1 ? "" : "s")"
-    }
 }
 
 struct AskResponseSection: View {
@@ -103,7 +91,7 @@ struct AskResponseSection: View {
             } else {
                 QuietState(
                     title: "Matching memory found",
-                    detail: "Cortex found related memory, but no answer was returned. Open Sources below."
+                    detail: "Cortex found related memory, but no answer was returned. Open sources below."
                 )
             }
 
@@ -219,7 +207,7 @@ struct AskAnswerPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
-                Label("Cited memory", systemImage: "quote.bubble")
+                Label("Answer", systemImage: "quote.bubble")
                     .font(.headline)
                 Spacer()
             }
@@ -230,7 +218,7 @@ struct AskAnswerPanel: View {
             if !citations.isEmpty {
                 Divider()
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("\(citations.count) citation\(citations.count == 1 ? "" : "s")")
+                    Text("Citations")
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundColor(.secondary)
