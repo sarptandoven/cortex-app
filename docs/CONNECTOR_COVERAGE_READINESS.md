@@ -33,6 +33,7 @@ Live OAuth means direct cloud sync for services that expose appropriate APIs. Co
 - `scopes`: read-only service scopes or permissions for token/API connectors; for planned OAuth connectors, these are future consent scopes. Export-only and local file connectors use an empty list.
 - `permissions_required`: the first-100 import permission requirement, plus future live consent scope requirements when `readiness_status` is `live-planned`.
 - `first_100_note`: the beta-safe setup note. This should describe the account/direct-integration path when one exists, and only mention Advanced/Fallback import when no supported connector exists.
+- `connection_setup`: the structured setup contract for the app UI. For real wired connectors this includes the HTTP sync endpoint, default cursor name, max-record limits, common account fields, credential/configuration fields, secret flags, and disconnect behavior. For planned or export-only connectors this must set `available: false` and explain why no primary connector flow should be shown.
 
 Representative catalog expectations:
 

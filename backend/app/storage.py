@@ -486,6 +486,194 @@ BASELINE_10K_CONNECTOR_IDS: frozenset[str] = frozenset(
         "zotero",
     }
 )
+COMMON_CONNECTOR_SETUP_FIELDS: tuple[dict[str, Any], ...] = (
+    {"name": "account_label", "label": "Account label", "kind": "text", "required": False, "secret": False, "max_length": 160},
+    {"name": "account_identifier", "label": "Account identifier", "kind": "text", "required": False, "secret": False, "max_length": 240},
+)
+CONNECTOR_SETUP_BLUEPRINTS: dict[str, dict[str, Any]] = {
+    "obsidian": {
+        "mode": "native-local-connector",
+        "endpoint": "/v1/connectors/obsidian/sync",
+        "default_cursor_name": "local-folder",
+        "default_max_records": 1000,
+        "max_records_limit": 5000,
+        "credential_fields": [],
+        "configuration_fields": [
+            {"name": "vault_path", "label": "Vault folder", "kind": "local_folder", "required": True, "secret": False, "local_path": True, "max_length": 2000},
+        ],
+    },
+    "github": {
+        "mode": "native-token-connector",
+        "endpoint": "/v1/connectors/github/sync",
+        "default_cursor_name": "issues",
+        "default_max_records": 100,
+        "max_records_limit": 500,
+        "credential_fields": [{"name": "token", "label": "GitHub token", "kind": "secret", "required": True, "secret": True, "max_length": 4000}],
+        "configuration_fields": [
+            {"name": "repositories", "label": "Repositories", "kind": "string_list", "required": True, "secret": False, "max_items": 25},
+            {"name": "include_comments", "label": "Include comments and reviews", "kind": "boolean", "required": False, "default": True, "secret": False},
+            {"name": "max_comments_per_item", "label": "Max comments per item", "kind": "integer", "required": False, "default": 10, "minimum": 0, "maximum": 50, "secret": False},
+            {"name": "since", "label": "Sync after", "kind": "timestamp", "required": False, "secret": False, "max_length": 80},
+            {"name": "api_base_url", "label": "API base URL", "kind": "url", "required": False, "secret": False, "max_length": 500},
+        ],
+    },
+    "gmail": {
+        "mode": "native-token-connector",
+        "endpoint": "/v1/connectors/gmail/sync",
+        "default_cursor_name": "messages",
+        "default_max_records": 50,
+        "max_records_limit": 200,
+        "credential_fields": [{"name": "access_token", "label": "Gmail access token", "kind": "secret", "required": True, "secret": True, "max_length": 4000}],
+        "configuration_fields": [
+            {"name": "query", "label": "Gmail query", "kind": "text", "required": False, "secret": False, "max_length": 500},
+            {"name": "label_ids", "label": "Label IDs", "kind": "string_list", "required": False, "secret": False, "max_items": 20},
+            {"name": "include_body", "label": "Include message body", "kind": "boolean", "required": False, "default": True, "secret": False},
+            {"name": "since", "label": "Sync after", "kind": "timestamp", "required": False, "secret": False, "max_length": 80},
+            {"name": "api_base_url", "label": "API base URL", "kind": "url", "required": False, "secret": False, "max_length": 500},
+        ],
+    },
+    "google-drive": {
+        "mode": "native-token-connector",
+        "endpoint": "/v1/connectors/google-drive/sync",
+        "default_cursor_name": "files",
+        "default_max_records": 50,
+        "max_records_limit": 200,
+        "credential_fields": [{"name": "access_token", "label": "Google Drive access token", "kind": "secret", "required": True, "secret": True, "max_length": 4000}],
+        "configuration_fields": [
+            {"name": "query", "label": "Drive query", "kind": "text", "required": False, "secret": False, "max_length": 500},
+            {"name": "mime_types", "label": "MIME types", "kind": "string_list", "required": False, "secret": False, "max_items": 20},
+            {"name": "include_content", "label": "Include readable file content", "kind": "boolean", "required": False, "default": True, "secret": False},
+            {"name": "since", "label": "Sync after", "kind": "timestamp", "required": False, "secret": False, "max_length": 80},
+            {"name": "api_base_url", "label": "API base URL", "kind": "url", "required": False, "secret": False, "max_length": 500},
+        ],
+    },
+    "outlook": {
+        "mode": "native-token-connector",
+        "endpoint": "/v1/connectors/outlook/sync",
+        "default_cursor_name": "messages",
+        "default_max_records": 50,
+        "max_records_limit": 200,
+        "credential_fields": [{"name": "access_token", "label": "Microsoft Graph access token", "kind": "secret", "required": True, "secret": True, "max_length": 4000}],
+        "configuration_fields": [
+            {"name": "query", "label": "Outlook query", "kind": "text", "required": False, "secret": False, "max_length": 1000},
+            {"name": "include_body", "label": "Include message body", "kind": "boolean", "required": False, "default": True, "secret": False},
+            {"name": "since", "label": "Sync after", "kind": "timestamp", "required": False, "secret": False, "max_length": 80},
+            {"name": "api_base_url", "label": "API base URL", "kind": "url", "required": False, "secret": False, "max_length": 500},
+        ],
+    },
+    "slack": {
+        "mode": "native-token-connector",
+        "endpoint": "/v1/connectors/slack/sync",
+        "default_cursor_name": "messages",
+        "default_max_records": 100,
+        "max_records_limit": 200,
+        "credential_fields": [{"name": "token", "label": "Slack token", "kind": "secret", "required": True, "secret": True, "max_length": 4000}],
+        "configuration_fields": [
+            {"name": "channels", "label": "Channel IDs", "kind": "string_list", "required": True, "secret": False, "max_items": 20},
+            {"name": "workspace_url", "label": "Workspace URL", "kind": "url", "required": False, "secret": False, "max_length": 500},
+            {"name": "since", "label": "Sync after", "kind": "timestamp", "required": False, "secret": False, "max_length": 80},
+            {"name": "api_base_url", "label": "API base URL", "kind": "url", "required": False, "secret": False, "max_length": 500},
+        ],
+    },
+    "readwise": {
+        "mode": "native-token-connector",
+        "endpoint": "/v1/connectors/readwise/sync",
+        "default_cursor_name": "highlights",
+        "default_max_records": 100,
+        "max_records_limit": 500,
+        "credential_fields": [{"name": "token", "label": "Readwise token", "kind": "secret", "required": True, "secret": True, "max_length": 4000}],
+        "configuration_fields": [
+            {"name": "since", "label": "Sync after", "kind": "timestamp", "required": False, "secret": False, "max_length": 80},
+            {"name": "page_cursor", "label": "Page cursor", "kind": "text", "required": False, "secret": False, "max_length": 2000},
+            {"name": "api_base_url", "label": "API base URL", "kind": "url", "required": False, "secret": False, "max_length": 500},
+        ],
+    },
+    "calendar": {
+        "mode": "native-local-connector",
+        "endpoint": "/v1/connectors/calendar/sync",
+        "default_cursor_name": "events",
+        "default_max_records": 100,
+        "max_records_limit": 500,
+        "require_one_of": ["ics_path", "feed_url"],
+        "credential_fields": [],
+        "configuration_fields": [
+            {"name": "ics_path", "label": "ICS file", "kind": "local_file", "required": False, "secret": False, "local_path": True, "max_length": 1000},
+            {"name": "feed_url", "label": "ICS feed URL", "kind": "url", "required": False, "secret": True, "max_length": 1000},
+            {"name": "since", "label": "Sync after", "kind": "timestamp", "required": False, "secret": False, "max_length": 80},
+        ],
+    },
+    "raindrop": {
+        "mode": "native-token-connector",
+        "endpoint": "/v1/connectors/raindrop/sync",
+        "default_cursor_name": "raindrops",
+        "default_max_records": 100,
+        "max_records_limit": 500,
+        "credential_fields": [{"name": "token", "label": "Raindrop token", "kind": "secret", "required": True, "secret": True, "max_length": 4000}],
+        "configuration_fields": [
+            {"name": "collection_id", "label": "Collection ID", "kind": "text", "required": False, "default": "0", "secret": False, "max_length": 120},
+            {"name": "include_highlights", "label": "Include highlights", "kind": "boolean", "required": False, "default": True, "secret": False},
+            {"name": "since", "label": "Sync after", "kind": "timestamp", "required": False, "secret": False, "max_length": 80},
+            {"name": "api_base_url", "label": "API base URL", "kind": "url", "required": False, "secret": False, "max_length": 500},
+        ],
+    },
+    "zotero": {
+        "mode": "native-local-connector",
+        "endpoint": "/v1/connectors/zotero/sync",
+        "default_cursor_name": "items",
+        "default_max_records": 100,
+        "max_records_limit": 500,
+        "credential_fields": [{"name": "token", "label": "Optional Zotero Web API token", "kind": "secret", "required": False, "secret": True, "max_length": 4000}],
+        "configuration_fields": [
+            {"name": "library_type", "label": "Library type", "kind": "select", "required": False, "default": "user", "options": ["user", "group"], "secret": False},
+            {"name": "library_id", "label": "Library ID", "kind": "text", "required": False, "default": "0", "secret": False, "max_length": 120},
+            {"name": "include_attachments", "label": "Include attachments", "kind": "boolean", "required": False, "default": False, "secret": False},
+            {"name": "since", "label": "Sync after", "kind": "timestamp", "required": False, "secret": False, "max_length": 80},
+            {"name": "api_base_url", "label": "API base URL", "kind": "url", "required": False, "secret": False, "max_length": 500},
+        ],
+    },
+    "linear": {
+        "mode": "native-token-connector",
+        "endpoint": "/v1/connectors/linear/sync",
+        "default_cursor_name": "issues",
+        "default_max_records": 100,
+        "max_records_limit": 500,
+        "credential_fields": [{"name": "token", "label": "Linear API key", "kind": "secret", "required": True, "secret": True, "max_length": 4000}],
+        "configuration_fields": [
+            {"name": "since", "label": "Sync after", "kind": "timestamp", "required": False, "secret": False, "max_length": 80},
+            {"name": "api_url", "label": "API URL", "kind": "url", "required": False, "secret": False, "max_length": 500},
+        ],
+    },
+    "jira": {
+        "mode": "native-token-connector",
+        "endpoint": "/v1/connectors/jira/sync",
+        "default_cursor_name": "issues",
+        "default_max_records": 100,
+        "max_records_limit": 500,
+        "credential_fields": [
+            {"name": "email", "label": "Atlassian account email", "kind": "email", "required": True, "secret": False, "max_length": 320},
+            {"name": "api_token", "label": "Jira API token", "kind": "secret", "required": True, "secret": True, "max_length": 4000},
+            {"name": "site_url", "label": "Jira site URL", "kind": "url", "required": True, "secret": False, "max_length": 500},
+        ],
+        "configuration_fields": [
+            {"name": "jql", "label": "JQL filter", "kind": "text", "required": False, "secret": False, "max_length": 2000},
+            {"name": "since", "label": "Sync after", "kind": "timestamp", "required": False, "secret": False, "max_length": 80},
+        ],
+    },
+    "notion": {
+        "mode": "native-token-connector",
+        "endpoint": "/v1/connectors/notion/sync",
+        "default_cursor_name": "pages",
+        "default_max_records": 50,
+        "max_records_limit": 200,
+        "credential_fields": [{"name": "token", "label": "Notion integration token", "kind": "secret", "required": True, "secret": True, "max_length": 4000}],
+        "configuration_fields": [
+            {"name": "include_content", "label": "Include page content", "kind": "boolean", "required": False, "default": True, "secret": False},
+            {"name": "since", "label": "Sync after", "kind": "timestamp", "required": False, "secret": False, "max_length": 80},
+            {"name": "api_base_url", "label": "API base URL", "kind": "url", "required": False, "secret": False, "max_length": 500},
+            {"name": "notion_version", "label": "Notion API version", "kind": "text", "required": False, "secret": False, "max_length": 80},
+        ],
+    },
+}
 SERVICE_MEMORY_SOURCE_KEYS: frozenset[str] = frozenset(
     {
         "calendar",
@@ -763,6 +951,69 @@ def _connector_service_baseline(item: dict[str, Any], source_ids: list[str], *, 
         "primary_ui": primary_beta,
         "path": path,
         "source_ids": source_ids,
+    }
+
+
+def _copy_setup_fields(fields: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    copied: list[dict[str, Any]] = []
+    for field in fields:
+        next_field = dict(field)
+        if isinstance(next_field.get("options"), list):
+            next_field["options"] = list(next_field["options"])
+        copied.append(next_field)
+    return copied
+
+
+def _connector_connection_setup(item: dict[str, Any], service_baseline: dict[str, Any]) -> dict[str, Any]:
+    connector_id = _normalize_source_key(item.get("id"))
+    blueprint = CONNECTOR_SETUP_BLUEPRINTS.get(connector_id)
+    if not blueprint:
+        if str(item.get("live_status") or "").lower() == "planned":
+            mode = "account-sign-in-planned"
+            unavailable_reason = "managed_sign_in_not_shipped"
+        elif _connector_readiness_status(item) == "export-only":
+            mode = "direct-connector-needed"
+            unavailable_reason = "direct_connector_needed"
+        else:
+            mode = _connector_primary_beta_path(item)
+            unavailable_reason = "advanced_fallback_only"
+        return {
+            "available": False,
+            "mode": mode,
+            "method": None,
+            "endpoint": None,
+            "unavailable_reason": unavailable_reason,
+            "managed_oauth_shipped": False,
+            "credential_storage": "none",
+            "credential_retained_on_disconnect": False,
+            "disconnect_behavior": "no_live_sync_configuration",
+            "common_fields": [],
+            "credential_fields": [],
+            "configuration_fields": [],
+            "require_one_of": [],
+        }
+
+    mode = str(blueprint.get("mode") or _connector_primary_beta_path(item))
+    credential_fields = _copy_setup_fields(blueprint.get("credential_fields") or [])
+    configuration_fields = _copy_setup_fields(blueprint.get("configuration_fields") or [])
+    return {
+        "available": bool(service_baseline.get("live_sync")),
+        "mode": mode,
+        "method": "POST",
+        "endpoint": blueprint.get("endpoint"),
+        "unavailable_reason": None,
+        "managed_oauth_shipped": False,
+        "credential_storage": "local_vault_credentials" if service_baseline.get("live_sync") else "none",
+        "credential_retained_on_disconnect": bool(service_baseline.get("live_sync")),
+        "disconnect_behavior": "pause_sync_keep_local_data_and_credentials" if service_baseline.get("live_sync") else "no_live_sync_configuration",
+        "default_processing": "sync",
+        "default_cursor_name": blueprint.get("default_cursor_name"),
+        "default_max_records": blueprint.get("default_max_records"),
+        "max_records_limit": blueprint.get("max_records_limit"),
+        "common_fields": _copy_setup_fields(COMMON_CONNECTOR_SETUP_FIELDS),
+        "credential_fields": credential_fields,
+        "configuration_fields": configuration_fields,
+        "require_one_of": list(blueprint.get("require_one_of") or []),
     }
 
 
@@ -2320,6 +2571,7 @@ class CortexStore:
                     "formats": formats,
                     "baseline_10k": service_baseline["included"],
                     "service_baseline": service_baseline,
+                    "connection_setup": _connector_connection_setup(item, service_baseline),
                 }
             )
         return catalog

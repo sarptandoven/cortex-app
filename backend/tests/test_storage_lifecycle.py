@@ -1636,6 +1636,78 @@ class CortexStorageLifecycleTests(unittest.TestCase):
                 self.assertNotEqual(entry["status"], "advanced_fallback")
                 self.assertNotIn("Advanced/Fallback", entry["next_action"])
 
+    def test_baseline_connector_catalog_exposes_structured_setup_contracts(self) -> None:
+        catalog = {item["id"]: item for item in self.store.source_connector_catalog()}
+        baseline_ids = {
+            "obsidian",
+            "gmail",
+            "outlook",
+            "google-drive",
+            "slack",
+            "github",
+            "readwise",
+            "linear",
+            "notion",
+            "jira",
+            "raindrop",
+            "calendar",
+            "zotero",
+        }
+        secret_field_by_source = {
+            "gmail": "access_token",
+            "outlook": "access_token",
+            "google-drive": "access_token",
+            "slack": "token",
+            "github": "token",
+            "readwise": "token",
+            "linear": "token",
+            "notion": "token",
+            "jira": "api_token",
+            "raindrop": "token",
+            "zotero": "token",
+        }
+
+        for source_id in baseline_ids:
+            with self.subTest(source_id=source_id):
+                setup = catalog[source_id]["connection_setup"]
+                self.assertTrue(setup["available"])
+                self.assertEqual(setup["method"], "POST")
+                self.assertTrue(str(setup["endpoint"]).startswith("/v1/connectors/"))
+                self.assertEqual(setup["credential_storage"], "local_vault_credentials")
+                self.assertTrue(setup["credential_retained_on_disconnect"])
+                self.assertEqual(setup["disconnect_behavior"], "pause_sync_keep_local_data_and_credentials")
+                self.assertEqual(setup["default_processing"], "sync")
+                self.assertTrue(setup["default_cursor_name"])
+                self.assertGreaterEqual(setup["max_records_limit"], setup["default_max_records"])
+                self.assertTrue(any(field["name"] == "account_label" for field in setup["common_fields"]))
+
+        obsidian_setup = catalog["obsidian"]["connection_setup"]
+        self.assertEqual(obsidian_setup["mode"], "native-local-connector")
+        vault_path = next(field for field in obsidian_setup["configuration_fields"] if field["name"] == "vault_path")
+        self.assertEqual(vault_path["kind"], "local_folder")
+        self.assertTrue(vault_path["required"])
+        self.assertTrue(vault_path["local_path"])
+        self.assertEqual(obsidian_setup["credential_fields"], [])
+
+        calendar_setup = catalog["calendar"]["connection_setup"]
+        self.assertEqual(calendar_setup["require_one_of"], ["ics_path", "feed_url"])
+        feed_url = next(field for field in calendar_setup["configuration_fields"] if field["name"] == "feed_url")
+        self.assertTrue(feed_url["secret"])
+        self.assertEqual(feed_url["kind"], "url")
+
+        for source_id, secret_name in secret_field_by_source.items():
+            with self.subTest(secret_source=source_id):
+                setup = catalog[source_id]["connection_setup"]
+                secret = next(field for field in setup["credential_fields"] if field["name"] == secret_name)
+                self.assertTrue(secret["secret"])
+                self.assertEqual(secret["kind"], "secret")
+
+        google_docs_setup = catalog["google-docs"]["connection_setup"]
+        self.assertFalse(google_docs_setup["available"])
+        self.assertEqual(google_docs_setup["mode"], "account-sign-in-planned")
+        self.assertEqual(google_docs_setup["unavailable_reason"], "managed_sign_in_not_shipped")
+        self.assertEqual(google_docs_setup["credential_fields"], [])
+
     def test_source_sync_plan_marks_due_and_backing_off_accounts(self) -> None:
         vault_path = Path(self.tmp.name) / "due-plan-vault"
         vault_path.mkdir()
