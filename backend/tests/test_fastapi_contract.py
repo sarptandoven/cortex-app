@@ -1093,16 +1093,30 @@ class FastAPIContractTests(unittest.TestCase):
 
     def test_github_connector_endpoint_syncs_issues_with_citations(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "github-endpoint-contract"}
+        calls: list[str] = []
 
         def fake_request(url: str, request_headers: dict[str, str]):
-            self.assertIn("/repos/doppl-tech/cortex-app/issues", url)
+            calls.append(url)
             self.assertEqual(request_headers["Authorization"], "Bearer ghp_test")
+            if "/comments" in url:
+                self.assertIn("per_page=3", url)
+                return [
+                    {
+                        "id": 8801,
+                        "user": {"login": "teammate"},
+                        "created_at": "2026-06-30T10:15:00Z",
+                        "body": "Endpoint comment context should be bounded and cited.",
+                    }
+                ]
+            self.assertIn("/repos/doppl-tech/cortex-app/issues", url)
             return [
                 {
                     "number": 88,
                     "title": "Endpoint sync should cite GitHub",
                     "state": "open",
                     "html_url": "https://github.com/doppl-tech/cortex-app/issues/88",
+                    "comments_url": "https://api.github.test/repos/doppl-tech/cortex-app/issues/88/comments",
+                    "comments": 1,
                     "created_at": "2026-06-30T09:00:00Z",
                     "updated_at": "2026-06-30T10:00:00Z",
                     "user": {"login": "sarp"},
@@ -1119,6 +1133,8 @@ class FastAPIContractTests(unittest.TestCase):
                     "repositories": ["doppl-tech/cortex-app"],
                     "processing": "sync",
                     "max_records": 25,
+                    "include_comments": True,
+                    "max_comments_per_item": 3,
                 },
                 headers=headers,
             )
@@ -1131,6 +1147,9 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(payload["records"][0]["source_url"], "https://github.com/doppl-tech/cortex-app/issues/88")
         self.assertEqual(payload["source_account"]["source"], "github")
         self.assertEqual(payload["source_account"]["connection_type"], "api-token")
+        self.assertEqual(payload["sync"]["comments_returned"], 1)
+        self.assertEqual(payload["source_account"]["metadata"]["max_comments_per_item"], 3)
+        self.assertTrue(any("/comments" in url for url in calls))
         self.assertNotIn("ghp_test", json.dumps(payload))
         approved = self.client.post(f"/v1/captures/{payload['capture_ids'][0]}/approve", headers=headers)
         self.assertEqual(approved.status_code, 200)

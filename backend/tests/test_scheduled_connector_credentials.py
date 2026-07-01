@@ -52,6 +52,8 @@ class ScheduledConnectorCredentialTests(unittest.TestCase):
             {
                 "token": GITHUB_TOKEN,
                 "repositories": [GITHUB_REPOSITORY],
+                "include_comments": False,
+                "max_comments_per_item": 0,
                 "api_base_url": GITHUB_API_BASE_URL,
             },
         )
@@ -118,6 +120,8 @@ class ScheduledConnectorCredentialTests(unittest.TestCase):
         self.assertEqual(calls[0]["processing"], "async")
         self.assertEqual(calls[0]["cursor_name"], "issues")
         self.assertEqual(calls[0]["max_records"], 200)
+        self.assertFalse(calls[0]["include_comments"])
+        self.assertEqual(calls[0]["max_comments_per_item"], 0)
 
         job = ran["jobs"][0]
         self.assertEqual(job["job_type"], "source_account_sync")
@@ -272,6 +276,8 @@ class ScheduledConnectorCredentialTests(unittest.TestCase):
             account_identifier="github-scheduled-contract",
             processing="sync",
             max_records=10,
+            include_comments=False,
+            max_comments_per_item=0,
             api_base_url=GITHUB_API_BASE_URL,
             request_json=fake_request_json,
         )

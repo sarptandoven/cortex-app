@@ -217,6 +217,76 @@ class ConnectorFetchRetrievalTests(unittest.TestCase):
         self.assertTrue(citation["source_url"].startswith("https://doppl.slack.com/archives/C123ABC/p1782739210000200"))
         self.assertEqual(citation["source_record_id"], "slack:C123ABC:1782739210.000200")
 
+    def test_github_issue_comments_reach_search_and_ask_citations(self) -> None:
+        calls: list[str] = []
+
+        def fake_request(url: str, headers: dict[str, str]):
+            calls.append(url)
+            self.assertEqual(headers["Authorization"], "Bearer ghp_comment_test")
+            if "/issues?" in url:
+                return [
+                    {
+                        "number": 42,
+                        "title": "Ship GitHub comment memory",
+                        "state": "open",
+                        "html_url": "https://github.com/doppl-tech/cortex-app/issues/42",
+                        "comments_url": "https://api.github.test/repos/doppl-tech/cortex-app/issues/42/comments",
+                        "comments": 1,
+                        "created_at": "2026-06-30T10:00:00Z",
+                        "updated_at": "2026-06-30T11:00:00Z",
+                        "user": {"login": "sarp"},
+                        "labels": [{"name": "backend"}],
+                        "body": "Issue body without the unique comment marker.",
+                    }
+                ]
+            if "/comments" in url:
+                self.assertIn("per_page=10", url)
+                return [
+                    {
+                        "id": 1001,
+                        "user": {"login": "teammate"},
+                        "created_at": "2026-06-30T11:10:00Z",
+                        "updated_at": "2026-06-30T11:12:00Z",
+                        "html_url": "https://github.com/doppl-tech/cortex-app/issues/42#issuecomment-1001",
+                        "body": "We decided githubcommenttest retrieval should preserve GitHub discussion comments.",
+                    }
+                ]
+            self.fail(f"unexpected GitHub URL {url}")
+
+        result = self.store.sync_github_account(
+            self.user_id,
+            token="ghp_comment_test",
+            repositories=["doppl-tech/cortex-app"],
+            max_records=1,
+            processing="sync",
+            api_base_url="https://api.github.test",
+            request_json=fake_request,
+        )
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["received"], 1)
+        self.assertEqual(result["saved"], 1)
+        self.assertEqual(result["sync"]["comments_found"], 1)
+        self.assertEqual(result["sync"]["comments_returned"], 1)
+        self.assertTrue(any("/issues?" in url for url in calls))
+        self.assertTrue(any("/comments" in url for url in calls))
+        self.assertEqual(self.store.search(self.user_id, "githubcommenttest discussion comments", limit=5), [])
+
+        self.assertTrue(self.store.approve_capture(self.user_id, result["capture_ids"][0]))
+
+        hits = self.store.search(self.user_id, "githubcommenttest discussion comments", limit=5)
+        hit = self._first_result_with_marker(hits, "github", "githubcommenttest")
+        self.assertIsNotNone(hit)
+        self.assertTrue(hit["source_url"].startswith("https://github.com/doppl-tech/cortex-app/issues/42"))
+        self.assertEqual(hit["provenance"]["external_id"], "github:doppl-tech/cortex-app:issue:42")
+        self.assertEqual(hit["provenance"]["record_metadata"]["comments_returned"], 1)
+
+        answer = self.store.answer_query(self.user_id, "githubcommenttest discussion comments", limit=5)
+        citation = self._first_citation_with_marker(answer["citations"], "github", "githubcommenttest")
+        self.assertIsNotNone(citation)
+        self.assertTrue(citation["source_url"].startswith("https://github.com/doppl-tech/cortex-app/issues/42"))
+        self.assertEqual(citation["source_record_id"], "github:doppl-tech/cortex-app:issue:42")
+
     def test_slack_sync_uses_channel_page_cursor(self) -> None:
         calls: list[str] = []
 

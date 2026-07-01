@@ -539,6 +539,8 @@ class FakeStore:
         since: str | None = None,
         processing: str = "sync",
         max_records: int = 100,
+        include_comments: bool = True,
+        max_comments_per_item: int = 10,
         cursor_name: str = "issues",
         api_base_url: str | None = None,
     ) -> dict:
@@ -556,6 +558,8 @@ class FakeStore:
             "since": since,
             "processing": processing,
             "max_records": max_records,
+            "include_comments": include_comments,
+            "max_comments_per_item": max_comments_per_item,
             "cursor_name": cursor_name,
             "api_base_url": api_base_url,
         }
@@ -2189,6 +2193,8 @@ class StandaloneServerTests(unittest.TestCase):
                 "since": "2026-01-01T00:00:00Z",
                 "processing": "sync",
                 "max_records": 50,
+                "include_comments": True,
+                "max_comments_per_item": 7,
                 "cursor_name": "issues",
                 "api_base_url": "https://api.github.test",
             },
@@ -2214,6 +2220,8 @@ class StandaloneServerTests(unittest.TestCase):
                     "since": "2026-01-01T00:00:00Z",
                     "processing": "sync",
                     "max_records": 50,
+                    "include_comments": True,
+                    "max_comments_per_item": 7,
                     "cursor_name": "issues",
                     "api_base_url": "https://api.github.test",
                 }
@@ -2227,6 +2235,18 @@ class StandaloneServerTests(unittest.TestCase):
                     "token": "ghp_test",
                     "repositories": ["doppl-tech/cortex-app"],
                     "max_records": 501,
+                },
+            )
+        self.assertEqual(context.exception.code, 422)
+        self.assertEqual(len(self.fake_store.github_sync_calls), 1)
+
+        with self.assertRaises(error.HTTPError) as context:
+            self.post_json(
+                "/v1/connectors/github/sync",
+                {
+                    "token": "ghp_test",
+                    "repositories": ["doppl-tech/cortex-app"],
+                    "max_comments_per_item": 51,
                 },
             )
         self.assertEqual(context.exception.code, 422)

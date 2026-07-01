@@ -106,6 +106,88 @@ class GitHubConnectorTests(unittest.TestCase):
         self.assertEqual(len(sync.errors), 1)
         self.assertEqual(sync.errors[0]["repository"], "doppl-tech/cortex-ios")
 
+    def test_fetch_github_records_can_opt_out_of_issue_comments(self) -> None:
+        calls: list[str] = []
+
+        def fake_request(url: str, headers: dict[str, str]):
+            calls.append(url)
+            parsed = urlparse(url)
+            self.assertEqual(parsed.path, "/repos/doppl-tech/cortex-app/issues")
+            return [
+                {
+                    "number": 42,
+                    "title": "Issue comments disabled",
+                    "state": "open",
+                    "html_url": "https://github.com/doppl-tech/cortex-app/issues/42",
+                    "comments_url": "https://api.github.test/repos/doppl-tech/cortex-app/issues/42/comments",
+                    "comments": 2,
+                    "created_at": "2026-06-30T10:00:00Z",
+                    "updated_at": "2026-06-30T11:00:00Z",
+                    "user": {"login": "sarp"},
+                    "body": "Issue body only.",
+                }
+            ]
+
+        sync = fetch_github_records(
+            token="ghp_test",
+            repositories=["doppl-tech/cortex-app"],
+            include_comments=False,
+            max_records=10,
+            request_json=fake_request,
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(sync.comments_found, 0)
+        self.assertEqual(sync.comments_returned, 0)
+        self.assertNotIn("Comments:", sync.records[0].content)
+
+    def test_fetch_github_records_bounds_issue_comments(self) -> None:
+        calls: list[str] = []
+
+        def fake_request(url: str, headers: dict[str, str]):
+            calls.append(url)
+            parsed = urlparse(url)
+            if parsed.path == "/repos/doppl-tech/cortex-app/issues":
+                return [
+                    {
+                        "number": 42,
+                        "title": "Issue comments bounded",
+                        "state": "open",
+                        "html_url": "https://github.com/doppl-tech/cortex-app/issues/42",
+                        "comments_url": "https://api.github.test/repos/doppl-tech/cortex-app/issues/42/comments?direction=asc",
+                        "comments": 3,
+                        "created_at": "2026-06-30T10:00:00Z",
+                        "updated_at": "2026-06-30T11:00:00Z",
+                        "user": {"login": "sarp"},
+                        "body": "Issue body.",
+                    }
+                ]
+            self.assertEqual(parsed.path, "/repos/doppl-tech/cortex-app/issues/42/comments")
+            query = parse_qs(parsed.query)
+            self.assertEqual(query["direction"], ["asc"])
+            self.assertEqual(query["per_page"], ["2"])
+            return [
+                {"id": 1, "user": {"login": "a"}, "created_at": "2026-06-30T11:01:00Z", "body": "First bounded comment."},
+                {"id": 2, "user": {"login": "b"}, "created_at": "2026-06-30T11:02:00Z", "body": "Second bounded comment."},
+                {"id": 3, "user": {"login": "c"}, "created_at": "2026-06-30T11:03:00Z", "body": "Third comment should be ignored."},
+            ]
+
+        sync = fetch_github_records(
+            token="ghp_test",
+            repositories=["doppl-tech/cortex-app"],
+            max_comments_per_item=2,
+            max_records=10,
+            request_json=fake_request,
+        )
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(sync.comments_found, 3)
+        self.assertEqual(sync.comments_returned, 2)
+        self.assertIn("First bounded comment.", sync.records[0].content)
+        self.assertIn("Second bounded comment.", sync.records[0].content)
+        self.assertNotIn("Third comment should be ignored.", sync.records[0].content)
+        self.assertEqual(sync.records[0].metadata["comments_returned"], 2)
+
     def test_fetch_github_records_requires_token_and_repository(self) -> None:
         with self.assertRaisesRegex(ValueError, "token"):
             fetch_github_records(token="", repositories=["doppl-tech/cortex-app"])

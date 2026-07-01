@@ -165,6 +165,8 @@ class GitHubSyncRequest(BaseModel):
     since: str | None = Field(default=None, max_length=80)
     processing: Literal["sync", "async"] = "sync"
     max_records: int = Field(default=100, ge=1, le=500)
+    include_comments: bool = True
+    max_comments_per_item: int = Field(default=10, ge=0, le=50)
     cursor_name: str = Field(default="issues", min_length=1, max_length=120)
     api_base_url: str | None = Field(default=None, max_length=500)
 

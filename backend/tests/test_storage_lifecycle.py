@@ -1481,6 +1481,8 @@ class CortexStorageLifecycleTests(unittest.TestCase):
             repositories=["doppl-tech/cortex-app"],
             processing="sync",
             max_records=20,
+            include_comments=False,
+            max_comments_per_item=0,
             request_json=fake_request,
         )
 
@@ -1491,6 +1493,15 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(result["source_account"]["connection_type"], "api-token")
         self.assertEqual(result["source_account"]["status"], "connected")
         self.assertEqual(result["source_account"]["metadata"]["token_configured"], True)
+        self.assertFalse(result["source_account"]["metadata"]["include_comments"])
+        self.assertEqual(result["source_account"]["metadata"]["max_comments_per_item"], 0)
+        self.assertFalse(result["sync"]["include_comments"])
+        self.assertEqual(result["sync"]["max_comments_per_item"], 0)
+        self.assertFalse(result["cursor"]["state"]["include_comments"])
+        self.assertEqual(result["cursor"]["state"]["max_comments_per_item"], 0)
+        credential = self.store.vault.read_source_credential(user_id=self.user_id, source_account_id=result["source_account_id"])
+        self.assertEqual(credential["payload"]["include_comments"], False)
+        self.assertEqual(credential["payload"]["max_comments_per_item"], 0)
         self.assertEqual(result["records"][0]["source_url"], "https://github.com/doppl-tech/cortex-app/issues/17")
         capture_id = result["capture_ids"][0]
         self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
@@ -1513,6 +1524,8 @@ class CortexStorageLifecycleTests(unittest.TestCase):
             repositories=["doppl-tech/cortex-app"],
             processing="sync",
             max_records=20,
+            include_comments=False,
+            max_comments_per_item=0,
             request_json=fake_request,
         )
         self.assertEqual(duplicate["saved"], 0)
@@ -1556,6 +1569,8 @@ class CortexStorageLifecycleTests(unittest.TestCase):
                     "repositories": ["doppl-tech/cortex-app"],
                     "processing": "sync",
                     "max_records": 10,
+                    "include_comments": False,
+                    "max_comments_per_item": 0,
                 },
                 token_scopes=["write"],
             )
@@ -1563,6 +1578,8 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(synced["source"], "github")
         self.assertEqual(synced["saved"], 1)
         self.assertNotIn("ghp_mcp_test", json.dumps(synced))
+        self.assertFalse(synced["sync"]["include_comments"])
+        self.assertEqual(synced["sync"]["max_comments_per_item"], 0)
         self.assertEqual(synced["records"][0]["source_url"], "https://github.com/doppl-tech/cortex-app/issues/31")
 
     def test_slack_account_sync_fetches_messages_with_stable_citations(self) -> None:

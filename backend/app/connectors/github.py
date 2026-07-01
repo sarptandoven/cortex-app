@@ -45,6 +45,10 @@ class GitHubSync:
     records: list[GitHubSyncRecord]
     records_found: int
     records_returned: int
+    comments_found: int
+    comments_returned: int
+    include_comments: bool
+    max_comments_per_item: int
     high_water_mark: str | None
     cursor_value: str | None
     errors: list[dict[str, Any]]
@@ -57,6 +61,10 @@ class GitHubSync:
             "repositories": self.repositories,
             "records_found": self.records_found,
             "records_returned": self.records_returned,
+            "comments_found": self.comments_found,
+            "comments_returned": self.comments_returned,
+            "include_comments": self.include_comments,
+            "max_comments_per_item": self.max_comments_per_item,
             "high_water_mark": self.high_water_mark,
             "cursor_value": self.cursor_value,
             "errors": self.errors,
@@ -69,6 +77,8 @@ def fetch_github_records(
     token: str,
     repositories: list[str],
     since: str | None = None,
+    include_comments: bool = True,
+    max_comments_per_item: int = 10,
     max_records: int = 100,
     api_base_url: str = DEFAULT_API_BASE_URL,
     request_json: RequestJSON | None = None,
@@ -95,6 +105,13 @@ def fetch_github_records(
     records_found = 0
     errors: list[dict[str, Any]] = []
     high_water_mark: str | None = None
+    comments_found = 0
+    comments_returned = 0
+    try:
+        capped_comments_per_item = max(0, min(int(max_comments_per_item or 0), 50))
+    except (TypeError, ValueError):
+        capped_comments_per_item = 10
+    comment_enrichment_remaining = min(capped_max, 50) if include_comments and capped_comments_per_item > 0 else 0
 
     for repository in normalized_repositories:
         page = 1
@@ -127,7 +144,22 @@ def fetch_github_records(
             for item in payload:
                 if not isinstance(item, dict):
                     continue
-                record = _record_from_issue(repository, item)
+                comments: list[dict[str, str]] = []
+                if comment_enrichment_remaining > 0:
+                    comments, found, returned = _fetch_issue_comments(
+                        requester,
+                        base_url=base_url,
+                        headers=headers,
+                        token=cleaned_token,
+                        repository=repository,
+                        issue=item,
+                        limit=capped_comments_per_item,
+                        errors=errors,
+                    )
+                    comments_found += found
+                    comments_returned += returned
+                    comment_enrichment_remaining -= 1
+                record = _record_from_issue(repository, item, comments=comments)
                 if record is None:
                     continue
                 high_water_mark = _max_iso(high_water_mark, record.captured_at)
@@ -143,6 +175,10 @@ def fetch_github_records(
         records=records,
         records_found=records_found,
         records_returned=len(records),
+        comments_found=comments_found,
+        comments_returned=comments_returned,
+        include_comments=bool(include_comments),
+        max_comments_per_item=capped_comments_per_item,
         high_water_mark=high_water_mark,
         cursor_value=since if errors else high_water_mark or since,
         errors=errors,
@@ -154,6 +190,70 @@ def _request_json(url: str, headers: dict[str, str]) -> Any:
     request = Request(url, headers=headers, method="GET")
     with urlopen(request, timeout=30) as response:  # noqa: S310 - user-provided token, trusted GitHub API URL by default.
         return json.loads(response.read().decode("utf-8"))
+
+
+def _fetch_issue_comments(
+    requester: RequestJSON,
+    *,
+    base_url: str,
+    headers: dict[str, str],
+    token: str,
+    repository: str,
+    issue: dict[str, Any],
+    limit: int,
+    errors: list[dict[str, Any]],
+) -> tuple[list[dict[str, str]], int, int]:
+    if limit <= 0:
+        return [], 0, 0
+    number = issue.get("number")
+    if not number:
+        return [], 0, 0
+    try:
+        comment_count = int(issue.get("comments") or 0)
+    except (TypeError, ValueError):
+        comment_count = 0
+    comments_url = str(issue.get("comments_url") or "").strip()
+    if comment_count <= 0 and not comments_url:
+        return [], 0, 0
+    query = {"per_page": str(limit), "page": "1"}
+    if comments_url:
+        separator = "&" if "?" in comments_url else "?"
+        url = f"{comments_url}{separator}{urlencode(query)}"
+    else:
+        url = f"{base_url}/repos/{repository}/issues/{number}/comments?{urlencode(query)}"
+    try:
+        payload = requester(url, headers)
+    except Exception as exc:
+        errors.append(
+            {
+                "repository": repository,
+                "issue": str(number),
+                "scope": "comments",
+                "error": redact_error_message(exc, [token, headers.get("Authorization")]),
+            }
+        )
+        return [], 0, 0
+    if not isinstance(payload, list):
+        errors.append({"repository": repository, "issue": str(number), "scope": "comments", "error": "GitHub comments response was not a list"})
+        return [], 0, 0
+    comments: list[dict[str, str]] = []
+    for item in payload[:limit]:
+        if not isinstance(item, dict):
+            continue
+        body = _clean_body(item.get("body"))
+        if not body:
+            continue
+        comments.append(
+            {
+                "id": _text(item.get("id")),
+                "author": _login(item.get("user")) or "unknown",
+                "created_at": _text(item.get("created_at")),
+                "updated_at": _text(item.get("updated_at")),
+                "url": _text(item.get("html_url")),
+                "body": body,
+            }
+        )
+    return comments, len(payload), len(comments)
 
 
 def _normalize_repositories(values: list[str]) -> list[str]:
@@ -185,7 +285,7 @@ def _normalize_repository(value: str) -> str:
     return f"{owner}/{repo}"
 
 
-def _record_from_issue(repository: str, item: dict[str, Any]) -> GitHubSyncRecord | None:
+def _record_from_issue(repository: str, item: dict[str, Any], *, comments: list[dict[str, str]] | None = None) -> GitHubSyncRecord | None:
     number = item.get("number")
     title = str(item.get("title") or "").strip()
     if not number or not title:
@@ -229,6 +329,16 @@ def _record_from_issue(repository: str, item: dict[str, Any]) -> GitHubSyncRecor
     lines.append(f"URL: {source_url}")
     if body:
         lines.extend(["", "Body:", body])
+    issue_comments = comments or []
+    if issue_comments:
+        lines.extend(["", "Comments:"])
+        for index, comment in enumerate(issue_comments, start=1):
+            comment_header = f"Comment {index}"
+            if comment.get("author"):
+                comment_header += f" by {comment['author']}"
+            if comment.get("updated_at") or comment.get("created_at"):
+                comment_header += f" at {comment.get('updated_at') or comment.get('created_at')}"
+            lines.extend([comment_header + ":", comment["body"]])
 
     return GitHubSyncRecord(
         content="\n".join(lines).strip(),
@@ -246,6 +356,7 @@ def _record_from_issue(repository: str, item: dict[str, Any]) -> GitHubSyncRecor
             "author": author,
             "state": _text(item.get("state")),
             "labels": labels,
+            "comments_returned": len(issue_comments),
             "url": source_url,
             "source_type": "github_pull_request" if is_pull_request else "github_issue",
             "source_quality": "canonical",

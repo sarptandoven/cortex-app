@@ -483,6 +483,12 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         raise ValueError("max_records must be an integer") from exc
                     if max_records < 1 or max_records > 500:
                         raise ValueError("max_records must be between 1 and 500")
+                    try:
+                        max_comments_per_item = int(body.get("max_comments_per_item") if body.get("max_comments_per_item") is not None else 10)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError("max_comments_per_item must be an integer") from exc
+                    if max_comments_per_item < 0 or max_comments_per_item > 50:
+                        raise ValueError("max_comments_per_item must be between 0 and 50")
                     repositories = body.get("repositories") if isinstance(body.get("repositories"), list) else []
                     result = store.sync_github_account(
                         user_id,
@@ -494,6 +500,8 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         since=str(body.get("since") or "") or None,
                         processing=str(body.get("processing") or "sync"),
                         max_records=max_records,
+                        include_comments=_bool_value(body.get("include_comments"), default=True),
+                        max_comments_per_item=max_comments_per_item,
                         cursor_name=str(body.get("cursor_name") or "issues"),
                         api_base_url=str(body.get("api_base_url") or "") or None,
                     )

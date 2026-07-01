@@ -518,6 +518,8 @@ def sync_github_account(request: GitHubSyncRequest, user_id: str = Depends(auth)
             since=request.since,
             processing=request.processing,
             max_records=request.max_records,
+            include_comments=request.include_comments,
+            max_comments_per_item=request.max_comments_per_item,
             cursor_name=request.cursor_name,
             api_base_url=request.api_base_url,
         )

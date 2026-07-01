@@ -3276,6 +3276,8 @@ class CortexStore:
         since: str | None = None,
         processing: str = "sync",
         max_records: int = 100,
+        include_comments: bool = True,
+        max_comments_per_item: int = 10,
         cursor_name: str = "issues",
         api_base_url: str | None = None,
         request_json: Any | None = None,
@@ -3290,11 +3292,16 @@ class CortexStore:
             raise ValueError("max_records must be an integer") from exc
         if capped_max_records < 1 or capped_max_records > 500:
             raise ValueError("max_records must be between 1 and 500")
+        bounded_max_comments = _bounded_int(max_comments_per_item, minimum=0, maximum=50)
+        if bounded_max_comments is None:
+            raise ValueError("max_comments_per_item must be between 0 and 50")
 
         sync = fetch_github_records(
             token=token,
             repositories=repositories,
             since=since,
+            include_comments=bool(include_comments),
+            max_comments_per_item=bounded_max_comments,
             max_records=capped_max_records,
             api_base_url=api_base_url or "https://api.github.com",
             request_json=request_json,
@@ -3311,6 +3318,10 @@ class CortexStore:
             "repositories": sync.repositories,
             "records_found": sync.records_found,
             "records_returned": sync.records_returned,
+            "comments_found": sync.comments_found,
+            "comments_returned": sync.comments_returned,
+            "include_comments": bool(include_comments),
+            "max_comments_per_item": bounded_max_comments,
             "token_configured": True,
             "api_base_url": sync.api_base_url,
         }
@@ -3336,6 +3347,8 @@ class CortexStore:
                 payload={
                     "token": token,
                     "repositories": sync.repositories,
+                    "include_comments": bool(include_comments),
+                    "max_comments_per_item": bounded_max_comments,
                     "api_base_url": sync.api_base_url,
                 },
             )
@@ -3345,6 +3358,10 @@ class CortexStore:
             "repositories": sync.repositories,
             "records_found": sync.records_found,
             "records_returned": sync.records_returned,
+            "comments_found": sync.comments_found,
+            "comments_returned": sync.comments_returned,
+            "include_comments": bool(include_comments),
+            "max_comments_per_item": bounded_max_comments,
             "sync_errors": sync.errors,
             "api_base_url": sync.api_base_url,
         }
@@ -10026,6 +10043,13 @@ class CortexStore:
             repositories = [str(repo).strip() for repo in repositories if str(repo).strip()]
             if not token or not repositories:
                 raise ValueError("github source account is missing stored token or repositories")
+            scheduled_max_comments_per_item = _bounded_int(
+                credential_payload.get("max_comments_per_item", metadata.get("max_comments_per_item", 10)),
+                minimum=0,
+                maximum=50,
+            )
+            if scheduled_max_comments_per_item is None:
+                scheduled_max_comments_per_item = 10
             result = self.sync_github_account(
                 user_id,
                 token=token,
@@ -10036,6 +10060,8 @@ class CortexStore:
                 since=cursor_value or high_water_mark or account.get("last_sync_at"),
                 processing=processing,
                 max_records=max_records,
+                include_comments=bool(credential_payload.get("include_comments", metadata.get("include_comments", True))),
+                max_comments_per_item=scheduled_max_comments_per_item,
                 cursor_name=cursor_name,
                 api_base_url=str(credential_payload.get("api_base_url") or metadata.get("api_base_url") or "https://api.github.com"),
             )
