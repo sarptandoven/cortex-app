@@ -46,15 +46,10 @@ class ConnectorCatalogAcceptanceTests(unittest.TestCase):
                 self.assertFalse(readiness_entry["show_in_primary_ui"])
                 self.assertFalse(readiness_entry["primary_beta"])
 
-                if source_id in {"google-drive"}:
-                    self.assertEqual(catalog_entry["live_status"], "planned")
-                    self.assertEqual(readiness_entry["status"], "planned")
-                    self.assertEqual(readiness_entry["sync_plan"]["mode"], "planned_account_sync")
-                else:
-                    self.assertIn(catalog_entry["live_status"], {"api_token", "local_api", "local_only"})
-                    self.assertEqual(catalog_entry["beta_status"], "ready")
-                    self.assertTrue(catalog_entry["scopes"] or catalog_entry["formats"])
-                    self.assertNotEqual(readiness_entry["sync_plan"]["mode"], "planned_account_sync")
+                self.assertIn(catalog_entry["live_status"], {"api_token", "local_api", "local_only"})
+                self.assertEqual(catalog_entry["beta_status"], "ready")
+                self.assertTrue(catalog_entry["scopes"] or catalog_entry["formats"])
+                self.assertNotEqual(readiness_entry["sync_plan"]["mode"], "planned_account_sync")
 
         for source_id, item in catalog.items():
             with self.subTest(primary_capability_source_id=source_id):

@@ -1357,6 +1357,64 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertIn("line=", search.json()["results"][0]["source_url"])
         self.assertIn("excerpt=", search.json()["results"][0]["source_url"])
 
+    def test_google_drive_connector_endpoint_syncs_docs_with_citations(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "drive-endpoint-contract"}
+
+        def fake_request(url: str, request_headers: dict[str, str]):
+            self.assertEqual(request_headers["Authorization"], "Bearer drive_test")
+            if url.endswith("/about?fields=user(emailAddress,displayName)"):
+                return {"user": {"emailAddress": "sarp@example.com", "displayName": "Sarp Doven"}}
+            if "/files?" in url:
+                return {
+                    "files": [
+                        {
+                            "id": "fastapi-drive-doc",
+                            "name": "Drive endpoint contract",
+                            "mimeType": "application/vnd.google-apps.document",
+                            "createdTime": "2026-06-29T10:00:00Z",
+                            "modifiedTime": "2026-06-30T10:00:00Z",
+                            "webViewLink": "https://docs.google.com/document/d/fastapi-drive-doc/edit",
+                            "owners": [{"emailAddress": "sarp@example.com", "displayName": "Sarp Doven"}],
+                            "lastModifyingUser": {"emailAddress": "sarp@example.com", "displayName": "Sarp Doven"},
+                        }
+                    ]
+                }
+            self.assertTrue(url.endswith("/files/fastapi-drive-doc/export?mimeType=text%2Fplain"))
+            return "We decided the FastAPI Drive connector should preserve document URLs."
+
+        with patch("backend.app.connectors.google_drive._request_value", side_effect=fake_request):
+            response = self.client.post(
+                "/v1/connectors/google-drive/sync",
+                json={
+                    "access_token": "drive_test",
+                    "processing": "sync",
+                    "max_records": 25,
+                },
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["source"], "google-drive")
+        self.assertEqual(payload["status"], "complete")
+        self.assertEqual(payload["saved"], 1)
+        self.assertEqual(payload["records"][0]["source_url"], "https://docs.google.com/document/d/fastapi-drive-doc/edit")
+        self.assertEqual(payload["source_account"]["source"], "google-drive")
+        self.assertEqual(payload["source_account"]["connection_type"], "oauth-token")
+        self.assertNotIn("drive_test", json.dumps(payload))
+        approved = self.client.post(f"/v1/captures/{payload['capture_ids'][0]}/approve", headers=headers)
+        self.assertEqual(approved.status_code, 200)
+        search = self.client.get(
+            "/v1/search",
+            params={"query": "FastAPI Drive connector preserve document URLs"},
+            headers=headers,
+        )
+        self.assertEqual(search.status_code, 200)
+        self.assertTrue(search.json()["results"])
+        self.assertTrue(search.json()["results"][0]["source_url"].startswith("https://docs.google.com/document/d/fastapi-drive-doc/edit"))
+        self.assertIn("line=", search.json()["results"][0]["source_url"])
+        self.assertIn("excerpt=", search.json()["results"][0]["source_url"])
+
     def test_slack_connector_endpoint_syncs_messages_with_citations(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "slack-endpoint-contract"}
 
@@ -1951,6 +2009,7 @@ END:VCALENDAR
             "chatgpt": ("export-only", [], "direct connector"),
             "apple-mail": ("import-ready", [], "direct local integration"),
             "gmail": ("token-ready", ["gmail.readonly"], "read-only token sync"),
+            "google-drive": ("token-ready", ["drive.readonly"], "read-only token sync"),
             "notion": ("token-ready", ["read_content"], "read-only token sync"),
             "slack": ("token-ready", ["channels:history", "groups:history", "channels:read", "groups:read"], "read-only token sync"),
             "github": ("token-ready", ["repo:read"], "read-only token sync"),
@@ -1979,6 +2038,9 @@ END:VCALENDAR
         self.assertFalse(catalog["gmail"]["primary_beta"])
         self.assertEqual(catalog["gmail"]["beta_status"], "ready")
         self.assertFalse(catalog["gmail"]["show_in_primary_ui"])
+        self.assertFalse(catalog["google-drive"]["primary_beta"])
+        self.assertEqual(catalog["google-drive"]["beta_status"], "ready")
+        self.assertFalse(catalog["google-drive"]["show_in_primary_ui"])
         self.assertFalse(catalog["notion"]["primary_beta"])
         self.assertEqual(catalog["notion"]["beta_status"], "ready")
         self.assertFalse(catalog["notion"]["show_in_primary_ui"])

@@ -197,6 +197,27 @@ class GmailSyncResponse(SourceAccountSyncResponse):
     sync: dict[str, Any]
 
 
+class GoogleDriveSyncRequest(BaseModel):
+    access_token: str = Field(..., min_length=1, max_length=4000)
+    source_account_id: str | None = Field(default=None, max_length=80)
+    account_label: str | None = Field(default=None, max_length=160)
+    account_identifier: str | None = Field(default=None, max_length=240)
+    query: str | None = Field(default=None, max_length=500)
+    mime_types: list[str] = Field(default_factory=list, max_length=20)
+    since: str | None = Field(default=None, max_length=80)
+    page_token: str | None = Field(default=None, max_length=2000)
+    processing: Literal["sync", "async"] = "sync"
+    max_records: int = Field(default=50, ge=1, le=200)
+    cursor_name: str = Field(default="files", min_length=1, max_length=120)
+    include_content: bool = True
+    api_base_url: str | None = Field(default=None, max_length=500)
+
+
+class GoogleDriveSyncResponse(SourceAccountSyncResponse):
+    source_account: SourceAccountResponse
+    sync: dict[str, Any]
+
+
 class SlackSyncRequest(BaseModel):
     token: str = Field(..., min_length=1, max_length=4000)
     channels: list[str] = Field(..., min_length=1, max_length=20)

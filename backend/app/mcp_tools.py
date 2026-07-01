@@ -258,6 +258,29 @@ TOOLS = [
         },
     },
     {
+        "name": "sync_google_drive",
+        "description": "Fetch Google Drive docs and text files with a read-only OAuth access token, then sync them into Cortex with stable Drive citations.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "access_token": {"type": "string"},
+                "source_account_id": {"type": "string"},
+                "account_label": {"type": "string"},
+                "account_identifier": {"type": "string"},
+                "query": {"type": "string"},
+                "mime_types": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+                "since": {"type": "string"},
+                "page_token": {"type": "string"},
+                "processing": {"type": "string", "default": "sync", "enum": ["sync", "async"]},
+                "max_records": {"type": "integer", "default": 50},
+                "cursor_name": {"type": "string", "default": "files"},
+                "include_content": {"type": "boolean", "default": True},
+                "api_base_url": {"type": "string"},
+            },
+            "required": ["access_token"],
+        },
+    },
+    {
         "name": "sync_slack",
         "description": "Fetch recent Slack channel messages with a read-only token, then sync them into Cortex with stable citations.",
         "inputSchema": {
@@ -588,6 +611,7 @@ WRITE_TOOLS = {
     "sync_source_records",
     "sync_github",
     "sync_gmail",
+    "sync_google_drive",
     "sync_slack",
     "sync_readwise",
     "sync_calendar",
@@ -891,6 +915,24 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             max_records=int(args.get("max_records", 50)),
             cursor_name=args.get("cursor_name", "messages"),
             include_body=_bool_arg(args, "include_body", True),
+            api_base_url=args.get("api_base_url"),
+        )
+        return store.agent_payload(user_id, result)
+    if name == "sync_google_drive":
+        result = store.sync_google_drive_account(
+            user_id,
+            access_token=args.get("access_token", ""),
+            source_account_id=args.get("source_account_id"),
+            account_label=args.get("account_label"),
+            account_identifier=args.get("account_identifier"),
+            query=args.get("query"),
+            mime_types=args.get("mime_types") or [],
+            since=args.get("since"),
+            page_token=args.get("page_token"),
+            processing=args.get("processing", "sync"),
+            max_records=int(args.get("max_records", 50)),
+            cursor_name=args.get("cursor_name", "files"),
+            include_content=_bool_arg(args, "include_content", True),
             api_base_url=args.get("api_base_url"),
         )
         return store.agent_payload(user_id, result)

@@ -381,7 +381,7 @@ SOURCE_CONNECTOR_CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "pdfs", "name": "PDFs", "category": "Docs", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "PDF connector coverage for readable documents."},
     {"id": "cloud-docs", "name": "Cloud docs", "category": "Docs", "auth": "export", "live_status": "import_ready", "scopes": [], "notes": "Cloud document connector coverage for Drive, OneDrive, and Dropbox Paper account sources."},
     {"id": "notion", "name": "Notion", "category": "Docs", "auth": "api_token", "live_status": "api_token", "scopes": ["read_content"], "notes": "Read-only Notion page sync works with an internal integration token shared into selected pages."},
-    {"id": "google-drive", "name": "Google Drive", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["drive.readonly"], "notes": "Drive account sync is the intended connector path."},
+    {"id": "google-drive", "name": "Google Drive", "category": "Docs", "auth": "oauth", "live_status": "api_token", "scopes": ["drive.readonly"], "notes": "Backend read-only Drive sync works when a trusted OAuth token is already available; consumer Google sign-in remains planned."},
     {"id": "google-docs", "name": "Google Docs", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["drive.readonly", "documents.readonly"], "notes": "Drive and Docs account sync is the intended connector path."},
     {"id": "google-keep", "name": "Google Keep", "category": "Notes", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Google Keep account connector is required before this can be a primary source."},
     {"id": "microsoft-365", "name": "Microsoft 365", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["Files.Read", "Mail.Read", "Calendars.Read"], "notes": "Microsoft 365 account sync is the intended connector path."},
@@ -466,6 +466,7 @@ BASELINE_10K_CONNECTOR_IDS: frozenset[str] = frozenset(
     {
         "obsidian",
         "gmail",
+        "google-drive",
         "slack",
         "github",
         "readwise",
@@ -785,10 +786,11 @@ def _bounded_int(value: Any, *, minimum: int, maximum: int) -> int | None:
     return parsed
 
 
-SCHEDULED_CREDENTIAL_SYNC_SOURCES = {"github", "gmail", "readwise", "raindrop", "zotero", "linear", "notion", "slack", "calendar", "jira"}
+SCHEDULED_CREDENTIAL_SYNC_SOURCES = {"github", "gmail", "google-drive", "readwise", "raindrop", "zotero", "linear", "notion", "slack", "calendar", "jira"}
 SOURCE_SYNC_CURSOR_NAMES = {
     "obsidian": "local-folder",
     "gmail": "messages",
+    "google-drive": "files",
     "github": "issues",
     "slack": "messages",
     "readwise": "highlights",
@@ -3646,6 +3648,168 @@ class CortexStore:
             result["failed"] = int(result.get("failed") or 0) + len(sync.errors)
             if result.get("status") == "complete":
                 result["status"] = "partial"
+        result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
+        result["sync"] = sync_summary
+        return result
+
+    def sync_google_drive_account(
+        self,
+        user_id: str,
+        *,
+        access_token: str,
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        query: str | None = None,
+        mime_types: list[str] | None = None,
+        since: str | None = None,
+        page_token: str | None = None,
+        processing: str = "sync",
+        max_records: int = 50,
+        cursor_name: str = "files",
+        include_content: bool = True,
+        api_base_url: str | None = None,
+        request_value: Any | None = None,
+    ) -> dict[str, Any]:
+        from .connectors.google_drive import GOOGLE_DRIVE_SOURCE, fetch_google_drive_records
+
+        if processing not in {"sync", "async"}:
+            raise ValueError("processing must be sync or async")
+        try:
+            capped_max_records = int(max_records or 50)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_records must be an integer") from exc
+        if capped_max_records < 1 or capped_max_records > 200:
+            raise ValueError("max_records must be between 1 and 200")
+
+        sync = fetch_google_drive_records(
+            access_token=access_token,
+            query=query,
+            mime_types=mime_types or [],
+            since=since,
+            page_token=page_token,
+            max_records=capped_max_records,
+            include_content=bool(include_content),
+            api_base_url=api_base_url or "https://www.googleapis.com/drive/v3",
+            request_value=request_value,
+        )
+        identifier = (account_identifier or sync.user_email or "google-drive").strip()[:240]
+        resolved_account_id = (source_account_id or "").strip() or stable_id("sacct_", f"{user_id}:{GOOGLE_DRIVE_SOURCE}:{identifier}")
+        label = (account_label or f"Google Drive: {identifier}").strip()[:160]
+        sync_summary = sync.to_summary()
+        error_message = sync.errors[0]["error"] if sync.errors else None
+        metadata = {
+            "connector": GOOGLE_DRIVE_SOURCE,
+            "connector_version": sync_summary["connector_version"],
+            "records_found": sync.records_found,
+            "records_returned": sync.records_returned,
+            "skipped_unsupported": sync.skipped_unsupported,
+            "token_configured": True,
+            "content_sync_enabled": bool(include_content),
+            "query_configured": bool(str(query or "").strip()),
+            "mime_types": sync.mime_types,
+            "api_base_url": sync.api_base_url,
+        }
+        if sync.user_email:
+            metadata["email"] = sync.user_email
+            metadata["user_email"] = sync.user_email
+        if sync.query:
+            metadata["query"] = sync.query
+        metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(access_token or "").strip()))
+        account = self.upsert_source_account(
+            user_id,
+            source=GOOGLE_DRIVE_SOURCE,
+            account_label=label,
+            account_identifier=identifier,
+            connection_type="oauth_token",
+            status="needs_attention" if error_message else "connected",
+            auth_state="error" if error_message else "healthy",
+            policy={"review_required": True, "allow_ai_context": True},
+            metadata=metadata,
+            last_error=error_message,
+            account_id=resolved_account_id,
+        )
+        if str(access_token or "").strip():
+            self.store_source_account_credential(
+                user_id,
+                account["id"],
+                source=GOOGLE_DRIVE_SOURCE,
+                payload={
+                    "access_token": access_token,
+                    "query": query or "",
+                    "mime_types": sync.mime_types,
+                    "include_content": bool(include_content),
+                    "api_base_url": sync.api_base_url,
+                },
+            )
+        state = {
+            "connector": GOOGLE_DRIVE_SOURCE,
+            "connector_version": sync_summary["connector_version"],
+            "records_found": sync.records_found,
+            "records_returned": sync.records_returned,
+            "skipped_unsupported": sync.skipped_unsupported,
+            "sync_errors": sync.errors,
+            "next_page_token": sync.next_page_token,
+            "query": sync.query,
+            "mime_types": sync.mime_types,
+            "api_base_url": sync.api_base_url,
+        }
+        records = [record.to_source_account_record() for record in sync.records]
+        if not records:
+            cursor = self.upsert_sync_cursor(
+                user_id,
+                source=GOOGLE_DRIVE_SOURCE,
+                source_account_id=account["id"],
+                cursor_name=cursor_name,
+                cursor_value=sync.cursor_value,
+                high_water_mark=sync.high_water_mark,
+                state={
+                    **state,
+                    "last_batch_received": 0,
+                    "last_batch_saved": 0,
+                    "last_batch_queued": 0,
+                    "last_batch_skipped": sync.skipped_unsupported,
+                    "last_batch_failed": 0,
+                },
+                last_error=error_message,
+                completed=not bool(error_message),
+            )
+            updated_account = self._source_account_by_id(user_id, account["id"]) or account
+            return {
+                "source_account_id": account["id"],
+                "source": GOOGLE_DRIVE_SOURCE,
+                "status": "partial" if error_message else "empty",
+                "processing": processing,
+                "received": 0,
+                "queued": 0,
+                "saved": 0,
+                "skipped": sync.skipped_unsupported,
+                "failed": len(sync.errors),
+                "archived_missing": 0,
+                "capture_ids": [],
+                "records": [],
+                "errors": sync.errors,
+                "cursor": cursor,
+                "source_account": updated_account,
+                "sync": sync_summary,
+            }
+
+        result = self.sync_source_account_records(
+            user_id,
+            account["id"],
+            records=records,
+            cursor_name=cursor_name,
+            cursor_value=sync.cursor_value,
+            high_water_mark=sync.high_water_mark,
+            state=state,
+            processing=processing,
+        )
+        if sync.errors:
+            result["errors"] = [*(result.get("errors") or []), *sync.errors]
+            result["failed"] = int(result.get("failed") or 0) + len(sync.errors)
+            if result.get("status") == "complete":
+                result["status"] = "partial"
+        result["skipped"] = int(result.get("skipped") or 0) + sync.skipped_unsupported
         result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
         result["sync"] = sync_summary
         return result
@@ -10436,6 +10600,30 @@ class CortexStore:
                 cursor_name=cursor_name,
                 include_body=bool(credential_payload.get("include_body", metadata.get("content_sync_enabled", True))),
                 api_base_url=str(credential_payload.get("api_base_url") or metadata.get("api_base_url") or "https://gmail.googleapis.com/gmail/v1"),
+            )
+        elif source == "google-drive":
+            access_token = str(credential_payload.get("access_token") or "").strip()
+            if not access_token:
+                raise ValueError("google-drive source account is missing stored access token")
+            next_page_token = cursor_state_value("next_page_token")
+            mime_types = credential_payload.get("mime_types")
+            if not isinstance(mime_types, list):
+                mime_types = metadata.get("mime_types") if isinstance(metadata.get("mime_types"), list) else []
+            result = self.sync_google_drive_account(
+                user_id,
+                access_token=access_token,
+                source_account_id=account_id,
+                account_label=account_label,
+                account_identifier=account_identifier,
+                query=str(credential_payload.get("query") or metadata.get("query") or "").strip() or None,
+                mime_types=[str(mime).strip() for mime in mime_types if str(mime).strip()],
+                since=None if next_page_token else (high_water_mark or cursor_value),
+                page_token=next_page_token,
+                processing=processing,
+                max_records=min(max_records, 200),
+                cursor_name=cursor_name,
+                include_content=bool(credential_payload.get("include_content", metadata.get("content_sync_enabled", True))),
+                api_base_url=str(credential_payload.get("api_base_url") or metadata.get("api_base_url") or "https://www.googleapis.com/drive/v3"),
             )
         elif source == "github":
             token = str(credential_payload.get("token") or "").strip()

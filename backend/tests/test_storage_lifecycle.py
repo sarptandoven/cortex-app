@@ -593,7 +593,7 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertIn("Gmail account records", catalog["gmail"]["import_label"])
         self.assertIn("cloud-docs", catalog["google-drive"]["source_ids"])
         self.assertIn("docs", catalog["google-drive"]["source_ids"])
-        self.assertEqual(catalog["google-drive"]["live_status"], "planned")
+        self.assertEqual(catalog["google-drive"]["live_status"], "api_token")
         self.assertEqual(catalog["google-drive"]["export_status"], "generic")
         self.assertTrue(catalog["github"]["formats"])
         catalog_display_text = "\n".join(
@@ -1438,6 +1438,7 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         wired_source_paths = {
             "obsidian": "native-local-connector",
             "gmail": "native-token-connector",
+            "google-drive": "native-token-connector",
             "slack": "native-token-connector",
             "github": "native-token-connector",
             "readwise": "native-token-connector",
@@ -1450,7 +1451,7 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         }
         wired_source_ids = tuple(wired_source_paths)
 
-        self.assertEqual(len(wired_source_ids), 11)
+        self.assertEqual(len(wired_source_ids), 12)
         for source_id, primary_beta_path in wired_source_paths.items():
             with self.subTest(source_id=source_id):
                 entry = catalog[source_id]
@@ -1662,14 +1663,13 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         )
         account = account_payload["account"]
         self.assertEqual(account["source"], "google-drive")
-        self.assertEqual(account["status"], "planned")
-        self.assertEqual(account["auth_state"], "not_configured")
-        self.assertEqual(account["metadata"]["requested_status"], "connected")
+        self.assertEqual(account["status"], "connected")
+        self.assertEqual(account["auth_state"], "healthy")
 
         readiness_before_records = self.store.source_readiness_report(self.user_id)
         drive_before_records = next(item for item in readiness_before_records["sources"] if item["source"] == "google-drive")
-        self.assertEqual(drive_before_records["status"], "planned")
-        self.assertEqual(drive_before_records["beta_status"], "planned")
+        self.assertEqual(drive_before_records["status"], "connected")
+        self.assertEqual(drive_before_records["beta_status"], "ready")
 
         with self.assertRaises(PermissionError):
             call_tool(
@@ -1716,7 +1716,7 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         readiness_after_records = self.store.source_readiness_report(self.user_id)
         drive_after_records = next(item for item in readiness_after_records["sources"] if item["source"] == "google-drive")
         self.assertEqual(drive_after_records["status"], "needs_review")
-        self.assertEqual(drive_after_records["beta_status"], "planned")
+        self.assertEqual(drive_after_records["beta_status"], "ready")
 
         capture_id = synced["capture_ids"][0]
         self.assertEqual([item["id"] for item in self.store.inbox(self.user_id, limit=10)], [capture_id])
@@ -1729,9 +1729,9 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
         readiness_after_review = self.store.source_readiness_report(self.user_id)
         drive_after_review = next(item for item in readiness_after_review["sources"] if item["source"] == "google-drive")
-        self.assertEqual(drive_after_review["status"], "imported")
-        self.assertEqual(drive_after_review["beta_status"], "planned")
-        self.assertEqual(drive_after_review["sync_plan"]["managed_sync_status"], "planned")
+        self.assertEqual(drive_after_review["status"], "synced")
+        self.assertEqual(drive_after_review["beta_status"], "ready")
+        self.assertEqual(drive_after_review["sync_plan"]["managed_sync_status"], "healthy")
 
         found = self.store.search(self.user_id, "canonical project memory source", limit=5)
         self.assertTrue(found)

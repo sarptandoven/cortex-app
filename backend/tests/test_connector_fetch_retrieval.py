@@ -71,6 +71,14 @@ class ConnectorFetchRetrievalTests(unittest.TestCase):
                 "sync": self._sync_gmail,
             },
             {
+                "source": "google-drive",
+                "marker": "drivecitetest",
+                "query": "drivecitetest retrieval Drive citations",
+                "search_url_prefix": "https://docs.google.com/document/d/drive-citation-doc/edit",
+                "ask_url_prefix": "https://docs.google.com/document/d/drive-citation-doc/edit",
+                "sync": self._sync_google_drive,
+            },
+            {
                 "source": "linear",
                 "marker": "linearcitetest",
                 "query": "linearcitetest retrieval Linear citations",
@@ -710,6 +718,37 @@ END:VCALENDAR
             max_records=1,
             processing="sync",
             request_json=fake_request,
+        )
+
+    def _sync_google_drive(self) -> dict:
+        def fake_request(url: str, headers: dict[str, str]):
+            self.assertEqual(headers["Authorization"], "Bearer drive-test")
+            if url.endswith("/about?fields=user(emailAddress,displayName)"):
+                return {"user": {"emailAddress": "sarp@example.com"}}
+            if "/files?" in url:
+                return {
+                    "files": [
+                        {
+                            "id": "drive-citation-doc",
+                            "name": "Drive retrieval citation",
+                            "mimeType": "application/vnd.google-apps.document",
+                            "createdTime": "2026-06-29T10:00:00Z",
+                            "modifiedTime": "2026-06-30T10:00:00Z",
+                            "webViewLink": "https://docs.google.com/document/d/drive-citation-doc/edit",
+                            "owners": [{"emailAddress": "sarp@example.com", "displayName": "Sarp Doven"}],
+                            "lastModifyingUser": {"emailAddress": "sarp@example.com", "displayName": "Sarp Doven"},
+                        }
+                    ]
+                }
+            self.assertTrue(url.endswith("/files/drive-citation-doc/export?mimeType=text%2Fplain"))
+            return "We decided drivecitetest retrieval should preserve Drive document citations."
+
+        return self.store.sync_google_drive_account(
+            self.user_id,
+            access_token="drive-test",
+            max_records=1,
+            processing="sync",
+            request_value=fake_request,
         )
 
     def _sync_linear(self) -> dict:

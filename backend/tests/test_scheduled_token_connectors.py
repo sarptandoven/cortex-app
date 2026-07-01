@@ -13,12 +13,13 @@ from backend.app.storage import CortexStore
 
 READWISE_TOKEN = "readwise_scheduled_secret_123"
 GMAIL_TOKEN = "gmail_scheduled_secret_123"
+GOOGLE_DRIVE_TOKEN = "google_drive_scheduled_secret_123"
 RAINDROP_TOKEN = "raindrop_scheduled_secret_123"
 ZOTERO_TOKEN = "zotero_scheduled_secret_123"
 LINEAR_TOKEN = "linear_scheduled_secret_123"
 NOTION_TOKEN = "notion_scheduled_secret_123"
 
-SECRET_VALUES = (READWISE_TOKEN, GMAIL_TOKEN, RAINDROP_TOKEN, ZOTERO_TOKEN, LINEAR_TOKEN, NOTION_TOKEN)
+SECRET_VALUES = (READWISE_TOKEN, GMAIL_TOKEN, GOOGLE_DRIVE_TOKEN, RAINDROP_TOKEN, ZOTERO_TOKEN, LINEAR_TOKEN, NOTION_TOKEN)
 
 
 class ScheduledTokenConnectorTests(unittest.TestCase):
@@ -59,6 +60,22 @@ class ScheduledTokenConnectorTests(unittest.TestCase):
                 "label_ids": ["INBOX"],
                 "include_body": False,
                 "cursor_name": "messages",
+                "max_records": 200,
+            },
+        )
+
+    def test_google_drive_dispatches_from_local_credentials(self) -> None:
+        self._assert_credential_backed_dispatch(
+            "google-drive",
+            self._connect_google_drive_account,
+            "sync_google_drive_account",
+            {
+                "access_token": GOOGLE_DRIVE_TOKEN,
+                "api_base_url": "https://drive.invalid/drive/v3",
+                "query": "name contains 'Cortex'",
+                "mime_types": ["application/vnd.google-apps.document"],
+                "include_content": False,
+                "cursor_name": "files",
                 "max_records": 200,
             },
         )
@@ -191,6 +208,29 @@ class ScheduledTokenConnectorTests(unittest.TestCase):
             processing="sync",
             max_records=10,
             request_json=fake_request_json,
+        )
+        self.assertEqual(result["status"], "empty")
+        return result["source_account"]
+
+    def _connect_google_drive_account(self) -> dict[str, Any]:
+        def fake_request_value(url: str, headers: dict[str, str]) -> dict[str, Any] | str:
+            self.assertEqual(headers["Authorization"], f"Bearer {GOOGLE_DRIVE_TOKEN}")
+            if url.endswith("/about?fields=user(emailAddress,displayName)"):
+                return {"user": {"emailAddress": "sarp@example.com"}}
+            self.assertTrue(url.startswith("https://drive.invalid/drive/v3/files?"))
+            self.assertIn("name+contains+%27Cortex%27", url)
+            return {"files": [], "nextPageToken": None}
+
+        result = self.store.sync_google_drive_account(
+            self.user_id,
+            access_token=GOOGLE_DRIVE_TOKEN,
+            query="name contains 'Cortex'",
+            mime_types=["application/vnd.google-apps.document"],
+            include_content=False,
+            api_base_url="https://drive.invalid/drive/v3",
+            processing="sync",
+            max_records=10,
+            request_value=fake_request_value,
         )
         self.assertEqual(result["status"], "empty")
         return result["source_account"]
