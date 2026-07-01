@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from .config import load_settings
 from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
-from .mcp_tools import TOOLS, call_tool, tool_result_text, tools_for_scopes
+from .mcp_tools import TOOLS, call_tool, tool_call_result, tools_for_scopes
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
 
@@ -879,14 +879,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 except Exception as exc:
                     store.record_agent_event(user_id, tool_name, arguments, success=False, error=str(exc), token=context)
                     raise
-                result = {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": tool_result_text(value),
-                        }
-                    ]
-                }
+                result = tool_call_result(value)
             else:
                 raise ValueError(f"Unsupported MCP method: {method}")
             self._send_json({"jsonrpc": "2.0", "id": request.get("id"), "result": result})

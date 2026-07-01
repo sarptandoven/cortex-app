@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import load_settings
 from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
-from .mcp_tools import TOOLS, call_tool, tool_result_text, tools_for_scopes
+from .mcp_tools import TOOLS, call_tool, tool_call_result, tools_for_scopes
 from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GraphResponse, JobRunResponse, ListResponse, MaintenanceResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, ProductLoopResponse, QueuedCaptureResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
@@ -988,14 +988,7 @@ def mcp(request: MCPRequest, context: dict[str, Any] = Depends(mcp_auth)) -> dic
             except Exception as exc:
                 store.record_agent_event(user_id, tool_name, arguments, success=False, error=str(exc), token=context)
                 raise
-            result = {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": tool_result_text(value),
-                    }
-                ]
-            }
+            result = tool_call_result(value)
         else:
             raise ValueError(f"Unsupported MCP method: {request.method}")
         return {"jsonrpc": "2.0", "id": request.id, "result": result}

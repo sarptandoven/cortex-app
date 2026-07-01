@@ -992,6 +992,43 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertIn(("source_account", "upserted"), event_pairs)
         self.assertIn(("sync_cursor", "updated"), event_pairs)
 
+    def test_baseline_ten_catalog_services_do_not_make_fake_primary_ui_promises(self) -> None:
+        catalog = {item["id"]: item for item in self.store.source_connector_catalog()}
+        baseline_ids = (
+            "obsidian",
+            "chatgpt",
+            "claude",
+            "slack",
+            "email",
+            "gmail",
+            "notion",
+            "google-drive",
+            "cloud-docs",
+            "github",
+            "calendar",
+            "google-keep",
+        )
+
+        self.assertGreaterEqual(len(baseline_ids), 10)
+        for source_id in baseline_ids:
+            with self.subTest(source_id=source_id):
+                entry = catalog[source_id]
+                baseline = entry["service_baseline"]
+                self.assertTrue(entry["baseline_10k"])
+                self.assertTrue(baseline["included"])
+                self.assertTrue(baseline["records_supported"])
+                self.assertTrue(entry["supports_import"])
+                self.assertTrue(entry["source_ids"])
+                self.assertTrue(entry["formats"])
+                self.assertEqual(baseline["primary_ui"], source_id == "obsidian")
+                self.assertEqual(entry["show_in_primary_ui"], source_id == "obsidian")
+                self.assertEqual(entry["primary_beta"], source_id == "obsidian")
+
+        readiness = self.store.source_readiness_report(self.user_id)
+        self.assertGreaterEqual(readiness["summary"]["baseline_10k_services"], len(baseline_ids))
+        self.assertGreaterEqual(readiness["summary"]["baseline_10k_records_supported"], len(baseline_ids))
+        self.assertEqual(readiness["summary"]["baseline_10k_live_sync"], 1)
+
     def test_mcp_connected_source_tools_register_and_sync_cited_records(self) -> None:
         connectors = call_tool(self.store, self.user_id, "list_source_connectors", {"include_accounts": False})
         connector_ids = {item["id"] for item in connectors["results"]}

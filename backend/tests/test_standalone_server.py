@@ -1290,6 +1290,9 @@ class StandaloneServerTests(unittest.TestCase):
 
         self.assertEqual(response.status, 200)
         self.assertIn("result", payload)
+        self.assertIn("structuredContent", payload["result"])
+        self.assertEqual(payload["result"]["structuredContent"][0]["id"], "memory-1")
+        self.assertEqual(json.loads(payload["result"]["content"][0]["text"]), payload["result"]["structuredContent"])
         self.assertEqual(self.fake_store.search_calls[-1], ("local", "voice", 8, None, None, None))
         self.assertEqual(self.fake_store.agent_events[-1]["token"]["token_id"], "tok_standalone")
 

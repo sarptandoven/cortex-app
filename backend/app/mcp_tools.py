@@ -632,3 +632,17 @@ def tool_result_text(value: Any) -> str:
     if isinstance(value, str):
         return value
     return json.dumps(value, ensure_ascii=False, indent=2)
+
+
+def tool_call_result(value: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "content": [
+            {
+                "type": "text",
+                "text": tool_result_text(value),
+            }
+        ]
+    }
+    if isinstance(value, (dict, list)):
+        result["structuredContent"] = value
+    return result

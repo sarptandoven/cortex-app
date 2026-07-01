@@ -450,6 +450,73 @@ SOURCE_CONNECTOR_IMPORT_METADATA: dict[str, dict[str, Any]] = {
 }
 
 PRIMARY_BETA_CONNECTOR_IDS: frozenset[str] = frozenset({"obsidian"})
+BASELINE_10K_CONNECTOR_IDS: frozenset[str] = frozenset(
+    {
+        "obsidian",
+        "chatgpt",
+        "claude",
+        "slack",
+        "email",
+        "gmail",
+        "notion",
+        "google-drive",
+        "cloud-docs",
+        "github",
+        "calendar",
+        "google-keep",
+    }
+)
+SERVICE_MEMORY_SOURCE_KEYS: frozenset[str] = frozenset(
+    {
+        "calendar",
+        "chatgpt",
+        "claude",
+        "cloud-docs",
+        "contacts",
+        "copilot",
+        "discord",
+        "email",
+        "gemini",
+        "github",
+        "gmail",
+        "google-chat",
+        "google-docs",
+        "google-drive",
+        "google-keep",
+        "grok",
+        "jira",
+        "linear",
+        "linkedin",
+        "microsoft-365",
+        "notebooklm",
+        "notion",
+        "outlook",
+        "perplexity",
+        "poe",
+        "readwise",
+        "slack",
+        "teams",
+        "telegram",
+        "twitter-x",
+        "whatsapp",
+        "work-tools",
+        "zoom",
+    }
+)
+LOCAL_FILE_MEMORY_SOURCE_KEYS: frozenset[str] = frozenset(
+    {
+        "apple-mail",
+        "apple-notes",
+        "browser-bookmarks",
+        "browser-history",
+        "docs",
+        "imessage",
+        "knowledge-base",
+        "messages",
+        "obsidian",
+        "pdfs",
+    }
+)
 
 
 SENSITIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -594,6 +661,28 @@ def _default_import_label(import_status: str, source_name: str) -> str:
     if status == "export_only":
         return f"{source_name} needs a direct connector before becoming a primary source"
     return "Connect this source when an account or direct integration is available"
+
+
+def _connector_service_baseline(item: dict[str, Any], source_ids: list[str], *, supports_import: bool) -> dict[str, Any]:
+    connector_id = _normalize_source_key(item.get("id"))
+    live_status = str(item.get("live_status") or "").lower()
+    primary_beta = _connector_primary_beta(item)
+    if primary_beta:
+        path = "native-local-sync"
+    elif live_status == "planned":
+        path = "normalized-record-sync-now-account-sign-in-planned"
+    elif supports_import:
+        path = "connector-records-supported"
+    else:
+        path = "direct-connector-needed"
+    return {
+        "included": connector_id in BASELINE_10K_CONNECTOR_IDS,
+        "records_supported": bool(supports_import),
+        "live_sync": primary_beta,
+        "primary_ui": primary_beta,
+        "path": path,
+        "source_ids": source_ids,
+    }
 
 
 def _connector_readiness_status(item: dict[str, Any]) -> str:
@@ -871,14 +960,16 @@ def _normalize_sector_filter(value: str | None) -> str:
 def _memory_source_type(source: str, source_url: str | None) -> str:
     if source_url:
         scheme = urlsplit(source_url).scheme.lower()
-        if scheme == "file":
+        if scheme in {"file", "local-file"}:
             return "local_file"
         if scheme:
             return "service"
+        if str(source_url).startswith("/"):
+            return "local_file"
     normalized = _normalize_source_key(source)
-    if normalized in {"obsidian", "apple-notes", "browser-bookmarks", "browser-history"}:
+    if normalized in LOCAL_FILE_MEMORY_SOURCE_KEYS:
         return "local_file"
-    if normalized in {"gmail", "notion", "slack", "google-drive", "github"}:
+    if normalized in SERVICE_MEMORY_SOURCE_KEYS:
         return "service"
     return "manual" if normalized in {"macos", "unit-test"} else "connector"
 
@@ -1826,6 +1917,8 @@ class CortexStore:
             if import_info and not formats:
                 formats = _unique_catalog_strings(import_info.get("formats", []))
             export_status = str(import_metadata.get("export_status") or import_status)
+            supports_import = import_status in {"native", "generic", "import_ready"} or bool(formats)
+            service_baseline = _connector_service_baseline(item, source_ids, supports_import=supports_import)
             catalog.append(
                 {
                     **item,
@@ -1841,8 +1934,10 @@ class CortexStore:
                     "source_ids": source_ids,
                     "source_aliases": source_aliases,
                     "import_label": import_metadata.get("import_label") or _default_import_label(import_status, item.get("name") or source_id),
-                    "supports_import": import_status in {"native", "generic", "import_ready"} or bool(formats),
+                    "supports_import": supports_import,
                     "formats": formats,
+                    "baseline_10k": service_baseline["included"],
+                    "service_baseline": service_baseline,
                 }
             )
         return catalog
@@ -1921,6 +2016,11 @@ class CortexStore:
             has_attention = bool(account_errors or cursor_errors or processing_errors or revoked_or_disconnected)
             import_status = str(item.get("import_status") or "")
             supports_import = bool(item.get("supports_import")) or import_status in {"native", "generic", "import_ready"} or bool(item.get("formats"))
+            service_baseline = item.get("service_baseline") or _connector_service_baseline(
+                item,
+                _unique_catalog_strings(item.get("source_ids") or [source]),
+                supports_import=supports_import,
+            )
             live_status = str(item.get("live_status") or "")
             readiness_status = str(item.get("readiness_status") or _connector_readiness_status(item))
             catalog_primary_beta = bool(item.get("primary_beta"))
@@ -2012,6 +2112,8 @@ class CortexStore:
                     "readiness_status": readiness_status,
                     "permissions_required": item.get("permissions_required") or _connector_permission_requirements(item),
                     "first_100_note": item.get("first_100_note") or _connector_first_100_note(item),
+                    "baseline_10k": bool(item.get("baseline_10k") or service_baseline.get("included")),
+                    "service_baseline": service_baseline,
                     "primary_beta": primary_beta,
                     "beta_status": beta_status,
                     "primary_beta_path": primary_beta_path,
@@ -2071,6 +2173,11 @@ class CortexStore:
             "processing": sum(int(row["processing"]) for row in rows),
             "processing_failed": sum(int(row["processing_failed"]) for row in rows),
             "sources_with_data": sum(1 for row in rows if row["captures"] or row["active_memories"]),
+            "baseline_10k_services": sum(1 for row in rows if row["baseline_10k"]),
+            "baseline_10k_records_supported": sum(
+                1 for row in rows if row["baseline_10k"] and (row["service_baseline"] or {}).get("records_supported")
+            ),
+            "baseline_10k_live_sync": sum(1 for row in rows if row["baseline_10k"] and (row["service_baseline"] or {}).get("live_sync")),
             "needs_review": sum(1 for row in rows if row["status"] == "needs_review"),
             "needs_attention": sum(1 for row in rows if row["status"] == "needs_attention"),
             "active_memories": sum(int(row["active_memories"]) for row in rows),
@@ -4103,7 +4210,15 @@ class CortexStore:
             intent_rows = []
             if not fts_rows and not temporal_rows:
                 intent_rows = self._intent_search(conn, user_id, query, candidate_limit, kind, layer, user_settings, sector=sector)
-            rows = self._fuse_search_rows(query, fts_rows, vector_rows, temporal_rows, intent_rows, limit)
+            rows = self._fuse_search_rows(
+                query,
+                fts_rows,
+                vector_rows,
+                temporal_rows,
+                intent_rows,
+                limit,
+                user_settings=user_settings,
+            )
             if not rows:
                 like = f"%{query}%"
                 fallback_rows = conn.execute(
@@ -4115,7 +4230,7 @@ class CortexStore:
                     """,
                     [*params, like, like, like, candidate_limit],
                 ).fetchall()
-                rows = self._rank_rows_with_layer_boosts(query, fallback_rows, limit)
+                rows = self._rank_rows_with_layer_boosts(query, fallback_rows, limit, user_settings=user_settings)
             if not vector_available and not rows:
                 existing_ids = {row["id"] for row in rows}
                 lexical_rows = self._lexical_fallback_search(conn, user_id, query, candidate_limit, kind, layer, user_settings, sector=sector)
@@ -8762,6 +8877,8 @@ class CortexStore:
         temporal_rows: list[Any],
         intent_rows: list[Any],
         limit: int,
+        *,
+        user_settings: dict[str, Any] | None = None,
     ) -> list[Any]:
         ranked: dict[str, dict[str, Any]] = {}
         for index, row in enumerate(fts_rows):
@@ -8778,20 +8895,31 @@ class CortexStore:
             entry["score"] += 0.35 / (60 + index)
         layer_boosts = query_layer_boosts(query)
         temporal_prefixes = query_temporal_prefixes(query)
+        source_policies = _normalize_source_policies((user_settings or {}).get("source_policies"))
         for entry in ranked.values():
             entry["score"] += self._layer_boost(entry["row"], layer_boosts)
             entry["score"] += self._temporal_boost(entry["row"], temporal_prefixes)
+            entry["score"] += self._source_quality_boost(entry["row"], source_policies)
         return [item["row"] for item in sorted(ranked.values(), key=lambda item: item["score"], reverse=True)[:limit]]
 
-    def _rank_rows_with_layer_boosts(self, query: str, rows: list[Any], limit: int) -> list[Any]:
+    def _rank_rows_with_layer_boosts(
+        self,
+        query: str,
+        rows: list[Any],
+        limit: int,
+        *,
+        user_settings: dict[str, Any] | None = None,
+    ) -> list[Any]:
         layer_boosts = query_layer_boosts(query)
         temporal_prefixes = query_temporal_prefixes(query)
+        source_policies = _normalize_source_policies((user_settings or {}).get("source_policies"))
         ranked = [
             {
                 "row": row,
                 "score": (0.2 / (60 + index))
                 + self._layer_boost(row, layer_boosts)
-                + self._temporal_boost(row, temporal_prefixes),
+                + self._temporal_boost(row, temporal_prefixes)
+                + self._source_quality_boost(row, source_policies),
             }
             for index, row in enumerate(rows)
         ]
@@ -8875,6 +9003,58 @@ class CortexStore:
                     return 0.045
                 return TEMPORAL_RETRIEVAL_BOOST + 0.004
         return 0.0
+
+    def _source_quality_boost(self, row: Any, source_policies: dict[str, dict[str, Any]]) -> float:
+        score = (
+            self._citation_quality_boost(row)
+            + self._source_type_boost(row)
+            + self._trusted_source_boost(row, source_policies)
+        )
+        return min(0.006, score)
+
+    def _citation_quality_boost(self, row: Any) -> float:
+        source_url = str(self._row_value(row, "source_url") or "").strip()
+        if not source_url:
+            return 0.0
+        score = 0.0015
+        lowered = source_url.lower()
+        if any(marker in lowered for marker in ("line=", "excerpt=", "message=", "row=", "event=", "subject=", "page=", "document=")):
+            score += 0.001
+        return score
+
+    def _source_type_boost(self, row: Any) -> float:
+        source = str(self._row_value(row, "source") or "")
+        source_url = str(self._row_value(row, "source_url") or "").strip() or None
+        source_type = str(self._row_value(row, "source_type") or _memory_source_type(source, source_url)).strip().lower()
+        return 0.001 if source_type in {"service", "local_file"} else 0.0
+
+    def _trusted_source_boost(self, row: Any, source_policies: dict[str, dict[str, Any]]) -> float:
+        score = 0.0
+        source = _normalize_source_key(str(self._row_value(row, "source") or ""))
+        if source:
+            matched_sources = _source_account_alias_sources(source) or {source}
+            if any((source_policies.get(candidate) or {}).get("mode") == "trusted" for candidate in matched_sources):
+                score += 0.003
+
+        provenance = self._json_or_empty(str(self._row_value(row, "provenance_json") or "{}"))
+        metadata = provenance.get("record_metadata") if isinstance(provenance.get("record_metadata"), dict) else {}
+        trusted_values = {
+            str(metadata.get(key) or "").strip().lower()
+            for key in ("source_quality", "quality", "trust", "trust_level", "verification")
+        }
+        if any(value in {"trusted", "high", "canonical", "verified"} for value in trusted_values):
+            score += 0.002
+        if any(bool(metadata.get(key)) for key in ("trusted_source", "verified", "canonical")):
+            score += 0.002
+        return score
+
+    def _row_value(self, row: Any, key: str, default: Any = None) -> Any:
+        try:
+            return row[key] if key in row.keys() else default
+        except (AttributeError, KeyError, IndexError, TypeError):
+            if isinstance(row, dict):
+                return row.get(key, default)
+            return default
 
     def _lexical_fallback_terms(self, query: str, *, limit: int = 8) -> list[str]:
         terms: list[str] = []

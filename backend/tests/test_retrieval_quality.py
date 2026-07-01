@@ -341,6 +341,143 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
                 self.assertEqual(results[0]["id"], expected_id)
                 self.assertEqual(results[0]["layer"], expected_layer)
 
+    def test_source_quality_boost_reranks_near_tie_with_citation_and_trusted_metadata(self) -> None:
+        self.store.update_settings(
+            self.user_id,
+            {
+                "review_new_captures": False,
+                "allow_pending_in_context": True,
+                "source_policies": {"github": {"mode": "trusted"}},
+            },
+        )
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Atlas reliability contract source quality chooses ranking from generic memo.",
+            source="unit-test",
+            source_url=None,
+            title="Uncited near tie",
+            extracted={
+                "_timestamp": "2026-05-01T00:00:00+00:00",
+                "summary": "Uncited near tie.",
+                "records": [
+                    {
+                        "id": "quality_uncited_manual",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "Atlas reliability contract source quality chooses ranking from generic memo.",
+                        "summary": "Generic uncited ranking memo.",
+                        "confidence": "confirmed",
+                        "importance": 5,
+                        "topics": ["atlas", "reliability", "ranking"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Atlas reliability contract source quality chooses ranking from canonical issue.",
+            source="github",
+            source_url="cortex-source://github#service=github&file=issues.json&line=12&excerpt=atlas-reliability",
+            title="Cited trusted near tie",
+            extracted={
+                "_timestamp": "2026-05-01T00:00:00+00:00",
+                "summary": "Cited trusted near tie.",
+                "records": [
+                    {
+                        "id": "quality_cited_trusted",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "Atlas reliability contract source quality chooses ranking from canonical issue.",
+                        "summary": "Canonical cited ranking issue.",
+                        "confidence": "confirmed",
+                        "importance": 1,
+                        "topics": ["atlas", "reliability", "ranking"],
+                        "entity_ids": [],
+                        "metadata": {"source_quality": "canonical", "verified": True},
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+
+        results = self.store.search(self.user_id, "atlas reliability contract source quality ranking", limit=2)
+
+        self.assertEqual(results[0]["id"], "quality_cited_trusted")
+        self.assertEqual(results[0]["source_type"], "service")
+        self.assertIn("line=12", results[0]["source_url"])
+
+    def test_source_quality_boost_does_not_override_layer_intent_relevance(self) -> None:
+        self.store.update_settings(
+            self.user_id,
+            {
+                "review_new_captures": False,
+                "allow_pending_in_context": True,
+                "source_policies": {"github": {"mode": "trusted"}},
+            },
+        )
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Planning alpha rank decision appears in a trusted GitHub note but is not the final choice.",
+            source="github",
+            source_url="cortex-source://github#service=github&file=issues.json&line=20&excerpt=planning-alpha",
+            title="Trusted semantic distractor",
+            extracted={
+                "_timestamp": "2026-05-01T00:00:00+00:00",
+                "summary": "Trusted semantic distractor.",
+                "records": [
+                    {
+                        "id": "quality_trusted_semantic_distractor",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "Planning alpha rank decision appears in a trusted GitHub note but is not the final choice.",
+                        "summary": "Trusted semantic planning note.",
+                        "confidence": "confirmed",
+                        "importance": 5,
+                        "topics": ["planning", "alpha", "rank", "decision"],
+                        "entity_ids": [],
+                        "metadata": {"source_quality": "verified", "canonical": True},
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Planning alpha rank decision: choose stdlib unittest for retrieval evaluation.",
+            source="unit-test",
+            source_url=None,
+            title="Decision near tie",
+            extracted={
+                "_timestamp": "2026-05-01T00:00:00+00:00",
+                "summary": "Decision near tie.",
+                "records": [
+                    {
+                        "id": "quality_decision_intent",
+                        "kind": "decision",
+                        "layer": "decision",
+                        "content": "Planning alpha rank decision: choose stdlib unittest for retrieval evaluation.",
+                        "summary": "Use stdlib unittest for retrieval evaluation.",
+                        "confidence": "confirmed",
+                        "importance": 1,
+                        "topics": ["planning", "alpha", "rank", "decision"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+
+        results = self.store.search(self.user_id, "planning alpha rank decision", limit=2)
+
+        self.assertEqual(results[0]["id"], "quality_decision_intent")
+        self.assertEqual(results[0]["layer"], "decision")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1259,6 +1259,57 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(bob.json()["user_id"], "mcp-token-bob")
         self.assertNotEqual(alice.json()["token_id"], bob.json()["token_id"])
 
+    def test_mcp_tool_calls_return_structured_content_for_retrieval_and_catalog(self) -> None:
+        user = "mcp-structured-content-contract"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+        self._allow_pending_context(user)
+        phrase = "Structured MCP retrieval should preserve Cortex citation payloads for Project Signal."
+        created = self.client.post(
+            "/v1/captures",
+            json={
+                "content": phrase,
+                "source": "github",
+                "source_url": "cortex-source://github#service=github&file=issues.json&line=31&excerpt=project-signal",
+            },
+            headers=headers,
+        )
+        self.assertEqual(created.status_code, 200)
+
+        search = self.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": "structured-search",
+                "method": "tools/call",
+                "params": {"name": "search_memory", "arguments": {"query": "Project Signal citation payloads", "top_k": 3}},
+            },
+            headers=headers,
+        )
+        self.assertEqual(search.status_code, 200)
+        search_result = search.json()["result"]
+        self.assertIn("content", search_result)
+        self.assertIn("structuredContent", search_result)
+        self.assertEqual(json.loads(search_result["content"][0]["text"]), search_result["structuredContent"])
+        self.assertEqual(search_result["structuredContent"][0]["source"], "github")
+        self.assertIn("line=31", search_result["structuredContent"][0]["source_url"])
+
+        catalog = self.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": "structured-catalog",
+                "method": "tools/call",
+                "params": {"name": "list_source_connectors", "arguments": {}},
+            },
+            headers=headers,
+        )
+        self.assertEqual(catalog.status_code, 200)
+        catalog_result = catalog.json()["result"]
+        self.assertIn("structuredContent", catalog_result)
+        github = next(item for item in catalog_result["structuredContent"]["results"] if item["id"] == "github")
+        self.assertTrue(github["service_baseline"]["records_supported"])
+        self.assertFalse(github["service_baseline"]["primary_ui"])
+
     def test_read_only_mcp_search_suppresses_edited_obsidian_note_pending_review(self) -> None:
         user = "mcp-obsidian-review-contract"
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
