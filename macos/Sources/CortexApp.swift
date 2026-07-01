@@ -1229,10 +1229,10 @@ enum AIIntegrationCatalog {
             category: .developer,
             systemImage: "rectangle.connected.to.line.below",
             summary: "Connect Cortex to VS Code user or workspace AI tools.",
-            restartHint: "Add the connection details to VS Code, then reload the window.",
+            restartHint: "Add the manual setup to VS Code, then reload the window.",
             bundleIdentifiers: ["com.microsoft.VSCode"],
             configTargets: [],
-            setupHint: "Use connection details only if VS Code asks for them.",
+            setupHint: "Use manual setup only if VS Code asks for it.",
             browserURL: "https://code.visualstudio.com"
         ),
         AIIntegration(
@@ -1455,14 +1455,14 @@ enum CortexRecoveryText {
 
     static func backendStatusLine(_ raw: String) -> String? {
         let lowered = raw.lowercased()
-        if lowered.hasPrefix("backend start failed") {
-            return "Backend could not start. Click Reconnect, then try again."
+        if lowered.hasPrefix("backend start failed") || lowered.hasPrefix("memory engine start failed") {
+            return "Local memory engine could not start. Click Reconnect, then try again."
         }
-        if lowered == "backend did not become ready" {
-            return "Backend is still starting. Wait a moment, then click Reconnect."
+        if lowered == "backend did not become ready" || lowered == "local memory engine did not become ready" {
+            return "Local memory engine is still starting. Wait a moment, then click Reconnect."
         }
-        if lowered.contains("backend") && lowered.contains("unavailable") {
-            return "Backend is unavailable. Click Reconnect, then try again."
+        if (lowered.contains("backend") || lowered.contains("memory engine")) && lowered.contains("unavailable") {
+            return "Local memory engine is unavailable. Click Reconnect, then try again."
         }
         return nil
     }
@@ -1523,7 +1523,7 @@ enum CortexRecoveryText {
             return "Authentication needs a reset. Click Reconnect, then try again."
         }
         if lowered.contains("http 404") || lowered.contains("not found") {
-            return "This app and backend may be out of sync. Click Reconnect, then try again."
+            return "This app and local memory engine may be out of sync. Click Reconnect, then try again."
         }
         if lowered.contains("http 409") || lowered.contains("conflict") || lowered.contains("database is locked") {
             return "Cortex is finishing another change. Wait a moment, then try again."
@@ -1535,10 +1535,10 @@ enum CortexRecoveryText {
             return "Cortex is busy. Wait a moment, then try again."
         }
         if lowered.contains("http 5") || lowered.contains("internal server error") || lowered.contains("bad gateway") || lowered.contains("service unavailable") {
-            return "Local backend hit a problem. Click Reconnect, then try again."
+            return "Local memory engine hit a problem. Click Reconnect, then try again."
         }
         if lowered.contains("connection refused") || lowered.contains("could not connect to the server") || lowered.contains("cannot connect to host") || lowered.contains("failed to connect") || lowered.contains("nsurlerrordomain code=-1004") {
-            return "Local backend is unreachable. Click Reconnect, then try again."
+            return "Local memory engine is unreachable. Click Reconnect, then try again."
         }
         if lowered.contains("network connection was lost") || lowered.contains("nsurlerrordomain code=-1005") {
             return "Connection dropped. Click Reconnect, then try again."
@@ -1550,10 +1550,10 @@ enum CortexRecoveryText {
             return "Network is offline. Check the connection, then try again."
         }
         if lowered.contains("unsupported url") || lowered.contains("bad url") || lowered.contains("nsurlerrordomain code=-1000") {
-            return "The backend endpoint is invalid. Check the endpoint, then reconnect."
+            return "The local memory endpoint is invalid. Check the endpoint, then reconnect."
         }
         if lowered.contains("existing config") || lowered.contains("config is not a json") {
-            return "That tool connection could not be updated automatically. Open Troubleshooting, then Connection details."
+            return "That tool connection could not be updated automatically. Open Troubleshooting, then Manual setup."
         }
         if lowered.contains("data couldn") || lowered.contains("correct format") || lowered.contains("decoding") {
             return "Cortex received an unexpected response. Click Reconnect, then try again."
@@ -1572,7 +1572,7 @@ enum CortexRecoveryText {
         case 401, 403:
             return "Authentication needs a reset. Click Reconnect, then try again."
         case 404:
-            return "This app and backend may be out of sync. Click Reconnect, then try again."
+            return "This app and local memory engine may be out of sync. Click Reconnect, then try again."
         case 409:
             return "Cortex is finishing another change. Wait a moment, then try again."
         case 413:
@@ -1580,7 +1580,7 @@ enum CortexRecoveryText {
         case 429:
             return "Cortex is busy. Wait a moment, then try again."
         case 500...599:
-            return "Local backend hit a problem. Click Reconnect, then try again."
+            return "Local memory engine hit a problem. Click Reconnect, then try again."
         default:
             return "Refresh and try again. If it repeats, click Reconnect."
         }
@@ -1589,7 +1589,7 @@ enum CortexRecoveryText {
     private static func urlRecoveryText(_ code: URLError.Code) -> String {
         switch code {
         case .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed:
-            return "Local backend is unreachable. Click Reconnect, then try again."
+            return "Local memory engine is unreachable. Click Reconnect, then try again."
         case .networkConnectionLost:
             return "Connection dropped. Click Reconnect, then try again."
         case .timedOut:
@@ -1597,11 +1597,11 @@ enum CortexRecoveryText {
         case .notConnectedToInternet:
             return "Network is offline. Check the connection, then try again."
         case .badURL, .unsupportedURL:
-            return "The backend endpoint is invalid. Check the endpoint, then reconnect."
+            return "The local memory endpoint is invalid. Check the endpoint, then reconnect."
         case .userAuthenticationRequired, .userCancelledAuthentication:
             return "Authentication needs a reset. Click Reconnect, then try again."
         default:
-            return "Local backend is unreachable. Click Reconnect, then try again."
+            return "Local memory engine is unreachable. Click Reconnect, then try again."
         }
     }
 
@@ -1671,20 +1671,20 @@ final class BackendSupervisor {
     func ensureRunning(endpoint: String, apiKey: String, mcpAPIKey: String, vaultPath: String) async -> String {
         let normalizedEndpoint = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard normalizedEndpoint.contains("127.0.0.1") || normalizedEndpoint.contains("localhost") else {
-            return "Using remote backend"
+            return "Using remote memory engine"
         }
         let initialHealth = await healthCheck(endpoint: normalizedEndpoint, apiKey: apiKey, expectedVaultPath: vaultPath)
         if initialHealth == .healthy {
-            return "Backend connected"
+            return "Local memory engine connected"
         }
         if let process, process.isRunning {
             for _ in 0..<90 {
                 if await healthCheck(endpoint: normalizedEndpoint, apiKey: apiKey, expectedVaultPath: vaultPath) == .healthy {
-                    return "Local backend started"
+                    return "Local memory engine started"
                 }
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
-            return "Backend is still starting"
+            return "Local memory engine is still starting"
         }
         do {
             if initialHealth == .incompatible {
@@ -1694,13 +1694,13 @@ final class BackendSupervisor {
             try startBundledBackend(apiKey: apiKey, mcpAPIKey: mcpAPIKey, vaultPath: vaultPath)
             for _ in 0..<90 {
                 if await healthCheck(endpoint: normalizedEndpoint, apiKey: apiKey, expectedVaultPath: vaultPath) == .healthy {
-                    return "Local backend started"
+                    return "Local memory engine started"
                 }
                 try await Task.sleep(nanoseconds: 500_000_000)
             }
-            return "Backend did not become ready"
+            return "Local memory engine did not become ready"
         } catch {
-            return CortexRecoveryText.failureStatus("Backend start", error: error)
+            return CortexRecoveryText.failureStatus("Memory engine start", error: error)
         }
     }
 
@@ -1723,7 +1723,7 @@ final class BackendSupervisor {
         let backendURL = resources.appendingPathComponent("backend", isDirectory: true)
         let moduleURL = backendURL.appendingPathComponent("app/standalone_server.py")
         guard FileManager.default.fileExists(atPath: moduleURL.path) else {
-            throw NSError(domain: "Cortex", code: 2, userInfo: [NSLocalizedDescriptionKey: "Bundled backend is missing"])
+            throw NSError(domain: "Cortex", code: 2, userInfo: [NSLocalizedDescriptionKey: "Bundled local memory engine is missing"])
         }
 
         try FileManager.default.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
@@ -2313,7 +2313,7 @@ final class AppState: ObservableObject {
     func ensureBackend() async {
         ensureUsableAPIKey()
         ensureUsableMCPAPIKey()
-        backendStatus = "Checking backend"
+        backendStatus = "Checking memory engine"
         let message = await backend.ensureRunning(endpoint: endpoint, apiKey: apiKey, mcpAPIKey: mcpAPIKey, vaultPath: vaultPath)
         backendStatus = message
         status = message
@@ -2956,7 +2956,7 @@ final class AppState: ObservableObject {
         await loadIntegrationTokens()
         refreshIntegrationStates()
         if registered {
-            status = "Tool access token reset. Reconnect or update connection details for connected AI tools."
+            status = "Tool access reset. Reconnect detected AI tools or use manual setup if an app asks."
         }
     }
 
@@ -2969,7 +2969,7 @@ final class AppState: ObservableObject {
         let text = mcpConfigJSON()
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-        status = integration.map { "\($0.name) connection details copied" } ?? "Connection details copied"
+        status = integration.map { "\($0.name) manual setup copied" } ?? "Manual setup copied"
     }
 
     func copyIntegrationGuide(_ integration: AIIntegration) {
@@ -3001,7 +3001,7 @@ final class AppState: ObservableObject {
 
     func installDetectedIntegrations() {
         if DistributionMode.isAppStore {
-            status = "App Store builds require advanced tool connection details"
+            status = "App Store builds require manual AI tool setup"
             return
         }
         let detected = integrations.filter { integration in
@@ -3145,7 +3145,7 @@ final class AppState: ObservableObject {
 
     private func integrationGuide(for integration: AIIntegration) -> String {
         let targetPaths = integration.configTargets.isEmpty
-            ? "This app uses connection details from Cortex."
+            ? "This app uses manual setup from Cortex."
             : integration.configTargets.map { "- \($0.label): \($0.url.path)" }.joined(separator: "\n")
         return """
         Cortex integration: \(integration.name)
@@ -3159,12 +3159,12 @@ final class AppState: ObservableObject {
         Connection targets:
         \(targetPaths)
 
-        Connection details preview:
+        Manual setup preview:
         \(mcpConfigJSON(redactToken: true))
 
         Local Cortex service:
         Base URL: \(endpoint)
-        Token: use Copy connection details from Connection details only if this app asks for them.
+        Token: use Copy manual setup from Troubleshooting only if this app asks for it.
 
         Assistant rule:
         Search Cortex memory before asking the user to repeat project, person, decision, or open-loop details. Prefer cited memory search or agent adaptation when another app needs approved personal memory.
@@ -4137,7 +4137,7 @@ struct IntegrationCenterView: View {
             Text(compact ? "AI tools" : "AI access")
                 .font(compact ? .headline : .title3)
                 .fontWeight(.semibold)
-            Text(compact ? "Connect local AI tools so approved memory is available where you already work." : "Connect local tools so approved memory is available where you work. Extra connection details stay collapsed unless an app asks for them.")
+            Text(compact ? "Connect local AI tools so approved memory is available where you already work." : "Connect local tools so approved memory is available where you work. Manual setup stays collapsed unless an app asks for it.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -4147,7 +4147,7 @@ struct IntegrationCenterView: View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 8)], spacing: 8) {
             IntegrationMetricBadge(title: "Connected", value: "\(connectedCount)", systemImage: "checkmark.seal.fill", color: .green)
             IntegrationMetricBadge(title: "Detected", value: "\(detectedCount)", systemImage: "app.badge.checkmark", color: .accentColor)
-            IntegrationMetricBadge(title: "Local Cortex", value: state.endpoint.replacingOccurrences(of: "http://", with: ""), systemImage: "network", color: .purple)
+            IntegrationMetricBadge(title: "Local memory", value: state.endpoint.replacingOccurrences(of: "http://", with: ""), systemImage: "network", color: .purple)
         }
     }
 
@@ -4175,16 +4175,16 @@ struct IntegrationCenterView: View {
     }
 
     private var troubleshootingSetupActions: some View {
-        DisclosureGroup("Connection details") {
+        DisclosureGroup("Manual setup") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Most tools connect automatically. Open this only when a local AI app asks for connection details.")
+                Text("Most tools connect automatically. Open this only when a local AI app asks for manual setup.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 HStack {
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy connection details", systemImage: "doc.on.doc")
+                        Label("Copy manual setup", systemImage: "doc.on.doc")
                     }
                     Spacer()
                 }
@@ -5282,8 +5282,8 @@ struct TrustPolicySection: View {
                             isOn: $state.appSettings.allow_agent_writes
                         )
                         TrustToggleRow(
-                            title: "Let connected AI export memory",
-                            detail: "Connected AI tools can request redacted exports only when this is on.",
+                            title: "Allow AI data exports",
+                            detail: "Connected AI tools can request redacted exports only when you turn this on.",
                             systemImage: "square.and.arrow.up",
                             isOn: $state.appSettings.allow_agent_exports
                         )
@@ -5336,9 +5336,6 @@ struct TrustPolicySection: View {
                         .textFieldStyle(.roundedBorder)
                     }
 
-                    Stepper(value: $state.appSettings.context_pack_limit, in: 4...50, step: 2) {
-                        Text("Memories per Ask: \(state.appSettings.context_pack_limit)")
-                    }
                 }
                 .padding(.top, 8)
             }
@@ -5706,7 +5703,7 @@ struct SettingsOnboardingSection: View {
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy connection details", systemImage: "doc.on.doc")
+                        Label("Copy manual setup", systemImage: "doc.on.doc")
                             .frame(minHeight: 40)
                     }
                     .controlSize(.large)
@@ -5864,7 +5861,7 @@ struct SettingsBackendSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Backend")
+            Text("Local memory engine")
                 .font(.headline)
             TextField("Endpoint", text: $state.endpoint)
                 .textFieldStyle(.roundedBorder)
@@ -5888,7 +5885,7 @@ struct SettingsBackendSection: View {
                 }
                 Spacer()
             }
-            Text("Backend: \(state.displayBackendStatus)")
+            Text("Engine: \(state.displayBackendStatus)")
                 .font(.caption)
                 .foregroundColor(.secondary)
             Text("Log: \(state.backendLogPath)")
@@ -5916,7 +5913,7 @@ struct SettingsReliabilitySection: View {
             }
             if let report = state.reliabilityReport {
                 HStack(spacing: 8) {
-                    HealthPill(label: "Backend", value: report.backend_version)
+                    HealthPill(label: "Engine", value: report.backend_version)
                     HealthPill(label: "Contract", value: String(report.health_contract))
                     HealthPill(label: "Checks", value: "\(report.checks.filter { $0.status == "ok" }.count)/\(report.checks.count)")
                 }

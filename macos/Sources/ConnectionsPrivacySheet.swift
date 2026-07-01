@@ -62,8 +62,6 @@ private struct ConnectionsPrivacyOverview: View {
     @State private var connectedExpanded = false
     @State private var advancedExpanded = false
     @State private var sourceAuditExpanded = false
-    @State private var tokenDetailsExpanded = false
-    @State private var aiToolSetupExpanded = false
     @State private var developerDetailsExpanded = false
 
     private var connectedNotesConnectionCount: Int {
@@ -150,38 +148,34 @@ private struct ConnectionsPrivacyOverview: View {
     private func advancedControls(summary: TrustSummaryResponse) -> some View {
         DisclosureGroup(isExpanded: $advancedExpanded) {
             VStack(alignment: .leading, spacing: 16) {
-                DisclosureGroup("Privacy history", isExpanded: $sourceAuditExpanded) {
+                SettingsDataRecoverySection(state: state)
+                Divider()
+                SettingsReliabilitySection(state: state)
+
+                DisclosureGroup("Developer tools", isExpanded: $developerDetailsExpanded) {
                     VStack(alignment: .leading, spacing: 14) {
-                        TrustSourceSection(state: state, summary: summary)
-                        TrustAuditSection(events: state.auditEvents, refresh: {
-                            Task { await state.loadTrust() }
-                        })
-                    }
-                    .padding(.top, 8)
-                }
-
-                DisclosureGroup("Tool access tokens", isExpanded: $tokenDetailsExpanded) {
-                    IntegrationTokensSection(state: state)
-                        .padding(.top, 8)
-                }
-
-                DisclosureGroup("Tool connection setup", isExpanded: $aiToolSetupExpanded) {
-                    IntegrationCenterView(state: state, compact: false)
-                        .padding(.top, 8)
-                }
-
-                Group {
-                    SettingsPrivacySection(state: state)
-                    Divider()
-                    SettingsDataRecoverySection(state: state)
-                    Divider()
-                    SettingsReliabilitySection(state: state)
-                    Divider()
-                    SettingsHealthSection(state: state)
-                }
-
-                DisclosureGroup("Diagnostics", isExpanded: $developerDetailsExpanded) {
-                    VStack(alignment: .leading, spacing: 14) {
+                        Group {
+                            DisclosureGroup("Privacy history", isExpanded: $sourceAuditExpanded) {
+                                VStack(alignment: .leading, spacing: 14) {
+                                    TrustSourceSection(state: state, summary: summary)
+                                    TrustAuditSection(events: state.auditEvents, refresh: {
+                                        Task { await state.loadTrust() }
+                                    })
+                                }
+                                .padding(.top, 8)
+                            }
+                            Divider()
+                            IntegrationTokensSection(state: state)
+                            Divider()
+                            IntegrationCenterView(state: state, compact: true)
+                            Divider()
+                        }
+                        Group {
+                            SettingsPrivacySection(state: state)
+                            Divider()
+                            SettingsHealthSection(state: state)
+                            Divider()
+                        }
                         if let lifecycle = state.dataLifecycleReport {
                             TrustLifecycleSection(report: lifecycle)
                             Divider()
@@ -215,9 +209,9 @@ private struct ConnectionsPrivacyOverview: View {
             .padding(.top, 10)
         } label: {
             ConnectionsDisclosureLabel(
-                systemImage: "slider.horizontal.3",
-                title: "Support details",
-                detail: "History, tokens, diagnostics"
+                systemImage: "wrench.and.screwdriver",
+                title: "Troubleshooting",
+                detail: "Backups, repair, developer tools"
             )
         }
         .padding(14)
