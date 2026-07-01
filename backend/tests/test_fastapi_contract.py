@@ -327,6 +327,74 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertNotIn("generic uncited memo", json.dumps(payload["citations"]))
         self.assertTrue(payload["results"][0]["source_url"])
 
+    def test_search_and_ask_accept_as_of_validity_filter(self) -> None:
+        user = "as-of-validity-user"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+        self._allow_pending_context(user)
+        main_module.store.save_capture(
+            user_id=user,
+            content="FastAPI as-of validity fixture",
+            source="fastapi-test",
+            source_url="fastapi://as-of-validity",
+            title="As-of validity fixture",
+            extracted={
+                "_timestamp": "2026-07-01T10:00:00Z",
+                "summary": "As-of validity fixture.",
+                "records": [
+                    {
+                        "id": "fastapi_as_of_old_process",
+                        "kind": "procedure",
+                        "layer": "procedural",
+                        "content": "FastAPI as-of old process used the legacy beta checklist.",
+                        "importance": 5,
+                        "valid_to": "2020-01-01T00:00:00+00:00",
+                    },
+                    {
+                        "id": "fastapi_as_of_current_process",
+                        "kind": "procedure",
+                        "layer": "procedural",
+                        "content": "FastAPI as-of current process uses the cited local beta checklist.",
+                        "importance": 4,
+                        "valid_from": "2020-01-01T00:00:00+00:00",
+                    },
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+
+        current = self.client.get(
+            "/v1/search",
+            params={"query": "FastAPI as-of process checklist", "layer": "procedural", "limit": 5},
+            headers=headers,
+        )
+        self.assertEqual(current.status_code, 200)
+        current_text = json.dumps(current.json())
+        self.assertIn("current process", current_text)
+        self.assertNotIn("old process", current_text)
+
+        historical = self.client.get(
+            "/v1/search",
+            params={"query": "FastAPI as-of old process checklist", "layer": "procedural", "limit": 5, "as_of": "2019-12-31"},
+            headers=headers,
+        )
+        self.assertEqual(historical.status_code, 200)
+        historical_payload = historical.json()
+        self.assertEqual(historical_payload["filters"]["as_of"], "2019-12-31T23:59:59+00:00")
+        historical_text = json.dumps(historical_payload)
+        self.assertIn("old process", historical_text)
+        self.assertNotIn("current process", historical_text)
+
+        historical_ask = self.client.get(
+            "/v1/ask",
+            params={"query": "FastAPI as-of old process checklist", "limit": 5, "as_of": "2019-12-31"},
+            headers=headers,
+        )
+        self.assertEqual(historical_ask.status_code, 200)
+        ask_payload = historical_ask.json()
+        self.assertEqual(ask_payload["filters"]["as_of"], "2019-12-31T23:59:59+00:00")
+        self.assertTrue(any(citation["id"] == "fastapi_as_of_old_process" for citation in ask_payload["citations"]))
+
     def test_retrieval_endpoints_support_sector_scope(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "sector-contract"}
         records = [

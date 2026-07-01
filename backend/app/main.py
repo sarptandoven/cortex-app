@@ -961,6 +961,7 @@ def search(
     sector: str | None = Query(default=None, max_length=120),
     source: str | None = Query(default=None, max_length=80),
     source_account_id: str | None = Query(default=None, max_length=120),
+    as_of: str | None = Query(default=None, max_length=80),
     repository: str | None = Query(default=None, max_length=240),
     channel: str | None = Query(default=None, max_length=240),
     record_scope: str | None = Query(default=None, max_length=80),
@@ -977,6 +978,7 @@ def search(
         sector=sector,
         source=source,
         source_account_id=source_account_id,
+        as_of=as_of,
         metadata_filters={
             "repository": repository,
             "channel": channel,
@@ -994,6 +996,7 @@ def ask(
     sector: str | None = Query(default=None, max_length=120),
     source: str | None = Query(default=None, max_length=80),
     source_account_id: str | None = Query(default=None, max_length=120),
+    as_of: str | None = Query(default=None, max_length=80),
     repository: str | None = Query(default=None, max_length=240),
     channel: str | None = Query(default=None, max_length=240),
     record_scope: str | None = Query(default=None, max_length=80),
@@ -1008,6 +1011,7 @@ def ask(
         sector=sector,
         source=source,
         source_account_id=source_account_id,
+        as_of=as_of,
         metadata_filters={
             "repository": repository,
             "channel": channel,

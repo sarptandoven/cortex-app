@@ -201,6 +201,40 @@ class MemoryQualityLayerTests(unittest.TestCase):
         self.assertNotIn("Future deployment process", profile_text)
         self.assertNotIn("Superseded deployment process", profile_text)
 
+        historical_results = self.store.search(
+            self.user_id,
+            "deployment process old Fabric script",
+            limit=10,
+            layer="procedural",
+            as_of="2019-12-31",
+        )
+        historical_contents = "\n".join(item["content"] for item in historical_results)
+        self.assertIn("Expired deployment process", historical_contents)
+        self.assertNotIn("Current deployment process", historical_contents)
+        self.assertNotIn("Future deployment process", historical_contents)
+        self.assertNotIn("Superseded deployment process", historical_contents)
+
+        historical_answer = self.store.answer_query(
+            self.user_id,
+            "deployment process old Fabric script",
+            limit=10,
+            as_of="2019-12-31",
+        )
+        self.assertEqual(historical_answer["filters"]["as_of"], "2019-12-31T23:59:59+00:00")
+        historical_answer_text = json.dumps(historical_answer)
+        self.assertIn("Expired deployment process", historical_answer_text)
+        self.assertNotIn("Current deployment process", historical_answer_text)
+        self.assertNotIn("Future deployment process", historical_answer_text)
+
+        mcp_search = call_tool(
+            self.store,
+            self.user_id,
+            "search_memory",
+            {"query": "deployment process old Fabric script", "top_k": 10, "layer": "procedural", "as_of": "2019-12-31"},
+        )
+        self.assertEqual(mcp_search["filters"]["as_of"], "2019-12-31T23:59:59+00:00")
+        self.assertTrue(any("Expired deployment process" in item["content"] for item in mcp_search["results"]))
+
     def test_mcp_high_value_tools_return_style_project_and_procedure_context(self) -> None:
         extracted = {
             "_timestamp": "2026-06-30T10:00:00+00:00",

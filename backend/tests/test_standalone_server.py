@@ -75,6 +75,7 @@ class FakeStore:
         sector: str | None = None,
         source: str | None = None,
         source_account_id: str | None = None,
+        as_of: str | None = None,
         metadata_filters: dict | None = None,
     ) -> list[dict]:
         self.search_calls.append(
@@ -87,6 +88,7 @@ class FakeStore:
                 "sector": sector,
                 "source": source,
                 "source_account_id": source_account_id,
+                "as_of": as_of,
                 "metadata_filters": metadata_filters or {},
             }
         )
@@ -109,6 +111,7 @@ class FakeStore:
         sector: str | None = None,
         source: str | None = None,
         source_account_id: str | None = None,
+        as_of: str | None = None,
         metadata_filters: dict | None = None,
     ) -> dict:
         self.answer_calls.append(
@@ -119,6 +122,7 @@ class FakeStore:
                 "sector": sector,
                 "source": source,
                 "source_account_id": source_account_id,
+                "as_of": as_of,
                 "metadata_filters": metadata_filters or {},
             }
         )
@@ -2076,6 +2080,7 @@ class StandaloneServerTests(unittest.TestCase):
                     "sector": None,
                     "source": None,
                     "source_account_id": None,
+                    "as_of": None,
                     "metadata_filters": {"repository": None, "channel": None, "record_scope": None, "state": None, "project": None},
                 }
             ],
@@ -2102,6 +2107,14 @@ class StandaloneServerTests(unittest.TestCase):
             {"repository": "doppl-tech/cortex-app", "channel": None, "record_scope": "pull_request", "state": "open", "project": None},
         )
 
+    def test_search_forwards_as_of_validity_filter_to_store(self) -> None:
+        with self.get("/v1/search?query=release&as_of=2019-12-31&limit=4") as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertTrue(payload["results"])
+        self.assertEqual(self.fake_store.search_calls[-1]["as_of"], "2019-12-31")
+
     def test_ask_route_forwards_to_store(self) -> None:
         with self.get("/v1/ask?query=voice&limit=2") as response:
             payload = json.loads(response.read().decode("utf-8"))
@@ -2111,6 +2124,14 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(payload["citations"][0]["source_url"], "/tmp/source.md")
         self.assertEqual(self.fake_store.answer_calls[-1]["query"], "voice")
         self.assertEqual(self.fake_store.answer_calls[-1]["limit"], 2)
+
+    def test_ask_route_forwards_as_of_validity_filter_to_store(self) -> None:
+        with self.get("/v1/ask?query=voice&as_of=2019-12-31&limit=2") as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertIn("cited memory", payload["answer"])
+        self.assertEqual(self.fake_store.answer_calls[-1]["as_of"], "2019-12-31")
 
     def test_cors_does_not_allow_arbitrary_origin(self) -> None:
         with self.get("/v1/search?query=voice", origin="https://example.invalid") as response:

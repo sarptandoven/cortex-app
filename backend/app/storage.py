@@ -830,11 +830,21 @@ def _normalize_retrieval_metadata_filters(value: dict[str, Any] | None) -> dict[
     return filters
 
 
+def _normalize_as_of_filter(value: Any) -> str | None:
+    text = str(value or "").strip()[:80]
+    if not text:
+        return None
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return f"{text}T23:59:59+00:00"
+    return text
+
+
 def _retrieval_filter_payload(
     *,
     source: str | None = None,
     source_account_id: str | None = None,
     metadata_filters: dict[str, Any] | None = None,
+    as_of: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {}
     normalized_source = _normalize_source_key(source or "")
@@ -846,6 +856,9 @@ def _retrieval_filter_payload(
     normalized_metadata = _normalize_retrieval_metadata_filters(metadata_filters)
     if normalized_metadata:
         payload["metadata"] = normalized_metadata
+    normalized_as_of = _normalize_as_of_filter(as_of)
+    if normalized_as_of:
+        payload["as_of"] = normalized_as_of
     return payload
 
 
@@ -7053,6 +7066,7 @@ class CortexStore:
         source: str | None = None,
         source_account_id: str | None = None,
         metadata_filters: dict[str, Any] | None = None,
+        as_of: str | None = None,
     ) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
@@ -7066,6 +7080,7 @@ class CortexStore:
                 source=source,
                 source_account_id=source_account_id,
                 metadata_filters=metadata_filters,
+                as_of=as_of,
             )
             where = " AND ".join(filters)
             rows = conn.execute(
@@ -7085,6 +7100,7 @@ class CortexStore:
         source: str | None = None,
         source_account_id: str | None = None,
         metadata_filters: dict[str, Any] | None = None,
+        as_of: str | None = None,
     ) -> list[dict[str, Any]]:
         results = self.recent(
             user_id,
@@ -7095,6 +7111,7 @@ class CortexStore:
             source=source,
             source_account_id=source_account_id,
             metadata_filters=metadata_filters,
+            as_of=as_of,
         )
         return self._shared_payload(results, redact_sensitive=bool(self.settings(user_id)["redact_sensitive_context"]))
 
@@ -7111,6 +7128,7 @@ class CortexStore:
         source_account_id: str | None = None,
         metadata_filters: dict[str, Any] | None = None,
         include_related: bool = False,
+        as_of: str | None = None,
         _diagnostics: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         query = query.strip()
@@ -7124,6 +7142,7 @@ class CortexStore:
                 source=source,
                 source_account_id=source_account_id,
                 metadata_filters=metadata_filters,
+                as_of=as_of,
             )
             if _diagnostics is not None:
                 _diagnostics.update(self._search_diagnostics_snapshot(user_id, limit=limit, returned=len(results), query_empty=True))
@@ -7159,6 +7178,7 @@ class CortexStore:
                 source=source,
                 source_account_id=source_account_id,
                 metadata_filters=metadata_filters,
+                as_of=as_of,
             )
             where = " AND ".join(filters)
             active_memory_count = conn.execute("SELECT COUNT(*) FROM memories WHERE user_id = ? AND status = 'active'", (user_id,)).fetchone()[0]
@@ -7190,6 +7210,7 @@ class CortexStore:
                 source=source,
                 source_account_id=source_account_id,
                 metadata_filters=metadata_filters,
+                as_of=as_of,
             )
             temporal_rows = self._temporal_search(
                 conn,
@@ -7203,6 +7224,7 @@ class CortexStore:
                 source=source,
                 source_account_id=source_account_id,
                 metadata_filters=metadata_filters,
+                as_of=as_of,
             )
             mode_counts["fts"] = len(fts_rows)
             mode_counts["vector"] = len(vector_rows)
@@ -7221,6 +7243,7 @@ class CortexStore:
                     source=source,
                     source_account_id=source_account_id,
                     metadata_filters=metadata_filters,
+                    as_of=as_of,
                 )
                 mode_counts["intent"] = len(intent_rows)
             rows = self._fuse_search_rows(
@@ -7259,6 +7282,7 @@ class CortexStore:
                     source=source,
                     source_account_id=source_account_id,
                     metadata_filters=metadata_filters,
+                    as_of=as_of,
                 )
                 mode_counts["lexical_fallback"] = len(lexical_rows)
                 rows.extend(row for row in lexical_rows if row["id"] not in existing_ids)
@@ -7283,6 +7307,7 @@ class CortexStore:
                     source=source,
                     source_account_id=source_account_id,
                     metadata_filters=metadata_filters,
+                    as_of=as_of,
                     user_settings=user_settings,
                 )
             mode_counts["related"] = len(related_rows)
@@ -7336,6 +7361,7 @@ class CortexStore:
         source_account_id: str | None = None,
         metadata_filters: dict[str, Any] | None = None,
         include_related: bool = False,
+        as_of: str | None = None,
     ) -> list[dict[str, Any]]:
         results = self.search(
             user_id,
@@ -7348,6 +7374,7 @@ class CortexStore:
             source_account_id=source_account_id,
             metadata_filters=metadata_filters,
             include_related=include_related,
+            as_of=as_of,
         )
         return self._shared_payload(results, redact_sensitive=bool(self.settings(user_id)["redact_sensitive_context"]))
 
@@ -7364,6 +7391,7 @@ class CortexStore:
         source_account_id: str | None = None,
         metadata_filters: dict[str, Any] | None = None,
         include_related: bool = False,
+        as_of: str | None = None,
     ) -> dict[str, Any]:
         diagnostics: dict[str, Any] = {}
         results = self.search(
@@ -7377,12 +7405,13 @@ class CortexStore:
             source_account_id=source_account_id,
             metadata_filters=metadata_filters,
             include_related=include_related,
+            as_of=as_of,
             _diagnostics=diagnostics,
         )
         return {
             "query": query,
             "sector": sector,
-            "filters": _retrieval_filter_payload(source=source, source_account_id=source_account_id, metadata_filters=metadata_filters),
+            "filters": _retrieval_filter_payload(source=source, source_account_id=source_account_id, metadata_filters=metadata_filters, as_of=as_of),
             "results": self._shared_payload(results, redact_sensitive=bool(self.settings(user_id)["redact_sensitive_context"])),
             "retrieval": diagnostics,
         }
@@ -7453,6 +7482,7 @@ class CortexStore:
         source: str | None = None,
         source_account_id: str | None = None,
         metadata_filters: dict[str, Any] | None = None,
+        as_of: str | None = None,
     ) -> dict[str, Any]:
         query = query.strip()
         limit = max(1, min(20, int(limit)))
@@ -7468,6 +7498,7 @@ class CortexStore:
             source_account_id=source_account_id,
             metadata_filters=metadata_filters,
             include_related=True,
+            as_of=as_of,
         )
         primary_candidates = [item for item in candidates if not self._is_related_result(item)]
         primary_by_id = {str(item.get("id") or ""): item for item in primary_candidates}
@@ -7532,7 +7563,7 @@ class CortexStore:
             answer = "Cortex did not find a cited item for this question yet. Import or approve more source material, then ask again."
         return {
             "query": query,
-            "filters": _retrieval_filter_payload(source=source, source_account_id=source_account_id, metadata_filters=metadata_filters),
+            "filters": _retrieval_filter_payload(source=source, source_account_id=source_account_id, metadata_filters=metadata_filters, as_of=as_of),
             "answer": answer,
             "citations": citations,
             "results": self._shared_payload(results, redact_sensitive=redact_sensitive),
@@ -12732,6 +12763,7 @@ class CortexStore:
         source: str | None = None,
         source_account_id: str | None = None,
         metadata_filters: dict[str, Any] | None = None,
+        as_of: str | None = None,
     ) -> list[Any]:
         if not self._vector_ready(conn):
             return []
@@ -12745,6 +12777,7 @@ class CortexStore:
             source=source,
             source_account_id=source_account_id,
             metadata_filters=metadata_filters,
+            as_of=as_of,
         )
         where = " AND ".join(filters)
         try:
@@ -12781,6 +12814,7 @@ class CortexStore:
         source: str | None = None,
         source_account_id: str | None = None,
         metadata_filters: dict[str, Any] | None = None,
+        as_of: str | None = None,
     ) -> list[Any]:
         prefixes = query_temporal_prefixes(query)
         if not prefixes:
@@ -12797,6 +12831,7 @@ class CortexStore:
             source=source,
             source_account_id=source_account_id,
             metadata_filters=metadata_filters,
+            as_of=as_of,
         )
         date_filters = []
         date_params: list[Any] = []
@@ -12847,6 +12882,7 @@ class CortexStore:
         source: str | None = None,
         source_account_id: str | None = None,
         metadata_filters: dict[str, Any] | None = None,
+        as_of: str | None = None,
     ) -> list[Any]:
         boosts = query_layer_boosts(query)
         if not boosts:
@@ -12867,6 +12903,7 @@ class CortexStore:
             source=source,
             source_account_id=source_account_id,
             metadata_filters=metadata_filters,
+            as_of=as_of,
         )
         placeholders = ", ".join("?" for _ in intent_layers)
         where = " AND ".join(filters)
@@ -12896,6 +12933,7 @@ class CortexStore:
         source: str | None = None,
         source_account_id: str | None = None,
         metadata_filters: dict[str, Any] | None = None,
+        as_of: str | None = None,
     ) -> list[Any]:
         terms = self._lexical_fallback_terms(query)
         if not terms:
@@ -12911,6 +12949,7 @@ class CortexStore:
             source=source,
             source_account_id=source_account_id,
             metadata_filters=metadata_filters,
+            as_of=as_of,
         )
         where = " AND ".join(filters)
         rows = conn.execute(
@@ -13017,6 +13056,7 @@ class CortexStore:
         source: str | None = None,
         source_account_id: str | None = None,
         metadata_filters: dict[str, Any] | None = None,
+        as_of: str | None = None,
         user_settings: dict[str, Any],
     ) -> list[Any]:
         primary_ids = [str(item.get("id") or "") for item in primary_results if item.get("result_type", "memory") == "memory"]
@@ -13034,6 +13074,7 @@ class CortexStore:
             source=source,
             source_account_id=source_account_id,
             metadata_filters=metadata_filters,
+            as_of=as_of,
         )
         filters.append(f"m.id NOT IN ({primary_placeholders})")
         where = " AND ".join(filters)
@@ -13788,6 +13829,7 @@ class CortexStore:
         source: str | None = None,
         source_account_id: str | None = None,
         metadata_filters: dict[str, Any] | None = None,
+        as_of: str | None = None,
     ) -> tuple[list[str], list[Any]]:
         filters = [f"{alias}.user_id = ?", f"{alias}.status = 'active'"]
         params: list[Any] = [user_id]
@@ -13826,7 +13868,7 @@ class CortexStore:
             clauses = [f"lower(COALESCE(json_extract({alias}.provenance_json, '$.record_metadata.{path}'), '')) = ?" for path in paths]
             filters.append(f"({' OR '.join(clauses)})")
             params.extend([value.lower()] * len(paths))
-        now = now_iso()
+        now = _normalize_as_of_filter(as_of) or now_iso()
         filters.append(f"({alias}.valid_from IS NULL OR {alias}.valid_from = '' OR {alias}.valid_from <= ?)")
         params.append(now)
         filters.append(f"({alias}.valid_to IS NULL OR {alias}.valid_to = '' OR {alias}.valid_to > ?)")

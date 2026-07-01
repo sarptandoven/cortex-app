@@ -991,6 +991,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 sector = (params.get("sector") or [None])[0]
                 source = (params.get("source") or [None])[0]
                 source_account_id = (params.get("source_account_id") or [None])[0]
+                as_of = (params.get("as_of") or [None])[0]
                 metadata_filters = {
                     "repository": (params.get("repository") or [None])[0],
                     "channel": (params.get("channel") or [None])[0],
@@ -1009,6 +1010,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         sector=sector,
                         source=source,
                         source_account_id=source_account_id,
+                        as_of=as_of,
                         metadata_filters=metadata_filters,
                     )
                 elif hasattr(store, "public_search"):
@@ -1021,6 +1023,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         sector=sector,
                         source=source,
                         source_account_id=source_account_id,
+                        as_of=as_of,
                         metadata_filters=metadata_filters,
                     )
                     payload = {"query": query, "sector": sector, "filters": {}, "results": results, "retrieval": {"diagnostics_unavailable": True}}
@@ -1034,6 +1037,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         sector=sector,
                         source=source,
                         source_account_id=source_account_id,
+                        as_of=as_of,
                         metadata_filters=metadata_filters,
                     )
                     payload = {"query": query, "sector": sector, "filters": {}, "results": results, "retrieval": {"diagnostics_unavailable": True}}
@@ -1050,6 +1054,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         sector=sector,
                         source=(params.get("source") or [None])[0],
                         source_account_id=(params.get("source_account_id") or [None])[0],
+                        as_of=(params.get("as_of") or [None])[0],
                         metadata_filters={
                             "repository": (params.get("repository") or [None])[0],
                             "channel": (params.get("channel") or [None])[0],
