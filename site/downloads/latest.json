@@ -4,15 +4,15 @@
     {
       "filename": "Cortex-0.1.0-1.dmg",
       "kind": "dmg",
-      "sha256": "bb5151190764537b8476b2ee6f4f22e22c41404a09fa3bfe055cc860be27df52",
-      "size_bytes": 21220103,
+      "sha256": "53c2a874095de2854e65c381098044cd316e2ee596c36e183021e156417b1084",
+      "size_bytes": 21225248,
       "url": "https://trydoppl.com/downloads/Cortex-0.1.0-1.dmg"
     },
     {
       "filename": "Cortex-0.1.0-1.app.zip",
       "kind": "zip",
-      "sha256": "4e623ecff2fa1a945bf9bde336b24b42e4dba174e3ca7a7c8897b8458105f267",
-      "size_bytes": 16856407,
+      "sha256": "e79527766dcfa03d5bec4c876056a69b4d7235e9419dd8c10d9c21244102c3de",
+      "size_bytes": 16858437,
       "url": "https://trydoppl.com/downloads/Cortex-0.1.0-1.app.zip"
     }
   ],
@@ -67,13 +67,13 @@
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "First-100 local beta DMG with source connection, Review, cited Ask, MCP retrieval, backup, support bundle checks, connector retrieval coverage, and actionable sync readiness."
+    "First-100 local beta DMG with Obsidian source connection, scheduled source sync jobs, Review, cited Ask, MCP retrieval, backup, support bundle checks, connector retrieval coverage, and actionable sync readiness."
   ],
-  "released_at": "2026-07-01T10:59:03Z",
+  "released_at": "2026-07-01T11:08:09Z",
   "source_provenance": {
-    "built_at": "2026-07-01T10:59:03Z",
+    "built_at": "2026-07-01T11:08:09Z",
     "git_branch": "mass-scale-app-redesign",
-    "git_commit": "f676ce35449a43a3b3a4600ee91aaa8e54854c20",
+    "git_commit": "267e0c50913b6314a343d1045b4b288808459dfd",
     "git_dirty": false
   },
   "version": "0.1.0"
