@@ -72,8 +72,11 @@ SENSITIVE_VALUE_PATTERNS = (
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\b(?:xox[baprs]-[A-Za-z0-9-]{16,})\b"),
     re.compile(
-        r"(?i)\b(api[_-]?key|access[_-]?token|auth[_-]?token|secret|password|passwd|pwd)\s*[:=]\s*['\"]?[^'\"\s,;]{8,}"
+        r"(?i)\b(api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|client[_-]?id|client[_-]?secret|secret|password|passwd|pwd)\s*[:=]\s*['\"]?[^'\"\s,;]{8,}"
     ),
+)
+SENSITIVE_KEY_PATTERN = re.compile(
+    r"(?i)^(api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|client[_-]?id|client[_-]?secret|secret|password|passwd|pwd)$"
 )
 
 
@@ -89,6 +92,8 @@ def validate_content_free_bundle(bundle: dict) -> None:
         if key in CONTENT_VALUE_KEYS and value != OMITTED_FROM_SUPPORT_BUNDLE and not isinstance(value, (int, float, bool, type(None))):
             violations.append(path)
         if key in RAW_QUERY_KEYS and value not in (None, OMITTED_FROM_SUPPORT_BUNDLE):
+            violations.append(path)
+        if SENSITIVE_KEY_PATTERN.match(str(key or "")) and value not in (None, "", OMITTED_FROM_SUPPORT_BUNDLE):
             violations.append(path)
         if isinstance(value, dict):
             for child_key, child_value in value.items():

@@ -540,12 +540,15 @@ SENSITIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b(?:xox[baprs]-[A-Za-z0-9-]{16,})\b"), "[REDACTED_SLACK_TOKEN]"),
     (
         re.compile(
-            r"(?i)\b(api[_-]?key|access[_-]?token|auth[_-]?token|secret|password|passwd|pwd)\s*[:=]\s*['\"]?[^'\"\s,;]{8,}"
+            r"(?i)\b(api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|client[_-]?id|client[_-]?secret|secret|password|passwd|pwd)\s*[:=]\s*['\"]?[^'\"\s,;]{8,}"
         ),
         r"\1=[REDACTED_SECRET]",
     ),
     (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), "[REDACTED_EMAIL]"),
     (re.compile(r"\b(?:\d[ -]*?){13,16}\b"), "[REDACTED_NUMBER]"),
+)
+SENSITIVE_KEY_PATTERN = re.compile(
+    r"(?i)^(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|client[_-]?id|client[_-]?secret|secret|password|passwd|pwd)$"
 )
 
 LOCAL_PATH_PATTERN = re.compile(
@@ -821,6 +824,24 @@ def _oauth_refresh_expires_at(payload: dict[str, Any], *, now: datetime) -> str 
     if expires_at:
         return expires_at.replace(microsecond=0).isoformat().replace("+00:00", "Z")
     return None
+
+
+def _oauth_refresh_credential_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    field_names = (
+        "refresh_token",
+        "token_endpoint",
+        "client_id",
+        "client_secret",
+        "access_token_expires_at",
+        "scope",
+        "oauth_refreshed_at",
+    )
+    fields: dict[str, Any] = {}
+    for key in field_names:
+        value = payload.get(key)
+        if value not in (None, "", []):
+            fields[key] = value
+    return fields
 
 
 SCHEDULED_CREDENTIAL_SYNC_SOURCES = {"github", "gmail", "outlook", "google-drive", "readwise", "raindrop", "zotero", "linear", "notion", "slack", "calendar", "jira"}
@@ -3683,6 +3704,7 @@ class CortexStore:
                     "label_ids": sync.label_ids,
                     "include_body": bool(include_body),
                     "api_base_url": sync.api_base_url,
+                    **_oauth_refresh_credential_fields(self._read_source_account_credential_payload(user_id, resolved_account_id)),
                 },
             )
         state = {
@@ -3844,6 +3866,7 @@ class CortexStore:
                     "mime_types": sync.mime_types,
                     "include_content": bool(include_content),
                     "api_base_url": sync.api_base_url,
+                    **_oauth_refresh_credential_fields(self._read_source_account_credential_payload(user_id, resolved_account_id)),
                 },
             )
         state = {
@@ -4002,6 +4025,7 @@ class CortexStore:
                     "query": query or "",
                     "include_body": bool(include_body),
                     "api_base_url": sync.api_base_url,
+                    **_oauth_refresh_credential_fields(self._read_source_account_credential_payload(user_id, resolved_account_id)),
                 },
             )
         state = {
@@ -12877,6 +12901,8 @@ class CortexStore:
 
     def _redact_payload(self, value: Any, key: str = "") -> Any:
         if isinstance(value, str):
+            if SENSITIVE_KEY_PATTERN.match(str(key or "")):
+                return "[REDACTED_SECRET]"
             redacted = value
             for pattern, replacement in SENSITIVE_PATTERNS:
                 redacted = pattern.sub(replacement, redacted)

@@ -36,6 +36,17 @@ class OpsReadinessSupportBundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "content-free"):
             check_support_bundle_contract(bundle)
 
+    def test_support_bundle_contract_rejects_oauth_refresh_fields(self) -> None:
+        bundle = valid_support_bundle()
+        bundle["diagnostics"] = {
+            "refresh_token": "oauth_refresh_secret_123",
+            "client_id": "oauth_client_id_123",
+            "client_secret": "oauth_client_secret_123",
+        }
+
+        with self.assertRaisesRegex(ValueError, "content-free"):
+            check_support_bundle_contract(bundle)
+
     def test_support_bundle_contract_requires_ops_readiness_feature(self) -> None:
         bundle = copy.deepcopy(valid_support_bundle())
         bundle["backend"]["features"] = []

@@ -11,7 +11,7 @@ _AUTH_CREDENTIAL_RE = re.compile(
     r"(?i)(authorization[\"']?\s*[:=]\s*[\"']?(?:Bearer|Token|Basic)\s+)([^\s,'\"}]+)"
 )
 _SECRET_FIELD_RE = re.compile(
-    r"(?i)((?:access[_-]?token|api[_-]?key|api[_-]?token|token|zotero-api-key)"
+    r"(?i)((?:access[_-]?token|refresh[_-]?token|client[_-]?id|client[_-]?secret|api[_-]?key|api[_-]?token|token|zotero-api-key)"
     r"[\"']?\s*[:=]\s*[\"']?)([^\s,'\"}]+)"
 )
 

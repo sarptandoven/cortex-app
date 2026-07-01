@@ -18,12 +18,19 @@ from backend.app.connectors.zotero import fetch_zotero_records
 class ConnectorRedactionTests(unittest.TestCase):
     def test_redact_error_message_removes_known_secrets_and_auth_values(self) -> None:
         message = redact_error_message(
-            "failed Authorization: Bearer ghp_secret_123 api_token=rw_secret_456 raw ghp_secret_123",
+            (
+                "failed Authorization: Bearer ghp_secret_123 api_token=rw_secret_456 "
+                "refresh_token=oauth_refresh_secret_789 client_secret=oauth_client_secret_123 "
+                "client_id=oauth_client_id_123 raw ghp_secret_123"
+            ),
             ["ghp_secret_123"],
         )
 
         self.assertNotIn("ghp_secret_123", message)
         self.assertNotIn("rw_secret_456", message)
+        self.assertNotIn("oauth_refresh_secret_789", message)
+        self.assertNotIn("oauth_client_secret_123", message)
+        self.assertNotIn("oauth_client_id_123", message)
         self.assertIn(REDACTED_CONNECTOR_SECRET, message)
 
     def test_request_exceptions_redact_tokens_across_token_connectors(self) -> None:
