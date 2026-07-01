@@ -266,17 +266,10 @@ struct OnboardingFirstSourceStep: View {
                 systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "folder.badge.plus",
                 isPrimary: true,
                 status: state.onboardingHasSource ? "Synced" : (state.hasConnectedObsidianVault ? "Connected" : "Local"),
-                buttonTitle: state.hasConnectedObsidianVault ? "Check status" : "Connect notes"
+                buttonTitle: firstSourceButtonTitle,
+                buttonSystemImage: firstSourceButtonIcon
             ) {
-                if state.hasConnectedObsidianVault {
-                    Task { await state.loadSourceConnectivity() }
-                    state.status = "Checking notes"
-                } else if let connector = obsidianConnector {
-                    state.connectLocalNotesFolder(connector)
-                } else {
-                    Task { await state.loadSourceConnectivity() }
-                    state.status = "Checking notes connector"
-                }
+                runFirstSourceAction()
             }
 
             if !state.onboardingFirstSourceNames.isEmpty {
@@ -325,6 +318,27 @@ struct OnboardingFirstSourceStep: View {
         }
         return "Connect notes when ready."
     }
+
+    private var firstSourceButtonTitle: String {
+        if state.hasConnectedObsidianVault { return "Sync now" }
+        if obsidianConnector != nil { return "Connect notes" }
+        return "Refresh"
+    }
+
+    private var firstSourceButtonIcon: String {
+        if state.hasConnectedObsidianVault { return "arrow.triangle.2.circlepath" }
+        if obsidianConnector != nil { return "folder.badge.plus" }
+        return "arrow.clockwise"
+    }
+
+    private func runFirstSourceAction() {
+        if let connector = obsidianConnector {
+            state.connectLocalNotesFolder(connector)
+        } else {
+            Task { await state.loadSourceConnectivity() }
+            state.status = "Checking notes connector"
+        }
+    }
 }
 
 struct OnboardingConnectionCard: View {
@@ -334,6 +348,7 @@ struct OnboardingConnectionCard: View {
     let isPrimary: Bool
     let status: String?
     let buttonTitle: String
+    let buttonSystemImage: String
     let action: () -> Void
 
     var body: some View {
@@ -375,14 +390,14 @@ struct OnboardingConnectionCard: View {
     private var actionButton: some View {
         if isPrimary {
             Button(action: action) {
-                Label(buttonTitle, systemImage: "link.circle")
+                Label(buttonTitle, systemImage: buttonSystemImage)
                     .frame(maxWidth: .infinity, minHeight: 46)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
         } else {
             Button(action: action) {
-                Label(buttonTitle, systemImage: "ellipsis.circle")
+                Label(buttonTitle, systemImage: buttonSystemImage)
                     .frame(maxWidth: .infinity, minHeight: 42)
             }
             .buttonStyle(.bordered)
