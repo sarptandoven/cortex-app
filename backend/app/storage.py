@@ -12,7 +12,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import quote, unquote, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, unquote, urlsplit, urlunsplit
 
 from .database import connect, sqlite_vec_status
 from .embeddings import VECTOR_DIMENSIONS, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status
@@ -5675,7 +5675,17 @@ class CortexStore:
         redact_sensitive = bool(self.settings(user_id)["redact_sensitive_context"])
         search_limit = max(limit * 3, 12)
         candidates = self.search(user_id, query, limit=search_limit, sector=sector, include_related=True)
-        source_backed = [item for item in candidates if self._has_source_citation(item)]
+        primary_candidates = [item for item in candidates if not self._is_related_result(item)]
+        primary_by_id = {str(item.get("id") or ""): item for item in primary_candidates}
+        primary_source_backed = [item for item in primary_candidates if self._has_source_citation(item)]
+        related_source_backed = [
+            item
+            for item in candidates
+            if self._is_related_result(item)
+            and self._has_source_citation(item)
+            and self._should_include_related_citation(query, item, primary_by_id)
+        ]
+        source_backed = [*primary_source_backed, *related_source_backed]
         uncited = [item for item in candidates if not self._has_source_citation(item)]
         results = [*source_backed, *uncited][:limit]
         cited_results = source_backed[:limit] if source_backed else results
@@ -5737,6 +5747,58 @@ class CortexStore:
         source_url = str(item.get("source_url") or "").strip()
         return bool(source_url)
 
+    def _is_related_result(self, item: dict[str, Any]) -> bool:
+        relationship = item.get("relationship")
+        return isinstance(relationship, dict) and bool(relationship)
+
+    def _should_include_related_citation(
+        self,
+        query: str,
+        item: dict[str, Any],
+        primary_by_id: dict[str, dict[str, Any]],
+    ) -> bool:
+        relationship = item.get("relationship") if isinstance(item.get("relationship"), dict) else {}
+        related_to_id = str(relationship.get("related_to_id") or "").strip()
+        primary = primary_by_id.get(related_to_id)
+        if not primary:
+            return False
+
+        item_sector = str(item.get("sector") or "").strip().casefold()
+        primary_sector = str(primary.get("sector") or "").strip().casefold()
+        if item_sector and primary_sector and item_sector == primary_sector:
+            return True
+
+        terms = self._lexical_fallback_terms(query, limit=12)
+        if not terms:
+            return False
+        matched = self._item_matched_query_terms(item, terms)
+        minimum = 2 if len(terms) <= 4 else max(3, len(terms) // 2)
+        return len(matched) >= minimum
+
+    def _item_matched_query_terms(self, item: dict[str, Any], terms: list[str]) -> set[str]:
+        topics = item.get("topics") if isinstance(item.get("topics"), list) else []
+        text = " ".join(
+            str(value or "")
+            for value in (
+                item.get("content"),
+                item.get("summary"),
+                item.get("source"),
+                item.get("sector"),
+                item.get("kind"),
+                item.get("layer"),
+                " ".join(str(topic or "") for topic in topics),
+            )
+        )
+        item_terms: set[str] = set()
+        for token in re.findall(r"[a-z0-9_]+", text.lower().replace("'", "")):
+            clean = token.strip("_")
+            if not clean:
+                continue
+            if len(clean) > 3 and clean.endswith("s") and not clean.endswith(("ss", "ies")):
+                clean = clean[:-1]
+            item_terms.add(clean)
+        return {term for term in terms if any(candidate.startswith(term) for candidate in item_terms)}
+
     def _citation_metadata(self, item: dict[str, Any], provenance: dict[str, Any]) -> dict[str, Any]:
         record_metadata = provenance.get("record_metadata") if isinstance(provenance.get("record_metadata"), dict) else {}
         external_id = str(provenance.get("external_id") or "").strip()
@@ -5753,7 +5815,47 @@ class CortexStore:
             value = record_metadata.get(key)
             if value not in (None, "", [], {}):
                 metadata[key] = value
+        for key, value in self._source_url_citation_metadata(str(item.get("source_url") or "")).items():
+            if metadata.get(key) in (None, "", [], {}):
+                metadata[key] = value
         return {key: value for key, value in metadata.items() if value not in (None, "", [], {})}
+
+    def _source_url_citation_metadata(self, source_url: str) -> dict[str, str]:
+        source_url = str(source_url or "").strip()
+        if not source_url:
+            return {}
+        allowed = {
+            "service",
+            "repository",
+            "file",
+            "line",
+            "line_start",
+            "line_end",
+            "row",
+            "message",
+            "event",
+            "subject",
+            "page",
+            "document",
+            "channel",
+            "record",
+            "excerpt",
+        }
+        split = urlsplit(source_url)
+        values: dict[str, str] = {}
+        for part in (split.query, split.fragment):
+            for key, value in parse_qsl(part, keep_blank_values=False):
+                normalized_key = str(key or "").strip().lower()
+                if normalized_key not in allowed:
+                    continue
+                cleaned = re.sub(r"\s+", " ", unquote(str(value or ""))).strip()
+                if not cleaned:
+                    continue
+                output_key = "source_excerpt" if normalized_key == "excerpt" else normalized_key
+                values.setdefault(output_key, cleaned[:240])
+        if "line" in values and "line_start" not in values:
+            values["line_start"] = values["line"]
+        return values
 
     def _safe_relative_citation_path(self, value: Any) -> str:
         text = str(value or "").strip().replace("\\", "/")

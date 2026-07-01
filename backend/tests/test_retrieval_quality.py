@@ -502,9 +502,97 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         answer = self.store.answer_query(self.user_id, "atlas ask source-backed ranking", limit=2)
 
         self.assertEqual(answer["citations"][0]["id"], "ask_source_backed_cited")
+        self.assertEqual(answer["citations"][0]["line_start"], "34")
+        self.assertEqual(answer["citations"][0]["source_excerpt"], "atlas-ask-source")
         self.assertTrue(all(citation["source_url"] for citation in answer["citations"]))
         self.assertNotIn("ask_source_backed_uncited", {citation["id"] for citation in answer["citations"]})
         self.assertEqual(answer["results"][0]["id"], "ask_source_backed_cited")
+
+    def test_answer_query_does_not_cite_weak_related_source_backed_neighbors(self) -> None:
+        self.store.update_settings(
+            self.user_id,
+            {
+                "review_new_captures": False,
+                "allow_pending_in_context": True,
+            },
+        )
+        self.store._vector_ready = lambda conn: False
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Project Anchor cited answer source selection keeps the GitHub issue as the primary evidence.",
+            source="github",
+            source_url="cortex-source://github#service=github&file=issues.json&line=71&excerpt=anchor-citation",
+            title="Project Anchor citation source",
+            extracted={
+                "_timestamp": "2026-05-01T00:00:00+00:00",
+                "summary": "Project Anchor citation source.",
+                "records": [
+                    {
+                        "id": "ask_related_primary_cited",
+                        "kind": "decision",
+                        "layer": "decision",
+                        "content": "Project Anchor cited answer source selection keeps the GitHub issue as the primary evidence.",
+                        "summary": "Project Anchor source selection uses GitHub as primary evidence.",
+                        "confidence": "confirmed",
+                        "importance": 5,
+                        "topics": ["anchor", "citation", "source-selection"],
+                        "entity_ids": ["project_anchor"],
+                    }
+                ],
+                "tasks": [],
+                "entities": [
+                    {
+                        "id": "project_anchor",
+                        "kind": "project",
+                        "name": "Project Anchor",
+                        "aliases": ["Anchor"],
+                        "context": "Ask citation regression fixture.",
+                    }
+                ],
+            },
+        )
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Project Anchor cafeteria seating plan moved to Friday after the facilities thread.",
+            source="slack",
+            source_url="cortex-source://slack#service=slack&channel=facilities&message=9&line=2&excerpt=anchor-cafeteria",
+            title="Project Anchor weak neighbor",
+            extracted={
+                "_timestamp": "2026-05-01T00:01:00+00:00",
+                "summary": "Project Anchor cafeteria note.",
+                "records": [
+                    {
+                        "id": "ask_related_weak_neighbor",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "Project Anchor cafeteria seating plan moved to Friday after the facilities thread.",
+                        "summary": "Project Anchor cafeteria seating moved to Friday.",
+                        "confidence": "confirmed",
+                        "importance": 4,
+                        "topics": ["anchor", "cafeteria", "facilities"],
+                        "entity_ids": ["project_anchor"],
+                    }
+                ],
+                "tasks": [],
+                "entities": [
+                    {
+                        "id": "project_anchor",
+                        "kind": "project",
+                        "name": "Project Anchor",
+                        "aliases": ["Anchor"],
+                        "context": "Ask citation regression fixture.",
+                    }
+                ],
+            },
+        )
+
+        answer = self.store.answer_query(self.user_id, "Project Anchor cited answer source selection primary evidence", limit=4)
+        citation_ids = {citation["id"] for citation in answer["citations"]}
+
+        self.assertIn("ask_related_primary_cited", citation_ids)
+        self.assertNotIn("ask_related_weak_neighbor", citation_ids)
+        self.assertEqual(answer["citations"][0]["line_start"], "71")
+        self.assertEqual(answer["citations"][0]["source_excerpt"], "anchor-citation")
 
     def test_source_quality_boost_does_not_override_layer_intent_relevance(self) -> None:
         self.store.update_settings(

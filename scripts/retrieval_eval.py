@@ -1504,6 +1504,10 @@ def assert_direct_connector_answer_contracts(
             raise AssertionError(f"Direct connector Ask citation missed source URL details for {source}: {citation}")
         if "line=1" not in source_url or "excerpt=" not in source_url:
             raise AssertionError(f"Direct connector Ask citation missed granular locator for {source}: {citation}")
+        if str(citation.get("line_start") or "") != "1":
+            raise AssertionError(f"Direct connector Ask citation missed structured line metadata for {source}: {citation}")
+        if str(citation.get("source_excerpt") or "") != f"{source}-direct-eval":
+            raise AssertionError(f"Direct connector Ask citation missed structured excerpt metadata for {source}: {citation}")
         if not citation.get("source_account_id"):
             raise AssertionError(f"Direct connector Ask citation missed source_account_id for {source}: {citation}")
         if citation.get("external_id") != expected_external_id or citation.get("source_record_id") != expected_external_id:
