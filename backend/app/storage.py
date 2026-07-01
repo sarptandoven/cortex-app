@@ -4687,23 +4687,67 @@ class CortexStore:
             counts = {
                 "captures": conn.execute("SELECT COUNT(*) FROM captures WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "pending_captures": conn.execute("SELECT COUNT(*) FROM captures WHERE user_id = ? AND review_status = 'pending'", (user_id,)).fetchone()[0],
-                "memories": conn.execute("SELECT COUNT(*) FROM memories WHERE user_id = ? AND status = 'active'", (user_id,)).fetchone()[0],
-                "decisions": conn.execute("SELECT COUNT(*) FROM memories WHERE user_id = ? AND status = 'active' AND kind = 'decision'", (user_id,)).fetchone()[0],
-                "tasks": conn.execute("SELECT COUNT(*) FROM tasks WHERE user_id = ? AND status = 'open'", (user_id,)).fetchone()[0],
-                "entities": conn.execute("SELECT COUNT(*) FROM entities WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "memories": conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM memories m
+                    LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
+                    WHERE m.user_id = ?
+                      AND m.status = 'active'
+                      AND (m.capture_id IS NULL OR c.review_status = 'approved')
+                    """,
+                    (user_id,),
+                ).fetchone()[0],
+                "decisions": conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM memories m
+                    LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
+                    WHERE m.user_id = ?
+                      AND m.status = 'active'
+                      AND m.kind = 'decision'
+                      AND (m.capture_id IS NULL OR c.review_status = 'approved')
+                    """,
+                    (user_id,),
+                ).fetchone()[0],
+                "tasks": conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM tasks t
+                    LEFT JOIN captures c ON c.id = t.capture_id AND c.user_id = t.user_id
+                    WHERE t.user_id = ?
+                      AND t.status = 'open'
+                      AND (t.capture_id IS NULL OR c.review_status = 'approved')
+                    """,
+                    (user_id,),
+                ).fetchone()[0],
+                "entities": conn.execute(
+                    """
+                    SELECT COUNT(DISTINCT e.id)
+                    FROM entities e
+                    JOIN memory_entities me ON me.entity_id = e.id AND me.user_id = e.user_id
+                    JOIN memories m ON m.id = me.memory_id AND m.user_id = me.user_id AND m.status = 'active'
+                    LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
+                    WHERE e.user_id = ?
+                      AND (m.capture_id IS NULL OR c.review_status = 'approved')
+                    """,
+                    (user_id,),
+                ).fetchone()[0],
                 "edges": conn.execute(
                     """
                     SELECT COUNT(*)
                     FROM graph_edges ge
                     LEFT JOIN captures c ON c.id = ge.evidence_id AND c.user_id = ge.user_id
                     LEFT JOIN memories m ON m.id = ge.evidence_id AND m.user_id = ge.user_id
+                    LEFT JOIN captures mc ON mc.id = m.capture_id AND mc.user_id = m.user_id
                     LEFT JOIN tasks t ON t.id = ge.evidence_id AND t.user_id = ge.user_id
+                    LEFT JOIN captures tc ON tc.id = t.capture_id AND tc.user_id = t.user_id
                     WHERE ge.user_id = ?
                       AND (
                         ge.evidence_id IS NULL
-                        OR c.review_status IN ('pending', 'approved')
-                        OR m.status = 'active'
-                        OR t.status = 'open'
+                        OR c.review_status = 'approved'
+                        OR (m.status = 'active' AND (m.capture_id IS NULL OR mc.review_status = 'approved'))
+                        OR (t.status = 'open' AND (t.capture_id IS NULL OR tc.review_status = 'approved'))
                       )
                     """,
                     (user_id,),
@@ -4712,14 +4756,32 @@ class CortexStore:
             by_kind = [
                 {"kind": row["kind"], "count": row["count"]}
                 for row in conn.execute(
-                    "SELECT kind, COUNT(*) AS count FROM memories WHERE user_id = ? AND status = 'active' GROUP BY kind ORDER BY count DESC",
+                    """
+                    SELECT m.kind, COUNT(*) AS count
+                    FROM memories m
+                    LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
+                    WHERE m.user_id = ?
+                      AND m.status = 'active'
+                      AND (m.capture_id IS NULL OR c.review_status = 'approved')
+                    GROUP BY m.kind
+                    ORDER BY count DESC
+                    """,
                     (user_id,),
                 ).fetchall()
             ]
             by_layer = [
                 {"layer": row["layer"], "count": row["count"]}
                 for row in conn.execute(
-                    "SELECT layer, COUNT(*) AS count FROM memories WHERE user_id = ? AND status = 'active' GROUP BY layer ORDER BY count DESC",
+                    """
+                    SELECT m.layer, COUNT(*) AS count
+                    FROM memories m
+                    LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
+                    WHERE m.user_id = ?
+                      AND m.status = 'active'
+                      AND (m.capture_id IS NULL OR c.review_status = 'approved')
+                    GROUP BY m.layer
+                    ORDER BY count DESC
+                    """,
                     (user_id,),
                 ).fetchall()
             ]
@@ -4730,7 +4792,10 @@ class CortexStore:
                     SELECT mt.topic, COUNT(*) AS count
                     FROM memory_topics mt
                     JOIN memories m ON m.id = mt.memory_id AND m.user_id = mt.user_id
-                    WHERE mt.user_id = ? AND m.status = 'active'
+                    LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
+                    WHERE mt.user_id = ?
+                      AND m.status = 'active'
+                      AND (m.capture_id IS NULL OR c.review_status = 'approved')
                     GROUP BY mt.topic
                     ORDER BY count DESC, mt.topic
                     LIMIT 12
@@ -4746,7 +4811,9 @@ class CortexStore:
                     FROM entities e
                     JOIN memory_entities me ON me.entity_id = e.id AND me.user_id = e.user_id
                     JOIN memories m ON m.id = me.memory_id AND m.user_id = me.user_id AND m.status = 'active'
+                    LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
                     WHERE e.user_id = ?
+                      AND (m.capture_id IS NULL OR c.review_status = 'approved')
                     GROUP BY e.id
                     ORDER BY count DESC, e.last_seen DESC
                     LIMIT 12
