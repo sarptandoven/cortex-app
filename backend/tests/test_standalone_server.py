@@ -373,9 +373,12 @@ class FakeStore:
         state: dict | None = None,
         processing: str = "async",
         archive_missing: bool = False,
+        complete_snapshot: bool = False,
     ) -> dict:
         if account_id == "sacct_missing":
             raise ValueError("source account not found")
+        if archive_missing and not complete_snapshot:
+            raise ValueError("archive_missing requires complete_snapshot=true so partial sync pages cannot archive existing memory")
         self.source_account_sync_calls.append((user_id, account_id, len(records), processing, archive_missing))
         return {
             "source_account_id": account_id,
@@ -1002,6 +1005,38 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertTrue(synced["records"][0]["source_url"].startswith("source-account://gmail/sacct_test/msg-standalone-1"))
         self.assertEqual(synced["cursor"]["cursor_value"], "cursor-2")
         self.assertEqual(self.fake_store.source_account_sync_calls, [("local", "sacct_test", 1, "sync", False)])
+
+        with self.assertRaises(error.HTTPError) as context:
+            self.post_json(
+                "/v1/source-accounts/sacct_test/sync",
+                {
+                    "processing": "sync",
+                    "cursor_name": "messages",
+                    "archive_missing": True,
+                    "records": [{"content": "Partial standalone page.", "external_id": "partial"}],
+                },
+            )
+        self.assertEqual(context.exception.code, 422)
+        self.assertIn("complete_snapshot", context.exception.read().decode("utf-8"))
+        self.assertEqual(self.fake_store.source_account_sync_calls, [("local", "sacct_test", 1, "sync", False)])
+
+        with self.post_json(
+            "/v1/source-accounts/sacct_test/sync",
+            {
+                "processing": "sync",
+                "cursor_name": "messages",
+                "archive_missing": True,
+                "complete_snapshot": True,
+                "records": [{"content": "Complete standalone snapshot.", "external_id": "complete"}],
+            },
+        ) as response:
+            complete = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(response.status, 200)
+        self.assertEqual(complete["archived_missing"], 1)
+        self.assertEqual(
+            self.fake_store.source_account_sync_calls,
+            [("local", "sacct_test", 1, "sync", False), ("local", "sacct_test", 1, "sync", True)],
+        )
 
         with self.get("/v1/source-accounts") as response:
             accounts = json.loads(response.read().decode("utf-8"))

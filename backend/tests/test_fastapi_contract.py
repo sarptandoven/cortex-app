@@ -830,6 +830,33 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(duplicate_payload["skipped"], 1)
         self.assertEqual(duplicate_payload["records"][0]["status"], "duplicate")
 
+        unsafe_archive = self.client.post(
+            f"/v1/source-accounts/{account['id']}/sync",
+            json={
+                "processing": "sync",
+                "cursor_name": "messages",
+                "cursor_value": "cursor-unsafe",
+                "archive_missing": True,
+                "records": [
+                    {
+                        "content": "Partial Gmail page should not archive Project Atlas memory.",
+                        "title": "Atlas Gmail partial",
+                        "external_id": "gmail-msg-partial",
+                        "captured_at": "2026-06-29T13:03:00Z",
+                    }
+                ],
+            },
+            headers=headers,
+        )
+        self.assertEqual(unsafe_archive.status_code, 422)
+        self.assertIn("complete_snapshot", unsafe_archive.json()["detail"])
+        still_found = self.client.get(
+            "/v1/search",
+            params={"query": "Project Atlas connected source sync"},
+            headers=headers,
+        )
+        self.assertTrue(still_found.json()["results"])
+
         full_snapshot = self.client.post(
             f"/v1/source-accounts/{account['id']}/sync",
             json={
@@ -837,6 +864,7 @@ class FastAPIContractTests(unittest.TestCase):
                 "cursor_name": "messages",
                 "cursor_value": "cursor-3",
                 "archive_missing": True,
+                "complete_snapshot": True,
                 "records": [
                     {
                         "content": "I decided Project Atlas now keeps only the current Gmail source snapshot.",
@@ -1424,6 +1452,42 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(results[0]["source"], "slack")
         self.assertTrue(results[0]["source_url"].startswith(f"source-account://slack/{account['id']}/thread-123"))
 
+        unsafe_archive = self.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": "sync-source-unsafe-archive",
+                "method": "tools/call",
+                "params": {
+                    "name": "sync_source_records",
+                    "arguments": {
+                        "source_account_id": account["id"],
+                        "records": [
+                            {
+                                "content": "Partial Slack page should not archive Project Orion memory.",
+                                "title": "Project Orion partial",
+                                "external_id": "thread-partial",
+                                "captured_at": "2026-06-30T10:25:00Z",
+                            }
+                        ],
+                        "cursor_name": "threads",
+                        "cursor_value": "cursor-unsafe",
+                        "processing": "sync",
+                        "archive_missing": True,
+                    },
+                },
+            },
+            headers={"Authorization": f"Bearer {write_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(unsafe_archive.status_code, 200)
+        self.assertIn("complete_snapshot", unsafe_archive.json()["error"]["message"])
+        still_found = self.client.get(
+            "/v1/search",
+            params={"query": "Project Orion cited product decisions"},
+            headers=headers,
+        )
+        self.assertTrue(still_found.json()["results"])
+
         full_snapshot = self.client.post(
             "/mcp",
             json={
@@ -1446,6 +1510,7 @@ class FastAPIContractTests(unittest.TestCase):
                         "cursor_value": "cursor-3",
                         "processing": "sync",
                         "archive_missing": True,
+                        "complete_snapshot": True,
                     },
                 },
             },

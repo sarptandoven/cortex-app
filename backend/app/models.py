@@ -120,6 +120,7 @@ class SourceAccountSyncRequest(BaseModel):
     state: dict[str, Any] | None = None
     processing: Literal["sync", "async"] = "async"
     archive_missing: bool = False
+    complete_snapshot: bool = False
 
 
 class SourceAccountSyncResponse(BaseModel):

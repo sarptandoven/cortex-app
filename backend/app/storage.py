@@ -2229,6 +2229,7 @@ class CortexStore:
         state: dict[str, Any] | None = None,
         processing: str = "async",
         archive_missing: bool = False,
+        complete_snapshot: bool = False,
         archive_external_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         account_id = (account_id or "").strip()
@@ -2240,6 +2241,8 @@ class CortexStore:
             raise ValueError("records are required")
         if len(records) > 500:
             raise ValueError("too many records")
+        if archive_missing and not complete_snapshot and archive_external_ids is None:
+            raise ValueError("archive_missing requires complete_snapshot=true so partial sync pages cannot archive existing memory")
 
         with connect(self.db_path) as conn:
             row = conn.execute(

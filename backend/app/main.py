@@ -467,6 +467,7 @@ def sync_source_account(account_id: str, request: SourceAccountSyncRequest, user
             state=request.state,
             processing=request.processing,
             archive_missing=request.archive_missing,
+            complete_snapshot=request.complete_snapshot,
         )
         return store.public_payload(user_id, result)
     except ValueError as exc:

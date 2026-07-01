@@ -430,6 +430,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         state=body.get("state") if isinstance(body.get("state"), dict) else None,
                         processing=str(body.get("processing") or "async"),
                         archive_missing=_bool_value(body.get("archive_missing"), default=False),
+                        complete_snapshot=_bool_value(body.get("complete_snapshot"), default=False),
                     )
                     self._send_json(store.public_payload(user_id, result) if hasattr(store, "public_payload") else result)
                 except ValueError as exc:
