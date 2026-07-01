@@ -70,6 +70,8 @@ I prefer #cortex notes that preserve citations.
         self.assertEqual(parsed.callouts, [{"type": "note", "title": "Template block"}])
         self.assertEqual(parsed.removed_blocks["code_blocks"], 1)
         self.assertEqual(parsed.removed_blocks["code_languages"], ["dataview"])
+        self.assertEqual(parsed.removed_blocks["callout_blocks"], 1)
+        self.assertNotIn("This callout should not become the note.", parsed.content)
 
         scan = scan_vault(self.vault, max_records=20)
 
@@ -84,7 +86,7 @@ I prefer #cortex notes that preserve citations.
         self.assertEqual(record["title"], "Project Atlas")
         self.assertIn("Dana", record["content"])
         self.assertIn("Atlas should use source-backed retrieval", record["content"])
-        for leaked in ("[[", "]]", "dataview", "TABLE file.mtime", "Template block", "#cortex"):
+        for leaked in ("[[", "]]", "dataview", "TABLE file.mtime", "Template block", "This callout should not become the note.", "#cortex"):
             self.assertNotIn(leaked, record["content"])
         self.assertEqual(record["metadata"]["tags"], ["cortex", "people/dana"])
         self.assertEqual(record["metadata"]["record_scope"], "section")
@@ -92,6 +94,7 @@ I prefer #cortex notes that preserve citations.
         self.assertTrue(any(link["target"] == "Project Atlas" and link["display"] == "Atlas" for link in record["metadata"]["wikilinks"]))
         self.assertEqual(record["metadata"]["callouts"], [{"type": "note", "title": "Template block"}])
         self.assertEqual(record["metadata"]["removed_blocks"]["code_languages"], ["dataview"])
+        self.assertEqual(record["metadata"]["removed_blocks"]["callout_blocks"], 1)
 
     def test_sync_vault_skips_unchanged_note_and_updates_changed_note(self) -> None:
         note = self.write_note(
@@ -148,6 +151,146 @@ I prefer #cortex notes that preserve citations.
         self.assertEqual(found[0]["provenance"]["record_metadata"]["relative_path"], "Decisions/Memory.md")
         self.assertEqual(found[0]["provenance"]["record_metadata"]["connector"], "obsidian")
         self.assertIn("Memory", found[0]["topics"])
+
+    def test_sync_noisy_obsidian_note_keeps_clean_citations_and_supersedes_edits(self) -> None:
+        def noisy_note(decision_marker: str, preference_marker: str) -> str:
+            return f"""---
+title: Noisy Research
+tags: [cortex, imported/noise]
+aliases:
+  - Decision: BogusYAML marker should never become memory.
+---
+# Noisy Research
+
+> [!WARNING] Import template
+> Decision: BogusCallout marker should never become memory.
+> I prefer BogusCallout instructions.
+
+```dataview
+TABLE file.mtime
+FROM #cortex
+Decision: BogusDataview marker should never become memory.
+```
+
+```yaml
+decision: BogusCodeFence marker should never become memory.
+```
+
+Decision: Cortex should keep {decision_marker} as the cited local-note memory.
+I prefer Cortex note imports that cite {preference_marker}.
+"""
+
+        note = self.write_note(
+            "Research/Noisy Memory.md",
+            noisy_note("oldstone first sync", "the original Markdown source"),
+        )
+        expected_external_id = stable_section_external_id(self.vault, note, "noisy-research")
+
+        scan = scan_vault(self.vault, max_records=20)
+        self.assertEqual(scan.records_returned, 1)
+        scanned = scan.records[0].to_source_account_record()
+        self.assertEqual(scanned["external_id"], expected_external_id)
+        self.assertIn("oldstone first sync", scanned["content"])
+        for leaked in ("BogusYAML", "BogusCallout", "BogusDataview", "BogusCodeFence", "TABLE file.mtime"):
+            self.assertNotIn(leaked, scanned["content"])
+        self.assertEqual(scanned["metadata"]["removed_blocks"]["code_languages"], ["dataview", "yaml"])
+        self.assertEqual(scanned["metadata"]["removed_blocks"]["callout_blocks"], 1)
+
+        first = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+        self.assertEqual(first["status"], "complete")
+        self.assertEqual(first["saved"], 1)
+        self.assertEqual(first["records"][0]["status"], "saved")
+        self.assertEqual(first["records"][0]["capture_id"], first["capture_ids"][0])
+        self.assertEqual(first["records"][0]["source_url"], note.resolve().as_uri())
+        capture_id = first["records"][0]["capture_id"]
+        self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+
+        self.assertEqual(self.store.search(self.user_id, "BogusYAML marker", limit=5), [])
+        self.assertEqual(self.store.search(self.user_id, "BogusCallout marker", limit=5), [])
+        self.assertEqual(self.store.search(self.user_id, "BogusDataview marker", limit=5), [])
+        self.assertEqual(self.store.search(self.user_id, "BogusCodeFence marker", limit=5), [])
+
+        first_hits = self.store.search(self.user_id, "oldstone first sync cited local-note memory", limit=5)
+        self.assertTrue(first_hits)
+        self.assertTrue(first_hits[0]["source_url"].startswith(note.resolve().as_uri()))
+        self.assertIn("line=", first_hits[0]["source_url"])
+        self.assertIn("excerpt=", first_hits[0]["source_url"])
+
+        note.write_text(
+            noisy_note("newstone edited sync", "the final Markdown source"),
+            encoding="utf-8",
+        )
+        changed = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+        self.assertEqual(changed["saved"], 1)
+        self.assertEqual(changed["skipped"], 0)
+        self.assertEqual(changed["records"][0]["status"], "updated")
+        self.assertEqual(changed["records"][0]["capture_id"], capture_id)
+        self.assertEqual(changed["records"][0]["source_url"], note.resolve().as_uri())
+        self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+
+        self.assertEqual(self.store.search(self.user_id, "oldstone first sync", limit=5), [])
+        changed_hits = self.store.search(self.user_id, "newstone edited sync cited local-note memory", limit=5)
+        self.assertTrue(changed_hits)
+        self.assertTrue(changed_hits[0]["source_url"].startswith(note.resolve().as_uri()))
+        self.assertIn("line=", changed_hits[0]["source_url"])
+        self.assertIn("excerpt=", changed_hits[0]["source_url"])
+
+        answer = self.store.answer_query(self.user_id, "newstone edited sync cited local-note memory", limit=3)
+        self.assertTrue(answer["citations"])
+        citation = next(item for item in answer["citations"] if "newstone edited sync" in item["excerpt"])
+        self.assertEqual(citation["source"], "obsidian")
+        self.assertEqual(citation["external_id"], expected_external_id)
+        self.assertEqual(citation["citation_path"], "Research/Noisy Memory.md")
+        self.assertEqual(citation["record_scope"], "section")
+        self.assertTrue(citation["source_url"].startswith("local-file://Noisy%20Memory.md#line="))
+        self.assertIn("excerpt=", citation["source_url"])
+        self.assertNotIn(str(self.vault), citation["source_url"])
+
+        context = self.store.context_pack(self.user_id, query="newstone edited sync cited local-note memory", limit=3)
+        self.assertIn("local-file://Noisy%20Memory.md#line=", context)
+        self.assertNotIn(str(self.vault), context)
+
+        with connect(self.db_path) as conn:
+            captures = conn.execute(
+                """
+                SELECT id, external_id, source_url, raw_text, review_status
+                FROM captures
+                WHERE user_id = ?
+                  AND source = 'obsidian'
+                """,
+                (self.user_id,),
+            ).fetchall()
+            active_memories = conn.execute(
+                """
+                SELECT content, source_url, raw_excerpt
+                FROM memories
+                WHERE user_id = ?
+                  AND capture_id = ?
+                  AND status = 'active'
+                ORDER BY content
+                """,
+                (self.user_id, capture_id),
+            ).fetchall()
+
+        self.assertEqual(len(captures), 1)
+        self.assertEqual(captures[0]["id"], capture_id)
+        self.assertEqual(captures[0]["external_id"], expected_external_id)
+        self.assertTrue(captures[0]["source_url"].startswith(note.resolve().as_uri()))
+        self.assertEqual(captures[0]["review_status"], "approved")
+        self.assertIn("newstone edited sync", captures[0]["raw_text"])
+        self.assertNotIn("oldstone first sync", captures[0]["raw_text"])
+
+        self.assertEqual(len(active_memories), 2)
+        active_text = "\n".join(row["content"] for row in active_memories)
+        active_excerpts = "\n".join(row["raw_excerpt"] or "" for row in active_memories)
+        self.assertIn("newstone edited sync", active_text)
+        self.assertIn("final Markdown source", active_text)
+        self.assertNotIn("oldstone first sync", active_text)
+        for leaked in ("BogusYAML", "BogusCallout", "BogusDataview", "BogusCodeFence"):
+            self.assertNotIn(leaked, active_text)
+            self.assertNotIn(leaked, active_excerpts)
+        self.assertTrue(all(row["source_url"].startswith(note.resolve().as_uri()) for row in active_memories))
+        self.assertTrue(all("line=" in row["source_url"] and "excerpt=" in row["source_url"] for row in active_memories))
 
     def test_empty_vault_does_not_count_as_synced_source(self) -> None:
         empty = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")

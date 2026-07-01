@@ -362,6 +362,7 @@ def _sentence_candidates(text: str, source: str = "unknown", author_aliases: Ite
     frontmatter_possible = True
     in_frontmatter = False
     in_fenced_block = False
+    in_callout_block = False
     for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         raw_stripped = raw_line.strip()
         if in_frontmatter:
@@ -380,6 +381,13 @@ def _sentence_candidates(text: str, source: str = "unknown", author_aliases: Ite
             in_fenced_block = not in_fenced_block
             continue
         if in_fenced_block:
+            continue
+        if in_callout_block:
+            if raw_stripped.startswith(">"):
+                continue
+            in_callout_block = False
+        if re.match(r"^>\s*\[![A-Za-z0-9_-]+\]", raw_stripped):
+            in_callout_block = True
             continue
 
         line = _clean_import_line(raw_line).strip(" -•\t")

@@ -211,6 +211,7 @@ created: 2026-06-29
 # Project Atlas
 
 > [!NOTE] Template block
+> This callout should not become memory.
 
 ```dataview
 TABLE file.mtime
@@ -228,7 +229,7 @@ Never use [[Templates/Marketing]] boilerplate in memory.
         tasks = data["tasks"]
         joined_content = "\n".join([*(record["content"] for record in records), *(task["content"] for task in tasks), data["summary"]])
 
-        for leaked in ("tags:", "#todo", "[[", "]]", "](https://example.com)", "dataview", "Template block", "TABLE file.mtime"):
+        for leaked in ("tags:", "#todo", "[[", "]]", "](https://example.com)", "dataview", "Template block", "This callout should not become memory.", "TABLE file.mtime"):
             self.assertNotIn(leaked, joined_content)
         self.assertFalse(any(task["content"].startswith("tags:") for task in tasks))
         self.assertTrue(any(task["content"] == "Follow up with Dana about Atlas review." for task in tasks))

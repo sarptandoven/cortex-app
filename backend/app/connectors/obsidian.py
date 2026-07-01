@@ -558,6 +558,8 @@ def _parse_obsidian_markdown(raw: str) -> tuple[str, dict[str, Any], set[str], l
     wikilinks = _extract_wikilinks(text)
     callouts = _extract_callouts(text)
     removed_blocks = _removed_fenced_blocks(text)
+    text, removed_callouts = _strip_callout_blocks(text)
+    removed_blocks["callout_blocks"] = removed_callouts
     tags = {_normalize_tag(tag) for tag in _TAG_RE.findall(text)}
     tags.update(_frontmatter_tags(frontmatter))
     text = _FENCED_BLOCK_RE.sub(_clean_fenced_block, text)
@@ -624,6 +626,25 @@ def _extract_callouts(text: str) -> list[dict[str, str]]:
         callouts.append({"type": key[0], "title": key[1]})
         seen.add(key)
     return callouts
+
+
+def _strip_callout_blocks(text: str) -> tuple[str, int]:
+    lines = text.split("\n")
+    kept: list[str] = []
+    removed = 0
+    in_callout = False
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r"^>\s*\[!([A-Za-z0-9_-]+)\][+-]?", stripped):
+            removed += 1
+            in_callout = True
+            continue
+        if in_callout:
+            if stripped.startswith(">"):
+                continue
+            in_callout = False
+        kept.append(line)
+    return "\n".join(kept), removed
 
 
 def _removed_fenced_blocks(text: str) -> dict[str, Any]:

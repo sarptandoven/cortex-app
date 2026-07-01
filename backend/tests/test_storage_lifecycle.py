@@ -1159,6 +1159,7 @@ tags: #cortex #todo
 # Project Atlas
 
 > [!NOTE] Template block
+> This callout should not become memory.
 
 ```dataview
 TABLE file.mtime
@@ -1196,7 +1197,7 @@ Never use [[Templates/Marketing]] boilerplate in memory.
 
         self.assertTrue(rows)
         joined = "\n".join((row["content"] or "") + "\n" + (row["raw_excerpt"] or "") for row in rows)
-        for leaked in ("tags:", "#todo", "[[", "]]", "dataview", "Template block", "TABLE file.mtime"):
+        for leaked in ("tags:", "#todo", "[[", "]]", "dataview", "Template block", "This callout should not become memory.", "TABLE file.mtime"):
             self.assertNotIn(leaked, joined)
         self.assertTrue(all((row["source_url"] or "").startswith("file:///Users/example/Obsidian/Project%20Atlas.md") for row in rows))
         self.assertTrue(any(row["kind"] == "decision" and "Atlas should use source-backed retrieval" in row["content"] for row in rows))
