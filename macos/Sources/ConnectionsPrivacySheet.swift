@@ -80,11 +80,7 @@ private struct ConnectionsPrivacyOverview: View {
             VStack(alignment: .leading, spacing: 22) {
                 ConnectionsOverviewHero(state: state)
 
-                VStack(alignment: .leading, spacing: 18) {
-                    SectionHeader(
-                        title: "Connect",
-                        detail: "Start with notes. AI tools can use approved memory after Review."
-                    )
+                VStack(alignment: .leading, spacing: 12) {
                     ConnectionsObsidianSection(state: state)
                     ConnectionsAIToolsSection(state: state)
                 }
@@ -122,7 +118,7 @@ private struct ConnectionsPrivacyOverview: View {
             ConnectionsDisclosureLabel(
                 systemImage: "shield.lefthalf.filled",
                 title: "Privacy",
-                detail: "Local-first · review-first"
+                detail: "Review, AI access, redaction"
             )
         }
         .padding(14)
@@ -139,7 +135,7 @@ private struct ConnectionsPrivacyOverview: View {
             ConnectionsDisclosureLabel(
                 systemImage: "checkmark.seal",
                 title: "Connected now",
-                detail: "\(connectedSourceCount) note source\(connectedSourceCount == 1 ? "" : "s") · \(state.connectedAIIntegrationCount) AI tool\(state.connectedAIIntegrationCount == 1 ? "" : "s")"
+                detail: "\(connectedSourceCount) notes · \(state.connectedAIIntegrationCount) AI tools"
             )
         }
         .padding(14)
@@ -217,8 +213,8 @@ private struct ConnectionsPrivacyOverview: View {
         } label: {
             ConnectionsDisclosureLabel(
                 systemImage: "slider.horizontal.3",
-                title: "Troubleshooting",
-                detail: "Backup, audit, and repair tools when needed"
+                title: "Advanced",
+                detail: "Support, audit, repair"
             )
         }
         .padding(14)
@@ -392,10 +388,6 @@ private struct ConnectionsObsidianSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            SectionHeader(
-                title: "Notes",
-                detail: "Connect notes once. Cortex keeps them synced locally with stable citations."
-            )
             if state.sourceConnectorCatalog.isEmpty {
                 QuietState(title: "Checking note connections", detail: "Cortex is checking available local note connections.")
             } else if let connector = obsidianConnector {
@@ -455,11 +447,6 @@ private struct ConnectionsAIToolsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            SectionHeader(
-                title: "AI tools",
-                detail: "Optional connections for using approved memory where you already work."
-            )
-
             HStack(alignment: .center, spacing: 14) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 8)
@@ -471,6 +458,10 @@ private struct ConnectionsAIToolsSection: View {
                 .frame(width: 56, height: 56)
 
                 VStack(alignment: .leading, spacing: 4) {
+                    Text("AI tools")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.secondary)
                     Text(statusTitle)
                         .font(.title3)
                         .fontWeight(.semibold)
@@ -550,7 +541,7 @@ private struct ConnectionsAIToolsSection: View {
         if !detectedConnectable.isEmpty {
             return "\(detectedConnectable.count) tool\(detectedConnectable.count == 1 ? "" : "s") ready"
         }
-        return "No local AI tool detected"
+        return "Use Ask first"
     }
 
     private var statusDetail: String {
@@ -560,7 +551,7 @@ private struct ConnectionsAIToolsSection: View {
         if !detectedConnectable.isEmpty {
             return "Connect detected tools once. Cortex handles the local connection."
         }
-        return "Open Claude, ChatGPT, or another supported local tool, then check again."
+        return "Cortex works without another app. Connect AI tools later when you want approved memory outside Cortex."
     }
 }
 
@@ -580,8 +571,8 @@ private struct ConnectionsPrivacyDefaultsSection: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center) {
                 SectionHeader(
-                    title: "Privacy defaults",
-                    detail: "Cortex stays local-first and review-first unless you explicitly widen access."
+                    title: "Privacy",
+                    detail: "Local-first and review-first unless you widen access."
                 )
                 Spacer(minLength: 12)
                 Button {
@@ -606,12 +597,6 @@ private struct ConnectionsPrivacyDefaultsSection: View {
                     detail: settings.allow_agent_reads ? (settings.allow_pending_in_context ? "pending can be shared" : "approved only") : "tools cannot search memory",
                     systemImage: settings.allow_agent_reads ? "eye.fill" : "eye.slash.fill",
                     color: settings.allow_agent_reads ? .accentColor : .secondary
-                )
-                ConnectionsTrustTile(
-                    title: settings.redact_sensitive_context ? "Redaction on" : "Redaction off",
-                    detail: settings.redact_sensitive_context ? "sensitive text is masked" : "full text can be shared",
-                    systemImage: settings.redact_sensitive_context ? "text.badge.xmark" : "text.viewfinder",
-                    color: settings.redact_sensitive_context ? .green : .orange
                 )
                 ConnectionsTrustTile(
                     title: backupCount > 0 ? "Backup ready" : "No backup yet",

@@ -21,6 +21,10 @@ struct SourceConnectorStatusCard: View {
                 )
             }
             VStack(alignment: .leading, spacing: 5) {
+                Text("Notes")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
                 Text(connector.id == "obsidian" ? "Notes folder" : connector.name)
                     .font(.title3)
                     .fontWeight(.semibold)
