@@ -9371,6 +9371,7 @@ class CortexStore:
         trust = self.trust_summary(user_id)
         stats = self.stats(user_id)
         loop = self.product_loop(user_id)
+        source_readiness = self.source_readiness_report(user_id)
         recent_events = [self._support_event_summary(event) for event in self.audit_log(user_id, limit=30)]
         latest_backup = self.latest_backup()
 
@@ -9417,6 +9418,7 @@ class CortexStore:
             "diagnostics": self._support_safe_payload(diagnostics),
             "reliability": self._support_safe_payload(reliability),
             "trust": self._support_safe_payload(trust),
+            "source_readiness": self._support_safe_payload(source_readiness),
             "product_loop": self._support_safe_payload(
                 {
                     "status": loop.get("status"),

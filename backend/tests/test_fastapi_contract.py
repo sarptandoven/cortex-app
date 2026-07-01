@@ -2399,6 +2399,75 @@ END:VCALENDAR
         self.assertEqual(too_long.json()["error"]["code"], -32000)
         self.assertIn("exceeds 500 characters", too_long.json()["error"]["message"])
 
+    def test_read_only_mcp_get_project_context_empty_state_is_structured(self) -> None:
+        user = "mcp-empty-project-context-contract"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+        read_token = "cxm_fastapi_empty_project_read_123456789"
+        registered = self.client.post(
+            "/v1/integrations/mcp-token",
+            json={"token": read_token, "label": "Empty project context MCP", "scopes": ["read"]},
+            headers=headers,
+        )
+        self.assertEqual(registered.status_code, 200)
+
+        project_name = "Project Empty Stable Payload"
+        project_query = "nonexistent empty project context marker"
+        response = self.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": "empty-project-context",
+                "method": "tools/call",
+                "params": {
+                    "name": "get_project_context",
+                    "arguments": {"name": project_name, "query": project_query, "limit": 5},
+                },
+            },
+            headers={"Authorization": f"Bearer {read_token}", "X-Cortex-User": user},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertNotIn("error", payload)
+        result = payload["result"]
+        self.assertIn("structuredContent", result)
+        self.assertEqual(json.loads(result["content"][0]["text"]), result["structuredContent"])
+        self.assertEqual(
+            result["structuredContent"],
+            {"name": project_name, "query": project_query, "memories": []},
+        )
+
+    def test_read_only_mcp_get_procedure_empty_state_is_structured(self) -> None:
+        user = "mcp-empty-procedure-contract"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+        read_token = "cxm_fastapi_empty_procedure_read_123456789"
+        registered = self.client.post(
+            "/v1/integrations/mcp-token",
+            json={"token": read_token, "label": "Empty procedure MCP", "scopes": ["read"]},
+            headers=headers,
+        )
+        self.assertEqual(registered.status_code, 200)
+
+        query = "nonexistent empty procedure marker"
+        response = self.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": "empty-procedure",
+                "method": "tools/call",
+                "params": {"name": "get_procedure", "arguments": {"query": query, "limit": 5}},
+            },
+            headers={"Authorization": f"Bearer {read_token}", "X-Cortex-User": user},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertNotIn("error", payload)
+        result = payload["result"]
+        self.assertIn("structuredContent", result)
+        self.assertEqual(json.loads(result["content"][0]["text"]), result["structuredContent"])
+        self.assertEqual(result["structuredContent"], {"query": query, "procedures": []})
+
     def test_mcp_direct_sync_tools_bound_requested_work_size(self) -> None:
         user = "mcp-sync-bound-contract"
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
