@@ -4223,7 +4223,8 @@ class CortexStore:
                   t.*,
                   c.source AS capture_source,
                   c.source_url AS capture_source_url,
-                  c.title AS capture_title
+                  c.title AS capture_title,
+                  c.raw_text AS capture_raw_text
                 FROM tasks t
                 LEFT JOIN captures c ON c.id = t.capture_id AND c.user_id = t.user_id
                 WHERE {where}
@@ -8894,7 +8895,7 @@ class CortexStore:
     def _task_search_result_from_row(self, row: Any) -> dict[str, Any]:
         keys = set(row.keys())
         source = row["capture_source"] if "capture_source" in keys and row["capture_source"] else "task"
-        source_url = row["capture_source_url"] if "capture_source_url" in keys else None
+        source_url = self._task_source_url_from_row(row)
         topics = json.loads(row["topics_json"] or "[]")
         entity_ids = json.loads(row["entity_ids_json"] or "[]")
         return {
@@ -8918,6 +8919,18 @@ class CortexStore:
             "updated_at": row["captured_at"],
             "raw_excerpt": row["content"],
         }
+
+    def _task_source_url_from_row(self, row: Any) -> str | None:
+        keys = set(row.keys())
+        source_url = row["capture_source_url"] if "capture_source_url" in keys else None
+        if source_url and "capture_raw_text" in keys:
+            return _granular_memory_source_url(
+                source_url,
+                row["capture_raw_text"] or "",
+                row["content"] or "",
+                enabled=True,
+            )
+        return source_url
 
     def _enqueue_embed_memory_job(
         self,
@@ -9944,7 +9957,7 @@ class CortexStore:
             "topics": json.loads(row["topics_json"] or "[]"),
             "entity_ids": json.loads(row["entity_ids_json"] or "[]"),
             "source": row["capture_source"] if "capture_source" in keys and row["capture_source"] else "task",
-            "source_url": row["capture_source_url"] if "capture_source_url" in keys else None,
+            "source_url": self._task_source_url_from_row(row),
             "captured_at": row["captured_at"],
         }
 

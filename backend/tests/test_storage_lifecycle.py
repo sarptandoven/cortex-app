@@ -398,10 +398,14 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(answer["citations"][0]["layer"], "task")
         self.assertEqual(answer["citations"][0]["status"], "open")
         self.assertEqual(answer["citations"][0]["source"], "slack")
-        self.assertEqual(answer["citations"][0]["source_url"], "slack://channel/C123/p202606291200")
+        self.assertTrue(answer["citations"][0]["source_url"].startswith("slack://channel/C123/p202606291200"))
+        self.assertIn("line=1", answer["citations"][0]["source_url"])
+        self.assertIn("excerpt=", answer["citations"][0]["source_url"])
         self.assertIn("API keys rotation", answer["citations"][0]["excerpt"])
         self.assertEqual(answer["results"][0]["result_type"], "task")
-        self.assertEqual(answer["results"][0]["source_url"], "slack://channel/C123/p202606291200")
+        self.assertTrue(answer["results"][0]["source_url"].startswith("slack://channel/C123/p202606291200"))
+        self.assertIn("line=1", answer["results"][0]["source_url"])
+        self.assertIn("excerpt=", answer["results"][0]["source_url"])
 
     def test_task_results_do_not_pad_non_task_memory_search(self) -> None:
         memory = self.store.save_capture(
@@ -498,7 +502,9 @@ class CortexStorageLifecycleTests(unittest.TestCase):
 
         self.assertTrue(approved_answer["citations"])
         self.assertEqual(approved_answer["citations"][0]["result_type"], "task")
-        self.assertEqual(approved_answer["citations"][0]["source_url"], "message://api-key-policy")
+        self.assertTrue(approved_answer["citations"][0]["source_url"].startswith("message://api-key-policy"))
+        self.assertIn("line=1", approved_answer["citations"][0]["source_url"])
+        self.assertIn("excerpt=", approved_answer["citations"][0]["source_url"])
 
     def test_api_and_mcp_tokens_are_audience_scoped(self) -> None:
         api_token = "cxa_storage_lifecycle_token_123456789"

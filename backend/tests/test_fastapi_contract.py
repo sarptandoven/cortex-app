@@ -400,8 +400,57 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(payload["citations"][0]["result_type"], "task")
         self.assertEqual(payload["citations"][0]["layer"], "task")
         self.assertEqual(payload["citations"][0]["status"], "open")
-        self.assertEqual(payload["citations"][0]["source_url"], "notion://page/import-undo")
+        self.assertTrue(payload["citations"][0]["source_url"].startswith("notion://page/import-undo"))
+        self.assertIn("line=1", payload["citations"][0]["source_url"])
+        self.assertIn("excerpt=", payload["citations"][0]["source_url"])
         self.assertEqual(payload["results"][0]["result_type"], "task")
+
+    def test_ask_endpoint_adds_line_locator_to_local_task_citation(self) -> None:
+        user_id = "ask-local-task-citation-contract"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user_id}
+        saved = main_module.store.save_capture(
+            user_id=user_id,
+            content=(
+                "# Beta Smoke Notes\n\n"
+                "Decision: Project Taipei should keep cited local memory stable.\n"
+                "Action: follow up with Mira about the beta invite checklist for local task citation.\n"
+            ),
+            source="obsidian",
+            source_url="file:///Users/example/Obsidian/Beta%20Smoke%20Notes.md",
+            title="Beta Smoke Notes",
+            extracted={
+                "_timestamp": "2026-06-29T13:00:00Z",
+                "summary": "Beta planning task.",
+                "records": [],
+                "tasks": [
+                    {
+                        "id": "task_fastapi_local_task_citation",
+                        "kind": "action",
+                        "content": "Action: follow up with Mira about the beta invite checklist for local task citation.",
+                        "status": "open",
+                        "importance": 4,
+                        "topics": ["beta"],
+                        "entity_ids": [],
+                    }
+                ],
+                "entities": [],
+            },
+        )
+        self.assertTrue(main_module.store.approve_capture(user_id, saved["capture_id"]))
+
+        response = self.client.get(
+            "/v1/ask",
+            params={"query": "follow up Mira beta invite checklist local task citation", "limit": 5},
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        task_citation = next(citation for citation in payload["citations"] if citation["result_type"] == "task")
+        self.assertTrue(task_citation["source_url"].startswith("local-file://Beta%20Smoke%20Notes.md"))
+        self.assertIn("line=4", task_citation["source_url"])
+        self.assertIn("excerpt=", task_citation["source_url"])
+        self.assertNotIn("/Users/example", json.dumps(payload))
 
     def test_scoped_api_token_prevents_user_header_impersonation_when_required(self) -> None:
         scoped_token = "cxa_fastapi_contract_token_123456789"
