@@ -116,8 +116,8 @@ Recommended integration-card rewrites:
 | Current string | Proposed string |
 | --- | --- |
 | `Adds Cortex memory tools directly inside Claude Desktop through MCP.` | `Lets Claude Desktop search and use Cortex memory directly.` |
-| old Claude context-pack tool description | `Use Claude Desktop to search Cortex memory, review today, copy context, and save new memory.` |
-| old Cursor context-pack tool description | `Gives Cursor access to saved project memory and chat context.` |
+| old Claude context-pack tool description | `Use Claude Desktop to search Cortex memory directly and save useful updates for Review.` |
+| old Cursor context-pack tool description | `Gives Cursor access to saved project memory through a direct local connection.` |
 | `Restart Cursor, then enable the cortex MCP server in Cursor settings if prompted.` | `Restart Cursor, then enable Cortex in Cursor settings if prompted.` |
 | `Use Cortex before implementation tasks: search memory for project decisions, people, and open loops.` | `Use Cortex before implementation tasks: search memory for project decisions, people, and follow-ups.` |
 | `Connects Windsurf/Cascade to Cortex through the local MCP stdio bridge.` | `Lets Windsurf use Cortex memory through a local connection.` |
@@ -126,10 +126,10 @@ Recommended integration-card rewrites:
 | `Adds Cortex MCP tools for Roo Code coding sessions.` | `Adds Cortex memory tools for Roo Code coding sessions.` |
 | `Copy a Cortex MCP server definition for VS Code user or workspace MCP setup.` | `Copy Cortex advanced setup for VS Code user or workspace settings.` |
 | `Copy a ready command/config snippet for Claude Code MCP setup.` | `Copy a ready setup command for Claude Code.` |
-| old ChatGPT context-pack copy | `Copy Cortex chat context and instructions for ChatGPT.` |
-| old ChatGPT paste-first instruction | `Paste Cortex context into ChatGPT when you want it to reuse your saved memory.` |
-| old Grok context-pack copy | `Copy Cortex chat context for Grok conversations.` |
-| old Poe context-pack copy | `Paste Cortex context into Poe bots that need personal or project memory.` |
+| old ChatGPT context-pack copy | `Use copied Cortex context for ChatGPT only when a direct connection is not available.` |
+| old ChatGPT paste-first instruction | `Paste Cortex context into ChatGPT as an Advanced/Fallback path after direct tool connections are unavailable.` |
+| old Grok context-pack copy | `Use copied Cortex context for Grok only when a direct connection is not available.` |
+| old Poe context-pack copy | `Paste Cortex context into Poe only as an Advanced/Fallback path when direct connection is unavailable.` |
 | `Copy Cortex MCP/API settings for local model workflows.` | `Copy Cortex local connection settings for local model workflows.` |
 | `Use Cortex's local API or MCP bridge with local model agents that support tools.` | `Use Cortex's local service with local model tools that support direct connections.` |
 | `Copy Cortex MCP/API settings for team chat deployments.` | `Copy Cortex local connection settings for team chat deployments.` |
@@ -177,7 +177,7 @@ Surface: Connections & Privacy sheet.
 | `Agent write access` | `AI tool save access` |
 | old MCP-agent write copy | `Connected AI tools can save, approve, archive, or delete memory when allowed.` |
 | `Agent export access` | `AI tool export access` |
-| old MCP-agent export copy | `Connected AI tools can copy context or export memory when allowed.` |
+| old MCP-agent export copy | `Connected AI tools can use approved memory directly; export remains an explicit advanced permission.` |
 | `Context pack size: N` | `Context to include: N items` |
 | `Audit Trail` | `Activity History` |
 | `Captures, approvals, backups, settings, and agent tool calls will appear here.` | `Saves, approvals, backups, settings changes, and connected AI tool actions will appear here.` |

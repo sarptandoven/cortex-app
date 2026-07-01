@@ -20,7 +20,7 @@ The release package starts its bundled local service on `127.0.0.1:8766` and sto
 Use the setup flow:
 
 1. Memory folder: confirm the local memory folder path and service health.
-2. Connect/sync: connect Obsidian or a local notes folder when ready.
+2. Connect/sync: connect Obsidian or a local notes folder as the first memory source, then connect AI tools through MCP when ready.
 3. Review: approve useful memory after a source syncs.
 4. Ask: ask a question and inspect cited memory after approval.
 

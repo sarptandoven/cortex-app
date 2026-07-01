@@ -20,6 +20,7 @@ REQUIRED_FILES = [
     ".github/ISSUE_TEMPLATE/first100_beta_support_case.md",
     ".github/ISSUE_TEMPLATE/first100_batch_go_no_go.md",
     "site/downloads/latest.json",
+    "site/downloads/Cortex-0.1.0-1.checksums.txt",
 ]
 
 SUPPORT_FIELDS = [
@@ -31,8 +32,10 @@ SUPPORT_FIELDS = [
     "Support artifact storage",
     "Business hours and timezone",
     "Deletion request contact",
+    "Build version, build number, hash",
     "Tester cohort source",
     "First batch size",
+    "Known limitations sent to testers",
     "Stop/go decision owner",
 ]
 
@@ -143,6 +146,7 @@ def check_release_manifest() -> dict[str, Any]:
 
     errors: list[str] = []
     artifacts: list[dict[str, Any]] = []
+    manifest_hashes: dict[str, str] = {}
     manifest_artifacts = manifest.get("artifacts")
     if not isinstance(manifest_artifacts, list) or not manifest_artifacts:
         errors.append("latest.json artifacts must be a non-empty list")
@@ -173,6 +177,7 @@ def check_release_manifest() -> dict[str, Any]:
             continue
         actual_hash = sha256(artifact_path)
         actual_size = artifact_path.stat().st_size
+        manifest_hashes[filename] = expected_hash
         summary.update(
             {
                 "ok": artifact_tracked and actual_hash == expected_hash and actual_size == expected_size,
@@ -192,6 +197,22 @@ def check_release_manifest() -> dict[str, Any]:
     if not provenance.get("git_commit"):
         errors.append("latest.json source_provenance.git_commit is missing")
 
+    checksum_filename = f"Cortex-{manifest.get('version')}-{manifest.get('build')}.checksums.txt"
+    checksum_path = ROOT / "site/downloads" / checksum_filename
+    checksum_entries: dict[str, str] = {}
+    if not checksum_path.exists():
+        errors.append(f"checksum file missing: site/downloads/{checksum_filename}")
+    else:
+        if not git_tracked(f"site/downloads/{checksum_filename}"):
+            errors.append(f"checksum file is not tracked by git: site/downloads/{checksum_filename}")
+        for raw_line in checksum_path.read_text(encoding="utf-8").splitlines():
+            parts = raw_line.split()
+            if len(parts) >= 2:
+                checksum_entries[parts[-1]] = parts[0]
+        for filename, expected_hash in manifest_hashes.items():
+            if checksum_entries.get(filename) != expected_hash:
+                errors.append(f"{checksum_filename}: missing or stale hash for {filename}")
+
     return {
         "ok": not errors,
         "version": manifest.get("version"),
@@ -199,6 +220,8 @@ def check_release_manifest() -> dict[str, Any]:
         "released_at": manifest.get("released_at"),
         "source_provenance": provenance,
         "artifacts": artifacts,
+        "checksum_file": checksum_filename,
+        "checksum_entries": checksum_entries,
         "errors": errors,
     }
 
@@ -218,6 +241,56 @@ def parse_field_packet(path: Path, allowed_fields: list[str]) -> dict[str, str]:
     return values
 
 
+def parse_packet_metadata(path: Path | None) -> dict[str, str]:
+    if path is None or not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    allowed = {"Version", "Build", "DMG", "ZIP", "DMG SHA-256"}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        if ":" not in raw_line:
+            continue
+        key, value = raw_line.split(":", 1)
+        key = " ".join(key.strip().split())
+        if key in allowed:
+            values[key] = value.strip()
+    return values
+
+
+def release_packet_metadata_errors(path: Path | None) -> list[str]:
+    metadata = parse_packet_metadata(path)
+    if not metadata:
+        return []
+    manifest_path = ROOT / "site/downloads/latest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    artifacts = {
+        str(artifact.get("filename") or ""): str(artifact.get("sha256") or "")
+        for artifact in manifest.get("artifacts") or []
+        if isinstance(artifact, dict)
+    }
+    errors: list[str] = []
+    if metadata.get("Version") and metadata["Version"] != str(manifest.get("version") or ""):
+        errors.append("packet Version does not match site/downloads/latest.json")
+    if metadata.get("Build") and metadata["Build"] != str(manifest.get("build") or ""):
+        errors.append("packet Build does not match site/downloads/latest.json")
+    for key in ("DMG", "ZIP"):
+        value = metadata.get(key)
+        if not value:
+            continue
+        parts = value.split()
+        if len(parts) < 2:
+            errors.append(f"packet {key} metadata must include filename and sha256")
+            continue
+        filename, digest = parts[0], parts[-1]
+        if artifacts.get(filename) != digest:
+            errors.append(f"packet {key} metadata does not match site/downloads/latest.json")
+    dmg_hash = metadata.get("DMG SHA-256")
+    if dmg_hash:
+        manifest_dmg_hashes = [digest for filename, digest in artifacts.items() if filename.endswith(".dmg")]
+        if dmg_hash not in manifest_dmg_hashes:
+            errors.append("packet DMG SHA-256 does not match site/downloads/latest.json")
+    return errors
+
+
 def field_is_filled(value: str | None) -> bool:
     if value is None:
         return False
@@ -235,11 +308,13 @@ def check_support_packet(path: Path | None) -> dict[str, Any]:
         }
     values = parse_field_packet(path, SUPPORT_FIELDS)
     missing = [field for field in SUPPORT_FIELDS if not field_is_filled(values.get(field))]
+    metadata_errors = release_packet_metadata_errors(path)
     return {
-        "ok": not missing,
+        "ok": not missing and not metadata_errors,
         "provided": True,
         "path": str(path),
         "missing_fields": missing,
+        "metadata_errors": metadata_errors,
         "filled_fields": sorted(field for field, value in values.items() if field_is_filled(value)),
     }
 
@@ -255,17 +330,19 @@ def check_clean_profile_qa(path: Path | None) -> dict[str, Any]:
         }
     values = parse_field_packet(path, CLEAN_PROFILE_QA_FIELDS)
     missing = [field for field in CLEAN_PROFILE_QA_FIELDS if not field_is_filled(values.get(field))]
+    metadata_errors = release_packet_metadata_errors(path)
     failed = [
         field
         for field in QA_BOOLEAN_FIELDS
         if field_is_filled(values.get(field)) and values[field].strip().lower() not in YES_VALUES
     ]
     return {
-        "ok": not missing and not failed,
+        "ok": not missing and not failed and not metadata_errors,
         "provided": True,
         "path": str(path),
         "missing_fields": missing,
         "failed_fields": sorted(failed),
+        "metadata_errors": metadata_errors,
         "filled_fields": sorted(field for field, value in values.items() if field_is_filled(value)),
     }
 
@@ -317,7 +394,7 @@ def main() -> int:
         if not clean_profile_qa_ok:
             payload["next_actions"].append("Complete and record clean-profile install/product QA before inviting testers.")
     if automated_ok and human_ok:
-        payload["next_actions"].append("Run the clean-profile install/product pass and record the batch go/no-go issue.")
+        payload["next_actions"].append("Record the batch go/no-go issue, attach or link the filled private packets, and retain the verified rollback artifacts.")
 
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0 if status in {"ok", "needs_human"} else 1

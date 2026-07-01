@@ -68,7 +68,7 @@ struct HomeHeroSection: View {
             return ("No notes found", "folder.badge.questionmark", .orange)
         }
         if state.connectedAIIntegrationCount > 0 {
-            return ("Waiting for notes", "folder.badge.plus", .accentColor)
+            return ("AI tools connected", "point.3.connected.trianglepath.dotted", .accentColor)
         }
         return ("Private on this Mac", "lock.shield", .secondary)
     }
@@ -81,7 +81,7 @@ struct HomeHeroSection: View {
             return "Review new memory"
         }
         if hasMemory {
-            return "Ask about your notes"
+            return "Ask about your memory"
         }
         if activeSources > 0 {
             return "Your notes are syncing"
@@ -90,9 +90,9 @@ struct HomeHeroSection: View {
             return "Choose notes with content"
         }
         if state.connectedAIIntegrationCount > 0 {
-            return "Connect notes to continue"
+            return "Connect a memory source"
         }
-        return "Connect your notes"
+        return "Connect your memory source"
     }
 
     private var detail: String {
@@ -115,14 +115,14 @@ struct HomeHeroSection: View {
             return "Cortex could not find usable notes there. Pick a folder or app that has real notes."
         }
         if state.connectedAIIntegrationCount > 0 {
-            return "Your AI tool is connected. Add notes so Ask can answer with sources."
+            return "Your AI tool is connected. Add a local notes source so Ask can answer with citations."
         }
-        return "Choose notes once. Cortex keeps them in sync and brings new memory to Review."
+        return "Choose a local notes source once. Cortex keeps it in sync and brings new memory to Review."
     }
 
     private var actionTitle: String {
         if !state.isLocalServiceReady { return "Start Cortex" }
-        if activeSources == 0 { return hasEmptySource ? "Choose notes" : "Connect notes" }
+        if activeSources == 0 { return hasEmptySource ? "Choose notes" : "Connect source" }
         if pendingCount > 0 { return "Review memory" }
         if hasMemory { return "Ask a question" }
         return "View sync status"

@@ -34,6 +34,8 @@ assignees: ""
 - Support artifact storage:
 - Business hours and timezone:
 - Deletion request contact:
+- Build version, build number, hash:
+- Known limitations sent to testers:
 
 ## Automated Gates
 

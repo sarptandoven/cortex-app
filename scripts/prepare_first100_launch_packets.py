@@ -59,8 +59,10 @@ def write_field_block(fields: list[str], defaults: dict[str, str]) -> str:
 
 def support_packet(summary: dict[str, str]) -> str:
     defaults = {
+        "Build version, build number, hash": f"{summary['version']} build {summary['build']}; DMG {summary['dmg_sha256']}; ZIP {summary['zip_sha256']}",
         "Tester cohort source": "FILL_ME",
         "First batch size": "FILL_ME",
+        "Known limitations sent to testers": "FILL_ME",
     }
     body = write_field_block(SUPPORT_FIELDS, defaults)
     return (
