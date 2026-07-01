@@ -379,6 +379,27 @@ I prefer Cortex note imports that cite {preference_marker}.
         self.assertEqual(obsidian["status"], "needs_attention")
         self.assertIn("larger than", " ".join(obsidian["warnings"]))
 
+    def test_scan_vault_skips_symlinked_notes_outside_vault(self) -> None:
+        outside = self.root / "Outside Secret.md"
+        outside.write_text(
+            "Decision: Cortex must never read symlinked outside-vault notes.",
+            encoding="utf-8",
+        )
+        link = self.vault / "Linked Secret.md"
+        link.symlink_to(outside)
+
+        scan = scan_vault(self.vault, max_records=20)
+
+        self.assertEqual(scan.files_seen, 1)
+        self.assertEqual(scan.records_found, 0)
+        self.assertEqual(scan.records_returned, 0)
+        self.assertEqual(scan.skipped, 1)
+        self.assertEqual(scan.errors[0]["reason"], "symlink_outside_vault")
+        self.assertEqual(scan.errors[0]["path"], "Linked Secret.md")
+        joined_records = "\n".join(record.content + "\n" + record.source_url for record in scan.records)
+        self.assertNotIn("outside-vault notes", joined_records)
+        self.assertNotIn(str(outside), joined_records)
+
     def test_long_note_keeps_late_explicit_decision_and_procedure(self) -> None:
         low_value_lines = "\n".join(
             f"Project Atlas background note {index} documents routine context without a durable decision."

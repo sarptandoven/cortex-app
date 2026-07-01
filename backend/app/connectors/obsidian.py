@@ -151,6 +151,16 @@ def scan_obsidian_vault(vault_path: str | Path, *, limit: int = 200, cursor_valu
             if suffix not in ALLOWED_EXTENSIONS:
                 continue
             files_seen += 1
+            if path.is_symlink() and not _is_within_root(root, path.resolve()):
+                errors.append(
+                    {
+                        "path": _safe_relative_link(root, path),
+                        "error": "Symlinked note points outside the selected vault",
+                        "reason": "symlink_outside_vault",
+                    }
+                )
+                skipped += 1
+                continue
             try:
                 stat = path.stat()
             except OSError as exc:
@@ -777,6 +787,21 @@ def _safe_relative(root: Path, path: Path) -> str:
         return path.resolve().relative_to(root).as_posix()
     except Exception:
         return str(path)
+
+
+def _safe_relative_link(root: Path, path: Path) -> str:
+    try:
+        return path.relative_to(root).as_posix()
+    except Exception:
+        return _safe_relative(root, path)
+
+
+def _is_within_root(root: Path, path: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 def _stable_scan_id(value: str) -> str:

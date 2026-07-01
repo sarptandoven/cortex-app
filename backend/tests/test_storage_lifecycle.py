@@ -8,6 +8,7 @@ import json
 import os
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from backend.app.database import connect, init_db
 from backend.app.extractor import extract_context
@@ -1569,6 +1570,44 @@ Never use [[Templates/Marketing]] boilerplate in memory.
         self.assertEqual(materialized_obsidian["pending"], 1)
         self.assertEqual(materialized_report["summary"]["syncing"], 0)
         self.assertEqual(materialized_report["summary"]["processing"], 0)
+
+    def test_async_source_account_job_uses_deterministic_extraction_even_with_anthropic_key(self) -> None:
+        account = self.store.upsert_source_account(
+            self.user_id,
+            source="obsidian",
+            account_label="Async Local Vault",
+            account_identifier="async-local-vault",
+            connection_type="local_folder",
+            status="connected",
+            auth_state="healthy",
+        )
+        synced = self.store.sync_source_account_records(
+            self.user_id,
+            account["id"],
+            records=[
+                {
+                    "content": "Decision: Cortex async connector jobs must keep local-first extraction.",
+                    "title": "Async local extraction",
+                    "external_id": "Async/Local.md",
+                }
+            ],
+            processing="async",
+        )
+        self.assertEqual(synced["status"], "complete")
+        self.assertEqual(synced["queued"], 1)
+        capture_id = synced["capture_ids"][0]
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), patch(
+            "backend.app.extractor._extract_with_claude",
+            side_effect=AssertionError("async connector extraction must stay local"),
+        ):
+            ran = self.store.run_due_jobs(self.user_id, limit=10)
+
+        self.assertGreaterEqual(ran["processed"], 1)
+        self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+        found = self.store.search(self.user_id, "async connector jobs local-first extraction", limit=5)
+        self.assertTrue(found)
+        self.assertEqual(found[0]["source"], "obsidian")
 
     def test_async_source_record_update_replaces_stale_memory(self) -> None:
         account = self.store.upsert_source_account(

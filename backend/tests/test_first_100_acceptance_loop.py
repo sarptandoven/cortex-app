@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from backend.app.connectors.obsidian import stable_external_id, stable_section_external_id
+from backend.app.connectors.obsidian import stable_block_external_id, stable_external_id, stable_section_external_id
 from backend.app.database import connect, init_db
 from backend.app.mcp_tools import TOOLS, call_tool, tool_required_capabilities
 from backend.app.storage import CortexStore
@@ -266,6 +267,88 @@ Decision: Cortex should cite the violet-plan archive note with a safe relative p
         self.assertEqual(archive_citation["source_record_id"], archive_external_id)
         self.assertNotEqual(project_citation["citation_path"], archive_citation["citation_path"])
         self.assertNotEqual(stable_external_id(self.vault, project_note), stable_external_id(self.vault, archive_note))
+
+    def test_obsidian_block_ref_citations_include_record_scope_and_block_id(self) -> None:
+        note = self.write_note(
+            "Blocks/Block Memory.md",
+            """# Block Memory
+
+Decision: Cortex should cite the amber-block marker at the exact Obsidian block. ^amber-block
+""",
+        )
+
+        synced = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+        self.assertEqual(synced["status"], "complete")
+        self.assertEqual(synced["saved"], 1)
+        self.assertEqual(call_tool(self.store, self.user_id, "approve_memory_capture", {"capture_id": synced["capture_ids"][0]}), {"approved": True})
+
+        answer = self.store.answer_query(self.user_id, "amber-block exact Obsidian block", limit=5)
+
+        self.assertTrue(answer["citations"])
+        citation = next(item for item in answer["citations"] if "amber-block marker" in item["excerpt"])
+        expected_block_id = stable_block_external_id(self.vault, note, "amber-block")
+        self.assertEqual(citation["source"], "obsidian")
+        self.assertEqual(citation["external_id"], expected_block_id)
+        self.assertEqual(citation["source_record_id"], expected_block_id)
+        self.assertEqual(citation["citation_path"], "Blocks/Block Memory.md")
+        self.assertEqual(citation["record_scope"], "block")
+        self.assertEqual(citation["block_id"], "amber-block")
+        self.assertEqual(citation["line_start"], 3)
+        self.assertEqual(citation["line_end"], 3)
+        self.assertTrue((citation["source_url"] or "").startswith("local-file://Block%20Memory.md#line="))
+        self.assertIn("excerpt=", citation["source_url"])
+        self.assertNotIn(str(self.vault), citation["source_url"])
+
+    def test_obsidian_review_gate_blocks_profile_and_adaptation_even_when_include_pending_true(self) -> None:
+        self.store.update_settings(self.user_id, {"allow_pending_in_context": True, "allow_agent_exports": True})
+        self.write_note(
+            "Review/Pending Profile.md",
+            """# Pending Profile
+
+Preference: I prefer the pending-orchid adaptation marker only after review approval.
+Decision: Project PendingProfile should not leak pending notes into AI adaptation.
+""",
+        )
+
+        synced = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+        self.assertEqual(synced["status"], "complete")
+        self.assertEqual(synced["saved"], 1)
+        capture_id = synced["capture_ids"][0]
+
+        pending_profile = call_tool(
+            self.store,
+            self.user_id,
+            "get_personal_profile",
+            {"query": "adaptation marker", "include_pending": True, "limit": 5},
+        )
+        pending_adaptation = call_tool(
+            self.store,
+            self.user_id,
+            "get_agent_adaptation",
+            {"query": "adaptation marker", "include_pending": True, "limit": 5, "target": "Claude"},
+        )
+        pending_text = json.dumps(pending_profile, sort_keys=True) + "\n" + json.dumps(pending_adaptation, sort_keys=True)
+        self.assertTrue(pending_profile["include_pending"])
+        self.assertTrue(pending_adaptation["include_pending"])
+        self.assertNotIn("pending-orchid", pending_text)
+        self.assertNotIn("Project PendingProfile", pending_text)
+
+        self.assertEqual(call_tool(self.store, self.user_id, "approve_memory_capture", {"capture_id": capture_id}), {"approved": True})
+        approved_profile = call_tool(
+            self.store,
+            self.user_id,
+            "get_personal_profile",
+            {"query": "adaptation marker", "include_pending": True, "limit": 5},
+        )
+        approved_adaptation = call_tool(
+            self.store,
+            self.user_id,
+            "get_agent_adaptation",
+            {"query": "adaptation marker", "include_pending": True, "limit": 5, "target": "Claude"},
+        )
+        approved_text = json.dumps(approved_profile, sort_keys=True) + "\n" + json.dumps(approved_adaptation, sort_keys=True)
+        self.assertIn("pending-orchid", approved_text)
+        self.assertIn("Project PendingProfile", approved_text)
 
 
 if __name__ == "__main__":
