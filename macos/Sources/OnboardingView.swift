@@ -126,6 +126,8 @@ struct OnboardingView: View {
             return "Review One Item"
         case .askUse:
             return "Ask with Citations"
+        case .trustBackup:
+            return "Back Up or Skip"
         }
     }
 
@@ -139,6 +141,8 @@ struct OnboardingView: View {
             return "checklist"
         case .askUse:
             return "quote.bubble"
+        case .trustBackup:
+            return "archivebox"
         }
     }
 
@@ -153,6 +157,8 @@ struct OnboardingView: View {
             OnboardingReviewMemoryStep(state: state)
         case .askUse:
             OnboardingAskUseStep(state: state)
+        case .trustBackup:
+            OnboardingBackupStep(state: state)
         }
     }
 }
@@ -573,6 +579,80 @@ struct OnboardingAskUseStep: View {
             return "Ask becomes useful after one memory is approved in Review."
         }
         return "Ask becomes useful after approved memory exists."
+    }
+}
+
+struct OnboardingBackupStep: View {
+    @ObservedObject var state: AppState
+
+    private var backupCount: Int {
+        state.dataLifecycleReport?.backups.count ?? 0
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Local backups let you recover Cortex memory on this Mac. Create one now, or skip and do it later from Connections & Privacy.")
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(alignment: .center, spacing: 12) {
+                Button {
+                    state.createBackup()
+                } label: {
+                    Label("Back Up Now", systemImage: "archivebox")
+                        .frame(minWidth: 150, minHeight: 46)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(state.isBusy)
+
+                Button {
+                    state.skipFirstBackup()
+                } label: {
+                    Label("Skip for Now", systemImage: "clock")
+                        .frame(minWidth: 132, minHeight: 46)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(state.isBusy)
+
+                Spacer(minLength: 0)
+            }
+
+            if let backup = state.lastBackupPath {
+                OnboardingCheckRow(
+                    title: "Backup saved",
+                    detail: backup,
+                    systemImage: "checkmark.seal.fill",
+                    color: .green
+                )
+            } else if state.onboardingBackupDecision == "skipped" {
+                OnboardingCheckRow(
+                    title: "Backup skipped for now",
+                    detail: "You can create a local backup from Connections & Privacy before adding more notes.",
+                    systemImage: "clock.fill",
+                    color: .orange
+                )
+            } else if backupCount > 0 {
+                OnboardingCheckRow(
+                    title: "Backup already exists",
+                    detail: "\(backupCount) local backup\(backupCount == 1 ? "" : "s") available.",
+                    systemImage: "checkmark.seal.fill",
+                    color: .green
+                )
+            } else {
+                OnboardingCheckRow(
+                    title: "Choose backup option",
+                    detail: "Create a backup now, or explicitly skip this first backup.",
+                    systemImage: "externaldrive.badge.exclamationmark",
+                    color: .orange
+                )
+            }
+        }
+        .task {
+            await state.loadReliability()
+            await state.loadTrust()
+        }
     }
 }
 

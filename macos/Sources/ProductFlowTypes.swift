@@ -11,6 +11,7 @@ enum OnboardingStep: Int, CaseIterable, Identifiable {
     case firstSource
     case reviewMemory
     case askUse
+    case trustBackup
 
     var id: Int { rawValue }
 
@@ -20,6 +21,7 @@ enum OnboardingStep: Int, CaseIterable, Identifiable {
         case .firstSource: return "Notes"
         case .reviewMemory: return "Review"
         case .askUse: return "Ask"
+        case .trustBackup: return "Backup"
         }
     }
 
@@ -33,6 +35,8 @@ enum OnboardingStep: Int, CaseIterable, Identifiable {
             return "Approve one useful item before Cortex uses it."
         case .askUse:
             return "Ask once and check the citations."
+        case .trustBackup:
+            return "Back up local memory, or choose to do it later."
         }
     }
 
@@ -42,6 +46,7 @@ enum OnboardingStep: Int, CaseIterable, Identifiable {
         case .firstSource: return "link.circle"
         case .reviewMemory: return "checklist"
         case .askUse: return "sparkle.magnifyingglass"
+        case .trustBackup: return "archivebox"
         }
     }
 }

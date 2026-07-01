@@ -2183,7 +2183,10 @@ final class AppState: ObservableObject {
     }
 
     var onboardingHasBackupDecision: Bool {
-        !onboardingBackupDecision.isEmpty || lastBackupPath != nil
+        !onboardingBackupDecision.isEmpty
+            || lastBackupPath != nil
+            || (dataLifecycleReport?.backups.count ?? 0) > 0
+            || reliabilityReport?.latest_backup != nil
     }
 
     var canCompleteOnboarding: Bool {
@@ -2216,6 +2219,8 @@ final class AppState: ObservableObject {
             return onboardingHasReviewedMemory
         case .askUse:
             return onboardingHasUsedCortex
+        case .trustBackup:
+            return onboardingHasBackupDecision
         }
     }
 
@@ -2228,6 +2233,8 @@ final class AppState: ObservableObject {
         case .reviewMemory:
             return onboardingStepIsComplete(.reviewMemory)
         case .askUse:
+            return onboardingStepIsComplete(.askUse)
+        case .trustBackup:
             return true
         }
     }
@@ -3359,6 +3366,8 @@ final class AppState: ObservableObject {
                 status = "Approve one review item before asking Cortex"
             case .askUse:
                 status = "Ask once with citations before finishing"
+            case .trustBackup:
+                status = "Back up local memory or skip backup for now"
             }
             return
         }
