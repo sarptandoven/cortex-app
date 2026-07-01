@@ -43,6 +43,7 @@ class FakeStore:
         self.github_sync_calls: list[dict] = []
         self.slack_sync_calls: list[dict] = []
         self.readwise_sync_calls: list[dict] = []
+        self.raindrop_sync_calls: list[dict] = []
         self.zotero_sync_calls: list[dict] = []
         self.linear_sync_calls: list[dict] = []
         self.jira_sync_calls: list[dict] = []
@@ -789,6 +790,103 @@ class FakeStore:
             },
             "sync": {
                 "connector": "readwise",
+                "connector_version": "test",
+                "records_found": 1,
+                "records_returned": 1,
+                "errors": [],
+            },
+        }
+
+    def sync_raindrop_account(
+        self,
+        user_id: str,
+        *,
+        token: str,
+        collection_id: str = "0",
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        since: str | None = None,
+        page: str | None = None,
+        processing: str = "sync",
+        max_records: int = 100,
+        cursor_name: str = "raindrops",
+        include_highlights: bool = True,
+        api_base_url: str | None = None,
+    ) -> dict:
+        if not token:
+            raise ValueError("Raindrop token is required")
+        call = {
+            "user_id": user_id,
+            "token": token,
+            "collection_id": collection_id,
+            "source_account_id": source_account_id,
+            "account_label": account_label,
+            "account_identifier": account_identifier,
+            "since": since,
+            "page": page,
+            "processing": processing,
+            "max_records": max_records,
+            "cursor_name": cursor_name,
+            "include_highlights": include_highlights,
+            "api_base_url": api_base_url,
+        }
+        self.raindrop_sync_calls.append(call)
+        account_id = source_account_id or "sacct_raindrop_test"
+        return {
+            "source_account_id": account_id,
+            "source": "raindrop",
+            "status": "complete",
+            "processing": processing,
+            "received": 1,
+            "queued": 0 if processing == "sync" else 1,
+            "saved": 1 if processing == "sync" else 0,
+            "skipped": 0,
+            "failed": 0,
+            "archived_missing": 0,
+            "capture_ids": ["cap_raindrop_test"],
+            "records": [
+                {
+                    "capture_id": "cap_raindrop_test",
+                    "status": "saved" if processing == "sync" else "queued",
+                    "source": "raindrop",
+                    "source_url": "https://example.com/raindrop",
+                    "title": "Raindrop Test bookmark",
+                }
+            ],
+            "errors": [],
+            "cursor": {
+                "id": "sync_raindrop_test",
+                "user_id": user_id,
+                "source_account_id": account_id,
+                "source": "raindrop",
+                "cursor_name": cursor_name,
+                "cursor_value": "2026-06-30T10:00:00Z",
+                "high_water_mark": "2026-06-30T10:00:00Z",
+                "state": {"records_returned": 1},
+                "last_error": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+            "source_account": {
+                "id": account_id,
+                "user_id": user_id,
+                "source": "raindrop",
+                "account_label": account_label or "Raindrop Bookmarks",
+                "account_identifier": account_identifier or f"collection:{collection_id}",
+                "connection_type": "api-token",
+                "status": "connected",
+                "auth_state": "healthy",
+                "policy": {"review_required": True, "allow_ai_context": True},
+                "metadata": {"records_returned": 1, "token_configured": True},
+                "last_sync_at": "2026-01-01T00:00:00Z",
+                "last_error": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "disconnected_at": None,
+            },
+            "sync": {
+                "connector": "raindrop",
                 "connector_version": "test",
                 "records_found": 1,
                 "records_returned": 1,
@@ -2119,6 +2217,65 @@ class StandaloneServerTests(unittest.TestCase):
             )
         self.assertEqual(context.exception.code, 422)
         self.assertEqual(len(self.fake_store.readwise_sync_calls), 1)
+
+    def test_raindrop_connector_route_forwards_to_store(self) -> None:
+        with self.post_json(
+            "/v1/connectors/raindrop/sync",
+            {
+                "token": "rd_route_secret",
+                "collection_id": "0",
+                "source_account_id": "sacct_raindrop_existing",
+                "account_label": "Cortex Raindrop",
+                "account_identifier": "collection:0",
+                "since": "2026-01-01T00:00:00Z",
+                "page": "2",
+                "processing": "sync",
+                "max_records": 50,
+                "cursor_name": "raindrops",
+                "include_highlights": True,
+                "api_base_url": "https://raindrop-api.test/rest/v1",
+            },
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["source"], "raindrop")
+        self.assertEqual(payload["source_account_id"], "sacct_raindrop_existing")
+        self.assertEqual(payload["processing"], "sync")
+        self.assertEqual(payload["source_account"]["account_label"], "Cortex Raindrop")
+        self.assertEqual(payload["records"][0]["source_url"], "https://example.com/raindrop")
+        self.assertNotIn("rd_route_secret", json.dumps(payload))
+        self.assertEqual(
+            self.fake_store.raindrop_sync_calls,
+            [
+                {
+                    "user_id": "local",
+                    "token": "rd_route_secret",
+                    "collection_id": "0",
+                    "source_account_id": "sacct_raindrop_existing",
+                    "account_label": "Cortex Raindrop",
+                    "account_identifier": "collection:0",
+                    "since": "2026-01-01T00:00:00Z",
+                    "page": "2",
+                    "processing": "sync",
+                    "max_records": 50,
+                    "cursor_name": "raindrops",
+                    "include_highlights": True,
+                    "api_base_url": "https://raindrop-api.test/rest/v1",
+                }
+            ],
+        )
+
+        with self.assertRaises(error.HTTPError) as context:
+            self.post_json(
+                "/v1/connectors/raindrop/sync",
+                {
+                    "token": "rd_route_secret",
+                    "max_records": 501,
+                },
+            )
+        self.assertEqual(context.exception.code, 422)
+        self.assertEqual(len(self.fake_store.raindrop_sync_calls), 1)
 
     def test_zotero_connector_route_forwards_to_store(self) -> None:
         with self.post_json(

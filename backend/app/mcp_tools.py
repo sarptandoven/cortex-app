@@ -257,6 +257,28 @@ TOOLS = [
         },
     },
     {
+        "name": "sync_raindrop",
+        "description": "Fetch Raindrop bookmarks and highlights with a read-only token, then sync them into Cortex with stable citations.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "token": {"type": "string"},
+                "collection_id": {"type": "string", "default": "0"},
+                "source_account_id": {"type": "string"},
+                "account_label": {"type": "string"},
+                "account_identifier": {"type": "string"},
+                "since": {"type": "string"},
+                "page": {"type": "string"},
+                "processing": {"type": "string", "default": "sync", "enum": ["sync", "async"]},
+                "max_records": {"type": "integer", "default": 100},
+                "cursor_name": {"type": "string", "default": "raindrops"},
+                "include_highlights": {"type": "boolean", "default": True},
+                "api_base_url": {"type": "string"},
+            },
+            "required": ["token"],
+        },
+    },
+    {
         "name": "sync_zotero",
         "description": "Fetch Zotero items, notes, and annotations from the local desktop API by default, then sync them into Cortex with stable citations.",
         "inputSchema": {
@@ -507,6 +529,7 @@ WRITE_TOOLS = {
     "sync_github",
     "sync_slack",
     "sync_readwise",
+    "sync_raindrop",
     "sync_zotero",
     "sync_linear",
     "sync_jira",
@@ -774,6 +797,23 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             processing=args.get("processing", "sync"),
             max_records=int(args.get("max_records", 100)),
             cursor_name=args.get("cursor_name", "highlights"),
+            api_base_url=args.get("api_base_url"),
+        )
+        return store.agent_payload(user_id, result)
+    if name == "sync_raindrop":
+        result = store.sync_raindrop_account(
+            user_id,
+            token=args.get("token", ""),
+            collection_id=args.get("collection_id", "0"),
+            source_account_id=args.get("source_account_id"),
+            account_label=args.get("account_label"),
+            account_identifier=args.get("account_identifier"),
+            since=args.get("since"),
+            page=args.get("page"),
+            processing=args.get("processing", "sync"),
+            max_records=int(args.get("max_records", 100)),
+            cursor_name=args.get("cursor_name", "raindrops"),
+            include_highlights=_bool_arg(args, "include_highlights", True),
             api_base_url=args.get("api_base_url"),
         )
         return store.agent_payload(user_id, result)

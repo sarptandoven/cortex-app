@@ -5,6 +5,7 @@ from .jira import JiraSync, JiraSyncRecord, fetch_jira_records
 from .linear import LinearSync, LinearSyncRecord, fetch_linear_records
 from .notion import NotionSync, NotionSyncRecord, fetch_notion_records
 from .obsidian import ObsidianVaultScan, scan_obsidian_vault
+from .raindrop import RaindropSync, RaindropSyncRecord, fetch_raindrop_records
 from .readwise import ReadwiseSync, ReadwiseSyncRecord, fetch_readwise_records
 from .slack import SlackSync, SlackSyncRecord, fetch_slack_records
 from .zotero import ZoteroSync, ZoteroSyncRecord, fetch_zotero_records
@@ -19,6 +20,8 @@ __all__ = [
     "NotionSync",
     "NotionSyncRecord",
     "ObsidianVaultScan",
+    "RaindropSync",
+    "RaindropSyncRecord",
     "ReadwiseSync",
     "ReadwiseSyncRecord",
     "SlackSync",
@@ -29,6 +32,7 @@ __all__ = [
     "fetch_jira_records",
     "fetch_linear_records",
     "fetch_notion_records",
+    "fetch_raindrop_records",
     "fetch_readwise_records",
     "fetch_slack_records",
     "fetch_zotero_records",

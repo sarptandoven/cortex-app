@@ -1267,6 +1267,58 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertIn("line=", search.json()["results"][0]["source_url"])
         self.assertIn("excerpt=", search.json()["results"][0]["source_url"])
 
+    def test_raindrop_connector_endpoint_syncs_bookmarks_with_citations(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "raindrop-endpoint-contract"}
+
+        def fake_request(url: str, request_headers: dict[str, str]):
+            self.assertIn("/raindrops/0", url)
+            self.assertEqual(request_headers["Authorization"], "Bearer raindrop_test")
+            return {
+                "result": True,
+                "items": [
+                    {
+                        "_id": 123,
+                        "title": "Endpoint sync should cite Raindrop",
+                        "link": "https://example.com/raindrop-endpoint",
+                        "excerpt": "We decided the FastAPI Raindrop connector should preserve bookmark URLs.",
+                        "lastUpdate": "2026-06-30T10:00:00Z",
+                    }
+                ],
+            }
+
+        with patch("backend.app.connectors.raindrop._request_json", side_effect=fake_request):
+            response = self.client.post(
+                "/v1/connectors/raindrop/sync",
+                json={
+                    "token": "raindrop_test",
+                    "processing": "sync",
+                    "max_records": 25,
+                },
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["source"], "raindrop")
+        self.assertEqual(payload["status"], "complete")
+        self.assertEqual(payload["saved"], 1)
+        self.assertEqual(payload["records"][0]["source_url"], "https://example.com/raindrop-endpoint")
+        self.assertEqual(payload["source_account"]["source"], "raindrop")
+        self.assertEqual(payload["source_account"]["connection_type"], "api-token")
+        self.assertNotIn("raindrop_test", json.dumps(payload))
+        approved = self.client.post(f"/v1/captures/{payload['capture_ids'][0]}/approve", headers=headers)
+        self.assertEqual(approved.status_code, 200)
+        search = self.client.get(
+            "/v1/search",
+            params={"query": "FastAPI Raindrop connector preserve bookmark URLs"},
+            headers=headers,
+        )
+        self.assertEqual(search.status_code, 200)
+        self.assertTrue(search.json()["results"])
+        self.assertTrue(search.json()["results"][0]["source_url"].startswith("https://example.com/raindrop-endpoint"))
+        self.assertIn("line=", search.json()["results"][0]["source_url"])
+        self.assertIn("excerpt=", search.json()["results"][0]["source_url"])
+
     def test_zotero_connector_endpoint_syncs_items_with_citations(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "zotero-endpoint-contract"}
 

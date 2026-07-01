@@ -39,6 +39,7 @@ BACKEND_FEATURES = (
     "github-token-connector",
     "slack-token-connector",
     "readwise-token-connector",
+    "raindrop-token-connector",
     "linear-token-connector",
     "jira-token-connector",
     "notion-token-connector",
@@ -402,6 +403,7 @@ SOURCE_CONNECTOR_CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "browser-bookmarks", "name": "Browser bookmarks", "category": "Research", "auth": "local_file", "live_status": "import_ready", "scopes": [], "notes": "Local browser integration covers bookmarks and history with explicit app data access."},
     {"id": "browser-history", "name": "Browser history", "category": "Research", "auth": "local_file", "live_status": "import_ready", "scopes": [], "notes": "Local browser history integration requires explicit app data access; no background browser collection."},
     {"id": "readwise", "name": "Readwise", "category": "Research", "auth": "api_token", "live_status": "api_token", "scopes": ["read"], "notes": "Read-only Readwise highlight export sync works with a user access token."},
+    {"id": "raindrop", "name": "Raindrop", "category": "Research", "auth": "api_token", "live_status": "api_token", "scopes": ["read"], "notes": "Read-only Raindrop bookmark and highlight sync works with a user API token."},
     {"id": "zotero", "name": "Zotero", "category": "Research", "auth": "local_api", "live_status": "local_api", "scopes": ["read"], "notes": "Read-only Zotero item, note, and annotation sync works through the local desktop API by default; Web API tokens are optional."},
     {"id": "knowledge-base", "name": "Knowledge base", "category": "Research", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Knowledge base connector coverage for local notes and read-later services."},
     {"id": "twitter-x", "name": "Twitter/X", "category": "Social", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Twitter/X account connector is required before this can be a primary source."},
@@ -450,6 +452,7 @@ SOURCE_CONNECTOR_IMPORT_METADATA: dict[str, dict[str, Any]] = {
     "browser-bookmarks": {"source_ids": ["browser-bookmarks", "browser-history"], "export_status": "native", "import_label": "Browser bookmarks and history local records"},
     "browser-history": {"source_ids": ["browser-bookmarks", "browser-history"], "source_aliases": ["chrome-history", "firefox-history"], "export_status": "native", "import_label": "Browser history local records"},
     "readwise": {"source_ids": ["readwise", "knowledge-base"], "export_status": "generic", "import_status": "generic", "import_label": "Readwise account records map to Knowledge bases"},
+    "raindrop": {"source_ids": ["raindrop", "knowledge-base"], "export_status": "generic", "import_status": "generic", "import_label": "Raindrop account records map to Knowledge bases"},
     "zotero": {"source_ids": ["zotero", "knowledge-base"], "export_status": "generic", "import_status": "generic", "import_label": "Zotero account records map to Knowledge bases"},
     "knowledge-base": {"source_ids": ["knowledge-base", "obsidian", "logseq", "roam", "readwise", "zotero", "pocket", "instapaper", "raindrop"], "export_status": "generic", "import_status": "generic", "import_label": "Knowledge base local records"},
     "twitter-x": {"source_ids": ["twitter-x"], "export_status": "native", "import_label": "Native Twitter/X account connector records"},
@@ -3232,6 +3235,143 @@ class CortexStore:
                 "records": [],
                 "errors": sync.errors,
                 "cursor": cursor,
+                "source_account": updated_account,
+                "sync": sync_summary,
+            }
+
+        result = self.sync_source_account_records(
+            user_id,
+            account["id"],
+            records=records,
+            cursor_name=cursor_name,
+            cursor_value=sync.cursor_value,
+            high_water_mark=sync.high_water_mark,
+            state=state,
+            processing=processing,
+        )
+        if sync.errors:
+            result["errors"] = [*(result.get("errors") or []), *sync.errors]
+            result["failed"] = int(result.get("failed") or 0) + len(sync.errors)
+            if result.get("status") == "complete":
+                result["status"] = "partial"
+        result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
+        result["sync"] = sync_summary
+        return result
+
+    def sync_raindrop_account(
+        self,
+        user_id: str,
+        *,
+        token: str,
+        collection_id: str = "0",
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        since: str | None = None,
+        page: str | None = None,
+        processing: str = "sync",
+        max_records: int = 100,
+        cursor_name: str = "raindrops",
+        include_highlights: bool = True,
+        api_base_url: str | None = None,
+        request_json: Any | None = None,
+    ) -> dict[str, Any]:
+        from .connectors.raindrop import RAINDROP_SOURCE, fetch_raindrop_records
+
+        if processing not in {"sync", "async"}:
+            raise ValueError("processing must be sync or async")
+        try:
+            capped_max_records = int(max_records or 100)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_records must be an integer") from exc
+        if capped_max_records < 1 or capped_max_records > 500:
+            raise ValueError("max_records must be between 1 and 500")
+
+        sync = fetch_raindrop_records(
+            token=token,
+            collection_id=collection_id,
+            since=since,
+            page=page,
+            max_records=capped_max_records,
+            include_highlights=bool(include_highlights),
+            api_base_url=api_base_url or "https://api.raindrop.io/rest/v1",
+            request_json=request_json,
+        )
+        identifier = (account_identifier or f"collection:{sync.collection_id}").strip()[:240]
+        resolved_account_id = (source_account_id or "").strip() or stable_id("sacct_", f"{user_id}:{RAINDROP_SOURCE}:{identifier}")
+        label = (account_label or "Raindrop Bookmarks").strip()[:160]
+        sync_summary = sync.to_summary()
+        error_message = sync.errors[0]["error"] if sync.errors else None
+        metadata = {
+            "connector": RAINDROP_SOURCE,
+            "connector_version": sync_summary["connector_version"],
+            "records_found": sync.records_found,
+            "records_returned": sync.records_returned,
+            "collection_id": sync.collection_id,
+            "token_configured": True,
+            "api_base_url": sync.api_base_url,
+            "include_highlights": bool(include_highlights),
+        }
+        account = self.upsert_source_account(
+            user_id,
+            source=RAINDROP_SOURCE,
+            account_label=label,
+            account_identifier=identifier,
+            connection_type="api_token",
+            status="needs_attention" if error_message else "connected",
+            auth_state="error" if error_message else "healthy",
+            policy={"review_required": True, "allow_ai_context": True},
+            metadata=metadata,
+            last_error=error_message,
+            account_id=resolved_account_id,
+        )
+        state = {
+            "connector": RAINDROP_SOURCE,
+            "connector_version": sync_summary["connector_version"],
+            "records_found": sync.records_found,
+            "records_returned": sync.records_returned,
+            "sync_errors": sync.errors,
+            "next_page": sync.next_page,
+            "collection_id": sync.collection_id,
+            "api_base_url": sync.api_base_url,
+            "include_highlights": bool(include_highlights),
+        }
+        records = [record.to_source_account_record() for record in sync.records]
+        if not records:
+            cursor_payload = self.upsert_sync_cursor(
+                user_id,
+                source=RAINDROP_SOURCE,
+                source_account_id=account["id"],
+                cursor_name=cursor_name,
+                cursor_value=sync.cursor_value,
+                high_water_mark=sync.high_water_mark,
+                state={
+                    **state,
+                    "last_batch_received": 0,
+                    "last_batch_saved": 0,
+                    "last_batch_queued": 0,
+                    "last_batch_skipped": 0,
+                    "last_batch_failed": 0,
+                },
+                last_error=error_message,
+                completed=not bool(error_message),
+            )
+            updated_account = self._source_account_by_id(user_id, account["id"]) or account
+            return {
+                "source_account_id": account["id"],
+                "source": RAINDROP_SOURCE,
+                "status": "partial" if error_message else "empty",
+                "processing": processing,
+                "received": 0,
+                "queued": 0,
+                "saved": 0,
+                "skipped": 0,
+                "failed": len(sync.errors),
+                "archived_missing": 0,
+                "capture_ids": [],
+                "records": [],
+                "errors": sync.errors,
+                "cursor": cursor_payload,
                 "source_account": updated_account,
                 "sync": sync_summary,
             }

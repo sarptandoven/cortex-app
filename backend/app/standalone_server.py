@@ -542,6 +542,34 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError) as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
+            if method == "POST" and path == "/v1/connectors/raindrop/sync":
+                body = self._json_body()
+                try:
+                    try:
+                        max_records = int(body.get("max_records") or 100)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError("max_records must be an integer") from exc
+                    if max_records < 1 or max_records > 500:
+                        raise ValueError("max_records must be between 1 and 500")
+                    result = store.sync_raindrop_account(
+                        user_id,
+                        token=str(body.get("token") or ""),
+                        collection_id=str(body.get("collection_id") or "0"),
+                        source_account_id=str(body.get("source_account_id") or "") or None,
+                        account_label=str(body.get("account_label") or "") or None,
+                        account_identifier=str(body.get("account_identifier") or "") or None,
+                        since=str(body.get("since") or "") or None,
+                        page=str(body.get("page") or "") or None,
+                        processing=str(body.get("processing") or "sync"),
+                        max_records=max_records,
+                        cursor_name=str(body.get("cursor_name") or "raindrops"),
+                        include_highlights=_bool_value(body.get("include_highlights"), default=True),
+                        api_base_url=str(body.get("api_base_url") or "") or None,
+                    )
+                    self._send_json(store.public_payload(user_id, result) if hasattr(store, "public_payload") else result)
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
             if method == "POST" and path == "/v1/connectors/zotero/sync":
                 body = self._json_body()
                 try:

@@ -210,6 +210,26 @@ class ReadwiseSyncResponse(SourceAccountSyncResponse):
     sync: dict[str, Any]
 
 
+class RaindropSyncRequest(BaseModel):
+    token: str = Field(..., min_length=1, max_length=4000)
+    collection_id: str = Field(default="0", min_length=1, max_length=120)
+    source_account_id: str | None = Field(default=None, max_length=80)
+    account_label: str | None = Field(default=None, max_length=160)
+    account_identifier: str | None = Field(default=None, max_length=240)
+    since: str | None = Field(default=None, max_length=80)
+    page: str | None = Field(default=None, max_length=80)
+    processing: Literal["sync", "async"] = "sync"
+    max_records: int = Field(default=100, ge=1, le=500)
+    cursor_name: str = Field(default="raindrops", min_length=1, max_length=120)
+    include_highlights: bool = True
+    api_base_url: str | None = Field(default=None, max_length=500)
+
+
+class RaindropSyncResponse(SourceAccountSyncResponse):
+    source_account: SourceAccountResponse
+    sync: dict[str, Any]
+
+
 class ZoteroSyncRequest(BaseModel):
     token: str | None = Field(default=None, max_length=4000)
     library_type: Literal["user", "group"] = "user"

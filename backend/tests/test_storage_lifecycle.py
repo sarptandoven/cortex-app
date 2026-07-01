@@ -1458,6 +1458,107 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertNotIn("readwise_mcp_test", json.dumps(synced))
         self.assertEqual(synced["records"][0]["source_url"], "readwise://book/333/highlight/444")
 
+    def test_raindrop_account_sync_fetches_bookmarks_with_stable_citations(self) -> None:
+        def fake_request(url: str, headers: dict[str, str]):
+            self.assertIn("/raindrops/0", url)
+            self.assertEqual(headers["Authorization"], "Bearer raindrop_test")
+            return {
+                "result": True,
+                "items": [
+                    {
+                        "_id": 123,
+                        "title": "Raindrop exact citations",
+                        "link": "https://example.com/raindrop-citations",
+                        "excerpt": "We decided Cortex should retrieve Raindrop bookmarks with exact source citations.",
+                        "note": "Useful for research recall.",
+                        "tags": ["research"],
+                        "lastUpdate": "2026-06-30T10:30:00Z",
+                        "highlights": [{"text": "Raindrop highlights should appear in the cited record."}],
+                    }
+                ],
+            }
+
+        result = self.store.sync_raindrop_account(
+            self.user_id,
+            token="raindrop_test",
+            processing="sync",
+            max_records=20,
+            request_json=fake_request,
+        )
+
+        self.assertEqual(result["source"], "raindrop")
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["saved"], 1)
+        self.assertEqual(result["source_account"]["source"], "raindrop")
+        self.assertEqual(result["source_account"]["connection_type"], "api-token")
+        self.assertEqual(result["source_account"]["metadata"]["token_configured"], True)
+        self.assertNotIn("raindrop_test", json.dumps(result))
+        self.assertEqual(result["records"][0]["source_url"], "https://example.com/raindrop-citations")
+        capture_id = result["capture_ids"][0]
+        self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+
+        search = self.store.search(self.user_id, "Raindrop bookmarks exact source citations", limit=3)
+        self.assertTrue(search)
+        self.assertEqual(search[0]["source"], "raindrop")
+        self.assertTrue(search[0]["source_url"].startswith("https://example.com/raindrop-citations"))
+        self.assertIn("line=", search[0]["source_url"])
+        self.assertIn("excerpt=", search[0]["source_url"])
+        self.assertEqual(search[0]["provenance"]["record_metadata"]["raindrop_id"], "123")
+
+        duplicate = self.store.sync_raindrop_account(
+            self.user_id,
+            token="raindrop_test",
+            processing="sync",
+            max_records=20,
+            request_json=fake_request,
+        )
+        self.assertEqual(duplicate["saved"], 0)
+        self.assertEqual(duplicate["skipped"], 1)
+        self.assertEqual(duplicate["records"][0]["status"], "duplicate")
+
+    def test_mcp_raindrop_sync_tool_fetches_records_without_exposing_token(self) -> None:
+        def fake_request(url: str, headers: dict[str, str]):
+            self.assertEqual(headers["Authorization"], "Bearer raindrop_mcp_test")
+            return {
+                "result": True,
+                "items": [
+                    {
+                        "_id": 456,
+                        "title": "MCP Raindrop sync",
+                        "link": "https://example.com/mcp-raindrop",
+                        "excerpt": "We decided MCP Raindrop sync should write source-account records.",
+                        "lastUpdate": "2026-06-30T10:00:00Z",
+                    }
+                ],
+            }
+
+        with self.assertRaises(PermissionError):
+            call_tool(
+                self.store,
+                self.user_id,
+                "sync_raindrop",
+                {"token": "raindrop_mcp_test"},
+                token_scopes=["read"],
+            )
+
+        with patch("backend.app.connectors.raindrop._request_json", side_effect=fake_request):
+            synced = call_tool(
+                self.store,
+                self.user_id,
+                "sync_raindrop",
+                {
+                    "token": "raindrop_mcp_test",
+                    "processing": "sync",
+                    "max_records": 10,
+                },
+                token_scopes=["write"],
+            )
+
+        self.assertEqual(synced["source"], "raindrop")
+        self.assertEqual(synced["saved"], 1)
+        self.assertNotIn("raindrop_mcp_test", json.dumps(synced))
+        self.assertEqual(synced["records"][0]["source_url"], "https://example.com/mcp-raindrop")
+
     def test_zotero_account_sync_fetches_items_with_stable_citations(self) -> None:
         def fake_request(url: str, headers: dict[str, str]):
             self.assertIn("/users/0/items", url)
