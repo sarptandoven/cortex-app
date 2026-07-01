@@ -795,7 +795,8 @@ enum TrustPreset: String, CaseIterable, Identifiable, Hashable {
             && settings.redact_sensitive_context {
             return .readOnly
         }
-        if settings.allow_agent_reads
+        if !settings.allow_pending_in_context
+            && settings.allow_agent_reads
             && settings.allow_agent_writes
             && !settings.allow_agent_exports
             && !settings.allow_agent_maintenance
@@ -825,7 +826,7 @@ enum TrustPreset: String, CaseIterable, Identifiable, Hashable {
             settings.allow_agent_destructive_actions = false
             settings.redact_sensitive_context = true
         case .canSave:
-            settings.allow_pending_in_context = true
+            settings.allow_pending_in_context = false
             settings.allow_agent_reads = true
             settings.allow_agent_writes = true
             settings.allow_agent_exports = false
