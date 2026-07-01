@@ -4,15 +4,15 @@
     {
       "filename": "Cortex-0.1.0-1.dmg",
       "kind": "dmg",
-      "sha256": "6371e7126d0880e677125020151096855ba8085e2e04f2d41b74e3d6e0ba1c0f",
-      "size_bytes": 20245149,
+      "sha256": "9733fea8a5988b667bee1bf6ea808ce1b4b5d82a820d35ba3f6d020cf68322c8",
+      "size_bytes": 21043080,
       "url": "downloads/Cortex-0.1.0-1.dmg"
     },
     {
       "filename": "Cortex-0.1.0-1.app.zip",
       "kind": "zip",
-      "sha256": "dabcf7359cdb88a444d42ed9f1e1b271091227614685082b3ed56f60db9b7131",
-      "size_bytes": 16630488,
+      "sha256": "6df689894bc2511b94413c94acf7f39d0f44008a9afcc95b37f360b2ceb8e312",
+      "size_bytes": 16634853,
       "url": "downloads/Cortex-0.1.0-1.app.zip"
     }
   ],
@@ -28,28 +28,28 @@
       "Open the DMG and drag Cortex.app to Applications.",
       "Launch Cortex from Applications.",
       "If macOS blocks an unnotarized local beta, Control-click Cortex.app and choose Open.",
-      "Complete getting started by connecting notes, reviewing one memory, asking a cited question, and deciding on backup."
+      "Complete getting started by connecting notes, reviewing one memory, asking a cited question, then deciding on backup in Connections & Privacy."
     ],
     "known_limitations": [
       "Manual app replacement is the only update path for this local beta.",
       "Live OAuth/API sync, hosted accounts, cloud backup, and remote MCP/OAuth are not enabled.",
-      "Support starts from the sanitized support bundle, not raw vault data.",
+      "Support starts from the sanitized support bundle, not raw memory folder data.",
       "Developer ID signing, notarization, hosted HTTPS downloads, and a support process are required before broad public distribution."
     ],
     "manual_qa_checklist": [
       "Install from the DMG on a clean macOS 13 or newer user profile.",
       "Launch from Applications and complete first-run setup.",
-      "Connect MCP or an Obsidian/local notes vault through Connections & Privacy.",
+      "Connect notes in Connections & Privacy.",
       "Approve at least one useful memory and archive obvious noise in Review.",
       "Ask a question that returns cited memory from the approved connected source.",
-      "Verify Connections & Privacy shows vault path, backend health, backup, export, support bundle, and update feed controls.",
+      "Verify Connections & Privacy shows memory folder path, backend health, backup, export, support bundle, and update feed controls.",
       "Create a backup and confirm the support bundle contains no raw memory content.",
-      "Replace the app with this build over a previous build and confirm the vault remains intact.",
-      "Roll back to the previous build and confirm the vault remains intact."
+      "Replace the app with this build over a previous build and confirm the memory folder remains intact.",
+      "Roll back to the previous build and confirm the memory folder remains intact."
     ],
     "manual_qa_required": true,
     "rollback_steps": [
-      "Keep the user's local vault folder unchanged.",
+      "Keep the user's memory folder unchanged.",
       "Quit Cortex.",
       "Replace Cortex.app in Applications with the previous beta build.",
       "Relaunch, run the reliability report, and create a fresh backup."
@@ -57,7 +57,7 @@
     "update_steps": [
       "Quit Cortex before replacing the app.",
       "Install the new Cortex.app over the old app in Applications.",
-      "Keep the local vault folder unchanged.",
+      "Keep the memory folder unchanged.",
       "Relaunch, confirm backend health, and run the reliability report."
     ]
   },
@@ -67,13 +67,13 @@
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "Local-first Cortex beta with bundled local service, MCP/Obsidian sync, Review, cited Ask, and trust controls."
+    "Local-first Cortex beta with bundled local service, notes connections, Review, cited Ask, backup, and Connections & Privacy controls."
   ],
-  "released_at": "2026-07-01T03:14:31Z",
+  "released_at": "2026-07-01T03:34:41Z",
   "source_provenance": {
-    "built_at": "2026-07-01T03:14:31Z",
+    "built_at": "2026-07-01T03:34:41Z",
     "git_branch": "mass-scale-app-redesign",
-    "git_commit": "46f5947fea48a1f411f704311e3cbe360a8f657e",
+    "git_commit": "f2d0b3ec009bc7f5a32ac2439eaaa89eb8d38897",
     "git_dirty": false
   },
   "version": "0.1.0"
