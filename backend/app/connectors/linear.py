@@ -6,6 +6,8 @@ import re
 from typing import Any, Callable
 from urllib.request import Request, urlopen
 
+from ._redaction import redact_error_message
+
 
 LINEAR_SOURCE = "linear"
 CONNECTOR_VERSION = "2026-07-01"
@@ -126,13 +128,13 @@ def fetch_linear_records(
         try:
             payload = requester(endpoint, headers, {"query": LINEAR_ISSUES_QUERY, "variables": variables})
         except Exception as exc:
-            errors.append({"error": str(exc)})
+            errors.append({"error": redact_error_message(exc, [cleaned_token, headers.get("Authorization")])})
             break
         if not isinstance(payload, dict):
             errors.append({"error": "Linear GraphQL response was not an object"})
             break
         if payload.get("errors"):
-            errors.extend(_graphql_errors(payload.get("errors")))
+            errors.extend(_graphql_errors(payload.get("errors"), [cleaned_token, headers.get("Authorization")]))
             break
         issues = ((payload.get("data") or {}).get("issues") or {}) if isinstance(payload.get("data"), dict) else {}
         nodes = issues.get("nodes") if isinstance(issues.get("nodes"), list) else []
@@ -267,13 +269,15 @@ def _labels(value: Any) -> list[str]:
     return labels
 
 
-def _graphql_errors(value: Any) -> list[dict[str, Any]]:
+def _graphql_errors(value: Any, secrets: list[str | None] | None = None) -> list[dict[str, Any]]:
     errors = []
     for item in value or []:
         if isinstance(item, dict):
-            errors.append({"error": _clean_text(item.get("message")) or "Linear GraphQL error"})
+            message = redact_error_message(item.get("message"), secrets or [])
+            errors.append({"error": _clean_text(message) or "Linear GraphQL error"})
         else:
-            errors.append({"error": _clean_text(item) or "Linear GraphQL error"})
+            message = redact_error_message(item, secrets or [])
+            errors.append({"error": _clean_text(message) or "Linear GraphQL error"})
     return errors or [{"error": "Linear GraphQL error"}]
 
 

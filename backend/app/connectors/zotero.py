@@ -8,6 +8,8 @@ from typing import Any, Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from ._redaction import redact_error_message
+
 
 ZOTERO_SOURCE = "zotero"
 CONNECTOR_VERSION = "2026-07-01"
@@ -123,7 +125,7 @@ def fetch_zotero_records(
         try:
             payload = requester(url, headers)
         except Exception as exc:
-            errors.append({"error": str(exc)})
+            errors.append({"error": redact_error_message(exc, _request_secrets(cleaned_token, headers))})
             break
         if not isinstance(payload, list):
             errors.append({"error": "Zotero items response was not a list"})
@@ -171,6 +173,10 @@ def _request_json(url: str, headers: dict[str, str]) -> Any:
     request = Request(url, headers=headers, method="GET")
     with urlopen(request, timeout=30) as response:  # noqa: S310 - trusted Zotero local/Web API URL by default.
         return json.loads(response.read().decode("utf-8"))
+
+
+def _request_secrets(token: str, headers: dict[str, str]) -> list[str | None]:
+    return [token, headers.get("Zotero-API-Key")]
 
 
 def _record_from_item(

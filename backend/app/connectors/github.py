@@ -7,6 +7,8 @@ from typing import Any, Callable
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
+from ._redaction import redact_error_message
+
 
 GITHUB_SOURCE = "github"
 CONNECTOR_VERSION = "2026-07-01"
@@ -111,7 +113,12 @@ def fetch_github_records(
             try:
                 payload = requester(url, headers)
             except Exception as exc:
-                errors.append({"repository": repository, "error": str(exc)})
+                errors.append(
+                    {
+                        "repository": repository,
+                        "error": redact_error_message(exc, [cleaned_token, headers.get("Authorization")]),
+                    }
+                )
                 break
             if not isinstance(payload, list):
                 errors.append({"repository": repository, "error": "GitHub issues response was not a list"})

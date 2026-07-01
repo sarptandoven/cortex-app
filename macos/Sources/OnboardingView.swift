@@ -121,7 +121,7 @@ struct OnboardingView: View {
         case .privateVault:
             return "Starting Cortex"
         case .firstSource:
-            return "Choose Notes"
+            return "Choose Source"
         case .reviewMemory:
             return "Review One Item"
         case .askUse:
@@ -196,7 +196,7 @@ struct OnboardingVaultStep: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             if state.diagnostics?.vault != nil {
-                OnboardingCheckRow(title: "Private memory ready", detail: "Next, connect notes so Cortex can start finding useful memory.", systemImage: "checkmark.seal.fill", color: .green)
+                OnboardingCheckRow(title: "Private memory ready", detail: "Next, connect a source so Cortex can start finding useful memory.", systemImage: "checkmark.seal.fill", color: .green)
             } else {
                 OnboardingCheckRow(title: "Starting private memory", detail: state.displayBackendStatus, systemImage: "clock", color: .orange)
             }
@@ -256,13 +256,13 @@ struct OnboardingFirstSourceStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Choose a local notes folder first. Cortex syncs it privately, sends useful memory to Review, and makes approved memory available to connected AI tools.")
+            Text("Connect one memory source first. Cortex syncs it privately, sends useful memory to Review, and makes approved memory available to Ask with citations.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             OnboardingConnectionCard(
-                title: state.hasConnectedObsidianVault ? "Notes sync connected" : "Start notes sync",
-                detail: state.hasConnectedObsidianVault ? "Cortex checks saved notes on launch and every 30 minutes, then sends new memory to Review with citations." : "Choose an Obsidian or local notes folder. Cortex handles parsing, citations, and repeat sync automatically.",
+                title: state.hasConnectedObsidianVault ? "Source sync connected" : "Start source sync",
+                detail: state.hasConnectedObsidianVault ? "Cortex checks the connected source on launch and every 30 minutes, then sends new memory to Review with citations." : "Choose Obsidian or a local notes folder to start. Direct service sync lives in Connections & Privacy when you need it.",
                 systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "folder.badge.plus",
                 isPrimary: true,
                 status: state.onboardingHasSource ? "Synced" : (state.hasConnectedObsidianVault ? "Connected" : "Local"),
@@ -274,7 +274,7 @@ struct OnboardingFirstSourceStep: View {
 
             if !state.onboardingFirstSourceNames.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Synced notes")
+                    Text("Synced source")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Text(state.onboardingFirstSourceNames.joined(separator: ", "))
@@ -301,27 +301,27 @@ struct OnboardingFirstSourceStep: View {
 
     private var connectionCheckTitle: String {
         if state.onboardingHasSource {
-            return "Notes synced"
+            return "Source synced"
         }
         if state.onboardingHasConnectedMemoryLayer {
             return "Waiting for synced memory"
         }
-        return "Start notes sync"
+        return "Start source sync"
     }
 
     private var connectionCheckDetail: String {
         if state.onboardingHasSource {
-            return "Review has memory from synced notes."
+            return "Review has memory from the synced source."
         }
         if state.onboardingHasConnectedMemoryLayer {
-            return "Cortex is checking notes so useful memory appears in Review."
+            return "Cortex is checking the connected source so useful memory appears in Review."
         }
-        return "Choose a local notes folder when ready. AI tool connections can use approved memory after setup."
+        return "Choose a source when ready. Reviewed memory becomes available to Ask with citations."
     }
 
     private var firstSourceButtonTitle: String {
-        if state.hasConnectedObsidianVault { return "Sync notes" }
-        if obsidianConnector != nil { return "Start notes sync" }
+        if state.hasConnectedObsidianVault { return "Sync source" }
+        if obsidianConnector != nil { return "Start source sync" }
         return "Refresh"
     }
 
@@ -336,7 +336,7 @@ struct OnboardingFirstSourceStep: View {
             state.connectLocalNotesFolder(connector)
         } else {
             Task { await state.loadSourceConnectivity() }
-            state.status = "Checking notes connector"
+            state.status = "Checking source connector"
         }
     }
 }
@@ -455,7 +455,7 @@ struct OnboardingReviewMemoryStep: View {
                 Button {
                     state.connectLocalNotesFolder(connector)
                 } label: {
-                    Label("Sync notes", systemImage: "arrow.triangle.2.circlepath")
+                    Label("Sync source", systemImage: "arrow.triangle.2.circlepath")
                         .frame(minWidth: 158, minHeight: 42)
                 }
                 .buttonStyle(.borderedProminent)
@@ -465,7 +465,7 @@ struct OnboardingReviewMemoryStep: View {
                 Button {
                     state.previousOnboardingStep()
                 } label: {
-                    Label("Start notes sync", systemImage: "folder.badge.plus")
+                    Label("Start source sync", systemImage: "folder.badge.plus")
                         .frame(minWidth: 146, minHeight: 42)
                 }
                 .buttonStyle(.borderedProminent)
@@ -504,9 +504,9 @@ struct OnboardingReviewMemoryStep: View {
             return "You already reviewed memory from your first connection."
         }
         if state.onboardingHasSource {
-            return "No reviewable memory is waiting yet. Let notes sync finish, then approve one useful item."
+            return "No reviewable memory is waiting yet. Let source sync finish, then approve one useful item."
         }
-        return "Start notes sync first; synced memory appears here before Cortex uses it."
+        return "Start source sync first; synced memory appears here before Cortex uses it."
     }
 
     private var reviewPathTitle: String {
@@ -518,7 +518,7 @@ struct OnboardingReviewMemoryStep: View {
 
     private var reviewPathDetail: String {
         if state.onboardingHasReviewedMemory {
-            return "Cortex has reviewed notes it can cite."
+            return "Cortex has reviewed memory it can cite."
         }
         if state.onboardingHasSource {
             return "Approve one useful memory to let Cortex cite it in Ask."

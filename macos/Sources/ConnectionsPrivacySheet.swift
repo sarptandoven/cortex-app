@@ -34,7 +34,7 @@ struct ConnectionsPrivacySheet: View {
                 Text("Connections & Privacy")
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text("Connect memory sources, control AI access, and keep local recovery tools in one place.")
+                Text("Connect a notes source, keep it synced, and manage local privacy settings.")
                     .font(.callout)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -73,9 +73,10 @@ private struct ConnectionsPrivacyOverview: View {
     }
 
     private var connectionStatusDetail: String {
-        let sources = notesHealth.isNeedsAttention ? "notes need attention" : "\(connectedSourceCount) source\(connectedSourceCount == 1 ? "" : "s")"
-        let tools = "\(state.connectedAIIntegrationCount) AI tool\(state.connectedAIIntegrationCount == 1 ? "" : "s")"
-        return "\(sources) · \(tools)"
+        if notesHealth.isNeedsAttention {
+            return "source needs attention"
+        }
+        return "\(connectedSourceCount) source\(connectedSourceCount == 1 ? "" : "s")"
     }
 
     private var notesHealth: NotesConnectionHealth {
@@ -96,11 +97,8 @@ private struct ConnectionsPrivacyOverview: View {
                 ConnectionsOverviewHero(state: state)
 
                 ConnectionsObsidianSection(state: state)
-                advancedSourceConnections
                 if state.connectedAIIntegrationCount > 0 {
                     ConnectionsAIToolsSection(state: state)
-                } else {
-                    optionalAITools
                 }
 
                 if let summary = state.trustSummary {
@@ -148,7 +146,7 @@ private struct ConnectionsPrivacyOverview: View {
         if extraSources > 0 {
             return "\(extraSources) extra source\(extraSources == 1 ? "" : "s") connected"
         }
-        return "Optional token, file, and local app sync"
+        return "Read-only token and local-file options"
     }
 
     private var optionalAITools: some View {
@@ -218,6 +216,12 @@ private struct ConnectionsPrivacyOverview: View {
                     .font(.callout)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                advancedSourceConnections
+
+                if state.connectedAIIntegrationCount == 0 {
+                    optionalAITools
+                }
 
                 DisclosureGroup("Recovery and support tools", isExpanded: $recoveryToolsExpanded) {
                     VStack(alignment: .leading, spacing: 14) {
@@ -390,16 +394,16 @@ private struct ConnectionsOverviewHero: View {
 
     private var primaryActionTitle: String {
         if notesConnected {
-            return state.hasConnectedObsidianVault ? "Sync notes" : "Reconnect notes"
+            return state.hasConnectedObsidianVault ? "Sync source" : "Reconnect source"
         }
         if !notesConnected, let _ = obsidianConnector {
-            if notesNeedAttention { return "Fix notes sync" }
-            return notesNeedContent ? "Choose notes" : "Start notes sync"
+            if notesNeedAttention { return "Fix source sync" }
+            return notesNeedContent ? "Choose source" : "Start source sync"
         }
         if !notesConnected {
             return "Check status"
         }
-        return "Sync notes"
+        return "Sync source"
     }
 
     private var primaryActionIcon: String {
@@ -415,28 +419,28 @@ private struct ConnectionsOverviewHero: View {
 
     private var title: String {
         if notesConnected {
-            return "Notes syncing"
+            return "Source syncing"
         }
         if notesNeedAttention {
-            return "Notes need attention"
+            return "Source needs attention"
         }
         if notesNeedContent {
-            return "Choose notes with content"
+            return "Choose a source with content"
         }
-        return "Start notes sync once"
+        return "Start source sync once"
     }
 
     private var detail: String {
         if notesConnected {
-            return "New notes go to Review first. Ask and connected AI tools use reviewed memory with citations."
+            return "New source memory goes to Review first. Ask uses reviewed memory with citations."
         }
         if notesNeedAttention {
-            return notesHealth.detail ?? "Cortex needs attention before these notes can keep syncing."
+            return notesHealth.detail ?? "Cortex needs attention before this source can keep syncing."
         }
         if notesNeedContent {
-            return "Cortex could not find usable notes there. Choose a notes library with real content."
+            return "Cortex could not find usable content there. Choose a source with real notes or records."
         }
-        return "Choose the notes folder Cortex should sync. New memory goes to Review before Ask or AI tools can use it."
+        return "Choose the source Cortex should sync. New memory goes to Review before Ask uses it."
     }
 
     private var statusIcon: String {
@@ -479,12 +483,12 @@ private struct ConnectionsObsidianSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
-                title: "Notes connection",
-                detail: "Choose the folder Cortex should keep synced automatically."
+                title: "Primary source connection",
+                detail: "Choose the local source Cortex should keep synced automatically."
             )
 
             if state.sourceConnectorCatalog.isEmpty {
-                QuietState(title: "Checking note connections", detail: "Cortex is checking available local note connections.")
+                QuietState(title: "Checking source connections", detail: "Cortex is checking available local source connections.")
             } else if let connector = obsidianConnector {
                 SourceConnectorStatusCard(
                     state: state,
@@ -495,7 +499,7 @@ private struct ConnectionsObsidianSection: View {
                     attentionDetail: notesHealth.detail
                 )
             } else {
-                QuietState(title: "Notes connection unavailable", detail: "Restart Cortex after the private memory store is ready.")
+                QuietState(title: "Source connection unavailable", detail: "Restart Cortex after the private memory store is ready.")
             }
         }
     }
@@ -552,13 +556,13 @@ private struct ConnectionsDirectSourcesSection: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
                 title: "Advanced source sync",
-                detail: "Optional read-only connectors for users who already have a token, local file, or local app ready."
+                detail: "Optional read-only connectors for specific token, local-file, or local-app setup. Notes sync is the default path."
             )
 
             if state.sourceConnectorCatalog.isEmpty {
                 QuietState(title: "Checking advanced connectors", detail: "Cortex is loading local source sync options.")
             } else if wiredConnectors.isEmpty {
-                QuietState(title: "No advanced connectors yet", detail: "Notes sync is ready. Additional direct connectors will appear here after they are wired end to end.")
+                QuietState(title: "No advanced connectors yet", detail: "Use notes sync as the default source path.")
             } else {
                 VStack(spacing: 10) {
                     ForEach(wiredConnectors) { connector in
@@ -675,10 +679,10 @@ private struct ConnectionsDirectSourceRow: View {
                 Button {
                     state.forgetDirectConnectorConfig(connector)
                 } label: {
-                    Image(systemName: "trash")
-                        .frame(width: 36, height: 42)
+                    Label("Forget setup", systemImage: "trash")
+                        .frame(minWidth: 118, minHeight: 42)
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.bordered)
                 .foregroundColor(.secondary)
                 .help("Forget automatic sync setup")
                 .disabled(state.isBusy || isSyncing)

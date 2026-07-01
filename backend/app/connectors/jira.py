@@ -9,6 +9,8 @@ from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
+from ._redaction import redact_error_message
+
 
 JIRA_SOURCE = "jira"
 CONNECTOR_VERSION = "2026-07-01"
@@ -107,9 +109,10 @@ def fetch_jira_records(
     capped_max = max(1, min(int(max_records or 100), MAX_RECORDS))
     query = str(jql or DEFAULT_JQL).strip() or DEFAULT_JQL
     requester = request_json or _request_json
+    basic_auth = _basic_auth(cleaned_email, cleaned_token)
     headers = {
         "Accept": "application/json",
-        "Authorization": f"Basic {_basic_auth(cleaned_email, cleaned_token)}",
+        "Authorization": f"Basic {basic_auth}",
         "Content-Type": "application/json",
         "User-Agent": "Cortex-local-connector",
     }
@@ -138,7 +141,7 @@ def fetch_jira_records(
         try:
             payload = requester(endpoint, headers, body)
         except Exception as exc:
-            errors.append({"error": _safe_error(exc, cleaned_token)})
+            errors.append({"error": _safe_error(exc, cleaned_token, basic_auth, headers.get("Authorization"))})
             break
         if not isinstance(payload, dict):
             errors.append({"error": "Jira search response was not an object"})
@@ -300,11 +303,8 @@ def _basic_auth(email: str, api_token: str) -> str:
     return base64.b64encode(f"{email}:{api_token}".encode("utf-8")).decode("ascii")
 
 
-def _safe_error(exc: Exception, api_token: str) -> str:
-    message = str(exc)
-    if api_token:
-        message = message.replace(api_token, "[REDACTED_JIRA_TOKEN]")
-    return message
+def _safe_error(exc: Exception, *secrets: str | None) -> str:
+    return redact_error_message(exc, secrets)
 
 
 def _jira_errors(payload: dict[str, Any]) -> list[dict[str, Any]]:

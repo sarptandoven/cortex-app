@@ -9,6 +9,8 @@ from typing import Any, Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from ._redaction import redact_error_message
+
 
 SLACK_SOURCE = "slack"
 CONNECTOR_VERSION = "2026-07-01"
@@ -120,7 +122,12 @@ def fetch_slack_records(
             try:
                 payload = requester(url, headers)
             except Exception as exc:
-                errors.append({"channel": channel.channel_id, "error": str(exc)})
+                errors.append(
+                    {
+                        "channel": channel.channel_id,
+                        "error": redact_error_message(exc, [cleaned_token, headers.get("Authorization")]),
+                    }
+                )
                 break
             if not isinstance(payload, dict):
                 errors.append({"channel": channel.channel_id, "error": "Slack history response was not an object"})

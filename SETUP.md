@@ -26,9 +26,9 @@ Use the setup flow:
 
 `Finish Later` opens the app without marking setup complete. Setup can be reopened from Connections & Privacy.
 
-## Connect Notes And AI Tools
+## Connect Sources And AI Tools
 
-Open Connections & Privacy and connect Obsidian/local notes plus supported local AI tools through MCP.
+Open Connections & Privacy and connect Obsidian/local notes or another supported source plus supported local AI tools through MCP.
 
 Cloud OAuth/API sync is staged by service readiness in this beta and does not appear as a primary setup path until direct sync is ready.
 

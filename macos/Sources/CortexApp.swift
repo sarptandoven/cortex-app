@@ -2694,7 +2694,7 @@ final class AppState: ObservableObject {
     func performProductLoopAction(_ action: ProductLoopAction) {
         switch action.action {
         case "capture":
-            openConnectionsPrivacy(statusMessage: "Start notes sync")
+            openConnectionsPrivacy(statusMessage: "Start source sync")
         case "review":
             selectedTab = .review
             status = "Review new signals below"
@@ -3230,7 +3230,7 @@ final class AppState: ObservableObject {
                 await loadSourceConnectivity()
                 await loadTrust()
                 if !automatic {
-                    status = "No usable notes found in \(synced.scan.vault_name). Choose a source with real content."
+                    status = "No usable content found in \(synced.scan.vault_name). Choose a source with real content."
                 }
                 return
             }
@@ -3746,7 +3746,7 @@ final class AppState: ObservableObject {
             case .privateVault:
                 status = "Start the local memory engine before continuing"
             case .firstSource:
-                status = "Start notes sync, then review memory"
+                status = "Start source sync, then review memory"
             case .reviewMemory:
                 status = "Approve one review item before asking Cortex"
             case .askUse:
@@ -5275,7 +5275,7 @@ struct SourceAccountHealthRow: View {
             return CortexRecoveryText.inlineError(error, fallback: "Refresh Connections. If it repeats, reconnect this source.")
         }
         if account.status.lowercased() == "empty" || account.auth_state.lowercased() == "needs-content" {
-            return "No usable notes found. Choose a source with real content."
+            return "No usable content found. Choose a source with real content."
         }
         if let synced = account.last_sync_at ?? cursor?.last_completed_at {
             if let summary = latestBatchSummary {

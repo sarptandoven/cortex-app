@@ -7,6 +7,8 @@ from typing import Any, Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from ._redaction import redact_error_message
+
 
 NOTION_SOURCE = "notion"
 CONNECTOR_VERSION = "2026-07-01"
@@ -109,7 +111,7 @@ def fetch_notion_records(
         try:
             payload = requester(f"{base_url}/search", headers, body, "POST")
         except Exception as exc:
-            errors.append({"error": str(exc)})
+            errors.append({"error": redact_error_message(exc, _request_secrets(cleaned_token, headers))})
             break
         if not isinstance(payload, dict):
             errors.append({"error": "Notion search response was not an object"})
@@ -126,7 +128,7 @@ def fetch_notion_records(
                 continue
             blocks: list[dict[str, Any]] = []
             if include_content:
-                blocks = _fetch_page_blocks(base_url, headers, page, requester, errors)
+                blocks = _fetch_page_blocks(base_url, headers, page, requester, errors, _request_secrets(cleaned_token, headers))
             record = _record_from_page(page, blocks)
             if record is None:
                 continue
@@ -164,6 +166,7 @@ def _fetch_page_blocks(
     page: dict[str, Any],
     requester: RequestJSON,
     errors: list[dict[str, Any]],
+    secrets: list[str | None],
 ) -> list[dict[str, Any]]:
     page_id = _text(page.get("id"))
     if not page_id:
@@ -178,7 +181,7 @@ def _fetch_page_blocks(
         try:
             payload = requester(url, headers, None, "GET")
         except Exception as exc:
-            errors.append({"page_id": page_id, "error": str(exc)})
+            errors.append({"page_id": page_id, "error": redact_error_message(exc, secrets)})
             break
         if not isinstance(payload, dict):
             errors.append({"page_id": page_id, "error": "Notion block children response was not an object"})
@@ -244,6 +247,10 @@ def _record_from_page(page: dict[str, Any], blocks: list[dict[str, Any]]) -> Not
             "source_quality": "canonical",
         },
     )
+
+
+def _request_secrets(token: str, headers: dict[str, str]) -> list[str | None]:
+    return [token, headers.get("Authorization")]
 
 
 def _page_title(page: dict[str, Any]) -> str:

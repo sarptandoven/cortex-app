@@ -7,6 +7,8 @@ from typing import Any, Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from ._redaction import redact_error_message
+
 
 RAINDROP_SOURCE = "raindrop"
 CONNECTOR_VERSION = "2026-07-01"
@@ -108,7 +110,7 @@ def fetch_raindrop_records(
         try:
             payload = requester(url, headers)
         except Exception as exc:
-            errors.append({"error": _safe_error(exc, cleaned_token)})
+            errors.append({"error": _safe_error(exc, cleaned_token, headers.get("Authorization"))})
             break
         if not isinstance(payload, dict):
             errors.append({"error": "Raindrop response was not an object"})
@@ -288,8 +290,5 @@ def _max_iso(left: str | None, right: str | None) -> str | None:
     return max(left, right)
 
 
-def _safe_error(exc: Exception, token: str) -> str:
-    message = str(exc)
-    if token:
-        message = message.replace(token, "[REDACTED_RAINDROP_TOKEN]")
-    return message
+def _safe_error(exc: Exception, *secrets: str | None) -> str:
+    return redact_error_message(exc, secrets)

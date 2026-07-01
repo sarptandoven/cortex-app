@@ -137,7 +137,7 @@ struct AskEmptyGuidance: View {
         if let connector = obsidianConnector {
             state.connectLocalNotesFolder(connector)
         } else {
-            state.openConnectionsPrivacy(statusMessage: "Notes sync")
+            state.openConnectionsPrivacy(statusMessage: "Source sync")
         }
     }
 
@@ -151,7 +151,7 @@ struct AskEmptyGuidance: View {
                         Button {
                             startNotesSync()
                         } label: {
-                            Label("Start notes sync", systemImage: "folder.badge.plus")
+                            Label("Start source sync", systemImage: "folder.badge.plus")
                                 .frame(minWidth: 172, minHeight: 46)
                         }
                         .buttonStyle(.borderedProminent)
@@ -180,7 +180,7 @@ struct AskEmptyGuidance: View {
                         Button {
                             startNotesSync()
                         } label: {
-                            Label("Sync more notes", systemImage: "folder.badge.plus")
+                            Label("Sync another source", systemImage: "folder.badge.plus")
                                 .frame(minWidth: 168, minHeight: 46)
                         }
                         .buttonStyle(.bordered)

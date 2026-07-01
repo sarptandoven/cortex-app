@@ -8,6 +8,8 @@ from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
+from ._redaction import redact_error_message
+
 
 CALENDAR_SOURCE = "calendar"
 CONNECTOR_VERSION = "2026-07-01"
@@ -301,7 +303,12 @@ def _max_text(left: str | None, right: str | None) -> str | None:
 
 
 def _safe_error(exc: Exception, secret: str) -> str:
-    message = str(exc)
+    secrets: list[str] = []
     if secret:
-        message = message.replace(secret, "[REDACTED_CALENDAR_SOURCE]")
-    return message
+        secrets.append(secret)
+        if str(secret).strip().startswith("webcal://"):
+            try:
+                secrets.append(_normalize_feed_url(secret))
+            except ValueError:
+                pass
+    return redact_error_message(exc, secrets)

@@ -118,7 +118,7 @@ struct ReviewInboxSection: View {
 
     private var emptyDetail: String {
         if (state.review?.stats.memories ?? 0) == 0 {
-            return "Start notes sync first. New memories will appear here before Cortex uses them."
+            return "Start source sync first. New memories will appear here before Cortex uses them."
         }
         return "All caught up. New synced items will appear here before Cortex uses them."
     }
@@ -155,7 +155,7 @@ struct ReviewEmptyState: View {
                     Button {
                         state.connectLocalNotesFolder(connector)
                     } label: {
-                        Label("Sync notes", systemImage: "arrow.triangle.2.circlepath")
+                        Label("Sync source", systemImage: "arrow.triangle.2.circlepath")
                             .frame(minWidth: 148, minHeight: 46)
                     }
                     .buttonStyle(.borderedProminent)
@@ -166,10 +166,10 @@ struct ReviewEmptyState: View {
                         if let connector = obsidianConnector {
                             state.connectLocalNotesFolder(connector)
                         } else {
-                            state.openConnectionsPrivacy(statusMessage: "Notes sync")
+                            state.openConnectionsPrivacy(statusMessage: "Source sync")
                         }
                     } label: {
-                        Label("Start notes sync", systemImage: "folder.badge.plus")
+                        Label("Start source sync", systemImage: "folder.badge.plus")
                             .frame(minWidth: 172, minHeight: 46)
                     }
                     .buttonStyle(.borderedProminent)

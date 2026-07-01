@@ -124,18 +124,18 @@ struct SourceConnectorStatusCard: View {
             if !state.hasConnectedObsidianVault {
                 return "Reconnect the notes folder on this Mac so Cortex can keep syncing."
             }
-            return "Cortex keeps these notes synced. Review approves memory before Ask or AI tools use it."
+            return "Cortex keeps these notes synced. Review approves memory before Ask uses it."
         }
         return "Choose a notes folder once. Cortex syncs locally and keeps citations attached."
     }
 
     private var primaryButtonTitle: String {
-        if needsAttention { return "Fix notes sync" }
-        if needsContent { return "Choose notes" }
+        if needsAttention { return "Fix source sync" }
+        if needsContent { return "Choose source" }
         if connected {
-            return state.hasConnectedObsidianVault ? "Sync notes" : "Reconnect notes"
+            return state.hasConnectedObsidianVault ? "Sync source" : "Reconnect source"
         }
-        return "Start notes sync"
+        return "Start source sync"
     }
 
     private var primaryButtonIcon: String {
