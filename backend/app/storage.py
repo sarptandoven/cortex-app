@@ -2484,6 +2484,13 @@ class CortexStore:
                 status = "available"
                 next_action = "Add this source when it contains useful personal context."
 
+            sync_plan = _source_readiness_sync_plan(
+                service_baseline=service_baseline,
+                live_status=live_status,
+                active_accounts=active_accounts,
+                source_cursors=source_cursors,
+            )
+            sync_plan = self._apply_source_scheduler_support(user_id, sync_plan, active_accounts)
             last_seen = stats.get("last_imported_at") or next((account.get("last_sync_at") for account in active_accounts if account.get("last_sync_at")), None)
             rows.append(
                 {
@@ -2504,12 +2511,7 @@ class CortexStore:
                     "first_100_note": item.get("first_100_note") or _connector_first_100_note(item),
                     "baseline_10k": bool(item.get("baseline_10k") or service_baseline.get("included")),
                     "service_baseline": service_baseline,
-                    "sync_plan": _source_readiness_sync_plan(
-                        service_baseline=service_baseline,
-                        live_status=live_status,
-                        active_accounts=active_accounts,
-                        source_cursors=source_cursors,
-                    ),
+                    "sync_plan": sync_plan,
                     "primary_beta": primary_beta,
                     "beta_status": beta_status,
                     "primary_beta_path": primary_beta_path,
@@ -2625,24 +2627,32 @@ class CortexStore:
         return [self._source_account_from_row(row) for row in rows]
 
     def enqueue_due_source_syncs(self, user_id: str, *, limit: int = 20) -> dict[str, Any]:
-        readiness = self.source_readiness_report(user_id)
-        readiness_by_source = {item["source"]: item for item in readiness.get("sources") or []}
         scheduled: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         accounts = self.list_source_accounts(user_id)
+        cursors_by_account: dict[str, list[dict[str, Any]]] = {}
+        for cursor in self.list_sync_cursors(user_id):
+            account_id = str(cursor.get("source_account_id") or "").strip()
+            if account_id:
+                cursors_by_account.setdefault(account_id, []).append(cursor)
+        catalog_by_source = {item["id"]: item for item in self.source_connector_catalog()}
         for account in accounts:
             if len(scheduled) >= max(0, min(int(limit or 0), 100)):
                 break
             source = account["source"]
-            source_readiness = readiness_by_source.get(source) or {}
-            sync_plan = source_readiness.get("sync_plan") or {}
+            sync_plan = self._source_account_readiness_sync_plan(
+                account,
+                cursors_by_account.get(account["id"], []),
+                catalog_by_source=catalog_by_source,
+            )
             if not sync_plan.get("due_now"):
                 continue
-            if not _source_account_sync_scheduler_supported(account):
+            scheduler_supported, blocked_reason = self._source_account_scheduler_support(user_id, account)
+            if not scheduler_supported:
                 skipped.append({
                     "source_account_id": account["id"],
                     "source": source,
-                    "reason": "stored_sync_configuration_required",
+                    "reason": blocked_reason or "stored_sync_configuration_required",
                 })
                 continue
             try:
@@ -2666,6 +2676,75 @@ class CortexStore:
             "skipped": skipped,
         }
 
+    def _source_account_readiness_sync_plan(
+        self,
+        account: dict[str, Any],
+        source_cursors: list[dict[str, Any]],
+        *,
+        catalog_by_source: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        source = _normalize_source_key(str(account.get("source") or ""))
+        catalog = catalog_by_source if catalog_by_source is not None else {item["id"]: item for item in self.source_connector_catalog()}
+        item = catalog.get(source) or {
+            "id": source,
+            "live_status": "local_only",
+            "source_ids": [source],
+            "supports_import": True,
+        }
+        supports_import = bool(item.get("supports_import")) or bool(item.get("formats"))
+        service_baseline = item.get("service_baseline") or _connector_service_baseline(
+            item,
+            _unique_catalog_strings(item.get("source_ids") or [source]),
+            supports_import=supports_import,
+        )
+        return _source_readiness_sync_plan(
+            service_baseline=service_baseline,
+            live_status=str(item.get("live_status") or ""),
+            active_accounts=[account],
+            source_cursors=source_cursors,
+        )
+
+    def _source_account_scheduler_support(self, user_id: str, account: dict[str, Any]) -> tuple[bool, str | None]:
+        if not _source_account_sync_scheduler_supported(account):
+            return False, "stored_sync_configuration_required"
+        metadata = account.get("metadata") if isinstance(account.get("metadata"), dict) else {}
+        credential_ref = str(metadata.get("credential_ref") or "").strip()
+        if not credential_ref.startswith("source_credential:"):
+            return True, None
+        source = _normalize_source_key(str(account.get("source") or ""))
+        if source == "zotero" and str(metadata.get("api_base_url") or "").strip():
+            return True, None
+        credential = self.vault.read_source_credential(
+            user_id=user_id,
+            source_account_id=str(account.get("id") or ""),
+        )
+        payload = credential.get("payload") if isinstance(credential, dict) else None
+        if isinstance(payload, dict) and payload:
+            return True, None
+        return False, "stored_credential_missing"
+
+    def _apply_source_scheduler_support(
+        self,
+        user_id: str,
+        sync_plan: dict[str, Any],
+        active_accounts: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not active_accounts:
+            return sync_plan
+        support_checks = [self._source_account_scheduler_support(user_id, account) for account in active_accounts]
+        if any(supported for supported, _reason in support_checks):
+            return sync_plan
+        reasons = [reason for _supported, reason in support_checks if reason]
+        if "stored_credential_missing" not in reasons:
+            return sync_plan
+        plan = dict(sync_plan)
+        plan["scheduler_supported"] = False
+        plan["due_now"] = False
+        plan["blocked_reason"] = reasons[0] if reasons else "stored_sync_configuration_required"
+        if plan.get("managed_sync_status") in {"due", "waiting_for_first_sync", "healthy", "not_configured"}:
+            plan["managed_sync_status"] = "needs_attention"
+        return plan
+
     def enqueue_source_account_sync(
         self,
         user_id: str,
@@ -2684,7 +2763,10 @@ class CortexStore:
             raise ValueError("source account not found")
         if account.get("disconnected_at"):
             raise ValueError("source account is disconnected")
-        if not _source_account_sync_scheduler_supported(account):
+        scheduler_supported, blocked_reason = self._source_account_scheduler_support(user_id, account)
+        if not scheduler_supported:
+            if blocked_reason == "stored_credential_missing":
+                raise ValueError("source account stored credential is missing")
             raise ValueError("source account needs stored sync configuration before it can be scheduled")
         try:
             capped_max_records = int(max_records or 200)

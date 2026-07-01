@@ -431,7 +431,13 @@ class StoreRegistry:
             "stale_running_count": stale_running_count,
             "recent_failure_count": recent_failure_count,
             "oldest_queued_age_seconds": oldest_queued_age_seconds,
-            "requires": ["no failed jobs", "no stale running jobs", "queue health available for ready hosted users"],
+            "requires": [
+                "no queued backlog",
+                "no running backlog",
+                "no failed jobs",
+                "no stale running jobs",
+                "queue health available for ready hosted users",
+            ],
         }
 
     def authenticate_mcp_token(self, token: str, user_id: str | None = None) -> dict[str, Any] | None:

@@ -182,6 +182,7 @@ class FastAPIContractTests(unittest.TestCase):
                 require_scoped_api_tokens=True,
                 public_base_url="https://api.cortex-hq.com",
                 sync_signing_key="sync-signing-key",
+                hosted_database_url="postgresql://cortex:secret@db.cortex.internal/cortex",
                 hosted_vector_backend="pgvector",
                 worker_mode="external",
                 observability_enabled=True,

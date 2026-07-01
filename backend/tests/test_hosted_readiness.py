@@ -23,6 +23,7 @@ class HostedReadinessTests(unittest.TestCase):
             "require_scoped_api_tokens": True,
             "public_base_url": "https://api.cortex-hq.com",
             "sync_signing_key": "sync-signing-key",
+            "hosted_database_url": "postgresql://cortex:secret@db.cortex.internal/cortex",
             "hosted_vector_backend": "pgvector",
             "worker_mode": "external",
             "observability_enabled": True,
@@ -65,6 +66,7 @@ class HostedReadinessTests(unittest.TestCase):
         self.assertIn("scoped_api_tokens_required", blocked)
         self.assertIn("public_base_url", blocked)
         self.assertIn("sync_signing_key", blocked)
+        self.assertIn("hosted_database", blocked)
         self.assertIn("embedding_provider", blocked)
         self.assertIn("hosted_vector_backend", blocked)
         self.assertIn("background_workers", blocked)
@@ -80,6 +82,25 @@ class HostedReadinessTests(unittest.TestCase):
         self.assertEqual(contract["status"], "blocked")
         blocked = {check["name"] for check in contract["checks"] if check["status"] == "blocked"}
         self.assertEqual(blocked, {"control_plane_scoped_tokens"})
+
+    def test_hosted_mode_blocks_worker_queue_attention_state(self) -> None:
+        runtime = self.ready_runtime()
+        runtime["worker_queue"] = {
+            **runtime["worker_queue"],
+            "status": "attention",
+            "counts": {"queued": 2, "running": 1, "succeeded": 4, "failed": 0},
+            "oldest_queued_age_seconds": 42,
+        }
+
+        contract = hosted_readiness_contract(self.ready_hosted_settings(), runtime=runtime)
+
+        self.assertEqual(contract["status"], "blocked")
+        blocked = {check["name"] for check in contract["checks"] if check["status"] == "blocked"}
+        self.assertEqual(blocked, {"background_worker_queue"})
+        queue_check = next(check for check in contract["checks"] if check["name"] == "background_worker_queue")
+        self.assertIn("status attention", queue_check["detail"])
+        self.assertIn("2 queued job", queue_check["detail"])
+        self.assertIn("1 running job", queue_check["detail"])
 
     def test_hosted_mode_passes_when_10k_platform_controls_are_declared_and_proven(self) -> None:
         contract = hosted_readiness_contract(
@@ -118,6 +139,29 @@ class HostedReadinessTests(unittest.TestCase):
                 blocked = {check["name"] for check in contract["checks"] if check["status"] == "blocked"}
                 self.assertEqual(public_url_check["status"], "blocked")
                 self.assertEqual(blocked, {"public_base_url"})
+                self.assertEqual(contract["status"], "blocked")
+
+    def test_hosted_mode_requires_postgres_database_url(self) -> None:
+        unsafe_database_urls = [
+            "",
+            "sqlite:///tmp/cortex.sqlite",
+            "file:///tmp/cortex.sqlite",
+            "mysql://db.cortex.internal/cortex",
+            "postgresql://db.cortex.internal",
+            "postgresql:///cortex",
+        ]
+
+        for hosted_database_url in unsafe_database_urls:
+            with self.subTest(hosted_database_url=hosted_database_url):
+                contract = hosted_readiness_contract(
+                    self.ready_hosted_settings(hosted_database_url=hosted_database_url),
+                    runtime=self.ready_runtime(),
+                )
+
+                database_check = next(check for check in contract["checks"] if check["name"] == "hosted_database")
+                blocked = {check["name"] for check in contract["checks"] if check["status"] == "blocked"}
+                self.assertEqual(database_check["status"], "blocked")
+                self.assertEqual(blocked, {"hosted_database"})
                 self.assertEqual(contract["status"], "blocked")
 
 

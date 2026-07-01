@@ -22,6 +22,7 @@ def hosted_readiness_contract(settings: Settings, runtime: dict | None = None) -
         _scoped_token_check(hosted_mode, requires_scoped_tokens),
         _public_base_url_check(hosted_mode, settings.public_base_url),
         _sync_signing_key_check(hosted_mode, settings.sync_signing_key),
+        _hosted_database_check(hosted_mode, settings.hosted_database_url),
         _embedding_provider_check(hosted_mode, settings.embedding_provider),
         _vector_backend_check(hosted_mode, settings.hosted_vector_backend),
         _worker_check(hosted_mode, settings.worker_mode),
@@ -126,6 +127,30 @@ def _sync_signing_key_check(hosted_mode: bool, sync_signing_key: str) -> dict:
     }
 
 
+def _hosted_database_check(hosted_mode: bool, hosted_database_url: str) -> dict:
+    if not hosted_mode:
+        return {
+            "name": "hosted_database",
+            "status": "ok",
+            "detail": "Local mode uses SQLite and the local Cortex vault.",
+        }
+    parsed = urlparse(hosted_database_url or "")
+    scheme = (parsed.scheme or "").lower()
+    host = (parsed.hostname or "").rstrip(".").lower()
+    database_name = (parsed.path or "").strip("/")
+    if scheme in {"postgres", "postgresql"} and host and database_name:
+        return {
+            "name": "hosted_database",
+            "status": "ok",
+            "detail": "Hosted mode has a Postgres database URL for the primary memory store.",
+        }
+    return {
+        "name": "hosted_database",
+        "status": "blocked",
+        "detail": "Set CORTEX_HOSTED_DATABASE_URL or DATABASE_URL to a postgres:// or postgresql:// database before marking hosted mode ready.",
+    }
+
+
 def _embedding_provider_check(hosted_mode: bool, embedding_provider: str) -> dict:
     provider = (embedding_provider or "hash").strip().lower()
     if not hosted_mode or provider != "hash":
@@ -201,13 +226,20 @@ def _worker_queue_check(hosted_mode: bool, worker_mode: str, runtime: dict | Non
     queue_status = str(queue.get("status") or "blocked").lower()
     counts = queue.get("counts") if isinstance(queue.get("counts"), dict) else {}
     ready_user_count = int(queue.get("ready_user_count") or 0)
+    queued = int(counts.get("queued") or 0)
+    running = int(counts.get("running") or 0)
     failed = int(counts.get("failed") or 0)
     stale_running = int(queue.get("stale_running_count") or 0)
-    if queue_status == "blocked" or failed or stale_running or ready_user_count <= 0:
+    oldest_queued_age_seconds = queue.get("oldest_queued_age_seconds")
+    if queue_status != "ok" or queued or running or failed or stale_running or ready_user_count <= 0:
         return {
             "name": "background_worker_queue",
             "status": "blocked",
-            "detail": f"Hosted worker queue is not healthy ({ready_user_count} ready user(s), {failed} failed job(s), {stale_running} stale running job(s)).",
+            "detail": (
+                f"Hosted worker queue is not healthy ({ready_user_count} ready user(s), status {queue_status}, "
+                f"{queued} queued job(s), {running} running job(s), {failed} failed job(s), "
+                f"{stale_running} stale running job(s), oldest queued age {oldest_queued_age_seconds})."
+            ),
         }
     return {
         "name": "background_worker_queue",

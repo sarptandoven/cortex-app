@@ -1661,6 +1661,49 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertFalse(unsupported_github["sync_plan"]["scheduler_supported"])
         self.assertEqual(unsupported_github["sync_plan"]["blocked_reason"], "stored_sync_configuration_required")
 
+    def test_due_source_sync_schedules_accounts_independently(self) -> None:
+        due_vault = Path(self.tmp.name) / "due-account-vault"
+        backoff_vault = Path(self.tmp.name) / "backoff-account-vault"
+        due_vault.mkdir()
+        backoff_vault.mkdir()
+        due_account = self.store.upsert_source_account(
+            self.user_id,
+            source="obsidian",
+            account_label="Due Vault",
+            account_identifier="due-vault",
+            connection_type="local_folder",
+            status="connected",
+            auth_state="healthy",
+            metadata={
+                "vault_path": str(due_vault),
+                "sync_interval_seconds": 60,
+                "next_sync_due_at": "2000-01-01T00:00:00Z",
+            },
+        )
+        backoff_account = self.store.upsert_source_account(
+            self.user_id,
+            source="obsidian",
+            account_label="Backoff Vault",
+            account_identifier="backoff-vault",
+            connection_type="local_folder",
+            status="connected",
+            auth_state="healthy",
+            metadata={
+                "vault_path": str(backoff_vault),
+                "sync_interval_seconds": 60,
+                "next_sync_due_at": "2000-01-01T00:00:00Z",
+                "retry_after": "2999-01-01T00:00:00Z",
+            },
+        )
+
+        scheduled = self.store.enqueue_due_source_syncs(self.user_id, limit=10)
+
+        self.assertEqual(scheduled["scheduled"], 1)
+        self.assertEqual(scheduled["jobs"][0]["object_id"], due_account["id"])
+        self.assertEqual(scheduled["jobs"][0]["payload"]["source_account_id"], due_account["id"])
+        self.assertEqual(scheduled["skipped"], [])
+        self.assertNotEqual(scheduled["jobs"][0]["object_id"], backoff_account["id"])
+
     def test_due_obsidian_source_sync_job_rescans_changed_vault(self) -> None:
         vault_path = Path(self.tmp.name) / "scheduled-vault"
         note_path = vault_path / "Scheduled Sync.md"

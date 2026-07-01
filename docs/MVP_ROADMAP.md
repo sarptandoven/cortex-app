@@ -43,7 +43,7 @@ Start with AI power users who already use ChatGPT, Claude, Cursor, Slack, Notion
 
 - Hosted accounts, login/session management, token issuance UI, organization membership, billing, quotas, public telemetry, and incident operations.
 - Hosted FastAPI deployment backed by Postgres plus `pgvector`, background workers, hosted MCP, object storage for vault/export artifacts, hosted deletion/export receipts, and observability.
-- The repo now has an honest hosted readiness contract: non-local shard modes block until scoped API tokens, HTTPS public URL, sync signing, non-hash embeddings, pgvector, external workers, and observability are configured.
+- The repo now has an honest hosted readiness contract: non-local shard modes block until scoped API tokens, HTTPS public URL, sync signing, a Postgres database URL, non-hash embeddings, pgvector, external workers, and observability are configured.
 - Live OAuth/API connectors for Gmail, Notion, Slack, Drive/Docs, GitHub, calendar, mail, browser, and work-tool sources.
 - Additional graph/entity/correction MCP tools, team memories, project sharing, automatic updates, hosted cloud backup, and enterprise policy.
 

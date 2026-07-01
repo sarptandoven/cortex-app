@@ -79,7 +79,7 @@ class ScheduledConnectorCredentialTests(unittest.TestCase):
                 self.assertNotIn(key, source_account_json.get("metadata", {}))
             self._assert_values_absent(source_account_json, SECRET_VALUES)
 
-    def test_due_credential_ref_connector_is_scheduler_supported_and_enqueues_without_credentials(self) -> None:
+    def test_due_credential_ref_connector_is_scheduler_supported_and_enqueues_without_exposing_credentials(self) -> None:
         account = self._mark_account_due(self._connect_github_account())
 
         readiness = self.store.source_readiness_report(self.user_id)
@@ -96,6 +96,28 @@ class ScheduledConnectorCredentialTests(unittest.TestCase):
         for key in SECRET_KEYS:
             self.assertNotIn(key, scheduled["jobs"][0]["payload"])
         self._assert_values_absent(scheduled["jobs"][0]["payload"], SECRET_VALUES)
+
+    def test_stale_credential_ref_connector_does_not_enqueue_doomed_sync_job(self) -> None:
+        account = self._mark_account_due(self._connect_github_account())
+        self.assertTrue(self.store.vault.delete_source_credential(user_id=self.user_id, source_account_id=account["id"]))
+
+        readiness = self.store.source_readiness_report(self.user_id)
+        github = next(item for item in readiness["sources"] if item["source"] == "github")
+        self.assertEqual(github["sync_plan"]["managed_sync_status"], "needs_attention")
+        self.assertFalse(github["sync_plan"]["due_now"])
+        self.assertFalse(github["sync_plan"]["scheduler_supported"])
+        self.assertEqual(github["sync_plan"]["blocked_reason"], "stored_credential_missing")
+
+        scheduled = self.store.enqueue_due_source_syncs(self.user_id, limit=5)
+
+        self.assertEqual(scheduled["scheduled"], 0)
+        self.assertEqual(scheduled["jobs"], [])
+        self.assertEqual(
+            scheduled["skipped"],
+            [{"source_account_id": account["id"], "source": "github", "reason": "stored_credential_missing"}],
+        )
+        with self.assertRaisesRegex(ValueError, "stored credential is missing"):
+            self.store.enqueue_source_account_sync(self.user_id, account["id"])
 
     def test_due_credential_ref_connector_dispatches_with_local_credential_payload(self) -> None:
         account = self._mark_account_due(self._connect_github_account())

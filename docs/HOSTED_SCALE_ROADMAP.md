@@ -39,6 +39,7 @@ Implemented local primitive:
   - `CORTEX_REQUIRE_SCOPED_API_TOKENS=1`
   - hosted HTTPS origin in `CORTEX_PUBLIC_BASE_URL` with a public, non-reserved host
   - `CORTEX_SYNC_SIGNING_KEY`
+  - Postgres primary store in `CORTEX_HOSTED_DATABASE_URL` or `DATABASE_URL`
   - non-hash `CORTEX_EMBEDDING_PROVIDER`
   - `CORTEX_HOSTED_VECTOR_BACKEND=pgvector`
   - `CORTEX_WORKER_MODE=external`

@@ -111,7 +111,7 @@ The remaining roadmap should stay non-overengineered:
 - Per-user API tokens scoped to read/write/export/maintenance/destructive actions
 - Hosted FastAPI service backed by Postgres plus `pgvector`
 - Hosted MCP endpoint with OAuth/API-token auth
-- Hosted readiness gate that blocks non-local shard modes until scoped tokens, HTTPS base URL, sync signing, non-hash embeddings, pgvector, external workers, and observability are configured
+- Hosted readiness gate that blocks non-local shard modes until scoped tokens, HTTPS base URL, sync signing, Postgres database URL, non-hash embeddings, pgvector, external workers, and observability are configured
 - External worker process for queued memory extraction/vector jobs, currently represented by `scripts/run_memory_worker.py`
 - Rate limits and abuse protection
 - Per-user export/delete account flow
