@@ -2857,6 +2857,7 @@ class CortexStore:
         metadata: dict[str, Any] | None = None,
         last_error: str | None = None,
         account_id: str | None = None,
+        resume_disconnected: bool = True,
     ) -> dict[str, Any]:
         normalized_source = _normalize_source_key(source)
         if not normalized_source:
@@ -2883,6 +2884,9 @@ class CortexStore:
             account_status = "planned"
             auth = "not_configured"
         with connect(self.db_path) as conn:
+            existing = conn.execute("SELECT disconnected_at FROM source_accounts WHERE user_id = ? AND id = ?", (user_id, resolved_id)).fetchone()
+            if existing and existing["disconnected_at"] and not resume_disconnected:
+                raise ValueError("source account is disconnected; resume before reconnecting")
             conn.execute(
                 """
                 INSERT INTO source_accounts

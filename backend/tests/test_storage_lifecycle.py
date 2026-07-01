@@ -1366,7 +1366,48 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(github_readiness["status"], "needs_attention")
         self.assertEqual(github_readiness["next_action"], "Resume sync or review this source account.")
 
-        resumed = self.store.resume_source_account(self.user_id, account["id"])
+        with self.assertRaisesRegex(ValueError, "resume before reconnecting"):
+            call_tool(
+                self.store,
+                self.user_id,
+                "connect_source_account",
+                {
+                    "source": "github",
+                    "account_label": "doppl-tech/cortex-app",
+                    "account_identifier": "doppl-tech/cortex-app",
+                    "account_id": account["id"],
+                },
+                token_scopes=["write"],
+            )
+        with self.assertRaises(PermissionError):
+            call_tool(
+                self.store,
+                self.user_id,
+                "connect_source_account",
+                {
+                    "source": "github",
+                    "account_label": "doppl-tech/cortex-app",
+                    "account_identifier": "doppl-tech/cortex-app",
+                    "account_id": account["id"],
+                    "resume_disconnected": True,
+                },
+                token_scopes=["write"],
+            )
+        self.store.update_settings(self.user_id, {"allow_agent_maintenance": True})
+        resumed_payload = call_tool(
+            self.store,
+            self.user_id,
+            "connect_source_account",
+            {
+                "source": "github",
+                "account_label": "doppl-tech/cortex-app",
+                "account_identifier": "doppl-tech/cortex-app",
+                "account_id": account["id"],
+                "resume_disconnected": True,
+            },
+            token_scopes=["write", "maintenance"],
+        )
+        resumed = resumed_payload["account"]
         self.assertEqual(resumed["status"], "connected")
         self.assertEqual(resumed["auth_state"], "healthy")
         self.assertIsNone(resumed["disconnected_at"])

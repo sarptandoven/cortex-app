@@ -166,6 +166,7 @@ TOOLS = [
                 "metadata": {"type": "object"},
                 "last_error": {"type": "string"},
                 "account_id": {"type": "string"},
+                "resume_disconnected": {"type": "boolean", "default": False},
             },
             "required": ["source"],
         },
@@ -867,6 +868,11 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             result["readiness"] = store.source_readiness_report(user_id)
         return store.agent_payload(user_id, result)
     if name == "connect_source_account":
+        resume_disconnected = _bool_arg(args, "resume_disconnected")
+        if resume_disconnected:
+            if token_scopes is not None and "maintenance" not in token_scopes:
+                raise PermissionError("MCP token is not scoped for maintenance actions.")
+            store.require_agent_access(user_id, "maintenance")
         account = store.upsert_source_account(
             user_id,
             source=args.get("source", ""),
@@ -879,6 +885,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             metadata=args.get("metadata") if isinstance(args.get("metadata"), dict) else None,
             last_error=args.get("last_error"),
             account_id=args.get("account_id"),
+            resume_disconnected=resume_disconnected,
         )
         return store.agent_payload(user_id, {"account": account})
     if name == "sync_source_records":
