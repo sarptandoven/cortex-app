@@ -652,6 +652,13 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(sync_cursor_blocked.status_code, 403)
         self.assertIn("maintenance scope", sync_cursor_blocked.json()["detail"])
 
+        source_sync_blocked = self.client.post(
+            "/v1/sources/sync-due",
+            headers={"Authorization": f"Bearer {tokens['write']}", "X-Cortex-User": user},
+        )
+        self.assertEqual(source_sync_blocked.status_code, 403)
+        self.assertIn("maintenance scope", source_sync_blocked.json()["detail"])
+
         self.client.put("/v1/settings", json={"allow_agent_maintenance": True}, headers=headers)
         source_account_allowed = self.client.post(
             "/v1/source-accounts",
@@ -666,6 +673,12 @@ class FastAPIContractTests(unittest.TestCase):
             headers={"Authorization": f"Bearer {tokens['maintenance']}", "X-Cortex-User": user},
         )
         self.assertEqual(sync_cursor_allowed.status_code, 200)
+
+        source_sync_allowed = self.client.post(
+            "/v1/sources/sync-due",
+            headers={"Authorization": f"Bearer {tokens['maintenance']}", "X-Cortex-User": user},
+        )
+        self.assertEqual(source_sync_allowed.status_code, 200)
 
     def test_scoped_capture_query_token_obeys_trust_controls(self) -> None:
         user = "scoped-capture-query-trust"
@@ -2679,6 +2692,52 @@ END:VCALENDAR
         self.assertEqual(payload["jobs"][0]["job_type"], "source_account_sync")
         self.assertEqual(payload["jobs"][0]["status"], "succeeded")
         self.assertEqual(payload["jobs"][0]["result"]["queued"], 1)
+
+    def test_source_sync_due_endpoint_runs_only_source_account_jobs(self) -> None:
+        user_id = "fastapi-source-sync-only-user"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user_id}
+        queued_capture = main_module.store.enqueue_capture(
+            user_id=user_id,
+            content="This unrelated queued capture should wait for the general worker.",
+            source="fastapi-test",
+            source_url=None,
+            title="Queued capture",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            vault_path = Path(tmp) / "vault"
+            note_path = vault_path / "Endpoint Source Only.md"
+            note_path.parent.mkdir(parents=True)
+            note_path.write_text(
+                "# Endpoint Source Only\n\n"
+                "Decision: source-only sync should not drain unrelated capture jobs.\n",
+                encoding="utf-8",
+            )
+            account = main_module.store.upsert_source_account(
+                user_id,
+                source="obsidian",
+                account_label="Source Only Vault",
+                account_identifier="source-only-vault",
+                connection_type="local_folder",
+                status="connected",
+                auth_state="healthy",
+                metadata={
+                    "vault_path": str(vault_path),
+                    "sync_interval_seconds": 60,
+                    "next_sync_due_at": "2000-01-01T00:00:00Z",
+                },
+            )
+
+            ran = self.client.post("/v1/sources/sync-due", params={"limit": 1}, headers=headers)
+
+        self.assertEqual(ran.status_code, 200)
+        payload = ran.json()
+        self.assertEqual(payload["scheduled_source_syncs"]["scheduled"], 1)
+        self.assertEqual(payload["scheduled_source_syncs"]["jobs"][0]["object_id"], account["id"])
+        self.assertEqual(payload["processed"], 1)
+        self.assertEqual(payload["jobs"][0]["job_type"], "source_account_sync")
+        self.assertEqual(payload["jobs"][0]["status"], "succeeded")
+        queued_extract_jobs = main_module.store.list_jobs(user_id, status="queued", job_type="extract_capture", limit=10)
+        self.assertIn(queued_capture["capture_id"], [job["object_id"] for job in queued_extract_jobs])
 
     def test_job_health_endpoint_reports_queue_state(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "queue-health-contract"}

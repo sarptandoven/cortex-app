@@ -65,7 +65,7 @@ def _required_api_scope(method: str, path: str) -> str:
         return "maintenance"
     if normalized_path in {"/v1/diagnostics", "/v1/reliability/report", "/v1/jobs/health"}:
         return "maintenance"
-    if normalized_path.startswith("/v1/maintenance/") or normalized_path in {"/v1/jobs/run", "/v1/maintenance/jobs/run"}:
+    if normalized_path.startswith("/v1/maintenance/") or normalized_path in {"/v1/jobs/run", "/v1/maintenance/jobs/run", "/v1/sources/sync-due"}:
         return "maintenance"
     if normalized_path in {"/v1/integrations/api-token", "/v1/integrations/mcp-token", "/v1/integrations/tokens"}:
         return "maintenance"
@@ -842,6 +842,11 @@ def run_jobs(limit: int = Query(default=10, ge=1, le=100), user_id: str = Depend
 @app.post("/v1/maintenance/jobs/run", response_model=JobRunResponse)
 def run_maintenance_jobs(limit: int = Query(default=10, ge=1, le=100), user_id: str = Depends(auth)) -> dict[str, Any]:
     return store.run_due_jobs(user_id, limit=limit)
+
+
+@app.post("/v1/sources/sync-due", response_model=JobRunResponse)
+def sync_due_sources(limit: int = Query(default=10, ge=1, le=100), user_id: str = Depends(auth)) -> dict[str, Any]:
+    return store.run_due_source_sync_jobs(user_id, limit=limit, worker_id="api-source-sync")
 
 
 @app.get("/v1/recent")

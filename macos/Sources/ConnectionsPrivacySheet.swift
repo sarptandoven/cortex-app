@@ -791,16 +791,17 @@ private struct ConnectionsDirectSourceRow: View {
             }
             return nil
         }
+        let autosyncLabel = backendAutosyncLabel(for: readiness)
         if readiness.pending > 0 {
-            return "\(readiness.pending) item\(readiness.pending == 1 ? "" : "s") waiting in Review · \(readiness.syncPlanModeTitle)"
+            return "\(readiness.pending) item\(readiness.pending == 1 ? "" : "s") waiting in Review · \(autosyncLabel)"
         }
         if readiness.active_memories > 0 {
-            return "\(readiness.syncPlanDisplayTitle) · \(readiness.active_memories) reviewed memor\(readiness.active_memories == 1 ? "y" : "ies") with \(Int((readiness.citation_coverage * 100).rounded()))% citation coverage"
+            return "\(autosyncLabel) · \(readiness.active_memories) reviewed memor\(readiness.active_memories == 1 ? "y" : "ies") with \(Int((readiness.citation_coverage * 100).rounded()))% citation coverage"
         }
         if let lastSeen = readiness.last_seen_at {
-            return "\(readiness.syncPlanDisplayTitle) · Last sync \(shortTimestamp(lastSeen))"
+            return "\(autosyncLabel) · Last sync \(shortTimestamp(lastSeen))"
         }
-        return readiness.syncPlanDisplayTitle
+        return autosyncLabel
     }
 
     private var sourceHealthColor: Color {
@@ -812,6 +813,26 @@ private struct ConnectionsDirectSourceRow: View {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "recently" }
         return String(trimmed.prefix(10))
+    }
+
+    private func backendAutosyncLabel(for readiness: SourceReadinessItem) -> String {
+        guard let syncPlan = readiness.sync_plan else {
+            return readiness.syncPlanDisplayTitle
+        }
+        if syncPlan.scheduler_supported == true {
+            if syncPlan.due_now == true {
+                return "\(readiness.syncPlanDisplayTitle) · Autosync due"
+            }
+            if let interval = syncPlan.sync_interval_seconds, interval > 0 {
+                let minutes = max(1, interval / 60)
+                return "\(readiness.syncPlanDisplayTitle) · Autosync \(minutes)m"
+            }
+            return "\(readiness.syncPlanDisplayTitle) · Autosync on"
+        }
+        if syncPlan.blocked_reason == "stored_sync_configuration_required" {
+            return "\(readiness.syncPlanDisplayTitle) · Finish setup for autosync"
+        }
+        return readiness.syncPlanDisplayTitle
     }
 
     private var actionTitle: String {

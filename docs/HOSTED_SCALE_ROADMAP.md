@@ -89,6 +89,7 @@ The local app now has the first durable queue primitives:
 - `GET /v1/captures/{capture_id}/status`
 - `GET /v1/jobs/{job_id}`
 - `POST /v1/maintenance/jobs/run`
+- `POST /v1/sources/sync-due`
 - `GET /v1/jobs/health`
 - `backend/app/worker.py`
 - `scripts/run_memory_worker.py`

@@ -159,6 +159,8 @@ struct SourceSyncPlan: Codable, Hashable {
     let next_sync_due_at: String?
     let sync_interval_seconds: Int?
     let due_now: Bool?
+    let scheduler_supported: Bool?
+    let blocked_reason: String?
     let last_attempt_at: String?
     let last_completed_at: String?
     let retry_after: String?
@@ -625,6 +627,20 @@ struct SourceImportDeleteResponse: Codable {
 
 struct JobRunResponse: Codable {
     let processed: Int
+    let scheduled_source_syncs: ScheduledSourceSyncSummary?
+    let pending: Int?
+    let failed: Int?
+}
+
+struct ScheduledSourceSyncSummary: Codable {
+    let scheduled: Int
+    let skipped: [ScheduledSourceSyncSkip]?
+}
+
+struct ScheduledSourceSyncSkip: Codable {
+    let source_account_id: String?
+    let source: String?
+    let reason: String?
 }
 
 struct SearchResponse: Codable {
@@ -3074,25 +3090,10 @@ final class AppState: ObservableObject {
     private func startConnectedSourceAutoSync(initialSync: Bool = true) {
         obsidianAutoSyncTask?.cancel()
         directConnectorAutoSyncTask?.cancel()
-        if storedObsidianVaultURL() != nil {
-            obsidianAutoSyncTask = Task { [weak self] in
-                if initialSync {
-                    await self?.syncSavedObsidianVaultIfAvailable(automatic: true)
-                }
-                while !Task.isCancelled {
-                    do {
-                        try await Task.sleep(nanoseconds: 30 * 60 * 1_000_000_000)
-                    } catch {
-                        return
-                    }
-                    await self?.syncSavedObsidianVaultIfAvailable(automatic: true)
-                }
-            }
-        }
-        guard !configuredDirectConnectorIDs.isEmpty else { return }
+        guard storedObsidianVaultURL() != nil || !sourceAccounts.isEmpty || !configuredDirectConnectorIDs.isEmpty else { return }
         directConnectorAutoSyncTask = Task { [weak self] in
             if initialSync {
-                await self?.syncConfiguredDirectConnectorsIfAvailable(automatic: true)
+                await self?.runConnectedSourceAutoSyncTick()
             }
             while !Task.isCancelled {
                 do {
@@ -3100,9 +3101,58 @@ final class AppState: ObservableObject {
                 } catch {
                     return
                 }
-                await self?.syncConfiguredDirectConnectorsIfAvailable(automatic: true)
+                await self?.runConnectedSourceAutoSyncTick()
             }
         }
+    }
+
+    private func runConnectedSourceAutoSyncTick() async {
+        if storedObsidianVaultURL() != nil {
+            await syncSavedObsidianVaultIfAvailable(automatic: true)
+        }
+        await syncDueConnectedSources(automatic: true)
+        if directConnectorIDsNeedingClientFallbackSync().isEmpty {
+            return
+        }
+        await syncConfiguredDirectConnectorsIfAvailable(automatic: true)
+    }
+
+    @discardableResult
+    private func syncDueConnectedSources(automatic: Bool = false) async -> JobRunResponse? {
+        do {
+            let data = try await request(path: "/v1/sources/sync-due?limit=25", method: "POST")
+            let response = try JSONDecoder().decode(JobRunResponse.self, from: data)
+            await loadSourceConnectivity()
+            if !automatic {
+                let scheduled = response.scheduled_source_syncs?.scheduled ?? 0
+                if response.processed > 0 || scheduled > 0 {
+                    status = "Synced \(response.processed) connected source job\(response.processed == 1 ? "" : "s")"
+                } else {
+                    status = "Connected sources are up to date"
+                }
+            }
+            return response
+        } catch {
+            if !automatic {
+                status = CortexRecoveryText.failureStatus("Connected source sync", error: error)
+            }
+            return nil
+        }
+    }
+
+    private func directConnectorIDsNeedingClientFallbackSync() -> Set<String> {
+        guard !configuredDirectConnectorIDs.isEmpty else { return [] }
+        let readinessBySource = Dictionary(uniqueKeysWithValues: (sourceReadinessReport?.sources ?? []).map { ($0.source, $0) })
+        return Set(configuredDirectConnectorIDs.filter { connectorID in
+            guard let readiness = readinessBySource[connectorID],
+                  let syncPlan = readiness.sync_plan else {
+                return true
+            }
+            if syncPlan.scheduler_supported == true {
+                return false
+            }
+            return syncPlan.blocked_reason == "stored_sync_configuration_required"
+        })
     }
 
     private func syncSavedObsidianVaultIfAvailable(automatic: Bool) async {

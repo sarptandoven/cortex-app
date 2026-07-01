@@ -57,7 +57,7 @@ def _required_api_scope(method: str, path: str) -> str:
         return "maintenance"
     if normalized_path in {"/v1/diagnostics", "/v1/reliability/report", "/v1/jobs/health"}:
         return "maintenance"
-    if normalized_path.startswith("/v1/maintenance/") or normalized_path in {"/v1/jobs/run", "/v1/maintenance/jobs/run"}:
+    if normalized_path.startswith("/v1/maintenance/") or normalized_path in {"/v1/jobs/run", "/v1/maintenance/jobs/run", "/v1/sources/sync-due"}:
         return "maintenance"
     if normalized_path in {"/v1/integrations/api-token", "/v1/integrations/mcp-token", "/v1/integrations/tokens"}:
         return "maintenance"
@@ -847,6 +847,9 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 return
             if method == "POST" and path == "/v1/maintenance/jobs/run":
                 self._send_json(store.run_due_jobs(user_id, limit=_int_param(params, "limit", 10, 1, 100)))
+                return
+            if method == "POST" and path == "/v1/sources/sync-due":
+                self._send_json(store.run_due_source_sync_jobs(user_id, limit=_int_param(params, "limit", 10, 1, 100), worker_id="api-source-sync"))
                 return
             if method == "GET" and path.startswith("/v1/jobs/"):
                 job_id = unquote(path.removeprefix("/v1/jobs/"))

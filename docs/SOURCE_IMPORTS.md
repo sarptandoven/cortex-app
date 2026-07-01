@@ -162,7 +162,7 @@ POST /v1/sync-cursors
 
 `POST /v1/sync-cursors` records an incremental cursor name/value, optional high-water mark, state metadata, and success/failure state. A successful linked cursor updates the source account `last_sync_at` and clears `last_error`; a failed cursor records `last_error` and leaves `last_completed_at` empty. The source-account sync endpoint uses the same cursor machinery so direct connector sync and standalone cursor updates report health consistently.
 
-Source accounts and sync cursors are written to the local vault under `source_accounts/` and `sync_cursors/`, included in backups, restored by latest-backup restore, and rebuilt by `POST /v1/maintenance/rebuild-index-from-vault`.
+Source accounts and sync cursors are written to the local vault under `source_accounts/` and `sync_cursors/`, included in backups, restored by latest-backup restore, and rebuilt by `POST /v1/maintenance/rebuild-index-from-vault`. `POST /v1/sources/sync-due` is the source-only scheduler trigger used by the local app to run due connected-source sync jobs without draining unrelated capture or embedding work.
 
 ## Source Trust Policies
 

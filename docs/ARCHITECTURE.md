@@ -38,6 +38,7 @@ FastAPI backend
   /v1/sources/readiness
   /v1/source-accounts
   /v1/source-accounts/{id}/sync
+  POST /v1/sources/sync-due
   /v1/sync-cursors
   /v1/sync/devices
   /v1/sync/devices/{id}/receipts

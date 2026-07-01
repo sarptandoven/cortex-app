@@ -53,6 +53,7 @@ class FakeStore:
         self.sync_device_calls: list[tuple[str, str]] = []
         self.sync_receipt_calls: list[tuple[str, str, str, str]] = []
         self.sync_feed_calls: list[tuple[str, str, int, str, str, dict | None]] = []
+        self.source_sync_run_calls: list[tuple[str, int, str]] = []
         self.source_account_disconnected = False
         self.sync_device_revoked = False
         self.api_token_scopes = ["read"]
@@ -309,6 +310,17 @@ class FakeStore:
                 }
             ],
             "recommendations": ["Source readiness is healthy for local beta use."],
+        }
+
+    def run_due_source_sync_jobs(self, user_id: str, *, limit: int = 10, worker_id: str = "source-sync-worker") -> dict:
+        self.source_sync_run_calls.append((user_id, limit, worker_id))
+        return {
+            "ran_at": "2026-01-01T00:00:00Z",
+            "processed": 1,
+            "jobs": [{"id": "job_source_sync", "job_type": "source_account_sync", "status": "succeeded"}],
+            "scheduled_source_syncs": {"scheduled": 1, "jobs": [], "skipped": []},
+            "pending": 0,
+            "failed": 0,
         }
 
     def list_source_accounts(self, user_id: str, *, include_disconnected: bool = False) -> list[dict]:
@@ -1906,6 +1918,13 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(readiness["sources"][0]["source"], "gmail")
         self.assertEqual(readiness["summary"]["sources_total"], 1)
+
+        with self.post("/v1/sources/sync-due?limit=7") as response:
+            source_sync = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(source_sync["processed"], 1)
+        self.assertEqual(self.fake_store.source_sync_run_calls, [("local", 7, "api-source-sync")])
 
         with self.post_json(
             "/v1/source-accounts",
