@@ -1,5 +1,6 @@
 """Connector helpers for account-backed and local source sync."""
 
+from .calendar import CalendarSync, CalendarSyncRecord, fetch_calendar_records
 from .github import GitHubSync, GitHubSyncRecord, fetch_github_records
 from .jira import JiraSync, JiraSyncRecord, fetch_jira_records
 from .linear import LinearSync, LinearSyncRecord, fetch_linear_records
@@ -13,6 +14,8 @@ from .zotero import ZoteroSync, ZoteroSyncRecord, fetch_zotero_records
 __all__ = [
     "GitHubSync",
     "GitHubSyncRecord",
+    "CalendarSync",
+    "CalendarSyncRecord",
     "JiraSync",
     "JiraSyncRecord",
     "LinearSync",
@@ -29,6 +32,7 @@ __all__ = [
     "ZoteroSync",
     "ZoteroSyncRecord",
     "fetch_github_records",
+    "fetch_calendar_records",
     "fetch_jira_records",
     "fetch_linear_records",
     "fetch_notion_records",

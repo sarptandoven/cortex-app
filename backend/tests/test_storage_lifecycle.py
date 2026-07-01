@@ -1458,6 +1458,102 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertNotIn("readwise_mcp_test", json.dumps(synced))
         self.assertEqual(synced["records"][0]["source_url"], "readwise://book/333/highlight/444")
 
+    def test_calendar_account_sync_fetches_events_with_stable_citations(self) -> None:
+        private_path = Path(self.tmp.name) / "Private Calendar.ics"
+        ics_text = """BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:event-storage@example.com
+DTSTAMP:20260630T100000Z
+DTSTART:20260701T160000Z
+DTEND:20260701T170000Z
+SUMMARY:Calendar exact citations
+DESCRIPTION:We decided Cortex should retrieve Calendar events with exact source citations.
+LOCATION:Doppl HQ
+ATTENDEE;CN=Ada:mailto:ada@example.com
+END:VEVENT
+END:VCALENDAR
+"""
+        private_path.write_text(ics_text, encoding="utf-8")
+
+        result = self.store.sync_calendar_account(
+            self.user_id,
+            ics_path=str(private_path),
+            processing="sync",
+            max_records=20,
+        )
+
+        self.assertEqual(result["source"], "calendar")
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["saved"], 1)
+        self.assertEqual(result["source_account"]["source"], "calendar")
+        self.assertEqual(result["source_account"]["connection_type"], "local-file")
+        self.assertEqual(result["source_account"]["metadata"]["path_redacted"], True)
+        self.assertNotIn(str(private_path), json.dumps(result))
+        self.assertTrue(result["records"][0]["source_url"].startswith("source-account://calendar/"))
+        capture_id = result["capture_ids"][0]
+        self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+
+        search = self.store.search(self.user_id, "Calendar events exact source citations", limit=3)
+        self.assertTrue(search)
+        self.assertEqual(search[0]["source"], "calendar")
+        self.assertTrue(search[0]["source_url"].startswith("source-account://calendar/"))
+        self.assertIn("line=", search[0]["source_url"])
+        self.assertIn("excerpt=", search[0]["source_url"])
+        self.assertEqual(search[0]["provenance"]["record_metadata"]["uid"], "event-storage@example.com")
+        self.assertNotIn(str(private_path), json.dumps(search))
+
+        duplicate = self.store.sync_calendar_account(
+            self.user_id,
+            ics_path=str(private_path),
+            processing="sync",
+            max_records=20,
+        )
+        self.assertEqual(duplicate["saved"], 0)
+        self.assertEqual(duplicate["skipped"], 1)
+        self.assertEqual(duplicate["records"][0]["status"], "duplicate")
+
+    def test_mcp_calendar_sync_tool_fetches_records_without_exposing_path(self) -> None:
+        private_path = Path(self.tmp.name) / "MCP Private Calendar.ics"
+        private_path.write_text(
+            """BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:event-mcp@example.com
+DTSTAMP:20260630T100000Z
+DTSTART:20260701T160000Z
+SUMMARY:MCP Calendar sync
+DESCRIPTION:We decided MCP Calendar sync should write source-account records.
+END:VEVENT
+END:VCALENDAR
+""",
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(PermissionError):
+            call_tool(
+                self.store,
+                self.user_id,
+                "sync_calendar",
+                {"ics_path": str(private_path)},
+                token_scopes=["read"],
+            )
+
+        synced = call_tool(
+            self.store,
+            self.user_id,
+            "sync_calendar",
+            {
+                "ics_path": str(private_path),
+                "processing": "sync",
+                "max_records": 10,
+            },
+            token_scopes=["write"],
+        )
+
+        self.assertEqual(synced["source"], "calendar")
+        self.assertEqual(synced["saved"], 1)
+        self.assertNotIn(str(private_path), json.dumps(synced))
+        self.assertTrue(synced["records"][0]["source_url"].startswith("source-account://calendar/"))
+
     def test_raindrop_account_sync_fetches_bookmarks_with_stable_citations(self) -> None:
         def fake_request(url: str, headers: dict[str, str]):
             self.assertIn("/raindrops/0", url)

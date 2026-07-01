@@ -1267,6 +1267,57 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertIn("line=", search.json()["results"][0]["source_url"])
         self.assertIn("excerpt=", search.json()["results"][0]["source_url"])
 
+    def test_calendar_connector_endpoint_syncs_events_with_citations(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "calendar-endpoint-contract"}
+        with tempfile.TemporaryDirectory() as tmp:
+            private_path = Path(tmp) / "Endpoint Private Calendar.ics"
+            private_path.write_text(
+                """BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:event-fastapi@example.com
+DTSTAMP:20260630T100000Z
+DTSTART:20260701T160000Z
+SUMMARY:Endpoint sync should cite Calendar
+DESCRIPTION:We decided the FastAPI Calendar connector should preserve generated source-account citations.
+END:VEVENT
+END:VCALENDAR
+""",
+                encoding="utf-8",
+            )
+            response = self.client.post(
+                "/v1/connectors/calendar/sync",
+                json={
+                    "ics_path": str(private_path),
+                    "processing": "sync",
+                    "max_records": 25,
+                },
+                headers=headers,
+            )
+            private_path_text = str(private_path)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["source"], "calendar")
+        self.assertEqual(payload["status"], "complete")
+        self.assertEqual(payload["saved"], 1)
+        self.assertTrue(payload["records"][0]["source_url"].startswith("source-account://calendar/"))
+        self.assertEqual(payload["source_account"]["source"], "calendar")
+        self.assertEqual(payload["source_account"]["connection_type"], "local-file")
+        self.assertNotIn(private_path_text, json.dumps(payload))
+        approved = self.client.post(f"/v1/captures/{payload['capture_ids'][0]}/approve", headers=headers)
+        self.assertEqual(approved.status_code, 200)
+        search = self.client.get(
+            "/v1/search",
+            params={"query": "FastAPI Calendar connector generated source-account citations"},
+            headers=headers,
+        )
+        self.assertEqual(search.status_code, 200)
+        self.assertTrue(search.json()["results"])
+        self.assertTrue(search.json()["results"][0]["source_url"].startswith("source-account://calendar/"))
+        self.assertIn("line=", search.json()["results"][0]["source_url"])
+        self.assertIn("excerpt=", search.json()["results"][0]["source_url"])
+        self.assertNotIn(private_path_text, json.dumps(search.json()))
+
     def test_raindrop_connector_endpoint_syncs_bookmarks_with_citations(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "raindrop-endpoint-contract"}
 

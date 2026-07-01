@@ -43,6 +43,7 @@ class FakeStore:
         self.github_sync_calls: list[dict] = []
         self.slack_sync_calls: list[dict] = []
         self.readwise_sync_calls: list[dict] = []
+        self.calendar_sync_calls: list[dict] = []
         self.raindrop_sync_calls: list[dict] = []
         self.zotero_sync_calls: list[dict] = []
         self.linear_sync_calls: list[dict] = []
@@ -794,6 +795,98 @@ class FakeStore:
                 "records_found": 1,
                 "records_returned": 1,
                 "errors": [],
+            },
+        }
+
+    def sync_calendar_account(
+        self,
+        user_id: str,
+        *,
+        ics_path: str | None = None,
+        feed_url: str | None = None,
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        since: str | None = None,
+        processing: str = "sync",
+        max_records: int = 100,
+        cursor_name: str = "events",
+    ) -> dict:
+        if bool(ics_path) == bool(feed_url):
+            raise ValueError("Provide exactly one of ics_path or feed_url")
+        call = {
+            "user_id": user_id,
+            "ics_path": ics_path,
+            "feed_url": feed_url,
+            "source_account_id": source_account_id,
+            "account_label": account_label,
+            "account_identifier": account_identifier,
+            "since": since,
+            "processing": processing,
+            "max_records": max_records,
+            "cursor_name": cursor_name,
+        }
+        self.calendar_sync_calls.append(call)
+        account_id = source_account_id or "sacct_calendar_test"
+        return {
+            "source_account_id": account_id,
+            "source": "calendar",
+            "status": "complete",
+            "processing": processing,
+            "received": 1,
+            "queued": 0 if processing == "sync" else 1,
+            "saved": 1 if processing == "sync" else 0,
+            "skipped": 0,
+            "failed": 0,
+            "archived_missing": 0,
+            "capture_ids": ["cap_calendar_test"],
+            "records": [
+                {
+                    "capture_id": "cap_calendar_test",
+                    "status": "saved" if processing == "sync" else "queued",
+                    "source": "calendar",
+                    "source_url": "source-account://calendar/sacct_calendar_test/calendar:event:event-1",
+                    "title": "Calendar Test event",
+                }
+            ],
+            "errors": [],
+            "cursor": {
+                "id": "sync_calendar_test",
+                "user_id": user_id,
+                "source_account_id": account_id,
+                "source": "calendar",
+                "cursor_name": cursor_name,
+                "cursor_value": "20260701T160000Z",
+                "high_water_mark": "20260701T160000Z",
+                "state": {"records_returned": 1},
+                "last_error": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+            "source_account": {
+                "id": account_id,
+                "user_id": user_id,
+                "source": "calendar",
+                "account_label": account_label or "Calendar",
+                "account_identifier": account_identifier or "local_file:calendar.ics",
+                "connection_type": "local-file" if ics_path else "calendar-feed",
+                "status": "connected",
+                "auth_state": "healthy",
+                "policy": {"review_required": True, "allow_ai_context": True},
+                "metadata": {"records_returned": 1, "path_redacted": True, "feed_url_redacted": True},
+                "last_sync_at": "2026-01-01T00:00:00Z",
+                "last_error": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "disconnected_at": None,
+            },
+            "sync": {
+                "connector": "calendar",
+                "connector_version": "test",
+                "records_found": 1,
+                "records_returned": 1,
+                "errors": [],
+                "input_type": "local_file" if ics_path else "feed",
             },
         }
 
@@ -2217,6 +2310,60 @@ class StandaloneServerTests(unittest.TestCase):
             )
         self.assertEqual(context.exception.code, 422)
         self.assertEqual(len(self.fake_store.readwise_sync_calls), 1)
+
+    def test_calendar_connector_route_forwards_to_store(self) -> None:
+        private_path = "/Users/sarp/Private/Calendar.ics"
+        with self.post_json(
+            "/v1/connectors/calendar/sync",
+            {
+                "ics_path": private_path,
+                "source_account_id": "sacct_calendar_existing",
+                "account_label": "Cortex Calendar",
+                "account_identifier": "local_file:Calendar.ics",
+                "since": "20260630T100000Z",
+                "processing": "sync",
+                "max_records": 50,
+                "cursor_name": "events",
+            },
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["source"], "calendar")
+        self.assertEqual(payload["source_account_id"], "sacct_calendar_existing")
+        self.assertEqual(payload["processing"], "sync")
+        self.assertEqual(payload["source_account"]["account_label"], "Cortex Calendar")
+        self.assertTrue(payload["records"][0]["source_url"].startswith("source-account://calendar/"))
+        self.assertNotIn(private_path, json.dumps(payload))
+        self.assertEqual(
+            self.fake_store.calendar_sync_calls,
+            [
+                {
+                    "user_id": "local",
+                    "ics_path": private_path,
+                    "feed_url": None,
+                    "source_account_id": "sacct_calendar_existing",
+                    "account_label": "Cortex Calendar",
+                    "account_identifier": "local_file:Calendar.ics",
+                    "since": "20260630T100000Z",
+                    "processing": "sync",
+                    "max_records": 50,
+                    "cursor_name": "events",
+                }
+            ],
+        )
+
+        with self.assertRaises(error.HTTPError) as context:
+            self.post_json(
+                "/v1/connectors/calendar/sync",
+                {
+                    "ics_path": private_path,
+                    "feed_url": "https://calendar.example.com/private.ics",
+                    "max_records": 50,
+                },
+            )
+        self.assertEqual(context.exception.code, 422)
+        self.assertEqual(len(self.fake_store.calendar_sync_calls), 1)
 
     def test_raindrop_connector_route_forwards_to_store(self) -> None:
         with self.post_json(

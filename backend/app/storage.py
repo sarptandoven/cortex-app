@@ -40,6 +40,7 @@ BACKEND_FEATURES = (
     "slack-token-connector",
     "readwise-token-connector",
     "raindrop-token-connector",
+    "calendar-ics-connector",
     "linear-token-connector",
     "jira-token-connector",
     "notion-token-connector",
@@ -392,7 +393,7 @@ SOURCE_CONNECTOR_CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "messages", "name": "Messages", "category": "Messages", "auth": "local_file", "live_status": "local_only", "scopes": [], "notes": "Local Messages integration requires explicit app data access."},
     {"id": "imessage", "name": "iMessage", "category": "Messages", "auth": "local_file", "live_status": "local_only", "scopes": [], "notes": "Local iMessage integration requires explicit Messages data access."},
     {"id": "whatsapp", "name": "WhatsApp", "category": "Messages", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct WhatsApp connector is required before this can be a primary source."},
-    {"id": "calendar", "name": "Calendar", "category": "Calendar", "auth": "oauth", "live_status": "planned", "scopes": ["calendar.readonly"], "notes": "Calendar account sync is the intended connector path."},
+    {"id": "calendar", "name": "Calendar", "category": "Calendar", "auth": "local_file", "live_status": "local_only", "scopes": [], "notes": "Read-only Calendar ICS file/feed sync works locally; Google/Microsoft OAuth is still planned."},
     {"id": "contacts", "name": "Contacts", "category": "People", "auth": "oauth", "live_status": "planned", "scopes": ["contacts.readonly"], "notes": "Contacts account sync is the intended connector path."},
     {"id": "work-tools", "name": "Work tools", "category": "Work tools", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Work tool connector coverage for issues, pull requests, tasks, and projects."},
     {"id": "github", "name": "GitHub", "category": "Work tools", "auth": "api_token", "live_status": "api_token", "scopes": ["repo:read"], "notes": "Read-only GitHub issue and pull request sync works with a fine-grained personal access token."},
@@ -3235,6 +3236,140 @@ class CortexStore:
                 "records": [],
                 "errors": sync.errors,
                 "cursor": cursor,
+                "source_account": updated_account,
+                "sync": sync_summary,
+            }
+
+        result = self.sync_source_account_records(
+            user_id,
+            account["id"],
+            records=records,
+            cursor_name=cursor_name,
+            cursor_value=sync.cursor_value,
+            high_water_mark=sync.high_water_mark,
+            state=state,
+            processing=processing,
+        )
+        if sync.errors:
+            result["errors"] = [*(result.get("errors") or []), *sync.errors]
+            result["failed"] = int(result.get("failed") or 0) + len(sync.errors)
+            if result.get("status") == "complete":
+                result["status"] = "partial"
+        result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
+        result["sync"] = sync_summary
+        return result
+
+    def sync_calendar_account(
+        self,
+        user_id: str,
+        *,
+        ics_path: str | None = None,
+        feed_url: str | None = None,
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        since: str | None = None,
+        processing: str = "sync",
+        max_records: int = 100,
+        cursor_name: str = "events",
+        read_text: Any | None = None,
+        request_text: Any | None = None,
+    ) -> dict[str, Any]:
+        from .connectors.calendar import CALENDAR_SOURCE, fetch_calendar_records
+
+        if processing not in {"sync", "async"}:
+            raise ValueError("processing must be sync or async")
+        try:
+            capped_max_records = int(max_records or 100)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_records must be an integer") from exc
+        if capped_max_records < 1 or capped_max_records > 500:
+            raise ValueError("max_records must be between 1 and 500")
+
+        sync = fetch_calendar_records(
+            ics_path=ics_path,
+            feed_url=feed_url,
+            since=since,
+            max_records=capped_max_records,
+            read_text=read_text,
+            request_text=request_text,
+        )
+        input_type = sync.input_type
+        identifier = (account_identifier or f"{input_type}:{sync.source_label}").strip()[:240]
+        resolved_account_id = (source_account_id or "").strip() or stable_id("sacct_", f"{user_id}:{CALENDAR_SOURCE}:{identifier}")
+        label = (account_label or f"Calendar: {sync.source_label}").strip()[:160]
+        sync_summary = sync.to_summary()
+        error_message = sync.errors[0]["error"] if sync.errors else None
+        metadata = {
+            "connector": CALENDAR_SOURCE,
+            "connector_version": sync_summary["connector_version"],
+            "records_found": sync.records_found,
+            "records_returned": sync.records_returned,
+            "input_type": input_type,
+            "source_label": sync.source_label,
+            "path_redacted": True,
+            "feed_url_redacted": True,
+        }
+        account = self.upsert_source_account(
+            user_id,
+            source=CALENDAR_SOURCE,
+            account_label=label,
+            account_identifier=identifier,
+            connection_type="calendar_feed" if input_type == "feed" else "local_file",
+            status="needs_attention" if error_message else "connected",
+            auth_state="error" if error_message else "healthy",
+            policy={"review_required": True, "allow_ai_context": True},
+            metadata=metadata,
+            last_error=error_message,
+            account_id=resolved_account_id,
+        )
+        state = {
+            "connector": CALENDAR_SOURCE,
+            "connector_version": sync_summary["connector_version"],
+            "records_found": sync.records_found,
+            "records_returned": sync.records_returned,
+            "sync_errors": sync.errors,
+            "input_type": input_type,
+            "source_label": sync.source_label,
+            "path_redacted": True,
+            "feed_url_redacted": True,
+        }
+        records = [record.to_source_account_record() for record in sync.records]
+        if not records:
+            cursor_payload = self.upsert_sync_cursor(
+                user_id,
+                source=CALENDAR_SOURCE,
+                source_account_id=account["id"],
+                cursor_name=cursor_name,
+                cursor_value=sync.cursor_value,
+                high_water_mark=sync.high_water_mark,
+                state={
+                    **state,
+                    "last_batch_received": 0,
+                    "last_batch_saved": 0,
+                    "last_batch_queued": 0,
+                    "last_batch_skipped": 0,
+                    "last_batch_failed": 0,
+                },
+                last_error=error_message,
+                completed=not bool(error_message),
+            )
+            updated_account = self._source_account_by_id(user_id, account["id"]) or account
+            return {
+                "source_account_id": account["id"],
+                "source": CALENDAR_SOURCE,
+                "status": "partial" if error_message else "empty",
+                "processing": processing,
+                "received": 0,
+                "queued": 0,
+                "saved": 0,
+                "skipped": 0,
+                "failed": len(sync.errors),
+                "archived_missing": 0,
+                "capture_ids": [],
+                "records": [],
+                "errors": sync.errors,
+                "cursor": cursor_payload,
                 "source_account": updated_account,
                 "sync": sync_summary,
             }

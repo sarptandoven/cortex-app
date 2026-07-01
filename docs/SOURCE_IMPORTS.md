@@ -24,7 +24,7 @@ These formats have dedicated parsers in `backend/app/source_ingest.py`. They are
 | Messages | Advanced/Fallback iMessage `chat.db` copy | Read-only import of recent message text by chat. This is only read from an explicit local copy or legally provided export. |
 | WhatsApp | Text chat export | Parses common timestamped text exports as episodic message history. |
 | Browser bookmarks and history exports | Chrome, Edge, Safari, and Firefox Netscape bookmark HTML exports; Chrome/Edge Bookmarks JSON; Chrome/Firefox history SQLite through Advanced/Fallback | Preserves bookmark titles, URLs, and bounded browser history as research/source signals. |
-| Calendar | Google Calendar, Apple Calendar, and Outlook `.ics` exports | Parses event summaries, dates, locations, organizers, attendees, and descriptions. |
+| Calendar | Local `.ics` files/feed sync plus Google Calendar, Apple Calendar, and Outlook `.ics` exports | Parses event summaries, dates, locations, organizers, attendees, and descriptions with event-level citations. |
 | Contacts | Apple Contacts, Google Contacts, and Outlook `.vcf` or CSV exports | Parses names, organizations, titles, emails, phones, URLs, and notes. |
 | Twitter/X | Archive `tweets.js` and `direct-messages.js` files | Parses public tweets and direct-message text from local archive files. |
 | LinkedIn | Data export `Messages.csv` and `Connections.csv` | Parses professional relationship and conversation context. |

@@ -210,6 +210,23 @@ class ReadwiseSyncResponse(SourceAccountSyncResponse):
     sync: dict[str, Any]
 
 
+class CalendarSyncRequest(BaseModel):
+    ics_path: str | None = Field(default=None, max_length=1000)
+    feed_url: str | None = Field(default=None, max_length=1000)
+    source_account_id: str | None = Field(default=None, max_length=80)
+    account_label: str | None = Field(default=None, max_length=160)
+    account_identifier: str | None = Field(default=None, max_length=240)
+    since: str | None = Field(default=None, max_length=80)
+    processing: Literal["sync", "async"] = "sync"
+    max_records: int = Field(default=100, ge=1, le=500)
+    cursor_name: str = Field(default="events", min_length=1, max_length=120)
+
+
+class CalendarSyncResponse(SourceAccountSyncResponse):
+    source_account: SourceAccountResponse
+    sync: dict[str, Any]
+
+
 class RaindropSyncRequest(BaseModel):
     token: str = Field(..., min_length=1, max_length=4000)
     collection_id: str = Field(default="0", min_length=1, max_length=120)
