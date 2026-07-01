@@ -14,6 +14,7 @@ struct ReviewTab: View {
             .padding(20)
         }
         .task {
+            await state.loadSourceConnectivity()
             await state.loadInbox()
             await state.loadReview()
             await state.loadProductLoop()
@@ -82,7 +83,7 @@ struct ReviewInboxSection: View {
             }
 
             if captures.isEmpty {
-                QuietState(title: "Nothing to review", detail: emptyDetail)
+                ReviewEmptyState(state: state, detail: emptyDetail)
             } else {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     ForEach(visibleCaptures) { capture in
@@ -120,6 +121,74 @@ struct ReviewInboxSection: View {
             return "Connect notes first. New memories will appear here before Cortex uses them."
         }
         return "All caught up. New synced items will appear here before Cortex uses them."
+    }
+}
+
+struct ReviewEmptyState: View {
+    @ObservedObject var state: AppState
+    let detail: String
+
+    private var approvedMemoryCount: Int {
+        state.review?.stats.memories ?? state.stats?.memories ?? 0
+    }
+
+    private var obsidianConnector: SourceConnectorCatalogItem? {
+        state.sourceConnectorCatalog.first { $0.id == "obsidian" }
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            QuietState(title: "Nothing to review", detail: detail)
+
+            HStack(spacing: 10) {
+                if approvedMemoryCount > 0 {
+                    Button {
+                        state.selectedTab = .ask
+                        state.status = "Ask Cortex"
+                    } label: {
+                        Label("Ask a question", systemImage: "magnifyingglass")
+                            .frame(minWidth: 150, minHeight: 46)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                } else if state.hasConnectedObsidianVault, let connector = obsidianConnector {
+                    Button {
+                        state.connectLocalNotesFolder(connector)
+                    } label: {
+                        Label("Sync now", systemImage: "arrow.triangle.2.circlepath")
+                            .frame(minWidth: 140, minHeight: 46)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(state.isBusy)
+                } else {
+                    Button {
+                        state.openConnectionsPrivacy(statusMessage: "Connect notes")
+                    } label: {
+                        Label("Connect notes", systemImage: "folder.badge.plus")
+                            .frame(minWidth: 150, minHeight: 46)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                }
+
+                Button {
+                    Task {
+                        await state.loadSourceConnectivity()
+                        await state.loadInbox()
+                        await state.loadReview()
+                        await state.loadStats()
+                    }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                        .frame(minWidth: 112, minHeight: 46)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(state.isBusy)
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
     }
 }
 

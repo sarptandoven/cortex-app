@@ -79,11 +79,33 @@ def block_network() -> Any:
         socket.create_connection = original_create_connection  # type: ignore[assignment]
 
 
-def write_obsidian_fixture(tmp: Path, marker: str) -> Path:
-    vault_dir = tmp / "Obsidian Beta Vault"
+def obsidian_fixture_note(vault_dir: Path) -> Path:
+    return vault_dir / "Projects" / "Beta Smoke Notes.md"
+
+
+def write_obsidian_fixture_note(vault_dir: Path, marker: str, *, edited: bool = False) -> Path:
     notes_dir = vault_dir / "Projects"
-    notes_dir.mkdir(parents=True)
-    (notes_dir / "Beta Smoke Notes.md").write_text(
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    decision = (
+        f"Decision: Project Taipei edited backend marker {marker} verifies changed Obsidian notes replace stale memory."
+        if edited
+        else (
+            f"Decision: Project Taipei backend smoke marker {marker} verifies Obsidian sync, "
+            "review approval, cited Ask answers, markdown export, and Trust controls before beta invites."
+        )
+    )
+    preference = (
+        "I prefer concise technical answers that cite the latest connected source revision."
+        if edited
+        else "I prefer concise technical answers when debugging Cortex beta issues."
+    )
+    action = (
+        f"Action: follow up with Mira about the edited beta invite checklist for smoke marker {marker}."
+        if edited
+        else f"Action: follow up with Mira about the beta invite checklist for smoke marker {marker}."
+    )
+    note = obsidian_fixture_note(vault_dir)
+    note.write_text(
         "\n".join(
             [
                 "---",
@@ -92,17 +114,20 @@ def write_obsidian_fixture(tmp: Path, marker: str) -> Path:
                 "---",
                 "# Beta Smoke Notes",
                 "",
-                (
-                    f"Decision: Project Taipei backend smoke marker {marker} verifies Obsidian sync, "
-                    "review approval, cited Ask answers, markdown export, and Trust controls before beta invites."
-                ),
-                "I prefer concise technical answers when debugging Cortex beta issues.",
-                f"Action: follow up with Mira about the beta invite checklist for smoke marker {marker}.",
+                decision,
+                preference,
+                action,
                 f"The beta smoke redaction fixture includes password=supersecret123 and {DUMMY_OPENAI_KEY}.",
             ]
         ),
         encoding="utf-8",
     )
+    return note
+
+
+def write_obsidian_fixture(tmp: Path, marker: str) -> Path:
+    vault_dir = tmp / "Obsidian Beta Vault"
+    write_obsidian_fixture_note(vault_dir, marker)
     return vault_dir
 
 
@@ -116,6 +141,8 @@ class SmokeRunner:
         self.checks: list[dict[str, Any]] = []
         self.capture_ids: list[str] = []
         self.source_account_id = ""
+        self.obsidian_vault_dir: Path | None = None
+        self.read_mcp_token = f"cxm_beta_smoke_read_{uuid.uuid4().hex[:12]}"
         self.export_token = "cxa_beta_smoke_export_1234567890"
         self.write_token = "cxa_beta_smoke_write_1234567890"
 
@@ -235,6 +262,7 @@ class SmokeRunner:
 
     def sync_review_and_approve(self) -> dict[str, Any]:
         vault_dir = write_obsidian_fixture(self.tmp, self.marker)
+        self.obsidian_vault_dir = vault_dir
         synced = self.request(
             "POST",
             "/v1/connectors/obsidian/sync",
@@ -371,6 +399,133 @@ class SmokeRunner:
             },
         }
 
+    def changed_note_replacement_and_readonly_mcp(self) -> dict[str, Any]:
+        self.ensure(self.obsidian_vault_dir is not None, "Obsidian fixture was not initialized")
+        self.ensure(bool(self.capture_ids), "No capture IDs are available for changed-note smoke")
+
+        unchanged = self.request(
+            "POST",
+            "/v1/connectors/obsidian/sync",
+            json={"vault_path": str(self.obsidian_vault_dir), "processing": "sync", "max_records": 10},
+        ).json()
+        self.ensure(unchanged["status"] == "complete", "Unchanged Obsidian resync did not complete", unchanged)
+        self.ensure(unchanged["saved"] == 0, "Unchanged Obsidian resync saved duplicate captures", unchanged)
+        self.ensure(unchanged["skipped"] >= len(self.capture_ids), "Unchanged Obsidian resync did not skip existing records", unchanged)
+        unchanged_ids = {record.get("capture_id") for record in unchanged.get("records") or [] if record.get("capture_id")}
+        self.ensure(set(self.capture_ids).issubset(unchanged_ids), "Unchanged resync did not report existing capture IDs", unchanged)
+
+        previous_marker = self.marker
+        edited_marker = f"backend-beta-smoke-edited-{uuid.uuid4().hex[:10]}"
+        write_obsidian_fixture_note(self.obsidian_vault_dir, edited_marker, edited=True)
+        changed = self.request(
+            "POST",
+            "/v1/connectors/obsidian/sync",
+            json={"vault_path": str(self.obsidian_vault_dir), "processing": "sync", "max_records": 10},
+        ).json()
+        self.ensure(changed["status"] == "complete", "Changed Obsidian resync did not complete", changed)
+        self.ensure(changed["saved"] >= 1, "Changed Obsidian resync did not save an updated capture", changed)
+        self.ensure(changed["failed"] == 0, "Changed Obsidian resync reported failures", changed)
+        updated_records = [record for record in changed.get("records") or [] if record.get("capture_id") in set(self.capture_ids)]
+        self.ensure(updated_records, "Changed Obsidian resync did not reuse the existing capture ID", changed)
+        self.ensure(any(record.get("status") == "updated" for record in updated_records), "Changed Obsidian resync was not marked updated", changed)
+        encoded_changed = json.dumps(changed)
+        self.ensure(str(self.obsidian_vault_dir) not in encoded_changed, "Changed sync leaked the temp Obsidian vault path", changed)
+        self.ensure("file:///Users/" not in encoded_changed, "Changed sync leaked a raw local file URL", changed)
+
+        stale_search = self.request("GET", "/v1/search", params={"query": previous_marker, "limit": 5}).json()
+        self.ensure(stale_search["results"] == [], "Edited Obsidian note left stale approved memory searchable", stale_search)
+
+        pending_ask = self.request("GET", "/v1/ask", params={"query": f"{edited_marker} edited beta invite", "limit": 5}).json()
+        self.ensure(pending_ask["citations"] == [], "Edited pending Obsidian memory leaked citations into Ask", pending_ask)
+        self.ensure(pending_ask["results"] == [], "Edited pending Obsidian memory leaked results into Ask", pending_ask)
+
+        review_after_edit = self.request("GET", "/v1/review/today").json()
+        pending_after_edit = {item["id"] for item in review_after_edit["pending"]}
+        self.ensure(
+            any(capture_id in pending_after_edit for capture_id in self.capture_ids),
+            "Edited Obsidian capture was not returned to Review",
+            {"capture_ids": self.capture_ids, "pending": review_after_edit["pending"]},
+        )
+        for capture_id in self.capture_ids:
+            approved = self.request("POST", f"/v1/captures/{capture_id}/approve").json()
+            self.ensure(approved["approved"] is True, "Edited capture approval failed", approved)
+
+        self.marker = edited_marker
+        refreshed_search = self.request("GET", "/v1/search", params={"query": self.marker, "limit": 5}).json()
+        self.ensure(refreshed_search["results"], "Edited approved Obsidian memory was not searchable", refreshed_search)
+        self.ensure(
+            all(previous_marker not in json.dumps(result) for result in refreshed_search["results"]),
+            "Edited approved search returned stale marker content",
+            refreshed_search,
+        )
+
+        asked = self.request("GET", "/v1/ask", params={"query": f"{self.marker} edited beta invite", "limit": 5}).json()
+        self.ensure(asked["citations"], "Ask returned no citations for edited approved memory", asked)
+        matching_citation = next((citation for citation in asked["citations"] if self.marker in citation.get("excerpt", "")), None)
+        self.ensure(matching_citation is not None, "Ask omitted edited marker citation", asked)
+        citation_url = str(matching_citation.get("source_url") or "")
+        self.ensure(citation_url.startswith("local-file://"), "Edited Ask citation was not a safe local-file locator", matching_citation)
+        self.ensure("line=" in citation_url and "excerpt=" in citation_url, "Edited Ask citation missed line/excerpt source parameters", matching_citation)
+        self.ensure(matching_citation.get("source_account_id"), "Edited Ask citation missed source_account_id", matching_citation)
+        encoded_ask = json.dumps(asked)
+        self.ensure(str(self.obsidian_vault_dir) not in encoded_ask, "Edited Ask leaked the temp Obsidian vault path", asked)
+        self.ensure("file:///Users/" not in encoded_ask, "Edited Ask leaked a raw local file URL", asked)
+
+        registered = self.request(
+            "POST",
+            "/v1/integrations/mcp-token",
+            json={"token": self.read_mcp_token, "label": "Backend beta smoke read-only MCP", "scopes": ["read"]},
+        ).json()
+        self.ensure(registered["audience"] == "mcp", "Registered read-only token was not an MCP token", registered)
+        self.ensure(registered["scopes"] == ["read"], "Registered read-only MCP token did not preserve scope", registered)
+        mcp_headers = {"Authorization": f"Bearer {self.read_mcp_token}"}
+        self.request("GET", "/v1/search", expected_status=401, headers=mcp_headers, params={"query": self.marker})
+
+        blocked_approval = self.request(
+            "POST",
+            "/mcp",
+            headers=mcp_headers,
+            json={
+                "jsonrpc": "2.0",
+                "id": "blocked-approval",
+                "method": "tools/call",
+                "params": {"name": "approve_memory_capture", "arguments": {"capture_id": self.capture_ids[0]}},
+            },
+        ).json()
+        self.ensure("error" in blocked_approval, "Read-only MCP token was able to approve memory", blocked_approval)
+
+        def mcp_call(call_id: str, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            payload = self.request(
+                "POST",
+                "/mcp",
+                headers=mcp_headers,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": call_id,
+                    "method": "tools/call",
+                    "params": {"name": name, "arguments": arguments},
+                },
+            ).json()
+            self.ensure("error" not in payload, f"MCP {name} returned an error", payload)
+            return payload
+
+        mcp_search = mcp_call("search", "search_memory", {"query": self.marker, "top_k": 5})
+        self.ensure(self.marker in mcp_search["result"]["content"][0]["text"], "MCP search did not return edited smoke memory", mcp_search)
+        mcp_procedure = mcp_call("procedure", "get_procedure", {"query": "edited beta invite checklist", "limit": 3})
+        self.ensure("edited beta invite checklist" in mcp_procedure["result"]["content"][0]["text"], "MCP get_procedure missed edited smoke action", mcp_procedure)
+        mcp_style = mcp_call("style", "get_style_profile", {"query": "latest connected source revision", "limit": 4})
+        self.ensure("latest connected source revision" in mcp_style["result"]["content"][0]["text"], "MCP get_style_profile missed edited smoke preference", mcp_style)
+
+        return {
+            "detail": "Changed Obsidian note replaced stale memory, returned to Review, cited edited memory after approval, and served read-only MCP retrieval.",
+            "payload": {
+                "capture_ids": self.capture_ids,
+                "unchanged_skipped": unchanged["skipped"],
+                "edited_records": len(updated_records),
+                "citations": len(asked["citations"]),
+            },
+        }
+
     def backup_support_and_queue_health(self) -> dict[str, Any]:
         backup = self.request("POST", "/v1/backups").json()
         self.ensure(int(backup.get("size_bytes") or 0) > 0, "Backup did not write data", backup)
@@ -465,6 +620,7 @@ class SmokeRunner:
         self.run_step("mcp_tool_surface", self.mcp_tool_surface)
         self.run_step("obsidian_sync_review_approve", self.sync_review_and_approve)
         self.run_step("ask_export", self.ask_and_export)
+        self.run_step("changed_note_replacement_readonly_mcp", self.changed_note_replacement_and_readonly_mcp)
         self.run_step("backup_support_queue_health", self.backup_support_and_queue_health)
         self.run_step("scoped_trust_controls", self.scoped_trust_controls)
         return {

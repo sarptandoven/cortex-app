@@ -16,14 +16,21 @@ struct AskTab: View {
                         citedMemoriesExpanded: $citedMemoriesExpanded
                     )
                 } else {
-                    QuietState(
+                    AskEmptyGuidance(
+                        state: state,
                         title: "Ask approved memory",
-                        detail: "Ask about a project, person, decision, or phrase from your notes. Cortex answers only from approved memory and shows citations."
+                        detail: "Ask about a project, person, decision, or phrase from your notes. Cortex answers only from approved memory and shows citations.",
+                        showActionsWhenMemoryExists: false
                     )
                 }
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .padding(16)
+        }
+        .task {
+            await state.loadSourceConnectivity()
+            await state.loadReview()
+            await state.loadStats()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(CortexDesign.appBackground)
@@ -84,9 +91,11 @@ struct AskResponseSection: View {
                     citations: state.askCitations
                 )
             } else if state.searchResults.isEmpty {
-                QuietState(
+                AskEmptyGuidance(
+                    state: state,
                     title: "No cited answer found",
-                    detail: "Try an exact phrase from approved memory, or connect notes from Connections & Privacy and approve them in Review."
+                    detail: "Try an exact phrase from approved memory, or connect notes and approve them in Review.",
+                    showActionsWhenMemoryExists: true
                 )
             } else {
                 QuietState(
@@ -107,6 +116,68 @@ struct AskResponseSection: View {
 
     private var memoryDisclosureTitle: String {
         "Sources (\(state.searchResults.count))"
+    }
+}
+
+struct AskEmptyGuidance: View {
+    @ObservedObject var state: AppState
+    let title: String
+    let detail: String
+    let showActionsWhenMemoryExists: Bool
+
+    private var approvedMemoryCount: Int {
+        state.review?.stats.memories ?? state.stats?.memories ?? 0
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            QuietState(title: title, detail: detail)
+
+            if approvedMemoryCount == 0 || showActionsWhenMemoryExists {
+                HStack(spacing: 10) {
+                    if approvedMemoryCount == 0 {
+                        Button {
+                            state.openConnectionsPrivacy(statusMessage: "Connect notes")
+                        } label: {
+                            Label("Connect notes", systemImage: "folder.badge.plus")
+                                .frame(minWidth: 150, minHeight: 46)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+
+                        Button {
+                            state.selectedTab = .review
+                            state.status = "Review memory"
+                        } label: {
+                            Label("Open Review", systemImage: "checklist")
+                                .frame(minWidth: 132, minHeight: 46)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                    } else {
+                        Button {
+                            state.selectedTab = .review
+                            state.status = "Review more memory"
+                        } label: {
+                            Label("Review memory", systemImage: "checklist")
+                                .frame(minWidth: 150, minHeight: 46)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+
+                        Button {
+                            state.openConnectionsPrivacy(statusMessage: "Connect notes")
+                        } label: {
+                            Label("Connect more notes", systemImage: "folder.badge.plus")
+                                .frame(minWidth: 168, minHeight: 46)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
+        }
     }
 }
 
