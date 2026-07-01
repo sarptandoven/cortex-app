@@ -2091,12 +2091,14 @@ final class AppState: ObservableObject {
     @Published var isBusy: Bool = false
     @Published var connectorSyncingIDs: Set<String> = []
     @Published var connectorLastMessages: [String: String] = [:]
+    @Published var configuredDirectConnectorIDs: Set<String> = []
 
     private let backend = BackendSupervisor.shared
     private var obsidianAutoSyncTask: Task<Void, Never>?
     private var obsidianSyncInFlight = false
     private var onboardingDismissedForSession = false
 
+    private static let directConnectorConfigSecretPrefix = "directConnectorConfig.v1."
     private static let directConnectorSyncIDs: Set<String> = [
         "calendar",
         "github",
@@ -2326,6 +2328,7 @@ final class AppState: ObservableObject {
         await loadImportHistory()
         await loadDiagnostics()
         await loadReliability()
+        refreshStoredConnectorConfigState()
         refreshIntegrationStates()
         startConnectedSourceAutoSync()
         presentOnboardingIfNeeded()
@@ -2848,7 +2851,8 @@ final class AppState: ObservableObject {
                         "ics_path": url.standardizedFileURL.path,
                         "processing": "sync",
                         "max_records": 500
-                    ]
+                    ],
+                    rememberPayload: true
                 )
             }
         }
@@ -2867,7 +2871,21 @@ final class AppState: ObservableObject {
         }
     }
 
-    func syncDirectConnector(_ connector: SourceConnectorCatalogItem, payload: [String: Any]) async {
+    func syncStoredDirectConnector(_ connector: SourceConnectorCatalogItem) {
+        guard let payload = storedDirectConnectorPayload(for: connector.id) else {
+            status = "Set up \(connector.name) before syncing again"
+            return
+        }
+        Task {
+            await syncDirectConnector(connector, payload: payload)
+        }
+    }
+
+    func hasStoredDirectConnectorConfig(_ connector: SourceConnectorCatalogItem) -> Bool {
+        configuredDirectConnectorIDs.contains(connector.id) || storedDirectConnectorPayload(for: connector.id) != nil
+    }
+
+    func syncDirectConnector(_ connector: SourceConnectorCatalogItem, payload: [String: Any], rememberPayload: Bool = false) async {
         guard Self.directConnectorSyncIDs.contains(connector.id) else {
             status = "\(connector.name) is not wired for direct sync yet"
             return
@@ -2896,6 +2914,9 @@ final class AppState: ObservableObject {
                 body: requestBody
             )
             let synced = try JSONDecoder().decode(SourceAccountSyncResponse.self, from: syncData)
+            if rememberPayload {
+                saveDirectConnectorPayload(payload, for: connector.id)
+            }
             firstSourceAdded = true
             onboardingFirstSourceNames = Array(Set(onboardingFirstSourceNames + [connector.name])).sorted()
             UserDefaults.standard.set(true, forKey: "onboardingFirstSourceImported.v1")
@@ -2920,6 +2941,36 @@ final class AppState: ObservableObject {
             connectorLastMessages[connector.id] = message
             status = message
         }
+    }
+
+    private static func directConnectorConfigSecretKey(for connectorID: String) -> String {
+        directConnectorConfigSecretPrefix + connectorID
+    }
+
+    private func refreshStoredConnectorConfigState() {
+        configuredDirectConnectorIDs = Set(Self.directConnectorSyncIDs.filter { storedDirectConnectorPayload(for: $0) != nil })
+    }
+
+    private func storedDirectConnectorPayload(for connectorID: String) -> [String: Any]? {
+        guard let json = CortexCredentialStore.loadSecret(forKey: Self.directConnectorConfigSecretKey(for: connectorID)),
+              let data = json.data(using: .utf8),
+              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              JSONSerialization.isValidJSONObject(payload) else {
+            return nil
+        }
+        return payload
+    }
+
+    private func saveDirectConnectorPayload(_ payload: [String: Any], for connectorID: String) {
+        var stored = payload
+        stored["processing"] = "sync"
+        guard JSONSerialization.isValidJSONObject(stored),
+              let data = try? JSONSerialization.data(withJSONObject: stored, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8) else {
+            return
+        }
+        CortexCredentialStore.saveSecret(json, forKey: Self.directConnectorConfigSecretKey(for: connectorID))
+        refreshStoredConnectorConfigState()
     }
 
     private func resolvedObsidianVaultPath() -> String {

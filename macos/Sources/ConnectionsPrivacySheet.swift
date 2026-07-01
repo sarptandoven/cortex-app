@@ -577,6 +577,10 @@ private struct ConnectionsDirectSourceRow: View {
         }
     }
 
+    private var hasStoredConfig: Bool {
+        state.hasStoredDirectConnectorConfig(connector)
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
             ZStack {
@@ -637,6 +641,7 @@ private struct ConnectionsDirectSourceRow: View {
     private var statusTitle: String {
         if activeAccount?.needsAttention == true { return "Needs attention" }
         if connected { return "Connected" }
+        if hasStoredConfig { return "Configured" }
         if connector.connectorReadinessStatus == "token-ready" { return "Token sync" }
         if connector.id == "zotero" { return "Local app" }
         if connector.id == "calendar" { return "Local feed" }
@@ -646,6 +651,7 @@ private struct ConnectionsDirectSourceRow: View {
     private var statusChipIcon: String {
         if activeAccount?.needsAttention == true { return "exclamationmark.circle.fill" }
         if connected { return "checkmark.circle.fill" }
+        if hasStoredConfig { return "checkmark.circle" }
         if connector.connectorReadinessStatus == "token-ready" { return "key.fill" }
         return "link.circle"
     }
@@ -653,6 +659,7 @@ private struct ConnectionsDirectSourceRow: View {
     private var statusColor: Color {
         if activeAccount?.needsAttention == true { return .orange }
         if connected { return .green }
+        if hasStoredConfig { return .green }
         if connector.connectorReadinessStatus == "token-ready" { return .accentColor }
         return .secondary
     }
@@ -677,16 +684,20 @@ private struct ConnectionsDirectSourceRow: View {
         }
         switch connector.id {
         case "calendar":
-            return connected ? "Calendar events are available for Review and cited Ask." : "Sync a read-only calendar export or feed into Review."
+            if connected { return "Calendar events are available for Review and cited Ask." }
+            if hasStoredConfig { return "Calendar sync is configured. Run it again when you want fresh events." }
+            return "Sync a read-only calendar export or feed into Review."
         case "zotero":
             return connected ? "Zotero research is available for Review and cited Ask." : "Sync from the Zotero desktop local API when Zotero is running."
         default:
-            return connected ? "\(connector.name) is connected. Run sync again when you want fresh memory." : "Connect with a read-only token, then Cortex sends useful items to Review with citations."
+            if connected { return "\(connector.name) is connected. Run sync again when you want fresh memory." }
+            if hasStoredConfig { return "\(connector.name) sync is configured. Run it again when you want fresh memory." }
+            return "Connect with a read-only token, then Cortex sends useful items to Review with citations."
         }
     }
 
     private var actionTitle: String {
-        if connected {
+        if connected || hasStoredConfig {
             return connector.id == "calendar" ? "Sync" : "Sync again"
         }
         switch connector.id {
@@ -707,11 +718,19 @@ private struct ConnectionsDirectSourceRow: View {
     private func runAction() {
         switch connector.id {
         case "calendar":
-            state.connectCalendarFile(connector)
+            if hasStoredConfig {
+                state.syncStoredDirectConnector(connector)
+            } else {
+                state.connectCalendarFile(connector)
+            }
         case "zotero":
             state.syncZoteroLocal(connector)
         default:
-            openTokenSetup()
+            if hasStoredConfig {
+                state.syncStoredDirectConnector(connector)
+            } else {
+                openTokenSetup()
+            }
         }
     }
 }
@@ -876,7 +895,7 @@ private struct ConnectorTokenSetupSheet: View {
         let payload = syncPayload()
         dismiss()
         Task {
-            await state.syncDirectConnector(connector, payload: payload)
+            await state.syncDirectConnector(connector, payload: payload, rememberPayload: true)
         }
     }
 
