@@ -82,15 +82,18 @@ manual QA checklist.
 ```bash
 ./macos/package_release.sh \
   --channel local-beta \
-  --note "Local-first Cortex beta with installer, update manifest, MCP/Obsidian sync, Review, cited Ask, and trust controls."
+  --base-url https://trydoppl.com/downloads \
+  --output outputs \
+  --note "First-100 local beta DMG with source connection, Review, cited Ask, MCP retrieval, backup, and support bundle checks."
 ```
 
 For a hosted beta feed:
 
 ```bash
 ./macos/package_release.sh \
-  --channel public-beta \
-  --base-url https://download.example.com/cortex/public-beta
+  --channel local-beta \
+  --base-url https://trydoppl.com/downloads \
+  --output outputs
 ```
 
 For Apple Developer ID signing and notarization, see `docs/APPLE_RELEASE.md`.

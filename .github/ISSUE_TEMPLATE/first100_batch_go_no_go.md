@@ -26,16 +26,16 @@ assignees: ""
 
 ## Required Support Packet
 
-- Support channel:
-- Primary support owner:
-- Backup support owner:
-- Incident engineer:
-- Case log location:
-- Support artifact storage:
-- Business hours and timezone:
-- Deletion request contact:
+- Support channel: sdoven@uwaterloo.ca
+- Primary support owner: Sarp Doven <sdoven@uwaterloo.ca>
+- Backup support owner: Sarp Doven <sdoven@uwaterloo.ca>
+- Incident engineer: Sarp Doven <sdoven@uwaterloo.ca>
+- Case log location: GitHub Issues in doppl-tech/cortex-app
+- Support artifact storage: Private GitHub issue attachments/comments; sanitized artifacts only
+- Business hours and timezone: Founder-monitored weekdays, America/Los_Angeles
+- Deletion request contact: sdoven@uwaterloo.ca
 - Build version, build number, hash:
-- Known limitations sent to testers:
+- Known limitations sent to testers: local-first macOS beta; unnotarized; macOS may require Control-click > Open; manual updates and rollback; no hosted accounts, cloud backup, automatic updates, production support SLA, or broad live OAuth sync.
 
 ## Automated Gates
 

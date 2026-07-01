@@ -114,19 +114,19 @@ Do not request raw imports, full chat exports, memory exports, context packs, pr
 Before sending invites, fill in the batch support packet:
 
 ```text
-Support channel:
-Primary support owner:
-Backup support owner:
-Incident engineer:
-Case log location:
-Support artifact storage:
-Business hours and timezone:
-Deletion request contact:
+Support channel: sdoven@uwaterloo.ca
+Primary support owner: Sarp Doven <sdoven@uwaterloo.ca>
+Backup support owner: Sarp Doven <sdoven@uwaterloo.ca>
+Incident engineer: Sarp Doven <sdoven@uwaterloo.ca>
+Case log location: GitHub Issues in doppl-tech/cortex-app
+Support artifact storage: Private GitHub issue attachments/comments; sanitized artifacts only
+Business hours and timezone: Founder-monitored weekdays, America/Los_Angeles
+Deletion request contact: sdoven@uwaterloo.ca
 Build version, build number, hash:
-Tester cohort source:
-First batch size:
-Known limitations sent to testers:
-Stop/go decision owner:
+Tester cohort source: Founder-selected first-100 local beta cohort
+First batch size: 10 initial testers, then 25, then 100 after no open SEV 0/1 issues
+Known limitations sent to testers: local-first macOS beta; unnotarized; macOS may require Control-click > Open; manual updates and rollback; no hosted accounts, cloud backup, automatic updates, production support SLA, or broad live OAuth sync.
+Stop/go decision owner: Sarp Doven <sdoven@uwaterloo.ca>
 ```
 
 For every case, open a case ID first and record only operational metadata:

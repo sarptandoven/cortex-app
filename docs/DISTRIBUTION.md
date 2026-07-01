@@ -62,14 +62,19 @@ The hero uses a canvas memory map instead of stock photography. This keeps the p
 After packaging the app:
 
 ```bash
-./macos/package_release.sh
+./macos/package_release.sh \
+  --channel local-beta \
+  --base-url https://trydoppl.com/downloads \
+  --output outputs \
+  --note "First-100 local beta DMG with source connection, Review, cited Ask, MCP retrieval, backup, and support bundle checks."
 RELEASE_DIR="outputs/Cortex-0.1.0-1"
 python3 scripts/ops_readiness_check.py \
   --skip-tests \
   --skip-build \
   --require-package-artifacts \
   --release-dir "$RELEASE_DIR"
-python3 scripts/prepare_distribution_site.py
+python3 scripts/prepare_distribution_site.py \
+  --artifact-base-url https://trydoppl.com/downloads
 python3 scripts/check_distribution_site.py
 python3 scripts/ops_readiness_check.py --skip-build
 ```

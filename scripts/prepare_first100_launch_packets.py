@@ -11,6 +11,15 @@ from first100_launch_gate import CLEAN_PROFILE_QA_FIELDS, SUPPORT_FIELDS, ROOT, 
 
 
 DEFAULT_OUTPUT_DIR = ROOT / ".context" / "first100_launch_packets"
+FOUNDER_EMAIL = "sdoven@uwaterloo.ca"
+FOUNDER_OWNER = f"Sarp Doven <{FOUNDER_EMAIL}>"
+CASE_LOG_LOCATION = "GitHub Issues in doppl-tech/cortex-app"
+SUPPORT_ARTIFACT_STORAGE = "Private GitHub issue attachments/comments; sanitized artifacts only"
+KNOWN_LIMITATIONS = (
+    "Local-first macOS beta; unnotarized; macOS may require Control-click > Open; "
+    "manual updates and rollback; no hosted accounts, cloud backup, automatic updates, "
+    "production support SLA, or broad live OAuth sync."
+)
 
 
 def load_manifest() -> dict[str, Any]:
@@ -59,10 +68,19 @@ def write_field_block(fields: list[str], defaults: dict[str, str]) -> str:
 
 def support_packet(summary: dict[str, str]) -> str:
     defaults = {
+        "Support channel": FOUNDER_EMAIL,
+        "Primary support owner": FOUNDER_OWNER,
+        "Backup support owner": FOUNDER_OWNER,
+        "Incident engineer": FOUNDER_OWNER,
+        "Case log location": CASE_LOG_LOCATION,
+        "Support artifact storage": SUPPORT_ARTIFACT_STORAGE,
+        "Business hours and timezone": "Founder-monitored weekdays, America/Los_Angeles",
+        "Deletion request contact": FOUNDER_EMAIL,
         "Build version, build number, hash": f"{summary['version']} build {summary['build']}; DMG {summary['dmg_sha256']}; ZIP {summary['zip_sha256']}",
-        "Tester cohort source": "FILL_ME",
-        "First batch size": "FILL_ME",
-        "Known limitations sent to testers": "FILL_ME",
+        "Tester cohort source": "Founder-selected first-100 local beta cohort",
+        "First batch size": "10 initial testers, then 25, then 100 after no open SEV 0/1 issues",
+        "Known limitations sent to testers": KNOWN_LIMITATIONS,
+        "Stop/go decision owner": FOUNDER_OWNER,
     }
     body = write_field_block(SUPPORT_FIELDS, defaults)
     return (

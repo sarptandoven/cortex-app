@@ -51,19 +51,19 @@ Before inviting the first tester, create a private first-100 support workspace t
 Fill these batch routing fields before invites go out:
 
 ```text
-Support channel: REQUIRED private email, chat, or helpdesk queue
-Primary support owner: REQUIRED named person
-Backup support owner: REQUIRED named person
-Incident engineer: REQUIRED named person or rotation
-Case log location: REQUIRED private tracker or spreadsheet
-Support artifact storage: REQUIRED private folder limited to support owner and incident engineer
-Business hours and timezone: REQUIRED response window
-Deletion request contact: REQUIRED channel or named owner
+Support channel: sdoven@uwaterloo.ca
+Primary support owner: Sarp Doven <sdoven@uwaterloo.ca>
+Backup support owner: Sarp Doven <sdoven@uwaterloo.ca>
+Incident engineer: Sarp Doven <sdoven@uwaterloo.ca>
+Case log location: GitHub Issues in doppl-tech/cortex-app
+Support artifact storage: Private GitHub issue attachments/comments; sanitized artifacts only
+Business hours and timezone: Founder-monitored weekdays, America/Los_Angeles
+Deletion request contact: sdoven@uwaterloo.ca
 Build version, build number, hash: REQUIRED exact build and artifact hash sent to testers
-Tester cohort source: REQUIRED invite list, waitlist segment, or partner group
-First batch size: REQUIRED number of users in the next invite batch
-Known limitations sent to testers: REQUIRED link, template, or exact limitations text
-Stop/go decision owner: REQUIRED named person
+Tester cohort source: Founder-selected first-100 local beta cohort
+First batch size: 10 initial testers, then 25, then 100 after no open SEV 0/1 issues
+Known limitations sent to testers: local-first macOS beta; unnotarized; macOS may require Control-click > Open; manual updates and rollback; no hosted accounts, cloud backup, automatic updates, production support SLA, or broad live OAuth sync.
+Stop/go decision owner: Sarp Doven <sdoven@uwaterloo.ca>
 ```
 
 Required setup:
