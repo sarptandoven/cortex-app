@@ -255,10 +255,10 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertEqual(result["distractor_memories"], len(DISTRACTOR_MEMORIES))
         self.assertEqual(result["focused_retrieval_memories"], 8)
         self.assertEqual(result["noisy_import_memories"], 11)
-        self.assertGreaterEqual(result["direct_connector_memories"], 10)
+        self.assertGreaterEqual(result["direct_connector_memories"], 11)
         self.assertEqual(set(result["seeded_layers"]), MEMORY_LAYERS)
         expected_noisy_cases = 11
-        expected_direct_connector_cases = 10
+        expected_direct_connector_cases = 11
         expected_source_backed_cases = 1
         expected_case_count = len(RETRIEVAL_CASES) + expected_noisy_cases + expected_direct_connector_cases + expected_source_backed_cases
         self.assertEqual(len(result["checks"]), expected_case_count)
@@ -318,6 +318,7 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         expected_direct_sources = {
             "calendar",
             "github",
+            "gmail",
             "jira",
             "linear",
             "notion",
@@ -327,7 +328,7 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
             "slack",
             "zotero",
         }
-        self.assertEqual(direct_contracts["source_count"], 10)
+        self.assertEqual(direct_contracts["source_count"], 11)
         self.assertEqual(set(direct_contracts["sources"]), expected_direct_sources)
         for source, contract in direct_contracts["contracts"].items():
             self.assertIn(source, expected_direct_sources)

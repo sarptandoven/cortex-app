@@ -582,8 +582,9 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(catalog["gmail"]["export_status"], "native_via_email")
         self.assertTrue(catalog["gmail"]["supports_import"])
         self.assertFalse(catalog["gmail"]["primary_beta"])
-        self.assertEqual(catalog["gmail"]["beta_status"], "planned")
-        self.assertEqual(catalog["gmail"]["primary_beta_path"], "account-sign-in-planned")
+        self.assertEqual(catalog["gmail"]["live_status"], "api_token")
+        self.assertEqual(catalog["gmail"]["beta_status"], "ready")
+        self.assertEqual(catalog["gmail"]["primary_beta_path"], "native-token-connector")
         self.assertFalse(catalog["gmail"]["show_in_primary_ui"])
         self.assertTrue(catalog["obsidian"]["primary_beta"])
         self.assertEqual(catalog["obsidian"]["beta_status"], "ready")
@@ -627,16 +628,16 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertGreaterEqual(readiness["summary"]["advanced_fallback_only"], 1)
         self.assertGreaterEqual(readiness["summary"]["connector_needed"], 1)
         gmail_readiness = next(item for item in readiness["sources"] if item["source"] == "gmail")
-        self.assertEqual(gmail_readiness["status"], "planned")
-        self.assertEqual(gmail_readiness["beta_status"], "planned")
+        self.assertEqual(gmail_readiness["status"], "available")
+        self.assertEqual(gmail_readiness["beta_status"], "ready")
         self.assertFalse(gmail_readiness["primary_beta"])
         self.assertFalse(gmail_readiness["show_in_primary_ui"])
-        self.assertEqual(gmail_readiness["sync_plan"]["mode"], "planned_account_sync")
-        self.assertEqual(gmail_readiness["sync_plan"]["managed_sync_status"], "planned")
+        self.assertEqual(gmail_readiness["sync_plan"]["mode"], "local_app_autosync")
+        self.assertEqual(gmail_readiness["sync_plan"]["managed_sync_status"], "not_configured")
         self.assertIsNone(gmail_readiness["sync_plan"]["credential_ref"])
         self.assertEqual(gmail_readiness["source_ids"], ["email"])
         self.assertEqual(gmail_readiness["export_status"], "native_via_email")
-        self.assertIn("Account sign-in sync is planned", gmail_readiness["next_action"])
+        self.assertIn("read-only token", gmail_readiness["next_action"])
         for source_id in ("gemini", "perplexity", "copilot", "grok", "poe", "notebooklm"):
             ai_readiness = next(item for item in readiness["sources"] if item["source"] == source_id)
             self.assertEqual(ai_readiness["status"], "connector_needed")
@@ -687,20 +688,17 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         )
         connected_readiness = self.store.source_readiness_report(self.user_id)
         connected_gmail = next(item for item in connected_readiness["sources"] if item["source"] == "gmail")
-        self.assertEqual(connected_gmail["status"], "planned")
-        self.assertEqual(connected_gmail["beta_status"], "planned")
+        self.assertEqual(connected_gmail["status"], "connected")
+        self.assertEqual(connected_gmail["beta_status"], "ready")
         self.assertFalse(connected_gmail["primary_beta"])
         self.assertFalse(connected_gmail["show_in_primary_ui"])
 
         self.assertTrue(account["id"].startswith("sacct_"))
         self.assertEqual(account["source"], "gmail")
-        self.assertEqual(account["status"], "planned")
-        self.assertEqual(account["auth_state"], "not_configured")
+        self.assertEqual(account["status"], "connected")
+        self.assertEqual(account["auth_state"], "healthy")
         self.assertEqual(account["account_label"], "Work Gmail")
         self.assertEqual(account["policy"]["sync"], "metadata_and_content")
-        self.assertEqual(account["metadata"]["requested_status"], "connected")
-        self.assertEqual(account["metadata"]["requested_auth_state"], "healthy")
-        self.assertEqual(account["metadata"]["connector_state"], "planned_until_records_sync")
         self.assertIsNone(account["last_sync_at"])
         self.assertEqual([item["id"] for item in self.store.list_source_accounts(self.user_id)], [account["id"]])
 
@@ -726,13 +724,13 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertIsNone(synced_account["last_error"])
         synced_readiness = self.store.source_readiness_report(self.user_id)
         synced_gmail = next(item for item in synced_readiness["sources"] if item["source"] == "gmail")
-        self.assertEqual(synced_gmail["status"], "planned")
-        self.assertEqual(synced_gmail["beta_status"], "planned")
+        self.assertEqual(synced_gmail["status"], "synced")
+        self.assertEqual(synced_gmail["beta_status"], "ready")
         self.assertFalse(synced_gmail["primary_beta"])
         self.assertFalse(synced_gmail["show_in_primary_ui"])
-        self.assertEqual(synced_gmail["primary_beta_path"], "account-sign-in-planned")
-        self.assertEqual(synced_gmail["sync_plan"]["mode"], "planned_account_sync")
-        self.assertEqual(synced_gmail["sync_plan"]["managed_sync_status"], "planned")
+        self.assertEqual(synced_gmail["primary_beta_path"], "native-token-connector")
+        self.assertEqual(synced_gmail["sync_plan"]["mode"], "local_app_autosync")
+        self.assertEqual(synced_gmail["sync_plan"]["managed_sync_status"], "healthy")
         self.assertEqual(synced_gmail["sync_plan"]["credential_ref"], f"source_account:{account['id']}")
         self.assertIsNotNone(synced_gmail["sync_plan"]["last_completed_at"])
 
@@ -1439,6 +1437,7 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         catalog = {item["id"]: item for item in self.store.source_connector_catalog()}
         wired_source_paths = {
             "obsidian": "native-local-connector",
+            "gmail": "native-token-connector",
             "slack": "native-token-connector",
             "github": "native-token-connector",
             "readwise": "native-token-connector",
@@ -1451,7 +1450,7 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         }
         wired_source_ids = tuple(wired_source_paths)
 
-        self.assertEqual(len(wired_source_ids), 10)
+        self.assertEqual(len(wired_source_ids), 11)
         for source_id, primary_beta_path in wired_source_paths.items():
             with self.subTest(source_id=source_id):
                 entry = catalog[source_id]

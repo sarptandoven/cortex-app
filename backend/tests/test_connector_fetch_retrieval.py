@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import tempfile
 import unittest
 from pathlib import Path
@@ -60,6 +61,14 @@ class ConnectorFetchRetrievalTests(unittest.TestCase):
                 "search_url_prefix": "source-account://calendar/",
                 "ask_url_prefix": "source-account://calendar/",
                 "sync": self._sync_calendar,
+            },
+            {
+                "source": "gmail",
+                "marker": "gmailcitetest",
+                "query": "gmailcitetest retrieval Gmail citations",
+                "search_url_prefix": "https://mail.google.com/mail/u/0/#all/gmail-citation-msg",
+                "ask_url_prefix": "https://mail.google.com/mail/u/0/#all/gmail-citation-msg",
+                "sync": self._sync_gmail,
             },
             {
                 "source": "linear",
@@ -663,6 +672,44 @@ END:VCALENDAR
             max_records=1,
             processing="sync",
             request_text=fake_request,
+        )
+
+    def _sync_gmail(self) -> dict:
+        def gmail_data(value: str) -> str:
+            return base64.urlsafe_b64encode(value.encode("utf-8")).decode("ascii").rstrip("=")
+
+        def fake_request(url: str, headers: dict[str, str]):
+            self.assertEqual(headers["Authorization"], "Bearer gmail-test")
+            if url.endswith("/users/me/profile"):
+                return {"emailAddress": "sarp@example.com"}
+            if "/users/me/messages?" in url:
+                return {"messages": [{"id": "gmail-citation-msg"}]}
+            self.assertTrue(url.endswith("/users/me/messages/gmail-citation-msg?format=full"))
+            return {
+                "id": "gmail-citation-msg",
+                "threadId": "thread-gmail-citation-msg",
+                "labelIds": ["INBOX"],
+                "internalDate": "1782739200000",
+                "payload": {
+                    "mimeType": "text/plain",
+                    "headers": [
+                        {"name": "Subject", "value": "Gmail retrieval citation"},
+                        {"name": "From", "value": "Sarp Doven <sarp@example.com>"},
+                        {"name": "To", "value": "sarp@example.com"},
+                        {"name": "Date", "value": "Mon, 29 Jun 2026 10:00:00 -0700"},
+                    ],
+                    "body": {
+                        "data": gmail_data("We decided gmailcitetest retrieval should preserve Gmail message citations.")
+                    },
+                },
+            }
+
+        return self.store.sync_gmail_account(
+            self.user_id,
+            access_token="gmail-test",
+            max_records=1,
+            processing="sync",
+            request_json=fake_request,
         )
 
     def _sync_linear(self) -> dict:

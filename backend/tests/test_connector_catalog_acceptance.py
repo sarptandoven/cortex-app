@@ -46,7 +46,7 @@ class ConnectorCatalogAcceptanceTests(unittest.TestCase):
                 self.assertFalse(readiness_entry["show_in_primary_ui"])
                 self.assertFalse(readiness_entry["primary_beta"])
 
-                if source_id in {"gmail", "google-drive"}:
+                if source_id in {"google-drive"}:
                     self.assertEqual(catalog_entry["live_status"], "planned")
                     self.assertEqual(readiness_entry["status"], "planned")
                     self.assertEqual(readiness_entry["sync_plan"]["mode"], "planned_account_sync")

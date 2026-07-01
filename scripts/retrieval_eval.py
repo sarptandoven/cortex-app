@@ -24,6 +24,7 @@ METRIC_K_VALUES = (1, 3)
 NOISY_IMPORT_SOURCES = {"chatgpt", "claude", "slack", "email", "docs", "notion", "cloud-docs", "calendar", "github"}
 DIRECT_CONNECTOR_SOURCES = {
     "calendar",
+    "gmail",
     "github",
     "jira",
     "linear",
@@ -95,6 +96,14 @@ DIRECT_CONNECTOR_FIXTURES: tuple[dict[str, Any], ...] = (
         "expected_layer": "episodic",
         "expected_phrase": "schedule memory",
         "occurred_at": "2026-07-01",
+    },
+    {
+        "source": "gmail",
+        "project": "Project Mailbox",
+        "query": "Project Mailbox Gmail direct sync cited message memory",
+        "content": "We decided Project Mailbox Gmail direct sync preserves cited message memory from email threads.",
+        "expected_layer": "decision",
+        "expected_phrase": "cited message memory",
     },
     {
         "source": "zotero",
@@ -913,6 +922,8 @@ def seed_direct_connector_memories(store: CortexStore, user_id: str = USER_ID) -
             connection_type = "local-folder"
         elif source == "calendar":
             connection_type = "local-file"
+        elif source == "gmail":
+            connection_type = "oauth-token"
         elif source == "zotero":
             connection_type = "local-api"
         account = store.upsert_source_account(

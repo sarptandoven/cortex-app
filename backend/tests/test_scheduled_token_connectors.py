@@ -12,12 +12,13 @@ from backend.app.storage import CortexStore
 
 
 READWISE_TOKEN = "readwise_scheduled_secret_123"
+GMAIL_TOKEN = "gmail_scheduled_secret_123"
 RAINDROP_TOKEN = "raindrop_scheduled_secret_123"
 ZOTERO_TOKEN = "zotero_scheduled_secret_123"
 LINEAR_TOKEN = "linear_scheduled_secret_123"
 NOTION_TOKEN = "notion_scheduled_secret_123"
 
-SECRET_VALUES = (READWISE_TOKEN, RAINDROP_TOKEN, ZOTERO_TOKEN, LINEAR_TOKEN, NOTION_TOKEN)
+SECRET_VALUES = (READWISE_TOKEN, GMAIL_TOKEN, RAINDROP_TOKEN, ZOTERO_TOKEN, LINEAR_TOKEN, NOTION_TOKEN)
 
 
 class ScheduledTokenConnectorTests(unittest.TestCase):
@@ -42,6 +43,22 @@ class ScheduledTokenConnectorTests(unittest.TestCase):
                 "token": READWISE_TOKEN,
                 "api_base_url": "https://readwise.invalid/api/v2",
                 "cursor_name": "highlights",
+                "max_records": 200,
+            },
+        )
+
+    def test_gmail_dispatches_from_local_credentials(self) -> None:
+        self._assert_credential_backed_dispatch(
+            "gmail",
+            self._connect_gmail_account,
+            "sync_gmail_account",
+            {
+                "access_token": GMAIL_TOKEN,
+                "api_base_url": "https://gmail.invalid/gmail/v1",
+                "query": "label:inbox",
+                "label_ids": ["INBOX"],
+                "include_body": False,
+                "cursor_name": "messages",
                 "max_records": 200,
             },
         )
@@ -147,6 +164,30 @@ class ScheduledTokenConnectorTests(unittest.TestCase):
             self.user_id,
             token=READWISE_TOKEN,
             api_base_url="https://readwise.invalid/api/v2",
+            processing="sync",
+            max_records=10,
+            request_json=fake_request_json,
+        )
+        self.assertEqual(result["status"], "empty")
+        return result["source_account"]
+
+    def _connect_gmail_account(self) -> dict[str, Any]:
+        def fake_request_json(url: str, headers: dict[str, str]) -> dict[str, Any]:
+            self.assertEqual(headers["Authorization"], f"Bearer {GMAIL_TOKEN}")
+            if url.endswith("/users/me/profile"):
+                return {"emailAddress": "sarp@example.com"}
+            self.assertTrue(url.startswith("https://gmail.invalid/gmail/v1/users/me/messages?"))
+            self.assertIn("q=label%3Ainbox", url)
+            self.assertIn("labelIds=INBOX", url)
+            return {"messages": [], "nextPageToken": None}
+
+        result = self.store.sync_gmail_account(
+            self.user_id,
+            access_token=GMAIL_TOKEN,
+            query="label:inbox",
+            label_ids=["INBOX"],
+            include_body=False,
+            api_base_url="https://gmail.invalid/gmail/v1",
             processing="sync",
             max_records=10,
             request_json=fake_request_json,

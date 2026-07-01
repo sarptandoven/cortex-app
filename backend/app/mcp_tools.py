@@ -235,6 +235,29 @@ TOOLS = [
         },
     },
     {
+        "name": "sync_gmail",
+        "description": "Fetch Gmail messages with a read-only OAuth access token, then sync them into Cortex with stable message citations.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "access_token": {"type": "string"},
+                "source_account_id": {"type": "string"},
+                "account_label": {"type": "string"},
+                "account_identifier": {"type": "string"},
+                "query": {"type": "string"},
+                "label_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+                "since": {"type": "string"},
+                "page_token": {"type": "string"},
+                "processing": {"type": "string", "default": "sync", "enum": ["sync", "async"]},
+                "max_records": {"type": "integer", "default": 50},
+                "cursor_name": {"type": "string", "default": "messages"},
+                "include_body": {"type": "boolean", "default": True},
+                "api_base_url": {"type": "string"},
+            },
+            "required": ["access_token"],
+        },
+    },
+    {
         "name": "sync_slack",
         "description": "Fetch recent Slack channel messages with a read-only token, then sync them into Cortex with stable citations.",
         "inputSchema": {
@@ -564,6 +587,7 @@ WRITE_TOOLS = {
     "connect_source_account",
     "sync_source_records",
     "sync_github",
+    "sync_gmail",
     "sync_slack",
     "sync_readwise",
     "sync_calendar",
@@ -849,6 +873,24 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             include_comments=_bool_arg(args, "include_comments", default=True),
             max_comments_per_item=int(args.get("max_comments_per_item", 10)),
             cursor_name=args.get("cursor_name", "issues"),
+            api_base_url=args.get("api_base_url"),
+        )
+        return store.agent_payload(user_id, result)
+    if name == "sync_gmail":
+        result = store.sync_gmail_account(
+            user_id,
+            access_token=args.get("access_token", ""),
+            source_account_id=args.get("source_account_id"),
+            account_label=args.get("account_label"),
+            account_identifier=args.get("account_identifier"),
+            query=args.get("query"),
+            label_ids=args.get("label_ids") or [],
+            since=args.get("since"),
+            page_token=args.get("page_token"),
+            processing=args.get("processing", "sync"),
+            max_records=int(args.get("max_records", 50)),
+            cursor_name=args.get("cursor_name", "messages"),
+            include_body=_bool_arg(args, "include_body", True),
             api_base_url=args.get("api_base_url"),
         )
         return store.agent_payload(user_id, result)

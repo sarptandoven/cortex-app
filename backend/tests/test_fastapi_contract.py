@@ -1136,8 +1136,8 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(gmail_readiness["accounts"], 1)
         self.assertEqual(gmail_readiness["cursors"], 1)
         self.assertEqual(gmail_readiness["status"], "needs_review")
-        self.assertEqual(gmail_readiness["sync_plan"]["mode"], "planned_account_sync")
-        self.assertEqual(gmail_readiness["sync_plan"]["managed_sync_status"], "planned")
+        self.assertEqual(gmail_readiness["sync_plan"]["mode"], "local_app_autosync")
+        self.assertEqual(gmail_readiness["sync_plan"]["managed_sync_status"], "healthy")
 
         disconnected = self.client.post(f"/v1/source-accounts/{account['id']}/disconnect", headers=headers)
         self.assertEqual(disconnected.status_code, 200)
@@ -1286,6 +1286,74 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(search.status_code, 200)
         self.assertTrue(search.json()["results"])
         self.assertTrue(search.json()["results"][0]["source_url"].startswith("https://github.com/doppl-tech/cortex-app/issues/88"))
+        self.assertIn("line=", search.json()["results"][0]["source_url"])
+        self.assertIn("excerpt=", search.json()["results"][0]["source_url"])
+
+    def test_gmail_connector_endpoint_syncs_messages_with_citations(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "gmail-endpoint-contract"}
+
+        def gmail_data(value: str) -> str:
+            return base64.urlsafe_b64encode(value.encode("utf-8")).decode("ascii").rstrip("=")
+
+        def fake_request(url: str, request_headers: dict[str, str]):
+            self.assertEqual(request_headers["Authorization"], "Bearer gmail_test")
+            if url.endswith("/users/me/profile"):
+                return {"emailAddress": "sarp@example.com"}
+            if "/users/me/messages?" in url:
+                self.assertIn("labelIds=INBOX", url)
+                return {"messages": [{"id": "fastapi-gmail-msg"}]}
+            self.assertTrue(url.endswith("/users/me/messages/fastapi-gmail-msg?format=full"))
+            return {
+                "id": "fastapi-gmail-msg",
+                "threadId": "thread-fastapi-gmail-msg",
+                "labelIds": ["INBOX"],
+                "internalDate": "1782739200000",
+                "snippet": "We decided the FastAPI Gmail connector should preserve message URLs.",
+                "payload": {
+                    "mimeType": "text/plain",
+                    "headers": [
+                        {"name": "Subject", "value": "Gmail endpoint contract"},
+                        {"name": "From", "value": "Sarp Doven <sarp@example.com>"},
+                        {"name": "To", "value": "sarp@example.com"},
+                        {"name": "Date", "value": "Mon, 29 Jun 2026 10:00:00 -0700"},
+                    ],
+                    "body": {
+                        "data": gmail_data("We decided the FastAPI Gmail connector should preserve message URLs.")
+                    },
+                },
+            }
+
+        with patch("backend.app.connectors.gmail._request_json", side_effect=fake_request):
+            response = self.client.post(
+                "/v1/connectors/gmail/sync",
+                json={
+                    "access_token": "gmail_test",
+                    "label_ids": ["INBOX"],
+                    "processing": "sync",
+                    "max_records": 25,
+                },
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["source"], "gmail")
+        self.assertEqual(payload["status"], "complete")
+        self.assertEqual(payload["saved"], 1)
+        self.assertEqual(payload["records"][0]["source_url"], "https://mail.google.com/mail/u/0/#all/fastapi-gmail-msg")
+        self.assertEqual(payload["source_account"]["source"], "gmail")
+        self.assertEqual(payload["source_account"]["connection_type"], "oauth-token")
+        self.assertNotIn("gmail_test", json.dumps(payload))
+        approved = self.client.post(f"/v1/captures/{payload['capture_ids'][0]}/approve", headers=headers)
+        self.assertEqual(approved.status_code, 200)
+        search = self.client.get(
+            "/v1/search",
+            params={"query": "FastAPI Gmail connector preserve message URLs"},
+            headers=headers,
+        )
+        self.assertEqual(search.status_code, 200)
+        self.assertTrue(search.json()["results"])
+        self.assertTrue(search.json()["results"][0]["source_url"].startswith("https://mail.google.com/mail/u/0/#all/fastapi-gmail-msg"))
         self.assertIn("line=", search.json()["results"][0]["source_url"])
         self.assertIn("excerpt=", search.json()["results"][0]["source_url"])
 
@@ -1882,7 +1950,7 @@ END:VCALENDAR
         expected = {
             "chatgpt": ("export-only", [], "direct connector"),
             "apple-mail": ("import-ready", [], "direct local integration"),
-            "gmail": ("live-planned", ["gmail.readonly"], "account sign-in"),
+            "gmail": ("token-ready", ["gmail.readonly"], "read-only token sync"),
             "notion": ("token-ready", ["read_content"], "read-only token sync"),
             "slack": ("token-ready", ["channels:history", "groups:history", "channels:read", "groups:read"], "read-only token sync"),
             "github": ("token-ready", ["repo:read"], "read-only token sync"),
@@ -1907,10 +1975,9 @@ END:VCALENDAR
             self.assertIn(entry["primary_beta_path"], {"native-local-connector", "native-token-connector", "account-sign-in-planned", "advanced-fallback-only", "direct-connector-needed"})
 
         self.assertTrue(any("account sign-in planned" in item for item in catalog["gmail"]["permissions_required"]))
-        self.assertTrue(any("account consent for gmail.readonly" in item for item in catalog["gmail"]["permissions_required"]))
         self.assertTrue(any("local app access" in item for item in catalog["obsidian"]["permissions_required"]))
         self.assertFalse(catalog["gmail"]["primary_beta"])
-        self.assertEqual(catalog["gmail"]["beta_status"], "planned")
+        self.assertEqual(catalog["gmail"]["beta_status"], "ready")
         self.assertFalse(catalog["gmail"]["show_in_primary_ui"])
         self.assertFalse(catalog["notion"]["primary_beta"])
         self.assertEqual(catalog["notion"]["beta_status"], "ready")
