@@ -69,6 +69,11 @@ MEMORY_LAYER_BY_KIND = {
 }
 LAYER_RETRIEVAL_BOOST = 0.02
 TEMPORAL_RETRIEVAL_BOOST = 0.025
+SAME_CAPTURE_RELATION_FULL_PAIR_LIMIT = 80
+SAME_CAPTURE_RELATION_PER_MEMORY_LIMIT = 6
+SAME_CAPTURE_RELATION_TOTAL_LIMIT = 2000
+SAME_CAPTURE_RELATION_TOPIC_BUCKET_LIMIT = 40
+SAME_CAPTURE_RELATION_BUCKET_SCAN_LIMIT = 24
 QUERY_MONTHS = {
     "jan": 1,
     "january": 1,
@@ -11970,6 +11975,8 @@ class CortexStore:
         )
 
         relations: list[dict[str, Any]] = []
+        if len(active) > SAME_CAPTURE_RELATION_FULL_PAIR_LIMIT:
+            return self._save_bounded_memory_relations_for_capture(conn, user_id, capture_id, active, captured_at)
         for left_index, left in enumerate(active):
             left_entities = {str(value) for value in left.get("entity_ids") or [] if str(value)}
             left_topics = {str(value).lower() for value in left.get("topics") or [] if str(value).strip()}
@@ -12019,6 +12026,113 @@ class CortexStore:
                 )
                 relations.append(relation)
         return relations
+
+    def _save_bounded_memory_relations_for_capture(
+        self,
+        conn,
+        user_id: str,
+        capture_id: str,
+        active: list[dict[str, Any]],
+        captured_at: str,
+    ) -> list[dict[str, Any]]:
+        entity_index: dict[str, list[int]] = {}
+        topic_index: dict[str, list[int]] = {}
+        normalized: list[dict[str, Any]] = []
+        for index, memory in enumerate(active):
+            entities = {str(value) for value in memory.get("entity_ids") or [] if str(value)}
+            topics = {str(value).lower() for value in memory.get("topics") or [] if str(value).strip()}
+            normalized.append({"entities": entities, "topics": topics})
+            for entity_id in entities:
+                entity_index.setdefault(entity_id, []).append(index)
+            for topic in topics:
+                topic_index.setdefault(topic, []).append(index)
+
+        relations: list[dict[str, Any]] = []
+        seen_pairs: set[tuple[str, str, str]] = set()
+        for left_index, left in enumerate(active):
+            left_terms = normalized[left_index]
+            candidates: set[int] = set()
+            for entity_id in left_terms["entities"]:
+                candidates.update(self._bounded_relation_candidate_indexes(entity_index.get(entity_id, []), left_index))
+            for topic in left_terms["topics"]:
+                topic_matches = topic_index.get(topic, [])
+                if len(topic_matches) <= SAME_CAPTURE_RELATION_TOPIC_BUCKET_LIMIT:
+                    candidates.update(self._bounded_relation_candidate_indexes(topic_matches, left_index))
+            if not candidates:
+                continue
+            ranked_candidates: list[tuple[float, int, list[str], list[str]]] = []
+            for right_index in candidates:
+                right_terms = normalized[right_index]
+                shared_entities = sorted(left_terms["entities"] & right_terms["entities"])
+                shared_topics = sorted(left_terms["topics"] & right_terms["topics"])
+                if not shared_entities and not shared_topics:
+                    continue
+                right = active[right_index]
+                score = (
+                    (1.0 if shared_entities else 0.0)
+                    + (0.2 * len(shared_entities))
+                    + (0.03 * len(shared_topics))
+                    + (0.001 * int(right.get("importance") or 0))
+                )
+                ranked_candidates.append((score, right_index, shared_entities, shared_topics))
+            added_for_left = 0
+            for _, right_index, shared_entities, shared_topics in sorted(ranked_candidates, key=lambda item: (-item[0], item[1])):
+                right = active[right_index]
+                relation_kind = "shared_entity" if shared_entities else "shared_topic"
+                source_id, target_id = sorted([left["id"], right["id"]])
+                pair_key = (source_id, target_id, relation_kind)
+                if pair_key in seen_pairs:
+                    continue
+                seen_pairs.add(pair_key)
+                weight = min(1.0, 0.55 + (0.25 * len(shared_entities)) + (0.08 * len(shared_topics)))
+                metadata = {
+                    "capture_id": capture_id,
+                    "shared_entities": shared_entities[:12],
+                    "shared_topics": shared_topics[:12],
+                    "source": left.get("source") or right.get("source"),
+                    "bounded": True,
+                    "candidate_count": len(active),
+                }
+                relation_id = stable_id("rel_", f"{user_id}:{source_id}:{target_id}:{relation_kind}:{','.join(shared_entities)}:{','.join(shared_topics)}")
+                relation = {
+                    "id": relation_id,
+                    "user_id": user_id,
+                    "source_memory_id": source_id,
+                    "target_memory_id": target_id,
+                    "kind": relation_kind,
+                    "weight": round(weight, 3),
+                    "metadata": metadata,
+                    "created_at": captured_at,
+                }
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO memory_relations
+                    (id, user_id, source_memory_id, target_memory_id, kind, weight, metadata_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        relation["id"],
+                        user_id,
+                        source_id,
+                        target_id,
+                        relation_kind,
+                        relation["weight"],
+                        json.dumps(metadata),
+                        captured_at,
+                    ),
+                )
+                relations.append(relation)
+                added_for_left += 1
+                if added_for_left >= SAME_CAPTURE_RELATION_PER_MEMORY_LIMIT or len(relations) >= SAME_CAPTURE_RELATION_TOTAL_LIMIT:
+                    break
+            if len(relations) >= SAME_CAPTURE_RELATION_TOTAL_LIMIT:
+                break
+        return relations
+
+    def _bounded_relation_candidate_indexes(self, indexes: list[int], left_index: int) -> list[int]:
+        if not indexes:
+            return []
+        return [index for index in indexes if index > left_index][:SAME_CAPTURE_RELATION_BUCKET_SCAN_LIMIT]
 
     def _save_cross_capture_memory_relations(
         self,

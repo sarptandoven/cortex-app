@@ -7,6 +7,13 @@ from .extractor import extract_context
 from .storage import CortexStore
 
 
+MCP_QUERY_MAX_CHARS = 500
+MCP_NAME_MAX_CHARS = 160
+MCP_READ_LIMIT_MAX = 50
+MCP_GRAPH_LIMIT_MAX = 300
+MCP_SYNC_RECORD_MAX = 500
+MCP_SYNC_COMMENT_MAX = 50
+
 TOOLS = [
     {
         "name": "remember_this",
@@ -706,6 +713,21 @@ def _bool_arg(args: dict[str, Any], key: str, default: bool = False) -> bool:
     return bool(value)
 
 
+def _bounded_int_arg(args: dict[str, Any], key: str, default: int, *, minimum: int = 1, maximum: int = MCP_READ_LIMIT_MAX) -> int:
+    try:
+        value = int(args.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def _text_arg(args: dict[str, Any], key: str, default: str = "", *, max_chars: int = MCP_QUERY_MAX_CHARS) -> str:
+    value = str(args.get(key, default) or "").strip()
+    if len(value) > max_chars:
+        raise ValueError(f"MCP argument '{key}' exceeds {max_chars} characters.")
+    return value
+
+
 def _markdown_memory_list(title: str, items: list[dict[str, Any]]) -> str:
     lines = [f"# {title}", ""]
     if not items:
@@ -733,8 +755,8 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             extracted=extracted,
         ))
     if name == "search_memory":
-        query = args.get("query", "")
-        limit = int(args.get("top_k", 8))
+        query = _text_arg(args, "query")
+        limit = _bounded_int_arg(args, "top_k", 8)
         metadata_filters = {
             "repository": args.get("repository"),
             "channel": args.get("channel"),
@@ -775,41 +797,44 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             "retrieval": {"diagnostics_unavailable": True},
         }
     if name == "get_recent_context":
-        return store.agent_payload(user_id, store.recent(user_id, int(args.get("limit", 10))))
+        return store.agent_payload(user_id, store.recent(user_id, _bounded_int_arg(args, "limit", 10)))
     if name == "get_memory_graph":
-        return store.agent_payload(user_id, store.graph(user_id, int(args.get("limit", 150))))
+        return store.agent_payload(user_id, store.graph(user_id, _bounded_int_arg(args, "limit", 150, maximum=MCP_GRAPH_LIMIT_MAX)))
     if name == "get_daily_review":
         return store.agent_payload(user_id, store.daily_review(user_id))
     if name == "get_product_loop":
         return store.product_loop(user_id)
     if name == "get_personal_profile":
+        query = _text_arg(args, "query")
         profile = store.personal_profile(
             user_id,
-            query=args.get("query", ""),
-            limit=int(args.get("limit", 6)),
+            query=query,
+            limit=_bounded_int_arg(args, "limit", 6),
             include_pending=_bool_arg(args, "include_pending"),
             sector=args.get("sector"),
         )
-        store.record_context_reuse(user_id, surface="mcp", query=args.get("query", ""), target="personal-profile")
+        store.record_context_reuse(user_id, surface="mcp", query=query, target="personal-profile")
         if args.get("format", "json") == "markdown":
             return profile["markdown"]
         return store.agent_payload(user_id, profile)
     if name == "get_agent_adaptation":
+        query = _text_arg(args, "query")
+        target = _text_arg(args, "target", "assistant", max_chars=MCP_NAME_MAX_CHARS)
         adaptation = store.agent_adaptation(
             user_id,
-            query=args.get("query", ""),
-            target=args.get("target", "assistant"),
-            limit=int(args.get("limit", 8)),
+            query=query,
+            target=target,
+            limit=_bounded_int_arg(args, "limit", 8),
             include_pending=_bool_arg(args, "include_pending"),
             sector=args.get("sector"),
         )
-        store.record_context_reuse(user_id, surface="mcp", query=args.get("query", ""), target=args.get("target", "agent-adaptation"))
+        store.record_context_reuse(user_id, surface="mcp", query=query, target=target)
         if args.get("format", "json") == "markdown":
             return adaptation["markdown"]
         return store.agent_payload(user_id, adaptation)
     if name == "get_style_profile":
-        query = args.get("query", "writing style")
-        limit = int(args.get("limit", 6))
+        query = _text_arg(args, "query", "writing style")
+        limit = _bounded_int_arg(args, "limit", 6)
         sector = args.get("sector")
         style = store.search(user_id, query, limit=limit, layer="style", sector=sector)
         preferences = store.search(user_id, query, limit=max(2, limit // 2), layer="preference", sector=sector)
@@ -829,10 +854,10 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             ])
         return store.agent_payload(user_id, result)
     if name == "get_project_context":
-        name_arg = str(args.get("name") or "").strip()
-        query = str(args.get("query") or "").strip()
+        name_arg = _text_arg(args, "name", max_chars=MCP_NAME_MAX_CHARS)
+        query = _text_arg(args, "query")
         combined_query = " ".join(value for value in [name_arg, query] if value).strip()
-        limit = int(args.get("limit", 8))
+        limit = _bounded_int_arg(args, "limit", 8)
         sector = str(args.get("sector") or "").strip() or None
         if sector:
             memories = store.search(user_id, combined_query or query or name_arg, limit=limit, sector=sector, include_related=True)
@@ -850,8 +875,8 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         store.record_context_reuse(user_id, surface="mcp", query=combined_query, target="project-context")
         return store.agent_payload(user_id, result)
     if name == "get_procedure":
-        query = args.get("query", "")
-        procedures = store.search(user_id, query, limit=int(args.get("limit", 6)), layer="procedural", sector=args.get("sector"))
+        query = _text_arg(args, "query")
+        procedures = store.search(user_id, query, limit=_bounded_int_arg(args, "limit", 6), layer="procedural", sector=args.get("sector"))
         result = {"query": query, "procedures": procedures}
         store.record_context_reuse(user_id, surface="mcp", query=query, target="procedure")
         if args.get("format", "json") == "markdown":
@@ -923,9 +948,9 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             account_identifier=args.get("account_identifier"),
             since=args.get("since"),
             processing=args.get("processing", "sync"),
-            max_records=int(args.get("max_records", 100)),
+            max_records=_bounded_int_arg(args, "max_records", 100, maximum=MCP_SYNC_RECORD_MAX),
             include_comments=_bool_arg(args, "include_comments", default=True),
-            max_comments_per_item=int(args.get("max_comments_per_item", 10)),
+            max_comments_per_item=_bounded_int_arg(args, "max_comments_per_item", 10, minimum=0, maximum=MCP_SYNC_COMMENT_MAX),
             cursor_name=args.get("cursor_name", "issues"),
             api_base_url=args.get("api_base_url"),
         )
@@ -942,7 +967,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             since=args.get("since"),
             page_token=args.get("page_token"),
             processing=args.get("processing", "sync"),
-            max_records=int(args.get("max_records", 50)),
+            max_records=_bounded_int_arg(args, "max_records", 50, maximum=MCP_SYNC_RECORD_MAX),
             cursor_name=args.get("cursor_name", "messages"),
             include_body=_bool_arg(args, "include_body", True),
             api_base_url=args.get("api_base_url"),
@@ -960,7 +985,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             since=args.get("since"),
             page_token=args.get("page_token"),
             processing=args.get("processing", "sync"),
-            max_records=int(args.get("max_records", 50)),
+            max_records=_bounded_int_arg(args, "max_records", 50, maximum=MCP_SYNC_RECORD_MAX),
             cursor_name=args.get("cursor_name", "files"),
             include_content=_bool_arg(args, "include_content", True),
             api_base_url=args.get("api_base_url"),
@@ -977,7 +1002,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             since=args.get("since"),
             page_token=args.get("page_token"),
             processing=args.get("processing", "sync"),
-            max_records=int(args.get("max_records", 50)),
+            max_records=_bounded_int_arg(args, "max_records", 50, maximum=MCP_SYNC_RECORD_MAX),
             cursor_name=args.get("cursor_name", "messages"),
             include_body=_bool_arg(args, "include_body", True),
             api_base_url=args.get("api_base_url"),
@@ -993,7 +1018,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             account_identifier=args.get("account_identifier"),
             since=args.get("since"),
             processing=args.get("processing", "sync"),
-            max_records=int(args.get("max_records", 100)),
+            max_records=_bounded_int_arg(args, "max_records", 100, maximum=MCP_SYNC_RECORD_MAX),
             cursor_name=args.get("cursor_name", "messages"),
             workspace_url=args.get("workspace_url"),
             api_base_url=args.get("api_base_url"),
@@ -1009,7 +1034,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             since=args.get("since"),
             page_cursor=args.get("page_cursor"),
             processing=args.get("processing", "sync"),
-            max_records=int(args.get("max_records", 100)),
+            max_records=_bounded_int_arg(args, "max_records", 100, maximum=MCP_SYNC_RECORD_MAX),
             cursor_name=args.get("cursor_name", "highlights"),
             api_base_url=args.get("api_base_url"),
         )
@@ -1024,7 +1049,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             account_identifier=args.get("account_identifier"),
             since=args.get("since"),
             processing=args.get("processing", "sync"),
-            max_records=int(args.get("max_records", 100)),
+            max_records=_bounded_int_arg(args, "max_records", 100, maximum=MCP_SYNC_RECORD_MAX),
             cursor_name=args.get("cursor_name", "events"),
         )
         return store.agent_payload(user_id, result)
@@ -1039,7 +1064,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             since=args.get("since"),
             page=args.get("page"),
             processing=args.get("processing", "sync"),
-            max_records=int(args.get("max_records", 100)),
+            max_records=_bounded_int_arg(args, "max_records", 100, maximum=MCP_SYNC_RECORD_MAX),
             cursor_name=args.get("cursor_name", "raindrops"),
             include_highlights=_bool_arg(args, "include_highlights", True),
             api_base_url=args.get("api_base_url"),
@@ -1057,7 +1082,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             since=args.get("since"),
             cursor=args.get("cursor"),
             processing=args.get("processing", "sync"),
-            max_records=int(args.get("max_records", 100)),
+            max_records=_bounded_int_arg(args, "max_records", 100, maximum=MCP_SYNC_RECORD_MAX),
             cursor_name=args.get("cursor_name", "items"),
             include_attachments=_bool_arg(args, "include_attachments", False),
             api_base_url=args.get("api_base_url"),
@@ -1073,7 +1098,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             since=args.get("since"),
             cursor=args.get("cursor"),
             processing=args.get("processing", "sync"),
-            max_records=int(args.get("max_records", 100)),
+            max_records=_bounded_int_arg(args, "max_records", 100, maximum=MCP_SYNC_RECORD_MAX),
             cursor_name=args.get("cursor_name", "issues"),
             api_url=args.get("api_url"),
         )
@@ -1091,7 +1116,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             since=args.get("since"),
             page_token=args.get("page_token"),
             processing=args.get("processing", "sync"),
-            max_records=int(args.get("max_records", 100)),
+            max_records=_bounded_int_arg(args, "max_records", 100, maximum=MCP_SYNC_RECORD_MAX),
             cursor_name=args.get("cursor_name", "issues"),
         )
         return store.agent_payload(user_id, result)
@@ -1105,7 +1130,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             since=args.get("since"),
             cursor=args.get("cursor"),
             processing=args.get("processing", "sync"),
-            max_records=int(args.get("max_records", 50)),
+            max_records=_bounded_int_arg(args, "max_records", 50, maximum=MCP_SYNC_RECORD_MAX),
             cursor_name=args.get("cursor_name", "pages"),
             include_content=_bool_arg(args, "include_content", True),
             api_base_url=args.get("api_base_url"),
@@ -1113,26 +1138,26 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         )
         return store.agent_payload(user_id, result)
     if name == "build_context_pack":
-        query = args.get("query", "")
-        value = store.context_pack(user_id, query, int(args.get("limit", 12)), sector=args.get("sector"))
-        store.record_context_reuse(user_id, surface="mcp", query=query, target=args.get("target", "mcp-agent"))
+        query = _text_arg(args, "query")
+        value = store.context_pack(user_id, query, _bounded_int_arg(args, "limit", 12), sector=args.get("sector"))
+        store.record_context_reuse(user_id, surface="mcp", query=query, target=_text_arg(args, "target", "mcp-agent", max_chars=MCP_NAME_MAX_CHARS))
         return value
     if name == "get_decisions":
-        return store.agent_payload(user_id, store.search(user_id, args.get("query", "decision"), int(args.get("top_k", 10)), kind="decision", sector=args.get("sector")))
+        return store.agent_payload(user_id, store.search(user_id, _text_arg(args, "query", "decision"), _bounded_int_arg(args, "top_k", 10), kind="decision", sector=args.get("sector")))
     if name == "get_open_questions":
-        return store.agent_payload(user_id, store.open_tasks(user_id, int(args.get("limit", 20))))
+        return store.agent_payload(user_id, store.open_tasks(user_id, _bounded_int_arg(args, "limit", 20)))
     if name == "list_memory_topics":
-        return store.list_topics(user_id, int(args.get("limit", 30)), sector=args.get("sector"))
+        return store.list_topics(user_id, _bounded_int_arg(args, "limit", 30), sector=args.get("sector"))
     if name == "list_memory_entities":
-        return store.agent_payload(user_id, store.list_entities(user_id, int(args.get("limit", 30)), sector=args.get("sector")))
+        return store.agent_payload(user_id, store.list_entities(user_id, _bounded_int_arg(args, "limit", 30), sector=args.get("sector")))
     if name == "get_about_person":
-        return store.agent_payload(user_id, store.about_person(user_id, args.get("name", ""), int(args.get("limit", 12))))
+        return store.agent_payload(user_id, store.about_person(user_id, _text_arg(args, "name", max_chars=MCP_NAME_MAX_CHARS), _bounded_int_arg(args, "limit", 12)))
     if name == "get_about_entity":
-        return store.agent_payload(user_id, store.about_entity(user_id, args.get("name", ""), int(args.get("limit", 12))))
+        return store.agent_payload(user_id, store.about_entity(user_id, _text_arg(args, "name", max_chars=MCP_NAME_MAX_CHARS), _bounded_int_arg(args, "limit", 12)))
     if name == "get_memory_stats":
         return store.stats(user_id)
     if name == "get_memory_inbox":
-        return store.agent_payload(user_id, store.inbox(user_id, int(args.get("limit", 10))))
+        return store.agent_payload(user_id, store.inbox(user_id, _bounded_int_arg(args, "limit", 10)))
     if name == "approve_memory_capture":
         return {"approved": store.approve_capture(user_id, args["capture_id"])}
     if name == "archive_memory_capture":
@@ -1168,7 +1193,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
     if name == "get_trust_summary":
         return store.trust_summary(user_id)
     if name == "get_audit_log":
-        return store.audit_log(user_id, int(args.get("limit", 30)))
+        return store.audit_log(user_id, _bounded_int_arg(args, "limit", 30))
     raise ValueError(f"Unknown Cortex tool: {name}")
 
 

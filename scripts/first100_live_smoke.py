@@ -539,6 +539,21 @@ class LiveSmokeRunner:
         )
         ensure("stale citations disappear" in mcp_procedure["result"]["content"][0]["text"], "MCP get_procedure missed edited smoke procedure", mcp_procedure)
 
+        mcp_project = self.scoped_mcp_request(
+            "/mcp",
+            method="POST",
+            data={
+                "jsonrpc": "2.0",
+                "id": "project-context",
+                "method": "tools/call",
+                "params": {
+                    "name": "get_project_context",
+                    "arguments": {"name": "Cortex", "query": self.marker, "limit": 4},
+                },
+            },
+        )
+        ensure(self.marker in mcp_project["result"]["content"][0]["text"], "MCP get_project_context missed edited smoke memory", mcp_project)
+
         mcp_style = self.scoped_mcp_request(
             "/mcp",
             method="POST",

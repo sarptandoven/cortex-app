@@ -14,7 +14,7 @@ from unittest.mock import patch
 from backend.app.database import connect, init_db
 from backend.app.extractor import extract_context
 from backend.app.mcp_tools import call_tool
-from backend.app.storage import CortexStore
+from backend.app.storage import CortexStore, SAME_CAPTURE_RELATION_PER_MEMORY_LIMIT, SAME_CAPTURE_RELATION_TOTAL_LIMIT
 from scripts.export_support_bundle import validate_content_free_bundle
 
 
@@ -212,6 +212,52 @@ class CortexStorageLifecycleTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(relation_count_after_archive, 0)
         self.assertEqual(self.store.answer_query(self.user_id, "risk budget local-first path", limit=2)["citations"], [])
+
+    def test_large_capture_relation_generation_is_bounded(self) -> None:
+        records = [
+            {
+                "id": f"mem_bulk_atlas_{index:03d}",
+                "kind": "claim",
+                "layer": "semantic",
+                "content": f"Project Atlas bulk memory {index} should not create every possible same-capture relation.",
+                "summary": f"Project Atlas bulk memory {index}.",
+                "confidence": "confirmed",
+                "importance": 2,
+                "topics": ["Project Atlas", "bulk-sync"],
+                "entity_ids": ["project_atlas"],
+            }
+            for index in range(420)
+        ]
+
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="\n".join(record["content"] for record in records),
+            source="obsidian",
+            source_url="file:///tmp/Atlas%20Bulk.md",
+            title="Atlas Bulk",
+            extracted={
+                "_timestamp": "2026-06-30T10:00:00+00:00",
+                "summary": "Bulk Project Atlas memory.",
+                "records": records,
+                "tasks": [],
+                "entities": [
+                    {"id": "project_atlas", "kind": "project", "name": "Project Atlas", "aliases": ["Atlas"], "context": ""}
+                ],
+            },
+        )
+
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS count, MAX(metadata_json) AS metadata_json FROM memory_relations WHERE user_id = ?",
+                (self.user_id,),
+            ).fetchone()
+
+        all_pairs = (len(records) * (len(records) - 1)) // 2
+        self.assertGreater(row["count"], 0)
+        self.assertLess(row["count"], all_pairs)
+        self.assertLessEqual(row["count"], SAME_CAPTURE_RELATION_TOTAL_LIMIT)
+        self.assertLessEqual(row["count"], len(records) * SAME_CAPTURE_RELATION_PER_MEMORY_LIMIT)
+        self.assertTrue(json.loads(row["metadata_json"])["bounded"])
 
     def test_related_memory_links_across_source_records_by_entity(self) -> None:
         decision = self.store.save_capture(
@@ -1528,7 +1574,7 @@ class CortexStorageLifecycleTests(unittest.TestCase):
             {(first["id"], "archived"), (second["id"], "approved")},
         )
 
-    def test_baseline_ten_catalog_services_do_not_make_fake_primary_ui_promises(self) -> None:
+    def test_baseline_thirteen_catalog_services_do_not_make_fake_primary_ui_promises(self) -> None:
         catalog = {item["id"]: item for item in self.store.source_connector_catalog()}
         wired_source_paths = {
             "obsidian": "native-local-connector",

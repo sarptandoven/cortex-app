@@ -2317,6 +2317,116 @@ END:VCALENDAR
         self.assertTrue(github["service_baseline"]["records_supported"])
         self.assertFalse(github["service_baseline"]["primary_ui"])
 
+    def test_read_only_mcp_high_value_tools_are_structured_and_bounded(self) -> None:
+        user = "mcp-high-value-tool-contract"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+        read_token = "cxm_fastapi_high_value_read_123456789"
+        self._allow_pending_context(user)
+        self.client.put(
+            "/v1/settings",
+            json={"review_new_captures": False, "source_policies": {"github": {"mode": "trusted"}}},
+            headers=headers,
+        )
+        registered = self.client.post(
+            "/v1/integrations/mcp-token",
+            json={"token": read_token, "label": "High value MCP", "scopes": ["read"]},
+            headers=headers,
+        )
+        self.assertEqual(registered.status_code, 200)
+        self.assertEqual(registered.json()["scopes"], ["read"])
+
+        created = self.client.post(
+            "/v1/captures",
+            json={
+                "content": (
+                    "Project Atlas decision: keep the local-first launch gate because support load is low. "
+                    "Project Atlas procedure: before inviting users, run backend tests and verify codesign. "
+                    "I write concise launch notes with direct caveats and source-backed bullets."
+                ),
+                "source": "github",
+                "source_url": "cortex-source://github#service=github&repository=cortex-app&file=issues.json&line=88&excerpt=atlas-launch",
+            },
+            headers=headers,
+        )
+        self.assertEqual(created.status_code, 200)
+
+        def call(name: str, arguments: dict[str, object]) -> dict[str, object]:
+            response = self.client.post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": name,
+                    "method": "tools/call",
+                    "params": {"name": name, "arguments": arguments},
+                },
+                headers={"Authorization": f"Bearer {read_token}", "X-Cortex-User": user},
+            )
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertNotIn("error", payload)
+            result = payload["result"]
+            self.assertIn("structuredContent", result)
+            self.assertEqual(json.loads(result["content"][0]["text"]), result["structuredContent"])
+            return result["structuredContent"]
+
+        project = call("get_project_context", {"name": "Project Atlas", "limit": 200})
+        self.assertEqual(project["name"], "Project Atlas")
+        self.assertGreaterEqual(len(project["memories"]), 1)
+        self.assertLessEqual(len(project["memories"]), 50)
+        self.assertTrue(any("line=88" in str(item.get("source_url") or "") for item in project["memories"]))
+
+        procedure = call("get_procedure", {"query": "Project Atlas invite users launch gate", "limit": 200})
+        self.assertGreaterEqual(len(procedure["procedures"]), 1)
+        self.assertLessEqual(len(procedure["procedures"]), 50)
+        self.assertTrue(all(item["layer"] == "procedural" for item in procedure["procedures"]))
+
+        style = call("get_style_profile", {"query": "launch notes caveats", "limit": 200})
+        self.assertLessEqual(len(style["style"]), 50)
+        self.assertLessEqual(len(style["preferences"]), 25)
+        self.assertLessEqual(len(style["negative_constraints"]), 25)
+
+        too_long = self.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": "too-long",
+                "method": "tools/call",
+                "params": {"name": "search_memory", "arguments": {"query": "x" * 501}},
+            },
+            headers={"Authorization": f"Bearer {read_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(too_long.status_code, 200)
+        self.assertEqual(too_long.json()["error"]["code"], -32000)
+        self.assertIn("exceeds 500 characters", too_long.json()["error"]["message"])
+
+    def test_mcp_direct_sync_tools_bound_requested_work_size(self) -> None:
+        user = "mcp-sync-bound-contract"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+        with patch.object(main_module.store, "sync_github_account", return_value={"source_account_id": "src_github", "records": []}) as sync:
+            response = self.client.post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "sync-github",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "sync_github",
+                        "arguments": {
+                            "token": "ghp_test",
+                            "repositories": ["doppl-tech/cortex-app"],
+                            "max_records": 1000000,
+                            "max_comments_per_item": 1000000,
+                        },
+                    },
+                },
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("error", response.json())
+        self.assertEqual(sync.call_args.kwargs["max_records"], 500)
+        self.assertEqual(sync.call_args.kwargs["max_comments_per_item"], 50)
+
     def test_read_only_mcp_search_suppresses_edited_obsidian_note_pending_review(self) -> None:
         user = "mcp-obsidian-review-contract"
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
