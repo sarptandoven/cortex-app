@@ -37,6 +37,18 @@ python3 scripts/first100_live_smoke.py
 
 It uses the local app token from `~/Library/Application Support/Cortex/credentials.json`, syncs a temporary Obsidian vault under an isolated smoke user, verifies Review/Ask/MCP, and deletes the smoke user rows. It does not create a backup unless `--include-backup` is passed.
 
+Before inviting a tester batch, run the launch gate summary:
+
+```bash
+python3 scripts/first100_launch_gate.py
+```
+
+This command verifies the tracked release artifacts, update manifest, docs, distribution site, issue templates, and clean worktree. It returns `needs_human` when automated checks pass but the required support packet fields still need to be filled. To make missing ownership fail the gate, pass a filled packet file:
+
+```bash
+python3 scripts/first100_launch_gate.py --support-packet path/to/packet.txt --require-human-packet
+```
+
 ## 2. Invite The Right Testers
 
 Good first-100 users:
