@@ -31,6 +31,17 @@ VAULT_DIRECTORIES = (
 )
 RESTORE_ROOT_FILES = {"manifest.json", "settings.json", "events.jsonl"}
 RESTORE_DIRECTORIES = {"imports", "source_accounts", "sync_cursors", "sync_devices", "sync_receipts", "captures", "memories", "tasks", "entities", "graph_edges", "deletion_tombstones", "attachments"}
+BACKUP_DENY_FILENAMES = {
+    ".env",
+    ".netrc",
+    "credentials.json",
+    "cortex-app.log",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+}
+BACKUP_DENY_NAME_PREFIXES = (".cortex-backup-",)
 
 
 def vault_now() -> str:
@@ -420,18 +431,47 @@ class CortexVault:
         self.ensure()
         backup_path = self.backups_dir / f"cortex-vault-{timestamp}.zip"
         with zipfile.ZipFile(backup_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
-            for path in sorted(self.root.rglob("*")):
-                if path.is_dir():
-                    continue
-                relative = path.relative_to(self.root)
-                if relative.parts and relative.parts[0] == "backups":
-                    continue
+            for path in sorted(self._iter_backup_files()):
                 if path == self.index_path or path.name in {self.index_path.name + "-wal", self.index_path.name + "-shm"}:
                     continue
+                relative = path.relative_to(self.root)
                 archive.write(path, relative.as_posix())
             if sqlite_backup_path.exists():
                 archive.write(sqlite_backup_path, "index.sqlite")
         return backup_path
+
+    def _iter_backup_files(self) -> Iterable[Path]:
+        for file_name in sorted(RESTORE_ROOT_FILES):
+            path = self.root / file_name
+            if self._should_include_backup_file(path):
+                yield path
+        for directory in sorted(RESTORE_DIRECTORIES):
+            root = self.root / directory
+            if not root.exists():
+                continue
+            for path in sorted(root.rglob("*")):
+                if self._should_include_backup_file(path):
+                    yield path
+
+    def _should_include_backup_file(self, path: Path) -> bool:
+        if not path.is_file() or path.is_symlink():
+            return False
+        try:
+            relative = path.relative_to(self.root)
+        except ValueError:
+            return False
+        if not relative.parts:
+            return False
+        name = path.name
+        lowered = name.lower()
+        if lowered in BACKUP_DENY_FILENAMES:
+            return False
+        if any(name.startswith(prefix) for prefix in BACKUP_DENY_NAME_PREFIXES):
+            return False
+        top = relative.parts[0]
+        if top in RESTORE_ROOT_FILES:
+            return len(relative.parts) == 1
+        return top in RESTORE_DIRECTORIES
 
     def delete_backups(self) -> dict[str, Any]:
         self.ensure()

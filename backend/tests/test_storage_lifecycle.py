@@ -3010,6 +3010,39 @@ Never use [[Templates/Marketing]] boilerplate in memory.
         self.assertFalse(backup_path.exists())
         self.assertEqual(self.store.diagnostics(self.user_id)["vault"]["record_counts"]["backups"], 0)
 
+    def test_backup_excludes_local_credentials_logs_and_config_backups(self) -> None:
+        self.capture("Backup allowlist should still include normal Cortex vault records.")
+        sensitive_files = {
+            "credentials.json": "{\"localBetaAPIKey.v1\":\"cx_secret\"}",
+            "cortex-app.log": "Authorization: Bearer cx_secret",
+            ".env": "CORTEX_API_KEY=cx_secret",
+            ".cortex-backup-mcp.json": "{\"CORTEX_API_KEY\":\"cx_secret\"}",
+            "exports/export.json": "{\"token\":\"cx_secret\"}",
+            "attachments/credentials.json": "{\"token\":\"cx_secret\"}",
+            "attachments/.cortex-backup-config.json": "{\"token\":\"cx_secret\"}",
+        }
+        for relative, content in sensitive_files.items():
+            path = self.store.vault.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        normal_attachment = self.store.vault.root / "attachments" / "safe-note.txt"
+        normal_attachment.write_text("safe attachment", encoding="utf-8")
+
+        backup = self.store.create_backup(self.user_id)
+        with zipfile.ZipFile(backup["backup_path"]) as archive:
+            names = set(archive.namelist())
+            backup_text = "\n".join(
+                archive.read(name).decode("utf-8", errors="ignore")
+                for name in names
+                if name.endswith((".json", ".jsonl", ".txt", ".env"))
+            )
+
+        self.assertTrue(any(name.startswith("captures/") for name in names))
+        self.assertIn("attachments/safe-note.txt", names)
+        for relative in sensitive_files:
+            self.assertNotIn(relative, names)
+        self.assertNotIn("cx_secret", backup_text)
+
     def test_backup_retention_prunes_older_archives_by_count(self) -> None:
         self.capture("Backup retention should keep the newest recovery archive.")
         backup_paths: list[Path] = []

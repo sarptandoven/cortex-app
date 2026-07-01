@@ -32,6 +32,20 @@ class LiveSmokeFailure(AssertionError):
 
 def read_default_token() -> str:
     try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", DEFAULT_APP_DOMAIN, "-a", DEFAULT_TOKEN_KEY, "-w"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            token = result.stdout.strip()
+            if token:
+                return token
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
         if DEFAULT_CREDENTIALS_PATH.exists():
             payload = json.loads(DEFAULT_CREDENTIALS_PATH.read_text(encoding="utf-8"))
             token = str(payload.get(DEFAULT_TOKEN_KEY) or "").strip()

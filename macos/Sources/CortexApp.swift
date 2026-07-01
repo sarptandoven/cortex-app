@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import SwiftUI
 import Carbon
+import Security
 import UserNotifications
 import Darwin
 import UniformTypeIdentifiers
@@ -1922,6 +1923,8 @@ final class BackendSupervisor {
     }
 
 private enum CortexCredentialStore {
+    private static let keychainService = Bundle.main.bundleIdentifier ?? "com.cortex.doppl"
+
     private static var credentialsURL: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -1931,30 +1934,32 @@ private enum CortexCredentialStore {
     }
 
     static func loadSecret(forKey key: String) -> String? {
-        guard let payload = readPayload(),
-              let value = payload[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !value.isEmpty else {
+        if let value = loadKeychainSecret(forKey: key) {
+            return value
+        }
+        guard let payload = readLegacyPayload(),
+              let value = normalized(payload[key]) else {
             return nil
+        }
+        if saveKeychainSecret(value, forKey: key) {
+            removeLegacyFileSecret(forKey: key)
         }
         return value
     }
 
     static func saveSecret(_ value: String, forKey key: String) {
-        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else { return }
-        var payload = readPayload() ?? [:]
-        payload[key] = normalized
-        writePayload(payload)
+        guard let normalized = normalized(value) else { return }
+        if saveKeychainSecret(normalized, forKey: key) {
+            removeLegacyFileSecret(forKey: key)
+        } else {
+            writeLegacyFileSecret(normalized, forKey: key)
+        }
         UserDefaults.standard.removeObject(forKey: key)
     }
 
     static func removeSecret(forKey key: String) {
-        guard var payload = readPayload() else {
-            UserDefaults.standard.removeObject(forKey: key)
-            return
-        }
-        payload.removeValue(forKey: key)
-        writePayload(payload)
+        deleteKeychainSecret(forKey: key)
+        removeLegacyFileSecret(forKey: key)
         UserDefaults.standard.removeObject(forKey: key)
     }
 
@@ -1962,7 +1967,67 @@ private enum CortexCredentialStore {
         UserDefaults.standard.removeObject(forKey: key)
     }
 
-    private static func readPayload() -> [String: String]? {
+    private static func normalized(_ value: String?) -> String? {
+        let value = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private static func keychainQuery(forKey key: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: key
+        ]
+    }
+
+    private static func loadKeychainSecret(forKey key: String) -> String? {
+        var query = keychainQuery(forKey: key)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess,
+              let data = result as? Data,
+              let value = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return normalized(value)
+    }
+
+    private static func saveKeychainSecret(_ value: String, forKey key: String) -> Bool {
+        guard let data = value.data(using: .utf8) else { return false }
+        let query = keychainQuery(forKey: key)
+        let update: [String: Any] = [kSecValueData as String: data]
+        let updateStatus = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        if updateStatus == errSecSuccess {
+            return true
+        }
+        guard updateStatus == errSecItemNotFound else {
+            NSLog("Cortex keychain update failed for \(key): \(updateStatus)")
+            return false
+        }
+
+        var add = query
+        add[kSecValueData as String] = data
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let addStatus = SecItemAdd(add as CFDictionary, nil)
+        if addStatus != errSecSuccess {
+            NSLog("Cortex keychain save failed for \(key): \(addStatus)")
+        }
+        return addStatus == errSecSuccess
+    }
+
+    @discardableResult
+    private static func deleteKeychainSecret(forKey key: String) -> Bool {
+        let status = SecItemDelete(keychainQuery(forKey: key) as CFDictionary)
+        if status != errSecSuccess && status != errSecItemNotFound {
+            NSLog("Cortex keychain delete failed for \(key): \(status)")
+        }
+        return status == errSecSuccess || status == errSecItemNotFound
+    }
+
+    private static func readLegacyPayload() -> [String: String]? {
         guard let data = try? Data(contentsOf: credentialsURL),
               let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
@@ -1976,12 +2041,28 @@ private enum CortexCredentialStore {
         return payload
     }
 
-    private static func writePayload(_ payload: [String: String]) {
+    private static func writeLegacyFileSecret(_ value: String, forKey key: String) {
+        var payload = readLegacyPayload() ?? [:]
+        payload[key] = value
+        writeLegacyPayload(payload)
+    }
+
+    private static func removeLegacyFileSecret(forKey key: String) {
+        guard var payload = readLegacyPayload() else { return }
+        payload.removeValue(forKey: key)
+        writeLegacyPayload(payload)
+    }
+
+    private static func writeLegacyPayload(_ payload: [String: String]) {
         let manager = FileManager.default
         let directory = credentialsURL.deletingLastPathComponent()
         do {
             try manager.createDirectory(at: directory, withIntermediateDirectories: true)
             try? manager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            guard !payload.isEmpty else {
+                try? manager.removeItem(at: credentialsURL)
+                return
+            }
             let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: credentialsURL, options: .atomic)
             try? manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: credentialsURL.path)
