@@ -2241,14 +2241,14 @@ END:VCALENDAR
         self.assertEqual(result["source_account"]["connection_type"], "local-file")
         self.assertEqual(result["source_account"]["metadata"]["path_redacted"], True)
         self.assertNotIn(str(private_path), json.dumps(result))
-        self.assertTrue(result["records"][0]["source_url"].startswith("source-account://calendar/"))
+        self.assertTrue(result["records"][0]["source_url"].startswith("calendar://event/event-storage%40example.com"))
         capture_id = result["capture_ids"][0]
         self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
 
         search = self.store.search(self.user_id, "Calendar events exact source citations", limit=3)
         self.assertTrue(search)
         self.assertEqual(search[0]["source"], "calendar")
-        self.assertTrue(search[0]["source_url"].startswith("source-account://calendar/"))
+        self.assertTrue(search[0]["source_url"].startswith("calendar://event/event-storage%40example.com"))
         self.assertIn("line=", search[0]["source_url"])
         self.assertIn("excerpt=", search[0]["source_url"])
         self.assertEqual(search[0]["provenance"]["record_metadata"]["uid"], "event-storage@example.com")
@@ -2304,7 +2304,7 @@ END:VCALENDAR
         self.assertEqual(synced["source"], "calendar")
         self.assertEqual(synced["saved"], 1)
         self.assertNotIn(str(private_path), json.dumps(synced))
-        self.assertTrue(synced["records"][0]["source_url"].startswith("source-account://calendar/"))
+        self.assertTrue(synced["records"][0]["source_url"].startswith("calendar://event/event-mcp%40example.com"))
 
     def test_raindrop_account_sync_fetches_bookmarks_with_stable_citations(self) -> None:
         def fake_request(url: str, headers: dict[str, str]):

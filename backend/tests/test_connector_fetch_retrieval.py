@@ -58,8 +58,8 @@ class ConnectorFetchRetrievalTests(unittest.TestCase):
                 "source": "calendar",
                 "marker": "calendarcitetest",
                 "query": "calendarcitetest retrieval Calendar citations",
-                "search_url_prefix": "source-account://calendar/",
-                "ask_url_prefix": "source-account://calendar/",
+                "search_url_prefix": "calendar://event/event-1%40example.com",
+                "ask_url_prefix": "calendar://event/event-1%40example.com",
                 "sync": self._sync_calendar,
             },
             {

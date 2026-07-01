@@ -53,10 +53,11 @@ class CalendarConnectorTests(unittest.TestCase):
         self.assertNotIn(str(path), str(sync.to_summary()))
         first = sync.records[0].to_source_account_record()
         self.assertEqual(first["external_id"], "calendar:event:event-1@example.com")
-        self.assertEqual(first["source_url"], "")
+        self.assertEqual(first["source_url"], "calendar://event/event-1%40example.com")
         self.assertIn("Source: Calendar", first["content"])
         self.assertIn("with comma, semicolon; and foldedcontinuation.", first["content"])
         self.assertNotIn("Reminder text", first["content"])
+        self.assertEqual(first["metadata"]["url"], "calendar://event/event-1%40example.com")
         self.assertEqual(first["metadata"]["attendees"], ["mailto:ada@example.com", "mailto:grace@example.com"])
         self.assertNotIn(str(path), str(first))
 
@@ -79,6 +80,7 @@ class CalendarConnectorTests(unittest.TestCase):
         self.assertEqual(sync.source_label, "calendar.example.com")
         self.assertNotIn("secret-feed-token", str(sync.to_summary()))
         self.assertNotIn("calendar.example.com/private", str(sync.records[0].to_source_account_record()))
+        self.assertEqual(sync.records[0].source_url, "calendar://event/event-1%40example.com")
 
     def test_fetch_calendar_records_requires_exactly_one_source(self) -> None:
         with self.assertRaisesRegex(ValueError, "exactly one"):

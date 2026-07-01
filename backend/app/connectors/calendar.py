@@ -5,7 +5,7 @@ import hashlib
 import re
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from ._redaction import redact_error_message
@@ -209,7 +209,7 @@ def _record_from_event(lines: list[str]) -> tuple[CalendarSyncRecord | None, lis
     attendees = fields.get("ATTENDEE") or []
     updated = _first(fields, "LAST-MODIFIED") or _first(fields, "DTSTAMP") or dtstart
     external_id = _external_id(uid)
-    source_url = ""
+    source_url = _event_source_url(uid, external_id)
 
     lines_out = [
         "Source: Calendar",
@@ -248,6 +248,7 @@ def _record_from_event(lines: list[str]) -> tuple[CalendarSyncRecord | None, lis
                 "location": location,
                 "organizer": organizer,
                 "attendees": attendees[:50],
+                "url": source_url,
                 "source_type": "calendar_event",
                 "source_quality": "canonical",
             },
@@ -292,6 +293,14 @@ def _external_id(uid: str) -> str:
         return base
     digest = hashlib.sha256(uid.encode("utf-8")).hexdigest()[:24]
     return f"calendar:event:{digest}"
+
+
+def _event_source_url(uid: str, external_id: str) -> str:
+    quoted_uid = quote(uid.strip(), safe="")
+    url = f"calendar://event/{quoted_uid}"
+    if len(url) <= 500:
+        return url
+    return f"calendar://event/{external_id.removeprefix('calendar:event:')}"
 
 
 def _max_text(left: str | None, right: str | None) -> str | None:
