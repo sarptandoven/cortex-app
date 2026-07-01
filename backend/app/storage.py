@@ -1140,6 +1140,9 @@ def _unique_preserving_order(values: Iterable[Any]) -> list[str]:
 def _memory_duplicate_key(value: str) -> str:
     text = re.sub(r"https?://\S+|www\.\S+", " ", value.casefold())
     text = re.sub(r"\b[\w.+-]+@[\w.-]+\.\w+\b", " ", text)
+    text = re.sub(r"^\s*(?:decision|summary|preference|procedure|process|note)\s*:\s*", " ", text)
+    text = re.sub(r"^\s*(?:we|i)\s+(?:decided|chose|agreed)\s+(?:that\s+)?", " ", text)
+    text = re.sub(r"^\s*(?:we|i)\s+(?:prefer|like|need|want)\s+(?:that\s+)?", " ", text)
     text = re.sub(r"[^a-z0-9]+", " ", text)
     words = [word for word in text.split() if word]
     if len(words) < 6:

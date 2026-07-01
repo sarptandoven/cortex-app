@@ -465,8 +465,35 @@ class SourceIngestTests(unittest.TestCase):
                 "entities": [],
             },
         )
+        third = store.save_capture(
+            user_id="test-user",
+            content="Decision: Project Dedup should keep one memory with citations.",
+            source="email",
+            source_url="mail://third",
+            title="Third",
+            extracted={
+                "_timestamp": "2026-06-29T10:02:00Z",
+                "summary": "",
+                "records": [
+                    {
+                        "id": "mem_third_dedup",
+                        "kind": "decision",
+                        "layer": "decision",
+                        "content": "Decision: Project Dedup should keep one memory with citations.",
+                        "summary": "",
+                        "confidence": "confirmed",
+                        "importance": 4,
+                        "topics": ["dedup"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
 
         self.assertEqual(second["memories"][0]["id"], first["memories"][0]["id"])
+        self.assertEqual(third["memories"][0]["id"], first["memories"][0]["id"])
         conn = sqlite3.connect(db_path)
         try:
             count = conn.execute(
