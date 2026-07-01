@@ -16,6 +16,7 @@ DEFAULT_API_BASE_URL = "https://api.notion.com/v1"
 DEFAULT_NOTION_VERSION = "2026-03-11"
 MAX_RECORDS = 200
 MAX_BLOCKS_PER_PAGE = 80
+MAX_BLOCK_TREE_DEPTH = 3
 
 
 RequestJSON = Callable[[str, dict[str, str], dict[str, Any] | None, str], Any]
@@ -172,26 +173,77 @@ def _fetch_page_blocks(
     if not page_id:
         return []
     blocks: list[dict[str, Any]] = []
+    _append_child_blocks(
+        base_url,
+        headers,
+        parent_id=page_id,
+        requester=requester,
+        errors=errors,
+        secrets=secrets,
+        blocks=blocks,
+        depth=0,
+        seen_parent_ids=set(),
+    )
+    return blocks
+
+
+def _append_child_blocks(
+    base_url: str,
+    headers: dict[str, str],
+    *,
+    parent_id: str,
+    requester: RequestJSON,
+    errors: list[dict[str, Any]],
+    secrets: list[str | None],
+    blocks: list[dict[str, Any]],
+    depth: int,
+    seen_parent_ids: set[str],
+) -> None:
+    if len(blocks) >= MAX_BLOCKS_PER_PAGE or depth > MAX_BLOCK_TREE_DEPTH:
+        return
+    if parent_id in seen_parent_ids:
+        errors.append({"block_id": parent_id, "error": "Notion block tree contained a repeated parent id"})
+        return
+    seen_parent_ids.add(parent_id)
     cursor: str | None = None
     while len(blocks) < MAX_BLOCKS_PER_PAGE:
         query = {"page_size": str(min(100, MAX_BLOCKS_PER_PAGE - len(blocks)))}
         if cursor:
             query["start_cursor"] = cursor
-        url = f"{base_url}/blocks/{page_id}/children?{urlencode(query)}"
+        url = f"{base_url}/blocks/{parent_id}/children?{urlencode(query)}"
         try:
             payload = requester(url, headers, None, "GET")
         except Exception as exc:
-            errors.append({"page_id": page_id, "error": redact_error_message(exc, secrets)})
+            errors.append({"block_id": parent_id, "error": redact_error_message(exc, secrets)})
             break
         if not isinstance(payload, dict):
-            errors.append({"page_id": page_id, "error": "Notion block children response was not an object"})
+            errors.append({"block_id": parent_id, "error": "Notion block children response was not an object"})
             break
         results = payload.get("results") if isinstance(payload.get("results"), list) else []
-        blocks.extend(item for item in results if isinstance(item, dict))
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            block = {**item, "_cortex_depth": depth}
+            blocks.append(block)
+            block_id = _text(item.get("id"))
+            if bool(item.get("has_children")) and block_id and len(blocks) < MAX_BLOCKS_PER_PAGE:
+                _append_child_blocks(
+                    base_url,
+                    headers,
+                    parent_id=block_id,
+                    requester=requester,
+                    errors=errors,
+                    secrets=secrets,
+                    blocks=blocks,
+                    depth=depth + 1,
+                    seen_parent_ids=seen_parent_ids,
+                )
+            if len(blocks) >= MAX_BLOCKS_PER_PAGE:
+                break
         cursor = str(payload.get("next_cursor") or "").strip() or None
         if not payload.get("has_more") or not cursor:
             break
-    return blocks
+    seen_parent_ids.discard(parent_id)
 
 
 def _record_from_page(page: dict[str, Any], blocks: list[dict[str, Any]]) -> NotionSyncRecord | None:
@@ -300,10 +352,20 @@ def _block_text(block: dict[str, Any]) -> str:
     text = _rich_text(value.get("rich_text") if isinstance(value, dict) else None)
     if not text and block_type == "child_page" and isinstance(value, dict):
         text = _clean_text(value.get("title"))
+    if not text and block_type == "child_database" and isinstance(value, dict):
+        text = _clean_text(value.get("title"))
+    if not text and block_type in {"bookmark", "embed", "link_preview"} and isinstance(value, dict):
+        text = _clean_text(value.get("url"))
     if not text:
         return ""
     label = block_type.replace("_", " ").title()
-    return f"{label}: {text}"
+    depth = 0
+    try:
+        depth = max(0, int(block.get("_cortex_depth") or 0))
+    except (TypeError, ValueError):
+        depth = 0
+    prefix = "  " * min(depth, MAX_BLOCK_TREE_DEPTH)
+    return f"{prefix}{label}: {text}"
 
 
 def _rich_text(value: Any) -> str:

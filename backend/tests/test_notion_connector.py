@@ -34,15 +34,32 @@ class NotionConnectorTests(unittest.TestCase):
                             },
                         }
                     ],
-                }
+            }
             self.assertEqual(method, "GET")
-            self.assertIn("/blocks/page-1/children", url)
+            if "/blocks/page-1/children" in url:
+                return {
+                    "has_more": False,
+                    "next_cursor": None,
+                    "results": [
+                        {"id": "heading-1", "type": "heading_1", "heading_1": {"rich_text": [{"plain_text": "Memory loop"}]}},
+                        {
+                            "id": "toggle-1",
+                            "type": "toggle",
+                            "has_children": True,
+                            "toggle": {"rich_text": [{"plain_text": "Nested decisions"}]},
+                        },
+                    ],
+                }
+            self.assertIn("/blocks/toggle-1/children", url)
             return {
                 "has_more": False,
                 "next_cursor": None,
                 "results": [
-                    {"type": "heading_1", "heading_1": {"rich_text": [{"plain_text": "Memory loop"}]}},
-                    {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "We decided Notion sync should cite page URLs."}]}},
+                    {
+                        "id": "paragraph-1",
+                        "type": "paragraph",
+                        "paragraph": {"rich_text": [{"plain_text": "We decided Notion sync should cite nested page content."}]},
+                    },
                 ],
             }
 
@@ -52,7 +69,7 @@ class NotionConnectorTests(unittest.TestCase):
             request_json=fake_request,
         )
 
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)
         self.assertEqual(sync.records_found, 1)
         self.assertEqual(sync.records_returned, 1)
         self.assertEqual(sync.high_water_mark, "2026-06-30T10:00:00Z")
@@ -63,7 +80,8 @@ class NotionConnectorTests(unittest.TestCase):
         self.assertIn("Page: Project Atlas Plan", record["content"])
         self.assertIn("Properties: Status: In Progress; Tags: memory, backend", record["content"])
         self.assertIn("Heading 1: Memory loop", record["content"])
-        self.assertIn("Paragraph: We decided Notion sync should cite page URLs.", record["content"])
+        self.assertIn("Toggle: Nested decisions", record["content"])
+        self.assertIn("  Paragraph: We decided Notion sync should cite nested page content.", record["content"])
         self.assertEqual(record["metadata"]["title"], "Project Atlas Plan")
 
     def test_fetch_notion_records_requires_token(self) -> None:

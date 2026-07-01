@@ -571,16 +571,30 @@ END:VCALENDAR
                         }
                     ],
                 }
+            if "/blocks/page-1/children" in url:
+                return {
+                    "has_more": False,
+                    "next_cursor": None,
+                    "results": [
+                        {
+                            "id": "toggle-1",
+                            "type": "toggle",
+                            "has_children": True,
+                            "toggle": {"rich_text": [{"plain_text": "Nested Cortex memory"}]},
+                        }
+                    ],
+                }
             return {
                 "has_more": False,
                 "next_cursor": None,
                 "results": [
                     {
+                        "id": "paragraph-1",
                         "type": "paragraph",
                         "paragraph": {
                             "rich_text": [
                                 {
-                                    "plain_text": "We decided notioncitetest retrieval should preserve Notion page citations.",
+                                    "plain_text": "We decided notioncitetest retrieval should preserve nested Notion page citations.",
                                 }
                             ]
                         },
