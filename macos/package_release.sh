@@ -275,7 +275,7 @@ payload = {
     "source_provenance": {
         "git_commit": "$GIT_COMMIT",
         "git_branch": "$GIT_BRANCH",
-        "git_dirty": $GIT_DIRTY,
+        "git_dirty": "$GIT_DIRTY" == "true",
         "built_at": "$STAMP",
     },
     "minimum_macos": "$MIN_MACOS",
