@@ -376,6 +376,45 @@ Decision: Cortex should keep the second Obsidian section searchable.
         self.assertTrue(self.store.search(self.user_id, "second Obsidian section searchable", limit=5))
         self.assertEqual(self.store.search(self.user_id, "azalea-middle marker", limit=5), [])
 
+    def test_sync_vault_preserves_approved_memory_when_note_moves(self) -> None:
+        note = self.write_note(
+            "Projects/Move Plan.md",
+            "Decision: Cortex should keep approved memory searchable when notes move folders.",
+        )
+        first = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+        self.assertEqual(first["saved"], 1)
+        capture_id = first["records"][0]["capture_id"]
+        self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+        self.assertTrue(self.store.search(self.user_id, "notes move folders", limit=5))
+
+        moved = self.vault / "Archive/Move Plan.md"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        note.rename(moved)
+        second = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+
+        self.assertEqual(second["saved"], 1)
+        self.assertEqual(second["archived_missing"], 0)
+        self.assertEqual(second["records"][0]["status"], "updated")
+        self.assertEqual(second["records"][0]["capture_id"], capture_id)
+        found = self.store.search(self.user_id, "notes move folders", limit=5)
+        self.assertTrue(found)
+        self.assertTrue(found[0]["source_url"].startswith(moved.resolve().as_uri()))
+        with connect(self.db_path) as conn:
+            captures = conn.execute(
+                """
+                SELECT id, external_id, source_url, review_status
+                FROM captures
+                WHERE user_id = ?
+                  AND source = 'obsidian'
+                """,
+                (self.user_id,),
+            ).fetchall()
+        self.assertEqual(len(captures), 1)
+        self.assertEqual(captures[0]["id"], capture_id)
+        self.assertEqual(captures[0]["external_id"], "Archive/Move Plan.md")
+        self.assertTrue(captures[0]["source_url"].startswith(moved.resolve().as_uri()))
+        self.assertEqual(captures[0]["review_status"], "approved")
+
     def test_scan_vault_uses_explicit_obsidian_block_refs_as_stable_records(self) -> None:
         note = self.write_note(
             "Projects/Blocks.md",

@@ -1602,6 +1602,7 @@ class CortexStore:
         external_id: str | None = None,
         record_metadata: dict[str, Any] | None = None,
         refresh_key: str | None = None,
+        capture_id_override: str | None = None,
     ) -> dict[str, Any]:
         content = content.strip()
         if not content:
@@ -1612,7 +1613,10 @@ class CortexStore:
         normalized_source = (source or "macos")[:80]
         normalized_source_account_id = (source_account_id or "").strip() or None
         normalized_external_id = (external_id or "").strip()[:240] or None
-        if normalized_source_account_id and normalized_external_id:
+        override_id = str(capture_id_override or "").strip()
+        if override_id.startswith("cap_"):
+            capture_id = override_id[:80]
+        elif normalized_source_account_id and normalized_external_id:
             capture_id = stable_id("cap_", f"{user_id}:{normalized_source_account_id}:{normalized_external_id}")
         else:
             capture_id = stable_id("cap_", user_id + normalized_source + captured_at + content[:120])
@@ -2286,6 +2290,7 @@ class CortexStore:
                 content_hash = stable_id("", content)
                 duplicate = None
                 updated_existing_record = False
+                capture_id_override = None
                 with connect(self.db_path) as conn:
                     metadata_refresh_required = False
                     if external_id:
@@ -2318,6 +2323,19 @@ class CortexStore:
                                     duplicate = existing_record
                             else:
                                 updated_existing_record = True
+                                capture_id_override = existing_record["id"]
+                        else:
+                            moved_record = self._source_account_record_by_content_hash(
+                                conn,
+                                user_id,
+                                account_id,
+                                content_hash,
+                                exclude_external_ids=active_external_ids,
+                            )
+                            if moved_record:
+                                updated_existing_record = True
+                                metadata_refresh_required = True
+                                capture_id_override = moved_record["id"]
                     else:
                         duplicate = conn.execute(
                             """
@@ -2367,6 +2385,7 @@ class CortexStore:
                         extracted=extracted,
                         source_account_id=account_id,
                         external_id=external_id,
+                        capture_id_override=capture_id_override,
                     )
                     saved += 1
                     record_results.append({
@@ -2393,6 +2412,7 @@ class CortexStore:
                             if metadata_refresh_required
                             else None
                         ),
+                        capture_id_override=capture_id_override,
                     )
                     queued += 1
                     record_results.append({
@@ -2476,6 +2496,39 @@ class CortexStore:
             "errors": errors,
             "cursor": cursor,
         }
+
+    def _source_account_record_by_content_hash(
+        self,
+        conn,
+        user_id: str,
+        account_id: str,
+        content_hash: str,
+        *,
+        exclude_external_ids: set[str] | None = None,
+    ):
+        excluded = {str(value or "").strip()[:240] for value in (exclude_external_ids or set()) if str(value or "").strip()}
+        filters = [
+            "user_id = ?",
+            "source_account_id = ?",
+            "raw_hash = ?",
+            "review_status != 'archived'",
+        ]
+        params: list[Any] = [user_id, account_id, content_hash]
+        if excluded:
+            filters.append(f"(external_id IS NULL OR external_id NOT IN ({','.join('?' for _ in excluded)}))")
+            params.extend(sorted(excluded))
+        return conn.execute(
+            f"""
+            SELECT id, raw_hash, review_status, source_url, title, captured_at, external_id
+            FROM captures
+            WHERE {' AND '.join(filters)}
+            ORDER BY
+              CASE WHEN review_status = 'approved' THEN 0 ELSE 1 END,
+              captured_at DESC
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
 
     def _archive_missing_source_account_records(self, user_id: str, account_id: str, active_external_ids: set[str]) -> int:
         with connect(self.db_path) as conn:
@@ -3728,11 +3781,15 @@ class CortexStore:
         import_id: str | None = None,
         source_account_id: str | None = None,
         external_id: str | None = None,
+        capture_id_override: str | None = None,
     ) -> dict[str, Any]:
         captured_at = extracted.get("_timestamp") or now_iso()
         normalized_source_account_id = (source_account_id or "").strip() or None
         normalized_external_id = (external_id or "").strip()[:240] or None
-        if normalized_source_account_id and normalized_external_id:
+        override_id = str(capture_id_override or "").strip()
+        if override_id.startswith("cap_"):
+            capture_id = override_id[:80]
+        elif normalized_source_account_id and normalized_external_id:
             capture_id = stable_id("cap_", f"{user_id}:{normalized_source_account_id}:{normalized_external_id}")
         else:
             capture_id = stable_id("cap_", user_id + source + captured_at + content[:120])
