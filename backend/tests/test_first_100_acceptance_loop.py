@@ -170,6 +170,7 @@ I prefer Cortex answers that cite the edited Obsidian note when memory changes.
             "get_memory_inbox",
             "approve_memory_capture",
             "get_product_loop",
+            "get_memory_quality_report",
             "list_source_connectors",
             "connect_source_account",
             "sync_source_records",
@@ -182,10 +183,18 @@ I prefer Cortex answers that cite the edited Obsidian note when memory changes.
         }
         self.assertTrue(expected_high_value_tools.issubset(tool_names))
         self.assertEqual(tool_required_capabilities("search_memory"), ["read"])
+        self.assertEqual(tool_required_capabilities("get_memory_quality_report"), ["read"])
         self.assertEqual(tool_required_capabilities("sync_source_records"), ["write"])
         self.assertEqual(tool_required_capabilities("sync_connected_sources"), ["maintenance"])
         self.assertEqual(tool_required_capabilities("approve_memory_capture"), ["write"])
         self.assertEqual(tool_required_capabilities("get_agent_adaptation"), ["read", "export"])
+
+        quality = call_tool(self.store, self.user_id, "get_memory_quality_report", {})
+        self.assertIn(quality["status"], {"usable", "strong"})
+        self.assertGreaterEqual(quality["score"], 55)
+        self.assertEqual(quality["citation_coverage"], 1.0)
+        self.assertEqual(quality["review_coverage"], 1.0)
+        self.assertIn("obsidian", {item["source"] for item in quality["source_health"]})
 
         connectors = call_tool(self.store, self.user_id, "list_source_connectors", {})
         obsidian = next(source for source in connectors["readiness"]["sources"] if source["source"] == "obsidian")

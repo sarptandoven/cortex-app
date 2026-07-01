@@ -246,6 +246,7 @@ class SmokeRunner:
             "get_memory_inbox",
             "approve_memory_capture",
             "get_product_loop",
+            "get_memory_quality_report",
             "list_source_connectors",
             "connect_source_account",
             "sync_source_records",

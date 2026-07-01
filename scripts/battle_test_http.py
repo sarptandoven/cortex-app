@@ -173,7 +173,7 @@ def main() -> None:
 
     tools = request(args.base_url, args.token, "/mcp", "POST", {"jsonrpc": "2.0", "id": "tools", "method": "tools/list", "params": {}})
     tool_names = {tool["name"] for tool in tools["result"]["tools"]}
-    assert {"remember_this", "search_memory", "get_daily_review", "get_product_loop", "list_source_connectors", "connect_source_account", "sync_source_records", "sync_connected_sources", "build_context_pack", "get_memory_stats", "get_memory_diagnostics", "get_reliability_report", "get_support_bundle", "repair_memory_storage", "rebuild_index_from_vault", "get_trust_summary", "get_audit_log"}.issubset(tool_names), tool_names
+    assert {"remember_this", "search_memory", "get_daily_review", "get_product_loop", "get_memory_quality_report", "list_source_connectors", "connect_source_account", "sync_source_records", "sync_connected_sources", "build_context_pack", "get_memory_stats", "get_memory_diagnostics", "get_reliability_report", "get_support_bundle", "repair_memory_storage", "rebuild_index_from_vault", "get_trust_summary", "get_audit_log"}.issubset(tool_names), tool_names
 
     mcp_pack = request(
         args.base_url,

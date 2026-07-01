@@ -291,6 +291,7 @@ class LiveSmokeRunner:
         expected = {
             "search_memory",
             "get_product_loop",
+            "get_memory_quality_report",
             "list_source_connectors",
             "get_style_profile",
             "get_project_context",

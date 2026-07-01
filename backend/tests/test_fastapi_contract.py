@@ -2219,6 +2219,7 @@ END:VCALENDAR
         self.assertEqual(mcp.status_code, 200)
         tool_names = {tool["name"] for tool in mcp.json()["result"]["tools"]}
         self.assertIn("search_memory", tool_names)
+        self.assertIn("get_memory_quality_report", tool_names)
         self.assertIn("list_source_connectors", tool_names)
         self.assertNotIn("connect_source_account", tool_names)
         self.assertNotIn("sync_source_records", tool_names)
@@ -2226,6 +2227,22 @@ END:VCALENDAR
         self.assertNotIn("get_daily_review", tool_names)
         self.assertNotIn("get_memory_inbox", tool_names)
         self.assertNotIn("delete_all_user_data", tool_names)
+
+        quality = self.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": "quality-report",
+                "method": "tools/call",
+                "params": {"name": "get_memory_quality_report", "arguments": {}},
+            },
+            headers={"Authorization": f"Bearer {scoped_token}"},
+        )
+        self.assertEqual(quality.status_code, 200)
+        quality_payload = quality.json()
+        self.assertNotIn("error", quality_payload)
+        self.assertIn("citation_coverage", quality_payload["result"]["structuredContent"])
+        self.assertIn("source_health", quality_payload["result"]["structuredContent"])
 
         for tool_name in ("get_daily_review", "get_memory_inbox"):
             blocked = self.client.post(
@@ -2384,6 +2401,11 @@ END:VCALENDAR
         self.assertLessEqual(len(style["style"]), 50)
         self.assertLessEqual(len(style["preferences"]), 25)
         self.assertLessEqual(len(style["negative_constraints"]), 25)
+
+        quality = call("get_memory_quality_report", {})
+        self.assertIn(quality["status"], {"needs_sources", "needs_review", "usable", "strong"})
+        self.assertIn("citation_coverage", quality)
+        self.assertIn("source_health", quality)
 
         too_long = self.client.post(
             "/mcp",
@@ -2671,6 +2693,7 @@ END:VCALENDAR
         )
         self.assertEqual(tools.status_code, 200)
         tool_names = {tool["name"] for tool in tools.json()["result"]["tools"]}
+        self.assertIn("get_memory_quality_report", tool_names)
         self.assertIn("list_source_connectors", tool_names)
         self.assertNotIn("connect_source_account", tool_names)
         self.assertNotIn("sync_source_records", tool_names)

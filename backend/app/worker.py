@@ -53,12 +53,18 @@ def run_worker_tick(
     processed = 0
     pending = 0
     failed = 0
+    source_syncs_scheduled = 0
+    source_syncs_skipped = 0
 
     for user_id in normalized_user_ids:
         result = store.run_due_jobs(user_id, limit=limit, worker_id=worker_id)
         processed += int(result.get("processed") or 0)
         pending += int(result.get("pending") or 0)
         failed += int(result.get("failed") or 0)
+        scheduled_source_syncs = result.get("scheduled_source_syncs") if isinstance(result, dict) else None
+        if isinstance(scheduled_source_syncs, dict):
+            source_syncs_scheduled += int(scheduled_source_syncs.get("scheduled") or 0)
+            source_syncs_skipped += len(scheduled_source_syncs.get("skipped") or [])
         users[user_id] = result
         if failed_limit:
             for job in store.list_jobs(user_id, status="failed", limit=failed_limit):
@@ -76,6 +82,8 @@ def run_worker_tick(
         "processed": processed,
         "pending": pending,
         "failed": failed,
+        "source_syncs_scheduled": source_syncs_scheduled,
+        "source_syncs_skipped": source_syncs_skipped,
         "users": users,
         "failed_jobs": failed_jobs,
     }

@@ -72,6 +72,11 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
+        "name": "get_memory_quality_report",
+        "description": "Return Cortex memory quality coverage for citations, dates, review state, memory layers, and source health.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "get_personal_profile",
         "description": "Return a cited Cortex personal adaptation profile grouped by memory layer, coverage, sources, and limitations.",
         "inputSchema": {
@@ -615,6 +620,7 @@ READ_TOOLS = {
     "get_recent_context",
     "get_memory_graph",
     "get_product_loop",
+    "get_memory_quality_report",
     "get_style_profile",
     "get_project_context",
     "get_procedure",
@@ -804,6 +810,8 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         return store.agent_payload(user_id, store.daily_review(user_id))
     if name == "get_product_loop":
         return store.product_loop(user_id)
+    if name == "get_memory_quality_report":
+        return store.memory_quality_report(user_id)
     if name == "get_personal_profile":
         query = _text_arg(args, "query")
         profile = store.personal_profile(

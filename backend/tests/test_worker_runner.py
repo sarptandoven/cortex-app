@@ -80,6 +80,41 @@ class CortexWorkerRunnerTests(unittest.TestCase):
             ["local", "alpha", "beta"],
         )
 
+    def test_worker_tick_summarizes_scheduled_source_syncs(self) -> None:
+        class FakeStore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def run_due_jobs(self, user_id: str, *, limit: int, worker_id: str) -> dict:
+                self.calls.append(user_id)
+                if user_id == "alpha":
+                    return {
+                        "processed": 1,
+                        "pending": 2,
+                        "failed": 0,
+                        "scheduled_source_syncs": {"scheduled": 2, "jobs": [], "skipped": [{"source": "gmail"}]},
+                    }
+                return {
+                    "processed": 0,
+                    "pending": 0,
+                    "failed": 1,
+                    "scheduled_source_syncs": {"scheduled": 1, "jobs": [], "skipped": []},
+                }
+
+            def list_jobs(self, user_id: str, *, status: str, limit: int) -> list:
+                return []
+
+        store = FakeStore()
+        tick = run_worker_tick(store, ["alpha", "beta"], limit_per_user=10, worker_id="test-worker")
+
+        self.assertEqual(store.calls, ["alpha", "beta"])
+        self.assertEqual(tick["processed"], 1)
+        self.assertEqual(tick["pending"], 2)
+        self.assertEqual(tick["failed"], 1)
+        self.assertEqual(tick["source_syncs_scheduled"], 3)
+        self.assertEqual(tick["source_syncs_skipped"], 1)
+        self.assertEqual(tick["users"]["alpha"]["scheduled_source_syncs"]["scheduled"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()
