@@ -631,6 +631,9 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(gmail_readiness["beta_status"], "planned")
         self.assertFalse(gmail_readiness["primary_beta"])
         self.assertFalse(gmail_readiness["show_in_primary_ui"])
+        self.assertEqual(gmail_readiness["sync_plan"]["mode"], "planned_account_sync")
+        self.assertEqual(gmail_readiness["sync_plan"]["managed_sync_status"], "planned")
+        self.assertIsNone(gmail_readiness["sync_plan"]["credential_ref"])
         self.assertEqual(gmail_readiness["source_ids"], ["email"])
         self.assertEqual(gmail_readiness["export_status"], "native_via_email")
         self.assertIn("Account sign-in sync is planned", gmail_readiness["next_action"])
@@ -728,6 +731,10 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertFalse(synced_gmail["primary_beta"])
         self.assertFalse(synced_gmail["show_in_primary_ui"])
         self.assertEqual(synced_gmail["primary_beta_path"], "account-sign-in-planned")
+        self.assertEqual(synced_gmail["sync_plan"]["mode"], "planned_account_sync")
+        self.assertEqual(synced_gmail["sync_plan"]["managed_sync_status"], "healthy")
+        self.assertEqual(synced_gmail["sync_plan"]["credential_ref"], f"source_account:{account['id']}")
+        self.assertIsNotNone(synced_gmail["sync_plan"]["last_completed_at"])
 
         failed = self.store.upsert_sync_cursor(
             self.user_id,
@@ -1018,6 +1025,9 @@ class CortexStorageLifecycleTests(unittest.TestCase):
                 self.assertTrue(baseline["included"])
                 self.assertTrue(baseline["records_supported"])
                 self.assertTrue(baseline["live_sync"])
+                self.assertTrue(baseline["local_app_autosync"])
+                self.assertFalse(baseline["manual_direct_sync"])
+                self.assertFalse(baseline["hosted_managed_sync"])
                 self.assertTrue(entry["supports_import"])
                 self.assertTrue(entry["source_ids"])
                 self.assertTrue(entry["formats"])
@@ -1033,6 +1043,9 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(readiness["summary"]["baseline_10k_services"], len(wired_source_ids))
         self.assertEqual(readiness["summary"]["baseline_10k_records_supported"], len(wired_source_ids))
         self.assertEqual(readiness["summary"]["baseline_10k_live_sync"], len(wired_source_ids))
+        self.assertEqual(readiness["summary"]["baseline_10k_local_app_autosync"], len(wired_source_ids))
+        self.assertEqual(readiness["summary"]["baseline_10k_manual_direct_sync"], 0)
+        self.assertEqual(readiness["summary"]["baseline_10k_hosted_managed_sync"], 0)
         readiness_by_source = {item["source"]: item for item in readiness["sources"]}
         for source_id, primary_beta_path in wired_source_paths.items():
             with self.subTest(readiness_source_id=source_id):
@@ -1040,6 +1053,9 @@ class CortexStorageLifecycleTests(unittest.TestCase):
                 self.assertEqual(entry["beta_status"], "ready")
                 self.assertEqual(entry["primary_beta_path"], primary_beta_path)
                 self.assertEqual(entry["show_in_primary_ui"], source_id == "obsidian")
+                self.assertEqual(entry["sync_plan"]["mode"], "local_app_autosync")
+                self.assertIsNone(entry["sync_plan"]["hosted_credential_ref"])
+                self.assertIn(entry["sync_plan"]["managed_sync_status"], {"not_configured", "waiting_for_first_sync", "healthy"})
                 self.assertNotEqual(entry["status"], "advanced_fallback")
                 self.assertNotIn("Advanced/Fallback", entry["next_action"])
 

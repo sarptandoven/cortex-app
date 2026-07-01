@@ -287,6 +287,30 @@ class TokenControlIndex:
             "revoked_tokens": int(row["revoked_tokens"] or 0),
         }
 
+    def ready_user_ids(self, *, limit: int = 50) -> list[str]:
+        if not self.path.exists():
+            return []
+        capped_limit = max(1, min(int(limit or 50), 500))
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT user_id
+                FROM scoped_token_index
+                WHERE revoked_at IS NULL
+                GROUP BY user_id
+                HAVING
+                  SUM(CASE WHEN audience = 'api' THEN 1 ELSE 0 END) > 0
+                  AND SUM(CASE WHEN audience = 'mcp' THEN 1 ELSE 0 END) > 0
+                ORDER BY user_id
+                LIMIT ?
+                """,
+                (capped_limit,),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [str(row["user_id"]) for row in rows]
+
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path)
@@ -365,6 +389,49 @@ class StoreRegistry:
             **summary,
             "status": "ok" if ready else "blocked",
             "requires": ["at least one active user with scoped API and MCP tokens"],
+        }
+
+    def hosted_job_health(self, *, ready_user_limit: int = 20) -> dict[str, Any]:
+        ready_users = self.token_index.ready_user_ids(limit=ready_user_limit)
+        aggregate_counts = {"queued": 0, "running": 0, "succeeded": 0, "failed": 0}
+        status_counts = {"ok": 0, "attention": 0, "blocked": 0}
+        stale_running_count = 0
+        recent_failure_count = 0
+        oldest_queued_age_seconds: int | None = None
+
+        for user_id in ready_users:
+            health = self.store_for_user(user_id).job_health(user_id, failed_limit=5)
+            status = str(health.get("status") or "blocked")
+            status_counts[status] = status_counts.get(status, 0) + 1
+            for key in aggregate_counts:
+                aggregate_counts[key] += int((health.get("counts") or {}).get(key) or 0)
+            stale_running_count += len(health.get("stale_running") or [])
+            recent_failure_count += len(health.get("recent_failures") or [])
+            age = health.get("oldest_queued_age_seconds")
+            if age is not None:
+                age_int = int(age)
+                oldest_queued_age_seconds = age_int if oldest_queued_age_seconds is None else max(oldest_queued_age_seconds, age_int)
+
+        if not ready_users:
+            status = "blocked"
+        elif status_counts.get("blocked", 0) or aggregate_counts["failed"] or stale_running_count:
+            status = "blocked"
+        elif status_counts.get("attention", 0) or aggregate_counts["queued"] or aggregate_counts["running"]:
+            status = "attention"
+        else:
+            status = "ok"
+
+        return {
+            "status": status,
+            "ready_user_count": len(ready_users),
+            "ready_user_limit": max(1, min(int(ready_user_limit or 20), 500)),
+            "truncated": len(ready_users) >= max(1, min(int(ready_user_limit or 20), 500)),
+            "counts": aggregate_counts,
+            "user_status_counts": status_counts,
+            "stale_running_count": stale_running_count,
+            "recent_failure_count": recent_failure_count,
+            "oldest_queued_age_seconds": oldest_queued_age_seconds,
+            "requires": ["no failed jobs", "no stale running jobs", "queue health available for ready hosted users"],
         }
 
     def authenticate_mcp_token(self, token: str, user_id: str | None = None) -> dict[str, Any] | None:

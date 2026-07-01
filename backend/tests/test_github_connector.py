@@ -71,6 +71,41 @@ class GitHubConnectorTests(unittest.TestCase):
         self.assertEqual(pull["external_id"], "github:doppl-tech/cortex-app:pull_request:43")
         self.assertEqual(pull["metadata"]["record_scope"], "pull_request")
 
+    def test_fetch_github_records_does_not_advance_cursor_on_partial_error(self) -> None:
+        calls: list[str] = []
+
+        def fake_request(url: str, headers: dict[str, str]):
+            calls.append(url)
+            parsed = urlparse(url)
+            if parsed.path == "/repos/doppl-tech/cortex-app/issues":
+                return [
+                    {
+                        "number": 42,
+                        "title": "Returned before another repository failed",
+                        "state": "open",
+                        "created_at": "2026-06-30T10:00:00Z",
+                        "updated_at": "2026-06-30T11:00:00Z",
+                        "user": {"login": "sarp"},
+                    }
+                ]
+            self.assertEqual(parsed.path, "/repos/doppl-tech/cortex-ios/issues")
+            raise RuntimeError("GitHub API unavailable")
+
+        sync = fetch_github_records(
+            token="ghp_test",
+            repositories=["doppl-tech/cortex-app", "doppl-tech/cortex-ios"],
+            since="2026-06-01T00:00:00Z",
+            max_records=10,
+            request_json=fake_request,
+        )
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(sync.records_returned, 1)
+        self.assertEqual(sync.high_water_mark, "2026-06-30T11:00:00Z")
+        self.assertEqual(sync.cursor_value, "2026-06-01T00:00:00Z")
+        self.assertEqual(len(sync.errors), 1)
+        self.assertEqual(sync.errors[0]["repository"], "doppl-tech/cortex-ios")
+
     def test_fetch_github_records_requires_token_and_repository(self) -> None:
         with self.assertRaisesRegex(ValueError, "token"):
             fetch_github_records(token="", repositories=["doppl-tech/cortex-app"])

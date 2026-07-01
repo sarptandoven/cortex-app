@@ -130,6 +130,7 @@ def _hosted_readiness_contract() -> dict[str, Any]:
     runtime: dict[str, Any] = {}
     if settings.shard_mode != "local":
         runtime["control_plane"] = store.control_plane_status()
+        runtime["worker_queue"] = store.hosted_job_health()
     return hosted_readiness_contract(settings, runtime=runtime)
 
 

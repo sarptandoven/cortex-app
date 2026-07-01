@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ipaddress import ip_address
 from urllib.parse import urlparse
 
 from .config import Settings
@@ -7,6 +8,8 @@ from .config import Settings
 
 HOSTED_VECTOR_BACKENDS = {"pgvector", "postgres-pgvector"}
 HOSTED_WORKER_MODES = {"external", "hosted", "worker"}
+RESERVED_PUBLIC_HOST_SUFFIXES = (".example", ".invalid", ".localhost", ".local", ".test")
+DOCUMENTATION_HOSTS = ("example.com", "example.net", "example.org")
 
 
 def hosted_readiness_contract(settings: Settings, runtime: dict | None = None) -> dict:
@@ -22,6 +25,7 @@ def hosted_readiness_contract(settings: Settings, runtime: dict | None = None) -
         _embedding_provider_check(hosted_mode, settings.embedding_provider),
         _vector_backend_check(hosted_mode, settings.hosted_vector_backend),
         _worker_check(hosted_mode, settings.worker_mode),
+        _worker_queue_check(hosted_mode, settings.worker_mode, runtime),
         _observability_check(hosted_mode, settings.observability_enabled),
         _control_plane_check(hosted_mode, runtime),
     ]
@@ -58,19 +62,54 @@ def _public_base_url_check(hosted_mode: bool, public_base_url: str) -> dict:
             "status": "ok",
             "detail": "Local mode can use the default loopback URL.",
         }
-    parsed = urlparse(public_base_url or "")
-    host = (parsed.hostname or "").lower()
-    if parsed.scheme == "https" and host not in {"127.0.0.1", "localhost", ""}:
+    try:
+        parsed = urlparse(public_base_url or "")
+        host = (parsed.hostname or "").rstrip(".").lower()
+        _ = parsed.port
+    except ValueError:
+        parsed = None
+        host = ""
+    origin_only = (
+        parsed is not None
+        and parsed.scheme == "https"
+        and bool(parsed.netloc)
+        and not parsed.username
+        and not parsed.password
+        and parsed.path in {"", "/"}
+        and not parsed.params
+        and not parsed.query
+        and not parsed.fragment
+    )
+    if origin_only and _public_base_url_host_is_safe(host):
         return {
             "name": "public_base_url",
             "status": "ok",
-            "detail": "Hosted mode has an HTTPS public base URL.",
+            "detail": "Hosted mode has an HTTPS public API origin.",
         }
     return {
         "name": "public_base_url",
         "status": "blocked",
-        "detail": "Set CORTEX_PUBLIC_BASE_URL to the hosted HTTPS API origin.",
+        "detail": "Set CORTEX_PUBLIC_BASE_URL to a hosted HTTPS API origin with a public routable host and no path, query, fragment, or credentials.",
     }
+
+
+def _public_base_url_host_is_safe(host: str) -> bool:
+    if not host:
+        return False
+    try:
+        parsed_ip = ip_address(host)
+    except ValueError:
+        pass
+    else:
+        return parsed_ip.is_global
+
+    if "." not in host:
+        return False
+    if any(host == suffix.lstrip(".") or host.endswith(suffix) for suffix in RESERVED_PUBLIC_HOST_SUFFIXES):
+        return False
+    if any(host == documentation_host or host.endswith(f".{documentation_host}") for documentation_host in DOCUMENTATION_HOSTS):
+        return False
+    return True
 
 
 def _sync_signing_key_check(hosted_mode: bool, sync_signing_key: str) -> dict:
@@ -135,6 +174,45 @@ def _worker_check(hosted_mode: bool, worker_mode: str) -> dict:
         "name": "background_workers",
         "status": "blocked",
         "detail": "Set CORTEX_WORKER_MODE=external and run background workers before hosted rollout.",
+    }
+
+
+def _worker_queue_check(hosted_mode: bool, worker_mode: str, runtime: dict | None) -> dict:
+    mode = (worker_mode or "inline").strip().lower()
+    if not hosted_mode:
+        return {
+            "name": "background_worker_queue",
+            "status": "ok",
+            "detail": "Local mode can monitor queue health through /v1/jobs/health.",
+        }
+    if mode not in HOSTED_WORKER_MODES:
+        return {
+            "name": "background_worker_queue",
+            "status": "blocked",
+            "detail": "Hosted queue health is blocked until CORTEX_WORKER_MODE=external and workers are running.",
+        }
+    queue = (runtime or {}).get("worker_queue") if isinstance(runtime, dict) else None
+    if not isinstance(queue, dict):
+        return {
+            "name": "background_worker_queue",
+            "status": "blocked",
+            "detail": "Hosted readiness needs runtime queue-health evidence from ready scoped-token users.",
+        }
+    queue_status = str(queue.get("status") or "blocked").lower()
+    counts = queue.get("counts") if isinstance(queue.get("counts"), dict) else {}
+    ready_user_count = int(queue.get("ready_user_count") or 0)
+    failed = int(counts.get("failed") or 0)
+    stale_running = int(queue.get("stale_running_count") or 0)
+    if queue_status == "blocked" or failed or stale_running or ready_user_count <= 0:
+        return {
+            "name": "background_worker_queue",
+            "status": "blocked",
+            "detail": f"Hosted worker queue is not healthy ({ready_user_count} ready user(s), {failed} failed job(s), {stale_running} stale running job(s)).",
+        }
+    return {
+        "name": "background_worker_queue",
+        "status": "ok",
+        "detail": f"Hosted worker queue has runtime health evidence for {ready_user_count} ready user(s); status {queue_status}.",
     }
 
 

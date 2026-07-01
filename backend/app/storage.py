@@ -677,6 +677,9 @@ def _connector_service_baseline(item: dict[str, Any], source_ids: list[str], *, 
     connector_id = _normalize_source_key(item.get("id"))
     live_status = str(item.get("live_status") or "").lower()
     primary_beta = _connector_primary_beta(item)
+    local_app_autosync = bool(primary_beta or live_status in {"api_token", "local_api", "local_only"})
+    manual_direct_sync = bool(supports_import and not local_app_autosync and live_status != "planned")
+    hosted_managed_sync = bool(item.get("hosted_managed_sync"))
     if primary_beta:
         path = "native-local-sync"
     elif live_status == "api_token":
@@ -692,10 +695,83 @@ def _connector_service_baseline(item: dict[str, Any], source_ids: list[str], *, 
     return {
         "included": connector_id in BASELINE_10K_CONNECTOR_IDS,
         "records_supported": bool(supports_import),
-        "live_sync": bool(primary_beta or live_status in {"api_token", "local_api", "local_only"}),
+        "live_sync": local_app_autosync,
+        "manual_direct_sync": manual_direct_sync,
+        "local_app_autosync": local_app_autosync,
+        "hosted_managed_sync": hosted_managed_sync,
         "primary_ui": primary_beta,
         "path": path,
         "source_ids": source_ids,
+    }
+
+
+def _latest_nonempty_iso(values: Iterable[Any]) -> str | None:
+    normalized = sorted(str(value or "").strip() for value in values if str(value or "").strip())
+    return normalized[-1] if normalized else None
+
+
+def _source_readiness_sync_plan(
+    *,
+    service_baseline: dict[str, Any],
+    live_status: str,
+    active_accounts: list[dict[str, Any]],
+    source_cursors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if service_baseline.get("hosted_managed_sync"):
+        mode = "hosted_managed_sync"
+    elif service_baseline.get("local_app_autosync"):
+        mode = "local_app_autosync"
+    elif live_status == "planned":
+        mode = "planned_account_sync"
+    elif service_baseline.get("manual_direct_sync"):
+        mode = "manual_direct_sync"
+    else:
+        mode = "direct_connector_needed"
+
+    first_account = active_accounts[0] if active_accounts else None
+    account_errors = [account.get("last_error") for account in active_accounts if account.get("last_error")]
+    cursor_errors = [cursor.get("last_error") for cursor in source_cursors if cursor.get("last_error")]
+    last_attempt_at = _latest_nonempty_iso(
+        [cursor.get("last_started_at") for cursor in source_cursors]
+        + [cursor.get("updated_at") for cursor in source_cursors]
+        + [account.get("updated_at") for account in active_accounts]
+    )
+    last_completed_at = _latest_nonempty_iso(
+        [cursor.get("last_completed_at") for cursor in source_cursors]
+        + [account.get("last_sync_at") for account in active_accounts]
+    )
+    next_sync_due_at = _latest_nonempty_iso(
+        [(account.get("metadata") or {}).get("next_sync_due_at") for account in active_accounts]
+    )
+    retry_after = _latest_nonempty_iso(
+        [(cursor.get("state") or {}).get("retry_after") for cursor in source_cursors]
+        + [(account.get("metadata") or {}).get("retry_after") for account in active_accounts]
+    )
+
+    if account_errors or cursor_errors:
+        managed_sync_status = "needs_attention"
+    elif last_completed_at:
+        managed_sync_status = "healthy"
+    elif active_accounts and mode in {"hosted_managed_sync", "local_app_autosync"}:
+        managed_sync_status = "waiting_for_first_sync"
+    elif mode == "manual_direct_sync":
+        managed_sync_status = "available_advanced"
+    elif mode == "planned_account_sync":
+        managed_sync_status = "planned"
+    elif mode == "direct_connector_needed":
+        managed_sync_status = "connector_needed"
+    else:
+        managed_sync_status = "not_configured"
+
+    return {
+        "mode": mode,
+        "credential_ref": f"source_account:{first_account['id']}" if first_account else None,
+        "hosted_credential_ref": None,
+        "managed_sync_status": managed_sync_status,
+        "next_sync_due_at": next_sync_due_at,
+        "last_attempt_at": last_attempt_at,
+        "last_completed_at": last_completed_at,
+        "retry_after": retry_after,
     }
 
 
@@ -2168,6 +2244,12 @@ class CortexStore:
                     "first_100_note": item.get("first_100_note") or _connector_first_100_note(item),
                     "baseline_10k": bool(item.get("baseline_10k") or service_baseline.get("included")),
                     "service_baseline": service_baseline,
+                    "sync_plan": _source_readiness_sync_plan(
+                        service_baseline=service_baseline,
+                        live_status=live_status,
+                        active_accounts=active_accounts,
+                        source_cursors=source_cursors,
+                    ),
                     "primary_beta": primary_beta,
                     "beta_status": beta_status,
                     "primary_beta_path": primary_beta_path,
@@ -2232,6 +2314,15 @@ class CortexStore:
                 1 for row in rows if row["baseline_10k"] and (row["service_baseline"] or {}).get("records_supported")
             ),
             "baseline_10k_live_sync": sum(1 for row in rows if row["baseline_10k"] and (row["service_baseline"] or {}).get("live_sync")),
+            "baseline_10k_manual_direct_sync": sum(
+                1 for row in rows if row["baseline_10k"] and (row["service_baseline"] or {}).get("manual_direct_sync")
+            ),
+            "baseline_10k_local_app_autosync": sum(
+                1 for row in rows if row["baseline_10k"] and (row["service_baseline"] or {}).get("local_app_autosync")
+            ),
+            "baseline_10k_hosted_managed_sync": sum(
+                1 for row in rows if row["baseline_10k"] and (row["service_baseline"] or {}).get("hosted_managed_sync")
+            ),
             "needs_review": sum(1 for row in rows if row["status"] == "needs_review"),
             "needs_attention": sum(1 for row in rows if row["status"] == "needs_attention"),
             "active_memories": sum(int(row["active_memories"]) for row in rows),
@@ -10356,6 +10447,7 @@ class CortexStore:
         ranked: list[dict[str, Any]] = []
         layer_boosts = query_layer_boosts(query)
         temporal_prefixes = query_temporal_prefixes(query)
+        source_policies = _normalize_source_policies(user_settings.get("source_policies"))
         for index, row in enumerate(rows):
             matched = self._lexical_matched_terms(row, terms)
             if len(matched) < min_matches:
@@ -10366,7 +10458,8 @@ class CortexStore:
                     "score": (len(matched) / len(terms))
                     + (0.05 / (60 + index))
                     + self._layer_boost(row, layer_boosts)
-                    + self._temporal_boost(row, temporal_prefixes),
+                    + self._temporal_boost(row, temporal_prefixes)
+                    + self._source_quality_boost(row, source_policies),
                 }
             )
         return [item["row"] for item in sorted(ranked, key=lambda item: item["score"], reverse=True)]

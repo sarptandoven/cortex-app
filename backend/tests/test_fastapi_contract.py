@@ -179,7 +179,7 @@ class FastAPIContractTests(unittest.TestCase):
                 default_user_id="hosted-default",
                 shard_mode="bucket",
                 require_scoped_api_tokens=True,
-                public_base_url="https://api.cortex.example",
+                public_base_url="https://api.cortex-hq.com",
                 sync_signing_key="sync-signing-key",
                 hosted_vector_backend="pgvector",
                 worker_mode="external",
@@ -197,23 +197,32 @@ class FastAPIContractTests(unittest.TestCase):
                 for check in response.json()["detail"]["hosted_readiness"]["checks"]
                 if check["status"] == "blocked"
             }
-            self.assertEqual(blocked, {"control_plane_scoped_tokens"})
+            self.assertEqual(blocked, {"background_worker_queue", "control_plane_scoped_tokens"})
 
             main_module.store.ensure_api_token(user, "cxa_hosted_ready_api_token_123456789", label="Hosted API", scopes=["read"])
             split_user = "hosted-ready-mcp-only"
             main_module.store.ensure_mcp_token(split_user, "cxm_hosted_ready_split_mcp_token_123456789", label="Hosted MCP", scopes=["read"])
             split_ready = self.client.get("/ready")
             self.assertEqual(split_ready.status_code, 503)
+            split_blocked = {
+                check["name"]
+                for check in split_ready.json()["detail"]["hosted_readiness"]["checks"]
+                if check["status"] == "blocked"
+            }
+            self.assertEqual(split_blocked, {"background_worker_queue", "control_plane_scoped_tokens"})
 
             main_module.store.ensure_mcp_token(user, "cxm_hosted_ready_mcp_token_123456789", label="Hosted MCP", scopes=["read"])
 
             ready = self.client.get("/ready")
             self.assertEqual(ready.status_code, 200)
             control = ready.json()["hosted_readiness"]["runtime"]["control_plane"]
+            worker_queue = ready.json()["hosted_readiness"]["runtime"]["worker_queue"]
             self.assertEqual(control["active_api_tokens"], 1)
             self.assertEqual(control["active_mcp_tokens"], 2)
             self.assertEqual(control["active_users"], 2)
             self.assertEqual(control["active_ready_users"], 1)
+            self.assertEqual(worker_queue["status"], "ok")
+            self.assertEqual(worker_queue["ready_user_count"], 1)
         finally:
             temp.cleanup()
             main_module.store = original_store

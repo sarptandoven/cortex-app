@@ -259,7 +259,8 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertEqual(set(result["seeded_layers"]), MEMORY_LAYERS)
         expected_noisy_cases = 11
         expected_direct_connector_cases = 10
-        expected_case_count = len(RETRIEVAL_CASES) + expected_noisy_cases + expected_direct_connector_cases
+        expected_source_backed_cases = 1
+        expected_case_count = len(RETRIEVAL_CASES) + expected_noisy_cases + expected_direct_connector_cases + expected_source_backed_cases
         self.assertEqual(len(result["checks"]), expected_case_count)
         self.assertEqual(result["metrics"]["overall"]["case_count"], expected_case_count)
         self.assertEqual(result["metrics"]["overall"]["top1_accuracy"], 1.0)
@@ -279,6 +280,9 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertEqual(result["metrics"]["by_category"]["sector_scoping"]["case_count"], 2)
         self.assertEqual(result["metrics"]["by_category"]["temporal_validity"]["case_count"], 1)
         self.assertEqual(result["metrics"]["by_category"]["related_memory"]["case_count"], 1)
+        self.assertEqual(result["metrics"]["by_category"]["source_backed_ranking"]["case_count"], 1)
+        self.assertEqual(result["source_backed_fallback"]["top_result"], "rq_source_backed_lexical_fallback_cited")
+        self.assertIn("lexical_fallback", result["source_backed_fallback"]["retrieval_modes"])
 
         categories = {case.category for case in RETRIEVAL_CASES} | {
             "noisy_import",
@@ -292,6 +296,7 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
             "noisy_import_calendar",
             "noisy_import_github",
             "direct_connector",
+            "source_backed_ranking",
         }
         self.assertIn("paraphrase", categories)
         self.assertIn("style_recall", categories)
@@ -437,6 +442,86 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertEqual(results[0]["id"], "quality_cited_trusted")
         self.assertEqual(results[0]["source_type"], "service")
         self.assertIn("line=12", results[0]["source_url"])
+
+    def test_lexical_fallback_prefers_source_backed_record_over_noisy_summary(self) -> None:
+        self.store.update_settings(
+            self.user_id,
+            {
+                "review_new_captures": False,
+                "allow_pending_in_context": True,
+                "source_policies": {"github": {"mode": "trusted"}},
+            },
+        )
+        self.store._vector_ready = lambda conn: False
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Project Beacon citation summary noisy fallback seed.",
+            source="chatgpt",
+            source_url=None,
+            title="Noisy generated summary",
+            extracted={
+                "_timestamp": "2026-05-01T00:00:00+00:00",
+                "summary": "Noisy generated summary.",
+                "records": [
+                    {
+                        "id": "fallback_noisy_generated_summary",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": (
+                            "Project Beacon citation summary repeats boilerplate. Project Beacon citation summary "
+                            "appears again in a generated service digest without source evidence."
+                        ),
+                        "summary": "Project Beacon citation summary generated service digest.",
+                        "confidence": "confirmed",
+                        "importance": 5,
+                        "topics": ["beacon", "citation", "summary"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Project Beacon citation summary canonical fallback seed.",
+            source="github",
+            source_url="cortex-source://github#service=github&repository=cortex&file=issues.json&line=99&excerpt=beacon-source-truth",
+            title="Canonical source record",
+            extracted={
+                "_timestamp": "2026-05-01T00:00:00+00:00",
+                "summary": "Canonical source record.",
+                "records": [
+                    {
+                        "id": "fallback_source_backed_canonical",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "Project Beacon citation summary comes from the signed GitHub issue source evidence.",
+                        "summary": "Project Beacon citation summary GitHub issue.",
+                        "confidence": "confirmed",
+                        "importance": 1,
+                        "topics": ["beacon", "citation", "summary"],
+                        "entity_ids": [],
+                        "metadata": {"source_quality": "canonical", "verified": True},
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+        diagnostics: dict[str, object] = {}
+
+        results = self.store.search(
+            self.user_id,
+            "Project Beacon citation summary fallbacktoken",
+            limit=2,
+            _diagnostics=diagnostics,
+        )
+
+        self.assertIn("lexical_fallback", diagnostics["used_modes"])
+        self.assertEqual(results[0]["id"], "fallback_source_backed_canonical")
+        self.assertEqual(results[0]["source_type"], "service")
+        self.assertIn("line=99", results[0]["source_url"])
 
     def test_answer_query_prefers_source_backed_citations_over_uncited_matches(self) -> None:
         self.store.update_settings(

@@ -1527,6 +1527,125 @@ def assert_direct_connector_answer_contracts(
     }
 
 
+def assert_source_backed_lexical_fallback_ranking(
+    store: CortexStore,
+    user_id: str = USER_ID,
+    limit: int = 3,
+) -> dict[str, Any]:
+    expected_id = "rq_source_backed_lexical_fallback_cited"
+    noisy_id = "rq_source_backed_lexical_fallback_noisy"
+    query = "Project Beacon citation summary fallbacktoken"
+    store.update_settings(
+        user_id,
+        {
+            "review_new_captures": False,
+            "allow_pending_in_context": True,
+            "source_policies": {"github": {"mode": "trusted"}},
+        },
+    )
+    store.save_capture(
+        user_id=user_id,
+        content="Project Beacon citation summary noisy fallback seed.",
+        source="chatgpt",
+        source_url=None,
+        title="Noisy generated summary fallback seed",
+        extracted={
+            "_timestamp": "2026-07-01T10:05:00Z",
+            "summary": "Noisy generated summary fallback seed.",
+            "records": [
+                {
+                    "id": noisy_id,
+                    "kind": "claim",
+                    "layer": "semantic",
+                    "content": (
+                        "Project Beacon citation summary repeats boilerplate. Project Beacon citation summary "
+                        "appears again in a generated service digest without source evidence."
+                    ),
+                    "summary": "Project Beacon citation summary generated service digest.",
+                    "confidence": "confirmed",
+                    "importance": 5,
+                    "topics": ["beacon", "citation", "summary"],
+                    "entity_ids": [],
+                }
+            ],
+            "tasks": [],
+            "entities": [],
+        },
+    )
+    store.save_capture(
+        user_id=user_id,
+        content="Project Beacon citation summary canonical fallback seed.",
+        source="github",
+        source_url="cortex-source://github#service=github&repository=cortex&file=issues.json&line=99&excerpt=beacon-source-truth",
+        title="Canonical source fallback seed",
+        extracted={
+            "_timestamp": "2026-07-01T10:05:00Z",
+            "summary": "Canonical source fallback seed.",
+            "records": [
+                {
+                    "id": expected_id,
+                    "kind": "claim",
+                    "layer": "semantic",
+                    "content": "Project Beacon citation summary comes from the signed GitHub issue source evidence.",
+                    "summary": "Project Beacon citation summary GitHub issue.",
+                    "confidence": "confirmed",
+                    "importance": 1,
+                    "topics": ["beacon", "citation", "summary"],
+                    "entity_ids": [],
+                    "metadata": {"source_quality": "canonical", "verified": True},
+                }
+            ],
+            "tasks": [],
+            "entities": [],
+        },
+    )
+
+    diagnostics: dict[str, Any] = {}
+    original_vector_ready = store._vector_ready
+    store._vector_ready = lambda conn: False
+    try:
+        results = store.search(user_id, query, limit=limit, _diagnostics=diagnostics)
+    finally:
+        store._vector_ready = original_vector_ready
+
+    if "lexical_fallback" not in diagnostics.get("used_modes", []):
+        raise AssertionError(f"Source-backed fallback case did not exercise lexical fallback: {diagnostics}")
+    if not results:
+        raise AssertionError("Source-backed fallback case returned no results")
+    top = results[0]
+    result_ids = [item["id"] for item in results]
+    if top["id"] != expected_id:
+        raise AssertionError(f"Source-backed fallback expected {expected_id}, got {result_ids}")
+    source_url = str(top.get("source_url") or "")
+    if "line=99" not in source_url or "excerpt=beacon-source-truth" not in source_url:
+        raise AssertionError(f"Source-backed fallback missed granular citation: {top}")
+    if top.get("source_type") != "service":
+        raise AssertionError(f"Source-backed fallback missed service source type: {top}")
+
+    return {
+        "name": "source_backed_lexical_fallback",
+        "category": "source_backed_ranking",
+        "query": query,
+        "sector": None,
+        "include_related": False,
+        "expected_layer": "semantic",
+        "expected_id": expected_id,
+        "expected_rank": 1,
+        "top_result": top["id"],
+        "top_layer": top["layer"],
+        "top_sector": top.get("sector"),
+        "top_source_url": top.get("source_url"),
+        "top_occurred_at": top.get("occurred_at"),
+        "result_ids": result_ids,
+        "noisy_result_id": noisy_id,
+        "disallowed_ids": [],
+        "related_result": None,
+        "layer_filtered_results": result_ids,
+        "retrieval_modes": diagnostics.get("used_modes", []),
+        "metrics": _metrics_for_results(expected_id, result_ids, METRIC_K_VALUES),
+    }
+
+
 def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 3) -> dict[str, Any]:
     seeded = seed_representative_memories(store, user_id)
     distractors = seed_distractor_memories(store, user_id)
@@ -1693,6 +1812,8 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
     state_leakage = assert_state_leakage_excluded(store, user_id)
     focused_answer_contracts = assert_focused_answer_contracts(store, user_id)
     direct_connector_answer_contracts = assert_direct_connector_answer_contracts(store, direct_connector_memories, user_id)
+    source_backed_fallback = assert_source_backed_lexical_fallback_ranking(store, user_id, limit)
+    checks.append(source_backed_fallback)
 
     return {
         "status": "ok",
@@ -1705,6 +1826,7 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
         "state_leakage_seeded": state_leakage,
         "focused_answer_contracts": focused_answer_contracts,
         "direct_connector_answer_contracts": direct_connector_answer_contracts,
+        "source_backed_fallback": source_backed_fallback,
         "seeded_layers": sorted(seeded_layers),
         "metrics": _summarize_metrics(checks, METRIC_K_VALUES),
         "checks": checks,

@@ -144,7 +144,7 @@ def fetch_github_records(
         records_found=records_found,
         records_returned=len(records),
         high_water_mark=high_water_mark,
-        cursor_value=high_water_mark or since,
+        cursor_value=since if errors else high_water_mark or since,
         errors=errors,
         api_base_url=base_url,
     )

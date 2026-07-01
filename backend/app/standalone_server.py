@@ -99,6 +99,9 @@ def _hosted_readiness_contract() -> dict:
     control_plane_status = getattr(store, "control_plane_status", None)
     if settings.shard_mode != "local" and callable(control_plane_status):
         runtime["control_plane"] = control_plane_status()
+        hosted_job_health = getattr(store, "hosted_job_health", None)
+        if callable(hosted_job_health):
+            runtime["worker_queue"] = hosted_job_health()
     return hosted_readiness_contract(settings, runtime=runtime)
 
 

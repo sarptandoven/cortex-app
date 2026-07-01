@@ -37,7 +37,7 @@ Implemented local primitive:
 - FastAPI `GET /ready` and standalone `GET /ready` fail closed with HTTP 503 in hosted-style shard modes (`CORTEX_SHARD_MODE=user` or `bucket`) until the production gates pass.
 - Hosted readiness now blocks on:
   - `CORTEX_REQUIRE_SCOPED_API_TOKENS=1`
-  - hosted HTTPS `CORTEX_PUBLIC_BASE_URL`
+  - hosted HTTPS origin in `CORTEX_PUBLIC_BASE_URL` with a public, non-reserved host
   - `CORTEX_SYNC_SIGNING_KEY`
   - non-hash `CORTEX_EMBEDDING_PROVIDER`
   - `CORTEX_HOSTED_VECTOR_BACKEND=pgvector`
