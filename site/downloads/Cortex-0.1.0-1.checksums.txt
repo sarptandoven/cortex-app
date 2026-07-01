@@ -1,2 +1,2 @@
-11df0cedca82dbd1ed25e4aa67b90e7eaee8ffd95d85bc937bdd2c03ee0b625a  Cortex-0.1.0-1.dmg
-1451580b8f13aa3b988c668e483a09c843ddf8249a9942034b9cb09cd980fb71  Cortex-0.1.0-1.app.zip
+d02672e4ddb8f3c67dc3477fbf5b83d76f338adf68e722eaa3a67611b79fa783  Cortex-0.1.0-1.dmg
+9cdff5c6c2b60bef7564db4cb4bb204a6dfd47acbd94bf1c9bf63e52249c39b5  Cortex-0.1.0-1.app.zip

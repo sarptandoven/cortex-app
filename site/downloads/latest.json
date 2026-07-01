@@ -4,14 +4,14 @@
     {
       "filename": "Cortex-0.1.0-1.dmg",
       "kind": "dmg",
-      "sha256": "11df0cedca82dbd1ed25e4aa67b90e7eaee8ffd95d85bc937bdd2c03ee0b625a",
-      "size_bytes": 21054274,
+      "sha256": "d02672e4ddb8f3c67dc3477fbf5b83d76f338adf68e722eaa3a67611b79fa783",
+      "size_bytes": 21054273,
       "url": "downloads/Cortex-0.1.0-1.dmg"
     },
     {
       "filename": "Cortex-0.1.0-1.app.zip",
       "kind": "zip",
-      "sha256": "1451580b8f13aa3b988c668e483a09c843ddf8249a9942034b9cb09cd980fb71",
+      "sha256": "9cdff5c6c2b60bef7564db4cb4bb204a6dfd47acbd94bf1c9bf63e52249c39b5",
       "size_bytes": 16638457,
       "url": "downloads/Cortex-0.1.0-1.app.zip"
     }
@@ -67,13 +67,13 @@
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "First-100 checkpoint: strict support and clean-profile QA launch gates."
+    "First-100 checkpoint: generated launch packet templates and strict human gates."
   ],
-  "released_at": "2026-07-01T04:51:49Z",
+  "released_at": "2026-07-01T04:59:24Z",
   "source_provenance": {
-    "built_at": "2026-07-01T04:51:49Z",
+    "built_at": "2026-07-01T04:59:24Z",
     "git_branch": "mass-scale-app-redesign",
-    "git_commit": "11ef46a6909d42b1b4441ffb2ea3a951f240694e",
+    "git_commit": "9592300c2390c6951ef5116cc0ce281ff47c6ee6",
     "git_dirty": false
   },
   "version": "0.1.0"
