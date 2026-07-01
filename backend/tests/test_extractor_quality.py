@@ -345,6 +345,28 @@ We decided Project Atlas should keep source dates for email decisions.
         self.assertEqual(data["summary"].count("Ada likes coffee."), 1)
         self.assertEqual(data["summary"].count("We decided Project Atlas uses Home, Review, and Ask."), 1)
 
+    def test_connector_labeled_content_is_preserved_without_metadata_labels(self) -> None:
+        data = extract_local(
+            """Repository: doppl/cortex
+State: open
+Author: alex
+URL: https://github.com/doppl-tech/cortex-app/issues/42
+Title: Decision: Project LabelOnly should preserve title-only connector memories.
+Summary: Project SummaryOnly should keep labeled connector summaries retrievable.
+Description: Procedure: Project DescriptionOnly should review source labels before Ask.
+Highlight: I prefer Project HighlightOnly answers that keep source highlights cited.
+""",
+            "github",
+        )
+        joined = "\n".join([*(record["content"] for record in data["records"]), data["summary"]])
+
+        self.assertTrue(any(record["kind"] == "decision" and "Project LabelOnly" in record["content"] for record in data["records"]))
+        self.assertTrue(any(record["kind"] == "claim" and "Project SummaryOnly" in record["content"] for record in data["records"]))
+        self.assertTrue(any(record["kind"] == "procedure" and "Project DescriptionOnly" in record["content"] for record in data["records"]))
+        self.assertFalse(any(record["kind"] == "preference" and "Project HighlightOnly" in record["content"] for record in data["records"]))
+        for leaked in ("Repository:", "State:", "Author:", "URL:", "Title:", "Summary:", "Description:", "Highlight:"):
+            self.assertNotIn(leaked, joined)
+
 
 if __name__ == "__main__":
     unittest.main()

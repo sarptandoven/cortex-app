@@ -86,6 +86,8 @@ STRICT_UNATTRIBUTED_PERSONAL_SOURCES = CONVERSATION_SOURCES | {
 BOILERPLATE_PREFIXES = {
     "aliases",
     "archive file",
+    "assignee",
+    "author",
     "channel",
     "chat",
     "conversation",
@@ -97,12 +99,23 @@ BOILERPLATE_PREFIXES = {
     "file",
     "folder",
     "from",
+    "html url",
+    "id",
+    "identifier",
+    "key",
     "last updated",
+    "labels",
     "modified",
     "modified at",
+    "number",
     "path",
+    "repo",
+    "repository",
+    "reporter",
     "source",
     "source file",
+    "state",
+    "status",
     "structured csv export",
     "structured contacts export",
     "subject",
@@ -110,6 +123,20 @@ BOILERPLATE_PREFIXES = {
     "title",
     "to",
     "updated",
+    "url",
+}
+CONTENT_BEARING_LABELS = {
+    "body",
+    "comment",
+    "content",
+    "description",
+    "excerpt",
+    "highlight",
+    "note",
+    "notes",
+    "summary",
+    "text",
+    "title",
 }
 SERVICE_DATE_HEADERS = {"created", "created at", "date", "edited", "updated", "user edited"}
 NON_SPEAKER_LABELS = BOILERPLATE_PREFIXES | {
@@ -412,7 +439,10 @@ def _sentence_candidates(text: str, source: str = "unknown", author_aliases: Ite
                     current_date = _extract_absolute_date(header_text) or line_date or current_date
             elif header_label in SERVICE_DATE_HEADERS and (line_date or _extract_absolute_date(header_text)):
                 current_date = _extract_absolute_date(header_text) or line_date or current_date
-        if _is_boilerplate_line(line):
+        content_payload = _content_label_payload(line, normalized_source)
+        if content_payload:
+            line = content_payload
+        elif _is_boilerplate_line(line):
             if line_date and email_source:
                 current_date = line_date
             continue
@@ -462,6 +492,21 @@ def _clean_wikilink_target(value: str) -> str:
 def _clean_tag_token(value: str) -> str:
     token = str(value or "").rsplit("/", 1)[-1].replace("_", " ").strip()
     return token
+
+
+def _content_label_payload(line: str, source: str) -> str:
+    if _normalize_source_label(source) in CONVERSATION_SOURCES:
+        return ""
+    match = re.match(r"^(?P<label>[A-Za-z][A-Za-z0-9 _-]{0,40})\s*:\s*(?P<text>.+)$", line)
+    if not match:
+        return ""
+    label = match.group("label").strip().lower()
+    if label not in CONTENT_BEARING_LABELS:
+        return ""
+    payload = match.group("text").strip()
+    if _is_boilerplate_line(payload):
+        return ""
+    return payload
 
 
 def _dedupe_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:

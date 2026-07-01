@@ -1117,10 +1117,12 @@ def _source_record_metadata_topics(metadata: dict[str, Any]) -> list[str]:
             value = str(link.get(key) or "").strip()
             if value:
                 topics.append(value.rsplit("/", 1)[-1])
-    for key in ("workspace", "project", "vault_name", "team"):
+    for key in ("workspace", "project", "vault_name", "team", "repository", "channel", "page", "document"):
         value = str(metadata.get(key) or "").strip()
         if value:
             topics.append(value)
+            if key == "repository" and "/" in value:
+                topics.extend(part.strip() for part in value.split("/") if part.strip())
     return _unique_preserving_order(topic for topic in topics if topic)[:12]
 
 
