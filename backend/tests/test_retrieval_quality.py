@@ -255,10 +255,13 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertEqual(result["distractor_memories"], len(DISTRACTOR_MEMORIES))
         self.assertEqual(result["focused_retrieval_memories"], 8)
         self.assertEqual(result["noisy_import_memories"], 11)
+        self.assertGreaterEqual(result["direct_connector_memories"], 10)
         self.assertEqual(set(result["seeded_layers"]), MEMORY_LAYERS)
         expected_noisy_cases = 11
-        self.assertEqual(len(result["checks"]), len(RETRIEVAL_CASES) + expected_noisy_cases)
-        self.assertEqual(result["metrics"]["overall"]["case_count"], len(RETRIEVAL_CASES) + expected_noisy_cases)
+        expected_direct_connector_cases = 10
+        expected_case_count = len(RETRIEVAL_CASES) + expected_noisy_cases + expected_direct_connector_cases
+        self.assertEqual(len(result["checks"]), expected_case_count)
+        self.assertEqual(result["metrics"]["overall"]["case_count"], expected_case_count)
         self.assertEqual(result["metrics"]["overall"]["top1_accuracy"], 1.0)
         self.assertEqual(result["metrics"]["overall"]["recall@1"], 1.0)
         self.assertEqual(result["metrics"]["overall"]["recall@3"], 1.0)
@@ -272,6 +275,7 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertEqual(result["metrics"]["by_category"]["noisy_import_cloud_docs"]["case_count"], 1)
         self.assertEqual(result["metrics"]["by_category"]["noisy_import_calendar"]["case_count"], 1)
         self.assertEqual(result["metrics"]["by_category"]["noisy_import_github"]["case_count"], 1)
+        self.assertEqual(result["metrics"]["by_category"]["direct_connector"]["case_count"], expected_direct_connector_cases)
         self.assertEqual(result["metrics"]["by_category"]["sector_scoping"]["case_count"], 2)
         self.assertEqual(result["metrics"]["by_category"]["temporal_validity"]["case_count"], 1)
         self.assertEqual(result["metrics"]["by_category"]["related_memory"]["case_count"], 1)
@@ -287,6 +291,7 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
             "noisy_import_cloud_docs",
             "noisy_import_calendar",
             "noisy_import_github",
+            "direct_connector",
         }
         self.assertIn("paraphrase", categories)
         self.assertIn("style_recall", categories)
@@ -303,6 +308,29 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertIn(RELATED_MEMORY_COMPANION_ID, focused_contracts["related_memory"]["citation_ids"])
         self.assertEqual(focused_contracts["related_memory"]["relationship"]["kind"], "shared_entity")
         self.assertEqual(focused_contracts["related_memory"]["relationship"]["related_to_id"], RELATED_MEMORY_PRIMARY_ID)
+
+        direct_contracts = result["direct_connector_answer_contracts"]
+        expected_direct_sources = {
+            "calendar",
+            "github",
+            "jira",
+            "linear",
+            "notion",
+            "obsidian",
+            "raindrop",
+            "readwise",
+            "slack",
+            "zotero",
+        }
+        self.assertEqual(direct_contracts["source_count"], 10)
+        self.assertEqual(set(direct_contracts["sources"]), expected_direct_sources)
+        for source, contract in direct_contracts["contracts"].items():
+            self.assertIn(source, expected_direct_sources)
+            self.assertTrue(contract["source_account_id"].startswith("sacct_"))
+            self.assertTrue(contract["source_record_id"].startswith(f"{source}-direct-eval-"))
+            self.assertIn("direct-connector", contract["source_url"])
+            self.assertIn(f"service={source}", contract["source_url"])
+            self.assertIn("line=1", contract["source_url"])
 
         sector_checks = {check["name"]: check for check in result["checks"] if check["category"] == "sector_scoping"}
         self.assertEqual(sector_checks["sector_scope_atlas_release"]["top_sector"], "Project Atlas")

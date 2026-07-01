@@ -15,13 +15,26 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.app.database import init_db
-from backend.app.storage import CortexStore, MEMORY_LAYERS
+from backend.app.storage import BASELINE_10K_CONNECTOR_IDS, CortexStore, MEMORY_LAYERS
 
 
 USER_ID = "retrieval-quality"
 SEED_TIMESTAMP = "2026-01-01T00:00:00Z"
 METRIC_K_VALUES = (1, 3)
 NOISY_IMPORT_SOURCES = {"chatgpt", "claude", "slack", "email", "docs", "notion", "cloud-docs", "calendar", "github"}
+DIRECT_CONNECTOR_SOURCES = {
+    "calendar",
+    "github",
+    "jira",
+    "linear",
+    "notion",
+    "obsidian",
+    "raindrop",
+    "readwise",
+    "slack",
+    "zotero",
+}
+DIRECT_CONNECTOR_SOURCE_URL_TOKEN = "direct-connector"
 NOISY_SOURCE_URL_FRAGMENTS: dict[str, tuple[str, ...]] = {
     "chatgpt": ("service=chatgpt", "conversation=", "line=", "message=", "excerpt="),
     "claude": ("service=claude", "conversation=", "line=", "message=", "excerpt="),
@@ -63,6 +76,90 @@ EXTERNAL_SPEAKER_PERSONAL_SIGNAL_GUARDS: tuple[dict[str, str], ...] = (
     {"source": "email", "layer": "preference", "phrase": "long onboarding checklists"},
     {"source": "email", "layer": "style", "phrase": "verbose and salesy"},
     {"source": "slack", "layer": "preference", "phrase": "long-form consensus memos"},
+)
+
+DIRECT_CONNECTOR_FIXTURES: tuple[dict[str, Any], ...] = (
+    {
+        "source": "obsidian",
+        "project": "Project Vaultline",
+        "query": "Project Vaultline Obsidian direct connector local notes",
+        "content": "Decision: Project Vaultline Obsidian direct connector keeps local notes as the canonical reviewed memory source.",
+        "expected_layer": "decision",
+        "expected_phrase": "canonical reviewed memory source",
+    },
+    {
+        "source": "calendar",
+        "project": "Project Chronos",
+        "query": "Project Chronos calendar direct sync schedule memory",
+        "content": "On July 1, 2026, Project Chronos calendar direct sync confirmed the schedule memory for first users.",
+        "expected_layer": "episodic",
+        "expected_phrase": "schedule memory",
+        "occurred_at": "2026-07-01",
+    },
+    {
+        "source": "zotero",
+        "project": "Project Papertrail",
+        "query": "Project Papertrail Zotero bibliography citation paths",
+        "content": "Decision: Project Papertrail Zotero direct sync preserves bibliography citation paths for research memory.",
+        "expected_layer": "decision",
+        "expected_phrase": "bibliography citation paths",
+    },
+    {
+        "source": "readwise",
+        "project": "Project Highlight",
+        "query": "Project Highlight source highlight first retrieval answers",
+        "content": "I prefer Project Highlight retrieval answers to quote the source highlight before summary text.",
+        "expected_layer": "preference",
+        "expected_phrase": "source highlight before summary",
+    },
+    {
+        "source": "raindrop",
+        "project": "Project Bookmark",
+        "query": "Project Bookmark Raindrop bookmark highlights cited memory",
+        "content": "Decision: Project Bookmark Raindrop direct sync stores bookmark highlights as cited memory.",
+        "expected_layer": "decision",
+        "expected_phrase": "bookmark highlights",
+    },
+    {
+        "source": "linear",
+        "project": "Project Sprint",
+        "query": "Project Sprint Linear triage owner status procedure",
+        "content": "Procedure: Project Sprint Linear sync review requires triage, owner check, and status update before planning.",
+        "expected_layer": "procedural",
+        "expected_phrase": "owner check",
+    },
+    {
+        "source": "jira",
+        "project": "Project Ticket",
+        "query": "Project Ticket Jira issue URLs before summaries",
+        "content": "Decision: Project Ticket Jira direct sync cites issue URLs before generated summaries.",
+        "expected_layer": "decision",
+        "expected_phrase": "issue URLs",
+    },
+    {
+        "source": "slack",
+        "project": "Project Signal",
+        "query": "Project Signal Slack compact update bullets source messages",
+        "content": "Decision: Project Signal Slack direct sync preserves compact update bullets from source messages.",
+        "expected_layer": "semantic",
+        "expected_phrase": "compact update bullets",
+    },
+    {
+        "source": "github",
+        "project": "Project PullRequest",
+        "query": "Project PullRequest GitHub PR source URLs",
+        "content": "Decision: Project PullRequest GitHub direct sync preserves pull request source URLs.",
+        "expected_layer": "decision",
+        "expected_phrase": "pull request source URLs",
+    },
+    {
+        "source": "notion",
+        "project": "Project Wiki",
+        "query": "Project Wiki Notion pages cited source memory",
+        "content": "Decision: Project Wiki Notion direct sync maps pages to cited source memory.",
+        "expected_layer": "decision",
+        "expected_phrase": "cited source memory",
+    },
 )
 
 
@@ -802,6 +899,79 @@ def assert_external_speaker_personal_signals_excluded(memories: list[dict[str, A
         raise AssertionError(f"Noisy import treated external speaker text as user personal signals: {leaked}")
 
 
+def seed_direct_connector_memories(store: CortexStore, user_id: str = USER_ID) -> list[dict[str, Any]]:
+    if DIRECT_CONNECTOR_SOURCES != set(BASELINE_10K_CONNECTOR_IDS):
+        raise AssertionError(
+            "Direct connector retrieval fixtures must match BASELINE_10K_CONNECTOR_IDS: "
+            f"fixtures={sorted(DIRECT_CONNECTOR_SOURCES)} baseline={sorted(BASELINE_10K_CONNECTOR_IDS)}"
+        )
+    store.update_settings(user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+    for index, fixture in enumerate(DIRECT_CONNECTOR_FIXTURES, start=1):
+        source = str(fixture["source"])
+        connection_type = "api-token"
+        if source == "obsidian":
+            connection_type = "local-folder"
+        elif source == "calendar":
+            connection_type = "local-file"
+        elif source == "zotero":
+            connection_type = "local-api"
+        account = store.upsert_source_account(
+            user_id,
+            source=source,
+            account_label=f"{fixture['project']} {source.title()}",
+            account_identifier=f"{source}-direct-eval",
+            connection_type=connection_type,
+            status="connected",
+            auth_state="connected",
+            policy={"review_required": False, "allow_ai_context": True},
+            metadata={"retrieval_eval": True, "direct_connector": True},
+        )
+        source_url = (
+            f"cortex-source://{source}#service={source}"
+            f"&record={DIRECT_CONNECTOR_SOURCE_URL_TOKEN}-{index}"
+            f"&line=1&excerpt={source}-direct-eval"
+        )
+        result = store.sync_source_account_records(
+            user_id,
+            account["id"],
+            records=[
+                {
+                    "external_id": f"{source}-direct-eval-{index}",
+                    "title": f"{fixture['project']} direct connector eval",
+                    "content": str(fixture["content"]),
+                    "source_url": source_url,
+                    "captured_at": "2026-07-01T12:00:00Z",
+                    "metadata": {
+                        "retrieval_eval": True,
+                        "source_quality": "canonical",
+                        "fixture": DIRECT_CONNECTOR_SOURCE_URL_TOKEN,
+                    },
+                }
+            ],
+            processing="sync",
+            cursor_name="direct-connector-eval",
+            cursor_value=str(index),
+            high_water_mark="2026-07-01T12:00:00Z",
+            state={"retrieval_eval": True},
+        )
+        if result["failed"] or result["saved"] != 1:
+            raise AssertionError(f"Direct connector eval failed for {source}: {result}")
+
+    memories = [
+        memory
+        for memory in store.recent(user_id, limit=240)
+        if memory["source"] in DIRECT_CONNECTOR_SOURCES
+        and DIRECT_CONNECTOR_SOURCE_URL_TOKEN in str(memory.get("source_url") or "")
+    ]
+    if len(memories) < len(DIRECT_CONNECTOR_FIXTURES):
+        raise AssertionError(f"Direct connector eval seeded too few memories: {len(memories)}")
+
+    missing_source_urls = [memory["id"] for memory in memories if not memory.get("source_url")]
+    if missing_source_urls:
+        raise AssertionError(f"Direct connector memories missed source URLs: {missing_source_urls}")
+    return memories
+
+
 def seed_local_file_citation_memory(store: CortexStore, user_id: str = USER_ID) -> list[dict[str, Any]]:
     store.update_settings(user_id, {"review_new_captures": False, "allow_pending_in_context": True})
     saved = store.save_capture(
@@ -1292,6 +1462,67 @@ def assert_focused_answer_contracts(store: CortexStore, user_id: str = USER_ID) 
     }
 
 
+def assert_direct_connector_answer_contracts(
+    store: CortexStore,
+    direct_connector_memories: list[dict[str, Any]],
+    user_id: str = USER_ID,
+) -> dict[str, Any]:
+    memory_by_source: dict[str, dict[str, Any]] = {}
+    for fixture in DIRECT_CONNECTOR_FIXTURES:
+        source = str(fixture["source"])
+        phrase = str(fixture["expected_phrase"])
+        layer = str(fixture["expected_layer"])
+        match = next(
+            (
+                memory
+                for memory in direct_connector_memories
+                if memory["source"] == source and memory["layer"] == layer and phrase in str(memory.get("content") or "")
+            ),
+            None,
+        )
+        if not match:
+            raise AssertionError(f"Direct connector Ask contract missing seeded memory for {source}")
+        memory_by_source[source] = match
+
+    contracts: dict[str, Any] = {}
+    for index, fixture in enumerate(DIRECT_CONNECTOR_FIXTURES, start=1):
+        source = str(fixture["source"])
+        expected = memory_by_source[source]
+        expected_external_id = f"{source}-direct-eval-{index}"
+        answer = store.answer_query(user_id, str(fixture["query"]), limit=3)
+        citations = answer.get("citations") or []
+        if not citations:
+            raise AssertionError(f"Direct connector Ask returned no citations for {source}")
+        citation_ids = [citation["id"] for citation in citations]
+        if citations[0]["id"] != expected["id"]:
+            raise AssertionError(f"Direct connector Ask for {source} expected top citation {expected['id']}, got {citation_ids}")
+        citation = citations[0]
+        source_url = str(citation.get("source_url") or "")
+        if citation.get("source") != source:
+            raise AssertionError(f"Direct connector Ask citation had wrong source for {source}: {citation}")
+        if DIRECT_CONNECTOR_SOURCE_URL_TOKEN not in source_url or f"service={source}" not in source_url:
+            raise AssertionError(f"Direct connector Ask citation missed source URL details for {source}: {citation}")
+        if "line=1" not in source_url or "excerpt=" not in source_url:
+            raise AssertionError(f"Direct connector Ask citation missed granular locator for {source}: {citation}")
+        if not citation.get("source_account_id"):
+            raise AssertionError(f"Direct connector Ask citation missed source_account_id for {source}: {citation}")
+        if citation.get("external_id") != expected_external_id or citation.get("source_record_id") != expected_external_id:
+            raise AssertionError(f"Direct connector Ask citation missed source record id for {source}: {citation}")
+        if citation.get("source_type") != "service":
+            raise AssertionError(f"Direct connector Ask citation had wrong source_type for {source}: {citation}")
+        contracts[source] = {
+            "citation_ids": citation_ids,
+            "source_account_id": citation.get("source_account_id"),
+            "source_record_id": citation.get("source_record_id"),
+            "source_url": source_url,
+        }
+    return {
+        "sources": sorted(contracts),
+        "source_count": len(contracts),
+        "contracts": contracts,
+    }
+
+
 def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 3) -> dict[str, Any]:
     seeded = seed_representative_memories(store, user_id)
     distractors = seed_distractor_memories(store, user_id)
@@ -1419,9 +1650,45 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
     for case in noisy_cases:
         checks.append(_evaluate_case(store, user_id, case, limit))
 
+    direct_connector_memories = seed_direct_connector_memories(store, user_id)
+    def direct_id(source: str, phrase: str, *, layer: str | None = None) -> str:
+        for memory in direct_connector_memories:
+            if (
+                memory["source"] == source
+                and phrase in memory["content"]
+                and (layer is None or memory["layer"] == layer)
+            ):
+                return memory["id"]
+        raise AssertionError(
+            f"No direct connector memory matched source={source!r} phrase={phrase!r} layer={layer!r}: "
+            f"{[(memory['source'], memory['layer'], memory['content']) for memory in direct_connector_memories]}"
+        )
+
+    direct_cases = tuple(
+        RetrievalCase(
+            name=f"direct_connector_{fixture['source']}",
+            query=str(fixture["query"]),
+            expected_id=direct_id(str(fixture["source"]), str(fixture["expected_phrase"]), layer=str(fixture["expected_layer"])),
+            expected_layer=str(fixture["expected_layer"]),
+            expected_phrase=str(fixture["expected_phrase"]),
+            category="direct_connector",
+            source_url_contains=(
+                DIRECT_CONNECTOR_SOURCE_URL_TOKEN,
+                f"service={fixture['source']}",
+                "line=1",
+                "excerpt=",
+            ),
+            expected_occurred_at=fixture.get("occurred_at"),
+        )
+        for fixture in DIRECT_CONNECTOR_FIXTURES
+    )
+    for case in direct_cases:
+        checks.append(_evaluate_case(store, user_id, case, limit))
+
     local_file_citation = assert_shared_local_file_citations_sanitized(store, user_id)
     state_leakage = assert_state_leakage_excluded(store, user_id)
     focused_answer_contracts = assert_focused_answer_contracts(store, user_id)
+    direct_connector_answer_contracts = assert_direct_connector_answer_contracts(store, direct_connector_memories, user_id)
 
     return {
         "status": "ok",
@@ -1429,9 +1696,11 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
         "distractor_memories": len(distractors),
         "focused_retrieval_memories": len(focused_memories),
         "noisy_import_memories": len(noisy_memories),
+        "direct_connector_memories": len(direct_connector_memories),
         "local_file_citation": local_file_citation,
         "state_leakage_seeded": state_leakage,
         "focused_answer_contracts": focused_answer_contracts,
+        "direct_connector_answer_contracts": direct_connector_answer_contracts,
         "seeded_layers": sorted(seeded_layers),
         "metrics": _summarize_metrics(checks, METRIC_K_VALUES),
         "checks": checks,
