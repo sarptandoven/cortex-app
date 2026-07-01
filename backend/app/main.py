@@ -75,6 +75,8 @@ def _required_api_scope(method: str, path: str) -> str:
         return "maintenance"
     if normalized_path.startswith("/v1/source-accounts/") and normalized_method == "DELETE":
         return "maintenance"
+    if normalized_path.startswith("/v1/source-accounts/") and normalized_path.endswith("/disconnect") and normalized_method == "POST":
+        return "maintenance"
     if normalized_path == "/v1/sync-cursors" and normalized_method == "POST":
         return "maintenance"
     if normalized_path == "/v1/sync/devices" and normalized_method == "POST":
@@ -449,6 +451,14 @@ def upsert_source_account(request: SourceAccountRequest, user_id: str = Depends(
 
 @app.delete("/v1/source-accounts/{account_id}", response_model=SourceAccountResponse)
 def disconnect_source_account(account_id: str, user_id: str = Depends(auth)) -> dict[str, Any]:
+    disconnected = store.disconnect_source_account(user_id, account_id)
+    if not disconnected:
+        raise HTTPException(status_code=404, detail="Source account not found")
+    return store.public_payload(user_id, disconnected)
+
+
+@app.post("/v1/source-accounts/{account_id}/disconnect", response_model=SourceAccountResponse)
+def pause_source_account_sync(account_id: str, user_id: str = Depends(auth)) -> dict[str, Any]:
     disconnected = store.disconnect_source_account(user_id, account_id)
     if not disconnected:
         raise HTTPException(status_code=404, detail="Source account not found")

@@ -80,7 +80,9 @@ def fetch_slack_records(
     token: str,
     channels: list[str],
     since: str | None = None,
+    page_cursors: dict[str, str] | None = None,
     max_records: int = 100,
+    include_threads: bool = True,
     workspace_url: str | None = None,
     api_base_url: str = DEFAULT_API_BASE_URL,
     request_json: RequestJSON | None = None,
@@ -108,9 +110,10 @@ def fetch_slack_records(
     errors: list[dict[str, Any]] = []
     high_water_mark: str | None = None
     next_cursors: dict[str, str] = {}
+    initial_cursors = {str(key): str(value).strip() for key, value in (page_cursors or {}).items() if str(value).strip()}
 
     for channel in channel_specs:
-        cursor: str | None = None
+        cursor: str | None = initial_cursors.get(channel.channel_id)
         while len(records) < capped_max:
             per_page = min(DEFAULT_PAGE_LIMIT, capped_max - len(records))
             query = {"channel": channel.channel_id, "limit": str(per_page)}
@@ -147,6 +150,24 @@ def fetch_slack_records(
                 records.append(record)
                 if len(records) >= capped_max:
                     break
+                if include_threads and _message_has_replies(message):
+                    replies = _fetch_thread_reply_records(
+                        requester,
+                        base_url=base_url,
+                        headers=headers,
+                        token=cleaned_token,
+                        channel=channel,
+                        parent=message,
+                        remaining=capped_max - len(records),
+                        workspace_url=workspace_url,
+                        errors=errors,
+                    )
+                    for reply_record in replies:
+                        high_water_mark = _max_iso(high_water_mark, reply_record.captured_at)
+                        records.append(reply_record)
+                        records_found += 1
+                        if len(records) >= capped_max:
+                            break
             cursor = str((payload.get("response_metadata") or {}).get("next_cursor") or "").strip() or None
             if cursor:
                 next_cursors[channel.channel_id] = cursor
@@ -165,6 +186,63 @@ def fetch_slack_records(
         errors=errors,
         api_base_url=base_url,
     )
+
+
+def _message_has_replies(message: dict[str, Any]) -> bool:
+    try:
+        reply_count = int(message.get("reply_count") or 0)
+    except (TypeError, ValueError):
+        reply_count = 0
+    thread_ts = str(message.get("thread_ts") or "").strip()
+    ts = str(message.get("ts") or "").strip()
+    return reply_count > 0 or bool(thread_ts and ts and thread_ts == ts and message.get("latest_reply"))
+
+
+def _fetch_thread_reply_records(
+    requester: RequestJSON,
+    *,
+    base_url: str,
+    headers: dict[str, str],
+    token: str,
+    channel: SlackChannelSpec,
+    parent: dict[str, Any],
+    remaining: int,
+    workspace_url: str | None,
+    errors: list[dict[str, Any]],
+) -> list[SlackSyncRecord]:
+    parent_ts = str(parent.get("ts") or "").strip()
+    if not parent_ts or remaining <= 0:
+        return []
+    query = {"channel": channel.channel_id, "ts": parent_ts, "limit": str(min(max(remaining + 1, 1), 100))}
+    url = f"{base_url}/conversations.replies?{urlencode(query)}"
+    try:
+        payload = requester(url, headers)
+    except Exception as exc:
+        errors.append(
+            {
+                "channel": channel.channel_id,
+                "thread_ts": parent_ts,
+                "error": redact_error_message(exc, [token, headers.get("Authorization")]),
+            }
+        )
+        return []
+    if not isinstance(payload, dict):
+        errors.append({"channel": channel.channel_id, "thread_ts": parent_ts, "error": "Slack replies response was not an object"})
+        return []
+    if not payload.get("ok", False):
+        errors.append({"channel": channel.channel_id, "thread_ts": parent_ts, "error": str(payload.get("error") or "Slack replies API error")})
+        return []
+    messages = payload.get("messages") if isinstance(payload.get("messages"), list) else []
+    records: list[SlackSyncRecord] = []
+    for reply in messages:
+        if not isinstance(reply, dict) or str(reply.get("ts") or "").strip() == parent_ts:
+            continue
+        record = _record_from_message(channel, reply, workspace_url=workspace_url)
+        if record is not None:
+            records.append(record)
+        if len(records) >= remaining:
+            break
+    return records
 
 
 def _request_json(url: str, headers: dict[str, str]) -> Any:

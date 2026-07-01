@@ -188,6 +188,15 @@ class ScheduledRemainingConnectorCredentialTests(unittest.TestCase):
             name: self._mark_account_due(account)
             for name, account in self._connect_accounts().items()
         }
+        self.store.upsert_sync_cursor(
+            self.user_id,
+            source="slack",
+            source_account_id=accounts["slack"]["id"],
+            cursor_name="messages",
+            cursor_value="2026-06-30T10:00:00Z",
+            high_water_mark="2026-06-30T10:00:00Z",
+            state={"next_cursors": {"C123ABC": "cursor-next-page"}},
+        )
         calls: dict[str, list[dict[str, Any]]] = {
             "slack": [],
             "jira": [],
@@ -228,6 +237,7 @@ class ScheduledRemainingConnectorCredentialTests(unittest.TestCase):
         self.assertEqual(slack_call["processing"], "async")
         self.assertEqual(slack_call["cursor_name"], "messages")
         self.assertEqual(slack_call["max_records"], 200)
+        self.assertEqual(slack_call["page_cursors"], {"C123ABC": "cursor-next-page"})
 
         jira_call = calls["jira"][0]
         self.assertEqual(jira_call["user_id"], self.user_id)

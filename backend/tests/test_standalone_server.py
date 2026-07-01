@@ -344,6 +344,13 @@ class FakeStore:
                 "created_at": "2026-01-01T00:00:00Z",
                 "updated_at": "2026-01-01T00:00:00Z",
                 "disconnected_at": "2026-01-01T00:00:01Z" if self.source_account_disconnected else None,
+                "retention": {
+                    "disconnect_action": "pause_sync",
+                    "disconnect_retains": ["source_account", "captures", "memories", "sync_cursors", "local_credentials"],
+                    "disconnect_stops": ["scheduled_sync", "new_remote_reads"],
+                    "delete_action": "delete_user_data",
+                    "delete_endpoint": "/v1/user-data?include_backups=true",
+                },
             }
         ]
 
@@ -2081,13 +2088,19 @@ class StandaloneServerTests(unittest.TestCase):
             self.post_json("/v1/source-accounts/sacct_missing/sync", {"records": [{"content": "Missing account"}]})
         self.assertEqual(context.exception.code, 422)
 
-        with self.delete("/v1/source-accounts/sacct_test") as response:
+        with self.post_json("/v1/source-accounts/sacct_test/disconnect", {}) as response:
             disconnected = json.loads(response.read().decode("utf-8"))
         self.assertEqual(disconnected["status"], "disconnected")
+        self.assertEqual(disconnected["retention"]["disconnect_action"], "pause_sync")
+        self.assertIn("memories", disconnected["retention"]["disconnect_retains"])
 
         with self.assertRaises(error.HTTPError) as context:
-            self.delete("/v1/source-accounts/sacct_missing")
+            self.post_json("/v1/source-accounts/sacct_missing/disconnect", {})
         self.assertEqual(context.exception.code, 404)
+
+        with self.delete("/v1/source-accounts/sacct_test") as response:
+            legacy_disconnected = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(legacy_disconnected["retention"]["delete_action"], "delete_user_data")
 
         with self.delete("/v1/sync/devices/sdev_test") as response:
             revoked_device = json.loads(response.read().decode("utf-8"))
@@ -2818,6 +2831,20 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(context.exception.code, 403)
         self.assertIn("maintenance scope", context.exception.read().decode("utf-8"))
         self.assertEqual(self.fake_store.source_account_calls, [])
+
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/source-accounts/sacct_test/disconnect",
+                    data=b"{}",
+                    headers={**scoped_headers, "Content-Type": "application/json"},
+                    method="POST",
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 403)
+        self.assertIn("maintenance scope", context.exception.read().decode("utf-8"))
+        self.assertFalse(self.fake_store.source_account_disconnected)
 
         with self.assertRaises(error.HTTPError) as context:
             request.urlopen(

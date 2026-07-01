@@ -3417,6 +3417,7 @@ class CortexStore:
         account_label: str | None = None,
         account_identifier: str | None = None,
         since: str | None = None,
+        page_cursors: dict[str, str] | None = None,
         processing: str = "sync",
         max_records: int = 100,
         cursor_name: str = "messages",
@@ -3439,6 +3440,7 @@ class CortexStore:
             token=token,
             channels=channels,
             since=since,
+            page_cursors=page_cursors,
             max_records=capped_max_records,
             workspace_url=workspace_url,
             api_base_url=api_base_url or "https://slack.com/api",
@@ -10062,6 +10064,7 @@ class CortexStore:
                 account_label=account_label,
                 account_identifier=account_identifier,
                 since=high_water_mark or cursor_value,
+                page_cursors=cursor_state.get("next_cursors") if isinstance(cursor_state.get("next_cursors"), dict) else None,
                 processing=processing,
                 max_records=min(max_records, 200),
                 cursor_name=cursor_name,
@@ -12446,6 +12449,13 @@ class CortexStore:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "disconnected_at": row["disconnected_at"],
+            "retention": {
+                "disconnect_action": "pause_sync",
+                "disconnect_retains": ["source_account", "captures", "memories", "sync_cursors", "local_credentials"],
+                "disconnect_stops": ["scheduled_sync", "new_remote_reads"],
+                "delete_action": "delete_user_data",
+                "delete_endpoint": "/v1/user-data?include_backups=true",
+            },
         }
 
     def _sync_cursor_from_row(self, row) -> dict[str, Any]:

@@ -141,6 +141,105 @@ class ConnectorFetchRetrievalTests(unittest.TestCase):
                 self.assertEqual(citation["external_id"], provenance["external_id"])
                 self.assertEqual(citation["source_record_id"], provenance["external_id"])
 
+    def test_slack_thread_replies_reach_search_and_ask_citations(self) -> None:
+        calls: list[str] = []
+
+        def fake_request(url: str, headers: dict[str, str]):
+            calls.append(url)
+            self.assertEqual(headers["Authorization"], "Bearer xoxb-thread-test")
+            if "conversations.history" in url:
+                return {
+                    "ok": True,
+                    "messages": [
+                        {
+                            "type": "message",
+                            "user": "U123",
+                            "text": "Thread parent for Cortex Slack retrieval.",
+                            "ts": "1782739200.000100",
+                            "thread_ts": "1782739200.000100",
+                            "reply_count": 1,
+                            "latest_reply": "1782739210.000200",
+                        }
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                }
+            if "conversations.replies" in url:
+                return {
+                    "ok": True,
+                    "messages": [
+                        {
+                            "type": "message",
+                            "user": "U123",
+                            "text": "Thread parent for Cortex Slack retrieval.",
+                            "ts": "1782739200.000100",
+                            "thread_ts": "1782739200.000100",
+                        },
+                        {
+                            "type": "message",
+                            "user": "U456",
+                            "text": "We decided slackthreadtest retrieval should preserve threaded Slack decisions.",
+                            "ts": "1782739210.000200",
+                            "thread_ts": "1782739200.000100",
+                        },
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                }
+            self.fail(f"unexpected Slack URL {url}")
+
+        result = self.store.sync_slack_account(
+            self.user_id,
+            token="xoxb-thread-test",
+            channels=["C123ABC|general"],
+            max_records=3,
+            workspace_url="https://doppl.slack.com",
+            processing="sync",
+            request_json=fake_request,
+        )
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["received"], 2)
+        self.assertEqual(result["saved"], 2)
+        self.assertTrue(any("conversations.history" in url for url in calls))
+        self.assertTrue(any("conversations.replies" in url for url in calls))
+        self.assertEqual(self.store.search(self.user_id, "slackthreadtest threaded Slack decisions", limit=5), [])
+        for capture_id in result["capture_ids"]:
+            self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+
+        hits = self.store.search(self.user_id, "slackthreadtest threaded Slack decisions", limit=5)
+        hit = self._first_result_with_marker(hits, "slack", "slackthreadtest")
+        self.assertIsNotNone(hit)
+        self.assertTrue(hit["source_url"].startswith("https://doppl.slack.com/archives/C123ABC/p1782739210000200"))
+        self.assertEqual(hit["provenance"]["record_metadata"]["thread_ts"], "1782739200.000100")
+
+        answer = self.store.answer_query(self.user_id, "slackthreadtest threaded Slack decisions", limit=5)
+        citation = self._first_citation_with_marker(answer["citations"], "slack", "slackthreadtest")
+        self.assertIsNotNone(citation)
+        self.assertTrue(citation["source_url"].startswith("https://doppl.slack.com/archives/C123ABC/p1782739210000200"))
+        self.assertEqual(citation["source_record_id"], "slack:C123ABC:1782739210.000200")
+
+    def test_slack_sync_uses_channel_page_cursor(self) -> None:
+        calls: list[str] = []
+
+        def fake_request(url: str, headers: dict[str, str]):
+            calls.append(url)
+            self.assertEqual(headers["Authorization"], "Bearer xoxb-cursor-test")
+            self.assertIn("conversations.history", url)
+            return {"ok": True, "messages": [], "response_metadata": {"next_cursor": ""}}
+
+        result = self.store.sync_slack_account(
+            self.user_id,
+            token="xoxb-cursor-test",
+            channels=["C123ABC|general"],
+            page_cursors={"C123ABC": "cursor-one"},
+            max_records=3,
+            processing="sync",
+            request_json=fake_request,
+        )
+
+        self.assertEqual(result["status"], "empty")
+        self.assertTrue(calls)
+        self.assertIn("cursor=cursor-one", calls[0])
+
     def _first_result_with_marker(self, hits: list[dict], source: str, marker: str) -> dict | None:
         for hit in hits:
             if hit["source"] == source and marker in hit["content"].lower():

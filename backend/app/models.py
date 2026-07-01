@@ -97,6 +97,7 @@ class SourceAccountResponse(BaseModel):
     created_at: str
     updated_at: str
     disconnected_at: str | None = None
+    retention: dict[str, Any] = Field(default_factory=dict)
 
 
 class SourceAccountListResponse(BaseModel):

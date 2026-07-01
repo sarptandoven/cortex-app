@@ -644,6 +644,13 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(source_account_blocked.status_code, 403)
         self.assertIn("maintenance scope", source_account_blocked.json()["detail"])
 
+        source_disconnect_blocked = self.client.post(
+            "/v1/source-accounts/sacct_write_blocked/disconnect",
+            headers={"Authorization": f"Bearer {tokens['write']}", "X-Cortex-User": user},
+        )
+        self.assertEqual(source_disconnect_blocked.status_code, 403)
+        self.assertIn("maintenance scope", source_disconnect_blocked.json()["detail"])
+
         sync_cursor_blocked = self.client.post(
             "/v1/sync-cursors",
             json={"source": "gmail", "cursor_name": "messages"},
@@ -679,6 +686,13 @@ class FastAPIContractTests(unittest.TestCase):
             headers={"Authorization": f"Bearer {tokens['maintenance']}", "X-Cortex-User": user},
         )
         self.assertEqual(source_sync_allowed.status_code, 200)
+
+        source_disconnect_allowed = self.client.post(
+            f"/v1/source-accounts/{source_account_allowed.json()['id']}/disconnect",
+            headers={"Authorization": f"Bearer {tokens['maintenance']}", "X-Cortex-User": user},
+        )
+        self.assertEqual(source_disconnect_allowed.status_code, 200)
+        self.assertEqual(source_disconnect_allowed.json()["retention"]["disconnect_action"], "pause_sync")
 
     def test_scoped_capture_query_token_obeys_trust_controls(self) -> None:
         user = "scoped-capture-query-trust"
@@ -828,6 +842,9 @@ class FastAPIContractTests(unittest.TestCase):
         account = account_response.json()
         self.assertEqual(account["source"], "gmail")
         self.assertEqual(account["policy"]["sync"], "incremental")
+        self.assertEqual(account["retention"]["disconnect_action"], "pause_sync")
+        self.assertIn("memories", account["retention"]["disconnect_retains"])
+        self.assertIn("local_credentials", account["retention"]["disconnect_retains"])
 
         cursor_response = self.client.post(
             "/v1/sync-cursors",
@@ -997,9 +1014,11 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(gmail_readiness["cursors"], 1)
         self.assertIn(gmail_readiness["status"], {"connected", "synced", "needs_review", "needs_attention"})
 
-        disconnected = self.client.delete(f"/v1/source-accounts/{account['id']}", headers=headers)
+        disconnected = self.client.post(f"/v1/source-accounts/{account['id']}/disconnect", headers=headers)
         self.assertEqual(disconnected.status_code, 200)
         self.assertEqual(disconnected.json()["status"], "disconnected")
+        self.assertEqual(disconnected.json()["retention"]["disconnect_action"], "pause_sync")
+        self.assertIn("memories", disconnected.json()["retention"]["disconnect_retains"])
 
         active_after_disconnect = self.client.get("/v1/source-accounts", headers=headers)
         self.assertEqual(active_after_disconnect.status_code, 200)
@@ -1012,8 +1031,13 @@ class FastAPIContractTests(unittest.TestCase):
         )
         self.assertEqual(all_accounts.status_code, 200)
         self.assertEqual(all_accounts.json()["results"][0]["id"], account["id"])
+        self.assertEqual(all_accounts.json()["results"][0]["retention"]["delete_action"], "delete_user_data")
 
-        missing_delete = self.client.delete("/v1/source-accounts/sacct_missing", headers=headers)
+        legacy_disconnect = self.client.delete(f"/v1/source-accounts/{account['id']}", headers=headers)
+        self.assertEqual(legacy_disconnect.status_code, 200)
+        self.assertEqual(legacy_disconnect.json()["retention"]["disconnect_action"], "pause_sync")
+
+        missing_delete = self.client.post("/v1/source-accounts/sacct_missing/disconnect", headers=headers)
         self.assertEqual(missing_delete.status_code, 404)
 
     def test_obsidian_connector_endpoint_scans_vault_and_skips_duplicates(self) -> None:
