@@ -117,7 +117,8 @@ BUNDLE_ID="$(plutil -extract CFBundleIdentifier raw -o - "$INFO")"
 STAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 GIT_COMMIT="$(git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || printf 'unknown')"
 GIT_BRANCH="$(git -C "$PROJECT_ROOT" branch --show-current 2>/dev/null || printf '')"
-if [[ -n "$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=no 2>/dev/null || true)" ]]; then
+GIT_STATUS="$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=no 2>/dev/null | grep -vE '^.. site/downloads/' || true)"
+if [[ -n "$GIT_STATUS" ]]; then
   GIT_DIRTY="true"
 else
   GIT_DIRTY="false"

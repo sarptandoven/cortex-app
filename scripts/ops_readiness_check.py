@@ -85,11 +85,17 @@ def git_output(root: Path, command: list[str]) -> str:
 
 
 def current_git_provenance(root: Path) -> dict:
-    status = git_output(root, ["status", "--porcelain", "--untracked-files=no"])
+    raw_status = git_output(root, ["status", "--porcelain", "--untracked-files=no"])
+    source_status = [
+        line
+        for line in raw_status.splitlines()
+        if "site/downloads/" not in line
+    ]
     return {
         "git_commit": git_output(root, ["rev-parse", "HEAD"]) or "unknown",
         "git_branch": git_output(root, ["branch", "--show-current"]) or "",
-        "git_dirty": bool(status),
+        "git_dirty": bool(source_status),
+        "ignored_dirty_paths": ["site/downloads/"],
     }
 
 
