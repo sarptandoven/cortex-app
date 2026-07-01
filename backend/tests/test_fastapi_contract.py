@@ -264,8 +264,8 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertIn("cited", payload["answer"])
         self.assertTrue(payload["citations"])
         self.assertTrue(payload["results"])
-        self.assertEqual(payload["citations"][0]["source_url"], "local-file://ask-source.md")
-        self.assertEqual(payload["results"][0]["source_url"], "local-file://ask-source.md")
+        self.assertTrue(payload["citations"][0]["source_url"].startswith("local-file://ask-source.md?path_hash="))
+        self.assertTrue(payload["results"][0]["source_url"].startswith("local-file://ask-source.md?path_hash="))
         self.assertIn("Ask citation contract", payload["citations"][0]["excerpt"])
 
     def test_retrieval_endpoints_support_sector_scope(self) -> None:

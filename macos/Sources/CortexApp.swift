@@ -1553,7 +1553,7 @@ enum CortexRecoveryText {
             return "The local memory endpoint is invalid. Check the endpoint, then reconnect."
         }
         if lowered.contains("existing config") || lowered.contains("config is not a json") {
-            return "That tool connection could not be updated automatically. Open Troubleshooting, then Manual setup."
+            return "That tool connection could not be updated automatically. Open Troubleshooting, then Fallback connection details."
         }
         if lowered.contains("data couldn") || lowered.contains("correct format") || lowered.contains("decoding") {
             return "Cortex received an unexpected response. Click Reconnect, then try again."
@@ -2956,7 +2956,7 @@ final class AppState: ObservableObject {
         await loadIntegrationTokens()
         refreshIntegrationStates()
         if registered {
-            status = "Tool access reset. Reconnect detected AI tools or use manual setup if an app asks."
+            status = "Tool access reset. Reconnect detected AI tools or use fallback connection details if an app asks."
         }
     }
 
@@ -2969,7 +2969,7 @@ final class AppState: ObservableObject {
         let text = mcpConfigJSON()
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-        status = integration.map { "\($0.name) manual setup copied" } ?? "Manual setup copied"
+        status = integration.map { "\($0.name) connection details copied" } ?? "Connection details copied"
     }
 
     func copyIntegrationGuide(_ integration: AIIntegration) {
@@ -3159,12 +3159,12 @@ final class AppState: ObservableObject {
         Connection targets:
         \(targetPaths)
 
-        Manual setup preview:
+        Fallback connection preview:
         \(mcpConfigJSON(redactToken: true))
 
         Local Cortex service:
         Base URL: \(endpoint)
-        Token: use Copy manual setup from Troubleshooting only if this app asks for it.
+        Token: copy fallback connection details from Troubleshooting only if this app asks for them.
 
         Assistant rule:
         Search Cortex memory before asking the user to repeat project, person, decision, or open-loop details. Prefer cited memory search or agent adaptation when another app needs approved personal memory.
@@ -4137,7 +4137,7 @@ struct IntegrationCenterView: View {
             Text(compact ? "AI tools" : "AI access")
                 .font(compact ? .headline : .title3)
                 .fontWeight(.semibold)
-            Text(compact ? "Connect local AI tools so approved memory is available where you already work." : "Connect local tools so approved memory is available where you work. Manual setup stays collapsed unless an app asks for it.")
+            Text(compact ? "Connect local AI tools so approved memory is available where you already work." : "Connect local tools so approved memory is available where you work. Fallback connection details stay collapsed unless an app asks for them.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -4175,16 +4175,16 @@ struct IntegrationCenterView: View {
     }
 
     private var troubleshootingSetupActions: some View {
-        DisclosureGroup("Manual setup") {
+        DisclosureGroup("Fallback connection details") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Most tools connect automatically. Open this only when a local AI app asks for manual setup.")
+                Text("Most tools connect automatically. Open this only when a local AI app asks for connection details.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 HStack {
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy manual setup", systemImage: "doc.on.doc")
+                        Label("Copy connection details", systemImage: "doc.on.doc")
                     }
                     Spacer()
                 }
@@ -5700,15 +5700,8 @@ struct SettingsOnboardingSection: View {
                 } label: {
                     Label("Open Memory Folder", systemImage: "folder")
                 }
-                    Button {
-                        state.copyMCPConfig()
-                    } label: {
-                        Label("Copy manual setup", systemImage: "doc.on.doc")
-                            .frame(minHeight: 40)
-                    }
-                    .controlSize(.large)
-                    Spacer()
-                }
+                Spacer()
+            }
             Text("Memory folder: \(state.vaultPath)")
                 .font(.caption)
                 .foregroundColor(.secondary)

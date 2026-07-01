@@ -36,10 +36,15 @@ NOISY_SOURCE_URL_FRAGMENTS: dict[str, tuple[str, ...]] = {
 PENDING_LEAK_PHRASE = "Pending-only retrieval memory must not leak into search"
 ARCHIVED_REJECTED_LEAK_PHRASE = "Archived rejected retrieval memory must not leak into search"
 LOCAL_FILE_SOURCE_URL = "/Users/sarptandoven/Documents/Cortex Beta/Local Citation Plan.md#line=9&excerpt=local-file-citation"
-LOCAL_FILE_SAFE_SOURCE_URL = "local-file://Local%20Citation%20Plan.md#line=9&excerpt=local-file-citation"
-LOCAL_FILE_RAW_FRAGMENTS = ("/Users/sarptandoven", "Documents/Cortex Beta")
+LOCAL_FILE_DUPLICATE_SOURCE_URL = "/Users/sarptandoven/Archive/Cortex Beta/Local Citation Plan.md#line=17&excerpt=duplicate-local-file-citation"
+LOCAL_FILE_SAFE_SOURCE_URL_PREFIX = "local-file://Local%20Citation%20Plan.md#line=9&excerpt=local-file-citation"
+LOCAL_FILE_DUPLICATE_SAFE_SOURCE_URL_PREFIX = "local-file://Local%20Citation%20Plan.md#line=17&excerpt=duplicate-local-file-citation"
+LOCAL_FILE_RAW_FRAGMENTS = ("/Users/sarptandoven", "Documents/Cortex Beta", "Archive/Cortex Beta")
 LOCAL_FILE_CITATION_CONTENT = (
     "Local file citation fixture prefers sanitized source locators in shared answer and context outputs."
+)
+LOCAL_FILE_DUPLICATE_CITATION_CONTENT = (
+    "Duplicate local file citation fixture also prefers sanitized source locators in shared answer and context outputs."
 )
 SECTOR_SCOPE_SOURCE_URL = "cortex-eval://retrieval/sector-scope"
 TEMPORAL_VALIDITY_SOURCE_URL = "cortex-eval://retrieval/temporal-validity"
@@ -797,17 +802,17 @@ def assert_external_speaker_personal_signals_excluded(memories: list[dict[str, A
         raise AssertionError(f"Noisy import treated external speaker text as user personal signals: {leaked}")
 
 
-def seed_local_file_citation_memory(store: CortexStore, user_id: str = USER_ID) -> dict[str, Any]:
+def seed_local_file_citation_memory(store: CortexStore, user_id: str = USER_ID) -> list[dict[str, Any]]:
     store.update_settings(user_id, {"review_new_captures": False, "allow_pending_in_context": True})
     saved = store.save_capture(
         user_id=user_id,
-        content=LOCAL_FILE_CITATION_CONTENT,
+        content=f"{LOCAL_FILE_CITATION_CONTENT}\n{LOCAL_FILE_DUPLICATE_CITATION_CONTENT}",
         source="docs",
         source_url=LOCAL_FILE_SOURCE_URL,
         title="Local citation sanitization fixture",
         extracted={
             "_timestamp": "2026-06-29T10:12:00Z",
-            "summary": LOCAL_FILE_CITATION_CONTENT,
+            "summary": "Local citation sanitization fixture.",
             "records": [
                 {
                     "id": "rq_local_file_citation_sanitized",
@@ -825,37 +830,74 @@ def seed_local_file_citation_memory(store: CortexStore, user_id: str = USER_ID) 
             "entities": [],
         },
     )
-    return saved["memories"][0]
+    duplicate_saved = store.save_capture(
+        user_id=user_id,
+        content=LOCAL_FILE_DUPLICATE_CITATION_CONTENT,
+        source="docs",
+        source_url=LOCAL_FILE_DUPLICATE_SOURCE_URL,
+        title="Duplicate local citation sanitization fixture",
+        extracted={
+            "_timestamp": "2026-06-29T10:13:00Z",
+            "summary": LOCAL_FILE_DUPLICATE_CITATION_CONTENT,
+            "records": [
+                {
+                    "id": "rq_local_file_citation_duplicate_sanitized",
+                    "kind": "preference",
+                    "layer": "preference",
+                    "content": LOCAL_FILE_DUPLICATE_CITATION_CONTENT,
+                    "summary": LOCAL_FILE_DUPLICATE_CITATION_CONTENT,
+                    "confidence": "confirmed",
+                    "importance": 5,
+                    "topics": ["citations", "local-files", "context"],
+                    "entity_ids": [],
+                }
+            ],
+            "tasks": [],
+            "entities": [],
+        },
+    )
+    return [saved["memories"][0], duplicate_saved["memories"][0]]
 
 
 def assert_shared_local_file_citations_sanitized(store: CortexStore, user_id: str = USER_ID) -> dict[str, Any]:
-    memory = seed_local_file_citation_memory(store, user_id)
+    memories = seed_local_file_citation_memory(store, user_id)
     query = "sanitized source locators shared answer context outputs"
-    answer = store.answer_query(user_id, query, limit=3)
-    context = store.context_pack(user_id, query=query, limit=3)
+    answer = store.answer_query(user_id, query, limit=5)
+    context = store.context_pack(user_id, query=query, limit=5)
     serialized_answer = json.dumps(answer, sort_keys=True)
     combined = f"{serialized_answer}\n{context}"
 
-    if LOCAL_FILE_SOURCE_URL in combined:
-        raise AssertionError("Shared answer/context output leaked the raw local source_url")
+    for raw_source_url in (LOCAL_FILE_SOURCE_URL, LOCAL_FILE_DUPLICATE_SOURCE_URL):
+        if raw_source_url in combined:
+            raise AssertionError("Shared answer/context output leaked the raw local source_url")
     for fragment in LOCAL_FILE_RAW_FRAGMENTS:
         if fragment in combined:
             raise AssertionError(f"Shared answer/context output leaked local path fragment: {fragment}")
-    if LOCAL_FILE_SAFE_SOURCE_URL not in serialized_answer:
-        raise AssertionError(f"Shared answer output missed sanitized local citation {LOCAL_FILE_SAFE_SOURCE_URL!r}")
-    if LOCAL_FILE_SAFE_SOURCE_URL not in context:
-        raise AssertionError(f"Context pack missed sanitized local citation {LOCAL_FILE_SAFE_SOURCE_URL!r}")
+    for expected_prefix in (LOCAL_FILE_SAFE_SOURCE_URL_PREFIX, LOCAL_FILE_DUPLICATE_SAFE_SOURCE_URL_PREFIX):
+        if expected_prefix not in serialized_answer:
+            raise AssertionError(f"Shared answer output missed sanitized local citation {expected_prefix!r}")
+        if expected_prefix not in context:
+            raise AssertionError(f"Context pack missed sanitized local citation {expected_prefix!r}")
 
-    citation = next((item for item in answer.get("citations") or [] if item.get("id") == memory["id"]), None)
-    if not citation:
-        raise AssertionError("Shared answer citations missed the local-file citation fixture")
-    if citation.get("source_url") != LOCAL_FILE_SAFE_SOURCE_URL:
-        raise AssertionError(f"Shared answer citation was not sanitized: {citation}")
+    citations = {item.get("id"): item for item in answer.get("citations") or []}
+    safe_source_urls: list[str] = []
+    for memory in memories:
+        citation = citations.get(memory["id"])
+        if not citation:
+            raise AssertionError(f"Shared answer citations missed the local-file citation fixture {memory['id']}")
+        source_url = str(citation.get("source_url") or "")
+        if not source_url.startswith("local-file://Local%20Citation%20Plan.md#"):
+            raise AssertionError(f"Shared answer citation was not sanitized: {citation}")
+        if "line=" not in source_url or "excerpt=" not in source_url or "path_hash=" not in source_url:
+            raise AssertionError(f"Shared answer citation missed line/excerpt/path hash metadata: {citation}")
+        safe_source_urls.append(source_url)
+    if len(set(safe_source_urls)) != len(safe_source_urls):
+        raise AssertionError(f"Sanitized duplicate local filenames were not disambiguated: {safe_source_urls}")
 
     return {
-        "memory_id": memory["id"],
-        "raw_source_url": LOCAL_FILE_SOURCE_URL,
-        "safe_source_url": LOCAL_FILE_SAFE_SOURCE_URL,
+        "memory_ids": [memory["id"] for memory in memories],
+        "raw_source_urls": [LOCAL_FILE_SOURCE_URL, LOCAL_FILE_DUPLICATE_SOURCE_URL],
+        "safe_source_urls": safe_source_urls,
     }
 
 

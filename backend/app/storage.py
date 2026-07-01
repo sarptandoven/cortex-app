@@ -9411,12 +9411,21 @@ class CortexStore:
             path_text, _, fragment = text.partition("#")
 
         basename = Path(unquote(path_text)).name or "local-source"
+        path_hash = hashlib.sha256(os.path.normpath(unquote(path_text)).encode("utf-8")).hexdigest()[:12]
         safe = f"local-file://{quote(basename)}"
         if query:
             safe = f"{safe}?{self._sanitize_locator_parameter_component(query)}"
         if fragment:
-            safe = f"{safe}#{self._sanitize_locator_parameter_component(fragment)}"
+            safe_fragment = self._sanitize_locator_parameter_component(fragment)
+            safe = f"{safe}#{self._append_locator_parameter(safe_fragment, f'path_hash={path_hash}')}"
+        elif query:
+            safe = f"{safe}&path_hash={path_hash}"
+        else:
+            safe = f"{safe}?path_hash={path_hash}"
         return safe
+
+    def _append_locator_parameter(self, value: str, parameter: str) -> str:
+        return f"{value}&{parameter}" if value else parameter
 
     def _sanitize_locator_path_components(self, value: str) -> str:
         parts = urlsplit(value)

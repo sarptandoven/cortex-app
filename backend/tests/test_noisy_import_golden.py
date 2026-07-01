@@ -81,16 +81,21 @@ class NoisyImportGoldenTests(unittest.TestCase):
 
         for expected in manifest["expected"]:
             with self.subTest(expected=expected["name"]):
-                hits = [
+                results = self.store.search("test-user", expected["query"], limit=8)
+                matching_hits = [
                     hit
-                    for hit in self.store.search("test-user", expected["query"], limit=8)
+                    for hit in results
                     if hit["source"] == expected["source"]
                     and hit["layer"] == expected["layer"]
                     and hit["kind"] == expected["kind"]
                     and expected["must_include"] in hit["content"]
                 ]
-                self.assertTrue(hits)
-                top = hits[0]
+                self.assertTrue(matching_hits)
+                top = results[0]
+                self.assertEqual(top["source"], expected["source"])
+                self.assertEqual(top["layer"], expected["layer"])
+                self.assertEqual(top["kind"], expected["kind"])
+                self.assertIn(expected["must_include"], top["content"])
                 if expected.get("occurred_at"):
                     self.assertEqual(top["occurred_at"], expected["occurred_at"])
                 self.assertTrue(top["source_url"])

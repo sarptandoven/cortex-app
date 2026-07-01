@@ -30,7 +30,7 @@ NOISY_ADAPTATION_EXTERNAL_SIGNAL_GUARDS: tuple[dict[str, str], ...] = (
     {"source": "slack", "layer": "preference", "phrase": "external Slack consensus rituals"},
 )
 LOCAL_FILE_SOURCE_URL = "/Users/sarptandoven/Documents/Cortex Beta/Adaptation Local Notes.md#line=14&excerpt=adaptation-local-citation"
-LOCAL_FILE_SAFE_SOURCE_URL = "local-file://Adaptation%20Local%20Notes.md#line=14&excerpt=adaptation-local-citation"
+LOCAL_FILE_SAFE_SOURCE_URL_PREFIX = "local-file://Adaptation%20Local%20Notes.md#line=14&excerpt=adaptation-local-citation"
 LOCAL_FILE_RAW_FRAGMENTS = ("/Users/sarptandoven", "Documents/Cortex Beta")
 LOCAL_FILE_CITATION_CONTENT = (
     "Local adaptation citation fixture keeps local file source locators sanitized in profile focus and adaptation evidence."
@@ -331,25 +331,27 @@ def assert_adaptation_local_file_citations_sanitized(store: CortexStore, user_id
     for fragment in LOCAL_FILE_RAW_FRAGMENTS:
         if fragment in serialized:
             raise AssertionError(f"Adaptation profile/evidence leaked local path fragment: {fragment}")
-    if LOCAL_FILE_SAFE_SOURCE_URL not in serialized:
-        raise AssertionError(f"Adaptation profile/evidence missed sanitized local citation {LOCAL_FILE_SAFE_SOURCE_URL!r}")
+    if LOCAL_FILE_SAFE_SOURCE_URL_PREFIX not in serialized:
+        raise AssertionError(f"Adaptation profile/evidence missed sanitized local citation {LOCAL_FILE_SAFE_SOURCE_URL_PREFIX!r}")
 
     focus = next((item for item in profile.get("focus") or [] if item.get("id") == memory["id"]), None)
     if not focus:
         raise AssertionError("Personal profile focus missed the local-file citation fixture")
-    if focus.get("source_url") != LOCAL_FILE_SAFE_SOURCE_URL:
+    focus_source_url = str(focus.get("source_url") or "")
+    if not focus_source_url.startswith(LOCAL_FILE_SAFE_SOURCE_URL_PREFIX) or "path_hash=" not in focus_source_url:
         raise AssertionError(f"Personal profile focus citation was not sanitized: {focus}")
 
     evidence = next((item for item in artifact.get("evidence") or [] if item.get("id") == memory["id"]), None)
     if not evidence:
         raise AssertionError("Adaptation evidence missed the local-file citation fixture")
-    if evidence.get("source_url") != LOCAL_FILE_SAFE_SOURCE_URL:
+    evidence_source_url = str(evidence.get("source_url") or "")
+    if not evidence_source_url.startswith(LOCAL_FILE_SAFE_SOURCE_URL_PREFIX) or "path_hash=" not in evidence_source_url:
         raise AssertionError(f"Adaptation evidence citation was not sanitized: {evidence}")
 
     return {
         "memory_id": memory["id"],
         "raw_source_url": LOCAL_FILE_SOURCE_URL,
-        "safe_source_url": LOCAL_FILE_SAFE_SOURCE_URL,
+        "safe_source_url": focus_source_url,
     }
 
 
