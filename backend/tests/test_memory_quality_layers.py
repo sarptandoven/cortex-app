@@ -65,6 +65,64 @@ class MemoryQualityLayerTests(unittest.TestCase):
         adaptation = self.store.agent_adaptation(self.user_id, query="deploy Cortex", include_pending=True)
         self.assertTrue(any(rule["layer"] == "procedural" for rule in adaptation["rules"]))
 
+    def test_trusted_source_account_policy_reranks_near_tie(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+        untrusted = self.store.upsert_source_account(
+            self.user_id,
+            source="github",
+            account_label="Untrusted GitHub",
+            account_identifier="untrusted-github",
+            connection_type="api_token",
+            status="connected",
+            auth_state="connected",
+            policy={"mode": "default", "review_required": False, "allow_ai_context": True},
+        )
+        trusted = self.store.upsert_source_account(
+            self.user_id,
+            source="github",
+            account_label="Trusted GitHub",
+            account_identifier="trusted-github",
+            connection_type="api_token",
+            status="connected",
+            auth_state="connected",
+            policy={"mode": "trusted", "review_required": False, "allow_ai_context": True},
+        )
+        self.store.sync_source_account_records(
+            self.user_id,
+            untrusted["id"],
+            records=[
+                {
+                    "external_id": "untrusted-reliability-ranking",
+                    "title": "Untrusted reliability ranking",
+                    "content": "Atlas reliability source-account trust ranking chooses the generic issue note.",
+                    "source_url": "cortex-source://github#service=github&repository=untrusted&line=5&excerpt=trust-ranking",
+                    "metadata": {"fixture": "trusted-source-account-ranking"},
+                }
+            ],
+            processing="sync",
+        )
+        self.store.sync_source_account_records(
+            self.user_id,
+            trusted["id"],
+            records=[
+                {
+                    "external_id": "trusted-reliability-ranking",
+                    "title": "Trusted reliability ranking",
+                    "content": "Atlas reliability source-account trust ranking chooses the canonical issue note.",
+                    "source_url": "cortex-source://github#service=github&repository=trusted&line=8&excerpt=trust-ranking",
+                    "metadata": {"fixture": "trusted-source-account-ranking"},
+                }
+            ],
+            processing="sync",
+        )
+
+        results = self.store.search(self.user_id, "Atlas reliability source-account trust ranking issue note", limit=2)
+
+        self.assertTrue(results)
+        self.assertIn("canonical issue note", results[0]["content"])
+        self.assertEqual(results[0]["provenance"]["source_account_id"], trusted["id"])
+        self.assertEqual(results[0]["provenance"]["source_account_policy"]["mode"], "trusted")
+
     def test_retrieval_filters_expired_future_and_superseded_memories(self) -> None:
         extracted = {
             "_timestamp": "2026-06-30T10:00:00+00:00",

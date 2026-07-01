@@ -1028,6 +1028,13 @@ def _memory_provenance(
         "external_id": external_id,
         "record_metadata": metadata,
     }
+    source_account_policy = (source_account or {}).get("policy") if isinstance((source_account or {}).get("policy"), dict) else {}
+    if source_account_policy:
+        provenance["source_account_policy"] = {
+            key: source_account_policy[key]
+            for key in ("mode", "allow_ai_context", "review_required")
+            if key in source_account_policy
+        }
     return {key: value for key, value in provenance.items() if value not in (None, "", {}, [])}
 
 
@@ -10527,6 +10534,9 @@ class CortexStore:
                 score += 0.003
 
         provenance = self._json_or_empty(str(self._row_value(row, "provenance_json") or "{}"))
+        account_policy = provenance.get("source_account_policy") if isinstance(provenance.get("source_account_policy"), dict) else {}
+        if _normalize_source_key(str(account_policy.get("mode") or "")) == "trusted":
+            score += 0.003
         metadata = provenance.get("record_metadata") if isinstance(provenance.get("record_metadata"), dict) else {}
         trusted_values = {
             str(metadata.get(key) or "").strip().lower()
