@@ -2095,6 +2095,7 @@ final class AppState: ObservableObject {
 
     private let backend = BackendSupervisor.shared
     private var obsidianAutoSyncTask: Task<Void, Never>?
+    private var directConnectorAutoSyncTask: Task<Void, Never>?
     private var obsidianSyncInFlight = false
     private var onboardingDismissedForSession = false
 
@@ -2782,10 +2783,26 @@ final class AppState: ObservableObject {
 
     private func startConnectedSourceAutoSync(initialSync: Bool = true) {
         obsidianAutoSyncTask?.cancel()
-        guard storedObsidianVaultURL() != nil else { return }
-        obsidianAutoSyncTask = Task { [weak self] in
+        directConnectorAutoSyncTask?.cancel()
+        if storedObsidianVaultURL() != nil {
+            obsidianAutoSyncTask = Task { [weak self] in
+                if initialSync {
+                    await self?.syncSavedObsidianVaultIfAvailable(automatic: true)
+                }
+                while !Task.isCancelled {
+                    do {
+                        try await Task.sleep(nanoseconds: 30 * 60 * 1_000_000_000)
+                    } catch {
+                        return
+                    }
+                    await self?.syncSavedObsidianVaultIfAvailable(automatic: true)
+                }
+            }
+        }
+        guard !configuredDirectConnectorIDs.isEmpty else { return }
+        directConnectorAutoSyncTask = Task { [weak self] in
             if initialSync {
-                await self?.syncSavedObsidianVaultIfAvailable(automatic: true)
+                await self?.syncConfiguredDirectConnectorsIfAvailable(automatic: true)
             }
             while !Task.isCancelled {
                 do {
@@ -2793,7 +2810,7 @@ final class AppState: ObservableObject {
                 } catch {
                     return
                 }
-                await self?.syncSavedObsidianVaultIfAvailable(automatic: true)
+                await self?.syncConfiguredDirectConnectorsIfAvailable(automatic: true)
             }
         }
     }
@@ -2804,6 +2821,18 @@ final class AppState: ObservableObject {
             return
         }
         await syncLocalNotesFolder(connector, folderURL: folderURL, rememberPath: false, automatic: automatic)
+    }
+
+    private func syncConfiguredDirectConnectorsIfAvailable(automatic: Bool) async {
+        let configuredIDs = configuredDirectConnectorIDs.sorted()
+        guard !configuredIDs.isEmpty else { return }
+        for connectorID in configuredIDs {
+            guard let connector = sourceConnectorCatalog.first(where: { $0.id == connectorID }),
+                  let payload = storedDirectConnectorPayload(for: connectorID) else {
+                continue
+            }
+            await syncDirectConnector(connector, payload: payload, automatic: automatic)
+        }
     }
 
     func connectLocalNotesFolder(_ connector: SourceConnectorCatalogItem, chooseNew: Bool = false) {
@@ -2885,25 +2914,35 @@ final class AppState: ObservableObject {
         configuredDirectConnectorIDs.contains(connector.id) || storedDirectConnectorPayload(for: connector.id) != nil
     }
 
-    func syncDirectConnector(_ connector: SourceConnectorCatalogItem, payload: [String: Any], rememberPayload: Bool = false) async {
+    func syncDirectConnector(_ connector: SourceConnectorCatalogItem, payload: [String: Any], rememberPayload: Bool = false, automatic: Bool = false) async {
         guard Self.directConnectorSyncIDs.contains(connector.id) else {
-            status = "\(connector.name) is not wired for direct sync yet"
+            if !automatic {
+                status = "\(connector.name) is not wired for direct sync yet"
+            }
             return
         }
         guard !connectorSyncingIDs.contains(connector.id) else {
-            status = "\(connector.name) sync is already running"
+            if !automatic {
+                status = "\(connector.name) sync is already running"
+            }
             return
         }
 
         connectorSyncingIDs.insert(connector.id)
-        isBusy = true
+        if !automatic {
+            isBusy = true
+        }
         defer {
             connectorSyncingIDs.remove(connector.id)
-            isBusy = false
+            if !automatic {
+                isBusy = false
+            }
         }
 
         do {
-            status = "Syncing \(connector.name)..."
+            if !automatic {
+                status = "Syncing \(connector.name)..."
+            }
             var requestBody = payload
             if requestBody["processing"] == nil {
                 requestBody["processing"] = "sync"
@@ -2922,7 +2961,9 @@ final class AppState: ObservableObject {
             UserDefaults.standard.set(true, forKey: "onboardingFirstSourceImported.v1")
             UserDefaults.standard.set(onboardingFirstSourceNames, forKey: "onboardingFirstSourceNames.v1")
             await loadSourceConnectivity()
-            await loadTrust()
+            if !automatic {
+                await loadTrust()
+            }
             await refreshAfterCapture()
 
             let changed = synced.saved + synced.queued
@@ -2935,11 +2976,15 @@ final class AppState: ObservableObject {
                 message = "\(connector.name) sync finished"
             }
             connectorLastMessages[connector.id] = message
-            status = message
+            if !automatic {
+                status = message
+            }
         } catch {
             let message = CortexRecoveryText.failureStatus("\(connector.name) sync", error: error)
             connectorLastMessages[connector.id] = message
-            status = message
+            if !automatic {
+                status = message
+            }
         }
     }
 
@@ -2971,6 +3016,7 @@ final class AppState: ObservableObject {
         }
         CortexCredentialStore.saveSecret(json, forKey: Self.directConnectorConfigSecretKey(for: connectorID))
         refreshStoredConnectorConfigState()
+        startConnectedSourceAutoSync(initialSync: false)
     }
 
     private func resolvedObsidianVaultPath() -> String {
@@ -4135,6 +4181,7 @@ final class AppState: ObservableObject {
 
     deinit {
         obsidianAutoSyncTask?.cancel()
+        directConnectorAutoSyncTask?.cancel()
     }
 }
 
