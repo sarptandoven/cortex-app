@@ -1948,6 +1948,16 @@ private enum CortexCredentialStore {
         UserDefaults.standard.removeObject(forKey: key)
     }
 
+    static func removeSecret(forKey key: String) {
+        guard var payload = readPayload() else {
+            UserDefaults.standard.removeObject(forKey: key)
+            return
+        }
+        payload.removeValue(forKey: key)
+        writePayload(payload)
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
     static func removeLegacyDefault(forKey key: String) {
         UserDefaults.standard.removeObject(forKey: key)
     }
@@ -2912,6 +2922,14 @@ final class AppState: ObservableObject {
 
     func hasStoredDirectConnectorConfig(_ connector: SourceConnectorCatalogItem) -> Bool {
         configuredDirectConnectorIDs.contains(connector.id) || storedDirectConnectorPayload(for: connector.id) != nil
+    }
+
+    func forgetDirectConnectorConfig(_ connector: SourceConnectorCatalogItem) {
+        CortexCredentialStore.removeSecret(forKey: Self.directConnectorConfigSecretKey(for: connector.id))
+        connectorLastMessages[connector.id] = nil
+        refreshStoredConnectorConfigState()
+        startConnectedSourceAutoSync(initialSync: false)
+        status = "\(connector.name) automatic sync setup forgotten"
     }
 
     func syncDirectConnector(_ connector: SourceConnectorCatalogItem, payload: [String: Any], rememberPayload: Bool = false, automatic: Bool = false) async {

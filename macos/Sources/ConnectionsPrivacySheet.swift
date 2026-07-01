@@ -644,6 +644,19 @@ private struct ConnectionsDirectSourceRow: View {
             .buttonStyle(.bordered)
             .controlSize(.large)
             .disabled(state.isBusy || isSyncing)
+
+            if hasStoredConfig {
+                Button {
+                    state.forgetDirectConnectorConfig(connector)
+                } label: {
+                    Image(systemName: "trash")
+                        .frame(width: 36, height: 42)
+                }
+                .buttonStyle(.borderless)
+                .foregroundColor(.secondary)
+                .help("Forget automatic sync setup")
+                .disabled(state.isBusy || isSyncing)
+            }
         }
         .padding(14)
         .background(connectionsPanelBackground)
@@ -812,6 +825,10 @@ private struct ConnectorTokenSetupSheet: View {
                         .fontWeight(.semibold)
                     Text("Cortex uses read-only access for this sync and sends new memory to Review first.")
                         .font(.callout)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Setup is stored locally on this Mac so future syncs can run automatically.")
+                        .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
