@@ -2498,6 +2498,7 @@ final class AppState: ObservableObject {
     @Published var sourceConnectorCatalog: [SourceConnectorCatalogItem] = []
     @Published var sourceReadinessReport: SourceReadinessResponse?
     @Published var sourceAccounts: [SourceAccountItem] = []
+    @Published var allSourceAccounts: [SourceAccountItem] = []
     @Published var syncCursors: [SyncCursorItem] = []
     @Published var syncDevices: [SyncDeviceItem] = []
     @Published var syncReceiptsByDevice: [String: [SyncReceiptItem]] = [:]
@@ -2657,6 +2658,27 @@ final class AppState: ObservableObject {
 
     var activeSourceAccounts: [SourceAccountItem] {
         sourceAccounts.filter { $0.disconnected_at == nil }
+    }
+
+    var knownSourceAccounts: [SourceAccountItem] {
+        allSourceAccounts.isEmpty ? sourceAccounts : allSourceAccounts
+    }
+
+    func sourceAccount(_ connector: SourceConnectorCatalogItem, includeDisconnected: Bool = false) -> SourceAccountItem? {
+        let accounts = includeDisconnected ? knownSourceAccounts : activeSourceAccounts
+        return accounts.first { account in
+            sourceAccount(account, matches: connector)
+        }
+    }
+
+    func disconnectedSourceAccount(_ connector: SourceConnectorCatalogItem) -> SourceAccountItem? {
+        knownSourceAccounts.first { account in
+            account.disconnected_at != nil && sourceAccount(account, matches: connector)
+        }
+    }
+
+    private func sourceAccount(_ account: SourceAccountItem, matches connector: SourceConnectorCatalogItem) -> Bool {
+        account.source == connector.id || (connector.source_ids ?? []).contains(account.source)
     }
 
     var hasConnectedObsidianVault: Bool {
@@ -3229,6 +3251,12 @@ final class AppState: ObservableObject {
             sourceConnectorCatalog = try JSONDecoder().decode(SourceConnectorCatalogResponse.self, from: catalogData).results
             let accountData = try await request(path: "/v1/source-accounts", method: "GET")
             sourceAccounts = try JSONDecoder().decode(SourceAccountListResponse.self, from: accountData).results
+            do {
+                let allAccountData = try await request(path: "/v1/source-accounts?include_disconnected=true", method: "GET")
+                allSourceAccounts = try JSONDecoder().decode(SourceAccountListResponse.self, from: allAccountData).results
+            } catch {
+                allSourceAccounts = sourceAccounts
+            }
             let cursorData = try await request(path: "/v1/sync-cursors", method: "GET")
             syncCursors = try JSONDecoder().decode(SyncCursorListResponse.self, from: cursorData).results
             do {
@@ -3250,6 +3278,7 @@ final class AppState: ObservableObject {
             sourceConnectorCatalog = []
             sourceReadinessReport = nil
             sourceAccounts = []
+            allSourceAccounts = []
             syncCursors = []
             syncDevices = []
             syncReceiptsByDevice = [:]
@@ -3426,12 +3455,52 @@ final class AppState: ObservableObject {
         configuredDirectConnectorIDs.contains(connector.id) || storedDirectConnectorPayload(for: connector.id) != nil
     }
 
+    func pauseDirectConnectorSync(_ connector: SourceConnectorCatalogItem) {
+        Task { await setDirectConnectorPaused(connector, paused: true) }
+    }
+
+    func resumeDirectConnectorSync(_ connector: SourceConnectorCatalogItem) {
+        Task { await setDirectConnectorPaused(connector, paused: false) }
+    }
+
     func forgetDirectConnectorConfig(_ connector: SourceConnectorCatalogItem) {
         CortexCredentialStore.removeSecret(forKey: Self.directConnectorConfigSecretKey(for: connector.id))
         connectorLastMessages[connector.id] = nil
         refreshStoredConnectorConfigState()
         startConnectedSourceAutoSync(initialSync: false)
         status = "\(connector.name) sync paused. Local memory already synced from this source is kept."
+    }
+
+    private func setDirectConnectorPaused(_ connector: SourceConnectorCatalogItem, paused: Bool) async {
+        let account = paused ? sourceAccount(connector) : disconnectedSourceAccount(connector)
+        guard let account else {
+            if paused {
+                forgetDirectConnectorConfig(connector)
+            } else {
+                status = "Reconnect \(connector.name) to resume sync"
+            }
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let accountID = account.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? account.id
+            let action = paused ? "disconnect" : "resume"
+            _ = try await request(path: "/v1/source-accounts/\(accountID)/\(action)", method: "POST")
+            if paused {
+                CortexCredentialStore.removeSecret(forKey: Self.directConnectorConfigSecretKey(for: connector.id))
+                connectorLastMessages[connector.id] = "\(connector.name) sync paused. Synced local memory and backend credentials are retained."
+                status = "\(connector.name) sync paused. Local memory already synced from this source is kept."
+            } else {
+                connectorLastMessages[connector.id] = "\(connector.name) sync resumed."
+                status = "\(connector.name) sync resumed"
+            }
+            refreshStoredConnectorConfigState()
+            await loadSourceConnectivity()
+            startConnectedSourceAutoSync(initialSync: !paused)
+        } catch {
+            status = CortexRecoveryText.failureStatus(paused ? "\(connector.name) pause" : "\(connector.name) resume", error: error)
+        }
     }
 
     func syncDirectConnector(_ connector: SourceConnectorCatalogItem, payload: [String: Any], rememberPayload: Bool = false, automatic: Bool = false) async {
@@ -4525,6 +4594,7 @@ final class AppState: ObservableObject {
                 graphEdges = []
                 importHistory = []
                 sourceAccounts = []
+                allSourceAccounts = []
                 syncCursors = []
                 stats = nil
                 review = nil

@@ -52,6 +52,9 @@ class MacOSConnectorUIContractTests(unittest.TestCase):
         self.assertIn("Other source connections", source)
         self.assertIn("Planned sign-in services stay hidden until they are real.", source)
         self.assertIn("state.isDirectConnectorSyncWired", source)
+        self.assertIn("state.pauseDirectConnectorSync", source)
+        self.assertIn("state.resumeDirectConnectorSync", source)
+        self.assertIn("Already synced local memory stays available", source)
         self.assertNotIn("Advanced source sync", source)
 
         display_text = source.lower()

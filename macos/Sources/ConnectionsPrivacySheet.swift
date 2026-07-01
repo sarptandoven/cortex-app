@@ -650,9 +650,15 @@ private struct ConnectionsDirectSourceRow: View {
     }
 
     private var activeAccount: SourceAccountItem? {
-        state.activeSourceAccounts.first { account in
-            account.source == connector.id || (connector.source_ids ?? []).contains(account.source)
-        }
+        state.sourceAccount(connector)
+    }
+
+    private var pausedAccount: SourceAccountItem? {
+        state.disconnectedSourceAccount(connector)
+    }
+
+    private var isPaused: Bool {
+        activeAccount == nil && pausedAccount != nil
     }
 
     private var readiness: SourceReadinessItem? {
@@ -723,9 +729,9 @@ private struct ConnectionsDirectSourceRow: View {
             .controlSize(.large)
             .disabled(state.isBusy || isSyncing)
 
-            if hasStoredConfig {
+            if !isPaused && (activeAccount != nil || hasStoredConfig) {
                 Button {
-                    state.forgetDirectConnectorConfig(connector)
+                    state.pauseDirectConnectorSync(connector)
                 } label: {
                     Label("Pause", systemImage: "pause.circle")
                         .frame(minWidth: 98, minHeight: 42)
@@ -743,6 +749,7 @@ private struct ConnectionsDirectSourceRow: View {
     }
 
     private var statusTitle: String {
+        if isPaused { return "Paused" }
         if activeAccount?.needsAttention == true { return "Needs attention" }
         if let readiness, readiness.pending > 0 { return "Review" }
         if let readiness { return readiness.syncPlanModeTitle }
@@ -753,6 +760,7 @@ private struct ConnectionsDirectSourceRow: View {
     }
 
     private var statusChipIcon: String {
+        if isPaused { return "pause.circle.fill" }
         if activeAccount?.needsAttention == true { return "exclamationmark.circle.fill" }
         if let readiness, readiness.pending > 0 { return "tray.full.fill" }
         if let readiness { return readiness.syncPlanIcon }
@@ -764,6 +772,7 @@ private struct ConnectionsDirectSourceRow: View {
     }
 
     private var statusColor: Color {
+        if isPaused { return .secondary }
         if activeAccount?.needsAttention == true { return .orange }
         if let readiness, readiness.pending > 0 { return .orange }
         if let readiness { return readiness.syncPlanColor }
@@ -803,6 +812,9 @@ private struct ConnectionsDirectSourceRow: View {
     }
 
     private var detail: String {
+        if isPaused {
+            return "\(connector.name) sync is paused. Already synced local memory stays available; resume when you want fresh items."
+        }
         if activeAccount?.needsAttention == true {
             return activeAccount?.last_error ?? "This connector needs attention before it can sync again."
         }
@@ -874,6 +886,7 @@ private struct ConnectionsDirectSourceRow: View {
     }
 
     private var actionTitle: String {
+        if isPaused { return "Resume" }
         if connected || hasStoredConfig {
             return connector.id == "calendar" ? "Sync" : "Sync again"
         }
@@ -885,6 +898,7 @@ private struct ConnectionsDirectSourceRow: View {
     }
 
     private var actionIcon: String {
+        if isPaused { return "play.circle.fill" }
         switch connector.id {
         case "calendar": return "calendar.badge.plus"
         case "zotero": return "arrow.triangle.2.circlepath"
@@ -893,6 +907,10 @@ private struct ConnectionsDirectSourceRow: View {
     }
 
     private func runAction() {
+        if isPaused {
+            state.resumeDirectConnectorSync(connector)
+            return
+        }
         switch connector.id {
         case "calendar":
             hasStoredConfig ? state.syncStoredDirectConnector(connector) : openTokenSetup()
