@@ -2,6 +2,57 @@
 
 Cortex is currently a local-first macOS beta. The release system should make it easy to create a repeatable app package today while leaving a clean path to signed, notarized, automatic updates later.
 
+The first-100 release track is explicitly the unnotarized `local-beta`
+track unless a specific build completes the Apple Developer ID flow in
+`docs/APPLE_RELEASE.md`. Treat it as a controlled direct beta for named testers,
+not as a public macOS distribution.
+
+## Current First-100 Track
+
+Use the current local-beta path for the first 100 testers only when the invite
+copy, operator handoff, and support runbook all say the same thing:
+
+- The app is packaged as a DMG and ZIP by `macos/package_release.sh`.
+- The app is ad-hoc signed for local verification, not Developer ID signed.
+- The app and DMG are not notarized or stapled.
+- macOS Gatekeeper may block first launch until the user uses Control-click >
+  Open.
+- Updates and rollback are manual app replacement flows.
+- The local memory folder is outside `Cortex.app` and must not be deleted during
+  install, update, or rollback.
+- The static site and `latest.json` are release metadata and download plumbing,
+  not automatic update infrastructure.
+
+If any operator, invite, landing page, or handoff copy describes the current
+local-beta build as notarized, auto-updating, production-ready, or broadly
+public, the build is a no-go for first-100 invites.
+
+## Ready And Not Ready
+
+Ready for the first-100 local-beta track:
+
+- repeatable DMG, ZIP, checksum file, `latest.json`, and `BETA_HANDOFF.md`
+  generation
+- checksum and manifest validation for generated artifacts
+- manual install from DMG on macOS 13 or newer
+- manual update by replacing `Cortex.app`
+- manual rollback by replacing `Cortex.app` with the previous build
+- local memory folder preservation across install, update, and rollback
+- static distribution-site validation
+- live packaged-app smoke testing after launch
+- content-free support bundle generation
+
+Not ready for the current first-100 local-beta track:
+
+- Gatekeeper-ready public distribution
+- Developer ID notarization or stapling, unless the exact build completed
+  `docs/APPLE_RELEASE.md`
+- automatic background updates or in-app rollback
+- Sparkle appcast or signed update-feed rollout
+- hosted accounts, cloud sync, cloud backup, billing, teams, or production
+  telemetry
+- production incident response for broad external launch
+
 ## Current Release Artifacts
 
 `macos/package_release.sh` creates a full local beta release:
@@ -81,6 +132,85 @@ The package-artifact gate validates:
 - `latest.json` source provenance matching the current git commit, unless `--allow-stale-package` is used for an explicit stale-artifact audit
 
 Do not publish `latest.json` or invite first-100 testers if this gate fails.
+
+## First-100 Go / No-Go Before Invites
+
+Run this gate before sending a build to any first-100 tester. Every step must be
+green for the exact build, release directory, and download location that users
+will receive.
+
+1. Confirm release track and copy:
+   - `latest.json` uses the intended beta channel, normally `local-beta`.
+   - Invite copy says the build is an unnotarized local beta when Developer ID
+     notarization has not completed.
+   - `BETA_HANDOFF.md`, landing-page copy, and support copy do not promise
+     automatic updates, hosted accounts, cloud backup, broad OAuth sync, or
+     production support.
+2. Generate or verify the package:
+
+   ```bash
+   python3 scripts/ops_readiness_check.py --refresh-site --include-package
+   ```
+
+3. Verify the generated release directory:
+
+   ```bash
+   RELEASE_DIR="outputs/Cortex-0.1.0-1"
+   python3 scripts/validate_update_manifest.py "$RELEASE_DIR/latest.json"
+   python3 scripts/ops_readiness_check.py \
+     --skip-tests \
+     --skip-build \
+     --require-package-artifacts \
+     --release-dir "$RELEASE_DIR"
+   (cd "$RELEASE_DIR" && shasum -a 256 -c "Cortex-0.1.0-1.checksums.txt")
+   ```
+
+4. Verify the distribution site:
+
+   ```bash
+   python3 scripts/prepare_distribution_site.py
+   python3 scripts/check_distribution_site.py
+   python3 scripts/ops_readiness_check.py --refresh-site
+   ```
+
+5. Test the exact user path on a clean macOS 13 or newer user profile:
+   - download the DMG from the planned tester location;
+   - verify the checksum;
+   - drag `Cortex.app` to Applications;
+   - for an unnotarized build, confirm the documented Control-click > Open path
+     works;
+   - complete first-run setup without source-code instructions;
+   - connect MCP tools or Obsidian/local notes and confirm sync health;
+   - approve memory in Review and get at least one cited Ask result;
+   - create a backup;
+   - export a support bundle and confirm it omits raw memory content;
+   - update over the previous beta and confirm the memory folder remains intact;
+   - roll back to the previous beta and confirm the memory folder remains intact.
+6. Run live checks after launching the packaged app:
+
+   ```bash
+   python3 scripts/first100_live_smoke.py
+   python3 scripts/ops_readiness_check.py \
+     --require-live \
+     --base-url http://127.0.0.1:8766 \
+     --token "$CORTEX_API_KEY"
+   ```
+
+7. Keep rollback artifacts available:
+   - current DMG, ZIP, checksum file, manifest, and `BETA_HANDOFF.md`;
+   - previous beta DMG, ZIP, checksum file, and manifest;
+   - operator notes for known limitations and support escalation.
+
+Go only if every automated check passes, clean-profile install succeeds,
+Gatekeeper handling is understood for the exact signing state, update and
+rollback preserve the memory folder, and support can explain backup, export,
+delete, and support-bundle behavior.
+
+No-go if any package check fails, the clean-profile app cannot open, Gatekeeper
+blocks the unnotarized path beyond the documented Control-click > Open flow,
+manual update or rollback risks the memory folder, checksums or manifests do not
+match the hosted artifacts, support bundle redaction fails, or current copy
+overstates notarization, automatic updates, hosted sync, or production support.
 
 ## Update Manifest
 

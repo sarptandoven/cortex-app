@@ -81,7 +81,45 @@ Allowed support artifacts:
 
 Do not request raw imports, full chat exports, memory exports, context packs, prompts with private content, API keys, or local tokens.
 
-## 5. Stop Conditions
+## 5. Support Intake
+
+Before sending invites, fill in the batch support packet:
+
+```text
+Support channel:
+Primary support owner:
+Backup support owner:
+Incident engineer:
+Case log location:
+Support artifact storage:
+Business hours and timezone:
+Deletion request contact:
+Build version, build number, hash:
+Known limitations sent to testers:
+Stop/go decision:
+```
+
+For every case, open a case ID first and record only operational metadata:
+
+- tester alias, batch, build, macOS, device, install path;
+- source type and approximate source shape, such as file count, size, or date range;
+- Connections & Privacy posture: redaction, pending context, MCP reads/writes/exports;
+- symptom, expected behavior, actual behavior, restart result, backup state;
+- support bundle status after user review;
+- severity, owner, response deadline, next action, and resolution.
+
+Use statuses from `BETA_SUPPORT.md`: `new`, `triaged`, `needs-user`, `reproducing`, `mitigating`, `fix-pending`, `ready-to-close`, `closed`.
+
+## 6. Triage Targets
+
+Set severity before repair steps:
+
+- SEV 0: possible data loss, deletion failure, backup failure, memory folder missing, SQLite corruption, or private content in a support artifact. Acknowledge within 2 business hours, ask the user to stop using Cortex until backup state is known, and escalate to the primary support owner and incident engineer.
+- SEV 1: app cannot launch, backend cannot start, installer blocked, delete/export inaccessible, or user locked out of local data. Acknowledge within 1 business day and generate an offline support bundle.
+- SEV 2: sync, import, review, search, citation, MCP, backup, or export behavior is wrong but data remains accessible. Acknowledge within 2 business days and reproduce with dummy data or local test data.
+- SEV 3: copy, onboarding confusion, visual polish, stale links, update-feed mismatch, or docs gaps. Batch unless it blocks onboarding, privacy understanding, backup, export, or deletion.
+
+## 7. Stop Conditions
 
 Pause new invites immediately if any tester reports:
 
@@ -93,7 +131,7 @@ Pause new invites immediately if any tester reports:
 
 Before repair, ask the user to stop using Cortex and make a manual copy of the vault folder if possible.
 
-## 6. Batch Discipline
+## 8. Batch Discipline
 
 Suggested rollout:
 
@@ -101,7 +139,7 @@ Suggested rollout:
 - users 11 to 25: mixed technical users after no SEV 0/1 issues remain;
 - users 26 to 100: broader macOS beta users only after onboarding, backup, export, delete-all, and support bundle checks pass for the current build.
 
-Each batch needs a build number, artifact hashes, known limitations, support owner, and stop/go decision.
+Each batch needs the filled support packet, no open SEV 0, no repeated unresolved SEV 1 on the same build, and a recorded stop/go decision from the primary support owner.
 
 ## References
 

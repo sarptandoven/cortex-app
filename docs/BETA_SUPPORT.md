@@ -44,6 +44,72 @@ Before sending a build to any new batch:
 
 Do not expand the batch if any current tester has an unresolved SEV 0 possible-data-loss issue.
 
+## Support Desk Setup
+
+Before inviting the first tester, create a private first-100 support workspace that operators can use without storing private memory content.
+
+Fill these batch routing fields before invites go out:
+
+```text
+Support channel: REQUIRED private email, chat, or helpdesk queue
+Primary support owner: REQUIRED named person
+Backup support owner: REQUIRED named person
+Incident engineer: REQUIRED named person or rotation
+Case log location: REQUIRED private tracker or spreadsheet
+Support artifact storage: REQUIRED private folder limited to support owner and incident engineer
+Business hours and timezone: REQUIRED response window
+Deletion request contact: REQUIRED channel or named owner
+```
+
+Required setup:
+
+1. Create a private case log with one row per support case.
+2. Restrict the case log and support artifact storage to operators who need access.
+3. Pin the consent script, deletion/export guarantee, severity table, and known-limitations list in the support channel.
+4. Prepare one reply template for standard intake, one for SEV 0/1 stop-using guidance, and one for support artifact deletion confirmation.
+5. Confirm the support owner can generate or explain live and offline support bundles.
+6. Confirm every operator knows that raw memory content, raw source files, memory exports, prompts with private content, API keys, and local tokens are not acceptable support artifacts.
+7. Run one dummy support case before the first invite: file the case, attach a sanitized test support bundle, assign severity, close it, and delete the test artifact.
+
+Use this case-log schema. It is intentionally content-free:
+
+```text
+Case ID:
+Opened at:
+Tester alias:
+Batch number:
+Build version:
+Build number/hash:
+macOS version:
+Device type:
+Severity:
+Status:
+Owner:
+Response deadline:
+Subsystem: onboarding/install/sync/review/ask/search/citations/MCP/backup/export/delete/support-bundle/update/docs
+Source type: MCP AI tool/Obsidian/local notes/advanced fallback/none/unknown
+Source shape: approximate file count, size, or date range only
+Connections & Privacy posture: redaction on/off, pending context on/off, MCP reads/writes/exports on/off
+Backup state: exists/none/unknown
+Support bundle: not requested/requested/received/rejected/deleted
+User-visible symptom:
+Next action:
+Resolution:
+Support artifact deletion requested: yes/no
+Support artifact deletion completed at:
+```
+
+Allowed case statuses:
+
+- `new`: case received, intake not complete.
+- `triaged`: severity assigned and response deadline set.
+- `needs-user`: waiting for non-private details, support bundle review, or confirmation.
+- `reproducing`: operator is trying to reproduce with dummy data or local test data.
+- `mitigating`: user has stop-use, backup, export, delete, reinstall, or wait-for-fix guidance.
+- `fix-pending`: linked product/docs fix exists but is not yet in a verified build.
+- `ready-to-close`: user has a path forward and artifact deletion preference is recorded.
+- `closed`: resolution and artifact retention/deletion are recorded.
+
 ## Consent And Privacy Script
 
 Read or send this before the user installs the beta. Keep the wording intact unless the product behavior changes.
@@ -112,9 +178,44 @@ Support copy retention:
 
 ## Support Triage
 
-Start every support case with this intake:
+Handle every case through the same intake and triage path.
 
-- Cortex version and build number;
+### Intake Path
+
+1. Open a case ID before asking for details.
+2. Send the standard intake request below.
+3. Record only symptoms, counts, source types, settings posture, build data, and artifact status.
+4. Reject or delete accidental raw content instead of copying it into the case log.
+5. Assign severity before suggesting repair steps.
+6. For SEV 0 or SEV 1, give stop-use or backup-first guidance before troubleshooting.
+7. Set the response deadline from the severity table.
+8. Close the case only after the user has a path forward and support artifact retention/deletion is recorded.
+
+Standard intake request:
+
+```text
+Please do not send raw notes, chats, memory records, prompts, exports, API keys, or local tokens.
+
+Case ID:
+Cortex version and build number:
+macOS version:
+Device type:
+Install path, usually /Applications/Cortex.app:
+Did first-run setup complete: yes/no
+Source type involved: MCP AI tool, Obsidian/local notes, advanced/fallback import, backup, export, delete, update, or none
+Approximate source shape: file count, size, or date range only
+Connections & Privacy settings relevant to the issue:
+What you expected:
+What happened instead:
+Does it reproduce after restarting Cortex: yes/no/not tried
+Does a local backup exist: yes/no/unknown
+Are you comfortable reviewing and sending a sanitized support bundle: yes/no
+Optional: redacted screenshot or dummy-data reproduction, with private text hidden
+```
+
+Record these triage fields:
+
+- Cortex version, build number, build hash if known, and batch number;
 - macOS version and device type;
 - install path, usually `/Applications/Cortex.app`;
 - whether first-run setup completed;
@@ -125,7 +226,8 @@ Start every support case with this intake:
 - what happened instead;
 - whether the issue reproduces after restarting Cortex;
 - whether a backup exists;
-- sanitized support bundle if the user is comfortable sending it.
+- sanitized support bundle status if the user is comfortable reviewing and sending it;
+- severity, owner, response deadline, status, next action, and resolution.
 
 Do not request:
 
@@ -157,7 +259,8 @@ Response:
 3. Ask them not to delete or move the memory folder.
 4. Collect a sanitized support bundle if possible.
 5. Ask them to make a local copy of the memory folder before repair.
-6. Escalate to the beta owner immediately.
+6. Escalate immediately to the primary support owner and incident engineer named in Support Desk Setup.
+7. Pause new invites for the affected build until the incident engineer gives a stop/go decision.
 
 SEV 1: app cannot launch, backend cannot start, installer is blocked, delete/export flow is inaccessible, or the user is locked out of their local data.
 
@@ -167,7 +270,8 @@ Response:
 2. Confirm macOS version, install location, and whether the app was moved to Applications.
 3. Generate an offline support bundle.
 4. Prefer replacing the app over touching the memory folder.
-5. Escalate if the issue affects more than one tester on the same build.
+5. Escalate to the primary support owner if the issue affects more than one tester on the same build.
+6. Pause the next invite batch when two SEV 1 cases are open on the same build.
 
 SEV 2: sync, advanced/fallback import, review, search, citation, MCP, context-copy fallback, backup, or export behavior is wrong but data remains accessible.
 
@@ -178,6 +282,7 @@ Response:
 3. Ask for source type and shape, not source content.
 4. Try backup-first repair or search rebuild only after the user has a backup.
 5. Link the case to the current build and suspected subsystem.
+6. Escalate to SEV 1 if the user cannot access local data or if two more testers reproduce the same failure on the same build.
 
 SEV 3: copy, onboarding confusion, visual polish, stale links, update-feed mismatch, or documentation gaps.
 
@@ -186,6 +291,7 @@ Response:
 1. Batch with other beta feedback unless it blocks onboarding.
 2. Ask for the screen name and visible label, not private content.
 3. Fix before the next invite batch if it affects first-run privacy, review, or backup clarity.
+4. Keep the case open only when a docs or product follow-up is assigned.
 
 ## Incident Escalation
 
