@@ -4,15 +4,15 @@
     {
       "filename": "Cortex-0.1.0-1.dmg",
       "kind": "dmg",
-      "sha256": "77fd0fb26e99fdde19542afe66f5dd35186f45ad38d4ff444c7afba35376bae7",
-      "size_bytes": 20151277,
+      "sha256": "1daa98a695239117028aec08bc71c36b81f1010a8121db537a11396e2102db2d",
+      "size_bytes": 20155063,
       "url": "downloads/Cortex-0.1.0-1.dmg"
     },
     {
       "filename": "Cortex-0.1.0-1.app.zip",
       "kind": "zip",
-      "sha256": "4085c7fd3f3e89f53575408077c36b76fec3c6d2903906d05a2742e105d6b31d",
-      "size_bytes": 16596926,
+      "sha256": "02d4a0f4a8784bef384b63e43390980f573fe5d99f67a8d95e4583d88fd0f438",
+      "size_bytes": 16600514,
       "url": "downloads/Cortex-0.1.0-1.app.zip"
     }
   ],
@@ -69,11 +69,11 @@
   "release_notes": [
     "Local-first Cortex beta with bundled local service, MCP/Obsidian sync, Review, cited Ask, and trust controls."
   ],
-  "released_at": "2026-07-01T02:44:29Z",
+  "released_at": "2026-07-01T02:53:54Z",
   "source_provenance": {
-    "built_at": "2026-07-01T02:44:29Z",
+    "built_at": "2026-07-01T02:53:54Z",
     "git_branch": "mass-scale-app-redesign",
-    "git_commit": "3cfe6e8210e64d2ccdf7330477c847741ac1d988",
+    "git_commit": "5c3b865bdfb93b89ccd4793d3aebac3c8739f0da",
     "git_dirty": false
   },
   "version": "0.1.0"
