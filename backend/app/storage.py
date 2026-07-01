@@ -12,8 +12,10 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import parse_qsl, quote, unquote, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
+from urllib.request import Request, urlopen
 
+from .connectors._redaction import redact_error_message
 from .database import connect, sqlite_vec_status
 from .embeddings import VECTOR_DIMENSIONS, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status
 from .extractor import extract_context, now_iso, stable_id
@@ -787,7 +789,42 @@ def _bounded_int(value: Any, *, minimum: int, maximum: int) -> int | None:
     return parsed
 
 
+def _request_oauth_token_refresh(token_endpoint: str, form: dict[str, str]) -> dict[str, Any]:
+    request = Request(
+        token_endpoint,
+        data=urlencode(form).encode("utf-8"),
+        headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(request, timeout=30) as response:  # noqa: S310 - caller supplies trusted OAuth token endpoint.
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _credential_access_token_expired(payload: dict[str, Any], *, now: datetime | None = None, skew_seconds: int = 60) -> bool:
+    expires_at = _parse_iso_timestamp(
+        str(payload.get("access_token_expires_at") or payload.get("expires_at") or "").strip()
+    )
+    if not expires_at:
+        return False
+    return expires_at <= ((now or datetime.now(timezone.utc)) + timedelta(seconds=skew_seconds))
+
+
+def _oauth_refresh_expires_at(payload: dict[str, Any], *, now: datetime) -> str | None:
+    raw_expires_in = payload.get("expires_in")
+    try:
+        expires_in = int(raw_expires_in)
+    except (TypeError, ValueError):
+        expires_in = 0
+    if expires_in > 0:
+        return (now + timedelta(seconds=max(60, expires_in))).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    expires_at = _parse_iso_timestamp(str(payload.get("expires_at") or "").strip())
+    if expires_at:
+        return expires_at.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return None
+
+
 SCHEDULED_CREDENTIAL_SYNC_SOURCES = {"github", "gmail", "outlook", "google-drive", "readwise", "raindrop", "zotero", "linear", "notion", "slack", "calendar", "jira"}
+OAUTH_REFRESH_CREDENTIAL_SOURCES = {"gmail", "google-drive", "outlook"}
 SOURCE_SYNC_CURSOR_NAMES = {
     "obsidian": "local-folder",
     "gmail": "messages",
@@ -2703,6 +2740,68 @@ class CortexStore:
             return {}
         payload = credential.get("payload")
         return payload if isinstance(payload, dict) else {}
+
+    def _source_credential_payload_with_fresh_oauth_token(
+        self,
+        user_id: str,
+        account: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        source = _normalize_source_key(str(account.get("source") or ""))
+        if source not in OAUTH_REFRESH_CREDENTIAL_SOURCES or not _credential_access_token_expired(payload):
+            return payload
+
+        refresh_token = str(payload.get("refresh_token") or "").strip()
+        token_endpoint = str(payload.get("token_endpoint") or "").strip()
+        client_id = str(payload.get("client_id") or "").strip()
+        client_secret = str(payload.get("client_secret") or "").strip()
+        if not refresh_token or not token_endpoint or not client_id:
+            raise ValueError(f"{source} access token expired and refresh configuration is missing")
+
+        form = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+        }
+        if client_secret:
+            form["client_secret"] = client_secret
+        scope = str(payload.get("scope") or "").strip()
+        if scope:
+            form["scope"] = scope
+        secrets_to_redact = [
+            str(payload.get("access_token") or "").strip(),
+            refresh_token,
+            client_id,
+            client_secret,
+        ]
+        try:
+            token_payload = _request_oauth_token_refresh(token_endpoint, form)
+        except Exception as exc:
+            raise ValueError(redact_error_message(exc, secrets_to_redact)) from exc
+        if not isinstance(token_payload, dict):
+            raise ValueError(f"{source} token refresh response was not an object")
+        access_token = str(token_payload.get("access_token") or "").strip()
+        if not access_token:
+            raise ValueError(f"{source} token refresh response did not include an access token")
+
+        refreshed = dict(payload)
+        refreshed["access_token"] = access_token
+        if str(token_payload.get("refresh_token") or "").strip():
+            refreshed["refresh_token"] = str(token_payload.get("refresh_token") or "").strip()
+        refreshed_at = datetime.now(timezone.utc).replace(microsecond=0)
+        refreshed["oauth_refreshed_at"] = refreshed_at.isoformat().replace("+00:00", "Z")
+        expires_at = _oauth_refresh_expires_at(token_payload, now=refreshed_at)
+        if expires_at:
+            refreshed["access_token_expires_at"] = expires_at
+        if str(token_payload.get("scope") or "").strip():
+            refreshed["scope"] = str(token_payload.get("scope") or "").strip()
+        self.store_source_account_credential(
+            user_id,
+            account["id"],
+            source=source,
+            payload=refreshed,
+        )
+        return refreshed
 
     def _identity_aliases_for_source(
         self,
@@ -10742,7 +10841,11 @@ class CortexStore:
         def cursor_state_value(name: str) -> str | None:
             return str(cursor_state.get(name) or "").strip() or None
 
-        credential_payload = self._read_source_account_credential_payload(user_id, account_id)
+        credential_payload = self._source_credential_payload_with_fresh_oauth_token(
+            user_id,
+            account,
+            self._read_source_account_credential_payload(user_id, account_id),
+        )
         account_label = account.get("account_label")
         account_identifier = account.get("account_identifier")
         if source == "obsidian":

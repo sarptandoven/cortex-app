@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from types import MethodType
 from typing import Any
+from unittest.mock import patch
 
 from backend.app.database import init_db
 from backend.app.storage import CortexStore
@@ -13,6 +14,11 @@ from backend.app.storage import CortexStore
 
 READWISE_TOKEN = "readwise_scheduled_secret_123"
 GMAIL_TOKEN = "gmail_scheduled_secret_123"
+GMAIL_EXPIRED_TOKEN = "gmail_expired_secret_123"
+GMAIL_FRESH_TOKEN = "gmail_fresh_secret_123"
+GMAIL_REFRESH_TOKEN = "gmail_refresh_secret_123"
+GMAIL_ROTATED_REFRESH_TOKEN = "gmail_rotated_refresh_secret_123"
+GMAIL_CLIENT_SECRET = "gmail_client_secret_123"
 OUTLOOK_TOKEN = "outlook_scheduled_secret_123"
 GOOGLE_DRIVE_TOKEN = "google_drive_scheduled_secret_123"
 RAINDROP_TOKEN = "raindrop_scheduled_secret_123"
@@ -20,7 +26,21 @@ ZOTERO_TOKEN = "zotero_scheduled_secret_123"
 LINEAR_TOKEN = "linear_scheduled_secret_123"
 NOTION_TOKEN = "notion_scheduled_secret_123"
 
-SECRET_VALUES = (READWISE_TOKEN, GMAIL_TOKEN, OUTLOOK_TOKEN, GOOGLE_DRIVE_TOKEN, RAINDROP_TOKEN, ZOTERO_TOKEN, LINEAR_TOKEN, NOTION_TOKEN)
+SECRET_VALUES = (
+    READWISE_TOKEN,
+    GMAIL_TOKEN,
+    GMAIL_EXPIRED_TOKEN,
+    GMAIL_FRESH_TOKEN,
+    GMAIL_REFRESH_TOKEN,
+    GMAIL_ROTATED_REFRESH_TOKEN,
+    GMAIL_CLIENT_SECRET,
+    OUTLOOK_TOKEN,
+    GOOGLE_DRIVE_TOKEN,
+    RAINDROP_TOKEN,
+    ZOTERO_TOKEN,
+    LINEAR_TOKEN,
+    NOTION_TOKEN,
+)
 
 
 class ScheduledTokenConnectorTests(unittest.TestCase):
@@ -64,6 +84,62 @@ class ScheduledTokenConnectorTests(unittest.TestCase):
                 "max_records": 200,
             },
         )
+
+    def test_expired_gmail_access_token_refreshes_before_scheduled_dispatch(self) -> None:
+        account = self._mark_account_due(self._connect_gmail_account())
+        self.store.store_source_account_credential(
+            self.user_id,
+            account["id"],
+            source="gmail",
+            payload={
+                "access_token": GMAIL_EXPIRED_TOKEN,
+                "refresh_token": GMAIL_REFRESH_TOKEN,
+                "token_endpoint": "https://oauth2.invalid/token",
+                "client_id": "gmail-client-id",
+                "client_secret": GMAIL_CLIENT_SECRET,
+                "access_token_expires_at": "2000-01-01T00:00:00Z",
+                "query": "label:inbox",
+                "label_ids": ["INBOX"],
+                "include_body": False,
+                "api_base_url": "https://gmail.invalid/gmail/v1",
+            },
+        )
+        calls: list[dict[str, Any]] = []
+
+        def fake_refresh(token_endpoint: str, form: dict[str, str]) -> dict[str, Any]:
+            self.assertEqual(token_endpoint, "https://oauth2.invalid/token")
+            self.assertEqual(form["grant_type"], "refresh_token")
+            self.assertEqual(form["refresh_token"], GMAIL_REFRESH_TOKEN)
+            self.assertEqual(form["client_id"], "gmail-client-id")
+            self.assertEqual(form["client_secret"], GMAIL_CLIENT_SECRET)
+            return {
+                "access_token": GMAIL_FRESH_TOKEN,
+                "refresh_token": GMAIL_ROTATED_REFRESH_TOKEN,
+                "expires_in": 3600,
+                "scope": "gmail.readonly",
+            }
+
+        def fake_sync(store: CortexStore, user_id: str, **kwargs: Any) -> dict[str, Any]:
+            calls.append({"user_id": user_id, **kwargs})
+            return self._sync_result("gmail", kwargs)
+
+        self.store.sync_gmail_account = MethodType(fake_sync, self.store)
+        with patch("backend.app.storage._request_oauth_token_refresh", side_effect=fake_refresh):
+            ran = self.store.run_due_jobs(self.user_id, limit=1)
+
+        self.assertEqual(ran["processed"], 1)
+        self.assertEqual(ran["jobs"][0]["status"], "succeeded")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["access_token"], GMAIL_FRESH_TOKEN)
+        self.assertEqual(calls[0]["source_account_id"], account["id"])
+        refreshed = self.store.vault.read_source_credential(user_id=self.user_id, source_account_id=account["id"])["payload"]
+        self.assertEqual(refreshed["access_token"], GMAIL_FRESH_TOKEN)
+        self.assertEqual(refreshed["refresh_token"], GMAIL_ROTATED_REFRESH_TOKEN)
+        self.assertEqual(refreshed["scope"], "gmail.readonly")
+        self.assertIn("oauth_refreshed_at", refreshed)
+        self.assertNotEqual(refreshed["access_token_expires_at"], "2000-01-01T00:00:00Z")
+        self._assert_values_absent(ran["jobs"][0]["payload"], SECRET_VALUES)
+        self._assert_values_absent(ran["jobs"][0]["result"], SECRET_VALUES)
 
     def test_google_drive_dispatches_from_local_credentials(self) -> None:
         self._assert_credential_backed_dispatch(
