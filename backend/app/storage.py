@@ -1449,6 +1449,25 @@ def _source_account_alias_sources(source: str) -> set[str]:
     return {item for item in matches if item}
 
 
+def _retrieval_source_filter_sources(source: str) -> set[str]:
+    normalized = _normalize_source_key(source)
+    if not normalized:
+        return set()
+    matches = {normalized}
+    direct_metadata = SOURCE_CONNECTOR_IMPORT_METADATA.get(normalized) or {}
+    matches.update(
+        _normalize_source_key(item)
+        for item in direct_metadata.get("source_aliases") or []
+        if _normalize_source_key(item)
+    )
+    for connector, metadata in SOURCE_CONNECTOR_IMPORT_METADATA.items():
+        source_ids = {_normalize_source_key(item) for item in metadata.get("source_ids") or []}
+        source_aliases = {_normalize_source_key(item) for item in metadata.get("source_aliases") or []}
+        if normalized in source_ids or normalized in source_aliases:
+            matches.add(_normalize_source_key(connector))
+    return {item for item in matches if item}
+
+
 def _source_account_identity_values(account: dict[str, Any], source: str) -> list[str]:
     values: list[Any] = [account.get("account_identifier")]
     metadata = account.get("metadata") if isinstance(account.get("metadata"), dict) else {}
@@ -13589,8 +13608,9 @@ class CortexStore:
             params.append(normalized_sector.lower())
         normalized_source = _normalize_source_key(source or "")
         if normalized_source:
-            filters.append(f"lower(COALESCE({alias}.source, '')) = ?")
-            params.append(normalized_source)
+            source_matches = sorted(_retrieval_source_filter_sources(normalized_source))
+            filters.append(f"lower(COALESCE({alias}.source, '')) IN ({','.join('?' for _ in source_matches)})")
+            params.extend(source_matches)
         normalized_source_account_id = _normalize_retrieval_filter_value(source_account_id, max_length=120)
         if normalized_source_account_id:
             filters.append(

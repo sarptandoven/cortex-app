@@ -682,6 +682,53 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertEqual(answer["citations"][0]["line_start"], "71")
         self.assertEqual(answer["citations"][0]["source_excerpt"], "anchor-citation")
 
+    def test_source_filter_uses_service_family_aliases_without_overexpanding(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+        records = [
+            ("source_alias_gmail", "gmail", "Aliasfilter mailbox source family includes the Gmail customer escalation."),
+            ("source_alias_outlook", "outlook", "Aliasfilter mailbox source family includes the Outlook renewal thread."),
+            ("source_alias_drive", "google-drive", "Aliasfilter mailbox source family should not include this Drive planning doc."),
+            ("source_alias_slack", "slack", "Aliasfilter mailbox source family should not include this Slack channel note."),
+        ]
+        for record_id, source, content in records:
+            self.store.save_capture(
+                user_id=self.user_id,
+                content=content,
+                source=source,
+                source_url=f"cortex-source://{source}#line=1&excerpt=aliasfilter",
+                title=f"{source} alias filter seed",
+                extracted={
+                    "_timestamp": "2026-05-01T00:00:00+00:00",
+                    "summary": f"{source} alias filter seed.",
+                    "records": [
+                        {
+                            "id": record_id,
+                            "kind": "claim",
+                            "layer": "semantic",
+                            "content": content,
+                            "summary": content,
+                            "confidence": "confirmed",
+                            "importance": 3,
+                            "topics": ["aliasfilter", "mailbox"],
+                            "entity_ids": [],
+                        }
+                    ],
+                    "tasks": [],
+                    "entities": [],
+                },
+            )
+
+        email_results = self.store.search(self.user_id, "aliasfilter mailbox source family", limit=10, source="email")
+        email_ids = {item["id"] for item in email_results}
+
+        self.assertIn("source_alias_gmail", email_ids)
+        self.assertIn("source_alias_outlook", email_ids)
+        self.assertNotIn("source_alias_drive", email_ids)
+        self.assertNotIn("source_alias_slack", email_ids)
+
+        gmail_results = self.store.search(self.user_id, "aliasfilter mailbox source family", limit=10, source="gmail")
+        self.assertEqual({item["id"] for item in gmail_results}, {"source_alias_gmail"})
+
     def test_source_quality_boost_does_not_override_layer_intent_relevance(self) -> None:
         self.store.update_settings(
             self.user_id,
