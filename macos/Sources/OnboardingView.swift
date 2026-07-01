@@ -201,7 +201,7 @@ struct OnboardingVaultStep: View {
                 OnboardingCheckRow(title: "Starting private memory", detail: state.displayBackendStatus, systemImage: "clock", color: .orange)
             }
 
-            DisclosureGroup("Local details", isExpanded: $vaultLocationExpanded) {
+            DisclosureGroup("Memory folder", isExpanded: $vaultLocationExpanded) {
                 VStack(alignment: .leading, spacing: 10) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Memory folder")

@@ -33,7 +33,7 @@ struct ConnectionsPrivacySheet: View {
                 Text("Connections & Privacy")
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text("Connect notes, choose AI tool access, and keep local backups.")
+                Text("Connect notes, share approved memory with AI tools, and keep a local backup.")
                     .font(.callout)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -118,8 +118,8 @@ private struct ConnectionsPrivacyOverview: View {
         } label: {
             ConnectionsDisclosureLabel(
                 systemImage: "shield.lefthalf.filled",
-                title: "Privacy settings",
-                detail: "Review gate, AI reads, redaction"
+                title: "Memory permissions",
+                detail: "Review before use, approved AI reads, redaction"
             )
         }
         .padding(14)
@@ -152,7 +152,7 @@ private struct ConnectionsPrivacyOverview: View {
                 Divider()
                 SettingsReliabilitySection(state: state)
 
-                DisclosureGroup("Developer tools", isExpanded: $developerDetailsExpanded) {
+                DisclosureGroup("Advanced support details", isExpanded: $developerDetailsExpanded) {
                     VStack(alignment: .leading, spacing: 14) {
                         Group {
                             DisclosureGroup("Privacy history", isExpanded: $sourceAuditExpanded) {
@@ -210,8 +210,8 @@ private struct ConnectionsPrivacyOverview: View {
         } label: {
             ConnectionsDisclosureLabel(
                 systemImage: "wrench.and.screwdriver",
-                title: "Troubleshooting",
-                detail: "Backups, repair, developer tools"
+                title: "Backup & recovery",
+                detail: "Backups, repair, support details"
             )
         }
         .padding(14)
@@ -413,7 +413,7 @@ private struct ConnectionsObsidianSection: View {
                     attentionDetail: notesHealth.detail
                 )
             } else {
-                QuietState(title: "Notes connection unavailable", detail: "Restart Cortex after the local memory engine is healthy.")
+                QuietState(title: "Notes connection unavailable", detail: "Restart Cortex after the private memory store is ready.")
             }
         }
     }
@@ -533,8 +533,8 @@ private struct ConnectionsAIToolsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
-                title: "AI tool access",
-                detail: "Ask works in Cortex; detected tools can read approved memory after you connect them."
+                title: "Use memory in AI tools",
+                detail: "Ask works in Cortex first. Connected tools can read approved memory when you want it elsewhere."
             )
 
             HStack(alignment: .center, spacing: 14) {
@@ -567,7 +567,7 @@ private struct ConnectionsAIToolsSection: View {
                     Button {
                         state.installDetectedIntegrations()
                     } label: {
-                        Label("Connect", systemImage: "link.circle")
+                        Label("Connect tools", systemImage: "link.circle")
                             .frame(minWidth: 118, minHeight: 46)
                     }
                     .buttonStyle(.borderedProminent)
