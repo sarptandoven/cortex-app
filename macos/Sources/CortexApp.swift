@@ -3308,7 +3308,7 @@ final class AppState: ObservableObject {
     func finishOnboarding() {
         guard canCompleteOnboarding else {
             dismissOnboardingForSession()
-            status = "First run closed. Continue the memory loop from Home."
+            status = "Getting started closed. Continue from Home."
             return
         }
         completeOnboarding()
@@ -3316,7 +3316,7 @@ final class AppState: ObservableObject {
 
     func dismissOnboardingForSession() {
         showOnboarding = false
-        status = "First run closed. Continue from Home anytime."
+        status = "Getting started closed. Continue from Home anytime."
     }
 
     func showOnboardingAgain() {
@@ -3358,7 +3358,7 @@ final class AppState: ObservableObject {
             case .reviewMemory:
                 status = "Approve one review item before asking Cortex"
             case .askUse:
-                status = "Ask once with citations before finishing first run"
+                status = "Ask once with citations before finishing"
             }
             return
         }
@@ -5680,13 +5680,13 @@ struct SettingsOnboardingSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("First run")
+            Text("Getting started")
                 .font(.headline)
             HStack {
                 Button {
                     state.showOnboardingAgain()
                 } label: {
-                    Label("Open First Run", systemImage: "sparkles")
+                    Label("Open Getting Started", systemImage: "sparkles")
                 }
                 Button {
                     state.openVaultFolder()

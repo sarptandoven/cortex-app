@@ -27,7 +27,7 @@ struct OnboardingView: View {
                     HStack(spacing: 7) {
                         Image(systemName: "brain.head.profile")
                             .foregroundColor(.accentColor)
-                        Text("Cortex first run")
+                        Text("Getting started")
                             .font(.caption)
                             .fontWeight(.semibold)
                             .foregroundColor(.secondary)
@@ -119,7 +119,7 @@ struct OnboardingView: View {
         guard !state.canAdvanceOnboarding else { return "Continue" }
         switch state.onboardingStep {
         case .privateVault:
-            return "Waiting for Service"
+            return "Starting Cortex"
         case .firstSource:
             return "Choose Notes"
         case .reviewMemory:
@@ -185,12 +185,12 @@ struct OnboardingVaultStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Your memory stays on this Mac. Cortex builds a private index, sends new memory to Review, and only uses memory after you approve it.")
+            Text("Your memory stays on this Mac. Cortex keeps a private index, sends useful items to Review, and only uses memory after you approve it.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if state.diagnostics?.vault != nil {
-                OnboardingCheckRow(title: "Private memory ready", detail: "Next, connect notes so Cortex can start the review loop.", systemImage: "checkmark.seal.fill", color: .green)
+                OnboardingCheckRow(title: "Private memory ready", detail: "Next, connect notes so Cortex can start finding useful memory.", systemImage: "checkmark.seal.fill", color: .green)
             } else {
                 OnboardingCheckRow(title: "Starting private memory", detail: state.displayBackendStatus, systemImage: "clock", color: .orange)
             }
@@ -250,13 +250,13 @@ struct OnboardingFirstSourceStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Connect your notes once. Cortex syncs locally, sends useful memory to Review, and keeps syncing after first run.")
+            Text("Connect notes once. Cortex syncs them locally, sends useful memory to Review, and keeps them updated in the background.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             OnboardingConnectionCard(
                 title: state.hasConnectedObsidianVault ? "Notes connected" : "Connect notes",
-                detail: state.hasConnectedObsidianVault ? "Cortex syncs saved notes on launch and every 30 minutes, then sends new memory to Review with citations." : "Choose your notes. Cortex handles parsing, citations, and repeat sync automatically.",
+                detail: state.hasConnectedObsidianVault ? "Cortex checks saved notes on launch and every 30 minutes, then sends new memory to Review with citations." : "Choose your notes folder. Cortex handles parsing, citations, and repeat sync automatically.",
                 systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "folder.badge.plus",
                 isPrimary: true,
                 status: state.onboardingHasSource ? "Synced" : (state.hasConnectedObsidianVault ? "Connected" : "Local"),
@@ -302,7 +302,7 @@ struct OnboardingFirstSourceStep: View {
 
     private var connectionCheckTitle: String {
         if state.onboardingHasSource {
-            return "Memory layer synced"
+            return "Notes synced"
         }
         if state.onboardingHasConnectedMemoryLayer {
             return "Waiting for synced memory"
@@ -317,7 +317,7 @@ struct OnboardingFirstSourceStep: View {
         if state.onboardingHasConnectedMemoryLayer {
             return "Cortex is checking notes so useful memory appears in Review."
         }
-        return "Connect notes from Home when ready."
+        return "Connect notes when ready."
     }
 }
 
@@ -422,7 +422,7 @@ struct OnboardingReviewMemoryStep: View {
                     state.selectedTab = .review
                     state.dismissOnboardingForSession()
                 } label: {
-                    Label("Open Full Review", systemImage: "checklist")
+                    Label("Open Review", systemImage: "checklist")
                         .frame(minHeight: 42)
                 }
                 .buttonStyle(.borderedProminent)
@@ -549,7 +549,7 @@ struct OnboardingAskUseStep: View {
         if state.hasSearched {
             return "Try an exact phrase from approved memory, or go back to Review and approve one useful item."
         }
-        return "Ask about approved memory from notes. First run finishes after Cortex returns a cited answer."
+        return "Ask about approved memory from notes. Getting started finishes after Cortex returns a cited answer."
     }
 
     private var askPathTitle: String {
@@ -567,7 +567,7 @@ struct OnboardingAskUseStep: View {
             return "Approved memory was used in a cited answer."
         }
         if state.onboardingHasReviewedMemory {
-            return "Run Ask once. First run finishes after Cortex returns a cited answer."
+            return "Run Ask once. Getting started finishes after Cortex returns a cited answer."
         }
         if state.onboardingHasSource {
             return "Ask becomes useful after one memory is approved in Review."
