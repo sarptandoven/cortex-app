@@ -2891,6 +2891,7 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertIn("list_source_connectors", tool_names)
         self.assertNotIn("connect_source_account", tool_names)
         self.assertNotIn("sync_source_records", tool_names)
+        self.assertNotIn("sync_connected_sources", tool_names)
         self.assertNotIn("approve_memory_capture", tool_names)
         self.assertNotIn("delete_all_user_data", tool_names)
 
@@ -2906,6 +2907,7 @@ class StandaloneServerTests(unittest.TestCase):
         admin_tool_names = {tool["name"] for tool in admin_payload["result"]["tools"]}
         self.assertIn("connect_source_account", admin_tool_names)
         self.assertIn("sync_source_records", admin_tool_names)
+        self.assertIn("sync_connected_sources", admin_tool_names)
         self.assertIn("approve_memory_capture", admin_tool_names)
 
     def test_integration_tokens_can_be_listed_and_revoked(self) -> None:

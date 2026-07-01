@@ -117,6 +117,7 @@ This is enabled by default for new local vaults so connected tools can save memo
 
 `allow_agent_maintenance` controls MCP maintenance tools:
 
+- `sync_connected_sources`
 - `get_memory_diagnostics`
 - `get_reliability_report`
 - `create_memory_backup`

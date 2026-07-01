@@ -288,6 +288,7 @@ The backend exposes an MCP-style JSON-RPC endpoint with these tools:
 - `get_agent_adaptation`
 - `connect_source_account`
 - `sync_source_records`
+- `sync_connected_sources`
 - `approve_memory_capture`
 - `archive_memory_capture`
 - `create_memory_backup`

@@ -173,7 +173,7 @@ def main() -> None:
 
     tools = request(args.base_url, args.token, "/mcp", "POST", {"jsonrpc": "2.0", "id": "tools", "method": "tools/list", "params": {}})
     tool_names = {tool["name"] for tool in tools["result"]["tools"]}
-    assert {"remember_this", "search_memory", "get_daily_review", "get_product_loop", "list_source_connectors", "connect_source_account", "sync_source_records", "build_context_pack", "get_memory_stats", "get_memory_diagnostics", "get_reliability_report", "get_support_bundle", "repair_memory_storage", "rebuild_index_from_vault", "get_trust_summary", "get_audit_log"}.issubset(tool_names), tool_names
+    assert {"remember_this", "search_memory", "get_daily_review", "get_product_loop", "list_source_connectors", "connect_source_account", "sync_source_records", "sync_connected_sources", "build_context_pack", "get_memory_stats", "get_memory_diagnostics", "get_reliability_report", "get_support_bundle", "repair_memory_storage", "rebuild_index_from_vault", "get_trust_summary", "get_audit_log"}.issubset(tool_names), tool_names
 
     mcp_pack = request(
         args.base_url,
@@ -203,6 +203,16 @@ def main() -> None:
         {"jsonrpc": "2.0", "id": "reliability", "method": "tools/call", "params": {"name": "get_reliability_report", "arguments": {}}},
     )
     assert "sqlite_quick_check" in mcp_reliability["result"]["content"][0]["text"], mcp_reliability
+
+    mcp_source_sync = request(
+        args.base_url,
+        args.token,
+        "/mcp",
+        "POST",
+        {"jsonrpc": "2.0", "id": "source-sync", "method": "tools/call", "params": {"name": "sync_connected_sources", "arguments": {"limit": 5}}},
+    )
+    source_sync_payload = json.loads(mcp_source_sync["result"]["content"][0]["text"])
+    assert "scheduled_source_syncs" in source_sync_payload, mcp_source_sync
 
     mcp_support = request(
         args.base_url,

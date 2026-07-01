@@ -302,6 +302,7 @@ class LiveSmokeRunner:
             "approve_memory_capture",
             "connect_source_account",
             "sync_source_records",
+            "sync_connected_sources",
             "get_memory_inbox",
             "get_daily_review",
             "delete_all_user_data",

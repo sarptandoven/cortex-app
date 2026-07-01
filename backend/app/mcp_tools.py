@@ -196,6 +196,16 @@ TOOLS = [
         },
     },
     {
+        "name": "sync_connected_sources",
+        "description": "Run due sync jobs for already connected Cortex sources using locally stored source configuration and credentials.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 100},
+            },
+        },
+    },
+    {
         "name": "sync_github",
         "description": "Fetch GitHub issues and pull requests with a read-only token, then sync them into Cortex with stable citations.",
         "inputSchema": {
@@ -561,6 +571,7 @@ WRITE_TOOLS = {
 EXPORT_TOOLS = {"build_context_pack", "get_personal_profile", "get_agent_adaptation", "export_memory"}
 MAINTENANCE_TOOLS = {
     "create_memory_backup",
+    "sync_connected_sources",
     "get_memory_diagnostics",
     "get_reliability_report",
     "repair_memory_storage",
@@ -771,6 +782,17 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             processing=args.get("processing", "sync"),
             archive_missing=_bool_arg(args, "archive_missing"),
             complete_snapshot=_bool_arg(args, "complete_snapshot"),
+        )
+        return store.agent_payload(user_id, result)
+    if name == "sync_connected_sources":
+        try:
+            limit = int(args.get("limit", 10))
+        except (TypeError, ValueError):
+            limit = 10
+        result = store.run_due_source_sync_jobs(
+            user_id,
+            limit=max(1, min(limit, 100)),
+            worker_id="mcp-source-sync",
         )
         return store.agent_payload(user_id, result)
     if name == "sync_github":

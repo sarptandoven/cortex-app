@@ -20,11 +20,12 @@ The macOS app uses a local per-install admin token for Cortex REST API calls. Lo
 
 Scoped MCP tokens are checked before Connections & Privacy controls. A tool call succeeds only when the token has the needed scope and the matching local privacy control is enabled. Newly generated local MCP tokens include `read`, `write`, `export`, and `maintenance`; they do not include `destructive`.
 
-Write-scoped MCP tools can now register connected source accounts and sync cited source records:
+MCP source tools can register connected source accounts, sync cited source records, and run due sync for already connected sources:
 
 - `list_source_connectors`
 - `connect_source_account`
 - `sync_source_records`
+- `sync_connected_sources` is maintenance-scoped and runs due sync for already connected sources using the locally stored source configuration.
 
 This is the preferred beta path for connected tools and local connector processes. Direct connector tools such as `sync_slack`, `sync_readwise`, `sync_raindrop`, `sync_zotero`, `sync_calendar`, `sync_linear`, `sync_jira`, and `sync_notion` feed this same account, cursor, citation, and review contract. When `sync_source_records` includes a stable `external_id`, Cortex treats the record as the same source item on future syncs: unchanged content is skipped, changed content replaces the existing record's derived memory, and citations stay attached to the source account.
 

@@ -9,6 +9,7 @@ from types import MethodType
 from typing import Any
 
 from backend.app.database import init_db
+from backend.app.mcp_tools import call_tool
 from backend.app.storage import CortexStore
 
 
@@ -124,6 +125,54 @@ class ScheduledConnectorCredentialTests(unittest.TestCase):
         self.assertEqual(job["result"]["sync_status"], "complete")
         self._assert_values_absent(job["payload"], SECRET_VALUES)
         self._assert_values_absent(job["result"], SECRET_VALUES)
+
+    def test_mcp_sync_connected_sources_runs_due_local_credentials_without_exposing_them(self) -> None:
+        account = self._mark_account_due(self._connect_github_account())
+        calls: list[dict[str, Any]] = []
+
+        def fake_sync_github_account(store: CortexStore, user_id: str, **kwargs: Any) -> dict[str, Any]:
+            calls.append({"user_id": user_id, **kwargs})
+            return self._sync_result("github", kwargs)
+
+        self.store.sync_github_account = MethodType(fake_sync_github_account, self.store)
+        queued_capture = self.store.enqueue_capture(
+            user_id=self.user_id,
+            content="This ordinary queued capture should wait for the general worker.",
+            source="unit-test",
+            source_url=None,
+            title="General queued capture",
+        )
+
+        with self.assertRaises(PermissionError):
+            call_tool(
+                self.store,
+                self.user_id,
+                "sync_connected_sources",
+                {"limit": 5},
+                token_scopes=["write"],
+            )
+
+        self.store.update_settings(self.user_id, {"allow_agent_maintenance": True})
+        ran = call_tool(
+            self.store,
+            self.user_id,
+            "sync_connected_sources",
+            {"limit": 5},
+            token_scopes=["maintenance"],
+        )
+
+        self.assertEqual(ran["processed"], 1)
+        self.assertEqual(ran["scheduled_source_syncs"]["scheduled"], 1)
+        self.assertEqual(ran["scheduled_source_syncs"]["jobs"][0]["object_id"], account["id"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["token"], GITHUB_TOKEN)
+        self.assertEqual(calls[0]["repositories"], [GITHUB_REPOSITORY])
+        self.assertEqual(ran["jobs"][0]["job_type"], "source_account_sync")
+        self.assertEqual(ran["jobs"][0]["status"], "succeeded")
+        self._assert_values_absent(ran, SECRET_VALUES)
+
+        extract_jobs = self.store.list_jobs(self.user_id, status="queued", job_type="extract_capture", limit=10)
+        self.assertEqual([job["object_id"] for job in extract_jobs], [queued_capture["capture_id"]])
 
     def test_slack_dispatches_with_local_credentials(self) -> None:
         self._assert_credential_backed_dispatch(

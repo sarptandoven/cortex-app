@@ -249,6 +249,7 @@ class SmokeRunner:
             "list_source_connectors",
             "connect_source_account",
             "sync_source_records",
+            "sync_connected_sources",
             "get_style_profile",
             "get_project_context",
             "get_procedure",

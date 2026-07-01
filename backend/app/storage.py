@@ -5598,6 +5598,29 @@ class CortexStore:
             "failed": len(self.list_jobs(user_id, status="failed", limit=100)),
         }
 
+    def run_due_source_sync_jobs(
+        self,
+        user_id: str,
+        *,
+        limit: int = 10,
+        worker_id: str = "source-sync-worker",
+    ) -> dict[str, Any]:
+        scheduled_sources = self.enqueue_due_source_syncs(user_id, limit=limit)
+        processed: list[dict[str, Any]] = []
+        for _ in range(max(0, min(limit, 100))):
+            job = self._claim_next_job(user_id, worker_id, job_type="source_account_sync")
+            if not job:
+                break
+            processed.append(self._run_job(job, worker_id))
+        return {
+            "ran_at": now_iso(),
+            "processed": len(processed),
+            "jobs": processed,
+            "scheduled_source_syncs": scheduled_sources,
+            "pending": len(self.list_jobs(user_id, status="queued", job_type="source_account_sync", limit=100)),
+            "failed": len(self.list_jobs(user_id, status="failed", job_type="source_account_sync", limit=100)),
+        }
+
     def update_settings(self, user_id: str, updates: dict[str, Any]) -> dict[str, Any]:
         with connect(self.db_path) as conn:
             current = self._settings(conn, user_id)
@@ -9877,21 +9900,27 @@ class CortexStore:
         row = conn.execute("SELECT * FROM memory_jobs WHERE unique_key = ?", (unique_key,)).fetchone()
         return self._job_from_row(row)
 
-    def _claim_next_job(self, user_id: str, worker_id: str) -> dict[str, Any] | None:
+    def _claim_next_job(self, user_id: str, worker_id: str, *, job_type: str | None = None) -> dict[str, Any] | None:
         timestamp = now_iso()
+        normalized_job_type = str(job_type or "").strip()
+        job_type_filter = "AND job_type = ?" if normalized_job_type else ""
+        params: list[Any] = [user_id, timestamp]
+        if normalized_job_type:
+            params.append(normalized_job_type)
         with connect(self.db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                """
+                f"""
                 SELECT *
                 FROM memory_jobs
                 WHERE user_id = ?
                   AND status = 'queued'
                   AND run_at <= ?
+                  {job_type_filter}
                 ORDER BY priority ASC, created_at ASC
                 LIMIT 1
                 """,
-                (user_id, timestamp),
+                params,
             ).fetchone()
             if not row:
                 return None

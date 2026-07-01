@@ -2083,6 +2083,7 @@ END:VCALENDAR
         self.assertIn("list_source_connectors", tool_names)
         self.assertNotIn("connect_source_account", tool_names)
         self.assertNotIn("sync_source_records", tool_names)
+        self.assertNotIn("sync_connected_sources", tool_names)
         self.assertNotIn("approve_memory_capture", tool_names)
 
         blocked = self.client.post(
@@ -2118,8 +2119,46 @@ END:VCALENDAR
         self.assertIn("list_source_connectors", write_tool_names)
         self.assertIn("connect_source_account", write_tool_names)
         self.assertIn("sync_source_records", write_tool_names)
+        self.assertNotIn("sync_connected_sources", write_tool_names)
         self.assertIn("approve_memory_capture", write_tool_names)
         self.assertNotIn("delete_all_user_data", write_tool_names)
+
+        maintenance_token = "cxm_fastapi_source_maintenance_123456789"
+        enabled_maintenance = self.client.put(
+            "/v1/settings",
+            json={"allow_agent_maintenance": True},
+            headers=headers,
+        )
+        self.assertEqual(enabled_maintenance.status_code, 200)
+        maintenance_registered = self.client.post(
+            "/v1/integrations/mcp-token",
+            json={"token": maintenance_token, "label": "Maintenance MCP", "scopes": ["maintenance"]},
+            headers=headers,
+        )
+        self.assertEqual(maintenance_registered.status_code, 200)
+        maintenance_tools = self.client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": "maintenance-tools", "method": "tools/list", "params": {}},
+            headers={"Authorization": f"Bearer {maintenance_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(maintenance_tools.status_code, 200)
+        maintenance_tool_names = {tool["name"] for tool in maintenance_tools.json()["result"]["tools"]}
+        self.assertIn("sync_connected_sources", maintenance_tool_names)
+        self.assertNotIn("sync_source_records", maintenance_tool_names)
+        synced_due = self.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": "sync-connected-sources",
+                "method": "tools/call",
+                "params": {"name": "sync_connected_sources", "arguments": {"limit": 5}},
+            },
+            headers={"Authorization": f"Bearer {maintenance_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(synced_due.status_code, 200)
+        synced_due_payload = json.loads(synced_due.json()["result"]["content"][0]["text"])
+        self.assertEqual(synced_due_payload["scheduled_source_syncs"]["scheduled"], 0)
+        self.assertEqual(synced_due_payload["processed"], 0)
 
         connected = self.client.post(
             "/mcp",

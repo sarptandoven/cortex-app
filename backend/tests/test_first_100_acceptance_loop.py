@@ -173,6 +173,7 @@ I prefer Cortex answers that cite the edited Obsidian note when memory changes.
             "list_source_connectors",
             "connect_source_account",
             "sync_source_records",
+            "sync_connected_sources",
             "get_personal_profile",
             "get_agent_adaptation",
             "get_style_profile",
@@ -182,6 +183,7 @@ I prefer Cortex answers that cite the edited Obsidian note when memory changes.
         self.assertTrue(expected_high_value_tools.issubset(tool_names))
         self.assertEqual(tool_required_capabilities("search_memory"), ["read"])
         self.assertEqual(tool_required_capabilities("sync_source_records"), ["write"])
+        self.assertEqual(tool_required_capabilities("sync_connected_sources"), ["maintenance"])
         self.assertEqual(tool_required_capabilities("approve_memory_capture"), ["write"])
         self.assertEqual(tool_required_capabilities("get_agent_adaptation"), ["read", "export"])
 
