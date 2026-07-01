@@ -29,13 +29,21 @@ Do not invite users from a build that fails the ship gate.
 
 The worker command should return a JSON object with `failed: 0`. If it reports failed jobs, inspect the `failed_jobs` array before inviting users from that build.
 
-After launching the packaged app, run the live first-100 smoke once:
+After packaging, run the isolated-home packaged DMG QA once:
 
 ```bash
-python3 scripts/first100_live_smoke.py
+python3 scripts/run_first100_dmg_qa.py
 ```
 
-It uses the local app token from the macOS Keychain, with legacy `~/Library/Application Support/Cortex/credentials.json` fallback for older local builds. It syncs a temporary Obsidian vault under an isolated smoke user, verifies Review/Ask/MCP, and deletes the smoke user rows. It does not create a backup unless `--include-backup` is passed.
+Quit any existing Cortex app or backend first; the script fails if `http://127.0.0.1:8766/health` is already responding so it cannot accidentally test the wrong app. It verifies the current `site/downloads` DMG checksum, runs `hdiutil verify`, mounts the DMG, copies the app into a temporary `Applications`-style folder, launches it with a temporary `CFFIXED_USER_HOME`, runs `scripts/first100_live_smoke.py` against `http://127.0.0.1:8766`, and writes `.context/first100_clean_profile_qa_run.txt`. The live smoke syncs a temporary Obsidian vault under an isolated smoke user, verifies Review/Ask/MCP/support-bundle privacy, deletes the smoke user rows, and includes the backup check when supported.
+
+To fill only the clean-profile packet fields that this automation actually verified, run:
+
+```bash
+python3 scripts/run_first100_dmg_qa.py --update-clean-profile-packet
+```
+
+This is isolated-home QA, not a real human clean-profile or Gatekeeper pass. The clean macOS profile, Control-click > Open, first-run human onboarding, manual update, manual rollback, and invite-copy review gates still need a human.
 
 Before inviting a tester batch, run the launch gate summary:
 

@@ -45,6 +45,24 @@ python3 scripts/prepare_first100_launch_packets.py
 
 The generated files stay under `.context/` by default, include the exact strict gate command to run after filling both packets, and must not be committed.
 
+## Isolated-Home DMG Automation
+
+Before the human clean-profile pass, run the packaged DMG automation from the repo root:
+
+```bash
+python3 scripts/run_first100_dmg_qa.py
+```
+
+Quit any existing Cortex app or backend first; the script fails if `http://127.0.0.1:8766/health` is already responding so it cannot accidentally test the wrong app. The script verifies the current `site/downloads` DMG checksum, runs `hdiutil verify`, mounts the DMG, copies the app into a temporary `Applications`-style folder, launches the packaged app with a temporary `CFFIXED_USER_HOME`, and runs `scripts/first100_live_smoke.py` against `http://127.0.0.1:8766`. When the smoke script supports it, the runner includes the backup check; the support-bundle privacy check is part of the live smoke.
+
+The run writes a private log to `.context/first100_clean_profile_qa_run.txt`. To fill only the packet fields that this automation actually verified, run:
+
+```bash
+python3 scripts/run_first100_dmg_qa.py --update-clean-profile-packet
+```
+
+This is isolated-home QA, not a real human clean macOS profile or Gatekeeper pass. It does not verify Control-click > Open, first-run human onboarding, manual update, manual rollback, screenshots, or browser automation. Leave those packet fields for the manual pass.
+
 ## Required Pass
 
 1. Download the exact DMG from the planned tester URL or hosted artifact path.
