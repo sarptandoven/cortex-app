@@ -77,6 +77,22 @@ def run_command(root: Path, command: list[str], timeout: int = 120) -> dict:
     }
 
 
+def git_output(root: Path, command: list[str]) -> str:
+    completed = subprocess.run(["git", *command], cwd=root, text=True, capture_output=True, check=False)
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.strip()
+
+
+def current_git_provenance(root: Path) -> dict:
+    status = git_output(root, ["status", "--porcelain", "--untracked-files=no"])
+    return {
+        "git_commit": git_output(root, ["rev-parse", "HEAD"]) or "unknown",
+        "git_branch": git_output(root, ["branch", "--show-current"]) or "",
+        "git_dirty": bool(status),
+    }
+
+
 def add_check(checks: list[dict], name: str, ok: bool, detail: str, payload: dict | None = None) -> None:
     checks.append({"name": name, "status": "ok" if ok else "failed", "detail": detail, "payload": payload or {}})
 
@@ -127,7 +143,14 @@ def checksum_entries(path: Path) -> dict[str, str]:
     return entries
 
 
-def verify_release_artifacts(release_dir: Path, strict_beta_metadata: bool) -> dict:
+def verify_release_artifacts(
+    release_dir: Path,
+    strict_beta_metadata: bool,
+    *,
+    root: Path,
+    require_current_provenance: bool,
+    allow_stale_package: bool,
+) -> dict:
     errors: list[str] = []
     warnings: list[str] = []
     artifact_summaries: list[dict] = []
@@ -154,6 +177,36 @@ def verify_release_artifacts(release_dir: Path, strict_beta_metadata: bool) -> d
     build = str(manifest.get("build", ""))
     checksums_path = release_dir / f"Cortex-{version}-{build}.checksums.txt"
     handoff_path = release_dir / "BETA_HANDOFF.md"
+    current_provenance = current_git_provenance(root)
+    manifest_provenance = manifest.get("source_provenance")
+
+    def provenance_issue(message: str) -> None:
+        if require_current_provenance and not allow_stale_package:
+            errors.append(message)
+        else:
+            warnings.append(message)
+
+    if not isinstance(manifest_provenance, dict):
+        provenance_issue("latest.json is missing source_provenance metadata.")
+        manifest_provenance = {}
+    else:
+        missing_provenance = [
+            key
+            for key in ("git_commit", "git_dirty", "built_at")
+            if key not in manifest_provenance
+        ]
+        if missing_provenance:
+            provenance_issue(f"source_provenance is missing keys: {', '.join(missing_provenance)}")
+        manifest_commit = str(manifest_provenance.get("git_commit", ""))
+        if manifest_commit and manifest_commit != current_provenance["git_commit"]:
+            provenance_issue(
+                "Packaged release is stale: "
+                f"manifest git_commit={manifest_commit} current={current_provenance['git_commit']}"
+            )
+        if manifest_provenance.get("git_dirty") is True:
+            provenance_issue("Packaged release was built from a dirty tracked worktree.")
+    if require_current_provenance and current_provenance["git_dirty"] and not allow_stale_package:
+        errors.append("Current tracked worktree is dirty; commit changes before requiring package-artifact freshness.")
 
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts:
@@ -230,6 +283,10 @@ def verify_release_artifacts(release_dir: Path, strict_beta_metadata: bool) -> d
         "ok": not errors,
         "release_dir": str(release_dir),
         "strict_beta_metadata": strict_beta_metadata,
+        "current_provenance": current_provenance,
+        "manifest_provenance": manifest_provenance,
+        "require_current_provenance": require_current_provenance,
+        "allow_stale_package": allow_stale_package,
         "errors": errors,
         "warnings": warnings,
         "artifacts": artifact_summaries,
@@ -367,6 +424,7 @@ def main() -> None:
     parser.add_argument("--output-root", default=None, help="Directory containing packaged Cortex-* releases. Defaults to the workspace outputs directory.")
     parser.add_argument("--release-dir", type=Path, help="Specific packaged Cortex release directory to verify.")
     parser.add_argument("--require-package-artifacts", action="store_true", help="Fail unless release artifacts, checksums, beta handoff, and beta-readiness manifest metadata verify.")
+    parser.add_argument("--allow-stale-package", action="store_true", help="Warn instead of failing when required package artifacts do not match the current git commit.")
     parser.add_argument("--require-live", action="store_true", help="Fail if the running local backend cannot pass live checks.")
     args = parser.parse_args()
     if args.require_live and not args.token:
@@ -423,7 +481,13 @@ def main() -> None:
     if release_dir:
         release_manifest_result = run_command(root, [sys.executable, "scripts/validate_update_manifest.py", str(release_dir / "latest.json")], timeout=60)
         add_check(checks, "release_update_manifest", release_manifest_result["ok"], "Latest packaged release update feed validates.", release_manifest_result)
-        release_artifacts = verify_release_artifacts(release_dir, strict_beta_metadata=strict_package_artifacts)
+        release_artifacts = verify_release_artifacts(
+            release_dir,
+            strict_beta_metadata=strict_package_artifacts,
+            root=root,
+            require_current_provenance=strict_package_artifacts,
+            allow_stale_package=args.allow_stale_package,
+        )
         if strict_package_artifacts:
             release_detail = "Packaged DMG, ZIP, checksums, latest.json, BETA_HANDOFF, and beta-readiness metadata verify."
         else:

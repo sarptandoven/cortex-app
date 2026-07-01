@@ -78,6 +78,7 @@ The package-artifact gate validates:
 - checksum file entries matching the manifest
 - `BETA_HANDOFF.md` presence and required handoff sections
 - `latest.json` beta-readiness metadata for install, update, rollback, known limitations, manual QA, and artifact verification
+- `latest.json` source provenance matching the current git commit, unless `--allow-stale-package` is used for an explicit stale-artifact audit
 
 Do not publish `latest.json` or invite first-100 testers if this gate fails.
 
@@ -94,6 +95,12 @@ Required shape:
   "channel": "local-beta",
   "version": "0.1.0",
   "build": "1",
+  "source_provenance": {
+    "git_commit": "abc123",
+    "git_branch": "mass-scale-app-redesign",
+    "git_dirty": false,
+    "built_at": "2026-06-25T00:00:00Z"
+  },
   "minimum_macos": "13.0",
   "released_at": "2026-06-25T00:00:00Z",
   "mandatory": false,
@@ -210,6 +217,7 @@ Sparkle is the likely production path for background update download/install. Th
 - Run `python3 scripts/check_distribution_site.py`.
 - Run `python3 scripts/ops_readiness_check.py --refresh-site`.
 - Run `python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir <release>`.
+  Use `--allow-stale-package` only when intentionally inspecting an old artifact that must not be shipped.
 - Run `python3 scripts/validate_update_manifest.py <release>/latest.json`.
 - Test the landing page download buttons against `site/downloads/latest.json`.
 - Test the DMG by opening it and launching a copied app.

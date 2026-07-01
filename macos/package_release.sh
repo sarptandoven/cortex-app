@@ -115,6 +115,13 @@ BUILD="$(plutil -extract CFBundleVersion raw -o - "$INFO")"
 MIN_MACOS="$(plutil -extract LSMinimumSystemVersion raw -o - "$INFO")"
 BUNDLE_ID="$(plutil -extract CFBundleIdentifier raw -o - "$INFO")"
 STAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+GIT_COMMIT="$(git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || printf 'unknown')"
+GIT_BRANCH="$(git -C "$PROJECT_ROOT" branch --show-current 2>/dev/null || printf '')"
+if [[ -n "$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=no 2>/dev/null || true)" ]]; then
+  GIT_DIRTY="true"
+else
+  GIT_DIRTY="false"
+fi
 RELEASE_NAME="Cortex-${VERSION}-${BUILD}"
 OUT_DIR="$OUTPUT_ROOT/$RELEASE_NAME"
 STAGING="$ROOT/build/release-staging"
@@ -265,6 +272,12 @@ payload = {
     "channel": "$CHANNEL",
     "version": "$VERSION",
     "build": "$BUILD",
+    "source_provenance": {
+        "git_commit": "$GIT_COMMIT",
+        "git_branch": "$GIT_BRANCH",
+        "git_dirty": $GIT_DIRTY,
+        "built_at": "$STAMP",
+    },
     "minimum_macos": "$MIN_MACOS",
     "released_at": "$STAMP",
     "mandatory": False,
@@ -349,6 +362,9 @@ Build: Cortex ${VERSION} (${BUILD})
 Channel: ${CHANNEL}
 Released: ${STAMP}
 Minimum macOS: ${MIN_MACOS}
+Git commit: ${GIT_COMMIT}
+Git branch: ${GIT_BRANCH:-unknown}
+Git dirty: ${GIT_DIRTY}
 
 This handoff is for local-first beta testing. It does not require screenshots,
 browser automation, hosted accounts, Redis, Docker, or cloud sync.
