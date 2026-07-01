@@ -37,6 +37,7 @@ BACKEND_FEATURES = (
     "source-account-sync",
     "obsidian-connector",
     "github-token-connector",
+    "slack-token-connector",
     "sync-device-manifests",
     "sync-receipts",
 )
@@ -378,7 +379,7 @@ SOURCE_CONNECTOR_CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "google-docs", "name": "Google Docs", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["drive.readonly", "documents.readonly"], "notes": "Drive and Docs account sync is the intended connector path."},
     {"id": "google-keep", "name": "Google Keep", "category": "Notes", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Google Keep account connector is required before this can be a primary source."},
     {"id": "microsoft-365", "name": "Microsoft 365", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["Files.Read", "Mail.Read", "Calendars.Read"], "notes": "Microsoft 365 account sync is the intended connector path."},
-    {"id": "slack", "name": "Slack", "category": "Work chat", "auth": "oauth", "live_status": "planned", "scopes": ["channels:history", "groups:history", "im:history"], "notes": "Slack account sync is the intended connector path."},
+    {"id": "slack", "name": "Slack", "category": "Work chat", "auth": "api_token", "live_status": "api_token", "scopes": ["channels:history", "groups:history", "channels:read", "groups:read"], "notes": "Read-only Slack channel sync works with a bot or user token for selected channels."},
     {"id": "google-chat", "name": "Google Chat", "category": "Work chat", "auth": "oauth", "live_status": "planned", "scopes": ["chat.messages.readonly"], "notes": "Google Chat account sync is the intended connector path."},
     {"id": "teams", "name": "Microsoft Teams", "category": "Work chat", "auth": "oauth", "live_status": "planned", "scopes": ["ChannelMessage.Read.All"], "notes": "Teams account sync is the intended connector path."},
     {"id": "discord", "name": "Discord", "category": "Messages", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Discord account connector is required before this can be a primary source."},
@@ -2949,6 +2950,141 @@ class CortexStore:
             return {
                 "source_account_id": account["id"],
                 "source": GITHUB_SOURCE,
+                "status": "partial" if error_message else "empty",
+                "processing": processing,
+                "received": 0,
+                "queued": 0,
+                "saved": 0,
+                "skipped": 0,
+                "failed": len(sync.errors),
+                "archived_missing": 0,
+                "capture_ids": [],
+                "records": [],
+                "errors": sync.errors,
+                "cursor": cursor,
+                "source_account": updated_account,
+                "sync": sync_summary,
+            }
+
+        result = self.sync_source_account_records(
+            user_id,
+            account["id"],
+            records=records,
+            cursor_name=cursor_name,
+            cursor_value=sync.cursor_value,
+            high_water_mark=sync.high_water_mark,
+            state=state,
+            processing=processing,
+        )
+        if sync.errors:
+            result["errors"] = [*(result.get("errors") or []), *sync.errors]
+            result["failed"] = int(result.get("failed") or 0) + len(sync.errors)
+            if result.get("status") == "complete":
+                result["status"] = "partial"
+        result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
+        result["sync"] = sync_summary
+        return result
+
+    def sync_slack_account(
+        self,
+        user_id: str,
+        *,
+        token: str,
+        channels: list[str],
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        since: str | None = None,
+        processing: str = "sync",
+        max_records: int = 100,
+        cursor_name: str = "messages",
+        workspace_url: str | None = None,
+        api_base_url: str | None = None,
+        request_json: Any | None = None,
+    ) -> dict[str, Any]:
+        from .connectors.slack import SLACK_SOURCE, fetch_slack_records
+
+        if processing not in {"sync", "async"}:
+            raise ValueError("processing must be sync or async")
+        try:
+            capped_max_records = int(max_records or 100)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_records must be an integer") from exc
+        if capped_max_records < 1 or capped_max_records > 200:
+            raise ValueError("max_records must be between 1 and 200")
+
+        sync = fetch_slack_records(
+            token=token,
+            channels=channels,
+            since=since,
+            max_records=capped_max_records,
+            workspace_url=workspace_url,
+            api_base_url=api_base_url or "https://slack.com/api",
+            request_json=request_json,
+        )
+        channel_key = ",".join(str(item.get("name") or item.get("id") or "") for item in sync.channels if item.get("id") or item.get("name"))
+        resolved_account_id = (source_account_id or "").strip() or stable_id("sacct_", f"{user_id}:{SLACK_SOURCE}:{channel_key}")
+        label = (account_label or f"Slack: {channel_key}").strip()[:160]
+        identifier = (account_identifier or channel_key or "slack").strip()[:240]
+        sync_summary = sync.to_summary()
+        error_message = sync.errors[0]["error"] if sync.errors else None
+        metadata = {
+            "connector": SLACK_SOURCE,
+            "connector_version": sync_summary["connector_version"],
+            "channels": sync.channels,
+            "records_found": sync.records_found,
+            "records_returned": sync.records_returned,
+            "token_configured": True,
+            "workspace_url_configured": bool(str(workspace_url or "").strip()),
+            "api_base_url": sync.api_base_url,
+        }
+        account = self.upsert_source_account(
+            user_id,
+            source=SLACK_SOURCE,
+            account_label=label,
+            account_identifier=identifier,
+            connection_type="api_token",
+            status="needs_attention" if error_message else "connected",
+            auth_state="error" if error_message else "healthy",
+            policy={"review_required": True, "allow_ai_context": True},
+            metadata=metadata,
+            last_error=error_message,
+            account_id=resolved_account_id,
+        )
+        state = {
+            "connector": SLACK_SOURCE,
+            "connector_version": sync_summary["connector_version"],
+            "channels": sync.channels,
+            "records_found": sync.records_found,
+            "records_returned": sync.records_returned,
+            "sync_errors": sync.errors,
+            "next_cursors": sync_summary.get("next_cursors") or {},
+            "api_base_url": sync.api_base_url,
+        }
+        records = [record.to_source_account_record() for record in sync.records]
+        if not records:
+            cursor = self.upsert_sync_cursor(
+                user_id,
+                source=SLACK_SOURCE,
+                source_account_id=account["id"],
+                cursor_name=cursor_name,
+                cursor_value=sync.cursor_value,
+                high_water_mark=sync.high_water_mark,
+                state={
+                    **state,
+                    "last_batch_received": 0,
+                    "last_batch_saved": 0,
+                    "last_batch_queued": 0,
+                    "last_batch_skipped": 0,
+                    "last_batch_failed": 0,
+                },
+                last_error=error_message,
+                completed=not bool(error_message),
+            )
+            updated_account = self._source_account_by_id(user_id, account["id"]) or account
+            return {
+                "source_account_id": account["id"],
+                "source": SLACK_SOURCE,
                 "status": "partial" if error_message else "empty",
                 "processing": processing,
                 "received": 0,

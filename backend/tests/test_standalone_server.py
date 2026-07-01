@@ -41,6 +41,7 @@ class FakeStore:
         self.source_account_sync_calls: list[tuple[str, str, int, str, bool]] = []
         self.obsidian_sync_calls: list[dict] = []
         self.github_sync_calls: list[dict] = []
+        self.slack_sync_calls: list[dict] = []
         self.sync_cursor_calls: list[tuple[str, str, str | None]] = []
         self.sync_device_calls: list[tuple[str, str]] = []
         self.sync_receipt_calls: list[tuple[str, str, str, str]] = []
@@ -591,6 +592,106 @@ class FakeStore:
                 "connector": "github",
                 "connector_version": "test",
                 "repositories": repositories,
+                "records_found": 1,
+                "records_returned": 1,
+                "errors": [],
+            },
+        }
+
+    def sync_slack_account(
+        self,
+        user_id: str,
+        *,
+        token: str,
+        channels: list[str],
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        since: str | None = None,
+        processing: str = "sync",
+        max_records: int = 100,
+        cursor_name: str = "messages",
+        workspace_url: str | None = None,
+        api_base_url: str | None = None,
+    ) -> dict:
+        if not token:
+            raise ValueError("Slack token is required")
+        if not channels:
+            raise ValueError("At least one Slack channel ID is required")
+        call = {
+            "user_id": user_id,
+            "token": token,
+            "channels": channels,
+            "source_account_id": source_account_id,
+            "account_label": account_label,
+            "account_identifier": account_identifier,
+            "since": since,
+            "processing": processing,
+            "max_records": max_records,
+            "cursor_name": cursor_name,
+            "workspace_url": workspace_url,
+            "api_base_url": api_base_url,
+        }
+        self.slack_sync_calls.append(call)
+        account_id = source_account_id or "sacct_slack_test"
+        channel = channels[0]
+        channel_id = channel.split("|", 1)[0]
+        return {
+            "source_account_id": account_id,
+            "source": "slack",
+            "status": "complete",
+            "processing": processing,
+            "received": 1,
+            "queued": 0 if processing == "sync" else 1,
+            "saved": 1 if processing == "sync" else 0,
+            "skipped": 0,
+            "failed": 0,
+            "archived_missing": 0,
+            "capture_ids": ["cap_slack_test"],
+            "records": [
+                {
+                    "capture_id": "cap_slack_test",
+                    "status": "saved" if processing == "sync" else "queued",
+                    "source": "slack",
+                    "source_url": f"https://doppl.slack.com/archives/{channel_id}/p1782739200000100",
+                    "title": f"Slack {channel_id}",
+                }
+            ],
+            "errors": [],
+            "cursor": {
+                "id": "sync_slack_test",
+                "user_id": user_id,
+                "source_account_id": account_id,
+                "source": "slack",
+                "cursor_name": cursor_name,
+                "cursor_value": "2026-06-29T13:20:00Z",
+                "high_water_mark": "2026-06-29T13:20:00Z",
+                "state": {"channels": channels, "records_returned": 1},
+                "last_error": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+            "source_account": {
+                "id": account_id,
+                "user_id": user_id,
+                "source": "slack",
+                "account_label": account_label or f"Slack: {channel}",
+                "account_identifier": account_identifier or channel,
+                "connection_type": "api-token",
+                "status": "connected",
+                "auth_state": "healthy",
+                "policy": {"review_required": True, "allow_ai_context": True},
+                "metadata": {"channels": channels, "records_returned": 1, "token_configured": True},
+                "last_sync_at": "2026-01-01T00:00:00Z",
+                "last_error": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "disconnected_at": None,
+            },
+            "sync": {
+                "connector": "slack",
+                "connector_version": "test",
+                "channels": [{"id": channel_id, "name": "general"}],
                 "records_found": 1,
                 "records_returned": 1,
                 "errors": [],
@@ -1421,6 +1522,63 @@ class StandaloneServerTests(unittest.TestCase):
             )
         self.assertEqual(context.exception.code, 422)
         self.assertEqual(len(self.fake_store.github_sync_calls), 1)
+
+    def test_slack_connector_route_forwards_to_store(self) -> None:
+        with self.post_json(
+            "/v1/connectors/slack/sync",
+            {
+                "token": "xoxb_test",
+                "channels": ["C123ABC|general"],
+                "source_account_id": "sacct_slack_existing",
+                "account_label": "Cortex Slack",
+                "account_identifier": "C123ABC",
+                "since": "2026-01-01T00:00:00Z",
+                "processing": "sync",
+                "max_records": 50,
+                "cursor_name": "messages",
+                "workspace_url": "https://doppl.slack.com",
+                "api_base_url": "https://slack-api.test",
+            },
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["source"], "slack")
+        self.assertEqual(payload["source_account_id"], "sacct_slack_existing")
+        self.assertEqual(payload["processing"], "sync")
+        self.assertEqual(payload["source_account"]["account_label"], "Cortex Slack")
+        self.assertEqual(payload["records"][0]["source_url"], "https://doppl.slack.com/archives/C123ABC/p1782739200000100")
+        self.assertEqual(
+            self.fake_store.slack_sync_calls,
+            [
+                {
+                    "user_id": "local",
+                    "token": "xoxb_test",
+                    "channels": ["C123ABC|general"],
+                    "source_account_id": "sacct_slack_existing",
+                    "account_label": "Cortex Slack",
+                    "account_identifier": "C123ABC",
+                    "since": "2026-01-01T00:00:00Z",
+                    "processing": "sync",
+                    "max_records": 50,
+                    "cursor_name": "messages",
+                    "workspace_url": "https://doppl.slack.com",
+                    "api_base_url": "https://slack-api.test",
+                }
+            ],
+        )
+
+        with self.assertRaises(error.HTTPError) as context:
+            self.post_json(
+                "/v1/connectors/slack/sync",
+                {
+                    "token": "xoxb_test",
+                    "channels": ["C123ABC|general"],
+                    "max_records": 201,
+                },
+            )
+        self.assertEqual(context.exception.code, 422)
+        self.assertEqual(len(self.fake_store.slack_sync_calls), 1)
 
     def test_delete_user_data_forwards_include_backups_flag(self) -> None:
         with self.delete("/v1/user-data?include_backups=false") as response:

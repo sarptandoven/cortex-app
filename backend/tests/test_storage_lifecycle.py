@@ -1237,6 +1237,112 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertNotIn("ghp_mcp_test", json.dumps(synced))
         self.assertEqual(synced["records"][0]["source_url"], "https://github.com/doppl-tech/cortex-app/issues/31")
 
+    def test_slack_account_sync_fetches_messages_with_stable_citations(self) -> None:
+        def fake_request(url: str, headers: dict[str, str]):
+            self.assertIn("/conversations.history", url)
+            self.assertIn("channel=C123ABC", url)
+            self.assertEqual(headers["Authorization"], "Bearer xoxb_test")
+            return {
+                "ok": True,
+                "messages": [
+                    {
+                        "type": "message",
+                        "user": "U123",
+                        "text": "We decided Cortex should retrieve Slack channel memory with exact citations.",
+                        "ts": "1782739200.000100",
+                    }
+                ],
+            }
+
+        result = self.store.sync_slack_account(
+            self.user_id,
+            token="xoxb_test",
+            channels=["C123ABC|general"],
+            workspace_url="https://doppl.slack.com",
+            processing="sync",
+            max_records=20,
+            request_json=fake_request,
+        )
+
+        self.assertEqual(result["source"], "slack")
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["saved"], 1)
+        self.assertEqual(result["source_account"]["source"], "slack")
+        self.assertEqual(result["source_account"]["connection_type"], "api-token")
+        self.assertEqual(result["source_account"]["metadata"]["token_configured"], True)
+        self.assertEqual(result["records"][0]["source_url"], "https://doppl.slack.com/archives/C123ABC/p1782739200000100")
+        capture_id = result["capture_ids"][0]
+        self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+
+        search = self.store.search(self.user_id, "Slack channel exact citations", limit=3)
+        self.assertTrue(search)
+        self.assertEqual(search[0]["source"], "slack")
+        self.assertTrue(search[0]["source_url"].startswith("https://doppl.slack.com/archives/C123ABC/p1782739200000100"))
+        self.assertIn("line=", search[0]["source_url"])
+        self.assertIn("excerpt=", search[0]["source_url"])
+        self.assertEqual(search[0]["provenance"]["record_metadata"]["channel"], "general")
+        answer = self.store.answer_query(self.user_id, "What did we decide about Slack channel memory?", limit=3)
+        self.assertTrue(answer["citations"])
+        self.assertTrue(answer["citations"][0]["source_url"].startswith("https://doppl.slack.com/archives/C123ABC/p1782739200000100"))
+
+        duplicate = self.store.sync_slack_account(
+            self.user_id,
+            token="xoxb_test",
+            channels=["C123ABC|general"],
+            workspace_url="https://doppl.slack.com",
+            processing="sync",
+            max_records=20,
+            request_json=fake_request,
+        )
+        self.assertEqual(duplicate["saved"], 0)
+        self.assertEqual(duplicate["skipped"], 1)
+        self.assertEqual(duplicate["records"][0]["status"], "duplicate")
+
+    def test_mcp_slack_sync_tool_fetches_records_without_exposing_token(self) -> None:
+        def fake_request(url: str, headers: dict[str, str]):
+            self.assertIn("/conversations.history", url)
+            self.assertEqual(headers["Authorization"], "Bearer xoxb_mcp_test")
+            return {
+                "ok": True,
+                "messages": [
+                    {
+                        "type": "message",
+                        "user": "U123",
+                        "text": "We decided MCP Slack sync should write source-account records.",
+                        "ts": "1782739200.000300",
+                    }
+                ],
+            }
+
+        with self.assertRaises(PermissionError):
+            call_tool(
+                self.store,
+                self.user_id,
+                "sync_slack",
+                {"token": "xoxb_mcp_test", "channels": ["C123ABC|general"]},
+                token_scopes=["read"],
+            )
+
+        with patch("backend.app.connectors.slack._request_json", side_effect=fake_request):
+            synced = call_tool(
+                self.store,
+                self.user_id,
+                "sync_slack",
+                {
+                    "token": "xoxb_mcp_test",
+                    "channels": ["C123ABC|general"],
+                    "workspace_url": "https://doppl.slack.com",
+                    "processing": "sync",
+                    "max_records": 10,
+                },
+                token_scopes=["write"],
+            )
+
+        self.assertEqual(synced["source"], "slack")
+        self.assertEqual(synced["saved"], 1)
+        self.assertNotIn("xoxb_mcp_test", json.dumps(synced))
+        self.assertEqual(synced["records"][0]["source_url"], "https://doppl.slack.com/archives/C123ABC/p1782739200000300")
+
     def test_source_account_policy_blocks_ai_context_after_approval(self) -> None:
         account = self.store.upsert_source_account(
             self.user_id,
