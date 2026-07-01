@@ -2602,6 +2602,44 @@ END:VCALENDAR
         self.assertEqual(search_after.status_code, 200)
         self.assertTrue(search_after.json()["results"])
 
+    def test_job_endpoint_schedules_due_obsidian_source_sync(self) -> None:
+        user_id = "fastapi-source-sync-user"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user_id}
+        with tempfile.TemporaryDirectory() as tmp:
+            vault_path = Path(tmp) / "vault"
+            note_path = vault_path / "Endpoint Sync.md"
+            note_path.parent.mkdir(parents=True)
+            note_path.write_text(
+                "# Endpoint Sync\n\n"
+                "Decision: FastAPI source sync jobs should queue Obsidian records.\n",
+                encoding="utf-8",
+            )
+            account = main_module.store.upsert_source_account(
+                user_id,
+                source="obsidian",
+                account_label="Endpoint Vault",
+                account_identifier="endpoint-vault",
+                connection_type="local_folder",
+                status="connected",
+                auth_state="healthy",
+                metadata={
+                    "vault_path": str(vault_path),
+                    "sync_interval_seconds": 60,
+                    "next_sync_due_at": "2000-01-01T00:00:00Z",
+                },
+            )
+
+            ran = self.client.post("/v1/maintenance/jobs/run", params={"limit": 1}, headers=headers)
+
+        self.assertEqual(ran.status_code, 200)
+        payload = ran.json()
+        self.assertEqual(payload["scheduled_source_syncs"]["scheduled"], 1)
+        self.assertEqual(payload["scheduled_source_syncs"]["jobs"][0]["object_id"], account["id"])
+        self.assertEqual(payload["processed"], 1)
+        self.assertEqual(payload["jobs"][0]["job_type"], "source_account_sync")
+        self.assertEqual(payload["jobs"][0]["status"], "succeeded")
+        self.assertEqual(payload["jobs"][0]["result"]["queued"], 1)
+
     def test_job_health_endpoint_reports_queue_state(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "queue-health-contract"}
         phrase = "FastAPI queue health endpoint should report pending work."

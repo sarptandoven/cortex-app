@@ -762,6 +762,18 @@ def _source_sync_interval_seconds(
     return min(candidates) if candidates else default
 
 
+def _source_account_sync_scheduler_supported(account: dict[str, Any]) -> bool:
+    source = _normalize_source_key(str(account.get("source") or ""))
+    metadata = account.get("metadata") if isinstance(account.get("metadata"), dict) else {}
+    if source == "obsidian" and str(metadata.get("vault_path") or "").strip():
+        return True
+    return False
+
+
+def _source_sync_scheduler_supported(active_accounts: list[dict[str, Any]]) -> bool:
+    return any(_source_account_sync_scheduler_supported(account) for account in active_accounts)
+
+
 def _source_sync_due_at(last_completed_at: str | None, *, interval_seconds: int) -> str | None:
     completed = _parse_iso_timestamp(last_completed_at)
     if completed is None:
@@ -824,9 +836,11 @@ def _source_readiness_sync_plan(
         + [(account.get("metadata") or {}).get("retry_after") for account in active_accounts]
     )
     backing_off = _timestamp_in_future(retry_after, now=now)
+    scheduler_supported = _source_sync_scheduler_supported(active_accounts)
     due_now = (
         bool(active_accounts)
         and mode in {"hosted_managed_sync", "local_app_autosync"}
+        and scheduler_supported
         and not backing_off
         and (_timestamp_due(next_sync_due_at, now=now) if next_sync_due_at else not bool(last_completed_at))
     )
@@ -858,6 +872,8 @@ def _source_readiness_sync_plan(
         "next_sync_due_at": next_sync_due_at,
         "sync_interval_seconds": interval_seconds,
         "due_now": due_now,
+        "scheduler_supported": scheduler_supported,
+        "blocked_reason": None if scheduler_supported or not active_accounts else "stored_sync_configuration_required",
         "last_attempt_at": last_attempt_at,
         "last_completed_at": last_completed_at,
         "retry_after": retry_after,
@@ -2452,6 +2468,123 @@ class CortexStore:
                 tuple(values),
             ).fetchall()
         return [self._source_account_from_row(row) for row in rows]
+
+    def enqueue_due_source_syncs(self, user_id: str, *, limit: int = 20) -> dict[str, Any]:
+        readiness = self.source_readiness_report(user_id)
+        readiness_by_source = {item["source"]: item for item in readiness.get("sources") or []}
+        scheduled: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        accounts = self.list_source_accounts(user_id)
+        for account in accounts:
+            if len(scheduled) >= max(0, min(int(limit or 0), 100)):
+                break
+            source = account["source"]
+            source_readiness = readiness_by_source.get(source) or {}
+            sync_plan = source_readiness.get("sync_plan") or {}
+            if not sync_plan.get("due_now"):
+                continue
+            if not _source_account_sync_scheduler_supported(account):
+                skipped.append({
+                    "source_account_id": account["id"],
+                    "source": source,
+                    "reason": "stored_sync_configuration_required",
+                })
+                continue
+            try:
+                scheduled.append(
+                    self.enqueue_source_account_sync(
+                        user_id,
+                        account["id"],
+                        schedule_token=sync_plan.get("next_sync_due_at") or now_iso(),
+                    )
+                )
+            except ValueError as exc:
+                skipped.append({
+                    "source_account_id": account["id"],
+                    "source": source,
+                    "reason": str(exc),
+                })
+        return {
+            "checked_at": now_iso(),
+            "scheduled": len(scheduled),
+            "jobs": scheduled,
+            "skipped": skipped,
+        }
+
+    def enqueue_source_account_sync(
+        self,
+        user_id: str,
+        account_id: str,
+        *,
+        processing: str = "async",
+        cursor_name: str | None = None,
+        max_records: int = 200,
+        run_at: str | None = None,
+        schedule_token: str | None = None,
+    ) -> dict[str, Any]:
+        if processing not in {"sync", "async"}:
+            raise ValueError("processing must be sync or async")
+        account = self._source_account_by_id(user_id, account_id)
+        if not account:
+            raise ValueError("source account not found")
+        if account.get("disconnected_at"):
+            raise ValueError("source account is disconnected")
+        if not _source_account_sync_scheduler_supported(account):
+            raise ValueError("source account needs stored sync configuration before it can be scheduled")
+        try:
+            capped_max_records = int(max_records or 200)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_records must be an integer") from exc
+        if capped_max_records < 1 or capped_max_records > 500:
+            raise ValueError("max_records must be between 1 and 500")
+        normalized_cursor_name = (cursor_name or ("local-folder" if account["source"] == "obsidian" else "default")).strip() or "default"
+        normalized_schedule_token = str(schedule_token or run_at or now_iso()).strip()[:120]
+        unique_key = f"source_account_sync:{account['id']}:{normalized_cursor_name}:{normalized_schedule_token}"
+        timestamp = now_iso()
+        with connect(self.db_path) as conn:
+            existing = conn.execute(
+                """
+                SELECT *
+                FROM memory_jobs
+                WHERE user_id = ?
+                  AND job_type = 'source_account_sync'
+                  AND object_type = 'source_account'
+                  AND object_id = ?
+                  AND status IN ('queued', 'running')
+                ORDER BY created_at ASC
+                LIMIT 1
+                """,
+                (user_id, account["id"]),
+            ).fetchone()
+            if existing:
+                return self._job_from_row(existing)
+            job = self._enqueue_job(
+                conn,
+                user_id=user_id,
+                job_type="source_account_sync",
+                object_type="source_account",
+                object_id=account["id"],
+                unique_key=unique_key,
+                payload={
+                    "source_account_id": account["id"],
+                    "source": account["source"],
+                    "processing": processing,
+                    "cursor_name": normalized_cursor_name,
+                    "max_records": capped_max_records,
+                },
+                priority=30,
+                run_at=run_at,
+                max_attempts=3,
+            )
+            self._event(
+                conn,
+                user_id,
+                account["id"],
+                "source_account",
+                "sync_enqueued",
+                {"job_id": job["id"], "source": account["source"], "run_at": run_at or timestamp},
+            )
+        return job
 
     def _identity_aliases_for_source(
         self,
@@ -5267,7 +5400,15 @@ class CortexStore:
             "recent_failures": recent_failures,
         }
 
-    def run_due_jobs(self, user_id: str, *, limit: int = 10, worker_id: str = "local-worker") -> dict[str, Any]:
+    def run_due_jobs(
+        self,
+        user_id: str,
+        *,
+        limit: int = 10,
+        worker_id: str = "local-worker",
+        schedule_source_syncs: bool = True,
+    ) -> dict[str, Any]:
+        scheduled_sources = self.enqueue_due_source_syncs(user_id, limit=limit) if schedule_source_syncs else None
         processed: list[dict[str, Any]] = []
         for _ in range(max(0, min(limit, 100))):
             job = self._claim_next_job(user_id, worker_id)
@@ -5278,6 +5419,7 @@ class CortexStore:
             "ran_at": now_iso(),
             "processed": len(processed),
             "jobs": processed,
+            "scheduled_source_syncs": scheduled_sources,
             "pending": len(self.list_jobs(user_id, status="queued", limit=100)),
             "failed": len(self.list_jobs(user_id, status="failed", limit=100)),
         }
@@ -9599,6 +9741,8 @@ class CortexStore:
                 result = self._process_extract_capture_job(job)
             elif job["job_type"] == "embed_memory":
                 result = self._process_embed_memory_job(job)
+            elif job["job_type"] == "source_account_sync":
+                result = self._process_source_account_sync_job(job)
             else:
                 raise ValueError(f"Unsupported memory job type: {job['job_type']}")
             completed = self._complete_job(job["id"], result)
@@ -9611,6 +9755,136 @@ class CortexStore:
             return completed
         except Exception as exc:
             return self._fail_job(job, str(exc))
+
+    def _process_source_account_sync_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        payload = job.get("payload") or {}
+        user_id = job["user_id"]
+        account_id = str(payload.get("source_account_id") or job["object_id"] or "").strip()
+        if not account_id:
+            raise ValueError("source account sync job missing source_account_id")
+        account = self._source_account_by_id(user_id, account_id)
+        if not account:
+            return {
+                "source_account_id": account_id,
+                "skipped": True,
+                "reason": "source_account_missing_or_deleted",
+                "completed_at": now_iso(),
+            }
+        if account.get("disconnected_at"):
+            return {
+                "source_account_id": account_id,
+                "source": account.get("source"),
+                "skipped": True,
+                "reason": "source_account_disconnected",
+                "completed_at": now_iso(),
+            }
+        processing = str(payload.get("processing") or "async").strip().lower()
+        if processing not in {"sync", "async"}:
+            raise ValueError("processing must be sync or async")
+        cursor_name = str(payload.get("cursor_name") or "default").strip() or "default"
+        max_records = _bounded_int(payload.get("max_records"), minimum=1, maximum=500) or 200
+        metadata = account.get("metadata") if isinstance(account.get("metadata"), dict) else {}
+        source = _normalize_source_key(str(account.get("source") or ""))
+        if source == "obsidian":
+            vault_path = str(metadata.get("vault_path") or "").strip()
+            if not vault_path:
+                raise ValueError("obsidian source account is missing vault_path")
+            result = self.sync_obsidian_vault(
+                user_id,
+                vault_path=vault_path,
+                source_account_id=account_id,
+                account_label=account.get("account_label"),
+                account_identifier=account.get("account_identifier"),
+                processing=processing,
+                max_records=max_records,
+                cursor_name=cursor_name,
+            )
+        else:
+            raise ValueError("source account needs stored sync configuration before it can be scheduled")
+        self._mark_source_account_sync_job_finished(
+            user_id,
+            account_id,
+            job_id=job["id"],
+            status=str(result.get("status") or ""),
+        )
+        return {
+            "source_account_id": account_id,
+            "source": source,
+            "sync_status": result.get("status"),
+            "processing": result.get("processing"),
+            "received": result.get("received"),
+            "queued": result.get("queued"),
+            "saved": result.get("saved"),
+            "skipped": result.get("skipped"),
+            "failed": result.get("failed"),
+            "archived_missing": result.get("archived_missing"),
+            "capture_ids": result.get("capture_ids") or [],
+            "cursor": result.get("cursor"),
+            "completed_at": now_iso(),
+        }
+
+    def _mark_source_account_sync_job_finished(self, user_id: str, account_id: str, *, job_id: str, status: str) -> None:
+        timestamp = now_iso()
+        with connect(self.db_path) as conn:
+            row = conn.execute("SELECT * FROM source_accounts WHERE user_id = ? AND id = ?", (user_id, account_id)).fetchone()
+            if not row:
+                return
+            account = self._source_account_from_row(row)
+            metadata = dict(account.get("metadata") or {})
+            metadata.pop("next_sync_due_at", None)
+            metadata.pop("retry_after", None)
+            metadata["last_scheduler_job_id"] = job_id
+            metadata["last_scheduler_sync_at"] = timestamp
+            metadata["last_scheduler_status"] = status[:80]
+            conn.execute(
+                """
+                UPDATE source_accounts
+                SET metadata_json = ?,
+                    last_error = NULL,
+                    updated_at = ?
+                WHERE user_id = ? AND id = ?
+                """,
+                (json.dumps(metadata), timestamp, user_id, account_id),
+            )
+            updated = conn.execute("SELECT * FROM source_accounts WHERE user_id = ? AND id = ?", (user_id, account_id)).fetchone()
+        if updated:
+            self.vault.write_source_account(self._source_account_from_row(updated))
+
+    def _mark_source_account_sync_job_failed(self, job: dict[str, Any], error: str) -> None:
+        user_id = job.get("user_id")
+        account_id = job.get("object_id")
+        if not user_id or not account_id:
+            return
+        timestamp_dt = datetime.now(timezone.utc)
+        timestamp = _isoformat_z(timestamp_dt)
+        retry_after = _isoformat_z(timestamp_dt + timedelta(seconds=min(3600, 300 * max(1, int(job.get("attempts") or 1)))))
+        with connect(self.db_path) as conn:
+            row = conn.execute("SELECT * FROM source_accounts WHERE user_id = ? AND id = ?", (user_id, account_id)).fetchone()
+            if not row:
+                return
+            account = self._source_account_from_row(row)
+            metadata = dict(account.get("metadata") or {})
+            metadata["retry_after"] = retry_after
+            metadata["last_scheduler_job_id"] = job.get("id")
+            metadata["last_scheduler_error_at"] = timestamp
+            conn.execute(
+                """
+                UPDATE source_accounts
+                SET status = 'needs_attention',
+                    auth_state = CASE
+                      WHEN auth_state IN ('healthy', 'authorized', 'available', 'not_configured') THEN 'error'
+                      ELSE auth_state
+                    END,
+                    metadata_json = ?,
+                    last_error = ?,
+                    updated_at = ?
+                WHERE user_id = ? AND id = ?
+                """,
+                (json.dumps(metadata), error[:500], timestamp, user_id, account_id),
+            )
+            updated = conn.execute("SELECT * FROM source_accounts WHERE user_id = ? AND id = ?", (user_id, account_id)).fetchone()
+        if updated:
+            self.vault.write_source_account(self._source_account_from_row(updated))
 
     def _process_extract_capture_job(self, job: dict[str, Any]) -> dict[str, Any]:
         payload = job.get("payload") or {}
@@ -9890,6 +10164,8 @@ class CortexStore:
                     last_job_id=job["id"],
                     last_error=error[:500],
                 )
+        elif job.get("job_type") == "source_account_sync":
+            self._mark_source_account_sync_job_failed(job, error)
         return self._job_from_row(row)
 
     def _refresh_capture_embedding_state(

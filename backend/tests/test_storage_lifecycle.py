@@ -1060,38 +1060,44 @@ class CortexStorageLifecycleTests(unittest.TestCase):
                 self.assertNotIn("Advanced/Fallback", entry["next_action"])
 
     def test_source_sync_plan_marks_due_and_backing_off_accounts(self) -> None:
+        vault_path = Path(self.tmp.name) / "due-plan-vault"
+        vault_path.mkdir()
         account = self.store.upsert_source_account(
             self.user_id,
-            source="github",
-            account_label="Doppl GitHub",
-            account_identifier="doppl-tech/cortex-app",
-            connection_type="api_token",
+            source="obsidian",
+            account_label="Doppl Vault",
+            account_identifier="vault-due-plan",
+            connection_type="local_folder",
             status="connected",
             auth_state="healthy",
             metadata={
+                "vault_path": str(vault_path),
                 "sync_interval_seconds": 900,
                 "next_sync_due_at": "2000-01-01T00:00:00Z",
             },
         )
 
         readiness = self.store.source_readiness_report(self.user_id)
-        github = next(item for item in readiness["sources"] if item["source"] == "github")
-        self.assertEqual(github["sync_plan"]["mode"], "local_app_autosync")
-        self.assertEqual(github["sync_plan"]["credential_ref"], f"source_account:{account['id']}")
-        self.assertEqual(github["sync_plan"]["managed_sync_status"], "due")
-        self.assertEqual(github["sync_plan"]["sync_interval_seconds"], 900)
-        self.assertTrue(github["sync_plan"]["due_now"])
-        self.assertEqual(github["sync_plan"]["next_sync_due_at"], "2000-01-01T00:00:00Z")
+        obsidian = next(item for item in readiness["sources"] if item["source"] == "obsidian")
+        self.assertEqual(obsidian["sync_plan"]["mode"], "local_app_autosync")
+        self.assertEqual(obsidian["sync_plan"]["credential_ref"], f"source_account:{account['id']}")
+        self.assertEqual(obsidian["sync_plan"]["managed_sync_status"], "due")
+        self.assertEqual(obsidian["sync_plan"]["sync_interval_seconds"], 900)
+        self.assertTrue(obsidian["sync_plan"]["due_now"])
+        self.assertTrue(obsidian["sync_plan"]["scheduler_supported"])
+        self.assertIsNone(obsidian["sync_plan"]["blocked_reason"])
+        self.assertEqual(obsidian["sync_plan"]["next_sync_due_at"], "2000-01-01T00:00:00Z")
 
         self.store.upsert_source_account(
             self.user_id,
-            source="github",
-            account_label="Doppl GitHub",
-            account_identifier="doppl-tech/cortex-app",
-            connection_type="api_token",
+            source="obsidian",
+            account_label="Doppl Vault",
+            account_identifier="vault-due-plan",
+            connection_type="local_folder",
             status="connected",
             auth_state="healthy",
             metadata={
+                "vault_path": str(vault_path),
                 "sync_interval_seconds": 900,
                 "next_sync_due_at": "2000-01-01T00:00:00Z",
                 "retry_after": "2999-01-01T00:00:00Z",
@@ -1099,10 +1105,107 @@ class CortexStorageLifecycleTests(unittest.TestCase):
             account_id=account["id"],
         )
         backoff_readiness = self.store.source_readiness_report(self.user_id)
-        backed_off = next(item for item in backoff_readiness["sources"] if item["source"] == "github")
+        backed_off = next(item for item in backoff_readiness["sources"] if item["source"] == "obsidian")
         self.assertEqual(backed_off["sync_plan"]["managed_sync_status"], "backing_off")
         self.assertFalse(backed_off["sync_plan"]["due_now"])
         self.assertEqual(backed_off["sync_plan"]["retry_after"], "2999-01-01T00:00:00Z")
+
+        unsupported = self.store.upsert_source_account(
+            self.user_id,
+            source="github",
+            account_label="Doppl GitHub",
+            account_identifier="doppl-tech/cortex-app",
+            connection_type="api_token",
+            status="connected",
+            auth_state="healthy",
+            metadata={
+                "sync_interval_seconds": 900,
+                "next_sync_due_at": "2000-01-01T00:00:00Z",
+            },
+        )
+        unsupported_readiness = self.store.source_readiness_report(self.user_id)
+        unsupported_github = next(item for item in unsupported_readiness["sources"] if item["source"] == "github")
+        self.assertEqual(unsupported_github["sync_plan"]["credential_ref"], f"source_account:{unsupported['id']}")
+        self.assertFalse(unsupported_github["sync_plan"]["due_now"])
+        self.assertFalse(unsupported_github["sync_plan"]["scheduler_supported"])
+        self.assertEqual(unsupported_github["sync_plan"]["blocked_reason"], "stored_sync_configuration_required")
+
+    def test_due_obsidian_source_sync_job_rescans_changed_vault(self) -> None:
+        vault_path = Path(self.tmp.name) / "scheduled-vault"
+        note_path = vault_path / "Scheduled Sync.md"
+        note_path.parent.mkdir(parents=True)
+        note_path.write_text(
+            "# Scheduled Sync\n\n"
+            "Decision: Project Sable oldsyncmarker should be replaced by scheduled source sync.\n",
+            encoding="utf-8",
+        )
+
+        initial = self.store.sync_obsidian_vault(
+            self.user_id,
+            vault_path=str(vault_path),
+            processing="async",
+        )
+        self.assertEqual(initial["status"], "complete")
+        self.assertEqual(initial["queued"], 1)
+        capture_id = initial["capture_ids"][0]
+
+        initial_jobs = self.store.run_due_jobs(self.user_id, limit=10)
+        self.assertGreaterEqual(initial_jobs["processed"], 1)
+        self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+        self.assertTrue(self.store.search(self.user_id, "oldsyncmarker", limit=5))
+
+        note_path.write_text(
+            "# Scheduled Sync\n\n"
+            "Decision: Project Sable newsyncmarker should replace stale scheduled source memory.\n",
+            encoding="utf-8",
+        )
+        account = self.store.list_source_accounts(self.user_id)[0]
+        self.store.upsert_source_account(
+            self.user_id,
+            source=account["source"],
+            account_label=account["account_label"],
+            account_identifier=account["account_identifier"],
+            connection_type=account["connection_type"],
+            status="connected",
+            auth_state="healthy",
+            policy=account["policy"],
+            metadata={
+                **account["metadata"],
+                "sync_interval_seconds": 60,
+                "next_sync_due_at": "2000-01-01T00:00:00Z",
+            },
+            account_id=account["id"],
+        )
+
+        due_report = self.store.source_readiness_report(self.user_id)
+        due_obsidian = next(item for item in due_report["sources"] if item["source"] == "obsidian")
+        self.assertTrue(due_obsidian["sync_plan"]["due_now"])
+        self.assertEqual(due_obsidian["sync_plan"]["managed_sync_status"], "due")
+
+        ran_sync = self.store.run_due_jobs(self.user_id, limit=1)
+        self.assertEqual(ran_sync["processed"], 1)
+        self.assertEqual(ran_sync["jobs"][0]["job_type"], "source_account_sync")
+        self.assertEqual(ran_sync["jobs"][0]["status"], "succeeded")
+        self.assertEqual(ran_sync["jobs"][0]["result"]["sync_status"], "complete")
+        self.assertEqual(ran_sync["jobs"][0]["result"]["queued"], 1)
+        self.assertEqual(ran_sync["jobs"][0]["result"]["capture_ids"], [capture_id])
+        self.assertEqual(self.store.search(self.user_id, "oldsyncmarker", limit=5), [])
+        self.assertEqual(self.store.search(self.user_id, "newsyncmarker", limit=5), [])
+
+        ran_extraction = self.store.run_due_jobs(self.user_id, limit=10)
+        self.assertGreaterEqual(ran_extraction["processed"], 1)
+        self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+        found = self.store.search(self.user_id, "newsyncmarker", limit=5)
+        self.assertTrue(found)
+        self.assertEqual(found[0]["source"], "obsidian")
+        self.assertIn("Scheduled%20Sync.md", found[0]["source_url"])
+
+        refreshed_account = self.store.list_source_accounts(self.user_id)[0]
+        self.assertNotIn("next_sync_due_at", refreshed_account["metadata"])
+        self.assertEqual(refreshed_account["metadata"]["last_scheduler_status"], "complete")
+        refreshed_report = self.store.source_readiness_report(self.user_id)
+        refreshed_obsidian = next(item for item in refreshed_report["sources"] if item["source"] == "obsidian")
+        self.assertFalse(refreshed_obsidian["sync_plan"]["due_now"])
 
     def test_mcp_connected_source_tools_register_and_sync_cited_records(self) -> None:
         connectors = call_tool(self.store, self.user_id, "list_source_connectors", {"include_accounts": False})

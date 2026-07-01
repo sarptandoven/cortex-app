@@ -448,6 +448,7 @@ class JobRunResponse(BaseModel):
     ran_at: str
     processed: int
     jobs: list[dict[str, Any]]
+    scheduled_source_syncs: dict[str, Any] | None = None
     pending: int
     failed: int
 
