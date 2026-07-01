@@ -4,15 +4,15 @@
     {
       "filename": "Cortex-0.1.0-1.dmg",
       "kind": "dmg",
-      "sha256": "3f36de8a1066ff6c4601a5acbfa0e1f94b1d008bcad15ebe14bf9e7a5294789d",
-      "size_bytes": 21053972,
+      "sha256": "66a54fefcf20e64de180d5ef58de5afecc354b03b87c623214860759686aa8ab",
+      "size_bytes": 21145527,
       "url": "https://trydoppl.com/downloads/Cortex-0.1.0-1.dmg"
     },
     {
       "filename": "Cortex-0.1.0-1.app.zip",
       "kind": "zip",
-      "sha256": "cddca1c5684df89b909dbc23df4f3170b52ed614deaf686e3905beecec53a501",
-      "size_bytes": 16638455,
+      "sha256": "c01bb1a364c5c1e91d850946fb59a61616541df786dd60bffd8cc93194afb650",
+      "size_bytes": 16815833,
       "url": "https://trydoppl.com/downloads/Cortex-0.1.0-1.app.zip"
     }
   ],
@@ -32,7 +32,7 @@
     ],
     "known_limitations": [
       "Manual app replacement is the only update path for this local beta.",
-      "Live OAuth/API sync, hosted accounts, cloud backup, and remote MCP/OAuth are not enabled.",
+      "Managed OAuth sign-in, hosted accounts, cloud backup, and remote MCP/OAuth are not enabled.",
       "Support starts from the sanitized support bundle, not raw memory folder data.",
       "Developer ID signing, notarization, hosted HTTPS downloads, and a support process are required before broad public distribution."
     ],
@@ -67,13 +67,13 @@
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "First-100 local beta DMG with source connection, Review, cited Ask, MCP retrieval, backup, and support bundle checks."
+    "First-100 local beta DMG with simplified source connection, advanced connector sync, Keychain-backed local token storage, cited Ask retrieval, backup, and support bundle checks."
   ],
-  "released_at": "2026-07-01T06:11:51Z",
+  "released_at": "2026-07-01T10:17:52Z",
   "source_provenance": {
-    "built_at": "2026-07-01T06:11:51Z",
+    "built_at": "2026-07-01T10:17:52Z",
     "git_branch": "mass-scale-app-redesign",
-    "git_commit": "a462d1b3318e9d254073f284fce7bdefe346fe74",
+    "git_commit": "578e9cc85683f599907dc8952e268d7790a7b8ef",
     "git_dirty": false
   },
   "version": "0.1.0"
