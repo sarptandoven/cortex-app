@@ -2560,10 +2560,13 @@ final class AppState: ObservableObject {
     private static let directConnectorConfigSecretPrefix = "directConnectorConfig.v1."
     private static let directConnectorSyncIDs: Set<String> = [
         "calendar",
+        "gmail",
         "github",
+        "google-drive",
         "jira",
         "linear",
         "notion",
+        "outlook",
         "raindrop",
         "readwise",
         "slack",
@@ -2574,6 +2577,9 @@ final class AppState: ObservableObject {
         "zotero",
         "notion",
         "slack",
+        "gmail",
+        "outlook",
+        "google-drive",
         "github",
         "readwise",
         "raindrop",

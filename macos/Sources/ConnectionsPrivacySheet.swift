@@ -789,6 +789,8 @@ private struct ConnectionsDirectSourceRow: View {
     private var sourceIcon: String {
         switch connector.id {
         case "calendar": return "calendar"
+        case "gmail", "outlook": return "envelope.fill"
+        case "google-drive": return "folder.fill"
         case "zotero": return "books.vertical.fill"
         case "notion": return "doc.richtext"
         case "slack": return "bubble.left.and.bubble.right.fill"

@@ -25,17 +25,20 @@ class MacOSConnectorUIContractTests(unittest.TestCase):
             connector_ids,
             {
                 "calendar",
+                "gmail",
                 "github",
+                "google-drive",
                 "jira",
                 "linear",
                 "notion",
+                "outlook",
                 "raindrop",
                 "readwise",
                 "slack",
                 "zotero",
             },
         )
-        self.assertTrue({"gmail", "google-drive", "google-docs", "outlook", "microsoft-365"}.isdisjoint(connector_ids))
+        self.assertTrue({"google-docs", "microsoft-365"}.isdisjoint(connector_ids))
 
         self.assertIn("service_baseline", source)
         self.assertIn("hasNativeDirectSync", source)

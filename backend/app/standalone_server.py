@@ -519,6 +519,94 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError) as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
+            if method == "POST" and path == "/v1/connectors/gmail/sync":
+                body = self._json_body()
+                try:
+                    try:
+                        max_records = int(body.get("max_records") or 50)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError("max_records must be an integer") from exc
+                    if max_records < 1 or max_records > 200:
+                        raise ValueError("max_records must be between 1 and 200")
+                    label_ids = body.get("label_ids") if isinstance(body.get("label_ids"), list) else []
+                    result = store.sync_gmail_account(
+                        user_id,
+                        access_token=str(body.get("access_token") or ""),
+                        source_account_id=str(body.get("source_account_id") or "") or None,
+                        account_label=str(body.get("account_label") or "") or None,
+                        account_identifier=str(body.get("account_identifier") or "") or None,
+                        query=str(body.get("query") or "") or None,
+                        label_ids=[str(item) for item in label_ids],
+                        since=str(body.get("since") or "") or None,
+                        page_token=str(body.get("page_token") or "") or None,
+                        processing=str(body.get("processing") or "sync"),
+                        max_records=max_records,
+                        cursor_name=str(body.get("cursor_name") or "messages"),
+                        include_body=_bool_value(body.get("include_body"), default=True),
+                        api_base_url=str(body.get("api_base_url") or "") or None,
+                    )
+                    self._send_json(store.public_payload(user_id, result) if hasattr(store, "public_payload") else result)
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path == "/v1/connectors/google-drive/sync":
+                body = self._json_body()
+                try:
+                    try:
+                        max_records = int(body.get("max_records") or 50)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError("max_records must be an integer") from exc
+                    if max_records < 1 or max_records > 200:
+                        raise ValueError("max_records must be between 1 and 200")
+                    mime_types = body.get("mime_types") if isinstance(body.get("mime_types"), list) else []
+                    result = store.sync_google_drive_account(
+                        user_id,
+                        access_token=str(body.get("access_token") or ""),
+                        source_account_id=str(body.get("source_account_id") or "") or None,
+                        account_label=str(body.get("account_label") or "") or None,
+                        account_identifier=str(body.get("account_identifier") or "") or None,
+                        query=str(body.get("query") or "") or None,
+                        mime_types=[str(item) for item in mime_types],
+                        since=str(body.get("since") or "") or None,
+                        page_token=str(body.get("page_token") or "") or None,
+                        processing=str(body.get("processing") or "sync"),
+                        max_records=max_records,
+                        cursor_name=str(body.get("cursor_name") or "files"),
+                        include_content=_bool_value(body.get("include_content"), default=True),
+                        api_base_url=str(body.get("api_base_url") or "") or None,
+                    )
+                    self._send_json(store.public_payload(user_id, result) if hasattr(store, "public_payload") else result)
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path == "/v1/connectors/outlook/sync":
+                body = self._json_body()
+                try:
+                    try:
+                        max_records = int(body.get("max_records") or 50)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError("max_records must be an integer") from exc
+                    if max_records < 1 or max_records > 200:
+                        raise ValueError("max_records must be between 1 and 200")
+                    result = store.sync_outlook_account(
+                        user_id,
+                        access_token=str(body.get("access_token") or ""),
+                        source_account_id=str(body.get("source_account_id") or "") or None,
+                        account_label=str(body.get("account_label") or "") or None,
+                        account_identifier=str(body.get("account_identifier") or "") or None,
+                        query=str(body.get("query") or "") or None,
+                        since=str(body.get("since") or "") or None,
+                        page_token=str(body.get("page_token") or "") or None,
+                        processing=str(body.get("processing") or "sync"),
+                        max_records=max_records,
+                        cursor_name=str(body.get("cursor_name") or "messages"),
+                        include_body=_bool_value(body.get("include_body"), default=True),
+                        api_base_url=str(body.get("api_base_url") or "") or None,
+                    )
+                    self._send_json(store.public_payload(user_id, result) if hasattr(store, "public_payload") else result)
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
             if method == "POST" and path == "/v1/connectors/slack/sync":
                 body = self._json_body()
                 try:

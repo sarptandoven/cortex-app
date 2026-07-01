@@ -41,6 +41,9 @@ class FakeStore:
         self.source_account_sync_calls: list[tuple[str, str, int, str, bool]] = []
         self.obsidian_sync_calls: list[dict] = []
         self.github_sync_calls: list[dict] = []
+        self.gmail_sync_calls: list[dict] = []
+        self.google_drive_sync_calls: list[dict] = []
+        self.outlook_sync_calls: list[dict] = []
         self.slack_sync_calls: list[dict] = []
         self.readwise_sync_calls: list[dict] = []
         self.calendar_sync_calls: list[dict] = []
@@ -672,6 +675,301 @@ class FakeStore:
                 "connector": "github",
                 "connector_version": "test",
                 "repositories": repositories,
+                "records_found": 1,
+                "records_returned": 1,
+                "errors": [],
+            },
+        }
+
+    def sync_gmail_account(
+        self,
+        user_id: str,
+        *,
+        access_token: str,
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        query: str | None = None,
+        label_ids: list[str] | None = None,
+        since: str | None = None,
+        page_token: str | None = None,
+        processing: str = "sync",
+        max_records: int = 50,
+        cursor_name: str = "messages",
+        include_body: bool = True,
+        api_base_url: str | None = None,
+    ) -> dict:
+        if not access_token:
+            raise ValueError("Gmail access token is required")
+        call = {
+            "user_id": user_id,
+            "access_token": access_token,
+            "source_account_id": source_account_id,
+            "account_label": account_label,
+            "account_identifier": account_identifier,
+            "query": query,
+            "label_ids": label_ids or [],
+            "since": since,
+            "page_token": page_token,
+            "processing": processing,
+            "max_records": max_records,
+            "cursor_name": cursor_name,
+            "include_body": include_body,
+            "api_base_url": api_base_url,
+        }
+        self.gmail_sync_calls.append(call)
+        account_id = source_account_id or "sacct_gmail_test"
+        return {
+            "source_account_id": account_id,
+            "source": "gmail",
+            "status": "complete",
+            "processing": processing,
+            "received": 1,
+            "queued": 0 if processing == "sync" else 1,
+            "saved": 1 if processing == "sync" else 0,
+            "skipped": 0,
+            "failed": 0,
+            "archived_missing": 0,
+            "capture_ids": ["cap_gmail_test"],
+            "records": [
+                {
+                    "capture_id": "cap_gmail_test",
+                    "status": "saved" if processing == "sync" else "queued",
+                    "source": "gmail",
+                    "source_url": "gmail://message/msg_123",
+                    "title": "Gmail Test message",
+                }
+            ],
+            "errors": [],
+            "cursor": {
+                "id": "sync_gmail_test",
+                "user_id": user_id,
+                "source_account_id": account_id,
+                "source": "gmail",
+                "cursor_name": cursor_name,
+                "cursor_value": "page-next",
+                "high_water_mark": "2026-01-01T00:00:00Z",
+                "state": {"records_returned": 1, "label_ids": label_ids or []},
+                "last_error": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+            "source_account": {
+                "id": account_id,
+                "user_id": user_id,
+                "source": "gmail",
+                "account_label": account_label or "Gmail",
+                "account_identifier": account_identifier or "gmail-local",
+                "connection_type": "api_token",
+                "status": "connected",
+                "auth_state": "healthy",
+                "policy": {"review_required": True, "allow_ai_context": True},
+                "metadata": {"records_returned": 1, "token_configured": True},
+                "last_sync_at": "2026-01-01T00:00:00Z",
+                "last_error": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "disconnected_at": None,
+            },
+            "sync": {
+                "connector": "gmail",
+                "connector_version": "test",
+                "records_found": 1,
+                "records_returned": 1,
+                "errors": [],
+            },
+        }
+
+    def sync_google_drive_account(
+        self,
+        user_id: str,
+        *,
+        access_token: str,
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        query: str | None = None,
+        mime_types: list[str] | None = None,
+        since: str | None = None,
+        page_token: str | None = None,
+        processing: str = "sync",
+        max_records: int = 50,
+        cursor_name: str = "files",
+        include_content: bool = True,
+        api_base_url: str | None = None,
+    ) -> dict:
+        if not access_token:
+            raise ValueError("Google Drive access token is required")
+        call = {
+            "user_id": user_id,
+            "access_token": access_token,
+            "source_account_id": source_account_id,
+            "account_label": account_label,
+            "account_identifier": account_identifier,
+            "query": query,
+            "mime_types": mime_types or [],
+            "since": since,
+            "page_token": page_token,
+            "processing": processing,
+            "max_records": max_records,
+            "cursor_name": cursor_name,
+            "include_content": include_content,
+            "api_base_url": api_base_url,
+        }
+        self.google_drive_sync_calls.append(call)
+        account_id = source_account_id or "sacct_google_drive_test"
+        return {
+            "source_account_id": account_id,
+            "source": "google-drive",
+            "status": "complete",
+            "processing": processing,
+            "received": 1,
+            "queued": 0 if processing == "sync" else 1,
+            "saved": 1 if processing == "sync" else 0,
+            "skipped": 0,
+            "failed": 0,
+            "archived_missing": 0,
+            "capture_ids": ["cap_google_drive_test"],
+            "records": [
+                {
+                    "capture_id": "cap_google_drive_test",
+                    "status": "saved" if processing == "sync" else "queued",
+                    "source": "google-drive",
+                    "source_url": "https://drive.google.com/file/d/file_123/view",
+                    "title": "Drive Test doc",
+                }
+            ],
+            "errors": [],
+            "cursor": {
+                "id": "sync_google_drive_test",
+                "user_id": user_id,
+                "source_account_id": account_id,
+                "source": "google-drive",
+                "cursor_name": cursor_name,
+                "cursor_value": "page-next",
+                "high_water_mark": "2026-01-01T00:00:00Z",
+                "state": {"records_returned": 1, "mime_types": mime_types or []},
+                "last_error": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+            "source_account": {
+                "id": account_id,
+                "user_id": user_id,
+                "source": "google-drive",
+                "account_label": account_label or "Google Drive",
+                "account_identifier": account_identifier or "drive-local",
+                "connection_type": "api_token",
+                "status": "connected",
+                "auth_state": "healthy",
+                "policy": {"review_required": True, "allow_ai_context": True},
+                "metadata": {"records_returned": 1, "token_configured": True},
+                "last_sync_at": "2026-01-01T00:00:00Z",
+                "last_error": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "disconnected_at": None,
+            },
+            "sync": {
+                "connector": "google-drive",
+                "connector_version": "test",
+                "records_found": 1,
+                "records_returned": 1,
+                "errors": [],
+            },
+        }
+
+    def sync_outlook_account(
+        self,
+        user_id: str,
+        *,
+        access_token: str,
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        query: str | None = None,
+        since: str | None = None,
+        page_token: str | None = None,
+        processing: str = "sync",
+        max_records: int = 50,
+        cursor_name: str = "messages",
+        include_body: bool = True,
+        api_base_url: str | None = None,
+    ) -> dict:
+        if not access_token:
+            raise ValueError("Outlook access token is required")
+        call = {
+            "user_id": user_id,
+            "access_token": access_token,
+            "source_account_id": source_account_id,
+            "account_label": account_label,
+            "account_identifier": account_identifier,
+            "query": query,
+            "since": since,
+            "page_token": page_token,
+            "processing": processing,
+            "max_records": max_records,
+            "cursor_name": cursor_name,
+            "include_body": include_body,
+            "api_base_url": api_base_url,
+        }
+        self.outlook_sync_calls.append(call)
+        account_id = source_account_id or "sacct_outlook_test"
+        return {
+            "source_account_id": account_id,
+            "source": "outlook",
+            "status": "complete",
+            "processing": processing,
+            "received": 1,
+            "queued": 0 if processing == "sync" else 1,
+            "saved": 1 if processing == "sync" else 0,
+            "skipped": 0,
+            "failed": 0,
+            "archived_missing": 0,
+            "capture_ids": ["cap_outlook_test"],
+            "records": [
+                {
+                    "capture_id": "cap_outlook_test",
+                    "status": "saved" if processing == "sync" else "queued",
+                    "source": "outlook",
+                    "source_url": "outlook://message/msg_123",
+                    "title": "Outlook Test message",
+                }
+            ],
+            "errors": [],
+            "cursor": {
+                "id": "sync_outlook_test",
+                "user_id": user_id,
+                "source_account_id": account_id,
+                "source": "outlook",
+                "cursor_name": cursor_name,
+                "cursor_value": "page-next",
+                "high_water_mark": "2026-01-01T00:00:00Z",
+                "state": {"records_returned": 1},
+                "last_error": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+            "source_account": {
+                "id": account_id,
+                "user_id": user_id,
+                "source": "outlook",
+                "account_label": account_label or "Outlook",
+                "account_identifier": account_identifier or "outlook-local",
+                "connection_type": "api_token",
+                "status": "connected",
+                "auth_state": "healthy",
+                "policy": {"review_required": True, "allow_ai_context": True},
+                "metadata": {"records_returned": 1, "token_configured": True},
+                "last_sync_at": "2026-01-01T00:00:00Z",
+                "last_error": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "disconnected_at": None,
+            },
+            "sync": {
+                "connector": "outlook",
+                "connector_version": "test",
                 "records_found": 1,
                 "records_returned": 1,
                 "errors": [],
@@ -2339,6 +2637,187 @@ class StandaloneServerTests(unittest.TestCase):
             )
         self.assertEqual(context.exception.code, 422)
         self.assertEqual(len(self.fake_store.github_sync_calls), 1)
+
+    def test_gmail_connector_route_forwards_to_store(self) -> None:
+        with self.post_json(
+            "/v1/connectors/gmail/sync",
+            {
+                "access_token": "gmail_access_test",
+                "source_account_id": "sacct_gmail_existing",
+                "account_label": "Cortex Gmail",
+                "account_identifier": "sdoven@uwaterloo.ca",
+                "query": "from:founder@example.com",
+                "label_ids": ["INBOX", "IMPORTANT"],
+                "since": "2026-01-01T00:00:00Z",
+                "page_token": "page-1",
+                "processing": "sync",
+                "max_records": 50,
+                "cursor_name": "messages",
+                "include_body": True,
+                "api_base_url": "https://gmail-api.test/gmail/v1",
+            },
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["source"], "gmail")
+        self.assertEqual(payload["source_account_id"], "sacct_gmail_existing")
+        self.assertEqual(payload["processing"], "sync")
+        self.assertEqual(payload["source_account"]["account_label"], "Cortex Gmail")
+        self.assertEqual(payload["records"][0]["source_url"], "gmail://message/msg_123")
+        self.assertNotIn("gmail_access_test", json.dumps(payload))
+        self.assertEqual(
+            self.fake_store.gmail_sync_calls,
+            [
+                {
+                    "user_id": "local",
+                    "access_token": "gmail_access_test",
+                    "source_account_id": "sacct_gmail_existing",
+                    "account_label": "Cortex Gmail",
+                    "account_identifier": "sdoven@uwaterloo.ca",
+                    "query": "from:founder@example.com",
+                    "label_ids": ["INBOX", "IMPORTANT"],
+                    "since": "2026-01-01T00:00:00Z",
+                    "page_token": "page-1",
+                    "processing": "sync",
+                    "max_records": 50,
+                    "cursor_name": "messages",
+                    "include_body": True,
+                    "api_base_url": "https://gmail-api.test/gmail/v1",
+                }
+            ],
+        )
+
+        with self.assertRaises(error.HTTPError) as context:
+            self.post_json(
+                "/v1/connectors/gmail/sync",
+                {
+                    "access_token": "gmail_access_test",
+                    "max_records": 201,
+                },
+            )
+        self.assertEqual(context.exception.code, 422)
+        self.assertEqual(len(self.fake_store.gmail_sync_calls), 1)
+
+    def test_google_drive_connector_route_forwards_to_store(self) -> None:
+        with self.post_json(
+            "/v1/connectors/google-drive/sync",
+            {
+                "access_token": "drive_access_test",
+                "source_account_id": "sacct_drive_existing",
+                "account_label": "Cortex Drive",
+                "account_identifier": "drive:sdoven",
+                "query": "modifiedTime > '2026-01-01T00:00:00'",
+                "mime_types": ["application/vnd.google-apps.document", "text/plain"],
+                "since": "2026-01-01T00:00:00Z",
+                "page_token": "page-1",
+                "processing": "sync",
+                "max_records": 50,
+                "cursor_name": "files",
+                "include_content": True,
+                "api_base_url": "https://drive-api.test/drive/v3",
+            },
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["source"], "google-drive")
+        self.assertEqual(payload["source_account_id"], "sacct_drive_existing")
+        self.assertEqual(payload["processing"], "sync")
+        self.assertEqual(payload["source_account"]["account_label"], "Cortex Drive")
+        self.assertEqual(payload["records"][0]["source_url"], "https://drive.google.com/file/d/file_123/view")
+        self.assertNotIn("drive_access_test", json.dumps(payload))
+        self.assertEqual(
+            self.fake_store.google_drive_sync_calls,
+            [
+                {
+                    "user_id": "local",
+                    "access_token": "drive_access_test",
+                    "source_account_id": "sacct_drive_existing",
+                    "account_label": "Cortex Drive",
+                    "account_identifier": "drive:sdoven",
+                    "query": "modifiedTime > '2026-01-01T00:00:00'",
+                    "mime_types": ["application/vnd.google-apps.document", "text/plain"],
+                    "since": "2026-01-01T00:00:00Z",
+                    "page_token": "page-1",
+                    "processing": "sync",
+                    "max_records": 50,
+                    "cursor_name": "files",
+                    "include_content": True,
+                    "api_base_url": "https://drive-api.test/drive/v3",
+                }
+            ],
+        )
+
+        with self.assertRaises(error.HTTPError) as context:
+            self.post_json(
+                "/v1/connectors/google-drive/sync",
+                {
+                    "access_token": "drive_access_test",
+                    "max_records": 201,
+                },
+            )
+        self.assertEqual(context.exception.code, 422)
+        self.assertEqual(len(self.fake_store.google_drive_sync_calls), 1)
+
+    def test_outlook_connector_route_forwards_to_store(self) -> None:
+        with self.post_json(
+            "/v1/connectors/outlook/sync",
+            {
+                "access_token": "outlook_access_test",
+                "source_account_id": "sacct_outlook_existing",
+                "account_label": "Cortex Outlook",
+                "account_identifier": "sdoven@uwaterloo.ca",
+                "query": "from/emailAddress/address eq 'founder@example.com'",
+                "since": "2026-01-01T00:00:00Z",
+                "page_token": "page-1",
+                "processing": "sync",
+                "max_records": 50,
+                "cursor_name": "messages",
+                "include_body": True,
+                "api_base_url": "https://graph-api.test/v1.0",
+            },
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["source"], "outlook")
+        self.assertEqual(payload["source_account_id"], "sacct_outlook_existing")
+        self.assertEqual(payload["processing"], "sync")
+        self.assertEqual(payload["source_account"]["account_label"], "Cortex Outlook")
+        self.assertEqual(payload["records"][0]["source_url"], "outlook://message/msg_123")
+        self.assertNotIn("outlook_access_test", json.dumps(payload))
+        self.assertEqual(
+            self.fake_store.outlook_sync_calls,
+            [
+                {
+                    "user_id": "local",
+                    "access_token": "outlook_access_test",
+                    "source_account_id": "sacct_outlook_existing",
+                    "account_label": "Cortex Outlook",
+                    "account_identifier": "sdoven@uwaterloo.ca",
+                    "query": "from/emailAddress/address eq 'founder@example.com'",
+                    "since": "2026-01-01T00:00:00Z",
+                    "page_token": "page-1",
+                    "processing": "sync",
+                    "max_records": 50,
+                    "cursor_name": "messages",
+                    "include_body": True,
+                    "api_base_url": "https://graph-api.test/v1.0",
+                }
+            ],
+        )
+
+        with self.assertRaises(error.HTTPError) as context:
+            self.post_json(
+                "/v1/connectors/outlook/sync",
+                {
+                    "access_token": "outlook_access_test",
+                    "max_records": 201,
+                },
+            )
+        self.assertEqual(context.exception.code, 422)
+        self.assertEqual(len(self.fake_store.outlook_sync_calls), 1)
 
     def test_slack_connector_route_forwards_to_store(self) -> None:
         with self.post_json(
