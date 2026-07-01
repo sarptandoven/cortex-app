@@ -1307,6 +1307,8 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(disconnected["retention"]["disconnect_action"], "pause_sync")
         self.assertIn("memories", disconnected["retention"]["disconnect_retains"])
         self.assertIn("local_credentials", disconnected["retention"]["disconnect_retains"])
+        self.assertEqual(disconnected["retention"]["resume_action"], "resume_sync")
+        self.assertEqual(disconnected["retention"]["resume_endpoint"], f"/v1/source-accounts/{account['id']}/resume")
         self.assertEqual(self.store.list_source_accounts(self.user_id), [])
         self.assertEqual(self.store.list_source_accounts(self.user_id, include_disconnected=True)[0]["id"], account["id"])
 
@@ -1358,6 +1360,38 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(ran["jobs"][0]["status"], "succeeded")
         self.assertEqual(ran["jobs"][0]["result"]["reason"], "source_account_disconnected")
         self.assertTrue(self.store.search(self.user_id, "retain local Cortex memory", source_account_id=account["id"]))
+        github_readiness = next(
+            item for item in self.store.source_readiness_report(self.user_id)["sources"] if item["source"] == "github"
+        )
+        self.assertEqual(github_readiness["status"], "needs_attention")
+        self.assertEqual(github_readiness["next_action"], "Resume sync or review this source account.")
+
+        resumed = self.store.resume_source_account(self.user_id, account["id"])
+        self.assertEqual(resumed["status"], "connected")
+        self.assertEqual(resumed["auth_state"], "healthy")
+        self.assertIsNone(resumed["disconnected_at"])
+        self.assertEqual(self.store.list_source_accounts(self.user_id)[0]["id"], account["id"])
+        self.assertEqual(
+            self.store.vault.read_source_credential(user_id=self.user_id, source_account_id=account["id"])["payload"]["token"],
+            "github_disconnect_secret",
+        )
+        resumed_sync = self.store.sync_source_account_records(
+            self.user_id,
+            account["id"],
+            records=[
+                {
+                    "content": "I decided resumed source accounts should continue from retained local state.",
+                    "external_id": "issue-103",
+                    "source_url": "https://github.com/doppl-tech/cortex-app/issues/103",
+                }
+            ],
+            cursor_name="issues",
+            cursor_value="issue-cursor-103",
+            processing="sync",
+        )
+        self.assertEqual(resumed_sync["saved"], 1)
+        self.assertTrue(self.store.search(self.user_id, "resumed source accounts", source_account_id=account["id"]))
+        self.assertEqual(self.store.resume_source_account(self.user_id, "sacct_missing"), None)
 
     def test_source_account_missing_snapshot_archive_is_account_scoped(self) -> None:
         self.store.update_settings(self.user_id, {"review_new_captures": False})

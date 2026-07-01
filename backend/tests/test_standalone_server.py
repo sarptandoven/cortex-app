@@ -336,7 +336,7 @@ class FakeStore:
                     "name": "Gmail",
                     "category": "communication",
                     "status": "needs_attention" if self.source_account_disconnected else "synced",
-                    "next_action": "Reconnect Gmail." if self.source_account_disconnected else "Source sync has completed; review new memories as they arrive.",
+                    "next_action": "Resume Gmail sync." if self.source_account_disconnected else "Source sync has completed; review new memories as they arrive.",
                     "import_status": "generic",
                     "live_status": "planned",
                     "auth": "oauth",
@@ -350,7 +350,7 @@ class FakeStore:
                     "active_memories": 0,
                     "citation_coverage": 0,
                     "last_seen_at": "2026-01-01T00:00:00Z",
-                    "warnings": ["Reconnect Gmail."] if self.source_account_disconnected else [],
+                    "warnings": ["Resume Gmail sync."] if self.source_account_disconnected else [],
                 }
             ],
             "recommendations": ["Source readiness is healthy for local beta use."],
@@ -433,6 +433,12 @@ class FakeStore:
             return None
         self.source_account_disconnected = True
         return self.list_source_accounts(user_id, include_disconnected=True)[0]
+
+    def resume_source_account(self, user_id: str, account_id: str) -> dict | None:
+        if account_id != "sacct_test":
+            return None
+        self.source_account_disconnected = False
+        return self.list_source_accounts(user_id)[0]
 
     def sync_source_account_records(
         self,
@@ -2173,6 +2179,15 @@ class StandaloneServerTests(unittest.TestCase):
 
         with self.assertRaises(error.HTTPError) as context:
             self.post_json("/v1/source-accounts/sacct_missing/disconnect", {})
+        self.assertEqual(context.exception.code, 404)
+
+        with self.post_json("/v1/source-accounts/sacct_test/resume", {}) as response:
+            resumed = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(resumed["status"], "connected")
+        self.assertIsNone(resumed["disconnected_at"])
+
+        with self.assertRaises(error.HTTPError) as context:
+            self.post_json("/v1/source-accounts/sacct_missing/resume", {})
         self.assertEqual(context.exception.code, 404)
 
         with self.delete("/v1/source-accounts/sacct_test") as response:

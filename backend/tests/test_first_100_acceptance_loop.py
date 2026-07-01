@@ -196,6 +196,56 @@ I prefer Cortex answers that cite the edited Obsidian note when memory changes.
         self.assertGreaterEqual(obsidian["active_memories"], 1)
         self.assertEqual(obsidian["citation_coverage"], 1.0)
 
+    def test_paused_obsidian_vault_keeps_approved_memory_and_requires_resume_for_new_sync(self) -> None:
+        note = self.write_note(
+            "Sources/Pause Resume.md",
+            """# Pause Resume
+
+Decision: Cortex keeps approved local memory available when an Obsidian vault sync is paused.
+""",
+        )
+
+        first_sync = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+        self.assertEqual(first_sync["saved"], 1)
+        account_id = first_sync["source_account"]["id"]
+        capture_id = first_sync["records"][0]["capture_id"]
+        self.assertEqual(call_tool(self.store, self.user_id, "approve_memory_capture", {"capture_id": capture_id}), {"approved": True})
+
+        answer = self.store.answer_query(self.user_id, "approved local memory available when paused", source_account_id=account_id)
+        self.assertTrue(answer["citations"])
+        self.assertTrue(any("approved local memory" in citation["excerpt"] for citation in answer["citations"]))
+
+        disconnected = self.store.disconnect_source_account(self.user_id, account_id)
+        self.assertEqual(disconnected["status"], "disconnected")
+        self.assertEqual(self.store.list_source_accounts(self.user_id), [])
+
+        paused_answer = self.store.answer_query(self.user_id, "approved local memory available when paused", source_account_id=account_id)
+        self.assertTrue(paused_answer["citations"])
+        self.assertTrue(any("approved local memory" in citation["excerpt"] for citation in paused_answer["citations"]))
+
+        note.write_text(
+            """# Pause Resume
+
+Decision: Cortex resumes a paused Obsidian vault before reading edited source memory again.
+""",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "source account is disconnected"):
+            self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+
+        resumed = self.store.resume_source_account(self.user_id, account_id)
+        self.assertEqual(resumed["status"], "available")
+        self.assertIsNone(resumed["disconnected_at"])
+
+        changed_sync = self.store.sync_obsidian_vault(self.user_id, vault_path=str(self.vault), processing="sync")
+        self.assertEqual(changed_sync["saved"], 1)
+        self.assertEqual(changed_sync["records"][0]["status"], "updated")
+        self.assertEqual(call_tool(self.store, self.user_id, "approve_memory_capture", {"capture_id": capture_id}), {"approved": True})
+
+        resumed_answer = self.store.answer_query(self.user_id, "paused Obsidian vault reading edited source memory", source_account_id=account_id)
+        self.assertTrue(resumed_answer["citations"])
+        self.assertTrue(any("reading edited source memory" in citation["excerpt"] for citation in resumed_answer["citations"]))
+
     def test_obsidian_review_required_policy_overrides_global_pending_access(self) -> None:
         self.store.update_settings(self.user_id, {"allow_pending_in_context": True})
         self.write_note(

@@ -2433,7 +2433,8 @@ class CortexStore:
                 show_in_primary_ui = bool(item.get("show_in_primary_ui"))
             if has_attention:
                 status = "needs_attention"
-                next_action = (account_errors + cursor_errors + processing_errors)[0] if account_errors or cursor_errors or processing_errors else "Reconnect or review this source account."
+                attention_messages = account_errors + cursor_errors + processing_errors
+                next_action = attention_messages[0] if attention_messages else "Resume sync or review this source account."
             elif processing:
                 status = "syncing"
                 next_action = f"Processing {processing} source record{'s' if processing != 1 else ''} before Review and Ask use them."
@@ -3285,6 +3286,7 @@ class CortexStore:
             raise ValueError("processing must be sync or async")
         identity = vault_identity(vault_path)
         resolved_account_id = (source_account_id or "").strip() or stable_id("sacct_", f"{user_id}:{OBSIDIAN_SOURCE}:{identity.vault_id}")
+        self._ensure_source_account_can_sync(user_id, resolved_account_id, expected_source=OBSIDIAN_SOURCE)
         previous_cursor = self._latest_sync_cursor_value(user_id, resolved_account_id, cursor_name)
         scan = scan_vault(vault_path, max_records=max_records, cursor_value=previous_cursor)
         label = (account_label or f"Obsidian: {scan.vault_name}").strip()[:160]
@@ -5344,7 +5346,7 @@ class CortexStore:
         if expected and source != expected:
             raise ValueError(f"source account belongs to {source or 'another source'}, not {expected}")
         if account.get("disconnected_at"):
-            raise ValueError("source account is disconnected; reconnect before syncing")
+            raise ValueError("source account is disconnected; resume before syncing")
 
     def disconnect_source_account(self, user_id: str, account_id: str) -> dict[str, Any] | None:
         timestamp = now_iso()
@@ -5364,6 +5366,40 @@ class CortexStore:
                 (timestamp, timestamp, user_id, account_id),
             )
             self._event(conn, user_id, account_id, "source_account", "disconnected", {"source": existing["source"]})
+            row = conn.execute("SELECT * FROM source_accounts WHERE user_id = ? AND id = ?", (user_id, account_id)).fetchone()
+        account = self._source_account_from_row(row)
+        self.vault.write_source_account(account)
+        return account
+
+    def resume_source_account(self, user_id: str, account_id: str) -> dict[str, Any] | None:
+        timestamp = now_iso()
+        with connect(self.db_path) as conn:
+            existing = conn.execute("SELECT * FROM source_accounts WHERE user_id = ? AND id = ?", (user_id, account_id)).fetchone()
+            if not existing:
+                return None
+            credential = self.vault.read_source_credential(user_id=user_id, source_account_id=account_id)
+            status = "connected" if credential else "available"
+            auth_state = "healthy" if credential else "not_configured"
+            conn.execute(
+                """
+                UPDATE source_accounts
+                SET status = ?,
+                    auth_state = ?,
+                    last_error = NULL,
+                    updated_at = ?,
+                    disconnected_at = NULL
+                WHERE user_id = ? AND id = ?
+                """,
+                (status, auth_state, timestamp, user_id, account_id),
+            )
+            self._event(
+                conn,
+                user_id,
+                account_id,
+                "source_account",
+                "resumed",
+                {"source": existing["source"], "credential_retained": bool(credential)},
+            )
             row = conn.execute("SELECT * FROM source_accounts WHERE user_id = ? AND id = ?", (user_id, account_id)).fetchone()
         account = self._source_account_from_row(row)
         self.vault.write_source_account(account)
@@ -13492,6 +13528,8 @@ class CortexStore:
                 "disconnect_action": "pause_sync",
                 "disconnect_retains": ["source_account", "captures", "memories", "sync_cursors", "local_credentials"],
                 "disconnect_stops": ["scheduled_sync", "new_remote_reads"],
+                "resume_action": "resume_sync",
+                "resume_endpoint": f"/v1/source-accounts/{row['id']}/resume",
                 "delete_action": "delete_user_data",
                 "delete_endpoint": "/v1/user-data?include_backups=true",
             },

@@ -69,6 +69,8 @@ def _required_api_scope(method: str, path: str) -> str:
         return "maintenance"
     if normalized_path.startswith("/v1/source-accounts/") and normalized_path.endswith("/disconnect") and normalized_method == "POST":
         return "maintenance"
+    if normalized_path.startswith("/v1/source-accounts/") and normalized_path.endswith("/resume") and normalized_method == "POST":
+        return "maintenance"
     if normalized_path == "/v1/sync-cursors" and normalized_method == "POST":
         return "maintenance"
     if normalized_path == "/v1/sync/devices" and normalized_method == "POST":
@@ -427,6 +429,14 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     self._send_json({"detail": "Source account not found"}, status=HTTPStatus.NOT_FOUND)
                 else:
                     self._send_json(store.public_payload(user_id, disconnected) if hasattr(store, "public_payload") else disconnected)
+                return
+            if method == "POST" and path.startswith("/v1/source-accounts/") and path.endswith("/resume"):
+                account_id = unquote(path.removeprefix("/v1/source-accounts/").removesuffix("/resume").strip("/"))
+                resumed = store.resume_source_account(user_id, account_id)
+                if not resumed:
+                    self._send_json({"detail": "Source account not found"}, status=HTTPStatus.NOT_FOUND)
+                else:
+                    self._send_json(store.public_payload(user_id, resumed) if hasattr(store, "public_payload") else resumed)
                 return
             if method == "POST" and path.startswith("/v1/source-accounts/") and path.endswith("/sync"):
                 account_id = unquote(path.removeprefix("/v1/source-accounts/").removesuffix("/sync").strip("/"))
