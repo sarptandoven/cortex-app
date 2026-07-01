@@ -67,14 +67,14 @@ private struct ConnectionsPrivacyOverview: View {
     @State private var recoveryToolsExpanded = false
     @State private var developerDetailsExpanded = false
 
-    private var connectedNotesConnectionCount: Int {
-        notesHealth == .healthy ? 1 : 0
+    private var connectedSourceCount: Int {
+        max(state.activeSourceAccounts.count, notesHealth == .healthy ? 1 : 0)
     }
 
     private var connectionStatusDetail: String {
-        let notes = notesHealth.isNeedsAttention ? "notes need attention" : "\(connectedNotesConnectionCount) notes sync\(connectedNotesConnectionCount == 1 ? "" : "s")"
+        let sources = notesHealth.isNeedsAttention ? "notes need attention" : "\(connectedSourceCount) source\(connectedSourceCount == 1 ? "" : "s")"
         let tools = "\(state.connectedAIIntegrationCount) AI tool\(state.connectedAIIntegrationCount == 1 ? "" : "s")"
-        return "\(notes) · \(tools)"
+        return "\(sources) · \(tools)"
     }
 
     private var notesHealth: NotesConnectionHealth {
@@ -577,6 +577,12 @@ private struct ConnectionsDirectSourceRow: View {
         }
     }
 
+    private var readiness: SourceReadinessItem? {
+        state.sourceReadinessReport?.sources.first { source in
+            source.source == connector.id || (connector.source_ids ?? []).contains(source.source)
+        }
+    }
+
     private var hasStoredConfig: Bool {
         state.hasStoredDirectConnectorConfig(connector)
     }
@@ -612,6 +618,13 @@ private struct ConnectionsDirectSourceRow: View {
                         .foregroundColor(CortexRecoveryText.needsAttention(lastMessage) ? .orange : .secondary)
                         .lineLimit(2)
                 }
+                if let sourceHealthLine {
+                    Text(sourceHealthLine)
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundColor(sourceHealthColor)
+                        .lineLimit(2)
+                }
             }
 
             Spacer(minLength: 12)
@@ -640,6 +653,7 @@ private struct ConnectionsDirectSourceRow: View {
 
     private var statusTitle: String {
         if activeAccount?.needsAttention == true { return "Needs attention" }
+        if let readiness, readiness.pending > 0 { return "Review" }
         if connected { return "Connected" }
         if hasStoredConfig { return "Configured" }
         if connector.connectorReadinessStatus == "token-ready" { return "Token sync" }
@@ -650,6 +664,7 @@ private struct ConnectionsDirectSourceRow: View {
 
     private var statusChipIcon: String {
         if activeAccount?.needsAttention == true { return "exclamationmark.circle.fill" }
+        if let readiness, readiness.pending > 0 { return "tray.full.fill" }
         if connected { return "checkmark.circle.fill" }
         if hasStoredConfig { return "checkmark.circle" }
         if connector.connectorReadinessStatus == "token-ready" { return "key.fill" }
@@ -658,6 +673,7 @@ private struct ConnectionsDirectSourceRow: View {
 
     private var statusColor: Color {
         if activeAccount?.needsAttention == true { return .orange }
+        if let readiness, readiness.pending > 0 { return .orange }
         if connected { return .green }
         if hasStoredConfig { return .green }
         if connector.connectorReadinessStatus == "token-ready" { return .accentColor }
@@ -694,6 +710,36 @@ private struct ConnectionsDirectSourceRow: View {
             if hasStoredConfig { return "\(connector.name) sync is configured. Run it again when you want fresh memory." }
             return "Connect with a read-only token, then Cortex sends useful items to Review with citations."
         }
+    }
+
+    private var sourceHealthLine: String? {
+        guard let readiness else {
+            if let lastSync = activeAccount?.last_sync_at {
+                return "Last sync \(shortTimestamp(lastSync))"
+            }
+            return nil
+        }
+        if readiness.pending > 0 {
+            return "\(readiness.pending) item\(readiness.pending == 1 ? "" : "s") waiting in Review"
+        }
+        if readiness.active_memories > 0 {
+            return "\(readiness.active_memories) reviewed memor\(readiness.active_memories == 1 ? "y" : "ies") with \(Int((readiness.citation_coverage * 100).rounded()))% citation coverage"
+        }
+        if let lastSeen = readiness.last_seen_at {
+            return "Last sync \(shortTimestamp(lastSeen))"
+        }
+        return nil
+    }
+
+    private var sourceHealthColor: Color {
+        if let readiness, readiness.pending > 0 { return .orange }
+        return .secondary
+    }
+
+    private func shortTimestamp(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "recently" }
+        return String(trimmed.prefix(10))
     }
 
     private var actionTitle: String {
