@@ -4,3 +4,12 @@
 setup = "python3 -m venv venv && venv/bin/python -m pip install -r backend/requirements.txt"
 run = "cd backend && CORTEX_PORT=\"${CONDUCTOR_PORT:-8766}\" CORTEX_PUBLIC_BASE_URL=\"http://127.0.0.1:${CONDUCTOR_PORT:-8766}\" CORTEX_API_KEY=\"${CORTEX_API_KEY:-dev-local-key}\" CORTEX_ALLOW_INSECURE_DEV_TOKEN=\"${CORTEX_ALLOW_INSECURE_DEV_TOKEN:-1}\" CORTEX_VAULT_PATH=\"./data/Cortex.vault\" CORTEX_DB_PATH=\"./data/Cortex.vault/index.sqlite\" ../venv/bin/python -m uvicorn app.main:app --reload --host 127.0.0.1 --port \"${CONDUCTOR_PORT:-8766}\""
 run_mode = "concurrent"
+
+[prompts]
+general = """
+Usage guardrail for long-running Cortex work:
+- Treat the user's 5-hour Codex/agent window as a finite launch resource.
+- If the visible remaining 5-hour usage drops to 10% or below, enter slow mode: stop spawning subagents, avoid broad searches, batch file reads, run only narrow tests/builds needed for the immediate checkpoint, and prefer concise checkpoints over exploration.
+- If the visible remaining 5-hour usage drops to 5% or below, enter conservation mode: keep the active goal/plan intact, write or update a lightweight checkpoint only if needed, then avoid tool calls, builds, tests, subagents, package generation, and code edits until the usage window resets to 100%.
+- If usage cannot be inspected from tools, infer pressure from usage-limit errors and ask the user for the visible remaining percentage before launching more agents or starting expensive verification.
+"""
