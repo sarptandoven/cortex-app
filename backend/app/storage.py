@@ -736,14 +736,17 @@ def _bounded_int(value: Any, *, minimum: int, maximum: int) -> int | None:
     return parsed
 
 
-SCHEDULED_CREDENTIAL_SYNC_SOURCES = {"github", "readwise", "raindrop", "zotero", "linear", "notion"}
+SCHEDULED_CREDENTIAL_SYNC_SOURCES = {"github", "readwise", "raindrop", "zotero", "linear", "notion", "slack", "calendar", "jira"}
 SOURCE_SYNC_CURSOR_NAMES = {
     "obsidian": "local-folder",
     "github": "issues",
+    "slack": "messages",
     "readwise": "highlights",
+    "calendar": "events",
     "raindrop": "raindrops",
     "zotero": "items",
     "linear": "issues",
+    "jira": "issues",
     "notion": "pages",
 }
 
@@ -3457,6 +3460,7 @@ class CortexStore:
             "workspace_url_configured": bool(str(workspace_url or "").strip()),
             "api_base_url": sync.api_base_url,
         }
+        metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(token or "").strip()))
         account = self.upsert_source_account(
             user_id,
             source=SLACK_SOURCE,
@@ -3470,6 +3474,18 @@ class CortexStore:
             last_error=error_message,
             account_id=resolved_account_id,
         )
+        if str(token or "").strip():
+            self.store_source_account_credential(
+                user_id,
+                account["id"],
+                source=SLACK_SOURCE,
+                payload={
+                    "token": token,
+                    "channels": channels,
+                    "workspace_url": workspace_url or "",
+                    "api_base_url": sync.api_base_url,
+                },
+            )
         state = {
             "connector": SLACK_SOURCE,
             "connector_version": sync_summary["connector_version"],
@@ -3730,6 +3746,7 @@ class CortexStore:
             "path_redacted": True,
             "feed_url_redacted": True,
         }
+        metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(ics_path or feed_url or "").strip()))
         account = self.upsert_source_account(
             user_id,
             source=CALENDAR_SOURCE,
@@ -3743,6 +3760,18 @@ class CortexStore:
             last_error=error_message,
             account_id=resolved_account_id,
         )
+        if str(ics_path or feed_url or "").strip():
+            self.store_source_account_credential(
+                user_id,
+                account["id"],
+                source=CALENDAR_SOURCE,
+                payload={
+                    "ics_path": ics_path or "",
+                    "feed_url": feed_url or "",
+                    "input_type": input_type,
+                    "source_label": sync.source_label,
+                },
+            )
         state = {
             "connector": CALENDAR_SOURCE,
             "connector_version": sync_summary["connector_version"],
@@ -4316,6 +4345,7 @@ class CortexStore:
             "email_configured": True,
             "api_token_configured": True,
         }
+        metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(email or "").strip() and str(api_token or "").strip() and str(site_url or "").strip()))
         account = self.upsert_source_account(
             user_id,
             source=JIRA_SOURCE,
@@ -4329,6 +4359,18 @@ class CortexStore:
             last_error=error_message,
             account_id=resolved_account_id,
         )
+        if str(email or "").strip() and str(api_token or "").strip() and str(site_url or "").strip():
+            self.store_source_account_credential(
+                user_id,
+                account["id"],
+                source=JIRA_SOURCE,
+                payload={
+                    "email": email,
+                    "api_token": api_token,
+                    "site_url": sync.site_url,
+                    "jql": sync.jql,
+                },
+            )
         state = {
             "connector": JIRA_SOURCE,
             "connector_version": sync_summary["connector_version"],
@@ -9966,6 +10008,37 @@ class CortexStore:
                 cursor_name=cursor_name,
                 api_base_url=str(credential_payload.get("api_base_url") or metadata.get("api_base_url") or "https://api.github.com"),
             )
+        elif source == "slack":
+            token = str(credential_payload.get("token") or "").strip()
+            channels = credential_payload.get("channels")
+            if not isinstance(channels, list):
+                channels = []
+                for item in metadata.get("channels") if isinstance(metadata.get("channels"), list) else []:
+                    if not isinstance(item, dict):
+                        continue
+                    channel_id = str(item.get("id") or "").strip()
+                    channel_name = str(item.get("name") or "").strip()
+                    if channel_id and channel_name:
+                        channels.append(f"{channel_id}|{channel_name}")
+                    elif channel_id:
+                        channels.append(channel_id)
+            channels = [str(channel).strip() for channel in channels if str(channel).strip()]
+            if not token or not channels:
+                raise ValueError("slack source account is missing stored token or channels")
+            result = self.sync_slack_account(
+                user_id,
+                token=token,
+                channels=channels,
+                source_account_id=account_id,
+                account_label=account_label,
+                account_identifier=account_identifier,
+                since=high_water_mark or cursor_value,
+                processing=processing,
+                max_records=min(max_records, 200),
+                cursor_name=cursor_name,
+                workspace_url=str(credential_payload.get("workspace_url") or "").strip() or None,
+                api_base_url=str(credential_payload.get("api_base_url") or metadata.get("api_base_url") or "https://slack.com/api"),
+            )
         elif source == "readwise":
             token = str(credential_payload.get("token") or "").strip()
             if not token:
@@ -9983,6 +10056,23 @@ class CortexStore:
                 max_records=max_records,
                 cursor_name=cursor_name,
                 api_base_url=str(credential_payload.get("api_base_url") or metadata.get("api_base_url") or "https://readwise.io/api/v2"),
+            )
+        elif source == "calendar":
+            ics_path = str(credential_payload.get("ics_path") or "").strip() or None
+            feed_url = str(credential_payload.get("feed_url") or "").strip() or None
+            if bool(ics_path) == bool(feed_url):
+                raise ValueError("calendar source account is missing one stored calendar source")
+            result = self.sync_calendar_account(
+                user_id,
+                ics_path=ics_path,
+                feed_url=feed_url,
+                source_account_id=account_id,
+                account_label=account_label,
+                account_identifier=account_identifier,
+                since=high_water_mark or cursor_value,
+                processing=processing,
+                max_records=max_records,
+                cursor_name=cursor_name,
             )
         elif source == "raindrop":
             token = str(credential_payload.get("token") or "").strip()
@@ -10040,6 +10130,28 @@ class CortexStore:
                 max_records=max_records,
                 cursor_name=cursor_name,
                 api_url=str(credential_payload.get("api_url") or "https://api.linear.app/graphql"),
+            )
+        elif source == "jira":
+            email = str(credential_payload.get("email") or "").strip()
+            api_token = str(credential_payload.get("api_token") or "").strip()
+            site_url = str(credential_payload.get("site_url") or metadata.get("site_url") or "").strip()
+            if not email or not api_token or not site_url:
+                raise ValueError("jira source account is missing stored email, token, or site URL")
+            next_page_token = cursor_state_value("next_page_token")
+            result = self.sync_jira_account(
+                user_id,
+                email=email,
+                api_token=api_token,
+                site_url=site_url,
+                source_account_id=account_id,
+                account_label=account_label,
+                account_identifier=account_identifier,
+                jql=str(credential_payload.get("jql") or "").strip() or None,
+                since=None if next_page_token else (high_water_mark or cursor_value),
+                page_token=next_page_token,
+                processing=processing,
+                max_records=max_records,
+                cursor_name=cursor_name,
             )
         elif source == "notion":
             token = str(credential_payload.get("token") or "").strip()

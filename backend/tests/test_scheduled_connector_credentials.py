@@ -15,8 +15,14 @@ from backend.app.storage import CortexStore
 GITHUB_TOKEN = "ghp_local_only_contract_token_123"
 GITHUB_REPOSITORY = "doppl-tech/private-scheduled-credential-contract"
 GITHUB_API_BASE_URL = "https://api.github.invalid/private-config"
-SECRET_VALUES = (GITHUB_TOKEN,)
-SECRET_KEYS = ("token",)
+SLACK_TOKEN = "xoxb_local_only_contract_token_123"
+CALENDAR_FEED_URL = "webcal://calendar.example.com/private.ics?token=calendar-local-only-secret"
+JIRA_EMAIL = "sarp@example.com"
+JIRA_API_TOKEN = "jira_local_only_contract_token_123"
+JIRA_SITE_URL = "https://doppl.atlassian.net"
+JIRA_JQL = "project = COR ORDER BY updated DESC"
+SECRET_VALUES = (GITHUB_TOKEN, SLACK_TOKEN, "calendar-local-only-secret", JIRA_EMAIL, JIRA_API_TOKEN)
+SECRET_KEYS = ("token", "api_token", "email")
 
 
 class ScheduledConnectorCredentialTests(unittest.TestCase):
@@ -94,20 +100,7 @@ class ScheduledConnectorCredentialTests(unittest.TestCase):
 
         def fake_sync_github_account(store: CortexStore, user_id: str, **kwargs: Any) -> dict[str, Any]:
             calls.append({"user_id": user_id, **kwargs})
-            return {
-                "source_account_id": kwargs["source_account_id"],
-                "source": "github",
-                "status": "complete",
-                "processing": kwargs["processing"],
-                "received": 0,
-                "queued": 0,
-                "saved": 0,
-                "skipped": 0,
-                "failed": 0,
-                "archived_missing": 0,
-                "capture_ids": [],
-                "cursor": {"cursor_name": kwargs["cursor_name"]},
-            }
+            return self._sync_result("github", kwargs)
 
         self.store.sync_github_account = MethodType(fake_sync_github_account, self.store)
 
@@ -131,6 +124,49 @@ class ScheduledConnectorCredentialTests(unittest.TestCase):
         self.assertEqual(job["result"]["sync_status"], "complete")
         self._assert_values_absent(job["payload"], SECRET_VALUES)
         self._assert_values_absent(job["result"], SECRET_VALUES)
+
+    def test_slack_dispatches_with_local_credentials(self) -> None:
+        self._assert_credential_backed_dispatch(
+            "slack",
+            self._connect_slack_account,
+            "sync_slack_account",
+            {
+                "token": SLACK_TOKEN,
+                "channels": ["C123ABC|general"],
+                "workspace_url": "https://doppl.slack.com",
+                "api_base_url": "https://slack.invalid/api",
+                "cursor_name": "messages",
+                "max_records": 200,
+            },
+        )
+
+    def test_calendar_dispatches_with_local_feed_credentials(self) -> None:
+        self._assert_credential_backed_dispatch(
+            "calendar",
+            self._connect_calendar_account,
+            "sync_calendar_account",
+            {
+                "feed_url": CALENDAR_FEED_URL,
+                "ics_path": None,
+                "cursor_name": "events",
+                "max_records": 200,
+            },
+        )
+
+    def test_jira_dispatches_with_local_credentials(self) -> None:
+        self._assert_credential_backed_dispatch(
+            "jira",
+            self._connect_jira_account,
+            "sync_jira_account",
+            {
+                "email": JIRA_EMAIL,
+                "api_token": JIRA_API_TOKEN,
+                "site_url": JIRA_SITE_URL,
+                "jql": JIRA_JQL,
+                "cursor_name": "issues",
+                "max_records": 200,
+            },
+        )
 
     def test_backup_zip_excludes_credentials_file_and_connector_tokens(self) -> None:
         self._mark_account_due(self._connect_github_account())
@@ -194,6 +230,114 @@ class ScheduledConnectorCredentialTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(result["status"], "empty")
         return result["source_account"]
+
+    def _connect_slack_account(self) -> dict[str, Any]:
+        def fake_request_json(url: str, headers: dict[str, str]) -> dict[str, Any]:
+            self.assertIn("/conversations.history", url)
+            self.assertEqual(headers["Authorization"], f"Bearer {SLACK_TOKEN}")
+            return {"ok": True, "messages": []}
+
+        result = self.store.sync_slack_account(
+            self.user_id,
+            token=SLACK_TOKEN,
+            channels=["C123ABC|general"],
+            account_label="Slack Scheduled Contract",
+            account_identifier="slack-scheduled-contract",
+            processing="sync",
+            max_records=10,
+            workspace_url="https://doppl.slack.com",
+            api_base_url="https://slack.invalid/api",
+            request_json=fake_request_json,
+        )
+        self.assertEqual(result["status"], "empty")
+        return result["source_account"]
+
+    def _connect_calendar_account(self) -> dict[str, Any]:
+        def fake_request_text(url: str) -> str:
+            self.assertEqual(url, "https://calendar.example.com/private.ics?token=calendar-local-only-secret")
+            return "BEGIN:VCALENDAR\nVERSION:2.0\nEND:VCALENDAR\n"
+
+        result = self.store.sync_calendar_account(
+            self.user_id,
+            feed_url=CALENDAR_FEED_URL,
+            account_label="Calendar Scheduled Contract",
+            account_identifier="calendar-scheduled-contract",
+            processing="sync",
+            max_records=10,
+            request_text=fake_request_text,
+        )
+        self.assertEqual(result["status"], "empty")
+        return result["source_account"]
+
+    def _connect_jira_account(self) -> dict[str, Any]:
+        def fake_request_json(url: str, headers: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+            self.assertEqual(url, f"{JIRA_SITE_URL}/rest/api/3/search/jql")
+            self.assertEqual(body["jql"], JIRA_JQL)
+            self.assertIn("Authorization", headers)
+            return {"isLast": True, "issues": []}
+
+        result = self.store.sync_jira_account(
+            self.user_id,
+            email=JIRA_EMAIL,
+            api_token=JIRA_API_TOKEN,
+            site_url=JIRA_SITE_URL,
+            jql=JIRA_JQL,
+            account_label="Jira Scheduled Contract",
+            account_identifier="jira-scheduled-contract",
+            processing="sync",
+            max_records=10,
+            request_json=fake_request_json,
+        )
+        self.assertEqual(result["status"], "empty")
+        return result["source_account"]
+
+    def _sync_result(self, source: str, kwargs: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "source_account_id": kwargs["source_account_id"],
+            "source": source,
+            "status": "complete",
+            "processing": kwargs["processing"],
+            "received": 0,
+            "queued": 0,
+            "saved": 0,
+            "skipped": 0,
+            "failed": 0,
+            "archived_missing": 0,
+            "capture_ids": [],
+            "cursor": {"cursor_name": kwargs["cursor_name"]},
+        }
+
+    def _assert_credential_backed_dispatch(
+        self,
+        source: str,
+        connect_account: Any,
+        method_name: str,
+        expected: dict[str, Any],
+    ) -> None:
+        account = self._mark_account_due(connect_account())
+        credential = self.store.vault.read_source_credential(user_id=self.user_id, source_account_id=account["id"])
+        self.assertIsNotNone(credential)
+        self.assertEqual(account["metadata"]["credential_ref"], f"source_credential:{account['id']}")
+        self._assert_values_absent(account["metadata"], SECRET_VALUES)
+        calls: list[dict[str, Any]] = []
+
+        def fake_sync(store: CortexStore, user_id: str, **kwargs: Any) -> dict[str, Any]:
+            calls.append({"user_id": user_id, **kwargs})
+            return self._sync_result(source, kwargs)
+
+        setattr(self.store, method_name, MethodType(fake_sync, self.store))
+
+        ran = self.store.run_due_jobs(self.user_id, limit=1)
+
+        self.assertEqual(ran["processed"], 1)
+        self.assertEqual(ran["jobs"][0]["status"], "succeeded")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["source_account_id"], account["id"])
+        self.assertEqual(calls[0]["processing"], "async")
+        for key, value in expected.items():
+            self.assertEqual(calls[0].get(key), value)
+        self._assert_values_absent(ran["jobs"][0]["payload"], SECRET_VALUES)
+        self._assert_values_absent(ran["jobs"][0]["result"], SECRET_VALUES)
 
     def _mark_account_due(self, account: dict[str, Any]) -> dict[str, Any]:
         return self.store.upsert_source_account(
