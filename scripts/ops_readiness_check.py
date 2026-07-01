@@ -99,6 +99,17 @@ def current_git_provenance(root: Path) -> dict:
     }
 
 
+def release_ignored_path(path: str) -> bool:
+    return path.startswith("site/downloads/")
+
+
+def source_changes_since(root: Path, commit: str) -> list[str]:
+    if not commit:
+        return []
+    changed = git_output(root, ["diff", "--name-only", f"{commit}..HEAD"])
+    return [path for path in changed.splitlines() if path and not release_ignored_path(path)]
+
+
 def add_check(checks: list[dict], name: str, ok: bool, detail: str, payload: dict | None = None) -> None:
     checks.append({"name": name, "status": "ok" if ok else "failed", "detail": detail, "payload": payload or {}})
 
@@ -205,10 +216,13 @@ def verify_release_artifacts(
             provenance_issue(f"source_provenance is missing keys: {', '.join(missing_provenance)}")
         manifest_commit = str(manifest_provenance.get("git_commit", ""))
         if manifest_commit and manifest_commit != current_provenance["git_commit"]:
-            provenance_issue(
-                "Packaged release is stale: "
-                f"manifest git_commit={manifest_commit} current={current_provenance['git_commit']}"
-            )
+            changed_source_paths = source_changes_since(root, manifest_commit)
+            if changed_source_paths:
+                provenance_issue(
+                    "Packaged release is stale: "
+                    f"manifest git_commit={manifest_commit} current={current_provenance['git_commit']} "
+                    f"source changes since package={changed_source_paths[:12]}"
+                )
         if manifest_provenance.get("git_dirty") is True:
             provenance_issue("Packaged release was built from a dirty tracked worktree.")
     if require_current_provenance and current_provenance["git_dirty"] and not allow_stale_package:

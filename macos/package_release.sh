@@ -159,7 +159,7 @@ detach_existing_dmg_image() {
 }
 
 if [[ ${#NOTES[@]} -eq 0 ]]; then
-  NOTES+=("Local-first Cortex beta with bundled backend, capture, MCP, and trust controls.")
+  NOTES+=("Local-first Cortex beta with bundled local service, MCP/Obsidian sync, Review, cited Ask, and trust controls.")
 fi
 
 mkdir -p "$OUT_DIR"
@@ -291,7 +291,7 @@ payload = {
             "Open the DMG and drag Cortex.app to Applications.",
             "Launch Cortex from Applications.",
             "If macOS blocks an unnotarized local beta, Control-click Cortex.app and choose Open.",
-            "Complete first-run setup with a local vault, MCP or Obsidian connection, memory review, cited Ask result, and backup decision.",
+            "Complete getting started by connecting notes, reviewing one memory, asking a cited question, and deciding on backup.",
         ],
         "update_steps": [
             "Quit Cortex before replacing the app.",
