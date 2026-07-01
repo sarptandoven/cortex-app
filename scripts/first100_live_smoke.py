@@ -106,11 +106,34 @@ def ensure(condition: bool, message: str, payload: dict[str, Any] | None = None)
         raise LiveSmokeFailure(message, payload)
 
 
-def write_obsidian_fixture(root: Path, marker: str) -> Path:
-    vault = root / "Live First 100 Vault"
+def obsidian_fixture_note(vault: Path) -> Path:
+    return vault / "Projects" / "Live Smoke.md"
+
+
+def write_obsidian_fixture_note(vault: Path, marker: str, *, edited: bool = False) -> Path:
     notes = vault / "Projects"
-    notes.mkdir(parents=True)
-    (notes / "Live Smoke.md").write_text(
+    notes.mkdir(parents=True, exist_ok=True)
+    decision = (
+        f"Decision: Live Cortex edited marker {marker} proves changed Obsidian notes replace stale memory "
+        "without creating a second source record."
+        if edited
+        else (
+            f"Decision: Live Cortex smoke marker {marker} proves Obsidian sync, Review approval, "
+            "cited Ask, and MCP retrieval in the packaged app."
+        )
+    )
+    procedure = (
+        "Procedure: After editing a connected note, re-run the connection-first live smoke and verify stale citations disappear."
+        if edited
+        else "Procedure: Before inviting beta users, run the connection-first live smoke against the packaged app."
+    )
+    preference = (
+        "I prefer first-100 Cortex answers that cite the latest connected source revision before giving advice."
+        if edited
+        else "I prefer first-100 Cortex answers that cite the connected source before giving advice."
+    )
+    note = obsidian_fixture_note(vault)
+    note.write_text(
         "\n".join(
             [
                 "---",
@@ -119,17 +142,20 @@ def write_obsidian_fixture(root: Path, marker: str) -> Path:
                 "---",
                 "# Live First 100 Smoke",
                 "",
-                (
-                    f"Decision: Live Cortex smoke marker {marker} proves Obsidian sync, Review approval, "
-                    "cited Ask, and MCP retrieval in the packaged app."
-                ),
-                "Procedure: Before inviting beta users, run the connection-first live smoke against the packaged app.",
-                "I prefer first-100 Cortex answers that cite the connected source before giving advice.",
+                decision,
+                procedure,
+                preference,
                 f"The live smoke redaction fixture includes password=supersecret123 and {DUMMY_OPENAI_KEY}.",
             ]
         ),
         encoding="utf-8",
     )
+    return note
+
+
+def write_obsidian_fixture(root: Path, marker: str) -> Path:
+    vault = root / "Live First 100 Vault"
+    write_obsidian_fixture_note(vault, marker)
     return vault
 
 
@@ -370,6 +396,75 @@ class LiveSmokeRunner:
         ensure(loop_after_ask["counts"]["used_today"] >= 1, "Product loop did not count cited Ask use", loop_after_ask)
         ensure(step_status(loop_after_ask, "reuse") == "done", "Product loop reuse step was not done after cited Ask", loop_after_ask)
 
+        unchanged = self.request(
+            "/v1/connectors/obsidian/sync",
+            method="POST",
+            data={"vault_path": str(vault), "processing": "sync", "max_records": 10},
+        )
+        ensure(unchanged["status"] == "complete", "Unchanged Obsidian resync did not complete", unchanged)
+        ensure(unchanged["saved"] == 0, "Unchanged Obsidian resync saved duplicate captures", unchanged)
+        ensure(unchanged["skipped"] >= len(self.capture_ids), "Unchanged Obsidian resync did not skip existing note records", unchanged)
+        unchanged_capture_ids = {record.get("capture_id") for record in unchanged.get("records") or [] if record.get("capture_id")}
+        ensure(
+            set(self.capture_ids).issubset(unchanged_capture_ids),
+            "Unchanged Obsidian resync did not report the existing capture id",
+            {"capture_ids": self.capture_ids, "unchanged": unchanged},
+        )
+
+        previous_marker = self.marker
+        updated_marker = f"first100-live-smoke-edited-{uuid.uuid4().hex[:10]}"
+        write_obsidian_fixture_note(vault, updated_marker, edited=True)
+        changed = self.request(
+            "/v1/connectors/obsidian/sync",
+            method="POST",
+            data={"vault_path": str(vault), "processing": "sync", "max_records": 10},
+        )
+        ensure(changed["status"] == "complete", "Changed Obsidian resync did not complete", changed)
+        ensure(changed["saved"] >= 1, "Changed Obsidian resync did not update a capture", changed)
+        ensure(changed["failed"] == 0, "Changed Obsidian resync reported failures", changed)
+        updated_records = [record for record in changed.get("records") or [] if record.get("capture_id") in set(self.capture_ids)]
+        ensure(updated_records, "Changed Obsidian resync did not reuse the existing capture id", changed)
+        ensure(any(record.get("status") == "updated" for record in updated_records), "Changed Obsidian resync was not marked updated", changed)
+        ensure(str(vault) not in json.dumps(changed), "Changed Obsidian resync leaked the local vault path", changed)
+
+        previous_quoted = urllib.parse.quote(previous_marker)
+        updated_quoted = urllib.parse.quote(updated_marker)
+        stale_search = self.request(f"/v1/search?query={previous_quoted}&limit=5")
+        ensure(stale_search["results"] == [], "Edited Obsidian note left stale approved memory searchable", stale_search)
+        pending_updated_ask = self.request(f"/v1/ask?query={updated_quoted}%20edited%20source&limit=5")
+        ensure(pending_updated_ask["citations"] == [], "Edited pending Obsidian memory leaked citations into Ask", pending_updated_ask)
+        ensure(pending_updated_ask["results"] == [], "Edited pending Obsidian memory leaked results into Ask", pending_updated_ask)
+
+        review_after_edit = self.request("/v1/review/today")
+        pending_after_edit = {item["id"] for item in review_after_edit["pending"]}
+        ensure(
+            any(capture_id in pending_after_edit for capture_id in self.capture_ids),
+            "Edited Obsidian capture was not returned to Review",
+            {"capture_ids": self.capture_ids, "pending": review_after_edit["pending"]},
+        )
+        for capture_id in self.capture_ids:
+            approved = self.request(f"/v1/captures/{capture_id}/approve", method="POST")
+            ensure(approved["approved"] is True, "Edited capture approval failed", approved)
+
+        self.marker = updated_marker
+        quoted = updated_quoted
+        refreshed_search = self.request(f"/v1/search?query={quoted}&limit=5")
+        ensure(refreshed_search["results"], "Edited approved Obsidian memory was not searchable", refreshed_search)
+        ensure(
+            all(previous_marker not in json.dumps(result) for result in refreshed_search["results"]),
+            "Edited approved Obsidian search returned stale marker content",
+            refreshed_search,
+        )
+        asked = self.request(f"/v1/ask?query={quoted}%20edited%20source&limit=5")
+        ensure(asked["citations"], "Ask returned no citations for edited approved memory", asked)
+        ensure(any(self.marker in citation.get("excerpt", "") for citation in asked["citations"]), "Ask citation omitted edited marker", asked)
+        ensure(
+            any(str(citation.get("source_url") or "").startswith("local-file://Live%20Smoke.md") for citation in asked["citations"]),
+            "Edited Ask citations did not include a safe local-file source",
+            asked,
+        )
+        ensure(str(vault) not in json.dumps(asked), "Edited Ask leaked the local Obsidian vault path", asked)
+
         mcp_search = self.scoped_mcp_request(
             "/mcp",
             method="POST",
@@ -391,11 +486,11 @@ class LiveSmokeRunner:
                 "method": "tools/call",
                 "params": {
                     "name": "get_procedure",
-                    "arguments": {"query": "connection-first live smoke packaged app", "limit": 3},
+                    "arguments": {"query": "edited connected note stale citations disappear", "limit": 3},
                 },
             },
         )
-        ensure("connection-first live smoke" in mcp_procedure["result"]["content"][0]["text"], "MCP get_procedure missed smoke procedure", mcp_procedure)
+        ensure("stale citations disappear" in mcp_procedure["result"]["content"][0]["text"], "MCP get_procedure missed edited smoke procedure", mcp_procedure)
 
         mcp_style = self.scoped_mcp_request(
             "/mcp",
@@ -406,18 +501,20 @@ class LiveSmokeRunner:
                 "method": "tools/call",
                 "params": {
                     "name": "get_style_profile",
-                    "arguments": {"query": "first-100 Cortex answers cite connected source", "limit": 4},
+                    "arguments": {"query": "first-100 Cortex answers cite latest connected source revision", "limit": 4},
                 },
             },
         )
-        ensure("cite the connected source" in mcp_style["result"]["content"][0]["text"], "MCP get_style_profile missed smoke preference", mcp_style)
+        ensure("latest connected source revision" in mcp_style["result"]["content"][0]["text"], "MCP get_style_profile missed edited smoke preference", mcp_style)
 
         return {
-            "detail": "Packaged app synced Obsidian, gated pending memory, approved review, answered with safe citations, and served scoped MCP retrieval.",
+            "detail": "Packaged app synced Obsidian, skipped unchanged notes, replaced edited memory, gated Review, answered with safe citations, and served scoped MCP retrieval.",
             "payload": {
                 "capture_ids": self.capture_ids,
                 "citations": len(asked["citations"]),
                 "active_obsidian_memories": obsidian_source.get("active_memories"),
+                "unchanged_skipped": unchanged["skipped"],
+                "edited_records": len(updated_records),
             },
         }
 
