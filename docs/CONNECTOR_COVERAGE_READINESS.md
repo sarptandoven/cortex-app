@@ -16,6 +16,8 @@ Live OAuth means direct cloud sync for services that expose appropriate APIs. Co
 | --- | --- |
 | Beta ready | Supported today through a connected source, local app integration, MCP bridge, or direct connector sync path. |
 | Beta conditional | Supported only when the user can grant a safe local integration, use an MCP bridge, or provide an export as Advanced/Fallback. |
+| Token-ready | Read-only direct sync is wired through source-account sync with a user-supplied service token or API key. This is an advanced connector path, not managed OAuth. |
+| Local/feed-ready | Read-only direct sync is wired through an explicit local folder, local API, selected file, or user-provided feed URL. |
 | OAuth planned | Candidate for a source-specific OAuth/API sign-in flow. The generic sync ingestion contract exists, but the branded OAuth flow is not yet a beta promise. |
 | Local/import only | Should remain Advanced/Fallback import unless a safer platform API becomes available. |
 
@@ -23,29 +25,56 @@ Live OAuth means direct cloud sync for services that expose appropriate APIs. Co
 
 `GET /v1/source-accounts/catalog` is the source of truth for connector readiness copy in product surfaces. It does not mean OAuth is implemented. Each catalog item should expose:
 
-- `readiness_status`: one of `export-only`, `import-ready`, or `live-planned`.
+- `readiness_status`: one of `export-only`, `import-ready`, `live-planned`, or `token-ready`.
 - `primary_beta`: true only when the connector is a real first-100 primary path in the app, not merely a parser or fallback.
 - `beta_status`: one of `ready`, `active`, `planned`, `advanced-fallback`, or `needs-connector`.
-- `primary_beta_path`: one of `native-local-connector`, `connected-source-account`, `account-sign-in-planned`, `advanced-fallback-only`, or `direct-connector-needed`.
+- `primary_beta_path`: one of `native-local-connector`, `native-token-connector`, `connected-source-account`, `account-sign-in-planned`, `advanced-fallback-only`, or `direct-connector-needed`.
 - `show_in_primary_ui`: true only for real primary beta connectors or user-connected accounts with completed sync/data evidence.
-- `scopes`: future live OAuth/API scopes only. Export-only and local import connectors use an empty list.
+- `scopes`: read-only service scopes or permissions for token/API connectors; for planned OAuth connectors, these are future consent scopes. Export-only and local file connectors use an empty list.
 - `permissions_required`: the first-100 import permission requirement, plus future live consent scope requirements when `readiness_status` is `live-planned`.
 - `first_100_note`: the beta-safe setup note. This should describe the account/direct-integration path when one exists, and only mention Advanced/Fallback import when no supported connector exists.
 
 Representative catalog expectations:
 
-| Connector | `readiness_status` | First-100 permission | Live scopes |
+| Connector | `readiness_status` | First-100 permission | Scopes or permissions |
 | --- | --- | --- | --- |
 | ChatGPT | `export-only` | MCP/direct AI-tool bridge where available; fallback export stays Advanced/Fallback. | None. |
 | Claude | `export-only` | MCP/direct AI-tool bridge where available; fallback export stays Advanced/Fallback. | None. |
 | Apple Mail | `import-ready` | Planned permissioned local mail integration; fallback `.eml`, `.emlx`, or `.mbox` stays Advanced/Fallback. | None. |
 | Gmail | `live-planned` | Planned Gmail connector backed by source-account sync; fallback Takeout/mail export stays Advanced/Fallback. | `gmail.readonly`. |
-| Notion | `live-planned` | Planned Notion connector backed by source-account sync; fallback Markdown/CSV/HTML export stays Advanced/Fallback. | `read_content`. |
-| Slack | `live-planned` | Planned Slack workspace connector backed by source-account sync; fallback workspace export stays Advanced/Fallback. | `channels:history`, `groups:history`, `im:history`. |
+| Notion | `token-ready` | Read-only page sync works with an internal integration token shared into selected pages; fallback Markdown/CSV/HTML export stays Advanced/Fallback. | `read_content`. |
+| Slack | `token-ready` | Read-only selected channel sync works with a bot or user token; fallback workspace export stays Advanced/Fallback. | `channels:history`, `groups:history`, `channels:read`, `groups:read`. |
 | GitHub | `token-ready` | Read-only GitHub issue and pull request sync works through source-account sync with a user-supplied token; fallback issue, PR, project, CSV, JSON, Markdown, or text export stays Advanced/Fallback. | `repo:read`. |
+| Linear | `token-ready` | Read-only issue sync works with a personal API key. | `read`. |
+| Jira | `token-ready` | Read-only issue sync works with a Jira Cloud site URL, Atlassian account email, and API token. | `read:jira-work`. |
+| Readwise | `token-ready` | Read-only highlight sync works with a user access token. | `read`. |
+| Raindrop | `token-ready` | Read-only bookmark and highlight sync works with a user API token. | `read`. |
+| Calendar | `import-ready` | Read-only `.ics` file or feed sync works locally; Google/Microsoft account sign-in remains later. | None. |
+| Zotero | `import-ready` | Read-only item, note, and annotation sync works through the local desktop API by default; Web API tokens are optional. | Local API, optional read token. |
 | Obsidian | `import-ready` | Permissioned local vault connector in the macOS app; Markdown/text notes sync through source-account sync. | None. |
 
 First-100 primary UI rule: MCP AI tools and Obsidian/local notes are allowed in the default path today. Gmail, Notion, Slack, Drive, Calendar, GitHub, Mail, Messages, browser data, and similar services should become primary only after they can register a source account and complete a real sync without asking the user to manage files. Export/file parser coverage, or a stale account metadata row without synced records/cursors, must not make a connector look beta-ready in the primary UI.
+
+## First-100 / 10k Wired Connector Checklist
+
+This checklist is the narrow readiness statement for the ten connector modules wired into the local backend and included in the 10k baseline catalog. "Wired" means there is an in-tree connector, a local sync route, request/response models, source-account sync integration, cursor/readiness reporting, and focused connector tests. It does not mean hosted multi-tenant production readiness.
+
+First-100 launch copy should still treat MCP AI tools and Obsidian/local notes as the normal default path. The other wired connectors are advanced, explicit, read-only sync paths for users or operators who can provide a local folder, local API, feed URL, or service token.
+
+| Connector | Functional now | Local-only / local-first boundary | Explicitly not promised |
+| --- | --- | --- | --- |
+| Obsidian | Scans a user-selected Markdown/text vault, registers a source account, syncs records through Review, preserves file citations, advances cursors, skips unchanged notes, and supersedes edited notes. | Local folder access only after the user selects the vault. This is the first native first-100 connector. | No Obsidian cloud account sync, no remote vault crawl, and no write-back to notes. |
+| GitHub | Syncs read-only issues and pull requests from selected repositories with stable GitHub citations and cursor-backed source-account state. | User-supplied read token at sync time; local backend stores source-account/cursor metadata, not a managed OAuth app flow. | No GitHub OAuth install, no writes/comments, no project/discussion coverage promise, and no org-wide discovery promise. |
+| Slack | Syncs read-only messages from selected channels with Slack permalinks or stable fallback citations and per-channel cursor state. | User-supplied bot/user token and explicit channel list. | No managed Slack OAuth, no broad workspace crawl, no DM/private-channel promise beyond granted scopes, and no automatic user-authorship attribution without aliases. |
+| Readwise | Syncs read-only highlights with pagination, source URLs or stable fallback citations, and source-account cursors. | User-supplied Readwise access token. | No OAuth, no write/highlight management, and no guarantee that unsupported Readwise object types sync. |
+| Calendar | Syncs read-only local `.ics` files or user-provided `.ics` feeds into event records with generated safe citations. | Local file/feed only; private feed URLs are not a product surface. | No Google Calendar/Microsoft OAuth, no system calendar database access, no calendar writes, and no background calendar daemon. |
+| Raindrop | Syncs read-only bookmarks and optional highlights with collection/page cursors and original URL or stable Raindrop fallback citations. | User-supplied Raindrop API token and selected collection. | No OAuth, no bookmark writes, no full account management, and no background bookmark collection. |
+| Zotero | Syncs read-only items, notes, and annotations through the local desktop API by default, with optional Web API token support and Zotero item citations. | Local API is the default; attachment import is off by default. | No Zotero OAuth, no library writes, and no attachment/PDF content import promise by default. |
+| Linear | Syncs read-only issues with pagination, source URLs or `linear://` fallback citations, and source-account cursors. | User-supplied Linear API key. | No OAuth, no issue writes/comments, no project/team administration, and no workflow mutation. |
+| Jira | Syncs read-only Jira Cloud issues with a site URL, account email, API token, optional JQL, stable browse URLs, and cursor state. | User-supplied Atlassian API token; Jira Cloud path only. | No OAuth, no issue writes/transitions, no full project/changelog coverage promise, and no on-prem Jira guarantee. |
+| Notion | Syncs read-only pages shared with a Notion internal integration token, preserving page IDs, page URLs, pagination, and optional page content. | User-supplied integration token; only pages shared with the integration are in scope. | No consumer OAuth, no whole-workspace discovery, no writes, and no full block/database fidelity promise. |
+
+Across all ten, the current promise is read-only local source-account sync into Review and cited Ask. The checklist explicitly does not promise managed OAuth, secret custody, hosted background workers, hosted deletion/export receipts, team administration, two-way service writes, billing/quotas, or primary first-run UI placement for every connector.
 
 ## Coverage Map
 
