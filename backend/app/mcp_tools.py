@@ -33,6 +33,13 @@ TOOLS = [
                 "kind": {"type": "string"},
                 "layer": {"type": "string", "enum": ["semantic", "episodic", "style", "decision", "preference", "negative", "procedural"]},
                 "sector": {"type": "string"},
+                "source": {"type": "string"},
+                "source_account_id": {"type": "string"},
+                "repository": {"type": "string"},
+                "channel": {"type": "string"},
+                "record_scope": {"type": "string"},
+                "state": {"type": "string"},
+                "project": {"type": "string"},
             },
             "required": ["query"],
         },
@@ -656,12 +663,43 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
     if name == "search_memory":
         query = args.get("query", "")
         limit = int(args.get("top_k", 8))
+        metadata_filters = {
+            "repository": args.get("repository"),
+            "channel": args.get("channel"),
+            "record_scope": args.get("record_scope"),
+            "state": args.get("state"),
+            "project": args.get("project"),
+        }
         if hasattr(store, "public_search_payload"):
-            return store.public_search_payload(user_id, query, limit, kind=args.get("kind"), layer=args.get("layer"), sector=args.get("sector"))
+            return store.public_search_payload(
+                user_id,
+                query,
+                limit,
+                kind=args.get("kind"),
+                layer=args.get("layer"),
+                sector=args.get("sector"),
+                source=args.get("source"),
+                source_account_id=args.get("source_account_id"),
+                metadata_filters=metadata_filters,
+            )
         return {
             "query": query,
             "sector": args.get("sector"),
-            "results": store.agent_payload(user_id, store.search(user_id, query, limit, kind=args.get("kind"), layer=args.get("layer"), sector=args.get("sector"))),
+            "filters": {},
+            "results": store.agent_payload(
+                user_id,
+                store.search(
+                    user_id,
+                    query,
+                    limit,
+                    kind=args.get("kind"),
+                    layer=args.get("layer"),
+                    sector=args.get("sector"),
+                    source=args.get("source"),
+                    source_account_id=args.get("source_account_id"),
+                    metadata_filters=metadata_filters,
+                ),
+            ),
             "retrieval": {"diagnostics_unavailable": True},
         }
     if name == "get_recent_context":

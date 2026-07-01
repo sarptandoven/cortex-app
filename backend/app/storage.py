@@ -600,6 +600,54 @@ def _normalize_source_key(value: str) -> str:
     return re.sub(r"[^a-z0-9-]+", "-", str(value or "").strip().lower()).strip("-")
 
 
+RETRIEVAL_METADATA_FILTER_KEYS: dict[str, tuple[str, ...]] = {
+    "channel": ("channel", "channel_id"),
+    "channel_id": ("channel_id",),
+    "repository": ("repository",),
+    "record_scope": ("record_scope",),
+    "state": ("state", "status"),
+    "project": ("project", "project_key"),
+    "project_key": ("project_key",),
+}
+
+
+def _normalize_retrieval_filter_value(value: Any, *, max_length: int = 240) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip())[:max_length]
+
+
+def _normalize_retrieval_metadata_filters(value: dict[str, Any] | None) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    filters: dict[str, str] = {}
+    for raw_key, raw_value in value.items():
+        key = _normalize_source_key(str(raw_key or "")).replace("-", "_")
+        if key not in RETRIEVAL_METADATA_FILTER_KEYS:
+            continue
+        normalized = _normalize_retrieval_filter_value(raw_value)
+        if normalized:
+            filters[key] = normalized
+    return filters
+
+
+def _retrieval_filter_payload(
+    *,
+    source: str | None = None,
+    source_account_id: str | None = None,
+    metadata_filters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    normalized_source = _normalize_source_key(source or "")
+    if normalized_source:
+        payload["source"] = normalized_source
+    normalized_account_id = _normalize_retrieval_filter_value(source_account_id, max_length=120)
+    if normalized_account_id:
+        payload["source_account_id"] = normalized_account_id
+    normalized_metadata = _normalize_retrieval_metadata_filters(metadata_filters)
+    if normalized_metadata:
+        payload["metadata"] = normalized_metadata
+    return payload
+
+
 def _normalize_source_policies(value: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(value, dict):
         return {}
@@ -5945,10 +5993,23 @@ class CortexStore:
         kind: str | None = None,
         layer: str | None = None,
         sector: str | None = None,
+        source: str | None = None,
+        source_account_id: str | None = None,
+        metadata_filters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
-            filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer, sector=sector)
+            filters, params = self._memory_filters(
+                user_id,
+                user_settings,
+                alias="m",
+                kind=kind,
+                layer=layer,
+                sector=sector,
+                source=source,
+                source_account_id=source_account_id,
+                metadata_filters=metadata_filters,
+            )
             where = " AND ".join(filters)
             rows = conn.execute(
                 f"SELECT * FROM memories m WHERE {where} ORDER BY m.captured_at DESC LIMIT ?",
@@ -5964,8 +6025,20 @@ class CortexStore:
         kind: str | None = None,
         layer: str | None = None,
         sector: str | None = None,
+        source: str | None = None,
+        source_account_id: str | None = None,
+        metadata_filters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        results = self.recent(user_id, limit=limit, kind=kind, layer=layer, sector=sector)
+        results = self.recent(
+            user_id,
+            limit=limit,
+            kind=kind,
+            layer=layer,
+            sector=sector,
+            source=source,
+            source_account_id=source_account_id,
+            metadata_filters=metadata_filters,
+        )
         return self._shared_payload(results, redact_sensitive=bool(self.settings(user_id)["redact_sensitive_context"]))
 
     def search(
@@ -5977,12 +6050,24 @@ class CortexStore:
         layer: str | None = None,
         *,
         sector: str | None = None,
+        source: str | None = None,
+        source_account_id: str | None = None,
+        metadata_filters: dict[str, Any] | None = None,
         include_related: bool = False,
         _diagnostics: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         query = query.strip()
         if not query:
-            results = self.recent(user_id, limit, kind=kind, layer=layer, sector=sector)
+            results = self.recent(
+                user_id,
+                limit,
+                kind=kind,
+                layer=layer,
+                sector=sector,
+                source=source,
+                source_account_id=source_account_id,
+                metadata_filters=metadata_filters,
+            )
             if _diagnostics is not None:
                 _diagnostics.update(self._search_diagnostics_snapshot(user_id, limit=limit, returned=len(results), query_empty=True))
             return results
@@ -6007,7 +6092,17 @@ class CortexStore:
 
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
-            filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer, sector=sector)
+            filters, params = self._memory_filters(
+                user_id,
+                user_settings,
+                alias="m",
+                kind=kind,
+                layer=layer,
+                sector=sector,
+                source=source,
+                source_account_id=source_account_id,
+                metadata_filters=metadata_filters,
+            )
             where = " AND ".join(filters)
             active_memory_count = conn.execute("SELECT COUNT(*) FROM memories WHERE user_id = ? AND status = 'active'", (user_id,)).fetchone()[0]
             rows = []
@@ -6026,14 +6121,50 @@ class CortexStore:
                 ).fetchall()
             vector_available = self._vector_ready(conn)
             vector_count = self._vector_count(conn, user_id)
-            vector_rows = self._vector_search(conn, user_id, query, candidate_limit, kind, layer, user_settings, sector=sector)
-            temporal_rows = self._temporal_search(conn, user_id, query, candidate_limit, kind, layer, user_settings, sector=sector)
+            vector_rows = self._vector_search(
+                conn,
+                user_id,
+                query,
+                candidate_limit,
+                kind,
+                layer,
+                user_settings,
+                sector=sector,
+                source=source,
+                source_account_id=source_account_id,
+                metadata_filters=metadata_filters,
+            )
+            temporal_rows = self._temporal_search(
+                conn,
+                user_id,
+                query,
+                candidate_limit,
+                kind,
+                layer,
+                user_settings,
+                sector=sector,
+                source=source,
+                source_account_id=source_account_id,
+                metadata_filters=metadata_filters,
+            )
             mode_counts["fts"] = len(fts_rows)
             mode_counts["vector"] = len(vector_rows)
             mode_counts["temporal"] = len(temporal_rows)
             intent_rows = []
             if not fts_rows and not temporal_rows:
-                intent_rows = self._intent_search(conn, user_id, query, candidate_limit, kind, layer, user_settings, sector=sector)
+                intent_rows = self._intent_search(
+                    conn,
+                    user_id,
+                    query,
+                    candidate_limit,
+                    kind,
+                    layer,
+                    user_settings,
+                    sector=sector,
+                    source=source,
+                    source_account_id=source_account_id,
+                    metadata_filters=metadata_filters,
+                )
                 mode_counts["intent"] = len(intent_rows)
             rows = self._fuse_search_rows(
                 query,
@@ -6059,11 +6190,24 @@ class CortexStore:
                 rows = self._rank_rows_with_layer_boosts(query, fallback_rows, limit, user_settings=user_settings)
             if not vector_available and not rows:
                 existing_ids = {row["id"] for row in rows}
-                lexical_rows = self._lexical_fallback_search(conn, user_id, query, candidate_limit, kind, layer, user_settings, sector=sector)
+                lexical_rows = self._lexical_fallback_search(
+                    conn,
+                    user_id,
+                    query,
+                    candidate_limit,
+                    kind,
+                    layer,
+                    user_settings,
+                    sector=sector,
+                    source=source,
+                    source_account_id=source_account_id,
+                    metadata_filters=metadata_filters,
+                )
                 mode_counts["lexical_fallback"] = len(lexical_rows)
                 rows.extend(row for row in lexical_rows if row["id"] not in existing_ids)
                 rows = rows[:limit]
-            if sector is None and layer is None and (task_intent or not rows):
+            scoped_to_memory = bool(source or source_account_id or _normalize_retrieval_metadata_filters(metadata_filters))
+            if sector is None and layer is None and not scoped_to_memory and (task_intent or not rows):
                 task_rows = self._task_search_rows(conn, user_id, query, candidate_limit, kind, user_settings)
                 mode_counts["task"] = len(task_rows)
 
@@ -6079,6 +6223,9 @@ class CortexStore:
                     kind=kind,
                     layer=layer,
                     sector=sector,
+                    source=source,
+                    source_account_id=source_account_id,
+                    metadata_filters=metadata_filters,
                     user_settings=user_settings,
                 )
             mode_counts["related"] = len(related_rows)
@@ -6128,9 +6275,23 @@ class CortexStore:
         layer: str | None = None,
         *,
         sector: str | None = None,
+        source: str | None = None,
+        source_account_id: str | None = None,
+        metadata_filters: dict[str, Any] | None = None,
         include_related: bool = False,
     ) -> list[dict[str, Any]]:
-        results = self.search(user_id, query, limit, kind, layer, sector=sector, include_related=include_related)
+        results = self.search(
+            user_id,
+            query,
+            limit,
+            kind,
+            layer,
+            sector=sector,
+            source=source,
+            source_account_id=source_account_id,
+            metadata_filters=metadata_filters,
+            include_related=include_related,
+        )
         return self._shared_payload(results, redact_sensitive=bool(self.settings(user_id)["redact_sensitive_context"]))
 
     def public_search_payload(
@@ -6142,6 +6303,9 @@ class CortexStore:
         layer: str | None = None,
         *,
         sector: str | None = None,
+        source: str | None = None,
+        source_account_id: str | None = None,
+        metadata_filters: dict[str, Any] | None = None,
         include_related: bool = False,
     ) -> dict[str, Any]:
         diagnostics: dict[str, Any] = {}
@@ -6152,12 +6316,16 @@ class CortexStore:
             kind,
             layer,
             sector=sector,
+            source=source,
+            source_account_id=source_account_id,
+            metadata_filters=metadata_filters,
             include_related=include_related,
             _diagnostics=diagnostics,
         )
         return {
             "query": query,
             "sector": sector,
+            "filters": _retrieval_filter_payload(source=source, source_account_id=source_account_id, metadata_filters=metadata_filters),
             "results": self._shared_payload(results, redact_sensitive=bool(self.settings(user_id)["redact_sensitive_context"])),
             "retrieval": diagnostics,
         }
@@ -6218,13 +6386,32 @@ class CortexStore:
             "embedding_dimensions": embedding.get("dimensions"),
         }
 
-    def answer_query(self, user_id: str, query: str, limit: int = 8, *, sector: str | None = None) -> dict[str, Any]:
+    def answer_query(
+        self,
+        user_id: str,
+        query: str,
+        limit: int = 8,
+        *,
+        sector: str | None = None,
+        source: str | None = None,
+        source_account_id: str | None = None,
+        metadata_filters: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         query = query.strip()
         limit = max(1, min(20, int(limit)))
         sector = _normalize_sector_filter(sector) or None
         redact_sensitive = bool(self.settings(user_id)["redact_sensitive_context"])
         search_limit = max(limit * 3, 12)
-        candidates = self.search(user_id, query, limit=search_limit, sector=sector, include_related=True)
+        candidates = self.search(
+            user_id,
+            query,
+            limit=search_limit,
+            sector=sector,
+            source=source,
+            source_account_id=source_account_id,
+            metadata_filters=metadata_filters,
+            include_related=True,
+        )
         primary_candidates = [item for item in candidates if not self._is_related_result(item)]
         primary_by_id = {str(item.get("id") or ""): item for item in primary_candidates}
         primary_source_backed = [item for item in primary_candidates if self._has_source_citation(item)]
@@ -6267,8 +6454,8 @@ class CortexStore:
         if citations:
             lines = [f"Cortex found {len(citations)} cited item{'s' if len(citations) != 1 else ''} for this question:"]
             for citation in citations[:5]:
-                source = citation["source_url"] or citation["source"]
-                lines.append(f"[{citation['index']}] {citation['excerpt']} ({source})")
+                citation_source = citation["source_url"] or citation["source"]
+                lines.append(f"[{citation['index']}] {citation['excerpt']} ({citation_source})")
             answer = "\n".join(lines)
             with connect(self.db_path) as conn:
                 self._event(
@@ -6288,6 +6475,7 @@ class CortexStore:
             answer = "Cortex did not find a cited item for this question yet. Import or approve more source material, then ask again."
         return {
             "query": query,
+            "filters": _retrieval_filter_payload(source=source, source_account_id=source_account_id, metadata_filters=metadata_filters),
             "answer": answer,
             "citations": citations,
             "results": self._shared_payload(results, redact_sensitive=redact_sensitive),
@@ -11106,10 +11294,23 @@ class CortexStore:
         user_settings: dict[str, Any],
         *,
         sector: str | None = None,
+        source: str | None = None,
+        source_account_id: str | None = None,
+        metadata_filters: dict[str, Any] | None = None,
     ) -> list[Any]:
         if not self._vector_ready(conn):
             return []
-        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer, sector=sector)
+        filters, params = self._memory_filters(
+            user_id,
+            user_settings,
+            alias="m",
+            kind=kind,
+            layer=layer,
+            sector=sector,
+            source=source,
+            source_account_id=source_account_id,
+            metadata_filters=metadata_filters,
+        )
         where = " AND ".join(filters)
         try:
             vector = embedding_json(embed_text(query))
@@ -11142,13 +11343,26 @@ class CortexStore:
         user_settings: dict[str, Any],
         *,
         sector: str | None = None,
+        source: str | None = None,
+        source_account_id: str | None = None,
+        metadata_filters: dict[str, Any] | None = None,
     ) -> list[Any]:
         prefixes = query_temporal_prefixes(query)
         if not prefixes:
             return []
         most_specific_length = len(prefixes[0])
         effective_prefixes = [prefix for prefix in prefixes if len(prefix) == most_specific_length]
-        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer, sector=sector)
+        filters, params = self._memory_filters(
+            user_id,
+            user_settings,
+            alias="m",
+            kind=kind,
+            layer=layer,
+            sector=sector,
+            source=source,
+            source_account_id=source_account_id,
+            metadata_filters=metadata_filters,
+        )
         date_filters = []
         date_params: list[Any] = []
         for prefix in effective_prefixes:
@@ -11195,6 +11409,9 @@ class CortexStore:
         user_settings: dict[str, Any],
         *,
         sector: str | None = None,
+        source: str | None = None,
+        source_account_id: str | None = None,
+        metadata_filters: dict[str, Any] | None = None,
     ) -> list[Any]:
         boosts = query_layer_boosts(query)
         if not boosts:
@@ -11205,7 +11422,17 @@ class CortexStore:
             intent_layers = [value for value in intent_layers if value == requested_layer]
         if not intent_layers:
             return []
-        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=None, sector=sector)
+        filters, params = self._memory_filters(
+            user_id,
+            user_settings,
+            alias="m",
+            kind=kind,
+            layer=None,
+            sector=sector,
+            source=source,
+            source_account_id=source_account_id,
+            metadata_filters=metadata_filters,
+        )
         placeholders = ", ".join("?" for _ in intent_layers)
         where = " AND ".join(filters)
         return conn.execute(
@@ -11231,12 +11458,25 @@ class CortexStore:
         user_settings: dict[str, Any],
         *,
         sector: str | None = None,
+        source: str | None = None,
+        source_account_id: str | None = None,
+        metadata_filters: dict[str, Any] | None = None,
     ) -> list[Any]:
         terms = self._lexical_fallback_terms(query)
         if not terms:
             return []
         match_query = " OR ".join(f"{term}*" for term in terms)
-        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer, sector=sector)
+        filters, params = self._memory_filters(
+            user_id,
+            user_settings,
+            alias="m",
+            kind=kind,
+            layer=layer,
+            sector=sector,
+            source=source,
+            source_account_id=source_account_id,
+            metadata_filters=metadata_filters,
+        )
         where = " AND ".join(filters)
         rows = conn.execute(
             f"""
@@ -11339,6 +11579,9 @@ class CortexStore:
         kind: str | None,
         layer: str | None,
         sector: str | None,
+        source: str | None = None,
+        source_account_id: str | None = None,
+        metadata_filters: dict[str, Any] | None = None,
         user_settings: dict[str, Any],
     ) -> list[Any]:
         primary_ids = [str(item.get("id") or "") for item in primary_results if item.get("result_type", "memory") == "memory"]
@@ -11346,7 +11589,17 @@ class CortexStore:
         if not primary_ids or limit <= 0:
             return []
         primary_placeholders = ",".join("?" for _ in primary_ids)
-        filters, params = self._memory_filters(user_id, user_settings, alias="m", kind=kind, layer=layer, sector=sector)
+        filters, params = self._memory_filters(
+            user_id,
+            user_settings,
+            alias="m",
+            kind=kind,
+            layer=layer,
+            sector=sector,
+            source=source,
+            source_account_id=source_account_id,
+            metadata_filters=metadata_filters,
+        )
         filters.append(f"m.id NOT IN ({primary_placeholders})")
         where = " AND ".join(filters)
         return conn.execute(
@@ -12095,6 +12348,9 @@ class CortexStore:
         kind: str | None = None,
         layer: str | None = None,
         sector: str | None = None,
+        source: str | None = None,
+        source_account_id: str | None = None,
+        metadata_filters: dict[str, Any] | None = None,
     ) -> tuple[list[str], list[Any]]:
         filters = [f"{alias}.user_id = ?", f"{alias}.status = 'active'"]
         params: list[Any] = [user_id]
@@ -12108,6 +12364,30 @@ class CortexStore:
         if normalized_sector:
             filters.append(f"lower(COALESCE({alias}.sector, '')) = ?")
             params.append(normalized_sector.lower())
+        normalized_source = _normalize_source_key(source or "")
+        if normalized_source:
+            filters.append(f"lower(COALESCE({alias}.source, '')) = ?")
+            params.append(normalized_source)
+        normalized_source_account_id = _normalize_retrieval_filter_value(source_account_id, max_length=120)
+        if normalized_source_account_id:
+            filters.append(
+                f"""(
+                  EXISTS (
+                    SELECT 1
+                    FROM captures c_source_scope
+                    WHERE c_source_scope.id = {alias}.capture_id
+                      AND c_source_scope.user_id = {alias}.user_id
+                      AND c_source_scope.source_account_id = ?
+                  )
+                  OR COALESCE(json_extract({alias}.provenance_json, '$.source_account_id'), '') = ?
+                )"""
+            )
+            params.extend([normalized_source_account_id, normalized_source_account_id])
+        for key, value in _normalize_retrieval_metadata_filters(metadata_filters).items():
+            paths = RETRIEVAL_METADATA_FILTER_KEYS[key]
+            clauses = [f"lower(COALESCE(json_extract({alias}.provenance_json, '$.record_metadata.{path}'), '')) = ?" for path in paths]
+            filters.append(f"({' OR '.join(clauses)})")
+            params.extend([value.lower()] * len(paths))
         now = now_iso()
         filters.append(f"({alias}.valid_from IS NULL OR {alias}.valid_from = '' OR {alias}.valid_from <= ?)")
         params.append(now)

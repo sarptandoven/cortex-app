@@ -878,14 +878,63 @@ def search(
     kind: str | None = None,
     layer: str | None = None,
     sector: str | None = Query(default=None, max_length=120),
+    source: str | None = Query(default=None, max_length=80),
+    source_account_id: str | None = Query(default=None, max_length=120),
+    repository: str | None = Query(default=None, max_length=240),
+    channel: str | None = Query(default=None, max_length=240),
+    record_scope: str | None = Query(default=None, max_length=80),
+    state: str | None = Query(default=None, max_length=80),
+    project: str | None = Query(default=None, max_length=240),
     user_id: str = Depends(auth),
 ) -> dict[str, Any]:
-    return store.public_search_payload(user_id, query, limit, kind, layer, sector=sector)
+    return store.public_search_payload(
+        user_id,
+        query,
+        limit,
+        kind,
+        layer,
+        sector=sector,
+        source=source,
+        source_account_id=source_account_id,
+        metadata_filters={
+            "repository": repository,
+            "channel": channel,
+            "record_scope": record_scope,
+            "state": state,
+            "project": project,
+        },
+    )
 
 
 @app.get("/v1/ask", response_model=AskResponse)
-def ask(query: str, limit: int = Query(default=8, ge=1, le=20), sector: str | None = Query(default=None, max_length=120), user_id: str = Depends(auth)) -> dict[str, Any]:
-    return store.answer_query(user_id, query, limit, sector=sector)
+def ask(
+    query: str,
+    limit: int = Query(default=8, ge=1, le=20),
+    sector: str | None = Query(default=None, max_length=120),
+    source: str | None = Query(default=None, max_length=80),
+    source_account_id: str | None = Query(default=None, max_length=120),
+    repository: str | None = Query(default=None, max_length=240),
+    channel: str | None = Query(default=None, max_length=240),
+    record_scope: str | None = Query(default=None, max_length=80),
+    state: str | None = Query(default=None, max_length=80),
+    project: str | None = Query(default=None, max_length=240),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return store.answer_query(
+        user_id,
+        query,
+        limit,
+        sector=sector,
+        source=source,
+        source_account_id=source_account_id,
+        metadata_filters={
+            "repository": repository,
+            "channel": channel,
+            "record_scope": record_scope,
+            "state": state,
+            "project": project,
+        },
+    )
 
 
 @app.get("/v1/tasks/open")

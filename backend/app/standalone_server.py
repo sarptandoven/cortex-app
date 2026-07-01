@@ -891,21 +891,76 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 kind = (params.get("kind") or [None])[0]
                 layer = (params.get("layer") or [None])[0]
                 sector = (params.get("sector") or [None])[0]
+                source = (params.get("source") or [None])[0]
+                source_account_id = (params.get("source_account_id") or [None])[0]
+                metadata_filters = {
+                    "repository": (params.get("repository") or [None])[0],
+                    "channel": (params.get("channel") or [None])[0],
+                    "record_scope": (params.get("record_scope") or [None])[0],
+                    "state": (params.get("state") or [None])[0],
+                    "project": (params.get("project") or [None])[0],
+                }
                 limit = _int_param(params, "limit", 10, 1, 50)
                 if hasattr(store, "public_search_payload"):
-                    payload = store.public_search_payload(user_id, query, limit, kind, layer, sector=sector)
+                    payload = store.public_search_payload(
+                        user_id,
+                        query,
+                        limit,
+                        kind,
+                        layer,
+                        sector=sector,
+                        source=source,
+                        source_account_id=source_account_id,
+                        metadata_filters=metadata_filters,
+                    )
                 elif hasattr(store, "public_search"):
-                    results = store.public_search(user_id, query, limit, kind, layer, sector=sector)
-                    payload = {"query": query, "sector": sector, "results": results, "retrieval": {"diagnostics_unavailable": True}}
+                    results = store.public_search(
+                        user_id,
+                        query,
+                        limit,
+                        kind,
+                        layer,
+                        sector=sector,
+                        source=source,
+                        source_account_id=source_account_id,
+                        metadata_filters=metadata_filters,
+                    )
+                    payload = {"query": query, "sector": sector, "filters": {}, "results": results, "retrieval": {"diagnostics_unavailable": True}}
                 else:
-                    results = store.search(user_id, query, limit, kind, layer, sector=sector)
-                    payload = {"query": query, "sector": sector, "results": results, "retrieval": {"diagnostics_unavailable": True}}
+                    results = store.search(
+                        user_id,
+                        query,
+                        limit,
+                        kind,
+                        layer,
+                        sector=sector,
+                        source=source,
+                        source_account_id=source_account_id,
+                        metadata_filters=metadata_filters,
+                    )
+                    payload = {"query": query, "sector": sector, "filters": {}, "results": results, "retrieval": {"diagnostics_unavailable": True}}
                 self._send_json(payload)
                 return
             if method == "GET" and path == "/v1/ask":
                 query = (params.get("query") or [""])[0]
                 sector = (params.get("sector") or [None])[0]
-                self._send_json(store.answer_query(user_id, query, _int_param(params, "limit", 8, 1, 20), sector=sector))
+                self._send_json(
+                    store.answer_query(
+                        user_id,
+                        query,
+                        _int_param(params, "limit", 8, 1, 20),
+                        sector=sector,
+                        source=(params.get("source") or [None])[0],
+                        source_account_id=(params.get("source_account_id") or [None])[0],
+                        metadata_filters={
+                            "repository": (params.get("repository") or [None])[0],
+                            "channel": (params.get("channel") or [None])[0],
+                            "record_scope": (params.get("record_scope") or [None])[0],
+                            "state": (params.get("state") or [None])[0],
+                            "project": (params.get("project") or [None])[0],
+                        },
+                    )
+                )
                 return
             if method == "GET" and path == "/v1/tasks/open":
                 self._send_json({"results": store.open_tasks(user_id, _int_param(params, "limit", 20, 1, 100))})

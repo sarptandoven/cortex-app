@@ -382,6 +382,129 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertIn("Project Atlas runs backend tests", pack.text)
         self.assertNotIn("Project Boreal runs web smoke tests", pack.text)
 
+    def test_retrieval_endpoints_support_source_account_and_facet_scope(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "source-scope-contract"}
+
+        github_account = self.client.post(
+            "/v1/source-accounts",
+            json={
+                "source": "github",
+                "account_label": "GitHub Scope",
+                "account_identifier": "doppl-tech/cortex-app",
+                "connection_type": "api_token",
+                "status": "connected",
+                "auth_state": "healthy",
+                "policy": {"review_required": True, "allow_ai_context": True},
+            },
+            headers=headers,
+        )
+        self.assertEqual(github_account.status_code, 200)
+        slack_account = self.client.post(
+            "/v1/source-accounts",
+            json={
+                "source": "slack",
+                "account_label": "Slack Scope",
+                "account_identifier": "C123ABC",
+                "connection_type": "api_token",
+                "status": "connected",
+                "auth_state": "healthy",
+                "policy": {"review_required": True, "allow_ai_context": True},
+            },
+            headers=headers,
+        )
+        self.assertEqual(slack_account.status_code, 200)
+
+        syncs = [
+            (
+                github_account.json()["id"],
+                {
+                    "content": "We decided apiscopefilter retrieval should isolate GitHub repository context.",
+                    "title": "GitHub scoped record",
+                    "source_url": "https://github.com/doppl-tech/cortex-app/issues/77",
+                    "external_id": "github:doppl-tech/cortex-app:issue:77",
+                    "captured_at": "2026-06-30T11:00:00Z",
+                    "metadata": {
+                        "connector": "github",
+                        "repository": "doppl-tech/cortex-app",
+                        "record_scope": "issue",
+                        "state": "open",
+                    },
+                },
+            ),
+            (
+                slack_account.json()["id"],
+                {
+                    "content": "We decided apiscopefilter retrieval should isolate Slack channel context.",
+                    "title": "Slack scoped record",
+                    "source_url": "https://doppl.slack.com/archives/C123ABC/p1782739300000100",
+                    "external_id": "slack:C123ABC:1782739300.000100",
+                    "captured_at": "2026-06-30T11:05:00Z",
+                    "metadata": {"connector": "slack", "channel": "general", "channel_id": "C123ABC"},
+                },
+            ),
+        ]
+        capture_ids: list[str] = []
+        for account_id, record in syncs:
+            synced = self.client.post(
+                f"/v1/source-accounts/{account_id}/sync",
+                json={"records": [record], "processing": "sync"},
+                headers=headers,
+            )
+            self.assertEqual(synced.status_code, 200)
+            capture_ids.extend(synced.json()["capture_ids"])
+        for capture_id in capture_ids:
+            approved = self.client.post(f"/v1/captures/{capture_id}/approve", headers=headers)
+            self.assertEqual(approved.status_code, 200)
+
+        all_results = self.client.get(
+            "/v1/search",
+            params={"query": "apiscopefilter retrieval isolate", "limit": 10},
+            headers=headers,
+        )
+        self.assertEqual(all_results.status_code, 200)
+        self.assertEqual({item["source"] for item in all_results.json()["results"]}, {"github", "slack"})
+
+        github_results = self.client.get(
+            "/v1/search",
+            params={
+                "query": "apiscopefilter retrieval isolate",
+                "source": "github",
+                "repository": "doppl-tech/cortex-app",
+                "state": "open",
+                "limit": 10,
+            },
+            headers=headers,
+        )
+        self.assertEqual(github_results.status_code, 200)
+        github_payload = github_results.json()
+        self.assertEqual(github_payload["filters"]["source"], "github")
+        self.assertEqual(github_payload["filters"]["metadata"]["repository"], "doppl-tech/cortex-app")
+        self.assertEqual([item["source"] for item in github_payload["results"]], ["github"])
+
+        slack_answer = self.client.get(
+            "/v1/ask",
+            params={
+                "query": "apiscopefilter retrieval isolate",
+                "source_account_id": slack_account.json()["id"],
+                "channel": "general",
+                "limit": 5,
+            },
+            headers=headers,
+        )
+        self.assertEqual(slack_answer.status_code, 200)
+        slack_payload = slack_answer.json()
+        self.assertEqual(slack_payload["filters"]["source_account_id"], slack_account.json()["id"])
+        self.assertEqual(slack_payload["filters"]["metadata"]["channel"], "general")
+        self.assertEqual([citation["source"] for citation in slack_payload["citations"]], ["slack"])
+
+        mismatch = self.client.get(
+            "/v1/search",
+            params={"query": "apiscopefilter retrieval isolate", "source": "slack", "channel": "random", "limit": 10},
+            headers=headers,
+        )
+        self.assertEqual(mismatch.status_code, 200)
+        self.assertEqual(mismatch.json()["results"], [])
+
     def test_ask_endpoint_redacts_local_paths_inside_service_citation_parameters(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "ask-service-locator-contract"}
         phrase = "FastAPI Ask service locator privacy should quote source-backed memory."
@@ -1929,7 +2052,7 @@ END:VCALENDAR
                 "jsonrpc": "2.0",
                 "id": "structured-search",
                 "method": "tools/call",
-                "params": {"name": "search_memory", "arguments": {"query": "Project Signal citation payloads", "top_k": 3}},
+                "params": {"name": "search_memory", "arguments": {"query": "Project Signal citation payloads", "top_k": 3, "source": "github"}},
             },
             headers=headers,
         )
@@ -1939,6 +2062,7 @@ END:VCALENDAR
         self.assertIn("structuredContent", search_result)
         self.assertEqual(json.loads(search_result["content"][0]["text"]), search_result["structuredContent"])
         self.assertEqual(search_result["structuredContent"]["results"][0]["source"], "github")
+        self.assertEqual(search_result["structuredContent"]["filters"]["source"], "github")
         self.assertIn("line=31", search_result["structuredContent"]["results"][0]["source_url"])
         self.assertIn("retrieval", search_result["structuredContent"])
         self.assertIn("used_modes", search_result["structuredContent"]["retrieval"])

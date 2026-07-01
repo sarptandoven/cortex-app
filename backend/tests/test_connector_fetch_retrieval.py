@@ -287,6 +287,105 @@ class ConnectorFetchRetrievalTests(unittest.TestCase):
         self.assertTrue(citation["source_url"].startswith("https://github.com/doppl-tech/cortex-app/issues/42"))
         self.assertEqual(citation["source_record_id"], "github:doppl-tech/cortex-app:issue:42")
 
+    def test_search_and_ask_can_scope_to_source_account_and_connector_facets(self) -> None:
+        def fake_github_request(url: str, headers: dict[str, str]):
+            self.assertEqual(headers["Authorization"], "Bearer ghp_scope_test")
+            self.assertIn("/repos/doppl-tech/cortex-app/issues", url)
+            return [
+                {
+                    "number": 77,
+                    "title": "Scoped GitHub retrieval",
+                    "state": "open",
+                    "html_url": "https://github.com/doppl-tech/cortex-app/issues/77",
+                    "created_at": "2026-06-30T10:00:00Z",
+                    "updated_at": "2026-06-30T11:00:00Z",
+                    "user": {"login": "sarp"},
+                    "labels": [{"name": "backend"}],
+                    "body": "We decided scopefiltertest retrieval should isolate GitHub repository context.",
+                }
+            ]
+
+        def fake_slack_request(url: str, headers: dict[str, str]):
+            self.assertEqual(headers["Authorization"], "Bearer xoxb-scope-test")
+            self.assertIn("conversations.history", url)
+            return {
+                "ok": True,
+                "messages": [
+                    {
+                        "type": "message",
+                        "user": "U123",
+                        "text": "We decided scopefiltertest retrieval should isolate Slack channel context.",
+                        "ts": "1782739300.000100",
+                    }
+                ],
+                "response_metadata": {"next_cursor": ""},
+            }
+
+        github = self.store.sync_github_account(
+            self.user_id,
+            token="ghp_scope_test",
+            repositories=["doppl-tech/cortex-app"],
+            max_records=1,
+            processing="sync",
+            request_json=fake_github_request,
+        )
+        slack = self.store.sync_slack_account(
+            self.user_id,
+            token="xoxb-scope-test",
+            channels=["C123ABC|general"],
+            max_records=1,
+            workspace_url="https://doppl.slack.com",
+            processing="sync",
+            request_json=fake_slack_request,
+        )
+        self.assertTrue(self.store.approve_capture(self.user_id, github["capture_ids"][0]))
+        self.assertTrue(self.store.approve_capture(self.user_id, slack["capture_ids"][0]))
+
+        all_hits = self.store.search(self.user_id, "scopefiltertest retrieval isolate", limit=10)
+        self.assertEqual({hit["source"] for hit in all_hits}, {"github", "slack"})
+
+        github_hits = self.store.search(
+            self.user_id,
+            "scopefiltertest retrieval isolate",
+            limit=10,
+            source="github",
+            metadata_filters={"repository": "doppl-tech/cortex-app", "state": "open"},
+        )
+        self.assertEqual([hit["source"] for hit in github_hits], ["github"])
+        self.assertEqual(github_hits[0]["provenance"]["record_metadata"]["repository"], "doppl-tech/cortex-app")
+
+        slack_hits = self.store.search(
+            self.user_id,
+            "scopefiltertest retrieval isolate",
+            limit=10,
+            source_account_id=slack["source_account_id"],
+            metadata_filters={"channel": "general"},
+        )
+        self.assertEqual([hit["source"] for hit in slack_hits], ["slack"])
+        self.assertEqual(slack_hits[0]["provenance"]["record_metadata"]["channel"], "general")
+
+        self.assertEqual(
+            self.store.search(
+                self.user_id,
+                "scopefiltertest retrieval isolate",
+                limit=10,
+                source="slack",
+                metadata_filters={"channel": "random"},
+            ),
+            [],
+        )
+
+        answer = self.store.answer_query(
+            self.user_id,
+            "scopefiltertest retrieval isolate",
+            limit=5,
+            source="github",
+            metadata_filters={"repository": "doppl-tech/cortex-app"},
+        )
+        self.assertEqual(answer["filters"]["source"], "github")
+        self.assertEqual(answer["filters"]["metadata"]["repository"], "doppl-tech/cortex-app")
+        self.assertEqual([citation["source"] for citation in answer["citations"]], ["github"])
+
     def test_slack_sync_uses_channel_page_cursor(self) -> None:
         calls: list[str] = []
 

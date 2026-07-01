@@ -24,8 +24,8 @@ def tearDownModule() -> None:
 
 class FakeStore:
     def __init__(self) -> None:
-        self.search_calls: list[tuple[str, str, int, str | None, str | None, str | None]] = []
-        self.answer_calls: list[tuple[str, str, int, str | None]] = []
+        self.search_calls: list[dict] = []
+        self.answer_calls: list[dict] = []
         self.delete_capture_calls: list[tuple[str, str]] = []
         self.delete_backups_calls: list[str] = []
         self.delete_user_data_calls: list[tuple[str, bool]] = []
@@ -61,8 +61,32 @@ class FakeStore:
         self.require_agent_access_calls: list[tuple[str, str]] = []
         self.context_pack_calls: list[tuple[str, str, int, str | None]] = []
 
-    def search(self, user_id: str, query: str, limit: int, kind: str | None = None, layer: str | None = None, *, sector: str | None = None) -> list[dict]:
-        self.search_calls.append((user_id, query, limit, kind, layer, sector))
+    def search(
+        self,
+        user_id: str,
+        query: str,
+        limit: int,
+        kind: str | None = None,
+        layer: str | None = None,
+        *,
+        sector: str | None = None,
+        source: str | None = None,
+        source_account_id: str | None = None,
+        metadata_filters: dict | None = None,
+    ) -> list[dict]:
+        self.search_calls.append(
+            {
+                "user_id": user_id,
+                "query": query,
+                "limit": limit,
+                "kind": kind,
+                "layer": layer,
+                "sector": sector,
+                "source": source,
+                "source_account_id": source_account_id,
+                "metadata_filters": metadata_filters or {},
+            }
+        )
         return [
             {
                 "id": "memory-1",
@@ -73,8 +97,28 @@ class FakeStore:
             }
         ]
 
-    def answer_query(self, user_id: str, query: str, limit: int, *, sector: str | None = None) -> dict:
-        self.answer_calls.append((user_id, query, limit, sector))
+    def answer_query(
+        self,
+        user_id: str,
+        query: str,
+        limit: int,
+        *,
+        sector: str | None = None,
+        source: str | None = None,
+        source_account_id: str | None = None,
+        metadata_filters: dict | None = None,
+    ) -> dict:
+        self.answer_calls.append(
+            {
+                "user_id": user_id,
+                "query": query,
+                "limit": limit,
+                "sector": sector,
+                "source": source,
+                "source_account_id": source_account_id,
+                "metadata_filters": metadata_filters or {},
+            }
+        )
         result = {
             "id": "memory-1",
             "kind": "claim",
@@ -1716,7 +1760,22 @@ class StandaloneServerTests(unittest.TestCase):
 
         self.assertEqual(response.status, 200)
         self.assertEqual(payload["results"][0]["layer"], "style")
-        self.assertEqual(self.fake_store.search_calls, [("local", "voice", 7, "style", "style", None)])
+        self.assertEqual(
+            self.fake_store.search_calls,
+            [
+                {
+                    "user_id": "local",
+                    "query": "voice",
+                    "limit": 7,
+                    "kind": "style",
+                    "layer": "style",
+                    "sector": None,
+                    "source": None,
+                    "source_account_id": None,
+                    "metadata_filters": {"repository": None, "channel": None, "record_scope": None, "state": None, "project": None},
+                }
+            ],
+        )
 
     def test_search_forwards_sector_to_store(self) -> None:
         with self.get("/v1/search?query=release&sector=Project%20Atlas&limit=4") as response:
@@ -1724,7 +1783,20 @@ class StandaloneServerTests(unittest.TestCase):
 
         self.assertEqual(response.status, 200)
         self.assertEqual(payload["sector"], "Project Atlas")
-        self.assertEqual(self.fake_store.search_calls, [("local", "release", 4, None, None, "Project Atlas")])
+        self.assertEqual(self.fake_store.search_calls[-1]["sector"], "Project Atlas")
+
+    def test_search_forwards_source_scope_to_store(self) -> None:
+        with self.get("/v1/search?query=review&source=github&source_account_id=sacct_1&repository=doppl-tech/cortex-app&record_scope=pull_request&state=open&limit=3") as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertTrue(payload["results"])
+        self.assertEqual(self.fake_store.search_calls[-1]["source"], "github")
+        self.assertEqual(self.fake_store.search_calls[-1]["source_account_id"], "sacct_1")
+        self.assertEqual(
+            self.fake_store.search_calls[-1]["metadata_filters"],
+            {"repository": "doppl-tech/cortex-app", "channel": None, "record_scope": "pull_request", "state": "open", "project": None},
+        )
 
     def test_ask_route_forwards_to_store(self) -> None:
         with self.get("/v1/ask?query=voice&limit=2") as response:
@@ -1733,7 +1805,8 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertIn("cited memory", payload["answer"])
         self.assertEqual(payload["citations"][0]["source_url"], "/tmp/source.md")
-        self.assertEqual(self.fake_store.answer_calls, [("local", "voice", 2, None)])
+        self.assertEqual(self.fake_store.answer_calls[-1]["query"], "voice")
+        self.assertEqual(self.fake_store.answer_calls[-1]["limit"], 2)
 
     def test_cors_does_not_allow_arbitrary_origin(self) -> None:
         with self.get("/v1/search?query=voice", origin="https://example.invalid") as response:
@@ -2733,7 +2806,8 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(payload["result"]["structuredContent"]["results"][0]["id"], "memory-1")
         self.assertTrue(payload["result"]["structuredContent"]["retrieval"]["diagnostics_unavailable"])
         self.assertEqual(json.loads(payload["result"]["content"][0]["text"]), payload["result"]["structuredContent"])
-        self.assertEqual(self.fake_store.search_calls[-1], ("local", "voice", 8, None, None, None))
+        self.assertEqual(self.fake_store.search_calls[-1]["query"], "voice")
+        self.assertEqual(self.fake_store.search_calls[-1]["limit"], 8)
         self.assertEqual(self.fake_store.agent_events[-1]["token"]["token_id"], "tok_standalone")
 
         with self.assertRaises(error.HTTPError) as context:
@@ -2770,7 +2844,7 @@ class StandaloneServerTests(unittest.TestCase):
 
         self.assertEqual(response.status, 200)
         self.assertEqual(payload["results"][0]["content"], "Layer-aware result")
-        self.assertEqual(self.fake_store.search_calls[-1][0], "alice")
+        self.assertEqual(self.fake_store.search_calls[-1]["user_id"], "alice")
 
         with self.assertRaises(error.HTTPError) as context:
             request.urlopen(
