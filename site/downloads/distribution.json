@@ -3,20 +3,20 @@
     {
       "filename": "Cortex-0.1.0-1.dmg",
       "kind": "dmg",
-      "sha256": "93d29195880c184e55ac60d52217ab10dc48cb3809ee4d9b13ebfbd79459c03d",
-      "size_bytes": 21153275,
+      "sha256": "5587738e01e8f05895a55b1a7003310b5b8c410059dad5befa1c90499773c65f",
+      "size_bytes": 21156267,
       "url": "https://trydoppl.com/downloads/Cortex-0.1.0-1.dmg"
     },
     {
       "filename": "Cortex-0.1.0-1.app.zip",
       "kind": "zip",
-      "sha256": "6f2fb8a99a33d8f9e7a068d57cd35269c507e06cec7756487b2315755813c0fa",
-      "size_bytes": 16820647,
+      "sha256": "167d3c4fa316a8e21125ce38be0740ea86aab8bda07faec158ea7bcc73c46d19",
+      "size_bytes": 16822810,
       "url": "https://trydoppl.com/downloads/Cortex-0.1.0-1.app.zip"
     }
   ],
   "build": "1",
   "channel": "local-beta",
-  "prepared_at": "2026-07-01T10:29:18+00:00",
+  "prepared_at": "2026-07-01T10:40:33+00:00",
   "version": "0.1.0"
 }
