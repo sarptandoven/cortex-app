@@ -61,6 +61,68 @@ class SlackConnectorTests(unittest.TestCase):
         second = sync.records[1].to_source_account_record()
         self.assertEqual(second["metadata"]["thread_ts"], "1782739200.000100")
 
+    def test_fetch_slack_records_adds_parent_context_to_thread_replies(self) -> None:
+        calls: list[str] = []
+
+        def fake_request(url: str, headers: dict[str, str]):
+            calls.append(url)
+            self.assertEqual(headers["Authorization"], "Bearer xoxb-thread")
+            parsed = urlparse(url)
+            if parsed.path.endswith("/conversations.history"):
+                return {
+                    "ok": True,
+                    "messages": [
+                        {
+                            "type": "message",
+                            "user": "U123",
+                            "text": "Project Atlas release thread for backend launch.",
+                            "ts": "1782739200.000100",
+                            "thread_ts": "1782739200.000100",
+                            "reply_count": 1,
+                            "latest_reply": "1782739210.000200",
+                        }
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                }
+            self.assertTrue(parsed.path.endswith("/conversations.replies"))
+            return {
+                "ok": True,
+                "messages": [
+                    {
+                        "type": "message",
+                        "user": "U123",
+                        "text": "Project Atlas release thread for backend launch.",
+                        "ts": "1782739200.000100",
+                        "thread_ts": "1782739200.000100",
+                    },
+                    {
+                        "type": "message",
+                        "user": "U456",
+                        "text": "We decided Slack replies need parent context.",
+                        "ts": "1782739210.000200",
+                        "thread_ts": "1782739200.000100",
+                    },
+                ],
+                "response_metadata": {"next_cursor": ""},
+            }
+
+        sync = fetch_slack_records(
+            token="xoxb-thread",
+            channels=["C123ABC|general"],
+            max_records=3,
+            workspace_url="https://doppl.slack.com",
+            request_json=fake_request,
+        )
+
+        self.assertTrue(any("conversations.replies" in url for url in calls))
+        self.assertEqual(sync.records_returned, 2)
+        reply = sync.records[1].to_source_account_record()
+        self.assertIn("Thread parent: U123: Project Atlas release thread for backend launch.", reply["content"])
+        self.assertIn("Thread context: Project Atlas release thread for backend launch.", reply["content"])
+        self.assertEqual(reply["metadata"]["author"], "U456")
+        self.assertEqual(reply["metadata"]["thread_parent_author"], "U123")
+        self.assertEqual(reply["metadata"]["thread_parent_text_excerpt"], "Project Atlas release thread for backend launch.")
+
     def test_fetch_slack_records_requires_token_and_channel(self) -> None:
         with self.assertRaisesRegex(ValueError, "token"):
             fetch_slack_records(token="", channels=["C123ABC"])

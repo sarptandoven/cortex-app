@@ -210,12 +210,21 @@ class ConnectorFetchRetrievalTests(unittest.TestCase):
         self.assertIsNotNone(hit)
         self.assertTrue(hit["source_url"].startswith("https://doppl.slack.com/archives/C123ABC/p1782739210000200"))
         self.assertEqual(hit["provenance"]["record_metadata"]["thread_ts"], "1782739200.000100")
+        self.assertEqual(hit["provenance"]["record_metadata"]["thread_parent_ts"], "1782739200.000100")
 
         answer = self.store.answer_query(self.user_id, "slackthreadtest threaded Slack decisions", limit=5)
         citation = self._first_citation_with_marker(answer["citations"], "slack", "slackthreadtest")
         self.assertIsNotNone(citation)
         self.assertTrue(citation["source_url"].startswith("https://doppl.slack.com/archives/C123ABC/p1782739210000200"))
         self.assertEqual(citation["source_record_id"], "slack:C123ABC:1782739210.000200")
+
+        context_hits = self.store.search(self.user_id, "Cortex Slack retrieval slackthreadtest", limit=5)
+        context_hit = self._first_result_with_marker(context_hits, "slack", "slackthreadtest")
+        self.assertIsNotNone(context_hit)
+        context_answer = self.store.answer_query(self.user_id, "Cortex Slack retrieval slackthreadtest", limit=5)
+        context_citation = self._first_citation_with_marker(context_answer["citations"], "slack", "slackthreadtest")
+        self.assertIsNotNone(context_citation)
+        self.assertEqual(context_citation["source_record_id"], "slack:C123ABC:1782739210.000200")
 
     def test_github_issue_comments_reach_search_and_ask_citations(self) -> None:
         calls: list[str] = []

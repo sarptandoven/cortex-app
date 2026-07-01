@@ -234,10 +234,15 @@ def _fetch_thread_reply_records(
         return []
     messages = payload.get("messages") if isinstance(payload.get("messages"), list) else []
     records: list[SlackSyncRecord] = []
+    thread_parent = parent
     for reply in messages:
-        if not isinstance(reply, dict) or str(reply.get("ts") or "").strip() == parent_ts:
+        if not isinstance(reply, dict):
             continue
-        record = _record_from_message(channel, reply, workspace_url=workspace_url)
+        if str(reply.get("ts") or "").strip() == parent_ts:
+            if _clean_slack_text(reply.get("text")):
+                thread_parent = reply
+            continue
+        record = _record_from_message(channel, reply, workspace_url=workspace_url, thread_parent=thread_parent)
         if record is not None:
             records.append(record)
         if len(records) >= remaining:
@@ -285,7 +290,13 @@ def _normalize_channel(value: str) -> SlackChannelSpec | None:
     return SlackChannelSpec(channel_id=channel_id, name=name)
 
 
-def _record_from_message(channel: SlackChannelSpec, message: dict[str, Any], *, workspace_url: str | None = None) -> SlackSyncRecord | None:
+def _record_from_message(
+    channel: SlackChannelSpec,
+    message: dict[str, Any],
+    *,
+    workspace_url: str | None = None,
+    thread_parent: dict[str, Any] | None = None,
+) -> SlackSyncRecord | None:
     ts = str(message.get("ts") or "").strip()
     text = _clean_slack_text(message.get("text"))
     if not ts or not text:
@@ -308,10 +319,20 @@ def _record_from_message(channel: SlackChannelSpec, message: dict[str, Any], *, 
         lines.append(f"Subtype: {subtype}")
     if captured_at:
         lines.append(f"Date: {captured_at}")
-    lines.extend(["", f"{author}: {text}"])
     thread_ts = str(message.get("thread_ts") or "").strip()
     if thread_ts and thread_ts != ts:
         lines.insert(-1, f"Thread TS: {thread_ts}")
+    parent_context = _thread_parent_context(thread_parent, thread_ts=thread_ts, reply_ts=ts)
+    if parent_context:
+        lines.extend(
+            [
+                "",
+                f"Thread parent: {parent_context['thread_parent_author']}: {parent_context['thread_parent_text_excerpt']}",
+                f"{author}: {text} Thread context: {parent_context['thread_parent_text_excerpt']}",
+            ]
+        )
+    else:
+        lines.extend(["", f"{author}: {text}"])
 
     return SlackSyncRecord(
         content="\n".join(lines).strip(),
@@ -330,11 +351,29 @@ def _record_from_message(channel: SlackChannelSpec, message: dict[str, Any], *, 
             "author": author,
             "message_type": message_type,
             "subtype": subtype,
+            **parent_context,
             "url": source_url,
             "source_type": "slack_message",
             "source_quality": "canonical",
         },
     )
+
+
+def _thread_parent_context(parent: dict[str, Any] | None, *, thread_ts: str, reply_ts: str) -> dict[str, str]:
+    if not isinstance(parent, dict) or not thread_ts or thread_ts == reply_ts:
+        return {}
+    parent_ts = str(parent.get("ts") or "").strip()
+    if parent_ts and parent_ts != thread_ts:
+        return {}
+    parent_text = _clean_slack_text(parent.get("text"))[:500]
+    if not parent_text:
+        return {}
+    author = str(parent.get("user") or parent.get("username") or parent.get("bot_id") or "unknown").strip()
+    return {
+        "thread_parent_ts": thread_ts,
+        "thread_parent_author": author,
+        "thread_parent_text_excerpt": parent_text,
+    }
 
 
 def _message_source_url(channel_id: str, ts: str, *, workspace_url: str | None = None) -> str:
