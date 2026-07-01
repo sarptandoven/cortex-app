@@ -736,6 +736,22 @@ def _bounded_int(value: Any, *, minimum: int, maximum: int) -> int | None:
     return parsed
 
 
+SCHEDULED_CREDENTIAL_SYNC_SOURCES = {"github", "readwise", "raindrop", "zotero", "linear", "notion"}
+SOURCE_SYNC_CURSOR_NAMES = {
+    "obsidian": "local-folder",
+    "github": "issues",
+    "readwise": "highlights",
+    "raindrop": "raindrops",
+    "zotero": "items",
+    "linear": "issues",
+    "notion": "pages",
+}
+
+
+def _default_source_sync_cursor_name(source: str) -> str:
+    return SOURCE_SYNC_CURSOR_NAMES.get(_normalize_source_key(source), "default")
+
+
 def _source_sync_interval_seconds(
     active_accounts: list[dict[str, Any]],
     source_cursors: list[dict[str, Any]],
@@ -767,11 +783,25 @@ def _source_account_sync_scheduler_supported(account: dict[str, Any]) -> bool:
     metadata = account.get("metadata") if isinstance(account.get("metadata"), dict) else {}
     if source == "obsidian" and str(metadata.get("vault_path") or "").strip():
         return True
+    if source in SCHEDULED_CREDENTIAL_SYNC_SOURCES and str(metadata.get("credential_ref") or "").startswith("source_credential:"):
+        return True
+    if source == "zotero" and str(metadata.get("api_base_url") or "").strip():
+        return True
     return False
 
 
 def _source_sync_scheduler_supported(active_accounts: list[dict[str, Any]]) -> bool:
     return any(_source_account_sync_scheduler_supported(account) for account in active_accounts)
+
+
+def _source_credential_ref(account_id: str) -> str:
+    return f"source_credential:{account_id}"
+
+
+def _with_source_credential_ref(metadata: dict[str, Any], account_id: str, enabled: bool = True) -> dict[str, Any]:
+    if not enabled:
+        return metadata
+    return {**metadata, "credential_ref": _source_credential_ref(account_id)}
 
 
 def _source_sync_due_at(last_completed_at: str | None, *, interval_seconds: int) -> str | None:
@@ -2537,7 +2567,7 @@ class CortexStore:
             raise ValueError("max_records must be an integer") from exc
         if capped_max_records < 1 or capped_max_records > 500:
             raise ValueError("max_records must be between 1 and 500")
-        normalized_cursor_name = (cursor_name or ("local-folder" if account["source"] == "obsidian" else "default")).strip() or "default"
+        normalized_cursor_name = (cursor_name or _default_source_sync_cursor_name(account["source"])).strip() or "default"
         normalized_schedule_token = str(schedule_token or run_at or now_iso()).strip()[:120]
         unique_key = f"source_account_sync:{account['id']}:{normalized_cursor_name}:{normalized_schedule_token}"
         timestamp = now_iso()
@@ -2585,6 +2615,28 @@ class CortexStore:
                 {"job_id": job["id"], "source": account["source"], "run_at": run_at or timestamp},
             )
         return job
+
+    def store_source_account_credential(self, user_id: str, account_id: str, *, source: str, payload: dict[str, Any]) -> dict[str, Any]:
+        cleaned_payload = {
+            str(key): value
+            for key, value in (payload or {}).items()
+            if str(key or "").strip() and value is not None
+        }
+        if not cleaned_payload:
+            raise ValueError("credential payload is required")
+        return self.vault.write_source_credential(
+            user_id=user_id,
+            source_account_id=account_id,
+            source=source,
+            payload=cleaned_payload,
+        )
+
+    def _read_source_account_credential_payload(self, user_id: str, account_id: str) -> dict[str, Any]:
+        credential = self.vault.read_source_credential(user_id=user_id, source_account_id=account_id)
+        if not credential:
+            return {}
+        payload = credential.get("payload")
+        return payload if isinstance(payload, dict) else {}
 
     def _identity_aliases_for_source(
         self,
@@ -3259,6 +3311,7 @@ class CortexStore:
             "token_configured": True,
             "api_base_url": sync.api_base_url,
         }
+        metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(token or "").strip()))
         account = self.upsert_source_account(
             user_id,
             source=GITHUB_SOURCE,
@@ -3272,6 +3325,17 @@ class CortexStore:
             last_error=error_message,
             account_id=resolved_account_id,
         )
+        if str(token or "").strip():
+            self.store_source_account_credential(
+                user_id,
+                account["id"],
+                source=GITHUB_SOURCE,
+                payload={
+                    "token": token,
+                    "repositories": sync.repositories,
+                    "api_base_url": sync.api_base_url,
+                },
+            )
         state = {
             "connector": GITHUB_SOURCE,
             "connector_version": sync_summary["connector_version"],
@@ -3523,6 +3587,7 @@ class CortexStore:
             "token_configured": True,
             "api_base_url": sync.api_base_url,
         }
+        metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(token or "").strip()))
         account = self.upsert_source_account(
             user_id,
             source=READWISE_SOURCE,
@@ -3536,6 +3601,16 @@ class CortexStore:
             last_error=error_message,
             account_id=resolved_account_id,
         )
+        if str(token or "").strip():
+            self.store_source_account_credential(
+                user_id,
+                account["id"],
+                source=READWISE_SOURCE,
+                payload={
+                    "token": token,
+                    "api_base_url": sync.api_base_url,
+                },
+            )
         state = {
             "connector": READWISE_SOURCE,
             "connector_version": sync_summary["connector_version"],
@@ -3792,6 +3867,7 @@ class CortexStore:
             "api_base_url": sync.api_base_url,
             "include_highlights": bool(include_highlights),
         }
+        metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(token or "").strip()))
         account = self.upsert_source_account(
             user_id,
             source=RAINDROP_SOURCE,
@@ -3805,6 +3881,18 @@ class CortexStore:
             last_error=error_message,
             account_id=resolved_account_id,
         )
+        if str(token or "").strip():
+            self.store_source_account_credential(
+                user_id,
+                account["id"],
+                source=RAINDROP_SOURCE,
+                payload={
+                    "token": token,
+                    "collection_id": sync.collection_id,
+                    "api_base_url": sync.api_base_url,
+                    "include_highlights": bool(include_highlights),
+                },
+            )
         state = {
             "connector": RAINDROP_SOURCE,
             "connector_version": sync_summary["connector_version"],
@@ -3936,6 +4024,7 @@ class CortexStore:
             "include_attachments": bool(include_attachments),
             "attachment_content_imported": False,
         }
+        metadata = _with_source_credential_ref(metadata, resolved_account_id, token_configured or bool(sync.api_base_url))
         account = self.upsert_source_account(
             user_id,
             source=ZOTERO_SOURCE,
@@ -3949,6 +4038,19 @@ class CortexStore:
             last_error=error_message,
             account_id=resolved_account_id,
         )
+        if token_configured or sync.api_base_url:
+            self.store_source_account_credential(
+                user_id,
+                account["id"],
+                source=ZOTERO_SOURCE,
+                payload={
+                    "token": token or "",
+                    "library_type": sync.library_type,
+                    "library_id": sync.library_id,
+                    "api_base_url": sync.api_base_url,
+                    "include_attachments": bool(include_attachments),
+                },
+            )
         state = {
             "connector": ZOTERO_SOURCE,
             "connector_version": sync_summary["connector_version"],
@@ -4069,6 +4171,7 @@ class CortexStore:
             "token_configured": True,
             "api_url_configured": bool(str(api_url or "").strip()),
         }
+        metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(token or "").strip()))
         account = self.upsert_source_account(
             user_id,
             source=LINEAR_SOURCE,
@@ -4082,6 +4185,16 @@ class CortexStore:
             last_error=error_message,
             account_id=resolved_account_id,
         )
+        if str(token or "").strip():
+            self.store_source_account_credential(
+                user_id,
+                account["id"],
+                source=LINEAR_SOURCE,
+                payload={
+                    "token": token,
+                    "api_url": api_url or "https://api.linear.app/graphql",
+                },
+            )
         state = {
             "connector": LINEAR_SOURCE,
             "connector_version": sync_summary["connector_version"],
@@ -4338,6 +4451,7 @@ class CortexStore:
             "content_sync_enabled": bool(include_content),
             "notion_version": sync.notion_version,
         }
+        metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(token or "").strip()))
         account = self.upsert_source_account(
             user_id,
             source=NOTION_SOURCE,
@@ -4351,6 +4465,18 @@ class CortexStore:
             last_error=error_message,
             account_id=resolved_account_id,
         )
+        if str(token or "").strip():
+            self.store_source_account_credential(
+                user_id,
+                account["id"],
+                source=NOTION_SOURCE,
+                payload={
+                    "token": token,
+                    "include_content": bool(include_content),
+                    "api_base_url": api_base_url or "https://api.notion.com/v1",
+                    "notion_version": sync.notion_version,
+                },
+            )
         state = {
             "connector": NOTION_SOURCE,
             "connector_version": sync_summary["connector_version"],
@@ -4419,12 +4545,12 @@ class CortexStore:
         result["sync"] = sync_summary
         return result
 
-    def _latest_sync_cursor_value(self, user_id: str, account_id: str, cursor_name: str) -> str | None:
+    def _latest_sync_cursor(self, user_id: str, account_id: str, cursor_name: str) -> dict[str, Any] | None:
         normalized_name = (cursor_name or "default").strip() or "default"
         with connect(self.db_path) as conn:
             row = conn.execute(
                 """
-                SELECT cursor_value
+                SELECT *
                 FROM sync_cursors
                 WHERE user_id = ?
                   AND source_account_id = ?
@@ -4436,7 +4562,13 @@ class CortexStore:
             ).fetchone()
         if not row:
             return None
-        return str(row["cursor_value"] or "").strip() or None
+        return self._sync_cursor_from_row(row)
+
+    def _latest_sync_cursor_value(self, user_id: str, account_id: str, cursor_name: str) -> str | None:
+        row = self._latest_sync_cursor(user_id, account_id, cursor_name)
+        if not row:
+            return None
+        return str(row.get("cursor_value") or "").strip() or None
 
     def _source_account_by_id(self, user_id: str, account_id: str) -> dict[str, Any] | None:
         with connect(self.db_path) as conn:
@@ -9312,6 +9444,7 @@ class CortexStore:
                     "sync_cursors",
                     "sync_devices",
                     "sync_receipts",
+                    "credentials",
                     "settings",
                     "events",
                     "attachments",
@@ -9785,6 +9918,19 @@ class CortexStore:
         max_records = _bounded_int(payload.get("max_records"), minimum=1, maximum=500) or 200
         metadata = account.get("metadata") if isinstance(account.get("metadata"), dict) else {}
         source = _normalize_source_key(str(account.get("source") or ""))
+        if cursor_name == "default":
+            cursor_name = _default_source_sync_cursor_name(source)
+        cursor_record = self._latest_sync_cursor(user_id, account_id, cursor_name) or {}
+        cursor_state = cursor_record.get("state") if isinstance(cursor_record.get("state"), dict) else {}
+        cursor_value = str(cursor_record.get("cursor_value") or "").strip() or None
+        high_water_mark = str(cursor_record.get("high_water_mark") or "").strip() or None
+
+        def cursor_state_value(name: str) -> str | None:
+            return str(cursor_state.get(name) or "").strip() or None
+
+        credential_payload = self._read_source_account_credential_payload(user_id, account_id)
+        account_label = account.get("account_label")
+        account_identifier = account.get("account_identifier")
         if source == "obsidian":
             vault_path = str(metadata.get("vault_path") or "").strip()
             if not vault_path:
@@ -9798,6 +9944,122 @@ class CortexStore:
                 processing=processing,
                 max_records=max_records,
                 cursor_name=cursor_name,
+            )
+        elif source == "github":
+            token = str(credential_payload.get("token") or "").strip()
+            repositories = credential_payload.get("repositories")
+            if not isinstance(repositories, list):
+                repositories = metadata.get("repositories") if isinstance(metadata.get("repositories"), list) else []
+            repositories = [str(repo).strip() for repo in repositories if str(repo).strip()]
+            if not token or not repositories:
+                raise ValueError("github source account is missing stored token or repositories")
+            result = self.sync_github_account(
+                user_id,
+                token=token,
+                repositories=repositories,
+                source_account_id=account_id,
+                account_label=account_label,
+                account_identifier=account_identifier,
+                since=cursor_value or high_water_mark or account.get("last_sync_at"),
+                processing=processing,
+                max_records=max_records,
+                cursor_name=cursor_name,
+                api_base_url=str(credential_payload.get("api_base_url") or metadata.get("api_base_url") or "https://api.github.com"),
+            )
+        elif source == "readwise":
+            token = str(credential_payload.get("token") or "").strip()
+            if not token:
+                raise ValueError("readwise source account is missing stored token")
+            next_page_cursor = cursor_state_value("next_page_cursor")
+            result = self.sync_readwise_account(
+                user_id,
+                token=token,
+                source_account_id=account_id,
+                account_label=account_label,
+                account_identifier=account_identifier,
+                since=None if next_page_cursor else (high_water_mark or cursor_value),
+                page_cursor=next_page_cursor,
+                processing=processing,
+                max_records=max_records,
+                cursor_name=cursor_name,
+                api_base_url=str(credential_payload.get("api_base_url") or metadata.get("api_base_url") or "https://readwise.io/api/v2"),
+            )
+        elif source == "raindrop":
+            token = str(credential_payload.get("token") or "").strip()
+            if not token:
+                raise ValueError("raindrop source account is missing stored token")
+            next_page = cursor_state_value("next_page")
+            result = self.sync_raindrop_account(
+                user_id,
+                token=token,
+                collection_id=str(credential_payload.get("collection_id") or metadata.get("collection_id") or "0"),
+                source_account_id=account_id,
+                account_label=account_label,
+                account_identifier=account_identifier,
+                since=None if next_page else (high_water_mark or cursor_value),
+                page=next_page,
+                processing=processing,
+                max_records=max_records,
+                cursor_name=cursor_name,
+                include_highlights=bool(credential_payload.get("include_highlights", metadata.get("include_highlights", True))),
+                api_base_url=str(credential_payload.get("api_base_url") or metadata.get("api_base_url") or "https://api.raindrop.io/rest/v1"),
+            )
+        elif source == "zotero":
+            next_cursor = cursor_state_value("next_cursor")
+            zotero_payload = credential_payload or metadata
+            result = self.sync_zotero_account(
+                user_id,
+                token=str(zotero_payload.get("token") or "").strip() or None,
+                library_type=str(zotero_payload.get("library_type") or metadata.get("library_type") or "user"),
+                library_id=str(zotero_payload.get("library_id") or metadata.get("library_id") or "0"),
+                source_account_id=account_id,
+                account_label=account_label,
+                account_identifier=account_identifier,
+                since=None if next_cursor else (high_water_mark or cursor_value),
+                cursor=next_cursor,
+                processing=processing,
+                max_records=max_records,
+                cursor_name=cursor_name,
+                include_attachments=bool(zotero_payload.get("include_attachments", metadata.get("include_attachments", False))),
+                api_base_url=str(zotero_payload.get("api_base_url") or metadata.get("api_base_url") or "http://localhost:23119/api"),
+            )
+        elif source == "linear":
+            token = str(credential_payload.get("token") or "").strip()
+            if not token:
+                raise ValueError("linear source account is missing stored token")
+            next_cursor = cursor_state_value("next_cursor")
+            result = self.sync_linear_account(
+                user_id,
+                token=token,
+                source_account_id=account_id,
+                account_label=account_label,
+                account_identifier=account_identifier,
+                since=None if next_cursor else (high_water_mark or cursor_value),
+                cursor=next_cursor,
+                processing=processing,
+                max_records=max_records,
+                cursor_name=cursor_name,
+                api_url=str(credential_payload.get("api_url") or "https://api.linear.app/graphql"),
+            )
+        elif source == "notion":
+            token = str(credential_payload.get("token") or "").strip()
+            if not token:
+                raise ValueError("notion source account is missing stored token")
+            next_cursor = cursor_state_value("next_cursor")
+            result = self.sync_notion_account(
+                user_id,
+                token=token,
+                source_account_id=account_id,
+                account_label=account_label,
+                account_identifier=account_identifier,
+                since=None if next_cursor else (high_water_mark or cursor_value),
+                cursor=next_cursor,
+                processing=processing,
+                max_records=min(max_records, 200),
+                cursor_name=cursor_name,
+                include_content=bool(credential_payload.get("include_content", metadata.get("content_sync_enabled", True))),
+                api_base_url=str(credential_payload.get("api_base_url") or "https://api.notion.com/v1"),
+                notion_version=str(credential_payload.get("notion_version") or metadata.get("notion_version") or "2026-03-11"),
             )
         else:
             raise ValueError("source account needs stored sync configuration before it can be scheduled")

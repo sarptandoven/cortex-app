@@ -3301,6 +3301,15 @@ Never use [[Templates/Marketing]] boilerplate in memory.
         with self.assertRaises(ValueError):
             self.store.restore_latest_backup(self.user_id)
 
+    def test_restore_rejects_denylisted_backup_member_paths(self) -> None:
+        backup_path = self.store.vault.backups_dir / "cortex-vault-denylisted.zip"
+        self.store.vault.backups_dir.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(backup_path, "w") as archive:
+            archive.writestr("attachments/credentials.json", "{\"token\":\"cx_secret\"}")
+
+        with self.assertRaises(ValueError):
+            self.store.restore_latest_backup(self.user_id)
+
     def test_delete_user_data_purges_current_vault_index_events_and_backups(self) -> None:
         phrase = "Delete all local Cortex user data phrase."
         self.capture(phrase)
@@ -3606,6 +3615,7 @@ Never use [[Templates/Marketing]] boilerplate in memory.
         self.assertEqual(report["export"]["json_endpoint"], "/v1/export.json")
         self.assertTrue(report["deletion"]["include_backups_default"])
         self.assertIn("api_tokens", report["deletion"]["covered_sqlite"])
+        self.assertIn("credentials", report["deletion"]["covered_vault"])
         self.assertIn("backups when include_backups=true", report["deletion"]["covered_vault"])
         self.assertEqual(report["deletion"]["tombstone_policy"], "block_restore")
         self.assertTrue(report["deletion"]["restore_preserves_tombstones"])

@@ -124,6 +124,7 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(payload["export"]["json_endpoint"], "/v1/export.json")
         self.assertEqual(payload["deletion"]["endpoint"], "/v1/user-data?include_backups=true")
         self.assertIn("api_tokens", payload["deletion"]["covered_sqlite"])
+        self.assertIn("credentials", payload["deletion"]["covered_vault"])
         self.assertTrue(payload["deletion"]["restore_preserves_tombstones"])
         self.assertIn("trust_score", payload["ai_access"])
         self.assertIn("events", payload["audit"])

@@ -73,6 +73,17 @@ class CortexVault:
         return self.root / "events.jsonl"
 
     @property
+    def credentials_path(self) -> Path:
+        return self.root / "credentials.json"
+
+    def _chmod_credentials_file(self) -> None:
+        try:
+            if self.credentials_path.exists():
+                self.credentials_path.chmod(0o600)
+        except OSError:
+            pass
+
+    @property
     def backups_dir(self) -> Path:
         return self.root / "backups"
 
@@ -210,6 +221,73 @@ class CortexVault:
         device_id = safe_segment(record.get("device_id"), "sync-device")
         path = self.root / "sync_receipts" / user_id / device_id / f"{safe_segment(record.get('id'), 'sync-receipt')}.json"
         return self._write_record(path, "sync_receipt", record)
+
+    def write_source_credential(self, *, user_id: str, source_account_id: str, source: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self.ensure()
+        user_key = str(user_id or "").strip()
+        account_key = str(source_account_id or "").strip()
+        if not user_key or not account_key:
+            raise ValueError("user_id and source_account_id are required")
+        now = vault_now()
+        credentials = self._read_json(
+            self.credentials_path,
+            {
+                "vault_record_type": "credentials",
+                "vault_record_version": VAULT_VERSION,
+                "users": {},
+            },
+        )
+        credentials.setdefault("users", {})
+        user_credentials = credentials["users"].setdefault(user_key, {})
+        existing = user_credentials.get(account_key) if isinstance(user_credentials.get(account_key), dict) else {}
+        record = {
+            "user_id": user_key,
+            "source_account_id": account_key,
+            "source": safe_segment(source, "source"),
+            "payload": payload,
+            "created_at": existing.get("created_at") or now,
+            "updated_at": now,
+        }
+        user_credentials[account_key] = record
+        credentials["vault_updated_at"] = now
+        self._write_json(self.credentials_path, credentials)
+        self._chmod_credentials_file()
+        return {
+            "credential_ref": f"source_credential:{account_key}",
+            "source_account_id": account_key,
+            "source": record["source"],
+            "updated_at": now,
+        }
+
+    def read_source_credential(self, *, user_id: str, source_account_id: str) -> dict[str, Any] | None:
+        credentials = self._read_json(self.credentials_path, {})
+        user_credentials = (credentials.get("users") or {}).get(user_id)
+        if not isinstance(user_credentials, dict):
+            return None
+        record = user_credentials.get(source_account_id)
+        if not isinstance(record, dict):
+            return None
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            return None
+        return {
+            "credential_ref": f"source_credential:{source_account_id}",
+            "source_account_id": source_account_id,
+            "source": record.get("source"),
+            "payload": payload,
+            "updated_at": record.get("updated_at"),
+        }
+
+    def delete_source_credential(self, *, user_id: str, source_account_id: str) -> bool:
+        credentials = self._read_json(self.credentials_path, {})
+        user_credentials = (credentials.get("users") or {}).get(user_id)
+        if not isinstance(user_credentials, dict) or source_account_id not in user_credentials:
+            return False
+        user_credentials.pop(source_account_id, None)
+        credentials["vault_updated_at"] = vault_now()
+        self._write_json(self.credentials_path, credentials)
+        self._chmod_credentials_file()
+        return True
 
     def write_memory(self, record: dict[str, Any]) -> Path:
         kind = safe_segment(record.get("kind"), "memory")
@@ -536,6 +614,7 @@ class CortexVault:
             "deletion_tombstones": 0,
             "events": 0,
             "settings": 0,
+            "credentials": 0,
             "attachments": 0,
             "backups": 0,
         }
@@ -570,6 +649,16 @@ class CortexVault:
             settings["updated_at"] = vault_now()
             self._write_json(self.settings_path, settings)
             counts["settings"] = 1
+
+        credentials = self._read_json(self.credentials_path, {})
+        credential_users = credentials.get("users")
+        if isinstance(credential_users, dict) and user_id in credential_users:
+            removed = credential_users.pop(user_id, {})
+            if isinstance(removed, dict):
+                counts["credentials"] = len(removed)
+            credentials["vault_updated_at"] = vault_now()
+            self._write_json(self.credentials_path, credentials)
+            self._chmod_credentials_file()
 
         if self.events_path.exists():
             retained: list[str] = []
@@ -655,6 +744,8 @@ class CortexVault:
             raise ValueError(f"unsafe backup member path: {name}")
         if "\\" in name:
             raise ValueError(f"unsafe backup member path: {name}")
+        if path.name.lower() in BACKUP_DENY_FILENAMES or any(path.name.startswith(prefix) for prefix in BACKUP_DENY_NAME_PREFIXES):
+            raise ValueError(f"unsupported backup member path: {name}")
         top = path.parts[0]
         if top in RESTORE_ROOT_FILES:
             if len(path.parts) != 1:
