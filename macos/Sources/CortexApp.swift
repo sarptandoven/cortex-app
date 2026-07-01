@@ -2163,7 +2163,7 @@ final class AppState: ObservableObject {
     }
 
     var hasConnectedObsidianVault: Bool {
-        !resolvedObsidianVaultPath().isEmpty
+        storedObsidianVaultURL() != nil
     }
 
     var detectedAIIntegrationCount: Int {

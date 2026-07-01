@@ -350,6 +350,9 @@ private struct ConnectionsOverviewHero: View {
     }
 
     private var primaryActionTitle: String {
+        if notesConnected {
+            return state.hasConnectedObsidianVault ? "Sync now" : "Reconnect"
+        }
         if !notesConnected, let _ = obsidianConnector {
             if notesNeedAttention { return "Fix notes" }
             return notesNeedContent ? "Choose notes" : "Connect notes"
@@ -357,10 +360,13 @@ private struct ConnectionsOverviewHero: View {
         if !notesConnected {
             return "Check status"
         }
-        return "Refresh status"
+        return "Sync now"
     }
 
     private var primaryActionIcon: String {
+        if notesConnected {
+            return state.hasConnectedObsidianVault ? "arrow.triangle.2.circlepath" : "folder.badge.plus"
+        }
         if !notesConnected, obsidianConnector != nil {
             if notesNeedAttention { return "exclamationmark.triangle.fill" }
             return notesNeedContent ? "folder.badge.questionmark" : "folder.badge.plus"
@@ -409,7 +415,7 @@ private struct ConnectionsOverviewHero: View {
     }
 
     private func runPrimaryAction() {
-        if !notesConnected, let connector = obsidianConnector {
+        if let connector = obsidianConnector {
             state.connectLocalNotesFolder(connector)
         } else {
             Task {

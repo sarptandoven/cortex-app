@@ -119,6 +119,9 @@ struct SourceConnectorStatusCard: View {
             return "Cortex could not find usable notes there. Choose a notes library with real content."
         }
         if connected {
+            if !state.hasConnectedObsidianVault {
+                return "Reconnect the notes folder on this Mac so Cortex can keep syncing."
+            }
             return "Cortex keeps these notes synced. Review approves memory before Ask or AI tools use it."
         }
         return "Connect notes once. Cortex syncs locally and keeps citations attached."
@@ -127,13 +130,19 @@ struct SourceConnectorStatusCard: View {
     private var primaryButtonTitle: String {
         if needsAttention { return "Fix notes" }
         if needsContent { return "Choose notes" }
-        return connected ? "Check status" : "Connect notes"
+        if connected {
+            return state.hasConnectedObsidianVault ? "Sync now" : "Reconnect"
+        }
+        return "Connect notes"
     }
 
     private var primaryButtonIcon: String {
         if needsAttention { return "exclamationmark.triangle.fill" }
         if needsContent { return "folder.badge.questionmark" }
-        return connected ? "checkmark.seal" : "folder.badge.plus"
+        if connected {
+            return state.hasConnectedObsidianVault ? "arrow.triangle.2.circlepath" : "folder.badge.plus"
+        }
+        return "folder.badge.plus"
     }
 }
 
