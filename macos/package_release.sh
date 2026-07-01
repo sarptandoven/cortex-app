@@ -195,7 +195,7 @@ Rollback:
 
 Known local-beta limits:
 - Manual app replacement is the only update path.
-- Live OAuth/API sync, hosted accounts, cloud backup, and automatic updates are not enabled.
+- Managed OAuth sign-in, hosted accounts, cloud backup, and automatic updates are not enabled.
 - Broad public distribution requires Developer ID signing, notarization, hosted HTTPS downloads, and a support process.
 
 Channel: ${CHANNEL}
@@ -307,7 +307,7 @@ payload = {
         ],
         "known_limitations": [
             "Manual app replacement is the only update path for this local beta.",
-            "Live OAuth/API sync, hosted accounts, cloud backup, and remote MCP/OAuth are not enabled.",
+            "Managed OAuth sign-in, hosted accounts, cloud backup, and remote MCP/OAuth are not enabled.",
             "Support starts from the sanitized support bundle, not raw memory folder data.",
             "Developer ID signing, notarization, hosted HTTPS downloads, and a support process are required before broad public distribution.",
         ],
@@ -476,9 +476,10 @@ python3 scripts/ops_readiness_check.py --refresh-site --include-package
 ~~~
 
 With the packaged app running, run the first-100 smoke directly. It reads the
-local API token from the app credentials file and cleans up its isolated smoke
-user. For deeper diagnostics, copy the local API token from Connections &
-Privacy > Advanced.
+local API token from the macOS Keychain first, falls back to legacy local
+credentials only for older builds, and cleans up its isolated smoke user. For
+deeper diagnostics, copy the local API token from Connections & Privacy >
+Advanced.
 
 ~~~bash
 python3 scripts/first100_live_smoke.py --base-url http://127.0.0.1:8766
@@ -516,7 +517,7 @@ Use the product flow without browser automation:
 ## Known Limitations
 
 - User data stays in the Cortex data folder.
-- Live OAuth/API sync is not enabled for this local beta.
+- Managed OAuth sign-in, hosted accounts, cloud backup, and remote MCP/OAuth are not enabled for this local beta.
 - Manual app replacement is the update path.
 - Developer ID notarization is required before broad public distribution.
 - Support should ask for the sanitized support bundle before any raw memory folder data.
