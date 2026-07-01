@@ -48,8 +48,14 @@ This command verifies the release artifacts are tracked, the update manifest mat
 Use the strict command as the invite-blocking gate:
 
 ```bash
-python3 scripts/first100_launch_gate.py --support-packet path/to/packet.txt --require-human-packet
+python3 scripts/first100_launch_gate.py \
+  --support-packet path/to/support-packet.txt \
+  --clean-profile-qa path/to/clean-profile-qa.txt \
+  --require-human-packet \
+  --require-clean-profile-qa
 ```
+
+Use `docs/FIRST100_CLEAN_PROFILE_QA.md` for the clean-profile packet format. The default summary command exits 0 with `needs_human`; only the strict command above should be treated as invite-blocking.
 
 ## 2. Invite The Right Testers
 
@@ -160,6 +166,7 @@ Each batch needs the filled support packet, no open SEV 0, no repeated unresolve
 ## References
 
 - [First 100 User Demo Checkpoint](checkpoints/first-100-demo.md)
+- [First-100 Clean-Profile QA](FIRST100_CLEAN_PROFILE_QA.md)
 - [First 100 User Support And Privacy Runbook](BETA_SUPPORT.md)
 - [Installer And Updates](INSTALLER_AND_UPDATES.md)
 - [Trust Controls](TRUST_CONTROLS.md)

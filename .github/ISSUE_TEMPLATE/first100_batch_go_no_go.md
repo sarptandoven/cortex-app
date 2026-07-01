@@ -52,6 +52,7 @@ Paste command status only. Do not paste private memory content.
 
 ## Human Clean-Profile QA
 
+- Clean-profile QA packet location:
 - DMG downloaded from planned tester URL:
 - DMG checksum matched:
 - Installed on clean macOS 13+ profile:
@@ -65,6 +66,7 @@ Paste command status only. Do not paste private memory content.
 - Content-free support bundle export worked:
 - Manual update over previous beta preserved memory folder:
 - Manual rollback to previous beta preserved memory folder:
+- Strict launch gate passed with support packet and clean-profile QA packet:
 
 ## No-Go Checks
 

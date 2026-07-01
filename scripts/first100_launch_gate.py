@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_FILES = [
     "docs/BETA_SUPPORT.md",
     "docs/BETA_OPERATOR_QUICKSTART.md",
+    "docs/FIRST100_CLEAN_PROFILE_QA.md",
     "docs/INSTALLER_AND_UPDATES.md",
     "docs/DISTRIBUTION.md",
     ".github/ISSUE_TEMPLATE/first100_beta_support_case.md",
@@ -34,6 +35,45 @@ SUPPORT_FIELDS = [
     "First batch size",
     "Stop/go decision owner",
 ]
+
+CLEAN_PROFILE_QA_FIELDS = [
+    "QA owner",
+    "QA date",
+    "macOS version",
+    "Device type",
+    "Artifact source",
+    "DMG checksum matched",
+    "Installed on clean macOS 13+ profile",
+    "Gatekeeper path accepted",
+    "First-run onboarding completed without developer docs",
+    "Obsidian/local notes or MCP connected",
+    "Sync created Review items",
+    "Review approval worked",
+    "Ask returned cited answer",
+    "Backup worked",
+    "Content-free support bundle export worked",
+    "Manual update preserved memory folder",
+    "Manual rollback preserved memory folder",
+    "Invite copy reviewed for local-beta limitations",
+]
+
+QA_BOOLEAN_FIELDS = {
+    "DMG checksum matched",
+    "Installed on clean macOS 13+ profile",
+    "Gatekeeper path accepted",
+    "First-run onboarding completed without developer docs",
+    "Obsidian/local notes or MCP connected",
+    "Sync created Review items",
+    "Review approval worked",
+    "Ask returned cited answer",
+    "Backup worked",
+    "Content-free support bundle export worked",
+    "Manual update preserved memory folder",
+    "Manual rollback preserved memory folder",
+    "Invite copy reviewed for local-beta limitations",
+}
+
+YES_VALUES = {"yes", "true", "pass", "passed", "ok", "done", "verified"}
 
 
 def sha256(path: Path) -> str:
@@ -162,16 +202,17 @@ def check_release_manifest() -> dict[str, Any]:
     }
 
 
-def parse_support_packet(path: Path) -> dict[str, str]:
+def parse_field_packet(path: Path, allowed_fields: list[str]) -> dict[str, str]:
     values: dict[str, str] = {}
     if not path.exists():
         return values
+    allowed = set(allowed_fields)
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         if ":" not in raw_line:
             continue
         key, value = raw_line.split(":", 1)
         key = " ".join(key.strip().split())
-        if key in SUPPORT_FIELDS:
+        if key in allowed:
             values[key] = value.strip()
     return values
 
@@ -184,7 +225,7 @@ def check_support_packet(path: Path | None) -> dict[str, Any]:
             "missing_fields": SUPPORT_FIELDS,
             "detail": "No support packet file was provided. Use --support-packet with filled field values before inviting testers.",
         }
-    values = parse_support_packet(path)
+    values = parse_field_packet(path, SUPPORT_FIELDS)
     missing = [field for field in SUPPORT_FIELDS if not values.get(field)]
     return {
         "ok": not missing,
@@ -195,10 +236,38 @@ def check_support_packet(path: Path | None) -> dict[str, Any]:
     }
 
 
+def check_clean_profile_qa(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {
+            "ok": False,
+            "provided": False,
+            "missing_fields": CLEAN_PROFILE_QA_FIELDS,
+            "failed_fields": [],
+            "detail": "No clean-profile QA packet was provided. Use --clean-profile-qa with filled field values before inviting testers.",
+        }
+    values = parse_field_packet(path, CLEAN_PROFILE_QA_FIELDS)
+    missing = [field for field in CLEAN_PROFILE_QA_FIELDS if not values.get(field)]
+    failed = [
+        field
+        for field in QA_BOOLEAN_FIELDS
+        if values.get(field) and values[field].strip().lower() not in YES_VALUES
+    ]
+    return {
+        "ok": not missing and not failed,
+        "provided": True,
+        "path": str(path),
+        "missing_fields": missing,
+        "failed_fields": sorted(failed),
+        "filled_fields": sorted(values),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Summarize first-100 automated and human launch readiness gates.")
     parser.add_argument("--support-packet", type=Path, help="Optional filled support packet with 'Field: value' lines.")
+    parser.add_argument("--clean-profile-qa", type=Path, help="Optional filled clean-profile QA packet with 'Field: value' lines.")
     parser.add_argument("--require-human-packet", action="store_true", help="Fail unless --support-packet is provided and complete.")
+    parser.add_argument("--require-clean-profile-qa", action="store_true", help="Fail unless --clean-profile-qa is provided and complete.")
     args = parser.parse_args()
 
     checks = {
@@ -209,26 +278,36 @@ def main() -> int:
         "distribution_site": command_ok(["python3", "scripts/check_distribution_site.py"]),
         "site_update_manifest": command_ok(["python3", "scripts/validate_update_manifest.py", "site/downloads/latest.json"]),
         "support_packet": check_support_packet(args.support_packet),
+        "clean_profile_qa": check_clean_profile_qa(args.clean_profile_qa),
     }
 
     automated_names = ["required_files", "worktree", "release_manifest", "docs_current", "distribution_site", "site_update_manifest"]
     automated_ok = all(checks[name]["ok"] for name in automated_names)
-    human_ok = checks["support_packet"]["ok"]
+    support_ok = checks["support_packet"]["ok"]
+    clean_profile_qa_ok = checks["clean_profile_qa"]["ok"]
+    human_ok = support_ok and clean_profile_qa_ok
     status = "ok" if automated_ok and human_ok else "needs_human" if automated_ok else "failed"
-    if args.require_human_packet and not human_ok:
+    if args.require_human_packet and not support_ok:
+        status = "failed"
+    if args.require_clean_profile_qa and not clean_profile_qa_ok:
         status = "failed"
 
     payload = {
         "status": status,
         "automated_ok": automated_ok,
-        "human_packet_ok": human_ok,
+        "human_gates_ok": human_ok,
+        "support_packet_ok": support_ok,
+        "clean_profile_qa_ok": clean_profile_qa_ok,
         "checks": checks,
         "next_actions": [],
     }
     if not automated_ok:
         payload["next_actions"].append("Fix failed automated checks before inviting testers.")
     if not human_ok:
-        payload["next_actions"].append("Fill support ownership, case-log, artifact-storage, cohort, and go/no-go owner fields before inviting testers.")
+        if not support_ok:
+            payload["next_actions"].append("Fill support ownership, case-log, artifact-storage, cohort, and go/no-go owner fields before inviting testers.")
+        if not clean_profile_qa_ok:
+            payload["next_actions"].append("Complete and record clean-profile install/product QA before inviting testers.")
     if automated_ok and human_ok:
         payload["next_actions"].append("Run the clean-profile install/product pass and record the batch go/no-go issue.")
 
