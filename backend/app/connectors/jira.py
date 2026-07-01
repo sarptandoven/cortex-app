@@ -9,7 +9,7 @@ from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
-from ._redaction import redact_error_message
+from ._redaction import classify_error_message, connector_error_payload
 
 
 JIRA_SOURCE = "jira"
@@ -141,7 +141,7 @@ def fetch_jira_records(
         try:
             payload = requester(endpoint, headers, body)
         except Exception as exc:
-            errors.append({"error": _safe_error(exc, cleaned_token, basic_auth, headers.get("Authorization"))})
+            errors.append(_safe_error(exc, cleaned_token, basic_auth, headers.get("Authorization")))
             break
         if not isinstance(payload, dict):
             errors.append({"error": "Jira search response was not an object"})
@@ -303,8 +303,8 @@ def _basic_auth(email: str, api_token: str) -> str:
     return base64.b64encode(f"{email}:{api_token}".encode("utf-8")).decode("ascii")
 
 
-def _safe_error(exc: Exception, *secrets: str | None) -> str:
-    return redact_error_message(exc, secrets)
+def _safe_error(exc: Exception, *secrets: str | None) -> dict[str, Any]:
+    return connector_error_payload(exc, secrets)
 
 
 def _jira_errors(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -312,12 +312,16 @@ def _jira_errors(payload: dict[str, Any]) -> list[dict[str, Any]]:
     for item in payload.get("errorMessages") or []:
         text = _clean_text(item)
         if text:
-            errors.append({"error": text})
+            errors.append({"error": text, "category": classify_error_message(text, default="client")})
     raw_errors = payload.get("errors")
     if isinstance(raw_errors, dict):
         for key, value in raw_errors.items():
-            message = _clean_text(value)
-            errors.append({"field": _clean_text(key), "error": message or "Jira API error"})
+            message = _clean_text(value) or "Jira API error"
+            errors.append({
+                "field": _clean_text(key),
+                "error": message,
+                "category": classify_error_message(message, default="client"),
+            })
     return errors
 
 

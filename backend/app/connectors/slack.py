@@ -9,7 +9,7 @@ from typing import Any, Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from ._redaction import redact_error_message
+from ._redaction import connector_error_payload
 
 
 SLACK_SOURCE = "slack"
@@ -131,7 +131,7 @@ def fetch_slack_records(
                 errors.append(
                     {
                         "channel": channel.channel_id,
-                        "error": redact_error_message(exc, [cleaned_token, headers.get("Authorization")]),
+                        **connector_error_payload(exc, [cleaned_token, headers.get("Authorization")]),
                     }
                 )
                 break
@@ -139,7 +139,7 @@ def fetch_slack_records(
                 errors.append({"channel": channel.channel_id, "error": "Slack history response was not an object"})
                 break
             if not payload.get("ok", False):
-                errors.append({"channel": channel.channel_id, "error": str(payload.get("error") or "Slack API error")})
+                errors.append({"channel": channel.channel_id, **connector_error_payload(payload.get("error") or "Slack API error")})
                 break
             messages = payload.get("messages") if isinstance(payload.get("messages"), list) else []
             records_found += len(messages)
@@ -246,7 +246,7 @@ def _fetch_thread_reply_records(
             {
                 "channel": channel.channel_id,
                 "thread_ts": parent_ts,
-                "error": redact_error_message(exc, [token, headers.get("Authorization")]),
+                **connector_error_payload(exc, [token, headers.get("Authorization")]),
             }
         )
         return []
@@ -254,7 +254,7 @@ def _fetch_thread_reply_records(
         errors.append({"channel": channel.channel_id, "thread_ts": parent_ts, "error": "Slack replies response was not an object"})
         return []
     if not payload.get("ok", False):
-        errors.append({"channel": channel.channel_id, "thread_ts": parent_ts, "error": str(payload.get("error") or "Slack replies API error")})
+        errors.append({"channel": channel.channel_id, "thread_ts": parent_ts, **connector_error_payload(payload.get("error") or "Slack replies API error")})
         return []
     messages = payload.get("messages") if isinstance(payload.get("messages"), list) else []
     records: list[SlackSyncRecord] = []

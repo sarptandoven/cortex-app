@@ -8,7 +8,7 @@ from typing import Any, Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from ._redaction import redact_error_message
+from ._redaction import connector_error_payload
 
 
 ZOTERO_SOURCE = "zotero"
@@ -125,7 +125,7 @@ def fetch_zotero_records(
         try:
             payload = requester(url, headers)
         except Exception as exc:
-            errors.append({"error": redact_error_message(exc, _request_secrets(cleaned_token, headers))})
+            errors.append(connector_error_payload(exc, _request_secrets(cleaned_token, headers)))
             break
         if not isinstance(payload, list):
             errors.append({"error": "Zotero items response was not a list"})

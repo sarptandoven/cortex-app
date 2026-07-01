@@ -7,7 +7,7 @@ from typing import Any, Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from ._redaction import redact_error_message
+from ._redaction import connector_error_payload
 
 
 NOTION_SOURCE = "notion"
@@ -112,7 +112,7 @@ def fetch_notion_records(
         try:
             payload = requester(f"{base_url}/search", headers, body, "POST")
         except Exception as exc:
-            errors.append({"error": redact_error_message(exc, _request_secrets(cleaned_token, headers))})
+            errors.append(connector_error_payload(exc, _request_secrets(cleaned_token, headers)))
             break
         if not isinstance(payload, dict):
             errors.append({"error": "Notion search response was not an object"})
@@ -214,7 +214,7 @@ def _append_child_blocks(
         try:
             payload = requester(url, headers, None, "GET")
         except Exception as exc:
-            errors.append({"block_id": parent_id, "error": redact_error_message(exc, secrets)})
+            errors.append({"block_id": parent_id, **connector_error_payload(exc, secrets)})
             break
         if not isinstance(payload, dict):
             errors.append({"block_id": parent_id, "error": "Notion block children response was not an object"})

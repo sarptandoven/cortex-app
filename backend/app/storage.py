@@ -801,6 +801,10 @@ def _normalize_source_key(value: str) -> str:
     return re.sub(r"[^a-z0-9-]+", "-", str(value or "").strip().lower()).strip("-")
 
 
+def _normalize_account_state_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9_]+", "_", str(value or "").strip().lower()).strip("_")
+
+
 RETRIEVAL_METADATA_FILTER_KEYS: dict[str, tuple[str, ...]] = {
     "channel": ("channel", "channel_id"),
     "channel_id": ("channel_id",),
@@ -1188,6 +1192,44 @@ def _with_source_credential_ref(metadata: dict[str, Any], account_id: str, enabl
     return {**metadata, "credential_ref": _source_credential_ref(account_id)}
 
 
+def _connector_failure_summary(errors: list[dict[str, Any]] | None, *, now: datetime | None = None) -> dict[str, Any] | None:
+    normalized_errors = [error for error in (errors or []) if isinstance(error, dict)]
+    if not normalized_errors:
+        return None
+    now = now or datetime.now(timezone.utc)
+    first = normalized_errors[0]
+    category = str(first.get("category") or "").strip() or "network"
+    summary: dict[str, Any] = {
+        "category": category,
+        "error": str(first.get("error") or "Connector sync failed").strip()[:500],
+        "error_count": len(normalized_errors),
+    }
+    status_code = _bounded_int(first.get("status_code"), minimum=100, maximum=599)
+    if status_code is not None:
+        summary["status_code"] = status_code
+    retry_after = _earliest_nonempty_iso(
+        [error.get("retry_after") for error in normalized_errors if isinstance(error, dict)]
+    )
+    if not retry_after and category in {"rate_limited", "server", "timeout", "network"}:
+        retry_after = _isoformat_z(now + timedelta(seconds=900))
+    if retry_after:
+        summary["retry_after"] = retry_after
+    return summary
+
+
+def _with_connector_failure_metadata(metadata: dict[str, Any], errors: list[dict[str, Any]] | None, *, now: datetime | None = None) -> dict[str, Any]:
+    updated = dict(metadata or {})
+    summary = _connector_failure_summary(errors, now=now)
+    if summary:
+        updated["last_connector_failure"] = summary
+        if summary.get("retry_after"):
+            updated["retry_after"] = summary["retry_after"]
+    else:
+        updated.pop("last_connector_failure", None)
+        updated.pop("retry_after", None)
+    return updated
+
+
 def _source_sync_due_at(last_completed_at: str | None, *, interval_seconds: int) -> str | None:
     completed = _parse_iso_timestamp(last_completed_at)
     if completed is None:
@@ -1259,10 +1301,10 @@ def _source_readiness_sync_plan(
         and (_timestamp_due(next_sync_due_at, now=now) if next_sync_due_at else not bool(last_completed_at))
     )
 
-    if account_errors or cursor_errors:
-        managed_sync_status = "needs_attention"
-    elif backing_off:
+    if backing_off:
         managed_sync_status = "backing_off"
+    elif account_errors or cursor_errors:
+        managed_sync_status = "needs_attention"
     elif due_now:
         managed_sync_status = "due"
     elif mode == "planned_account_sync":
@@ -3237,8 +3279,8 @@ class CortexStore:
         label = (account_label or (catalog_entry or {}).get("name") or normalized_source).strip()[:160]
         identifier = (account_identifier or "").strip()[:240] or None
         connection = _normalize_source_key(connection_type or "manual") or "manual"
-        account_status = _normalize_source_key(status or "available") or "available"
-        auth = _normalize_source_key(auth_state or "not_configured") or "not_configured"
+        account_status = _normalize_account_state_key(status or "available") or "available"
+        auth = _normalize_account_state_key(auth_state or "not_configured") or "not_configured"
         timestamp = now_iso()
         resolved_id = account_id or stable_id("sacct_", f"{user_id}:{normalized_source}:{identifier or label}")
         resolved_policy = _normalize_source_account_policy(policy)
@@ -3522,6 +3564,10 @@ class CortexStore:
                 record_results.append({**error, "status": "failed"})
 
         cursor_state = dict(state or {})
+        sync_errors = [error for error in (cursor_state.get("sync_errors") or []) if isinstance(error, dict)]
+        sync_error_message = str(sync_errors[0].get("error") or "")[:500] if sync_errors else None
+        sync_had_errors = bool(sync_error_message)
+        cursor_state = _with_connector_failure_metadata(cursor_state, sync_errors)
         cursor_state.update({
             "last_batch_received": len(records),
             "last_batch_saved": saved,
@@ -3541,25 +3587,28 @@ class CortexStore:
             cursor_value=cursor_value,
             high_water_mark=high_water_mark,
             state=cursor_state,
-            last_error=errors[0]["error"] if errors else None,
-            completed=failed == 0,
+            last_error=errors[0]["error"] if errors else sync_error_message,
+            completed=failed == 0 and not sync_had_errors,
         )
         timestamp = now_iso()
+        account_metadata = _with_connector_failure_metadata(account.get("metadata") or {}, [*sync_errors, *errors])
         with connect(self.db_path) as conn:
             conn.execute(
                 """
                 UPDATE source_accounts
                 SET status = ?,
                     auth_state = ?,
+                    metadata_json = ?,
                     updated_at = ?,
                     last_error = ?
                 WHERE user_id = ? AND id = ?
                 """,
                 (
-                    "needs_attention" if failed else "connected",
-                    "error" if failed else ("healthy" if account.get("auth_state") in {"", "not_configured", "available"} else account.get("auth_state")),
+                    "needs_attention" if failed or sync_had_errors else "connected",
+                    "error" if failed or sync_had_errors else ("healthy" if account.get("auth_state") in {"", "not_configured", "available"} else account.get("auth_state")),
+                    json.dumps(account_metadata),
                     timestamp,
-                    errors[0]["error"] if errors else None,
+                    errors[0]["error"] if errors else sync_error_message,
                     user_id,
                     account_id,
                 ),
@@ -3891,6 +3940,7 @@ class CortexStore:
             "api_base_url": sync.api_base_url,
         }
         metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(token or "").strip()))
+        metadata = _with_connector_failure_metadata(metadata, sync.errors)
         account = self.upsert_source_account(
             user_id,
             source=GITHUB_SOURCE,
@@ -4057,6 +4107,7 @@ class CortexStore:
         if sync.query:
             metadata["query"] = sync.query
         metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(access_token or "").strip()))
+        metadata = _with_connector_failure_metadata(metadata, sync.errors)
         account = self.upsert_source_account(
             user_id,
             source=GMAIL_SOURCE,
@@ -4219,6 +4270,7 @@ class CortexStore:
         if sync.query:
             metadata["query"] = sync.query
         metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(access_token or "").strip()))
+        metadata = _with_connector_failure_metadata(metadata, sync.errors)
         account = self.upsert_source_account(
             user_id,
             source=GOOGLE_DRIVE_SOURCE,
@@ -4379,6 +4431,7 @@ class CortexStore:
         if sync.query:
             metadata["query"] = sync.query
         metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(access_token or "").strip()))
+        metadata = _with_connector_failure_metadata(metadata, sync.errors)
         account = self.upsert_source_account(
             user_id,
             source=OUTLOOK_SOURCE,
@@ -4543,6 +4596,7 @@ class CortexStore:
         if auth_identity.get("team"):
             metadata["team"] = auth_identity["team"]
         metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(token or "").strip()))
+        metadata = _with_connector_failure_metadata(metadata, sync.errors)
         account = self.upsert_source_account(
             user_id,
             source=SLACK_SOURCE,
@@ -4687,6 +4741,7 @@ class CortexStore:
             "api_base_url": sync.api_base_url,
         }
         metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(token or "").strip()))
+        metadata = _with_connector_failure_metadata(metadata, sync.errors)
         account = self.upsert_source_account(
             user_id,
             source=READWISE_SOURCE,
@@ -4831,6 +4886,7 @@ class CortexStore:
             "feed_url_redacted": True,
         }
         metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(ics_path or feed_url or "").strip()))
+        metadata = _with_connector_failure_metadata(metadata, sync.errors)
         account = self.upsert_source_account(
             user_id,
             source=CALENDAR_SOURCE,
@@ -4982,6 +5038,7 @@ class CortexStore:
             "include_highlights": bool(include_highlights),
         }
         metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(token or "").strip()))
+        metadata = _with_connector_failure_metadata(metadata, sync.errors)
         account = self.upsert_source_account(
             user_id,
             source=RAINDROP_SOURCE,
@@ -5140,6 +5197,7 @@ class CortexStore:
             "attachment_content_imported": False,
         }
         metadata = _with_source_credential_ref(metadata, resolved_account_id, token_configured or bool(sync.api_base_url))
+        metadata = _with_connector_failure_metadata(metadata, sync.errors)
         account = self.upsert_source_account(
             user_id,
             source=ZOTERO_SOURCE,
@@ -5288,6 +5346,7 @@ class CortexStore:
             "api_url_configured": bool(str(api_url or "").strip()),
         }
         metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(token or "").strip()))
+        metadata = _with_connector_failure_metadata(metadata, sync.errors)
         account = self.upsert_source_account(
             user_id,
             source=LINEAR_SOURCE,
@@ -5434,6 +5493,7 @@ class CortexStore:
             "api_token_configured": True,
         }
         metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(email or "").strip() and str(api_token or "").strip() and str(site_url or "").strip()))
+        metadata = _with_connector_failure_metadata(metadata, sync.errors)
         account = self.upsert_source_account(
             user_id,
             source=JIRA_SOURCE,
@@ -5583,6 +5643,7 @@ class CortexStore:
             "notion_version": sync.notion_version,
         }
         metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(token or "").strip()))
+        metadata = _with_connector_failure_metadata(metadata, sync.errors)
         account = self.upsert_source_account(
             user_id,
             source=NOTION_SOURCE,
@@ -11796,6 +11857,7 @@ class CortexStore:
             account_id,
             job_id=job["id"],
             status=str(result.get("status") or ""),
+            result=result,
         )
         return {
             "source_account_id": account_id,
@@ -11813,8 +11875,12 @@ class CortexStore:
             "completed_at": now_iso(),
         }
 
-    def _mark_source_account_sync_job_finished(self, user_id: str, account_id: str, *, job_id: str, status: str) -> None:
+    def _mark_source_account_sync_job_finished(self, user_id: str, account_id: str, *, job_id: str, status: str, result: dict[str, Any] | None = None) -> None:
         timestamp = now_iso()
+        result = result or {}
+        errors = [error for error in (result.get("errors") or []) if isinstance(error, dict)]
+        failed = int(result.get("failed") or 0)
+        clean_success = not errors and failed == 0 and status not in {"partial", "failed", "error"}
         with connect(self.db_path) as conn:
             row = conn.execute("SELECT * FROM source_accounts WHERE user_id = ? AND id = ?", (user_id, account_id)).fetchone()
             if not row:
@@ -11822,7 +11888,11 @@ class CortexStore:
             account = self._source_account_from_row(row)
             metadata = dict(account.get("metadata") or {})
             metadata.pop("next_sync_due_at", None)
-            metadata.pop("retry_after", None)
+            if clean_success:
+                metadata.pop("retry_after", None)
+                metadata.pop("last_connector_failure", None)
+            else:
+                metadata = _with_connector_failure_metadata(metadata, errors)
             metadata["last_scheduler_job_id"] = job_id
             metadata["last_scheduler_sync_at"] = timestamp
             metadata["last_scheduler_status"] = status[:80]
@@ -11830,11 +11900,25 @@ class CortexStore:
                 """
                 UPDATE source_accounts
                 SET metadata_json = ?,
-                    last_error = NULL,
+                    status = ?,
+                    auth_state = ?,
+                    last_error = ?,
                     updated_at = ?
                 WHERE user_id = ? AND id = ?
                 """,
-                (json.dumps(metadata), timestamp, user_id, account_id),
+                (
+                    json.dumps(metadata),
+                    "connected" if clean_success else "needs_attention",
+                    (
+                        "healthy"
+                        if clean_success and account.get("auth_state") in {"", "error", "not_configured", "available"}
+                        else ("error" if not clean_success else account.get("auth_state"))
+                    ),
+                    None if clean_success else (errors[0].get("error") if errors else account.get("last_error")),
+                    timestamp,
+                    user_id,
+                    account_id,
+                ),
             )
             updated = conn.execute("SELECT * FROM source_accounts WHERE user_id = ? AND id = ?", (user_id, account_id)).fetchone()
         if updated:
@@ -11872,6 +11956,16 @@ class CortexStore:
                 """,
                 (json.dumps(metadata), error[:500], timestamp, user_id, account_id),
             )
+            if job.get("id"):
+                conn.execute(
+                    """
+                    UPDATE memory_jobs
+                    SET run_at = ?,
+                        updated_at = ?
+                    WHERE user_id = ? AND id = ?
+                    """,
+                    (retry_after, timestamp, user_id, job["id"]),
+                )
             updated = conn.execute("SELECT * FROM source_accounts WHERE user_id = ? AND id = ?", (user_id, account_id)).fetchone()
         if updated:
             self.vault.write_source_account(self._source_account_from_row(updated))
@@ -14239,8 +14333,8 @@ class CortexStore:
             "account_label": row["account_label"],
             "account_identifier": row["account_identifier"],
             "connection_type": row["connection_type"],
-            "status": row["status"],
-            "auth_state": row["auth_state"],
+            "status": _normalize_account_state_key(row["status"]) or "available",
+            "auth_state": _normalize_account_state_key(row["auth_state"]) or "not_configured",
             "policy": self._json_or_empty(row["policy_json"]),
             "metadata": self._json_or_empty(row["metadata_json"]),
             "last_sync_at": row["last_sync_at"],

@@ -6,7 +6,7 @@ import re
 from typing import Any, Callable
 from urllib.request import Request, urlopen
 
-from ._redaction import redact_error_message
+from ._redaction import classify_error_message, connector_error_payload, redact_error_message
 
 
 LINEAR_SOURCE = "linear"
@@ -128,7 +128,7 @@ def fetch_linear_records(
         try:
             payload = requester(endpoint, headers, {"query": LINEAR_ISSUES_QUERY, "variables": variables})
         except Exception as exc:
-            errors.append({"error": redact_error_message(exc, [cleaned_token, headers.get("Authorization")])})
+            errors.append(connector_error_payload(exc, [cleaned_token, headers.get("Authorization")]))
             break
         if not isinstance(payload, dict):
             errors.append({"error": "Linear GraphQL response was not an object"})
@@ -273,12 +273,24 @@ def _graphql_errors(value: Any, secrets: list[str | None] | None = None) -> list
     errors = []
     for item in value or []:
         if isinstance(item, dict):
-            message = redact_error_message(item.get("message"), secrets or [])
-            errors.append({"error": _clean_text(message) or "Linear GraphQL error"})
+            message = _clean_text(redact_error_message(item.get("message"), secrets or [])) or "Linear GraphQL error"
+            errors.append({"error": message, "category": _graphql_error_category(item, message)})
         else:
-            message = redact_error_message(item, secrets or [])
-            errors.append({"error": _clean_text(message) or "Linear GraphQL error"})
-    return errors or [{"error": "Linear GraphQL error"}]
+            message = _clean_text(redact_error_message(item, secrets or [])) or "Linear GraphQL error"
+            errors.append({"error": message, "category": classify_error_message(message, default="client")})
+    return errors or [{"error": "Linear GraphQL error", "category": "client"}]
+
+
+def _graphql_error_category(item: dict[str, Any], message: str) -> str:
+    extensions = item.get("extensions") if isinstance(item.get("extensions"), dict) else {}
+    code = str(extensions.get("code") or "").strip().upper()
+    if code in {"AUTHENTICATION_ERROR", "FORBIDDEN", "UNAUTHENTICATED", "ACCESS_DENIED"}:
+        return "auth"
+    if code in {"RATELIMITED", "RATE_LIMITED"}:
+        return "rate_limited"
+    if code in {"INTERNAL_SERVER_ERROR", "SERVICE_UNAVAILABLE"}:
+        return "server"
+    return classify_error_message(message, default="client")
 
 
 def _clean_markdown(value: Any) -> str:

@@ -639,6 +639,18 @@ struct SourceAccountItem: Codable, Identifiable, Hashable {
     var needsAttention: Bool {
         last_error != nil || disconnected_at != nil || status.lowercased().contains("error") || auth_state.lowercased().contains("expired") || auth_state.lowercased().contains("revoked")
     }
+
+    var normalizedStatus: String {
+        status.lowercased().replacingOccurrences(of: "-", with: "_")
+    }
+
+    var normalizedAuthState: String {
+        auth_state.lowercased().replacingOccurrences(of: "-", with: "_")
+    }
+
+    var needsContent: Bool {
+        normalizedStatus == "empty" || normalizedAuthState == "needs_content"
+    }
 }
 
 enum JSONValue: Codable, Hashable {
@@ -4911,9 +4923,7 @@ struct CortexLayerStatusPill: View {
 
     private var activeAccounts: Int {
         state.sourceAccounts.filter { account in
-            account.disconnected_at == nil
-                && account.status.lowercased() != "empty"
-                && account.auth_state.lowercased() != "needs-content"
+            account.disconnected_at == nil && !account.needsContent
         }.count
     }
 
@@ -5780,7 +5790,7 @@ struct SourceAccountHealthRow: View {
         if let error = account.last_error ?? cursor?.last_error {
             return CortexRecoveryText.inlineError(error, fallback: "Refresh Connections. If it repeats, reconnect this source.")
         }
-        if account.status.lowercased() == "empty" || account.auth_state.lowercased() == "needs-content" {
+        if account.needsContent {
             return "No usable content found. Choose a source with real content."
         }
         if let synced = account.last_sync_at ?? cursor?.last_completed_at {
@@ -5795,8 +5805,7 @@ struct SourceAccountHealthRow: View {
     private var needsAttention: Bool {
         account.needsAttention
             || cursor?.needsAttention == true
-            || account.status.lowercased() == "empty"
-            || account.auth_state.lowercased() == "needs-content"
+            || account.needsContent
     }
 
     private var accountTitle: String {
@@ -5837,12 +5846,12 @@ struct SourceAccountHealthRow: View {
         default:
             break
         }
-        switch account.auth_state.lowercased() {
+        switch account.normalizedAuthState {
         case "connected", "authorized":
             return "connected"
-        case "needs-content":
+        case "needs_content":
             return "choose notes"
-        case "needs-auth":
+        case "needs_auth":
             return "needs permission"
         default:
             return account.status.isEmpty ? "connected" : account.status.replacingOccurrences(of: "_", with: " ")

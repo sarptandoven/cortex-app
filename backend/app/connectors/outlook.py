@@ -9,7 +9,7 @@ from typing import Any, Callable
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
-from ._redaction import redact_error_message
+from ._redaction import connector_error_payload
 
 
 OUTLOOK_SOURCE = "outlook"
@@ -122,7 +122,7 @@ def fetch_outlook_records(
         try:
             payload = requester(url, headers)
         except Exception as exc:
-            errors.append({"error": redact_error_message(exc, secrets)})
+            errors.append(connector_error_payload(exc, secrets))
             break
         if not isinstance(payload, dict):
             errors.append({"error": "Outlook messages response was not an object"})

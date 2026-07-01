@@ -7,7 +7,7 @@ from typing import Any, Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from ._redaction import redact_error_message
+from ._redaction import connector_error_payload
 
 
 READWISE_SOURCE = "readwise"
@@ -103,7 +103,7 @@ def fetch_readwise_records(
         try:
             payload = requester(url, headers)
         except Exception as exc:
-            errors.append({"error": redact_error_message(exc, [cleaned_token, headers.get("Authorization")])})
+            errors.append(connector_error_payload(exc, [cleaned_token, headers.get("Authorization")]))
             break
         if not isinstance(payload, dict):
             errors.append({"error": "Readwise export response was not an object"})

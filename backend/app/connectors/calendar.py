@@ -8,7 +8,7 @@ from typing import Any, Callable
 from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
-from ._redaction import redact_error_message
+from ._redaction import connector_error_payload
 
 
 CALENDAR_SOURCE = "calendar"
@@ -85,7 +85,7 @@ def fetch_calendar_records(
     try:
         raw_text = _fetch_feed(url_text, request_text) if url_text else _read_path(path_text, read_text)
     except Exception as exc:
-        errors.append({"error": _safe_error(exc, url_text or path_text), "scope": "read"})
+        errors.append({"scope": "read", **_safe_error(exc, url_text or path_text)})
         return CalendarSync(
             records=[],
             records_found=0,
@@ -311,7 +311,7 @@ def _max_text(left: str | None, right: str | None) -> str | None:
     return max(left, right)
 
 
-def _safe_error(exc: Exception, secret: str) -> str:
+def _safe_error(exc: Exception, secret: str) -> dict[str, Any]:
     secrets: list[str] = []
     if secret:
         secrets.append(secret)
@@ -320,4 +320,4 @@ def _safe_error(exc: Exception, secret: str) -> str:
                 secrets.append(_normalize_feed_url(secret))
             except ValueError:
                 pass
-    return redact_error_message(exc, secrets)
+    return connector_error_payload(exc, secrets)

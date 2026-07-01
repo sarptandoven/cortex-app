@@ -7,7 +7,7 @@ from typing import Any, Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from ._redaction import redact_error_message
+from ._redaction import connector_error_payload
 
 
 RAINDROP_SOURCE = "raindrop"
@@ -110,14 +110,14 @@ def fetch_raindrop_records(
         try:
             payload = requester(url, headers)
         except Exception as exc:
-            errors.append({"error": _safe_error(exc, cleaned_token, headers.get("Authorization"))})
+            errors.append(_safe_error(exc, cleaned_token, headers.get("Authorization")))
             break
         if not isinstance(payload, dict):
             errors.append({"error": "Raindrop response was not an object"})
             break
         if payload.get("result") is False:
             error_text = _clean_text(payload.get("error") or payload.get("message")) or "Raindrop API returned an error"
-            errors.append({"error": error_text})
+            errors.append(connector_error_payload(error_text))
             break
         items = payload.get("items") if isinstance(payload.get("items"), list) else []
         records_found += len(items)
@@ -290,5 +290,5 @@ def _max_iso(left: str | None, right: str | None) -> str | None:
     return max(left, right)
 
 
-def _safe_error(exc: Exception, *secrets: str | None) -> str:
-    return redact_error_message(exc, secrets)
+def _safe_error(exc: Exception, *secrets: str | None) -> dict[str, Any]:
+    return connector_error_payload(exc, secrets)

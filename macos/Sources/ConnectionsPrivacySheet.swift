@@ -536,7 +536,7 @@ private struct ConnectionsObsidianSection: View {
         }
         return state.activeSourceAccounts.contains { account in
             (account.source == connector.id || (connector.source_ids ?? []).contains(account.source))
-                && (account.status.lowercased() == "empty" || account.auth_state.lowercased() == "needs-content")
+                && account.needsContent
         }
     }
 
@@ -1337,7 +1337,7 @@ private enum NotesConnectionHealth: Equatable {
                 self = .needsAttention(account.last_error)
                 return
             }
-            if account.status.lowercased() == "empty" || account.auth_state.lowercased() == "needs-content" {
+            if account.needsContent {
                 self = .empty
                 return
             }
@@ -1612,8 +1612,7 @@ private struct ConnectionsActiveSourcesSection: View {
     private var activeAccounts: [SourceAccountItem] {
         state.sourceAccounts.filter { account in
             account.disconnected_at == nil
-                && account.status.lowercased() != "empty"
-                && account.auth_state.lowercased() != "needs-content"
+                && !account.needsContent
                 && shouldShowInPrimaryUI(account)
         }
     }
@@ -1621,7 +1620,7 @@ private struct ConnectionsActiveSourcesSection: View {
     private var accountsNeedingContent: [SourceAccountItem] {
         state.sourceAccounts.filter { account in
             account.disconnected_at == nil
-                && (account.status.lowercased() == "empty" || account.auth_state.lowercased() == "needs-content")
+                && account.needsContent
                 && shouldShowInPrimaryUI(account)
         }
     }

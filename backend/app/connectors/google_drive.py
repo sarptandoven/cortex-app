@@ -9,7 +9,7 @@ from typing import Any, Callable
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
-from ._redaction import redact_error_message
+from ._redaction import connector_error_payload
 
 
 GOOGLE_DRIVE_SOURCE = "google-drive"
@@ -132,7 +132,7 @@ def fetch_google_drive_records(
         try:
             payload = requester(url, headers)
         except Exception as exc:
-            errors.append({"error": redact_error_message(exc, secrets)})
+            errors.append(connector_error_payload(exc, secrets))
             break
         if not isinstance(payload, dict):
             errors.append({"error": "Google Drive files response was not an object"})
@@ -152,7 +152,7 @@ def fetch_google_drive_records(
                     user_email=user_email,
                 )
             except Exception as exc:
-                errors.append({"file_id": _text(item.get("id")), "error": redact_error_message(exc, secrets)})
+                errors.append({"file_id": _text(item.get("id")), **connector_error_payload(exc, secrets)})
                 continue
             if record is None:
                 skipped_unsupported += 1

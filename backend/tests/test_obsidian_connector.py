@@ -459,7 +459,7 @@ I prefer Cortex note imports that cite {preference_marker}.
         self.assertEqual(empty["saved"], 0)
         self.assertEqual(empty["received"], 0)
         self.assertEqual(empty["source_account"]["status"], "empty")
-        self.assertEqual(empty["source_account"]["auth_state"], "needs-content")
+        self.assertEqual(empty["source_account"]["auth_state"], "needs_content")
         self.assertEqual(empty["scan"]["records_found"], 0)
         self.assertEqual(empty["scan"]["records_returned"], 0)
 

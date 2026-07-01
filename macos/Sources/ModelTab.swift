@@ -23,7 +23,7 @@ struct HomeHeroSection: View {
             return connected
         }
         return state.activeSourceAccounts.filter { account in
-            account.status.lowercased() != "empty" && account.auth_state.lowercased() != "needs-content"
+            !account.needsContent
         }.count
     }
 
@@ -32,7 +32,7 @@ struct HomeHeroSection: View {
             return report.sources.contains { $0.status == "empty" }
         }
         return state.activeSourceAccounts.contains { account in
-            account.status.lowercased() == "empty" || account.auth_state.lowercased() == "needs-content"
+            account.needsContent
         }
     }
 

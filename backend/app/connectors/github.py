@@ -7,7 +7,7 @@ from typing import Any, Callable
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
-from ._redaction import redact_error_message
+from ._redaction import connector_error_payload, redact_error_message
 
 
 GITHUB_SOURCE = "github"
@@ -145,7 +145,7 @@ def fetch_github_records(
                 errors.append(
                     {
                         "repository": repository,
-                        "error": redact_error_message(exc, [cleaned_token, headers.get("Authorization")]),
+                        **connector_error_payload(exc, [cleaned_token, headers.get("Authorization")]),
                     }
                 )
                 break
@@ -272,7 +272,7 @@ def _fetch_issue_comments(
                 "repository": repository,
                 "issue": str(number),
                 "scope": "comments",
-                "error": redact_error_message(exc, [token, headers.get("Authorization")]),
+                **connector_error_payload(exc, [token, headers.get("Authorization")]),
             }
         )
         return [], 0, 0
@@ -323,7 +323,7 @@ def _fetch_pull_request_reviews(
                 "repository": repository,
                 "pull_request": str(number),
                 "scope": "pull_request_reviews",
-                "error": redact_error_message(exc, [token, headers.get("Authorization")]),
+                **connector_error_payload(exc, [token, headers.get("Authorization")]),
             }
         )
         return [], 0, 0
@@ -375,7 +375,7 @@ def _fetch_pull_request_review_comments(
                 "repository": repository,
                 "pull_request": str(number),
                 "scope": "pull_request_review_comments",
-                "error": redact_error_message(exc, [token, headers.get("Authorization")]),
+                **connector_error_payload(exc, [token, headers.get("Authorization")]),
             }
         )
         return [], 0, 0

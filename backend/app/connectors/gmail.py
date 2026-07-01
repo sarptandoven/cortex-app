@@ -11,7 +11,7 @@ from typing import Any, Callable
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
-from ._redaction import redact_error_message
+from ._redaction import connector_error_payload
 
 
 GMAIL_SOURCE = "gmail"
@@ -120,7 +120,7 @@ def fetch_gmail_records(
         try:
             payload = requester(url, headers)
         except Exception as exc:
-            errors.append({"error": redact_error_message(exc, secrets)})
+            errors.append(connector_error_payload(exc, secrets))
             break
         if not isinstance(payload, dict):
             errors.append({"error": "Gmail messages response was not an object"})
@@ -135,7 +135,7 @@ def fetch_gmail_records(
             try:
                 detail = requester(detail_url, headers)
             except Exception as exc:
-                errors.append({"message_id": message_id, "error": redact_error_message(exc, secrets)})
+                errors.append({"message_id": message_id, **connector_error_payload(exc, secrets)})
                 continue
             if not isinstance(detail, dict):
                 errors.append({"message_id": message_id, "error": "Gmail message detail response was not an object"})

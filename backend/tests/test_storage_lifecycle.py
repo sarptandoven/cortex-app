@@ -1779,6 +1779,69 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertFalse(unsupported_github["sync_plan"]["scheduler_supported"])
         self.assertEqual(unsupported_github["sync_plan"]["blocked_reason"], "stored_sync_configuration_required")
 
+    def test_failed_connector_sync_stores_failure_metadata_and_backs_off(self) -> None:
+        class _RateLimitedError(Exception):
+            def __init__(self) -> None:
+                super().__init__("HTTP Error 429: Too Many Requests")
+                self.code = 429
+                self.headers = {"Retry-After": "600"}
+
+        def failing_request(*_args):
+            raise _RateLimitedError()
+
+        result = self.store.sync_linear_account(
+            self.user_id,
+            token="lin_api_secret_123",
+            request_json=failing_request,
+        )
+
+        self.assertEqual(result["status"], "partial")
+        account = result["source_account"]
+        self.assertEqual(account["status"], "needs_attention")
+        failure = account["metadata"]["last_connector_failure"]
+        self.assertEqual(failure["category"], "rate_limited")
+        self.assertEqual(failure["status_code"], 429)
+        self.assertTrue(account["metadata"]["retry_after"].endswith("Z"))
+        self.assertNotIn("lin_api_secret_123", str(account))
+
+        readiness = self.store.source_readiness_report(self.user_id)
+        linear = next(item for item in readiness["sources"] if item["source"] == "linear")
+        self.assertEqual(linear["sync_plan"]["managed_sync_status"], "backing_off")
+        self.assertFalse(linear["sync_plan"]["due_now"])
+
+        def healthy_request(*_args):
+            return {
+                "data": {
+                    "issues": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [
+                            {
+                                "id": "lin-recovery-1",
+                                "identifier": "COR-99",
+                                "title": "Recovered issue",
+                                "url": "https://linear.app/doppl/issue/COR-99/recovered-issue",
+                                "createdAt": "2026-06-29T10:00:00Z",
+                                "updatedAt": "2026-06-30T10:00:00Z",
+                                "labels": {"nodes": []},
+                            }
+                        ],
+                    }
+                }
+            }
+
+        recovered = self.store.sync_linear_account(
+            self.user_id,
+            token="lin_api_secret_123",
+            source_account_id=account["id"],
+            request_json=healthy_request,
+        )
+
+        recovered_account = recovered["source_account"]
+        self.assertEqual(recovered_account["status"], "connected")
+        self.assertNotIn("last_connector_failure", recovered_account["metadata"])
+        self.assertNotIn("retry_after", recovered_account["metadata"])
+        self.assertIsNone(recovered_account.get("last_error"))
+
     def test_due_source_sync_schedules_accounts_independently(self) -> None:
         due_vault = Path(self.tmp.name) / "due-account-vault"
         backoff_vault = Path(self.tmp.name) / "backoff-account-vault"
