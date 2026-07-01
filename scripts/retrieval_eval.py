@@ -75,6 +75,9 @@ TEMPORAL_VALIDITY_EXCLUDED_IDS = (
 )
 RELATED_MEMORY_PRIMARY_ID = "rq_related_memory_eval_decision"
 RELATED_MEMORY_COMPANION_ID = "rq_related_memory_eval_procedure"
+RELATED_MEMORY_SATURATION_PRIMARY_ID = "rq_related_memory_saturation_decision"
+RELATED_MEMORY_SATURATION_COMPANION_ID = "rq_related_memory_saturation_procedure"
+RELATED_MEMORY_SATURATION_DISTRACTOR_ID = "rq_related_memory_saturation_distractor"
 EXTERNAL_SPEAKER_PERSONAL_SIGNAL_GUARDS: tuple[dict[str, str], ...] = (
     {"source": "email", "layer": "preference", "phrase": "long onboarding checklists"},
     {"source": "email", "layer": "style", "phrase": "verbose and salesy"},
@@ -515,6 +518,21 @@ RETRIEVAL_CASES: tuple[RetrievalCase, ...] = (
         expected_relationship_kind="shared_entity",
         source_url_contains=("cortex-eval://retrieval/related-memory",),
     ),
+    RetrievalCase(
+        name="related_memory_companion_surfaces_under_saturation",
+        query="related memory saturation founder-only launch decision path",
+        expected_id=RELATED_MEMORY_SATURATION_PRIMARY_ID,
+        expected_layer="decision",
+        expected_phrase="founder-only launch decision path",
+        category="related_memory",
+        sector="Project Atlas",
+        include_related=True,
+        expected_related_id=RELATED_MEMORY_SATURATION_COMPANION_ID,
+        expected_related_layer="procedural",
+        expected_related_phrase="checksum verification",
+        expected_relationship_kind="shared_entity",
+        source_url_contains=("cortex-eval://retrieval/related-memory",),
+    ),
 )
 
 def seed_representative_memories(store: CortexStore, user_id: str = USER_ID) -> list[dict[str, Any]]:
@@ -726,6 +744,42 @@ def seed_focused_retrieval_memories(store: CortexStore, user_id: str = USER_ID) 
                     "topics": ["related-memory-eval", "Project Atlas", "beta"],
                     "entity_ids": ["project_atlas_related_eval"],
                 },
+                {
+                    "id": RELATED_MEMORY_SATURATION_PRIMARY_ID,
+                    "kind": "decision",
+                    "layer": "decision",
+                    "content": "Related-memory saturation founder-only launch decision path keeps Project Atlas local-first until support checks are done.",
+                    "summary": "Project Atlas related-memory saturation decision keeps launch local-first.",
+                    "confidence": "confirmed",
+                    "importance": 5,
+                    "sector": "Project Atlas",
+                    "topics": ["related-memory-saturation", "Project Atlas", "launch"],
+                    "entity_ids": ["project_atlas_related_saturation_eval"],
+                },
+                {
+                    "id": RELATED_MEMORY_SATURATION_COMPANION_ID,
+                    "kind": "procedure",
+                    "layer": "procedural",
+                    "content": "Related-memory saturation companion procedure: run checksum verification, backup creation, support bundle export, and rollback replacement before launch.",
+                    "summary": "Project Atlas related-memory saturation companion procedure covers checksum, backup, support bundle, and rollback checks.",
+                    "confidence": "confirmed",
+                    "importance": 3,
+                    "sector": "Project Atlas",
+                    "topics": ["related-memory-saturation", "Project Atlas", "launch"],
+                    "entity_ids": ["project_atlas_related_saturation_eval"],
+                },
+                {
+                    "id": RELATED_MEMORY_SATURATION_DISTRACTOR_ID,
+                    "kind": "claim",
+                    "layer": "semantic",
+                    "content": "Related-memory saturation founder-only launch decision path appears in a generic duplicate note.",
+                    "summary": "Generic duplicate related-memory saturation note.",
+                    "confidence": "confirmed",
+                    "importance": 4,
+                    "sector": "Project Atlas",
+                    "topics": ["related-memory-saturation", "Project Atlas", "launch"],
+                    "entity_ids": [],
+                },
             ],
             "tasks": [],
             "entities": [
@@ -735,6 +789,13 @@ def seed_focused_retrieval_memories(store: CortexStore, user_id: str = USER_ID) 
                     "name": "Project Atlas",
                     "aliases": ["Atlas"],
                     "context": "Related-memory retrieval eval fixture.",
+                },
+                {
+                    "id": "project_atlas_related_saturation_eval",
+                    "kind": "project",
+                    "name": "Project Atlas Related Saturation",
+                    "aliases": ["Atlas saturation"],
+                    "context": "Related-memory saturation retrieval eval fixture.",
                 }
             ],
         },

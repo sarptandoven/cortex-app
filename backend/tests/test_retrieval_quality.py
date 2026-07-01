@@ -254,7 +254,7 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["seeded_memories"], len(MEMORY_LAYERS))
         self.assertEqual(result["distractor_memories"], len(DISTRACTOR_MEMORIES))
-        self.assertEqual(result["focused_retrieval_memories"], 8)
+        self.assertEqual(result["focused_retrieval_memories"], 11)
         self.assertEqual(result["noisy_import_memories"], 11)
         self.assertGreaterEqual(result["direct_connector_memories"], 13)
         self.assertEqual(set(result["seeded_layers"]), MEMORY_LAYERS)
@@ -280,7 +280,7 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertEqual(result["metrics"]["by_category"]["direct_connector"]["case_count"], expected_direct_connector_cases)
         self.assertEqual(result["metrics"]["by_category"]["sector_scoping"]["case_count"], 2)
         self.assertEqual(result["metrics"]["by_category"]["temporal_validity"]["case_count"], 1)
-        self.assertEqual(result["metrics"]["by_category"]["related_memory"]["case_count"], 1)
+        self.assertEqual(result["metrics"]["by_category"]["related_memory"]["case_count"], 2)
         self.assertEqual(result["metrics"]["by_category"]["source_backed_ranking"]["case_count"], 1)
         self.assertEqual(result["source_backed_fallback"]["top_result"], "rq_source_backed_lexical_fallback_cited")
         self.assertIn("lexical_fallback", result["source_backed_fallback"]["retrieval_modes"])
@@ -362,6 +362,105 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
                 self.assertIn(f"precision@{k}", check["metrics"])
                 self.assertGreaterEqual(check["metrics"][f"precision@{k}"], 0.0)
                 self.assertLessEqual(check["metrics"][f"precision@{k}"], 1.0)
+
+    def test_related_memory_surfaces_even_when_primary_results_fill_limit(self) -> None:
+        self.store.update_settings(
+            self.user_id,
+            {
+                "review_new_captures": False,
+                "allow_pending_in_context": True,
+            },
+        )
+        self.store._vector_ready = lambda conn: False
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Project SaturnVault relation saturation fixture.",
+            source="retrieval-test",
+            source_url="cortex-test://retrieval/related-saturation#line=12&excerpt=relation-saturation",
+            title="Relation saturation fixture",
+            extracted={
+                "_timestamp": "2026-07-01T00:00:00+00:00",
+                "summary": "Project SaturnVault relation saturation fixture.",
+                "records": [
+                    {
+                        "id": "related_saturation_primary",
+                        "kind": "decision",
+                        "layer": "decision",
+                        "content": "Project SaturnVault founder-only launch decision path stays local-first for the first beta cohort.",
+                        "summary": "SaturnVault founder-only launch decision stays local-first.",
+                        "confidence": "confirmed",
+                        "importance": 5,
+                        "sector": "Project SaturnVault",
+                        "topics": ["saturnvault", "launch"],
+                        "entity_ids": ["project_saturnvault"],
+                    },
+                    {
+                        "id": "related_saturation_companion",
+                        "kind": "procedure",
+                        "layer": "procedural",
+                        "content": "Before release, run checksum verification, backup creation, support bundle export, and rollback replacement checks.",
+                        "summary": "Release readiness requires checksum, backup, support bundle, and rollback checks.",
+                        "confidence": "confirmed",
+                        "importance": 3,
+                        "sector": "Project SaturnVault",
+                        "topics": ["saturnvault", "release-readiness"],
+                        "entity_ids": ["project_saturnvault"],
+                    },
+                ],
+                "tasks": [],
+                "entities": [
+                    {
+                        "id": "project_saturnvault",
+                        "kind": "project",
+                        "name": "Project SaturnVault",
+                        "aliases": ["SaturnVault"],
+                    }
+                ],
+            },
+        )
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Project SaturnVault founder-only launch decision path appears in a generic duplicate note.",
+            source="retrieval-test",
+            source_url="cortex-test://retrieval/related-saturation#line=31&excerpt=duplicate",
+            title="Relation saturation distractor",
+            extracted={
+                "_timestamp": "2026-07-01T00:01:00+00:00",
+                "summary": "Project SaturnVault duplicate note.",
+                "records": [
+                    {
+                        "id": "related_saturation_distractor",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "Project SaturnVault founder-only launch decision path appears in a generic duplicate note.",
+                        "summary": "Generic duplicate SaturnVault launch note.",
+                        "confidence": "confirmed",
+                        "importance": 4,
+                        "sector": "Project SaturnVault",
+                        "topics": ["saturnvault", "launch"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+
+        results = self.store.search(
+            self.user_id,
+            "Project SaturnVault founder-only launch decision path",
+            limit=2,
+            sector="Project SaturnVault",
+            include_related=True,
+        )
+        result_ids = [item["id"] for item in results]
+
+        self.assertEqual(result_ids[0], "related_saturation_primary")
+        self.assertIn("related_saturation_companion", result_ids)
+        self.assertNotIn("related_saturation_distractor", result_ids)
+        companion = next(item for item in results if item["id"] == "related_saturation_companion")
+        self.assertEqual(companion["relationship"]["kind"], "shared_entity")
+        self.assertEqual(companion["relationship"]["related_to_id"], "related_saturation_primary")
 
     def test_layer_intent_boosts_rerank_matching_candidates(self) -> None:
         self._seed_boost_ranking_memories()

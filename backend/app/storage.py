@@ -7293,14 +7293,16 @@ class CortexStore:
                 mode_counts["task"] = len(task_rows)
 
         memory_results = [self._memory_from_row(row) for row in rows]
-        if include_related and memory_results and len(memory_results) < limit:
+        if include_related and memory_results and limit > 1:
+            related_slot_count = min(2, max(1, limit // 4), limit - 1)
+            anchor_results = memory_results[: max(1, limit - related_slot_count)]
             with connect(self.db_path) as conn:
                 user_settings = self._settings(conn, user_id)
                 related_rows = self._related_memory_rows(
                     conn,
                     user_id,
-                    memory_results,
-                    max(0, limit - len(memory_results)),
+                    anchor_results,
+                    related_slot_count,
                     kind=kind,
                     layer=layer,
                     sector=sector,
@@ -7311,7 +7313,8 @@ class CortexStore:
                     user_settings=user_settings,
                 )
             mode_counts["related"] = len(related_rows)
-            seen_memory_ids = {item["id"] for item in memory_results}
+            seen_memory_ids = {item["id"] for item in anchor_results}
+            related_results: list[dict[str, Any]] = []
             for row in related_rows:
                 item = self._memory_from_row(row)
                 item["relationship"] = {
@@ -7321,10 +7324,20 @@ class CortexStore:
                 }
                 if item["id"] in seen_memory_ids:
                     continue
-                memory_results.append(item)
+                related_results.append(item)
                 seen_memory_ids.add(item["id"])
-                if len(memory_results) >= limit:
+                if len(related_results) >= related_slot_count:
                     break
+            if related_results:
+                combined_results = [*anchor_results, *related_results]
+                for item in memory_results:
+                    if item["id"] in seen_memory_ids:
+                        continue
+                    combined_results.append(item)
+                    seen_memory_ids.add(item["id"])
+                    if len(combined_results) >= limit:
+                        break
+                memory_results = combined_results[:limit]
         task_results = [self._task_search_result_from_row(row) for row in task_rows]
         if task_intent:
             task_ids = {item["id"] for item in task_results}
