@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from backend.app.database import init_db
@@ -896,6 +897,139 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertEqual(answer_report["target"]["result_rank"], 1)
         self.assertTrue(answer_report["context_pack_contains_target"])
         self.assertTrue(answer_report["context_pack_contains_source_url"])
+
+    def _save_near_tie_claim(self, *, record_id: str, content: str, captured_at: str, importance: int = 2) -> None:
+        self.store.save_capture(
+            user_id=self.user_id,
+            content=content,
+            source="unit-test",
+            source_url=None,
+            title=record_id,
+            extracted={
+                "_timestamp": captured_at,
+                "summary": record_id,
+                "records": [
+                    {
+                        "id": record_id,
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": content,
+                        "summary": content[:80],
+                        "confidence": "confirmed",
+                        "importance": importance,
+                        "topics": ["boreas", "cache", "invalidation"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+
+    def test_recency_boost_prefers_fresh_memory_in_near_tie(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+        now = datetime.now(timezone.utc)
+        # Stale row repeats a query term so bm25 places it first; only the
+        # recency boost can flip the fresh row ahead of it.
+        self._save_near_tie_claim(
+            record_id="recency_stale_claim",
+            content="Boreas cache invalidation strategy uses invalidation markers for cache entries.",
+            captured_at=(now - timedelta(days=400)).isoformat(),
+        )
+        self._save_near_tie_claim(
+            record_id="recency_fresh_claim",
+            content="Boreas cache invalidation strategy uses versioned markers for entries.",
+            captured_at=(now - timedelta(days=1)).isoformat(),
+        )
+
+        results = self.store.search(self.user_id, "boreas cache invalidation strategy markers", limit=2)
+
+        self.assertEqual(results[0]["id"], "recency_fresh_claim")
+        self.assertEqual(results[1]["id"], "recency_stale_claim")
+
+    def test_importance_boost_prefers_high_importance_in_near_tie(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+        captured_at = "2026-05-01T00:00:00+00:00"
+        # Low-importance row repeats a query term so bm25 places it first;
+        # only the importance boost can flip the high-importance row ahead.
+        self._save_near_tie_claim(
+            record_id="importance_low_claim",
+            content="Boreas cache invalidation policy tracks invalidation windows for caches.",
+            captured_at=captured_at,
+            importance=2,
+        )
+        self._save_near_tie_claim(
+            record_id="importance_high_claim",
+            content="Boreas cache invalidation policy tracks rollout windows for caches.",
+            captured_at=captured_at,
+            importance=5,
+        )
+
+        results = self.store.search(self.user_id, "boreas cache invalidation policy windows", limit=2)
+
+        self.assertEqual(results[0]["id"], "importance_high_claim")
+        self.assertEqual(results[1]["id"], "importance_low_claim")
+
+    def test_recency_boost_does_not_override_layer_intent(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+        now = datetime.now(timezone.utc)
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Gamma launch decision fresh semantic note keeps context but is not the choice.",
+            source="unit-test",
+            source_url=None,
+            title="Fresh semantic distractor",
+            extracted={
+                "_timestamp": (now - timedelta(days=1)).isoformat(),
+                "summary": "Fresh semantic distractor.",
+                "records": [
+                    {
+                        "id": "recency_semantic_distractor",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "Gamma launch decision fresh semantic note keeps context but is not the choice.",
+                        "summary": "Fresh semantic gamma note.",
+                        "confidence": "confirmed",
+                        "importance": 2,
+                        "topics": ["gamma", "launch", "decision"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Gamma launch decision: ship the beta behind a waitlist.",
+            source="unit-test",
+            source_url=None,
+            title="Old decision",
+            extracted={
+                "_timestamp": (now - timedelta(days=400)).isoformat(),
+                "summary": "Old decision.",
+                "records": [
+                    {
+                        "id": "recency_old_decision",
+                        "kind": "decision",
+                        "layer": "decision",
+                        "content": "Gamma launch decision: ship the beta behind a waitlist.",
+                        "summary": "Ship the beta behind a waitlist.",
+                        "confidence": "confirmed",
+                        "importance": 2,
+                        "topics": ["gamma", "launch", "decision"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+
+        results = self.store.search(self.user_id, "gamma launch decision", limit=2)
+
+        self.assertEqual(results[0]["id"], "recency_old_decision")
+        self.assertEqual(results[0]["layer"], "decision")
 
     def test_source_quality_boost_does_not_override_layer_intent_relevance(self) -> None:
         self.store.update_settings(

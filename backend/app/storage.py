@@ -69,6 +69,17 @@ MEMORY_LAYER_BY_KIND = {
 }
 LAYER_RETRIEVAL_BOOST = 0.02
 TEMPORAL_RETRIEVAL_BOOST = 0.025
+# Near-tie boosts: must stay below LAYER_RETRIEVAL_BOOST and the temporal
+# boosts so recency/importance break ties without overriding relevance.
+RECENCY_RETRIEVAL_BOOST_STEPS: tuple[tuple[float, float], ...] = (
+    (2.0, 0.004),
+    (7.0, 0.003),
+    (30.0, 0.002),
+    (90.0, 0.001),
+    (365.0, 0.0005),
+)
+IMPORTANCE_RETRIEVAL_BOOST_STEP = 0.0008
+IMPORTANCE_RETRIEVAL_BOOST_MAX = 0.0024
 SAME_CAPTURE_RELATION_FULL_PAIR_LIMIT = 80
 SAME_CAPTURE_RELATION_PER_MEMORY_LIMIT = 6
 SAME_CAPTURE_RELATION_TOTAL_LIMIT = 2000
@@ -13121,10 +13132,13 @@ class CortexStore:
         layer_boosts = query_layer_boosts(query)
         temporal_prefixes = query_temporal_prefixes(query)
         source_policies = _normalize_source_policies((user_settings or {}).get("source_policies"))
+        now = datetime.now(timezone.utc)
         for entry in ranked.values():
             entry["score"] += self._layer_boost(entry["row"], layer_boosts)
             entry["score"] += self._temporal_boost(entry["row"], temporal_prefixes)
             entry["score"] += self._source_quality_boost(entry["row"], source_policies)
+            entry["score"] += self._recency_boost(entry["row"], now=now)
+            entry["score"] += self._importance_boost(entry["row"])
         return [item["row"] for item in sorted(ranked.values(), key=lambda item: item["score"], reverse=True)[:limit]]
 
     def _rank_rows_with_layer_boosts(
@@ -13138,13 +13152,16 @@ class CortexStore:
         layer_boosts = query_layer_boosts(query)
         temporal_prefixes = query_temporal_prefixes(query)
         source_policies = _normalize_source_policies((user_settings or {}).get("source_policies"))
+        now = datetime.now(timezone.utc)
         ranked = [
             {
                 "row": row,
                 "score": (0.2 / (60 + index))
                 + self._layer_boost(row, layer_boosts)
                 + self._temporal_boost(row, temporal_prefixes)
-                + self._source_quality_boost(row, source_policies),
+                + self._source_quality_boost(row, source_policies)
+                + self._recency_boost(row, now=now)
+                + self._importance_boost(row),
             }
             for index, row in enumerate(rows)
         ]
@@ -13251,6 +13268,23 @@ class CortexStore:
             + self._trusted_source_boost(row, source_policies)
         )
         return min(0.006, score)
+
+    def _recency_boost(self, row: Any, *, now: datetime) -> float:
+        age_seconds = _age_seconds(str(self._row_value(row, "captured_at") or ""), now=now)
+        if age_seconds is None:
+            return 0.0
+        age_days = age_seconds / 86400.0
+        for max_days, boost in RECENCY_RETRIEVAL_BOOST_STEPS:
+            if age_days <= max_days:
+                return boost
+        return 0.0
+
+    def _importance_boost(self, row: Any) -> float:
+        try:
+            importance = int(self._row_value(row, "importance") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+        return min(IMPORTANCE_RETRIEVAL_BOOST_MAX, max(0, importance - 2) * IMPORTANCE_RETRIEVAL_BOOST_STEP)
 
     def _citation_quality_boost(self, row: Any) -> float:
         source_url = str(self._row_value(row, "source_url") or "").strip()
