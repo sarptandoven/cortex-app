@@ -210,6 +210,27 @@ class ReadwiseSyncResponse(SourceAccountSyncResponse):
     sync: dict[str, Any]
 
 
+class ZoteroSyncRequest(BaseModel):
+    token: str | None = Field(default=None, max_length=4000)
+    library_type: Literal["user", "group"] = "user"
+    library_id: str = Field(default="0", min_length=1, max_length=120)
+    source_account_id: str | None = Field(default=None, max_length=80)
+    account_label: str | None = Field(default=None, max_length=160)
+    account_identifier: str | None = Field(default=None, max_length=240)
+    since: str | None = Field(default=None, max_length=80)
+    cursor: str | None = Field(default=None, max_length=2000)
+    processing: Literal["sync", "async"] = "sync"
+    max_records: int = Field(default=100, ge=1, le=500)
+    cursor_name: str = Field(default="items", min_length=1, max_length=120)
+    include_attachments: bool = False
+    api_base_url: str | None = Field(default=None, max_length=500)
+
+
+class ZoteroSyncResponse(SourceAccountSyncResponse):
+    source_account: SourceAccountResponse
+    sync: dict[str, Any]
+
+
 class LinearSyncRequest(BaseModel):
     token: str = Field(..., min_length=1, max_length=4000)
     source_account_id: str | None = Field(default=None, max_length=80)
@@ -224,6 +245,26 @@ class LinearSyncRequest(BaseModel):
 
 
 class LinearSyncResponse(SourceAccountSyncResponse):
+    source_account: SourceAccountResponse
+    sync: dict[str, Any]
+
+
+class JiraSyncRequest(BaseModel):
+    email: str = Field(..., min_length=1, max_length=320)
+    api_token: str = Field(..., min_length=1, max_length=4000)
+    site_url: str = Field(..., min_length=1, max_length=500)
+    source_account_id: str | None = Field(default=None, max_length=80)
+    account_label: str | None = Field(default=None, max_length=160)
+    account_identifier: str | None = Field(default=None, max_length=240)
+    jql: str | None = Field(default=None, max_length=2000)
+    since: str | None = Field(default=None, max_length=80)
+    page_token: str | None = Field(default=None, max_length=2000)
+    processing: Literal["sync", "async"] = "sync"
+    max_records: int = Field(default=100, ge=1, le=500)
+    cursor_name: str = Field(default="issues", min_length=1, max_length=120)
+
+
+class JiraSyncResponse(SourceAccountSyncResponse):
     source_account: SourceAccountResponse
     sync: dict[str, Any]
 

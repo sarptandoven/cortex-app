@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import tempfile
 import unittest
 import shutil
@@ -1457,6 +1458,126 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertNotIn("readwise_mcp_test", json.dumps(synced))
         self.assertEqual(synced["records"][0]["source_url"], "readwise://book/333/highlight/444")
 
+    def test_zotero_account_sync_fetches_items_with_stable_citations(self) -> None:
+        def fake_request(url: str, headers: dict[str, str]):
+            self.assertIn("/users/0/items", url)
+            self.assertEqual(headers["Zotero-API-Version"], "3")
+            self.assertNotIn("Zotero-API-Key", headers)
+            return [
+                {
+                    "key": "ZTITEM1",
+                    "version": 42,
+                    "data": {
+                        "key": "ZTITEM1",
+                        "itemType": "annotation",
+                        "parentItem": "ZTPARENT",
+                        "title": "",
+                        "annotationType": "highlight",
+                        "annotationText": "We decided Cortex should retrieve Zotero annotations with exact source citations.",
+                        "annotationComment": "Useful for research recall.",
+                        "dateModified": "2026-06-30T10:30:00Z",
+                        "tags": [{"tag": "research"}],
+                    },
+                },
+                {
+                    "key": "ZTPDF1",
+                    "version": 43,
+                    "data": {
+                        "key": "ZTPDF1",
+                        "itemType": "attachment",
+                        "title": "Skipped PDF",
+                        "contentType": "application/pdf",
+                    },
+                },
+            ]
+
+        result = self.store.sync_zotero_account(
+            self.user_id,
+            processing="sync",
+            max_records=20,
+            request_json=fake_request,
+        )
+
+        self.assertEqual(result["source"], "zotero")
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["saved"], 1)
+        self.assertEqual(result["source_account"]["source"], "zotero")
+        self.assertEqual(result["source_account"]["connection_type"], "local-api")
+        self.assertEqual(result["source_account"]["metadata"]["token_configured"], False)
+        self.assertEqual(result["source_account"]["metadata"]["attachment_content_imported"], False)
+        self.assertEqual(result["sync"]["records_found"], 2)
+        self.assertEqual(result["sync"]["records_returned"], 1)
+        self.assertNotIn("ZTPDF1", json.dumps(result))
+        self.assertEqual(result["records"][0]["source_url"], "zotero://select/library/items/ZTITEM1")
+        capture_id = result["capture_ids"][0]
+        self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+
+        search = self.store.search(self.user_id, "Zotero annotations exact source citations", limit=3)
+        self.assertTrue(search)
+        self.assertEqual(search[0]["source"], "zotero")
+        self.assertTrue(search[0]["source_url"].startswith("zotero://select/library/items/ZTITEM1"))
+        self.assertIn("line=", search[0]["source_url"])
+        self.assertIn("excerpt=", search[0]["source_url"])
+        self.assertEqual(search[0]["provenance"]["record_metadata"]["item_key"], "ZTITEM1")
+        self.assertEqual(search[0]["provenance"]["record_metadata"]["record_kind"], "annotation")
+
+        duplicate = self.store.sync_zotero_account(
+            self.user_id,
+            processing="sync",
+            max_records=20,
+            request_json=fake_request,
+        )
+        self.assertEqual(duplicate["saved"], 0)
+        self.assertEqual(duplicate["skipped"], 1)
+        self.assertEqual(duplicate["records"][0]["status"], "duplicate")
+
+    def test_mcp_zotero_sync_tool_fetches_records_without_exposing_token(self) -> None:
+        def fake_request(url: str, headers: dict[str, str]):
+            self.assertIn("/groups/12345/items", url)
+            self.assertEqual(headers["Zotero-API-Key"], "zotero_mcp_test")
+            return [
+                {
+                    "key": "ZTMCP1",
+                    "version": 50,
+                    "data": {
+                        "key": "ZTMCP1",
+                        "itemType": "note",
+                        "note": "<p>We decided MCP Zotero sync should write source-account records.</p>",
+                        "dateModified": "2026-06-30T10:00:00Z",
+                    },
+                }
+            ]
+
+        with self.assertRaises(PermissionError):
+            call_tool(
+                self.store,
+                self.user_id,
+                "sync_zotero",
+                {"token": "zotero_mcp_test"},
+                token_scopes=["read"],
+            )
+
+        with patch("backend.app.connectors.zotero._request_json", side_effect=fake_request):
+            synced = call_tool(
+                self.store,
+                self.user_id,
+                "sync_zotero",
+                {
+                    "token": "zotero_mcp_test",
+                    "library_type": "group",
+                    "library_id": "12345",
+                    "api_base_url": "https://api.zotero.org",
+                    "processing": "sync",
+                    "max_records": 10,
+                },
+                token_scopes=["write"],
+            )
+
+        self.assertEqual(synced["source"], "zotero")
+        self.assertEqual(synced["saved"], 1)
+        self.assertNotIn("zotero_mcp_test", json.dumps(synced))
+        self.assertEqual(synced["records"][0]["source_url"], "zotero://select/groups/12345/items/ZTMCP1")
+
     def test_linear_account_sync_fetches_issues_with_stable_citations(self) -> None:
         def fake_request(url: str, headers: dict[str, str], body: dict):
             self.assertEqual(headers["Authorization"], "lin_api_test")
@@ -1567,6 +1688,143 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(synced["saved"], 1)
         self.assertNotIn("lin_mcp_test", json.dumps(synced))
         self.assertEqual(synced["records"][0]["source_url"], "linear://issue/COR-99")
+
+    def test_jira_account_sync_fetches_issues_with_stable_citations(self) -> None:
+        expected_auth = base64.b64encode(b"sarp@example.com:jira_api_test").decode("ascii")
+
+        def fake_request(url: str, headers: dict[str, str], body: dict):
+            self.assertEqual(url, "https://doppl.atlassian.net/rest/api/3/search/jql")
+            self.assertEqual(headers["Authorization"], f"Basic {expected_auth}")
+            self.assertEqual(body["jql"], "project = COR ORDER BY updated DESC")
+            return {
+                "isLast": True,
+                "issues": [
+                    {
+                        "id": "10001",
+                        "key": "COR-42",
+                        "fields": {
+                            "summary": "Jira exact citations",
+                            "description": {
+                                "type": "doc",
+                                "version": 1,
+                                "content": [
+                                    {
+                                        "type": "paragraph",
+                                        "content": [
+                                            {
+                                                "type": "text",
+                                                "text": "We decided Cortex should retrieve Jira issues with exact source citations.",
+                                            }
+                                        ],
+                                    }
+                                ],
+                            },
+                            "project": {"key": "COR", "name": "Cortex"},
+                            "issuetype": {"name": "Task"},
+                            "status": {"name": "In Progress"},
+                            "created": "2026-06-29T10:00:00.000+0000",
+                            "updated": "2026-06-30T10:30:00.000+0000",
+                        },
+                    }
+                ],
+            }
+
+        result = self.store.sync_jira_account(
+            self.user_id,
+            email="sarp@example.com",
+            api_token="jira_api_test",
+            site_url="https://doppl.atlassian.net",
+            jql="project = COR ORDER BY updated DESC",
+            processing="sync",
+            max_records=20,
+            request_json=fake_request,
+        )
+
+        self.assertEqual(result["source"], "jira")
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["saved"], 1)
+        self.assertEqual(result["source_account"]["source"], "jira")
+        self.assertEqual(result["source_account"]["connection_type"], "api-token")
+        self.assertEqual(result["source_account"]["metadata"]["api_token_configured"], True)
+        self.assertNotIn("jira_api_test", json.dumps(result))
+        self.assertEqual(result["records"][0]["source_url"], "https://doppl.atlassian.net/browse/COR-42")
+        capture_id = result["capture_ids"][0]
+        self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+
+        search = self.store.search(self.user_id, "Jira issues exact source citations", limit=3)
+        self.assertTrue(search)
+        self.assertEqual(search[0]["source"], "jira")
+        self.assertTrue(search[0]["source_url"].startswith("https://doppl.atlassian.net/browse/COR-42"))
+        self.assertIn("line=", search[0]["source_url"])
+        self.assertIn("excerpt=", search[0]["source_url"])
+        self.assertEqual(search[0]["provenance"]["record_metadata"]["issue_key"], "COR-42")
+
+        duplicate = self.store.sync_jira_account(
+            self.user_id,
+            email="sarp@example.com",
+            api_token="jira_api_test",
+            site_url="https://doppl.atlassian.net",
+            jql="project = COR ORDER BY updated DESC",
+            processing="sync",
+            max_records=20,
+            request_json=fake_request,
+        )
+        self.assertEqual(duplicate["saved"], 0)
+        self.assertEqual(duplicate["skipped"], 1)
+        self.assertEqual(duplicate["records"][0]["status"], "duplicate")
+
+    def test_mcp_jira_sync_tool_fetches_records_without_exposing_token(self) -> None:
+        expected_auth = base64.b64encode(b"sarp@example.com:jira_mcp_test").decode("ascii")
+
+        def fake_request(url: str, headers: dict[str, str], body: dict):
+            self.assertEqual(headers["Authorization"], f"Basic {expected_auth}")
+            return {
+                "isLast": True,
+                "issues": [
+                    {
+                        "id": "10099",
+                        "key": "COR-99",
+                        "fields": {
+                            "summary": "MCP Jira sync",
+                            "description": "We decided MCP Jira sync should write source-account records.",
+                            "updated": "2026-06-30T10:00:00.000+0000",
+                        },
+                    }
+                ],
+            }
+
+        with self.assertRaises(PermissionError):
+            call_tool(
+                self.store,
+                self.user_id,
+                "sync_jira",
+                {
+                    "email": "sarp@example.com",
+                    "api_token": "jira_mcp_test",
+                    "site_url": "https://doppl.atlassian.net",
+                },
+                token_scopes=["read"],
+            )
+
+        with patch("backend.app.connectors.jira._request_json", side_effect=fake_request):
+            synced = call_tool(
+                self.store,
+                self.user_id,
+                "sync_jira",
+                {
+                    "email": "sarp@example.com",
+                    "api_token": "jira_mcp_test",
+                    "site_url": "https://doppl.atlassian.net",
+                    "processing": "sync",
+                    "max_records": 10,
+                },
+                token_scopes=["write"],
+            )
+
+        self.assertEqual(synced["source"], "jira")
+        self.assertEqual(synced["saved"], 1)
+        self.assertNotIn("jira_mcp_test", json.dumps(synced))
+        self.assertEqual(synced["records"][0]["source_url"], "https://doppl.atlassian.net/browse/COR-99")
 
     def test_notion_account_sync_fetches_pages_with_stable_citations(self) -> None:
         def fake_request(url: str, headers: dict[str, str], body: dict | None, method: str):

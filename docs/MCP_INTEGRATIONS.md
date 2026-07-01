@@ -26,7 +26,7 @@ Write-scoped MCP tools can now register connected source accounts and sync cited
 - `connect_source_account`
 - `sync_source_records`
 
-This is the preferred beta path for connected tools and local connector processes. Direct account/OAuth connectors should feed this same account, cursor, citation, and review contract. When `sync_source_records` includes a stable `external_id`, Cortex treats the record as the same source item on future syncs: unchanged content is skipped, changed content replaces the existing record's derived memory, and citations stay attached to the source account.
+This is the preferred beta path for connected tools and local connector processes. Direct connector tools such as `sync_slack`, `sync_readwise`, `sync_zotero`, `sync_linear`, and `sync_notion` feed this same account, cursor, citation, and review contract. When `sync_source_records` includes a stable `external_id`, Cortex treats the record as the same source item on future syncs: unchanged content is skipped, changed content replaces the existing record's derived memory, and citations stay attached to the source account.
 
 ## One-Click Integrations
 

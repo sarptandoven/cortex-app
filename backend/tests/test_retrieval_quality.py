@@ -410,6 +410,74 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertEqual(results[0]["source_type"], "service")
         self.assertIn("line=12", results[0]["source_url"])
 
+    def test_answer_query_prefers_source_backed_citations_over_uncited_matches(self) -> None:
+        self.store.update_settings(
+            self.user_id,
+            {
+                "review_new_captures": False,
+                "allow_pending_in_context": True,
+            },
+        )
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Atlas ask source-backed ranking points at a generic uncited memo.",
+            source="unit-test",
+            source_url=None,
+            title="Uncited Ask distractor",
+            extracted={
+                "_timestamp": "2026-05-01T00:00:00+00:00",
+                "summary": "Uncited Ask distractor.",
+                "records": [
+                    {
+                        "id": "ask_source_backed_uncited",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "Atlas ask source-backed ranking points at a generic uncited memo.",
+                        "summary": "Generic uncited Ask memo.",
+                        "confidence": "confirmed",
+                        "importance": 5,
+                        "topics": ["atlas", "ask", "source-backed"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Atlas ask source-backed ranking points at the canonical connected source.",
+            source="github",
+            source_url="cortex-source://github#service=github&file=issues.json&line=34&excerpt=atlas-ask-source",
+            title="Cited Ask source",
+            extracted={
+                "_timestamp": "2026-05-01T00:00:00+00:00",
+                "summary": "Cited Ask source.",
+                "records": [
+                    {
+                        "id": "ask_source_backed_cited",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "Atlas ask source-backed ranking points at the canonical connected source.",
+                        "summary": "Canonical cited Ask source.",
+                        "confidence": "confirmed",
+                        "importance": 1,
+                        "topics": ["atlas", "ask", "source-backed"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+
+        answer = self.store.answer_query(self.user_id, "atlas ask source-backed ranking", limit=2)
+
+        self.assertEqual(answer["citations"][0]["id"], "ask_source_backed_cited")
+        self.assertTrue(all(citation["source_url"] for citation in answer["citations"]))
+        self.assertNotIn("ask_source_backed_uncited", {citation["id"] for citation in answer["citations"]})
+        self.assertEqual(answer["results"][0]["id"], "ask_source_backed_cited")
+
     def test_source_quality_boost_does_not_override_layer_intent_relevance(self) -> None:
         self.store.update_settings(
             self.user_id,

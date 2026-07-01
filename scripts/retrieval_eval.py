@@ -1196,10 +1196,74 @@ def assert_focused_answer_contracts(store: CortexStore, user_id: str = USER_ID) 
     if RELATED_MEMORY_SOURCE_URL not in str(companion.get("source_url") or ""):
         raise AssertionError(f"Related-memory Ask missed source citation: {companion}")
 
+    store.update_settings(user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+    store.save_capture(
+        user_id=user_id,
+        content="Ask eval source-backed ranking points at a generic uncited memo.",
+        source="eval-manual",
+        source_url=None,
+        title="Uncited Ask eval distractor",
+        extracted={
+            "_timestamp": "2026-07-01T10:00:00Z",
+            "summary": "Uncited Ask eval distractor.",
+            "records": [
+                {
+                    "id": "rq_ask_source_backed_uncited",
+                    "kind": "claim",
+                    "layer": "semantic",
+                    "content": "Ask eval source-backed ranking points at a generic uncited memo.",
+                    "summary": "Generic uncited Ask eval memo.",
+                    "confidence": "confirmed",
+                    "importance": 5,
+                    "topics": ["ask", "source-backed", "ranking"],
+                    "entity_ids": [],
+                }
+            ],
+            "tasks": [],
+            "entities": [],
+        },
+    )
+    store.save_capture(
+        user_id=user_id,
+        content="Ask eval source-backed ranking points at the canonical connected source.",
+        source="github",
+        source_url="cortex-source://github#service=github&file=issues.json&line=34&excerpt=ask-source-backed",
+        title="Cited Ask eval source",
+        extracted={
+            "_timestamp": "2026-07-01T10:00:00Z",
+            "summary": "Cited Ask eval source.",
+            "records": [
+                {
+                    "id": "rq_ask_source_backed_cited",
+                    "kind": "claim",
+                    "layer": "semantic",
+                    "content": "Ask eval source-backed ranking points at the canonical connected source.",
+                    "summary": "Canonical cited Ask eval source.",
+                    "confidence": "confirmed",
+                    "importance": 1,
+                    "topics": ["ask", "source-backed", "ranking"],
+                    "entity_ids": [],
+                }
+            ],
+            "tasks": [],
+            "entities": [],
+        },
+    )
+    source_backed_answer = store.answer_query(user_id, "ask eval source-backed ranking", limit=2)
+    source_backed_ids = [citation["id"] for citation in source_backed_answer.get("citations") or []]
+    if not source_backed_ids or source_backed_ids[0] != "rq_ask_source_backed_cited":
+        raise AssertionError(f"Ask source-backed rerank missed cited source: {source_backed_ids}")
+    if "rq_ask_source_backed_uncited" in source_backed_ids:
+        raise AssertionError(f"Ask source-backed rerank cited an uncited distractor: {source_backed_ids}")
+    missing_source_urls = [citation["id"] for citation in source_backed_answer.get("citations") or [] if not citation.get("source_url")]
+    if missing_source_urls:
+        raise AssertionError(f"Ask source-backed rerank emitted uncited citations: {missing_source_urls}")
+
     for label, answer in (
         ("sector_scoping", sector_answer),
         ("temporal_validity", validity_answer),
         ("related_memory", related_answer),
+        ("source_backed_rerank", source_backed_answer),
     ):
         missing_citations = [citation["id"] for citation in answer.get("citations") or [] if not citation.get("source_url")]
         if missing_citations:
@@ -1221,6 +1285,9 @@ def assert_focused_answer_contracts(store: CortexStore, user_id: str = USER_ID) 
             "related_id": RELATED_MEMORY_COMPANION_ID,
             "relationship": relationship,
             "source_url": companion.get("source_url"),
+        },
+        "source_backed_rerank": {
+            "citation_ids": source_backed_ids,
         },
     }
 

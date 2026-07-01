@@ -40,6 +40,7 @@ BACKEND_FEATURES = (
     "slack-token-connector",
     "readwise-token-connector",
     "linear-token-connector",
+    "jira-token-connector",
     "notion-token-connector",
     "sync-device-manifests",
     "sync-receipts",
@@ -396,11 +397,12 @@ SOURCE_CONNECTOR_CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "github", "name": "GitHub", "category": "Work tools", "auth": "api_token", "live_status": "api_token", "scopes": ["repo:read"], "notes": "Read-only GitHub issue and pull request sync works with a fine-grained personal access token."},
     {"id": "linkedin", "name": "LinkedIn", "category": "Work tools", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct LinkedIn account connector is required before this can be a primary source."},
     {"id": "linear", "name": "Linear", "category": "Work tools", "auth": "api_token", "live_status": "api_token", "scopes": ["read"], "notes": "Read-only Linear issue sync works with a personal API key."},
-    {"id": "jira", "name": "Jira", "category": "Work tools", "auth": "oauth", "live_status": "planned", "scopes": ["read:jira-work"], "notes": "Jira account sync is the intended connector path."},
+    {"id": "jira", "name": "Jira", "category": "Work tools", "auth": "api_token", "live_status": "api_token", "scopes": ["read:jira-work"], "notes": "Read-only Jira issue sync works with a Jira Cloud site URL, Atlassian account email, and API token."},
     {"id": "zoom", "name": "Zoom", "category": "Meetings", "auth": "oauth", "live_status": "planned", "scopes": ["recording:read"], "notes": "Zoom account sync is the intended connector path."},
     {"id": "browser-bookmarks", "name": "Browser bookmarks", "category": "Research", "auth": "local_file", "live_status": "import_ready", "scopes": [], "notes": "Local browser integration covers bookmarks and history with explicit app data access."},
     {"id": "browser-history", "name": "Browser history", "category": "Research", "auth": "local_file", "live_status": "import_ready", "scopes": [], "notes": "Local browser history integration requires explicit app data access; no background browser collection."},
     {"id": "readwise", "name": "Readwise", "category": "Research", "auth": "api_token", "live_status": "api_token", "scopes": ["read"], "notes": "Read-only Readwise highlight export sync works with a user access token."},
+    {"id": "zotero", "name": "Zotero", "category": "Research", "auth": "local_api", "live_status": "local_api", "scopes": ["read"], "notes": "Read-only Zotero item, note, and annotation sync works through the local desktop API by default; Web API tokens are optional."},
     {"id": "knowledge-base", "name": "Knowledge base", "category": "Research", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Knowledge base connector coverage for local notes and read-later services."},
     {"id": "twitter-x", "name": "Twitter/X", "category": "Social", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Twitter/X account connector is required before this can be a primary source."},
     {"id": "apple-notes", "name": "Apple Notes", "category": "Notes", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Local Apple Notes integration is the intended source path."},
@@ -448,7 +450,8 @@ SOURCE_CONNECTOR_IMPORT_METADATA: dict[str, dict[str, Any]] = {
     "browser-bookmarks": {"source_ids": ["browser-bookmarks", "browser-history"], "export_status": "native", "import_label": "Browser bookmarks and history local records"},
     "browser-history": {"source_ids": ["browser-bookmarks", "browser-history"], "source_aliases": ["chrome-history", "firefox-history"], "export_status": "native", "import_label": "Browser history local records"},
     "readwise": {"source_ids": ["readwise", "knowledge-base"], "export_status": "generic", "import_status": "generic", "import_label": "Readwise account records map to Knowledge bases"},
-    "knowledge-base": {"source_ids": ["knowledge-base", "obsidian", "logseq", "roam", "readwise", "pocket", "instapaper", "raindrop"], "export_status": "generic", "import_status": "generic", "import_label": "Knowledge base local records"},
+    "zotero": {"source_ids": ["zotero", "knowledge-base"], "export_status": "generic", "import_status": "generic", "import_label": "Zotero account records map to Knowledge bases"},
+    "knowledge-base": {"source_ids": ["knowledge-base", "obsidian", "logseq", "roam", "readwise", "zotero", "pocket", "instapaper", "raindrop"], "export_status": "generic", "import_status": "generic", "import_label": "Knowledge base local records"},
     "twitter-x": {"source_ids": ["twitter-x"], "export_status": "native", "import_label": "Native Twitter/X account connector records"},
     "apple-notes": {"source_ids": ["apple-notes", "docs"], "export_status": "generic", "import_status": "generic", "import_label": "Apple Notes local records map to Notes and writing"},
     "obsidian": {"source_ids": ["obsidian", "knowledge-base"], "export_status": "generic", "import_status": "generic", "import_label": "Obsidian vault local records map to Knowledge bases"},
@@ -3252,6 +3255,152 @@ class CortexStore:
         result["sync"] = sync_summary
         return result
 
+    def sync_zotero_account(
+        self,
+        user_id: str,
+        *,
+        token: str | None = None,
+        library_type: str = "user",
+        library_id: str = "0",
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        since: str | None = None,
+        cursor: str | None = None,
+        processing: str = "sync",
+        max_records: int = 100,
+        cursor_name: str = "items",
+        include_attachments: bool = False,
+        api_base_url: str | None = None,
+        request_json: Any | None = None,
+    ) -> dict[str, Any]:
+        from .connectors.zotero import ZOTERO_SOURCE, fetch_zotero_records
+
+        if processing not in {"sync", "async"}:
+            raise ValueError("processing must be sync or async")
+        try:
+            capped_max_records = int(max_records or 100)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_records must be an integer") from exc
+        if capped_max_records < 1 or capped_max_records > 500:
+            raise ValueError("max_records must be between 1 and 500")
+
+        sync = fetch_zotero_records(
+            token=token,
+            library_type=library_type,
+            library_id=library_id,
+            since=since,
+            cursor=cursor,
+            max_records=capped_max_records,
+            include_attachments=bool(include_attachments),
+            api_base_url=api_base_url or "http://localhost:23119/api",
+            request_json=request_json,
+        )
+        identifier = (account_identifier or f"{sync.library_type}:{sync.library_id}").strip()[:240]
+        resolved_account_id = (source_account_id or "").strip() or stable_id("sacct_", f"{user_id}:{ZOTERO_SOURCE}:{identifier}")
+        default_label = "Zotero Library" if sync.library_type == "user" else f"Zotero Group {sync.library_id}"
+        label = (account_label or default_label).strip()[:160]
+        sync_summary = sync.to_summary()
+        error_message = sync.errors[0]["error"] if sync.errors else None
+        token_configured = bool(str(token or "").strip())
+        metadata = {
+            "connector": ZOTERO_SOURCE,
+            "connector_version": sync_summary["connector_version"],
+            "records_found": sync.records_found,
+            "records_returned": sync.records_returned,
+            "library_type": sync.library_type,
+            "library_id": sync.library_id,
+            "token_configured": token_configured,
+            "local_api_default": sync.api_base_url.rstrip("/") == "http://localhost:23119/api",
+            "api_base_url": sync.api_base_url,
+            "include_attachments": bool(include_attachments),
+            "attachment_content_imported": False,
+        }
+        account = self.upsert_source_account(
+            user_id,
+            source=ZOTERO_SOURCE,
+            account_label=label,
+            account_identifier=identifier,
+            connection_type="api_token" if token_configured else "local_api",
+            status="needs_attention" if error_message else "connected",
+            auth_state="error" if error_message else "healthy",
+            policy={"review_required": True, "allow_ai_context": True},
+            metadata=metadata,
+            last_error=error_message,
+            account_id=resolved_account_id,
+        )
+        state = {
+            "connector": ZOTERO_SOURCE,
+            "connector_version": sync_summary["connector_version"],
+            "records_found": sync.records_found,
+            "records_returned": sync.records_returned,
+            "sync_errors": sync.errors,
+            "next_cursor": sync.next_cursor,
+            "library_type": sync.library_type,
+            "library_id": sync.library_id,
+            "api_base_url": sync.api_base_url,
+            "include_attachments": bool(include_attachments),
+            "attachment_content_imported": False,
+        }
+        records = [record.to_source_account_record() for record in sync.records]
+        if not records:
+            cursor_payload = self.upsert_sync_cursor(
+                user_id,
+                source=ZOTERO_SOURCE,
+                source_account_id=account["id"],
+                cursor_name=cursor_name,
+                cursor_value=sync.cursor_value,
+                high_water_mark=sync.high_water_mark,
+                state={
+                    **state,
+                    "last_batch_received": 0,
+                    "last_batch_saved": 0,
+                    "last_batch_queued": 0,
+                    "last_batch_skipped": 0,
+                    "last_batch_failed": 0,
+                },
+                last_error=error_message,
+                completed=not bool(error_message),
+            )
+            updated_account = self._source_account_by_id(user_id, account["id"]) or account
+            return {
+                "source_account_id": account["id"],
+                "source": ZOTERO_SOURCE,
+                "status": "partial" if error_message else "empty",
+                "processing": processing,
+                "received": 0,
+                "queued": 0,
+                "saved": 0,
+                "skipped": 0,
+                "failed": len(sync.errors),
+                "archived_missing": 0,
+                "capture_ids": [],
+                "records": [],
+                "errors": sync.errors,
+                "cursor": cursor_payload,
+                "source_account": updated_account,
+                "sync": sync_summary,
+            }
+
+        result = self.sync_source_account_records(
+            user_id,
+            account["id"],
+            records=records,
+            cursor_name=cursor_name,
+            cursor_value=sync.cursor_value,
+            high_water_mark=sync.high_water_mark,
+            state=state,
+            processing=processing,
+        )
+        if sync.errors:
+            result["errors"] = [*(result.get("errors") or []), *sync.errors]
+            result["failed"] = int(result.get("failed") or 0) + len(sync.errors)
+            if result.get("status") == "complete":
+                result["status"] = "partial"
+        result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
+        result["sync"] = sync_summary
+        return result
+
     def sync_linear_account(
         self,
         user_id: str,
@@ -3345,6 +3494,142 @@ class CortexStore:
             return {
                 "source_account_id": account["id"],
                 "source": LINEAR_SOURCE,
+                "status": "partial" if error_message else "empty",
+                "processing": processing,
+                "received": 0,
+                "queued": 0,
+                "saved": 0,
+                "skipped": 0,
+                "failed": len(sync.errors),
+                "archived_missing": 0,
+                "capture_ids": [],
+                "records": [],
+                "errors": sync.errors,
+                "cursor": cursor_payload,
+                "source_account": updated_account,
+                "sync": sync_summary,
+            }
+
+        result = self.sync_source_account_records(
+            user_id,
+            account["id"],
+            records=records,
+            cursor_name=cursor_name,
+            cursor_value=sync.cursor_value,
+            high_water_mark=sync.high_water_mark,
+            state=state,
+            processing=processing,
+        )
+        if sync.errors:
+            result["errors"] = [*(result.get("errors") or []), *sync.errors]
+            result["failed"] = int(result.get("failed") or 0) + len(sync.errors)
+            if result.get("status") == "complete":
+                result["status"] = "partial"
+        result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
+        result["sync"] = sync_summary
+        return result
+
+    def sync_jira_account(
+        self,
+        user_id: str,
+        *,
+        email: str,
+        api_token: str,
+        site_url: str,
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        jql: str | None = None,
+        since: str | None = None,
+        page_token: str | None = None,
+        processing: str = "sync",
+        max_records: int = 100,
+        cursor_name: str = "issues",
+        request_json: Any | None = None,
+    ) -> dict[str, Any]:
+        from .connectors.jira import JIRA_SOURCE, fetch_jira_records
+
+        if processing not in {"sync", "async"}:
+            raise ValueError("processing must be sync or async")
+        try:
+            capped_max_records = int(max_records or 100)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_records must be an integer") from exc
+        if capped_max_records < 1 or capped_max_records > 500:
+            raise ValueError("max_records must be between 1 and 500")
+
+        sync = fetch_jira_records(
+            email=email,
+            api_token=api_token,
+            site_url=site_url,
+            jql=jql,
+            since=since,
+            page_token=page_token,
+            max_records=capped_max_records,
+            request_json=request_json,
+        )
+        site_key = urlsplit(sync.site_url).netloc or sync.site_url
+        identifier = (account_identifier or site_key or "jira").strip()[:240]
+        resolved_account_id = (source_account_id or "").strip() or stable_id("sacct_", f"{user_id}:{JIRA_SOURCE}:{identifier}")
+        label = (account_label or f"Jira: {identifier}").strip()[:160]
+        sync_summary = sync.to_summary()
+        error_message = sync.errors[0]["error"] if sync.errors else None
+        metadata = {
+            "connector": JIRA_SOURCE,
+            "connector_version": sync_summary["connector_version"],
+            "records_found": sync.records_found,
+            "records_returned": sync.records_returned,
+            "site_url": sync.site_url,
+            "email_configured": True,
+            "api_token_configured": True,
+        }
+        account = self.upsert_source_account(
+            user_id,
+            source=JIRA_SOURCE,
+            account_label=label,
+            account_identifier=identifier,
+            connection_type="api_token",
+            status="needs_attention" if error_message else "connected",
+            auth_state="error" if error_message else "healthy",
+            policy={"review_required": True, "allow_ai_context": True},
+            metadata=metadata,
+            last_error=error_message,
+            account_id=resolved_account_id,
+        )
+        state = {
+            "connector": JIRA_SOURCE,
+            "connector_version": sync_summary["connector_version"],
+            "records_found": sync.records_found,
+            "records_returned": sync.records_returned,
+            "sync_errors": sync.errors,
+            "next_page_token": sync.next_page_token,
+            "site_url": sync.site_url,
+            "jql": sync.jql,
+        }
+        records = [record.to_source_account_record() for record in sync.records]
+        if not records:
+            cursor_payload = self.upsert_sync_cursor(
+                user_id,
+                source=JIRA_SOURCE,
+                source_account_id=account["id"],
+                cursor_name=cursor_name,
+                cursor_value=sync.cursor_value,
+                high_water_mark=sync.high_water_mark,
+                state={
+                    **state,
+                    "last_batch_received": 0,
+                    "last_batch_saved": 0,
+                    "last_batch_queued": 0,
+                    "last_batch_skipped": 0,
+                    "last_batch_failed": 0,
+                },
+                last_error=error_message,
+                completed=not bool(error_message),
+            )
+            updated_account = self._source_account_by_id(user_id, account["id"]) or account
+            return {
+                "source_account_id": account["id"],
+                "source": JIRA_SOURCE,
                 "status": "partial" if error_message else "empty",
                 "processing": processing,
                 "received": 0,
@@ -5093,9 +5378,14 @@ class CortexStore:
         limit = max(1, min(20, int(limit)))
         sector = _normalize_sector_filter(sector) or None
         redact_sensitive = bool(self.settings(user_id)["redact_sensitive_context"])
-        results = self.search(user_id, query, limit=limit, sector=sector, include_related=True)
+        search_limit = max(limit * 3, 12)
+        candidates = self.search(user_id, query, limit=search_limit, sector=sector, include_related=True)
+        source_backed = [item for item in candidates if self._has_source_citation(item)]
+        uncited = [item for item in candidates if not self._has_source_citation(item)]
+        results = [*source_backed, *uncited][:limit]
+        cited_results = source_backed[:limit] if source_backed else results
         citations: list[dict[str, Any]] = []
-        for index, item in enumerate(results, start=1):
+        for index, item in enumerate(cited_results, start=1):
             result_type = item.get("result_type") or "memory"
             source_url = item.get("source_url")
             excerpt = self._shared_text(item.get("content") or item.get("summary") or "", redact_sensitive=redact_sensitive)
@@ -5147,6 +5437,10 @@ class CortexStore:
             "citations": citations,
             "results": self._shared_payload(results, redact_sensitive=redact_sensitive),
         }
+
+    def _has_source_citation(self, item: dict[str, Any]) -> bool:
+        source_url = str(item.get("source_url") or "").strip()
+        return bool(source_url)
 
     def _citation_metadata(self, item: dict[str, Any], provenance: dict[str, Any]) -> dict[str, Any]:
         record_metadata = provenance.get("record_metadata") if isinstance(provenance.get("record_metadata"), dict) else {}

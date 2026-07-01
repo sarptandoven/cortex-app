@@ -257,6 +257,28 @@ TOOLS = [
         },
     },
     {
+        "name": "sync_zotero",
+        "description": "Fetch Zotero items, notes, and annotations from the local desktop API by default, then sync them into Cortex with stable citations.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "token": {"type": "string"},
+                "library_type": {"type": "string", "default": "user", "enum": ["user", "group"]},
+                "library_id": {"type": "string", "default": "0"},
+                "source_account_id": {"type": "string"},
+                "account_label": {"type": "string"},
+                "account_identifier": {"type": "string"},
+                "since": {"type": "string"},
+                "cursor": {"type": "string"},
+                "processing": {"type": "string", "default": "sync", "enum": ["sync", "async"]},
+                "max_records": {"type": "integer", "default": 100},
+                "cursor_name": {"type": "string", "default": "items"},
+                "include_attachments": {"type": "boolean", "default": False},
+                "api_base_url": {"type": "string", "default": "http://localhost:23119/api"},
+            },
+        },
+    },
+    {
         "name": "sync_linear",
         "description": "Fetch Linear issues with a personal API key, then sync them into Cortex with stable citations.",
         "inputSchema": {
@@ -274,6 +296,28 @@ TOOLS = [
                 "api_url": {"type": "string"},
             },
             "required": ["token"],
+        },
+    },
+    {
+        "name": "sync_jira",
+        "description": "Fetch Jira Cloud issues with an Atlassian account email and API token, then sync them into Cortex with stable /browse issue citations.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string"},
+                "api_token": {"type": "string"},
+                "site_url": {"type": "string"},
+                "source_account_id": {"type": "string"},
+                "account_label": {"type": "string"},
+                "account_identifier": {"type": "string"},
+                "jql": {"type": "string"},
+                "since": {"type": "string"},
+                "page_token": {"type": "string"},
+                "processing": {"type": "string", "default": "sync", "enum": ["sync", "async"]},
+                "max_records": {"type": "integer", "default": 100},
+                "cursor_name": {"type": "string", "default": "issues"},
+            },
+            "required": ["email", "api_token", "site_url"],
         },
     },
     {
@@ -463,7 +507,9 @@ WRITE_TOOLS = {
     "sync_github",
     "sync_slack",
     "sync_readwise",
+    "sync_zotero",
     "sync_linear",
+    "sync_jira",
     "sync_notion",
     "approve_memory_capture",
     "archive_memory_capture",
@@ -731,6 +777,24 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             api_base_url=args.get("api_base_url"),
         )
         return store.agent_payload(user_id, result)
+    if name == "sync_zotero":
+        result = store.sync_zotero_account(
+            user_id,
+            token=args.get("token"),
+            library_type=args.get("library_type", "user"),
+            library_id=args.get("library_id", "0"),
+            source_account_id=args.get("source_account_id"),
+            account_label=args.get("account_label"),
+            account_identifier=args.get("account_identifier"),
+            since=args.get("since"),
+            cursor=args.get("cursor"),
+            processing=args.get("processing", "sync"),
+            max_records=int(args.get("max_records", 100)),
+            cursor_name=args.get("cursor_name", "items"),
+            include_attachments=_bool_arg(args, "include_attachments", False),
+            api_base_url=args.get("api_base_url"),
+        )
+        return store.agent_payload(user_id, result)
     if name == "sync_linear":
         result = store.sync_linear_account(
             user_id,
@@ -744,6 +808,23 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             max_records=int(args.get("max_records", 100)),
             cursor_name=args.get("cursor_name", "issues"),
             api_url=args.get("api_url"),
+        )
+        return store.agent_payload(user_id, result)
+    if name == "sync_jira":
+        result = store.sync_jira_account(
+            user_id,
+            email=args.get("email", ""),
+            api_token=args.get("api_token", ""),
+            site_url=args.get("site_url", ""),
+            source_account_id=args.get("source_account_id"),
+            account_label=args.get("account_label"),
+            account_identifier=args.get("account_identifier"),
+            jql=args.get("jql"),
+            since=args.get("since"),
+            page_token=args.get("page_token"),
+            processing=args.get("processing", "sync"),
+            max_records=int(args.get("max_records", 100)),
+            cursor_name=args.get("cursor_name", "issues"),
         )
         return store.agent_payload(user_id, result)
     if name == "sync_notion":

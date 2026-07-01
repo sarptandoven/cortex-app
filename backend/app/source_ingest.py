@@ -324,7 +324,7 @@ SUPPORTED_SOURCES: list[dict[str, Any]] = [
     {
         "id": "knowledge-base",
         "name": "Knowledge bases",
-        "formats": ["Obsidian", "Roam", "Logseq", "Readwise, Pocket, Instapaper CSV/JSON"],
+        "formats": ["Obsidian", "Roam", "Logseq", "Readwise, Zotero, Pocket, Instapaper CSV/JSON"],
         "status": "generic",
     },
 ]

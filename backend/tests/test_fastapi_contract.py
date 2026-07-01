@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import json
 import tempfile
@@ -268,6 +269,47 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertTrue(payload["citations"][0]["source_url"].startswith("local-file://ask-source.md?path_hash="))
         self.assertTrue(payload["results"][0]["source_url"].startswith("local-file://ask-source.md?path_hash="))
         self.assertIn("Ask citation contract", payload["citations"][0]["excerpt"])
+
+    def test_ask_endpoint_prefers_source_backed_citations_over_uncited_matches(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "ask-source-backed-contract"}
+        uncited = self.client.post(
+            "/v1/captures",
+            json={
+                "content": "FastAPI Ask source-backed ranking points at a generic uncited memo.",
+                "source": "ask-test",
+            },
+            headers=headers,
+        )
+        self.assertEqual(uncited.status_code, 200)
+        approved_uncited = self.client.post(f"/v1/captures/{uncited.json()['capture_id']}/approve", headers=headers)
+        self.assertEqual(approved_uncited.status_code, 200)
+
+        cited = self.client.post(
+            "/v1/captures",
+            json={
+                "content": "FastAPI Ask source-backed ranking points at the canonical connected source.",
+                "source": "github",
+                "source_url": "cortex-source://github#service=github&file=issues.json&line=34&excerpt=ask-source-backed",
+            },
+            headers=headers,
+        )
+        self.assertEqual(cited.status_code, 200)
+        approved_cited = self.client.post(f"/v1/captures/{cited.json()['capture_id']}/approve", headers=headers)
+        self.assertEqual(approved_cited.status_code, 200)
+
+        response = self.client.get(
+            "/v1/ask",
+            params={"query": "FastAPI Ask source-backed ranking", "limit": 2},
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["citations"])
+        self.assertTrue(all(citation["source_url"] for citation in payload["citations"]))
+        self.assertIn("canonical connected source", payload["citations"][0]["excerpt"])
+        self.assertNotIn("generic uncited memo", json.dumps(payload["citations"]))
+        self.assertTrue(payload["results"][0]["source_url"])
 
     def test_retrieval_endpoints_support_sector_scope(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "sector-contract"}
@@ -1222,6 +1264,119 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(search.status_code, 200)
         self.assertTrue(search.json()["results"])
         self.assertTrue(search.json()["results"][0]["source_url"].startswith("https://linear.app/doppl/issue/COR-42/endpoint-sync-should-cite-linear"))
+        self.assertIn("line=", search.json()["results"][0]["source_url"])
+        self.assertIn("excerpt=", search.json()["results"][0]["source_url"])
+
+    def test_zotero_connector_endpoint_syncs_items_with_citations(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "zotero-endpoint-contract"}
+
+        def fake_request(url: str, request_headers: dict[str, str]):
+            self.assertIn("/users/0/items", url)
+            self.assertEqual(request_headers["Zotero-API-Version"], "3")
+            self.assertNotIn("Zotero-API-Key", request_headers)
+            return [
+                {
+                    "key": "ZTFAST1",
+                    "version": 42,
+                    "data": {
+                        "key": "ZTFAST1",
+                        "itemType": "annotation",
+                        "parentItem": "ZTPARENT",
+                        "annotationText": "We decided the FastAPI Zotero connector should preserve item URLs.",
+                        "annotationComment": "Useful for research recall.",
+                        "dateModified": "2026-06-30T10:00:00Z",
+                    },
+                }
+            ]
+
+        with patch("backend.app.connectors.zotero._request_json", side_effect=fake_request):
+            response = self.client.post(
+                "/v1/connectors/zotero/sync",
+                json={
+                    "processing": "sync",
+                    "max_records": 25,
+                },
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["source"], "zotero")
+        self.assertEqual(payload["status"], "complete")
+        self.assertEqual(payload["saved"], 1)
+        self.assertEqual(payload["records"][0]["source_url"], "zotero://select/library/items/ZTFAST1")
+        self.assertEqual(payload["source_account"]["source"], "zotero")
+        self.assertEqual(payload["source_account"]["connection_type"], "local-api")
+        approved = self.client.post(f"/v1/captures/{payload['capture_ids'][0]}/approve", headers=headers)
+        self.assertEqual(approved.status_code, 200)
+        search = self.client.get(
+            "/v1/search",
+            params={"query": "FastAPI Zotero connector preserve item URLs"},
+            headers=headers,
+        )
+        self.assertEqual(search.status_code, 200)
+        self.assertTrue(search.json()["results"])
+        self.assertTrue(search.json()["results"][0]["source_url"].startswith("zotero://select/library/items/ZTFAST1"))
+        self.assertIn("line=", search.json()["results"][0]["source_url"])
+        self.assertIn("excerpt=", search.json()["results"][0]["source_url"])
+
+    def test_jira_connector_endpoint_syncs_issues_with_citations(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "jira-endpoint-contract"}
+        expected_auth = base64.b64encode(b"sarp@example.com:jira_api_test").decode("ascii")
+
+        def fake_request(url: str, request_headers: dict[str, str], body: dict):
+            self.assertEqual(url, "https://doppl.atlassian.net/rest/api/3/search/jql")
+            self.assertEqual(request_headers["Authorization"], f"Basic {expected_auth}")
+            self.assertEqual(body["jql"], "project = COR ORDER BY updated DESC")
+            return {
+                "isLast": True,
+                "issues": [
+                    {
+                        "id": "10042",
+                        "key": "COR-42",
+                        "fields": {
+                            "summary": "Endpoint sync should cite Jira",
+                            "description": "We decided the FastAPI Jira connector should preserve issue URLs.",
+                            "created": "2026-06-30T09:00:00.000+0000",
+                            "updated": "2026-06-30T10:00:00.000+0000",
+                        },
+                    }
+                ],
+            }
+
+        with patch("backend.app.connectors.jira._request_json", side_effect=fake_request):
+            response = self.client.post(
+                "/v1/connectors/jira/sync",
+                json={
+                    "email": "sarp@example.com",
+                    "api_token": "jira_api_test",
+                    "site_url": "https://doppl.atlassian.net",
+                    "jql": "project = COR ORDER BY updated DESC",
+                    "processing": "sync",
+                    "max_records": 25,
+                },
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["source"], "jira")
+        self.assertEqual(payload["status"], "complete")
+        self.assertEqual(payload["saved"], 1)
+        self.assertEqual(payload["records"][0]["source_url"], "https://doppl.atlassian.net/browse/COR-42")
+        self.assertEqual(payload["source_account"]["source"], "jira")
+        self.assertEqual(payload["source_account"]["connection_type"], "api-token")
+        self.assertNotIn("jira_api_test", json.dumps(payload))
+        approved = self.client.post(f"/v1/captures/{payload['capture_ids'][0]}/approve", headers=headers)
+        self.assertEqual(approved.status_code, 200)
+        search = self.client.get(
+            "/v1/search",
+            params={"query": "FastAPI Jira connector preserve issue URLs"},
+            headers=headers,
+        )
+        self.assertEqual(search.status_code, 200)
+        self.assertTrue(search.json()["results"])
+        self.assertTrue(search.json()["results"][0]["source_url"].startswith("https://doppl.atlassian.net/browse/COR-42"))
         self.assertIn("line=", search.json()["results"][0]["source_url"])
         self.assertIn("excerpt=", search.json()["results"][0]["source_url"])
 
