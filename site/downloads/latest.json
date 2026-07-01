@@ -4,14 +4,14 @@
     {
       "filename": "Cortex-0.1.0-1.dmg",
       "kind": "dmg",
-      "sha256": "609aac8a93d7794110eec6eb1329ccfb4921d7203e1ab300e02d18972877977a",
-      "size_bytes": 21055519,
+      "sha256": "01d5c72945a7b6533e2b09395c768a4161fd30a394983d1c9969f14cec2960ef",
+      "size_bytes": 21055524,
       "url": "downloads/Cortex-0.1.0-1.dmg"
     },
     {
       "filename": "Cortex-0.1.0-1.app.zip",
       "kind": "zip",
-      "sha256": "89449e599d5adde4504102b02407384c636a608619c9983a07489802796a4c5a",
+      "sha256": "c56e002f41a81a7e81e1c033cef2b8719afa1459d9f751e0a8a8595556faff82",
       "size_bytes": 16639309,
       "url": "downloads/Cortex-0.1.0-1.app.zip"
     }
@@ -67,13 +67,13 @@
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "First-100 checkpoint: simpler first-run onboarding, clearer Connections & Privacy, reviewed-memory MCP retrieval, and stronger Obsidian citation regression coverage."
+    "First-100 checkpoint: simpler first-run onboarding, clearer Connections & Privacy, reviewed-memory MCP retrieval, stronger Obsidian citation regression coverage, and explicit first-100 rollout gates."
   ],
-  "released_at": "2026-07-01T04:07:18Z",
+  "released_at": "2026-07-01T04:25:18Z",
   "source_provenance": {
-    "built_at": "2026-07-01T04:07:18Z",
+    "built_at": "2026-07-01T04:25:18Z",
     "git_branch": "mass-scale-app-redesign",
-    "git_commit": "5831840f1f0a8de19e7fa31f543c5922d5075479",
+    "git_commit": "154d8783b0a293d7276e260c7d228607f0ab9399",
     "git_dirty": false
   },
   "version": "0.1.0"
