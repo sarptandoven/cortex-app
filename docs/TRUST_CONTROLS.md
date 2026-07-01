@@ -32,7 +32,7 @@ The packaged app now keeps two local secrets:
 - the admin app token, generated per install and kept in local app defaults for REST API calls;
 - a scoped `cxm_` MCP token, also generated per install, registered with the local backend, and copied into local AI-tool MCP configs.
 
-REST endpoints require the admin app token. `/mcp` accepts the admin token for backward compatibility, but new copied or installed MCP configs use the scoped MCP token. MCP tool calls must pass both checks: the token must include the needed scope and the user's Trust toggle for that capability must be enabled.
+REST endpoints require the admin app token. `/mcp` accepts the admin token for backward compatibility, but new copied or installed MCP configs use the scoped MCP token. MCP tool calls must pass both checks: the token must include the needed scope and the user's Connections & Privacy setting for that capability must be enabled.
 
 Default MCP token scopes are `read`, `write`, `export`, and `maintenance`. The destructive scope is not included in newly generated local integration tokens.
 
@@ -102,7 +102,7 @@ When disabled, connected agents cannot inspect memory through MCP.
 
 When disabled, connected agents cannot mutate memory or review state.
 
-This is enabled by default for new local vaults so connected tools can save memories into the review queue. Users can disable it from Trust.
+This is enabled by default for new local vaults so connected tools can save memories into the review queue. Users can disable it from Connections & Privacy.
 
 ### Agent Maintenance Access
 

@@ -18,8 +18,8 @@ struct AskTab: View {
                 } else {
                     AskEmptyGuidance(
                         state: state,
-                        title: "Ask approved memory",
-                        detail: "Ask about a project, person, decision, or phrase from your notes. Cortex answers only from approved memory and shows citations.",
+                        title: "Ask your notes",
+                        detail: "Ask about a project, person, decision, or detail from your reviewed notes. Cortex answers with sources.",
                         showActionsWhenMemoryExists: false
                     )
                 }
@@ -43,7 +43,7 @@ struct AskHeaderSection: View {
             Text("Ask Cortex")
                 .font(.title3)
                 .fontWeight(.semibold)
-            Text("Cortex answers from approved memory and shows sources.")
+            Text("Cortex answers from reviewed notes and shows sources.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -94,7 +94,7 @@ struct AskResponseSection: View {
                 AskEmptyGuidance(
                     state: state,
                     title: "No cited answer found",
-                    detail: "Try an exact phrase from approved memory, or connect notes and approve them in Review.",
+                    detail: "I could not find that in reviewed notes yet. Review new synced items or try a more specific question.",
                     showActionsWhenMemoryExists: true
                 )
             } else {
@@ -187,10 +187,10 @@ struct AskResultsSection: View {
     var body: some View {
         Group {
             if state.searchResults.isEmpty && !state.hasSearched {
-                QuietState(title: "Ask approved memory", detail: "Ask about a project, a person, a decision, or an exact phrase from approved memory.")
+                QuietState(title: "Ask your notes", detail: "Ask about a project, person, decision, or detail from reviewed notes.")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if state.searchResults.isEmpty {
-                QuietState(title: "No cited result matched", detail: "Try an exact phrase from approved memory, or approve more memory in Review.")
+                QuietState(title: "No cited result matched", detail: "Review new synced items or try a more specific question.")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -263,7 +263,7 @@ struct AskSourceDetailRow: View {
         if !layer.isEmpty, layer != kind {
             return "\(layer.capitalized) memory"
         }
-        return kind.isEmpty ? "Approved memory" : "\(kind.capitalized) memory"
+        return kind.isEmpty ? "Reviewed memory" : "\(kind.capitalized) memory"
     }
 
     private var citationLabel: String? {

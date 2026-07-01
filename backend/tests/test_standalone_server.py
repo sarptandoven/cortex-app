@@ -39,6 +39,7 @@ class FakeStore:
         self.revoke_token_calls: list[tuple[str, str]] = []
         self.source_account_calls: list[tuple[str, str]] = []
         self.source_account_sync_calls: list[tuple[str, str, int, str, bool]] = []
+        self.obsidian_sync_calls: list[dict] = []
         self.sync_cursor_calls: list[tuple[str, str, str | None]] = []
         self.sync_device_calls: list[tuple[str, str]] = []
         self.sync_receipt_calls: list[tuple[str, str, str, str]] = []
@@ -407,6 +408,94 @@ class FakeStore:
                 "cursor_value": cursor_value,
                 "high_water_mark": high_water_mark,
                 "state": state or {},
+            },
+        }
+
+    def sync_obsidian_vault(
+        self,
+        user_id: str,
+        *,
+        vault_path: str,
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        processing: str = "sync",
+        max_records: int = 1000,
+        cursor_name: str = "local-folder",
+    ) -> dict:
+        if not vault_path:
+            raise ValueError("vault_path is required")
+        call = {
+            "user_id": user_id,
+            "vault_path": vault_path,
+            "source_account_id": source_account_id,
+            "account_label": account_label,
+            "account_identifier": account_identifier,
+            "processing": processing,
+            "max_records": max_records,
+            "cursor_name": cursor_name,
+        }
+        self.obsidian_sync_calls.append(call)
+        account_id = source_account_id or "sacct_obsidian_test"
+        return {
+            "source_account_id": account_id,
+            "source": "obsidian",
+            "status": "complete",
+            "processing": processing,
+            "received": 1,
+            "queued": 0 if processing == "sync" else 1,
+            "saved": 1 if processing == "sync" else 0,
+            "skipped": 0,
+            "failed": 0,
+            "archived_missing": 0,
+            "capture_ids": ["cap_obsidian_test"],
+            "records": [
+                {
+                    "capture_id": "cap_obsidian_test",
+                    "status": "saved" if processing == "sync" else "queued",
+                    "source": "obsidian",
+                    "source_url": f"obsidian://open?vault=Test&file={Path(vault_path).name}/Decision.md",
+                    "title": "Decision",
+                }
+            ],
+            "errors": [],
+            "cursor": {
+                "id": "sync_obsidian_test",
+                "user_id": user_id,
+                "source_account_id": account_id,
+                "source": "obsidian",
+                "cursor_name": cursor_name,
+                "cursor_value": "manifest-hash",
+                "high_water_mark": "2026-01-01T00:00:00Z",
+                "state": {"records": 1},
+                "last_error": None,
+                "completed_at": "2026-01-01T00:00:00Z",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            },
+            "source_account": {
+                "id": account_id,
+                "user_id": user_id,
+                "source": "obsidian",
+                "account_label": account_label or "Obsidian: Test",
+                "account_identifier": account_identifier or "test-vault",
+                "connection_type": "local_folder",
+                "status": "connected",
+                "auth_state": "healthy",
+                "policy": {"review_required": True, "allow_ai_context": True},
+                "metadata": {"vault_path": vault_path, "records_returned": 1},
+                "last_sync_at": "2026-01-01T00:00:00Z",
+                "last_error": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "disconnected_at": None,
+            },
+            "scan": {
+                "vault_name": "Test",
+                "vault_path": vault_path,
+                "records_found": 1,
+                "records_returned": 1,
+                "truncated": False,
             },
         }
 
@@ -1129,6 +1218,56 @@ class StandaloneServerTests(unittest.TestCase):
         with self.get("/v1/source-accounts?include_disconnected=true") as response:
             all_accounts = json.loads(response.read().decode("utf-8"))
         self.assertEqual(all_accounts["results"][0]["status"], "disconnected")
+
+    def test_obsidian_connector_route_forwards_to_store(self) -> None:
+        vault_path = str(Path(self.tmp.name) / "Notes")
+        with self.post_json(
+            "/v1/connectors/obsidian/sync",
+            {
+                "vault_path": vault_path,
+                "source_account_id": "sacct_obsidian_existing",
+                "account_label": "Work Notes",
+                "account_identifier": "work-vault",
+                "processing": "sync",
+                "max_records": 5000,
+                "cursor_name": "local-folder",
+            },
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["source"], "obsidian")
+        self.assertEqual(payload["source_account_id"], "sacct_obsidian_existing")
+        self.assertEqual(payload["processing"], "sync")
+        self.assertEqual(payload["source_account"]["account_label"], "Work Notes")
+        self.assertEqual(payload["scan"]["vault_path"], vault_path)
+        self.assertEqual(payload["scan"]["records_returned"], 1)
+        self.assertEqual(
+            self.fake_store.obsidian_sync_calls,
+            [
+                {
+                    "user_id": "local",
+                    "vault_path": vault_path,
+                    "source_account_id": "sacct_obsidian_existing",
+                    "account_label": "Work Notes",
+                    "account_identifier": "work-vault",
+                    "processing": "sync",
+                    "max_records": 5000,
+                    "cursor_name": "local-folder",
+                }
+            ],
+        )
+
+        with self.assertRaises(error.HTTPError) as context:
+            self.post_json(
+                "/v1/connectors/obsidian/sync",
+                {
+                    "vault_path": vault_path,
+                    "max_records": 5001,
+                },
+            )
+        self.assertEqual(context.exception.code, 422)
+        self.assertEqual(len(self.fake_store.obsidian_sync_calls), 1)
 
     def test_delete_user_data_forwards_include_backups_flag(self) -> None:
         with self.delete("/v1/user-data?include_backups=false") as response:

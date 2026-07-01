@@ -125,7 +125,7 @@ struct HomeHeroSection: View {
         if activeSources == 0 { return hasEmptySource ? "Choose notes" : "Connect notes" }
         if pendingCount > 0 { return "Review memory" }
         if hasMemory { return "Ask a question" }
-        return "Check notes"
+        return "View sync status"
     }
 
     private var actionDetail: String {
@@ -145,7 +145,7 @@ struct HomeHeroSection: View {
         if hasMemory {
             return "\(memoryCount) saved memor\(memoryCount == 1 ? "y" : "ies") ready"
         }
-        return "Confirm notes are syncing."
+        return "Cortex checks notes in the background."
     }
 
     private var actionIcon: String {
@@ -153,7 +153,7 @@ struct HomeHeroSection: View {
         if activeSources == 0 { return hasEmptySource ? "folder.badge.questionmark" : "folder.badge.plus" }
         if pendingCount > 0 { return "checklist" }
         if hasMemory { return "magnifyingglass" }
-        return "arrow.clockwise"
+        return "info.circle"
     }
 
     var body: some View {
@@ -254,7 +254,7 @@ struct HomeHeroSection: View {
             state.selectedTab = .ask
             state.status = "Ask Cortex"
         } else {
-            state.openConnectionsPrivacy(statusMessage: "Check notes")
+            state.openConnectionsPrivacy(statusMessage: "Notes sync status")
         }
     }
 }
@@ -326,7 +326,7 @@ struct ModelQualitySection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "Memory quality", detail: "How much approved memory has citations, dates, review state, and useful structure.")
+            SectionHeader(title: "Memory quality", detail: "How much reviewed memory has citations, dates, review state, and useful structure.")
             HStack(alignment: .top, spacing: 12) {
                 ZStack {
                     Circle()
@@ -351,7 +351,7 @@ struct ModelQualitySection: View {
                     if let warning = quality.warnings.first {
                         TrustNotice(systemImage: "exclamationmark.triangle.fill", title: "Needs attention", detail: warning, color: .orange)
                     } else {
-                        TrustNotice(systemImage: "checkmark.seal.fill", title: quality.status.replacingOccurrences(of: "_", with: " ").capitalized, detail: "Approved memory has usable citations, review state, and coverage.", color: .green)
+                        TrustNotice(systemImage: "checkmark.seal.fill", title: quality.status.replacingOccurrences(of: "_", with: " ").capitalized, detail: "Reviewed memory has usable citations, review state, and coverage.", color: .green)
                     }
                 }
             }
@@ -377,7 +377,7 @@ struct ModelCoverageSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "Memory coverage", detail: "Types of approved memory available to Ask and connected AI tools.")
+            SectionHeader(title: "Memory coverage", detail: "Types of reviewed memory available to Ask and connected AI tools.")
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 128), spacing: 8)], spacing: 8) {
                 ForEach(layers, id: \.1) { layer in
                     LayerCoverageTile(title: layer.0, layer: layer.1, systemImage: layer.2, count: count(for: layer.1))
@@ -421,7 +421,7 @@ struct ModelSourceCoverageSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "Connected memory", detail: "Where approved memory is coming from.")
+            SectionHeader(title: "Connected memory", detail: "Where reviewed memory is coming from.")
             if let summary = state.trustSummary, !summary.source_counts.isEmpty {
                 HStack(spacing: 8) {
                     ForEach(summary.source_counts.prefix(4)) { source in
@@ -430,7 +430,7 @@ struct ModelSourceCoverageSection: View {
                     Spacer(minLength: 0)
                 }
             } else if review.stats.memories == 0 {
-                QuietState(title: "No approved memory yet", detail: "Connect notes, then approve useful memory in Review before expecting Ask to answer.")
+                QuietState(title: "No reviewed memory yet", detail: "Connect notes, then approve useful memory in Review before expecting Ask to answer.")
             } else {
                 HStack(spacing: 8) {
                     ModelMetricPill(label: "Topics", value: "\(review.top_topics.count)", systemImage: "number")
@@ -447,7 +447,7 @@ struct ModelSignalSummarySection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "Current snapshot", detail: "Approved memory, pending review, topics, people, and decisions.")
+            SectionHeader(title: "Current snapshot", detail: "Reviewed memory, pending review, topics, people, and decisions.")
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 8)], spacing: 8) {
                 ModelMetricPill(label: "Memories", value: "\(review.stats.memories)", systemImage: "brain.head.profile")
                 ModelMetricPill(label: "Pending review", value: "\(review.stats.pending_captures)", systemImage: "tray.full")
@@ -457,7 +457,7 @@ struct ModelSignalSummarySection: View {
                 ModelMetricPill(label: "Decisions", value: "\(review.recent_decisions.count)", systemImage: "checkmark.seal")
             }
             if review.top_topics.isEmpty && review.top_entities.isEmpty {
-                QuietState(title: "Needs more approved memory", detail: "Approve more memory or connect richer notes to improve people, project, topic, and style coverage.")
+                QuietState(title: "Needs more reviewed memory", detail: "Approve more memory or connect richer notes to improve people, project, topic, and style coverage.")
             } else {
                 ModelTopicSection(topics: review.top_topics, entities: review.top_entities)
             }

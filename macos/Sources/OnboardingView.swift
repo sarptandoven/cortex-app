@@ -320,7 +320,7 @@ struct OnboardingFirstSourceStep: View {
     }
 
     private var firstSourceButtonTitle: String {
-        if state.hasConnectedObsidianVault { return "Sync now" }
+        if state.hasConnectedObsidianVault { return "Check notes now" }
         if obsidianConnector != nil { return "Connect notes" }
         return "Refresh"
     }
@@ -409,6 +409,10 @@ struct OnboardingConnectionCard: View {
 struct OnboardingReviewMemoryStep: View {
     @ObservedObject var state: AppState
 
+    private var obsidianConnector: SourceConnectorCatalogItem? {
+        state.sourceConnectorCatalog.first { $0.id == "obsidian" }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Review one synced item before Cortex can use it. Approve only memory with a clear citation.")
@@ -427,29 +431,7 @@ struct OnboardingReviewMemoryStep: View {
                 }
             }
 
-            HStack {
-                Button {
-                    Task {
-                        await state.loadInbox()
-                        await state.loadReview()
-                        await state.loadStats()
-                    }
-                } label: {
-                    Label("Refresh Review", systemImage: "arrow.clockwise")
-                        .frame(minHeight: 42)
-                }
-                .controlSize(.large)
-                Button {
-                    state.selectedTab = .review
-                    state.dismissOnboardingForSession()
-                } label: {
-                    Label("Open Review", systemImage: "checklist")
-                        .frame(minHeight: 42)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                Spacer()
-            }
+            reviewActions
 
             OnboardingCheckRow(
                 title: reviewPathTitle,
@@ -459,9 +441,61 @@ struct OnboardingReviewMemoryStep: View {
             )
         }
         .task {
+            await state.loadSourceConnectivity()
             await state.loadInbox()
             await state.loadReview()
             await state.loadStats()
+        }
+    }
+
+    @ViewBuilder
+    private var reviewActions: some View {
+        HStack {
+            if state.inbox.isEmpty, state.hasConnectedObsidianVault, let connector = obsidianConnector {
+                Button {
+                    state.connectLocalNotesFolder(connector)
+                } label: {
+                    Label("Check notes now", systemImage: "arrow.triangle.2.circlepath")
+                        .frame(minWidth: 158, minHeight: 42)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(state.isBusy)
+            } else if state.inbox.isEmpty, !state.onboardingHasSource {
+                Button {
+                    state.previousOnboardingStep()
+                } label: {
+                    Label("Connect notes", systemImage: "folder.badge.plus")
+                        .frame(minWidth: 146, minHeight: 42)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            } else {
+                Button {
+                    state.selectedTab = .review
+                    state.dismissOnboardingForSession()
+                } label: {
+                    Label("Open Review", systemImage: "checklist")
+                        .frame(minWidth: 132, minHeight: 42)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            }
+
+            Button {
+                Task {
+                    await state.loadSourceConnectivity()
+                    await state.loadInbox()
+                    await state.loadReview()
+                    await state.loadStats()
+                }
+            } label: {
+                Label("Check again", systemImage: "arrow.clockwise")
+                    .frame(minWidth: 124, minHeight: 42)
+            }
+            .controlSize(.large)
+            .disabled(state.isBusy)
+            Spacer()
         }
     }
 
@@ -484,7 +518,7 @@ struct OnboardingReviewMemoryStep: View {
 
     private var reviewPathDetail: String {
         if state.onboardingHasReviewedMemory {
-            return "Cortex has approved memory it can cite."
+            return "Cortex has reviewed notes it can cite."
         }
         if state.onboardingHasSource {
             return "Approve one useful memory to let Cortex cite it in Ask."
@@ -496,14 +530,18 @@ struct OnboardingReviewMemoryStep: View {
 struct OnboardingAskUseStep: View {
     @ObservedObject var state: AppState
 
+    private var askStepReady: Bool {
+        state.onboardingStepIsComplete(.askUse)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Ask is the proof loop: approved memory should produce an answer with citations.")
+            Text("Cortex can now answer from reviewed notes with citations. Try a question now, or continue setup.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 10) {
-                TextField("Ask about an approved memory", text: $state.searchQuery)
+                TextField("Ask about your reviewed notes", text: $state.searchQuery)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { state.runSearch() }
                 HStack {
@@ -556,21 +594,24 @@ struct OnboardingAskUseStep: View {
             OnboardingCheckRow(
                 title: askPathTitle,
                 detail: askPathDetail,
-                systemImage: state.onboardingHasUsedCortex ? "checkmark.seal.fill" : "sparkle.magnifyingglass",
-                color: state.onboardingHasUsedCortex ? .green : .orange
+                systemImage: askStepReady ? "checkmark.seal.fill" : "sparkle.magnifyingglass",
+                color: askStepReady ? .green : .orange
             )
         }
     }
 
     private var askEmptyTitle: String {
-        state.hasSearched ? "No cited answer yet" : "Ask approved memory once"
+        state.hasSearched ? "No cited answer yet" : "Ask your notes"
     }
 
     private var askEmptyDetail: String {
         if state.hasSearched {
-            return "Try an exact phrase from approved memory, or go back to Review and approve one useful item."
+            return "Review new synced items or try a more specific question."
         }
-        return "Ask about approved memory from notes. Getting started finishes after Cortex returns a cited answer."
+        if state.onboardingHasReviewedMemory {
+            return "This step is optional now that reviewed notes exist. Ask once to see citations before you continue."
+        }
+        return "Ask becomes useful after reviewed notes exist."
     }
 
     private var askPathTitle: String {
@@ -578,22 +619,22 @@ struct OnboardingAskUseStep: View {
             return "Cortex used once"
         }
         if state.onboardingHasReviewedMemory {
-            return "Ask once with citations"
+            return "Ready to ask"
         }
         return state.onboardingHasSource ? "Review memory first" : "Ask later"
     }
 
     private var askPathDetail: String {
         if state.onboardingHasUsedCortex {
-            return "Approved memory was used in a cited answer."
+            return "Reviewed notes were used in a cited answer."
         }
         if state.onboardingHasReviewedMemory {
-            return "Run Ask once. Getting started finishes after Cortex returns a cited answer."
+            return "Ask is available now. Continue setup when ready."
         }
         if state.onboardingHasSource {
             return "Ask becomes useful after one memory is approved in Review."
         }
-        return "Ask becomes useful after approved memory exists."
+        return "Ask becomes useful after reviewed notes exist."
     }
 }
 

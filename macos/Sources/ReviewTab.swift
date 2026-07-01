@@ -155,8 +155,8 @@ struct ReviewEmptyState: View {
                     Button {
                         state.connectLocalNotesFolder(connector)
                     } label: {
-                        Label("Sync now", systemImage: "arrow.triangle.2.circlepath")
-                            .frame(minWidth: 140, minHeight: 46)
+                        Label("Check notes now", systemImage: "arrow.triangle.2.circlepath")
+                            .frame(minWidth: 164, minHeight: 46)
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)

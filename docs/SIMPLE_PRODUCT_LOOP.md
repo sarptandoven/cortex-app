@@ -13,22 +13,22 @@ Connections and privacy controls live in a secondary **Connections & Privacy** s
 | Surface | User goal | Ship check |
 | --- | --- | --- |
 | Home | Understand whether Cortex is ready and what to do next. | Shows connection state, memory readiness, and one primary action. |
-| Review | Decide what becomes trusted memory. | Synced memory candidates can be approved or archived with source/citation visible. |
-| Ask | Retrieve cited personal memory directly in the app. | Natural-language search returns cited results; context handoffs are secondary fallback actions. |
-| Connections & Privacy | Manage MCP tools, Obsidian/local notes, privacy, backup, and advanced diagnostics. | MCP and Obsidian are primary; manual import/export/copy flows stay advanced or fallback. |
+| Review | Decide what becomes approved memory. | Synced memory candidates can be approved or archived with source/citation visible. |
+| Ask | Retrieve cited personal memory directly in the app. | Natural-language search returns cited results; context-copy handoffs are secondary fallback actions. |
+| Connections & Privacy | Manage MCP tools, Obsidian/local notes, privacy, backup, and advanced diagnostics. | MCP and Obsidian are primary; import, export, and context-copy flows stay advanced or fallback. |
 
 ## Loop State
 
-`GET /v1/loop` returns a single opinionated next action:
+`GET /v1/loop` supports a single opinionated next action for the visible product flow:
 
-- `capture`: save one useful thing
-- `review`: approve or archive pending saves
-- `reuse`: ask Cortex or use approved memory in an AI tool
+- connect/sync: connect MCP tools or Obsidian/local notes and let Cortex update memory
+- review: approve or archive pending memory candidates
+- ask: ask Cortex or use approved memory in a connected AI tool
 - `done`: the loop is complete for today
 
-The response also includes four fixed steps, daily counts, completion percentage, reuse count, and streak days.
+The response also includes fixed steps, daily counts, completion percentage, use count, and streak days. Product copy should describe the loop as connect/sync, review, ask even when older API fields use compatibility names.
 
-## Reuse Tracking
+## Use Tracking
 
 `POST /v1/loop/reuse` records when memory is actually used:
 
@@ -40,7 +40,7 @@ The response also includes four fixed steps, daily counts, completion percentage
 }
 ```
 
-The event is stored in the same append-only audit stream as captures, approvals, backups, and agent activity. This gives Cortex a retention signal without adding a hosted analytics service.
+The event is stored in the same append-only audit stream as source syncs, approvals, backups, and agent activity. This gives Cortex a retention signal without adding a hosted analytics service.
 
 ## App Behavior
 
@@ -51,13 +51,13 @@ The app uses the loop as supporting state:
 - Ask is the primary place to use memory with citations.
 - Connections & Privacy keeps AI access, source sync, backup, and diagnostics out of the core flow.
 
-Context packs and browser handoffs remain available as secondary fallback actions when a tool cannot connect to Cortex directly.
+Context-copy packs and browser handoffs remain available as secondary fallback actions when a tool cannot connect to Cortex directly.
 
 ## MCP Behavior
 
 Agents can call `get_product_loop` to understand where the user is in the loop.
 
-`build_context_pack` records a reuse event because an agent-requested context pack means Cortex memory was used in work.
+`build_context_pack` records a use event because an agent-requested context-copy pack means Cortex memory was used in work.
 
 ## Why This Matters
 
@@ -65,7 +65,7 @@ This keeps Cortex simple for normal users:
 
 - Connect MCP tools or Obsidian.
 - Let Cortex sync automatically.
-- Approve what is trusted.
+- Approve what is useful.
 - Ask Cortex before an AI tool acts.
 - Keep privacy and backup choices visible.
 

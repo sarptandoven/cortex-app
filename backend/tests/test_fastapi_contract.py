@@ -1240,6 +1240,85 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(bob.json()["user_id"], "mcp-token-bob")
         self.assertNotEqual(alice.json()["token_id"], bob.json()["token_id"])
 
+    def test_read_only_mcp_search_suppresses_edited_obsidian_note_pending_review(self) -> None:
+        user = "mcp-obsidian-review-contract"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+        read_token = "cxm_fastapi_obsidian_review_read_123456789"
+        settings = self.client.put(
+            "/v1/settings",
+            json={"allow_pending_in_context": False},
+            headers=headers,
+        )
+        self.assertEqual(settings.status_code, 200)
+        registered = self.client.post(
+            "/v1/integrations/mcp-token",
+            json={"token": read_token, "label": "Obsidian Review Read MCP", "scopes": ["read"]},
+            headers=headers,
+        )
+        self.assertEqual(registered.status_code, 200)
+
+        def mcp_search(query: str) -> list[dict[str, object]]:
+            response = self.client.post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": f"search-{query}",
+                    "method": "tools/call",
+                    "params": {"name": "search_memory", "arguments": {"query": query, "top_k": 5}},
+                },
+                headers={"Authorization": f"Bearer {read_token}", "X-Cortex-User": user},
+            )
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertNotIn("error", payload)
+            return json.loads(payload["result"]["content"][0]["text"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp) / "Review Vault"
+            vault.mkdir()
+            note = vault / "Project Taipei.md"
+            note.write_text(
+                "# Project Taipei\n\nDecision: MCP Obsidian approved gate should expose initial review marker.",
+                encoding="utf-8",
+            )
+
+            first = self.client.post(
+                "/v1/connectors/obsidian/sync",
+                json={"vault_path": str(vault), "processing": "sync", "max_records": 10},
+                headers=headers,
+            )
+            self.assertEqual(first.status_code, 200)
+            first_payload = first.json()
+            self.assertEqual(first_payload["saved"], 1)
+            capture_id = first_payload["records"][0]["capture_id"]
+            approved = self.client.post(f"/v1/captures/{capture_id}/approve", headers=headers)
+            self.assertEqual(approved.status_code, 200)
+            self.assertTrue(mcp_search("initial review marker"))
+
+            note.write_text(
+                "# Project Taipei\n\nDecision: MCP Obsidian edited gate should stay hidden while pending review.",
+                encoding="utf-8",
+            )
+            changed = self.client.post(
+                "/v1/connectors/obsidian/sync",
+                json={"vault_path": str(vault), "processing": "sync", "max_records": 10},
+                headers=headers,
+            )
+            self.assertEqual(changed.status_code, 200)
+            changed_payload = changed.json()
+            self.assertEqual(changed_payload["saved"], 1)
+            self.assertEqual(changed_payload["records"][0]["status"], "updated")
+            self.assertEqual(changed_payload["records"][0]["capture_id"], capture_id)
+
+            inbox = self.client.get("/v1/inbox", headers=headers)
+            self.assertEqual(inbox.status_code, 200)
+            self.assertIn(capture_id, [item["id"] for item in inbox.json()["results"]])
+            self.assertEqual(mcp_search("edited gate hidden pending review"), [])
+
+            approved_again = self.client.post(f"/v1/captures/{capture_id}/approve", headers=headers)
+            self.assertEqual(approved_again.status_code, 200)
+            self.assertTrue(mcp_search("edited gate hidden pending review"))
+
     def test_scoped_mcp_token_blocks_unscoped_tool_even_when_setting_enabled(self) -> None:
         scoped_token = "cxm_fastapi_read_only_token_123456789"
         created = self.client.post(

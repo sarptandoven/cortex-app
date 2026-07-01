@@ -1162,7 +1162,7 @@ enum AIIntegrationCatalog {
             configTargets: [
                 IntegrationConfigTarget(label: "Claude Desktop", root: .applicationSupport, relativePath: "Claude/claude_desktop_config.json")
             ],
-            setupHint: "Use Claude Desktop to search approved memory and save useful updates for Review.",
+            setupHint: "Use Claude Desktop to search reviewed memory and save useful updates for Review.",
             browserURL: "https://claude.ai"
         ),
         AIIntegration(
@@ -2220,7 +2220,7 @@ final class AppState: ObservableObject {
         case .reviewMemory:
             return onboardingHasReviewedMemory
         case .askUse:
-            return onboardingHasUsedCortex
+            return onboardingHasUsedCortex || onboardingHasReviewedMemory
         case .trustBackup:
             return onboardingHasBackupDecision
         }
@@ -4061,29 +4061,29 @@ struct CortexLayerStatusPill: View {
     }
 
     private var label: String {
-        if activeAccounts > 0 {
-            return "\(activeAccounts) connected"
-        }
         if pending > 0 {
-            return "\(pending) pending"
+            return "\(pending) to review"
         }
         if (state.stats?.memories ?? 0) > 0 {
             return "Memory ready"
+        }
+        if activeAccounts > 0 {
+            return "Notes syncing"
         }
         return "No notes"
     }
 
     private var icon: String {
-        if activeAccounts > 0 { return "checkmark.seal.fill" }
         if pending > 0 { return "tray.full.fill" }
         if (state.stats?.memories ?? 0) > 0 { return "sparkle.magnifyingglass" }
+        if activeAccounts > 0 { return "arrow.triangle.2.circlepath" }
         return "circle.dashed"
     }
 
     private var color: Color {
-        if activeAccounts > 0 { return .green }
         if pending > 0 { return .orange }
         if (state.stats?.memories ?? 0) > 0 { return .accentColor }
+        if activeAccounts > 0 { return .green }
         return .secondary
     }
 
@@ -4192,7 +4192,7 @@ struct IntegrationCenterView: View {
             Text(compact ? "AI tools" : "AI access")
                 .font(compact ? .headline : .title3)
                 .fontWeight(.semibold)
-            Text(compact ? "Connect local AI tools so approved memory is available where you already work." : "Connect local tools so approved memory is available where you work. Fallback connection details stay collapsed unless an app asks for them.")
+            Text(compact ? "Connect local AI tools so reviewed memory is available where you already work." : "Connect local tools so reviewed memory is available where you work. Fallback connection details stay collapsed unless an app asks for them.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -4682,7 +4682,7 @@ struct SourceHealthSummarySection: View {
                     }
                 }
             } else {
-                QuietState(title: "No notes connected", detail: "Connect notes or a local AI tool to start building memory.")
+                QuietState(title: "No notes connected", detail: "Connect a notes folder to start. AI tools can use reviewed memory later.")
             }
         }
     }
@@ -4712,10 +4712,10 @@ struct SourceReadinessPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 8) {
-                SourceConnectivityMetric(title: "Available", value: "\(report.summary.import_ready)", systemImage: "link.badge.plus", color: .accentColor)
-                SourceConnectivityMetric(title: "Connected", value: "\(report.summary.connected)", systemImage: "link.circle.fill", color: report.summary.connected == 0 ? .secondary : .green)
-                SourceConnectivityMetric(title: "With memory", value: "\(report.summary.sources_with_data)", systemImage: "brain.head.profile", color: report.summary.sources_with_data == 0 ? .secondary : .blue)
-                SourceConnectivityMetric(title: "Attention", value: "\(report.summary.needs_attention + report.summary.needs_review)", systemImage: "exclamationmark.triangle.fill", color: report.summary.needs_attention + report.summary.needs_review == 0 ? .secondary : .orange)
+                SourceConnectivityMetric(title: "Notes ready", value: "\(report.summary.import_ready)", systemImage: "folder.badge.plus", color: .accentColor)
+                SourceConnectivityMetric(title: "Connected notes", value: "\(report.summary.connected)", systemImage: "link.circle.fill", color: report.summary.connected == 0 ? .secondary : .green)
+                SourceConnectivityMetric(title: "With reviewed memory", value: "\(report.summary.sources_with_data)", systemImage: "brain.head.profile", color: report.summary.sources_with_data == 0 ? .secondary : .blue)
+                SourceConnectivityMetric(title: "Needs attention", value: "\(report.summary.needs_attention + report.summary.needs_review)", systemImage: "exclamationmark.triangle.fill", color: report.summary.needs_attention + report.summary.needs_review == 0 ? .secondary : .orange)
             }
 
             if let recommendation = report.recommendations.first {
@@ -4760,7 +4760,7 @@ struct SourceReadinessPanel: View {
 
     private func displayRecommendation(_ value: String) -> String {
         if value.lowercased().contains("import one high-signal source") {
-            return "Connect notes or a local AI tool so Cortex can sync useful memory into Review."
+            return "Connect a notes folder so Cortex can sync useful memory into Review."
         }
         if value.lowercased().contains("local beta use") {
             return "Connections are healthy for current and planned sync."
@@ -4859,7 +4859,7 @@ struct SourceConnectivityPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 8) {
-                SourceConnectivityMetric(title: "Available", value: "\(importReadyCount)", systemImage: "link.badge.plus", color: .accentColor)
+                SourceConnectivityMetric(title: "Notes ready", value: "\(importReadyCount)", systemImage: "folder.badge.plus", color: .accentColor)
                 SourceConnectivityMetric(title: "Direct planned", value: "\(livePlannedCount)", systemImage: "arrow.triangle.2.circlepath", color: .blue)
                 SourceConnectivityMetric(title: "Connected", value: "\(state.sourceAccounts.count)", systemImage: "link.circle.fill", color: state.sourceAccounts.isEmpty ? .secondary : .green)
                 SourceConnectivityMetric(title: "Needs attention", value: "\(accountsNeedingAttention.count + cursorErrors)", systemImage: "exclamationmark.triangle.fill", color: accountsNeedingAttention.isEmpty && cursorErrors == 0 ? .secondary : .orange)
@@ -5305,7 +5305,7 @@ struct TrustPolicySection: View {
                         )
                         TrustToggleRow(
                             title: "Let AI use pending saves",
-                            detail: "Turn this off when only approved memory should appear in search and AI access.",
+                            detail: "Turn this off when only reviewed memory should appear in search and AI access.",
                             systemImage: "lock.open",
                             isOn: $state.appSettings.allow_pending_in_context
                         )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -177,6 +178,63 @@ PRIMARY_UI_FORBIDDEN_PHRASES: tuple[str, ...] = (
     "AI tool access",
 )
 
+ARCHITECTURE_STORAGE_DOC_EXCEPTIONS: tuple[str, ...] = (
+    "docs/ARCHITECTURE.md",
+    "docs/LOCAL_VAULT_FORMAT.md",
+    "docs/MEMORY_BACKEND_BLUEPRINT.md",
+    "docs/PRODUCTION_READINESS.md",
+    "docs/RELIABILITY_HARDENING.md",
+    "docs/SOURCE_IMPORTS.md",
+    "docs/SQLITE_VEC_BACKEND_PLAN.md",
+)
+
+ROOT_COPY_FILES: tuple[str, ...] = (
+    "README.md",
+    "SETUP.md",
+    "PUBLISH_MANIFEST.md",
+    "backend/README.md",
+    "macos/README.md",
+)
+
+PRIMARY_PRODUCT_COPY_FILES: tuple[str, ...] = (
+    "site/index.html",
+    "site/privacy.html",
+    "site/app.js",
+    "site/downloads/latest.json",
+    "macos/update-feed.example.json",
+    "macos/package_release.sh",
+    *PRIMARY_UI_FILES,
+)
+
+PRIMARY_PRODUCT_STALE_PHRASES: tuple[str, ...] = (
+    "Trust >",
+    "from Trust",
+    "Review, Ask, and Trust",
+)
+
+SITE_VISIBLE_TRUST_FILES: tuple[str, ...] = (
+    "site/index.html",
+    "site/privacy.html",
+)
+
+SITE_VISIBLE_TRUST_PATTERN = re.compile(r">\s*Trust\s*<")
+
+GENERATED_BETA_METADATA_FILES: tuple[str, ...] = (
+    "macos/package_release.sh",
+    "macos/update-feed.example.json",
+    "site/downloads/latest.json",
+    "release-artifacts/direct-mac/latest.json",
+)
+
+GENERATED_BETA_METADATA_FORBIDDEN_PHRASES: tuple[str, ...] = (
+    "local vault",
+    "raw vault data",
+)
+
+USER_OPERATOR_DOC_FORBIDDEN_PHRASES: tuple[str, ...] = (
+    "Capture, Review, Reuse, Return",
+)
+
 
 def run_command(command: list[str]) -> dict[str, object]:
     completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
@@ -201,6 +259,7 @@ def phrase_errors() -> list[str]:
             if phrase in text:
                 errors.append(f"{relative_path}: stale phrase still present: {phrase!r}")
     errors.extend(primary_ui_errors())
+    errors.extend(scoped_stale_copy_errors())
     return errors
 
 
@@ -215,6 +274,95 @@ def primary_ui_errors() -> list[str]:
         for phrase in PRIMARY_UI_FORBIDDEN_PHRASES:
             if phrase in text:
                 errors.append(f"{relative_path}: primary UI regressed into forbidden phrase: {phrase!r}")
+    return errors
+
+
+def docs_copy_files() -> tuple[str, ...]:
+    paths = list(ROOT_COPY_FILES)
+    docs_dir = ROOT / "docs"
+    if docs_dir.exists():
+        paths.extend(str(path.relative_to(ROOT)) for path in sorted(docs_dir.rglob("*.md")))
+    return tuple(dict.fromkeys(paths))
+
+
+def user_operator_doc_files() -> tuple[str, ...]:
+    return tuple(
+        relative_path
+        for relative_path in docs_copy_files()
+        if relative_path not in ARCHITECTURE_STORAGE_DOC_EXCEPTIONS
+    )
+
+
+def primary_product_copy_files() -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            [
+                *user_operator_doc_files(),
+                *PRIMARY_PRODUCT_COPY_FILES,
+            ]
+        )
+    )
+
+
+def phrase_present(text: str, phrase: str, *, case_sensitive: bool = True) -> bool:
+    if case_sensitive:
+        return phrase in text
+    return phrase.casefold() in text.casefold()
+
+
+def stale_phrase_errors(
+    relative_paths: tuple[str, ...],
+    phrases: tuple[str, ...],
+    message: str,
+    *,
+    case_sensitive: bool = True,
+) -> list[str]:
+    errors: list[str] = []
+    for relative_path in relative_paths:
+        path = ROOT / relative_path
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        for phrase in phrases:
+            if phrase_present(text, phrase, case_sensitive=case_sensitive):
+                errors.append(f"{relative_path}: {message}: {phrase!r}")
+    return errors
+
+
+def scoped_stale_copy_errors() -> list[str]:
+    errors = stale_phrase_errors(
+        primary_product_copy_files(),
+        PRIMARY_PRODUCT_STALE_PHRASES,
+        "old primary-product language still present",
+    )
+    errors.extend(site_visible_trust_errors())
+    errors.extend(
+        stale_phrase_errors(
+            GENERATED_BETA_METADATA_FILES,
+            GENERATED_BETA_METADATA_FORBIDDEN_PHRASES,
+            "generated beta metadata still uses stale storage wording",
+            case_sensitive=False,
+        )
+    )
+    errors.extend(
+        stale_phrase_errors(
+            user_operator_doc_files(),
+            USER_OPERATOR_DOC_FORBIDDEN_PHRASES,
+            "user/operator docs still use the old product-loop phrase",
+        )
+    )
+    return errors
+
+
+def site_visible_trust_errors() -> list[str]:
+    errors: list[str] = []
+    for relative_path in SITE_VISIBLE_TRUST_FILES:
+        path = ROOT / relative_path
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        if SITE_VISIBLE_TRUST_PATTERN.search(text):
+            errors.append(f"{relative_path}: visible site loop/nav label still uses old Trust step")
     return errors
 
 
@@ -293,7 +441,16 @@ def main() -> None:
     errors = [*phrase_errors(), *manifest_errors(), *mcp_config_errors()]
     payload = {
         "status": "error" if errors else "ok",
-        "checks": ["stale-ui-phrases", "primary-ui-language", "direct-release-manifest", "mcp-config"],
+        "checks": [
+            "stale-ui-phrases",
+            "primary-ui-language",
+            "stale-primary-product-copy",
+            "site-visible-trust-step",
+            "generated-beta-metadata-language",
+            "user-operator-loop-language",
+            "direct-release-manifest",
+            "mcp-config",
+        ],
         "errors": errors,
     }
     print(json.dumps(payload, indent=2))

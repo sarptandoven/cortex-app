@@ -18,7 +18,7 @@ The macOS app uses a local per-install admin token for Cortex REST API calls. Lo
 - the admin app token for backward compatibility with older local configs;
 - a stored scoped MCP token for current integrations.
 
-Scoped MCP tokens are checked before Trust controls. A tool call succeeds only when the token has the needed scope and the matching Trust toggle is enabled. Newly generated local MCP tokens include `read`, `write`, `export`, and `maintenance`; they do not include `destructive`.
+Scoped MCP tokens are checked before Connections & Privacy controls. A tool call succeeds only when the token has the needed scope and the matching local privacy control is enabled. Newly generated local MCP tokens include `read`, `write`, `export`, and `maintenance`; they do not include `destructive`.
 
 Write-scoped MCP tools can now register connected source accounts and sync cited source records:
 
@@ -26,14 +26,14 @@ Write-scoped MCP tools can now register connected source accounts and sync cited
 - `connect_source_account`
 - `sync_source_records`
 
-This is the preferred beta path for connected tools and local connector processes. Direct account/OAuth connectors should feed this same account, cursor, citation, and review contract. When `sync_source_records` includes a stable `external_id`, Cortex treats the record as the same source item on future syncs: unchanged content is skipped, changed content replaces the existing capture's derived memory, and citations stay attached to the source account.
+This is the preferred beta path for connected tools and local connector processes. Direct account/OAuth connectors should feed this same account, cursor, citation, and review contract. When `sync_source_records` includes a stable `external_id`, Cortex treats the record as the same source item on future syncs: unchanged content is skipped, changed content replaces the existing record's derived memory, and citations stay attached to the source account.
 
 ## One-Click Integrations
 
 The macOS app exposes integrations from `Connections & Privacy > AI tools`. It supports two integration modes:
 
 - **One-click MCP install** for clients with stable local JSON config files.
-- **Advanced fallback handoff** for tools that cannot connect through MCP yet.
+- **Advanced/fallback context-copy handoff** for tools that cannot connect through MCP yet.
 
 For direct installs, Cortex creates the parent config directory if needed, backs up an existing config next to the original file, then merges a single `mcpServers.cortex` entry without removing other servers.
 
@@ -104,9 +104,9 @@ Development repo shape:
 }
 ```
 
-## Advanced Browser Assistant Context
+## Advanced Context-Copy Fallback
 
-Browser assistants do not all expose a stable local MCP config. For those, Cortex copies scoped chat context with instructions:
+Browser assistants do not all expose a stable local MCP config. For those, Cortex can copy scoped chat context as an advanced/fallback handoff with instructions:
 
 - search/use pasted Cortex memory before asking the user to repeat context
 - treat saved decisions and follow-ups as high-priority
@@ -119,8 +119,8 @@ Browser assistants do not all expose a stable local MCP config. For those, Corte
 - `search_memory`: search active memories, optionally filtered by `kind` or memory `layer` (`semantic`, `episodic`, `style`, `decision`, `preference`, `negative`, `procedural`)
 - `get_recent_context`: retrieve recent active memories
 - `get_memory_graph`: retrieve the active graph
-- `get_daily_review`: retrieve today's pending captures, follow-ups, decisions, topics, and recommended actions
-- `build_context_pack`: build an Advanced/Fallback copied-context payload for ChatGPT, Claude, Cursor, or another assistant when direct connection is not available
+- `get_daily_review`: retrieve today's pending memory candidates, follow-ups, decisions, topics, and recommended actions
+- `build_context_pack`: build an advanced/fallback context-copy payload for ChatGPT, Claude, Cursor, or another assistant when direct connection is not available
 - `get_personal_profile`: retrieve a cited profile grouped by memory layer, coverage, source health, follow-ups, and limitations
 - `get_agent_adaptation`: retrieve cited operating instructions that adapt an AI assistant to the user's preferences, style, decisions, limits, and current memory coverage
 - `get_decisions`: retrieve saved decisions
@@ -129,26 +129,26 @@ Browser assistants do not all expose a stable local MCP config. For those, Corte
 - `list_memory_entities`: list active people, projects, organizations, and topics
 - `get_about_person`: retrieve memories involving a person
 - `get_about_entity`: retrieve memories involving any named entity
-- `get_product_loop`: retrieve the Capture, Review, Reuse, Return loop state
+- `get_product_loop`: retrieve the connect/sync, review, ask loop state
 - `get_memory_stats`: retrieve counts and top context
-- `get_memory_inbox`: retrieve pending captures
-- `approve_memory_capture`: approve a pending capture
-- `archive_memory_capture`: archive a capture and remove it from active retrieval
-- `delete_memory_capture`: permanently delete a capture and its derived memories/tasks from the current local vault and index
+- `get_memory_inbox`: retrieve pending memory candidates
+- `approve_memory_capture`: approve a pending memory candidate
+- `archive_memory_capture`: archive a memory candidate and remove it from active retrieval
+- `delete_memory_capture`: permanently delete a memory candidate and its derived memories/tasks from the current local memory folder and index
 - `get_memory_diagnostics`: inspect storage health
 - `get_reliability_report`: inspect health contract, storage checks, backup state, and recommended recovery actions
-- `get_support_bundle`: generate a sanitized operational support bundle without captured text or memory content
-- `create_memory_backup`: create a full local vault backup
-- `restore_latest_memory_backup`: restore vault records from the latest local backup and rebuild the local search index
+- `get_support_bundle`: generate a sanitized operational support bundle without raw source text or memory content
+- `create_memory_backup`: create a full local memory folder backup
+- `restore_latest_memory_backup`: restore memory records from the latest local backup and rebuild the local search index
 - `delete_memory_backups`: delete local backup archives
-- `delete_all_user_data`: delete the current user's local vault/index data; includes backup archives by default
+- `delete_all_user_data`: delete the current user's local memory folder/index data; includes backup archives by default
 - `repair_memory_storage`: create a backup, clean stale derived index rows, and rebuild search
 - `rebuild_memory_search`: rebuild full-text search
-- `rebuild_index_from_vault`: rebuild the SQLite search index from user-owned vault files
+- `rebuild_index_from_vault`: rebuild the SQLite search index from user-owned memory files
 - `export_memory`: export memory as Markdown or JSON
 
-Diagnostics and reliability reports require the MCP token `maintenance` scope and the Trust maintenance toggle, because they include local operational paths and repair context.
-- `forget_memory`: permanently delete one memory by ID from the current local vault and index
+Diagnostics and reliability reports require the MCP token `maintenance` scope and the Connections & Privacy maintenance control, because they include local operational paths and repair context.
+- `forget_memory`: permanently delete one memory by ID from the current local memory folder and index
 
 ## Product Rule
 
@@ -160,9 +160,9 @@ Connected AI tools should search before asking users to repeat context, cite sou
 - Existing JSON must parse as an object before Cortex writes to it.
 - Every changed config gets a timestamped `.cortex-backup-*` copy.
 - Users can rerun Install as Repair to refresh the Python path, local API URL, or token.
-- Browser integrations are intentionally copy-based until the target service exposes a safe local config or remote OAuth/MCP flow.
-- MCP maintenance tools still respect Trust controls.
+- Browser integrations use context-copy fallback until the target service exposes a safe local config or remote OAuth/MCP flow.
+- MCP maintenance tools still respect Connections & Privacy controls.
 - The app and MCP clients can verify the backend through `health_contract >= 3`, the `reliability-hardening` feature flag, and the `operational-readiness` feature flag.
-- `build_context_pack` records reuse in the loop because fallback copied context still means Cortex memory was used in an AI workflow.
-- `get_agent_adaptation` records reuse in the loop because agent instructions are a higher-trust AI workflow and should be visible in review/audit surfaces.
+- `build_context_pack` records use in the loop because fallback context-copy still means Cortex memory was used in an AI workflow.
+- `get_agent_adaptation` records use in the loop because agent instructions are a higher-privilege AI workflow and should be visible in review/audit surfaces.
 - `get_support_bundle` is intended for support triage; users should still review the JSON before sharing it.

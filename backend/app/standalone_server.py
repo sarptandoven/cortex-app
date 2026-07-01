@@ -439,6 +439,12 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if method == "POST" and path == "/v1/connectors/obsidian/sync":
                 body = self._json_body()
                 try:
+                    try:
+                        max_records = int(body.get("max_records") or 1000)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError("max_records must be an integer") from exc
+                    if max_records < 1 or max_records > 5000:
+                        raise ValueError("max_records must be between 1 and 5000")
                     result = store.sync_obsidian_vault(
                         user_id,
                         vault_path=str(body.get("vault_path") or ""),
@@ -446,7 +452,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         account_label=str(body.get("account_label") or "") or None,
                         account_identifier=str(body.get("account_identifier") or "") or None,
                         processing=str(body.get("processing") or "sync"),
-                        max_records=int(body.get("max_records") or 200),
+                        max_records=max_records,
                         cursor_name=str(body.get("cursor_name") or "local-folder"),
                     )
                     self._send_json(store.public_payload(user_id, result) if hasattr(store, "public_payload") else result)

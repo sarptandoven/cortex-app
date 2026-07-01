@@ -105,7 +105,7 @@
       ["Connect", "#1f7a5c"],
       ["Review", "#365d8c"],
       ["Ask", "#bd5d45"],
-      ["Trust", "#a77722"]
+      ["Control", "#a77722"]
     ];
     rows.forEach((row, index) => {
       const y = panelY + 72 + index * 38;

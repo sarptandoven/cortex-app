@@ -33,7 +33,7 @@ struct ConnectionsPrivacySheet: View {
                 Text("Connections & Privacy")
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text("Connect notes, keep review-first memory private, and choose where approved memory can be used.")
+                Text("Connect notes, keep review-first memory private, and choose where reviewed memory can be used.")
                     .font(.callout)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -107,7 +107,7 @@ private struct ConnectionsPrivacyOverview: View {
                 } else {
                     QuietState(
                         title: "Preparing privacy controls",
-                        detail: CortexRecoveryText.needsAttention(state.displayStatus) ? state.displayStatus : "Cortex is reading local trust settings and connection history."
+                        detail: CortexRecoveryText.needsAttention(state.displayStatus) ? state.displayStatus : "Cortex is reading local privacy settings and connection history."
                     )
                 }
             }
@@ -351,7 +351,7 @@ private struct ConnectionsOverviewHero: View {
 
     private var primaryActionTitle: String {
         if notesConnected {
-            return state.hasConnectedObsidianVault ? "Sync now" : "Reconnect"
+            return state.hasConnectedObsidianVault ? "Check notes now" : "Reconnect"
         }
         if !notesConnected, let _ = obsidianConnector {
             if notesNeedAttention { return "Fix notes" }
@@ -360,7 +360,7 @@ private struct ConnectionsOverviewHero: View {
         if !notesConnected {
             return "Check status"
         }
-        return "Sync now"
+        return "Check notes now"
     }
 
     private var primaryActionIcon: String {
@@ -389,7 +389,7 @@ private struct ConnectionsOverviewHero: View {
 
     private var detail: String {
         if notesConnected {
-            return "New notes go to Review first. Ask and connected AI tools use approved memory with citations."
+            return "New notes go to Review first. Ask and connected AI tools use reviewed memory with citations."
         }
         if notesNeedAttention {
             return notesHealth.detail ?? "Cortex needs attention before these notes can keep syncing."
@@ -576,8 +576,8 @@ private struct ConnectionsAIToolsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
-                title: "Use approved memory outside Cortex",
-                detail: "Optional. Ask in Cortex first, then enable this when another AI app should read approved memory."
+                title: "Use reviewed memory outside Cortex",
+                detail: "Optional. Ask in Cortex first, then enable this when another AI app should read reviewed memory."
             )
 
             HStack(alignment: .center, spacing: 14) {
@@ -680,12 +680,12 @@ private struct ConnectionsAIToolsSection: View {
 
     private var statusDetail: String {
         if connectedCount > 0 {
-            return "These apps can read approved memory with citations."
+            return "These apps can read reviewed memory with citations."
         }
         if !detectedConnectable.isEmpty {
-            return "Enable this only when you want approved memory available outside Cortex."
+            return "Enable this only when you want reviewed memory available outside Cortex."
         }
-        return "Cortex works without another app. Ask uses approved memory with citations."
+        return "Cortex works without another app. Ask uses reviewed memory with citations."
     }
 }
 
@@ -728,7 +728,7 @@ private struct ConnectionsPrivacyDefaultsSection: View {
                 )
                 ConnectionsTrustTile(
                     title: settings.allow_agent_reads ? "AI access on" : "AI access off",
-                    detail: settings.allow_agent_reads ? (settings.allow_pending_in_context ? "pending memory allowed" : "approved memory only") : "tools cannot read memory",
+                    detail: settings.allow_agent_reads ? (settings.allow_pending_in_context ? "pending memory allowed" : "reviewed memory only") : "tools cannot read memory",
                     systemImage: settings.allow_agent_reads ? "eye.fill" : "eye.slash.fill",
                     color: settings.allow_agent_reads ? .accentColor : .secondary
                 )

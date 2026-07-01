@@ -159,7 +159,7 @@ detach_existing_dmg_image() {
 }
 
 if [[ ${#NOTES[@]} -eq 0 ]]; then
-  NOTES+=("Local-first Cortex beta with bundled local service, MCP/Obsidian sync, Review, cited Ask, and trust controls.")
+  NOTES+=("Local-first Cortex beta with bundled local service, notes connections, Review, cited Ask, backup, and Connections & Privacy controls.")
 fi
 
 mkdir -p "$OUT_DIR"
@@ -180,12 +180,12 @@ Install:
 3. Open Cortex from Applications.
 4. If macOS warns because this local beta is not notarized yet, Control-click Cortex.app and choose Open.
 5. Open Cortex. The local backend runtime is bundled in this release package.
-6. Connect notes from Home when ready, approve one memory in Review, and ask a cited question.
+6. Connect notes, review one memory, ask a cited question, then decide on backup in Connections & Privacy.
 
 Update:
 1. Quit Cortex.
 2. Replace the old Cortex.app in Applications with this version.
-3. Your local vault remains in ~/Library/Application Support/Cortex/Cortex.vault.
+3. Your memory folder remains at ~/Library/Application Support/Cortex/Cortex.vault.
 
 Rollback:
 1. Quit Cortex.
@@ -291,16 +291,16 @@ payload = {
             "Open the DMG and drag Cortex.app to Applications.",
             "Launch Cortex from Applications.",
             "If macOS blocks an unnotarized local beta, Control-click Cortex.app and choose Open.",
-            "Complete getting started by connecting notes, reviewing one memory, asking a cited question, and deciding on backup.",
+            "Complete getting started by connecting notes, reviewing one memory, asking a cited question, then deciding on backup in Connections & Privacy.",
         ],
         "update_steps": [
             "Quit Cortex before replacing the app.",
             "Install the new Cortex.app over the old app in Applications.",
-            "Keep the local vault folder unchanged.",
+            "Keep the memory folder unchanged.",
             "Relaunch, confirm backend health, and run the reliability report.",
         ],
         "rollback_steps": [
-            "Keep the user's local vault folder unchanged.",
+            "Keep the user's memory folder unchanged.",
             "Quit Cortex.",
             "Replace Cortex.app in Applications with the previous beta build.",
             "Relaunch, run the reliability report, and create a fresh backup.",
@@ -308,19 +308,19 @@ payload = {
         "known_limitations": [
             "Manual app replacement is the only update path for this local beta.",
             "Live OAuth/API sync, hosted accounts, cloud backup, and remote MCP/OAuth are not enabled.",
-            "Support starts from the sanitized support bundle, not raw vault data.",
+            "Support starts from the sanitized support bundle, not raw memory folder data.",
             "Developer ID signing, notarization, hosted HTTPS downloads, and a support process are required before broad public distribution.",
         ],
         "manual_qa_checklist": [
             "Install from the DMG on a clean macOS 13 or newer user profile.",
             "Launch from Applications and complete first-run setup.",
-            "Connect MCP or an Obsidian/local notes vault through Connections & Privacy.",
+            "Connect notes in Connections & Privacy.",
             "Approve at least one useful memory and archive obvious noise in Review.",
             "Ask a question that returns cited memory from the approved connected source.",
-            "Verify Connections & Privacy shows vault path, backend health, backup, export, support bundle, and update feed controls.",
+            "Verify Connections & Privacy shows memory folder path, backend health, backup, export, support bundle, and update feed controls.",
             "Create a backup and confirm the support bundle contains no raw memory content.",
-            "Replace the app with this build over a previous build and confirm the vault remains intact.",
-            "Roll back to the previous build and confirm the vault remains intact.",
+            "Replace the app with this build over a previous build and confirm the memory folder remains intact.",
+            "Roll back to the previous build and confirm the memory folder remains intact.",
         ],
         "generated_artifact_verification": [
             "shasum -a 256 -c $RELEASE_NAME.checksums.txt",
@@ -406,8 +406,8 @@ python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-packa
 4. Open Cortex from Applications.
 5. If macOS blocks this local beta because it is not notarized yet,
    Control-click Cortex.app and choose Open.
-6. Complete first-run setup with a local vault, MCP or Obsidian connection,
-   memory review, cited Ask result, and backup decision.
+6. Complete first-run setup by connecting notes, reviewing memory,
+   asking a cited question, then deciding on backup in Connections & Privacy.
 
 The app starts its local backend on:
 
@@ -415,7 +415,7 @@ The app starts its local backend on:
 http://127.0.0.1:8766
 ~~~
 
-The local vault remains outside the app bundle at:
+The memory folder remains outside the app bundle at:
 
 ~~~text
 ~/Library/Application Support/Cortex/Cortex.vault
@@ -427,13 +427,13 @@ Update:
 
 1. Quit Cortex.
 2. Replace the old Cortex.app in Applications with this build.
-3. Leave the local vault folder unchanged.
+3. Leave the memory folder unchanged.
 4. Reopen Cortex, confirm backend health in Connections & Privacy, and run the reliability report.
 5. Create a fresh backup after confirming the app opens.
 
 Rollback:
 
-1. Keep the local vault folder unchanged.
+1. Keep the memory folder unchanged.
 2. Quit Cortex.
 3. Replace Cortex.app in Applications with the previous beta build.
 4. Reopen Cortex, run the reliability report, and create a fresh backup.
@@ -494,13 +494,13 @@ Do not invite the first 100 testers until these checks pass on a clean macOS
 
 1. Install from ${DMG_FILE}, launch from Applications, and complete first-run setup.
 2. Confirm Home shows readiness, connection health, decisions, and next action.
-3. Connect MCP or an Obsidian/local notes vault through Connections & Privacy.
+3. Connect notes in Connections & Privacy.
 4. Approve at least one useful memory and archive obvious noise in Review.
 5. Ask a question that returns cited memory from the approved connected source.
-6. Confirm Connections & Privacy shows vault path, backend health, backup, export, support bundle, and update feed controls.
+6. Confirm Connections & Privacy shows memory folder path, backend health, backup, export, support bundle, and update feed controls.
 7. Create a backup and export a sanitized support bundle.
-8. Replace a previous beta with this build and confirm the vault remains intact.
-9. Roll back to the previous beta and confirm the vault remains intact.
+8. Replace a previous beta with this build and confirm the memory folder remains intact.
+9. Roll back to the previous beta and confirm the memory folder remains intact.
 10. Validate $(basename "$CHECKSUMS"), latest.json, the DMG, and the ZIP before publishing the update feed.
 
 ## Manual First-User Loop
@@ -508,18 +508,18 @@ Do not invite the first 100 testers until these checks pass on a clean macOS
 Use the product flow without browser automation:
 
 1. Home: confirm readiness, connection health, decisions, and next action.
-2. Connections & Privacy: connect MCP or an Obsidian/local notes vault.
+2. Connections & Privacy: connect notes.
 3. Review: approve at least one useful memory and archive obvious noise.
 4. Ask: ask a question that should return cited memory from the connected source.
-5. Connections & Privacy: confirm vault path, backup, export, support bundle, and update feed controls.
+5. Connections & Privacy: confirm memory folder path, backup, export, support bundle, and update feed controls.
 
 ## Known Limitations
 
-- User data stays in the local vault.
+- User data stays in the Cortex data folder.
 - Live OAuth/API sync is not enabled for this local beta.
 - Manual app replacement is the update path.
 - Developer ID notarization is required before broad public distribution.
-- Support should ask for the sanitized support bundle before any raw data.
+- Support should ask for the sanitized support bundle before any raw memory folder data.
 - Hosted accounts, cloud backup, remote MCP/OAuth, billing, teams, and automatic updates are not first-100 beta capabilities.
 EOF
 

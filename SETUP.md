@@ -19,8 +19,8 @@ The release package starts its bundled local service on `127.0.0.1:8766` and sto
 
 Use the setup flow:
 
-1. Vault: confirm the local memory folder path and service health.
-2. Source: connect Obsidian or a local notes folder when ready.
+1. Memory folder: confirm the local memory folder path and service health.
+2. Connect/sync: connect Obsidian or a local notes folder when ready.
 3. Review: approve useful memory after a source syncs.
 4. Ask: ask a question and inspect cited memory after approval.
 
@@ -30,7 +30,7 @@ Use the setup flow:
 
 Open Connections & Privacy and connect Obsidian/local notes plus supported local AI tools through MCP.
 
-Cloud OAuth/API sync is staged by service readiness in this beta. Gmail, Notion, Slack, Drive, and similar services stay planned or Advanced/Fallback until their direct connectors ship.
+Cloud OAuth/API sync is staged by service readiness in this beta. Gmail, Notion, Slack, Drive, and similar services stay planned or advanced/fallback until their direct connectors ship.
 
 ## Review And Ask
 
@@ -38,7 +38,7 @@ Cloud OAuth/API sync is staged by service readiness in this beta. Gmail, Notion,
 - `Ask` searches approved memory and returns cited answers.
 - Connected AI tools can retrieve approved memory through MCP. Ask remains the in-app way to test cited answers.
 
-## Trust And Backup
+## Connections & Privacy And Backup
 
 Open Connections & Privacy to manage:
 

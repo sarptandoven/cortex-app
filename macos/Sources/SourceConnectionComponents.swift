@@ -46,13 +46,13 @@ struct SourceConnectorStatusCard: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
-                    .disabled(state.isBusy)
+                        .disabled(state.isBusy)
 
                     if state.hasConnectedObsidianVault {
                         Button {
                             state.connectLocalNotesFolder(connector, chooseNew: true)
                         } label: {
-                            Label("Change", systemImage: "folder")
+                            Label("Change folder", systemImage: "folder")
                                 .frame(minHeight: 46)
                         }
                         .controlSize(.large)
@@ -131,7 +131,7 @@ struct SourceConnectorStatusCard: View {
         if needsAttention { return "Fix notes" }
         if needsContent { return "Choose notes" }
         if connected {
-            return state.hasConnectedObsidianVault ? "Sync now" : "Reconnect"
+            return state.hasConnectedObsidianVault ? "Check notes now" : "Reconnect"
         }
         return "Connect notes"
     }

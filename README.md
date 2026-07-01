@@ -105,4 +105,4 @@ python3 scripts/export_support_bundle.py --mode offline
 
 ## Current Boundaries
 
-Cortex is ready for local-first beta testing, not broad public distribution yet. The current beta centers on Obsidian/local notes sync, direct local AI-tool integrations, Review, Ask, and Trust. Selected export, folder, or file import remains available only as an Advanced/Fallback path for unsupported services or recovery. Public launch still needs Developer ID signing, notarization, hosted HTTPS downloads, a formal support path, a hosted update-feed decision, and a production privacy review.
+Cortex is ready for local-first beta testing, not broad public distribution yet. The current beta centers on Obsidian/local notes sync, direct local AI-tool integrations, Review, Ask, and Connections & Privacy. Selected export, folder, or file import remains available only as an Advanced/Fallback path for unsupported services or recovery. Public launch still needs Developer ID signing, notarization, hosted HTTPS downloads, a formal support path, a hosted update-feed decision, and a production privacy review.

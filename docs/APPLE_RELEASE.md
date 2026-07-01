@@ -12,7 +12,7 @@ Use Developer ID distribution:
 - signed with your Apple Developer account
 - notarized by Apple
 - stapled DMG
-- manual updates through the static `latest.json` feed
+- direct updates through the static `latest.json` feed
 
 The Mac App Store path is possible later, but it adds sandboxing, review, and entitlement constraints that are not ideal for this connection-first local memory beta.
 
@@ -186,7 +186,7 @@ Then:
 - ask Cortex and verify cited memory appears
 - create one backup
 - export one support bundle
-- verify copied context remains available as an Advanced/Fallback handoff for ChatGPT or Claude
+- verify context-copy remains available as an advanced/fallback handoff for ChatGPT or Claude
 - connect one MCP client or Obsidian/local notes source
 - quit and relaunch
 - verify the memory folder remains intact
