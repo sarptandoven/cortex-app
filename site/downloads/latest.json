@@ -4,15 +4,15 @@
     {
       "filename": "Cortex-0.1.0-1.dmg",
       "kind": "dmg",
-      "sha256": "53c2a874095de2854e65c381098044cd316e2ee596c36e183021e156417b1084",
-      "size_bytes": 21225248,
+      "sha256": "31771a6298018ca8bb18d9812bf300ada7e6ce7892b48cc011c8527c78e8980b",
+      "size_bytes": 21229102,
       "url": "https://trydoppl.com/downloads/Cortex-0.1.0-1.dmg"
     },
     {
       "filename": "Cortex-0.1.0-1.app.zip",
       "kind": "zip",
-      "sha256": "e79527766dcfa03d5bec4c876056a69b4d7235e9419dd8c10d9c21244102c3de",
-      "size_bytes": 16858437,
+      "sha256": "0b9357a35b519377966f9744f852a90712ea07c85eed9375cdb1614031c9a2ff",
+      "size_bytes": 16860644,
       "url": "https://trydoppl.com/downloads/Cortex-0.1.0-1.app.zip"
     }
   ],
@@ -67,13 +67,13 @@
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "First-100 local beta DMG with Obsidian source connection, scheduled source sync jobs, Review, cited Ask, MCP retrieval, backup, support bundle checks, connector retrieval coverage, and actionable sync readiness."
+    "Local beta package with credential-backed scheduled connector sync for GitHub, Readwise, Raindrop, Zotero, Linear, and Notion plus token-safe backup/deletion checks."
   ],
-  "released_at": "2026-07-01T11:08:09Z",
+  "released_at": "2026-07-01T18:01:58Z",
   "source_provenance": {
-    "built_at": "2026-07-01T11:08:09Z",
+    "built_at": "2026-07-01T18:01:58Z",
     "git_branch": "mass-scale-app-redesign",
-    "git_commit": "267e0c50913b6314a343d1045b4b288808459dfd",
+    "git_commit": "baca33d9157b58bf754df6c9fa9c2907c42e73ca",
     "git_dirty": false
   },
   "version": "0.1.0"
