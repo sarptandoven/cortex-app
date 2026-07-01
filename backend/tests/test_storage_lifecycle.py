@@ -726,13 +726,13 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertIsNone(synced_account["last_error"])
         synced_readiness = self.store.source_readiness_report(self.user_id)
         synced_gmail = next(item for item in synced_readiness["sources"] if item["source"] == "gmail")
-        self.assertEqual(synced_gmail["status"], "synced")
+        self.assertEqual(synced_gmail["status"], "planned")
         self.assertEqual(synced_gmail["beta_status"], "planned")
         self.assertFalse(synced_gmail["primary_beta"])
         self.assertFalse(synced_gmail["show_in_primary_ui"])
         self.assertEqual(synced_gmail["primary_beta_path"], "account-sign-in-planned")
         self.assertEqual(synced_gmail["sync_plan"]["mode"], "planned_account_sync")
-        self.assertEqual(synced_gmail["sync_plan"]["managed_sync_status"], "healthy")
+        self.assertEqual(synced_gmail["sync_plan"]["managed_sync_status"], "planned")
         self.assertEqual(synced_gmail["sync_plan"]["credential_ref"], f"source_account:{account['id']}")
         self.assertIsNotNone(synced_gmail["sync_plan"]["last_completed_at"])
 
@@ -1150,6 +1150,291 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual({item["source_account_id"] for item in provenances}, {first["id"], second["id"]})
         self.assertEqual({item["external_id"] for item in provenances}, {"shared-connector-record"})
 
+    def test_same_extracted_memory_id_from_two_source_accounts_does_not_overwrite_provenance(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False})
+        first = self.store.upsert_source_account(
+            self.user_id,
+            source="gmail",
+            account_label="First Gmail",
+            account_identifier="first@example.com",
+            connection_type="mcp",
+            status="connected",
+            auth_state="authorized",
+            policy={"review_required": False},
+        )
+        second = self.store.upsert_source_account(
+            self.user_id,
+            source="gmail",
+            account_label="Second Gmail",
+            account_identifier="second@example.com",
+            connection_type="mcp",
+            status="connected",
+            auth_state="authorized",
+            policy={"review_required": False},
+        )
+        extracted = {
+            "summary": "Shared extracted memory id",
+            "_timestamp": "2026-06-30T10:10:00Z",
+            "records": [
+                {
+                    "id": "mem_shared_extracted_id",
+                    "kind": "decision",
+                    "content": "I decided source-account memory IDs must preserve account-specific provenance.",
+                    "summary": "Source account provenance must survive memory id collisions.",
+                    "confidence": "confirmed",
+                    "importance": 4,
+                    "topics": ["source-sync"],
+                    "entity_ids": [],
+                }
+            ],
+            "tasks": [],
+            "entities": [],
+        }
+
+        first_result = self.store.save_capture(
+            user_id=self.user_id,
+            content="First account: I decided source-account memory IDs must preserve account-specific provenance.",
+            source="gmail",
+            source_url="source-account://gmail/first/msg-collision",
+            title="First collision",
+            extracted=extracted,
+            source_account_id=first["id"],
+            external_id="msg-collision",
+        )
+        second_result = self.store.save_capture(
+            user_id=self.user_id,
+            content="Second account: I decided source-account memory IDs must preserve account-specific provenance.",
+            source="gmail",
+            source_url="source-account://gmail/second/msg-collision",
+            title="Second collision",
+            extracted=extracted,
+            source_account_id=second["id"],
+            external_id="msg-collision",
+        )
+
+        self.assertNotEqual(first_result["memories"][0]["id"], "mem_shared_extracted_id")
+        self.assertNotEqual(second_result["memories"][0]["id"], "mem_shared_extracted_id")
+        self.assertNotEqual(first_result["memories"][0]["id"], second_result["memories"][0]["id"])
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, source_url, provenance_json
+                FROM memories
+                WHERE user_id = ?
+                  AND content = ?
+                  AND status = 'active'
+                ORDER BY source_url
+                """,
+                (
+                    self.user_id,
+                    "I decided source-account memory IDs must preserve account-specific provenance.",
+                ),
+            ).fetchall()
+        self.assertEqual(len(rows), 2)
+        provenances = [json.loads(row["provenance_json"]) for row in rows]
+        self.assertEqual({item["source_account_id"] for item in provenances}, {first["id"], second["id"]})
+        self.assertEqual({item["external_id"] for item in provenances}, {"msg-collision"})
+        first_answer = self.store.answer_query(
+            self.user_id,
+            "What did I decide about source-account memory IDs?",
+            source_account_id=first["id"],
+        )
+        self.assertEqual(first_answer["citations"][0]["source_account_id"], first["id"])
+        second_answer = self.store.answer_query(
+            self.user_id,
+            "What did I decide about source-account memory IDs?",
+            source_account_id=second["id"],
+        )
+        self.assertEqual(second_answer["citations"][0]["source_account_id"], second["id"])
+
+    def test_disconnect_retains_local_memory_credentials_and_citations_but_stops_sync(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False})
+        account_id = "sacct_disconnect_github"
+        account = self.store.upsert_source_account(
+            self.user_id,
+            source="github",
+            account_label="doppl-tech/cortex-app",
+            account_identifier="doppl-tech/cortex-app",
+            connection_type="api-token",
+            status="connected",
+            auth_state="authorized",
+            account_id=account_id,
+            policy={"review_required": False},
+            metadata={
+                "credential_ref": f"source_credential:{account_id}",
+                "repositories": ["doppl-tech/cortex-app"],
+                "sync_interval_seconds": 60,
+            },
+        )
+        self.store.store_source_account_credential(
+            self.user_id,
+            account["id"],
+            source="github",
+            payload={"token": "github_disconnect_secret", "repositories": ["doppl-tech/cortex-app"]},
+        )
+        synced = self.store.sync_source_account_records(
+            self.user_id,
+            account["id"],
+            records=[
+                {
+                    "content": "I decided disconnected source accounts should retain local Cortex memory for Ask.",
+                    "title": "Disconnect retention issue",
+                    "external_id": "issue-101",
+                    "source_url": "https://github.com/doppl-tech/cortex-app/issues/101",
+                    "captured_at": "2026-06-30T11:00:00Z",
+                    "metadata": {"repository": "doppl-tech/cortex-app", "line_start": 4},
+                }
+            ],
+            cursor_name="issues",
+            cursor_value="issue-cursor-101",
+            processing="sync",
+        )
+        self.assertEqual(synced["saved"], 1)
+        self.assertTrue(self.store.search(self.user_id, "retain local Cortex memory", source_account_id=account["id"]))
+
+        queued = self.store.enqueue_source_account_sync(
+            self.user_id,
+            account["id"],
+            cursor_name="issues",
+            schedule_token="pre-disconnect",
+        )
+        self.assertEqual(queued["job_type"], "source_account_sync")
+
+        disconnected = self.store.disconnect_source_account(self.user_id, account["id"])
+        self.assertEqual(disconnected["status"], "disconnected")
+        self.assertEqual(disconnected["retention"]["disconnect_action"], "pause_sync")
+        self.assertIn("memories", disconnected["retention"]["disconnect_retains"])
+        self.assertIn("local_credentials", disconnected["retention"]["disconnect_retains"])
+        self.assertEqual(self.store.list_source_accounts(self.user_id), [])
+        self.assertEqual(self.store.list_source_accounts(self.user_id, include_disconnected=True)[0]["id"], account["id"])
+
+        credential = self.store.vault.read_source_credential(user_id=self.user_id, source_account_id=account["id"])
+        self.assertEqual(credential["payload"]["token"], "github_disconnect_secret")
+        self.assertTrue(self.store.search(self.user_id, "retain local Cortex memory", source_account_id=account["id"]))
+        answer = self.store.answer_query(self.user_id, "What did I decide about disconnected source accounts?", source_account_id=account["id"])
+        citation = next((item for item in answer["citations"] if item.get("source_account_id") == account["id"]), None)
+        self.assertIsNotNone(citation)
+        self.assertEqual(citation["external_id"], "issue-101")
+        self.assertEqual(citation["source_record_id"], "issue-101")
+
+        with self.assertRaisesRegex(ValueError, "source account is disconnected"):
+            self.store.sync_source_account_records(
+                self.user_id,
+                account["id"],
+                records=[
+                    {
+                        "content": "This should not be read after disconnect.",
+                        "external_id": "issue-102",
+                    }
+                ],
+                processing="sync",
+            )
+        with self.assertRaisesRegex(ValueError, "source account is disconnected"):
+            self.store.enqueue_source_account_sync(self.user_id, account["id"], cursor_name="issues")
+
+        scheduled = self.store.enqueue_due_source_syncs(self.user_id, limit=10)
+        self.assertEqual(scheduled["scheduled"], 0)
+        ran = self.store.run_due_source_sync_jobs(self.user_id, limit=10)
+        self.assertEqual(ran["scheduled_source_syncs"]["scheduled"], 0)
+        self.assertEqual(ran["processed"], 1)
+        self.assertEqual(ran["jobs"][0]["status"], "succeeded")
+        self.assertEqual(ran["jobs"][0]["result"]["reason"], "source_account_disconnected")
+        self.assertTrue(self.store.search(self.user_id, "retain local Cortex memory", source_account_id=account["id"]))
+
+    def test_source_account_missing_snapshot_archive_is_account_scoped(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False})
+        first = self.store.upsert_source_account(
+            self.user_id,
+            source="gmail",
+            account_label="First Gmail",
+            account_identifier="first@example.com",
+            connection_type="mcp",
+            status="connected",
+            auth_state="authorized",
+            policy={"review_required": False},
+        )
+        second = self.store.upsert_source_account(
+            self.user_id,
+            source="gmail",
+            account_label="Second Gmail",
+            account_identifier="second@example.com",
+            connection_type="mcp",
+            status="connected",
+            auth_state="authorized",
+            policy={"review_required": False},
+        )
+
+        first_initial = self.store.sync_source_account_records(
+            self.user_id,
+            first["id"],
+            records=[
+                {
+                    "content": "I decided first account archive scope should disappear after its missing snapshot.",
+                    "title": "Shared Gmail record",
+                    "external_id": "shared-msg",
+                    "captured_at": "2026-06-30T12:00:00Z",
+                }
+            ],
+            cursor_name="messages",
+            processing="sync",
+        )
+        second_initial = self.store.sync_source_account_records(
+            self.user_id,
+            second["id"],
+            records=[
+                {
+                    "content": "I decided second account archive scope must remain after first account snapshot.",
+                    "title": "Shared Gmail record",
+                    "external_id": "shared-msg",
+                    "captured_at": "2026-06-30T12:01:00Z",
+                }
+            ],
+            cursor_name="messages",
+            processing="sync",
+        )
+        self.assertEqual(first_initial["saved"], 1)
+        self.assertEqual(second_initial["saved"], 1)
+        self.assertTrue(self.store.search(self.user_id, "first account archive scope", source_account_id=first["id"]))
+        self.assertTrue(self.store.search(self.user_id, "second account archive scope", source_account_id=second["id"]))
+
+        snapshot = self.store.sync_source_account_records(
+            self.user_id,
+            first["id"],
+            records=[
+                {
+                    "content": "I decided first account replacement record is the only current snapshot item.",
+                    "title": "Replacement Gmail record",
+                    "external_id": "replacement-msg",
+                    "captured_at": "2026-06-30T12:05:00Z",
+                }
+            ],
+            cursor_name="messages",
+            processing="sync",
+            archive_missing=True,
+            complete_snapshot=True,
+        )
+
+        self.assertEqual(snapshot["archived_missing"], 1)
+        self.assertEqual(self.store.search(self.user_id, "first account archive scope", source_account_id=first["id"]), [])
+        self.assertTrue(self.store.search(self.user_id, "first account replacement record", source_account_id=first["id"]))
+        self.assertTrue(self.store.search(self.user_id, "second account archive scope", source_account_id=second["id"]))
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT source_account_id, external_id, review_status
+                FROM captures
+                WHERE user_id = ?
+                  AND source = 'gmail'
+                  AND external_id = 'shared-msg'
+                ORDER BY source_account_id
+                """,
+                (self.user_id,),
+            ).fetchall()
+        self.assertEqual(
+            {(row["source_account_id"], row["review_status"]) for row in rows},
+            {(first["id"], "archived"), (second["id"], "approved")},
+        )
+
     def test_baseline_ten_catalog_services_do_not_make_fake_primary_ui_promises(self) -> None:
         catalog = {item["id"]: item for item in self.store.source_connector_catalog()}
         wired_source_paths = {
@@ -1445,8 +1730,9 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
         readiness_after_review = self.store.source_readiness_report(self.user_id)
         drive_after_review = next(item for item in readiness_after_review["sources"] if item["source"] == "google-drive")
-        self.assertEqual(drive_after_review["status"], "synced")
+        self.assertEqual(drive_after_review["status"], "imported")
         self.assertEqual(drive_after_review["beta_status"], "planned")
+        self.assertEqual(drive_after_review["sync_plan"]["managed_sync_status"], "planned")
 
         found = self.store.search(self.user_id, "canonical project memory source", limit=5)
         self.assertTrue(found)
@@ -1584,6 +1870,9 @@ class CortexStorageLifecycleTests(unittest.TestCase):
 
     def test_slack_account_sync_fetches_messages_with_stable_citations(self) -> None:
         def fake_request(url: str, headers: dict[str, str]):
+            if "/auth.test" in url:
+                self.assertEqual(headers["Authorization"], "Bearer xoxb_test")
+                return {"ok": True, "user_id": "U123", "user": "sarpt", "team_id": "T123", "team": "Doppl"}
             self.assertIn("/conversations.history", url)
             self.assertIn("channel=C123ABC", url)
             self.assertEqual(headers["Authorization"], "Bearer xoxb_test")
@@ -1614,6 +1903,8 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(result["saved"], 1)
         self.assertEqual(result["source_account"]["source"], "slack")
         self.assertEqual(result["source_account"]["connection_type"], "api-token")
+        self.assertEqual(result["source_account"]["account_identifier"], "U123")
+        self.assertEqual(result["source_account"]["metadata"]["slack_user_id"], "U123")
         self.assertEqual(result["source_account"]["metadata"]["token_configured"], True)
         self.assertEqual(result["records"][0]["source_url"], "https://doppl.slack.com/archives/C123ABC/p1782739200000100")
         capture_id = result["capture_ids"][0]
@@ -1643,8 +1934,71 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(duplicate["skipped"], 1)
         self.assertEqual(duplicate["records"][0]["status"], "duplicate")
 
+    def test_slack_account_sync_uses_auth_identity_for_user_authored_preferences(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False})
+
+        def fake_request(url: str, headers: dict[str, str]):
+            if "/auth.test" in url:
+                self.assertEqual(headers["Authorization"], "Bearer xoxb_identity")
+                return {"ok": True, "user_id": "U123", "user": "sarpt", "team_id": "T123", "team": "Doppl"}
+            self.assertIn("/conversations.history", url)
+            self.assertEqual(headers["Authorization"], "Bearer xoxb_identity")
+            return {
+                "ok": True,
+                "messages": [
+                    {
+                        "type": "message",
+                        "user": "U123",
+                        "text": "I prefer live Slack sync to preserve concise source-backed memory.",
+                        "ts": "1782739300.000100",
+                    },
+                    {
+                        "type": "message",
+                        "user": "U456",
+                        "text": "I prefer teammate-only Slack preferences to be ignored by Cortex.",
+                        "ts": "1782739301.000200",
+                    },
+                ],
+            }
+
+        result = self.store.sync_slack_account(
+            self.user_id,
+            token="xoxb_identity",
+            channels=["C123ABC|general"],
+            workspace_url="https://doppl.slack.com",
+            processing="sync",
+            max_records=20,
+            request_json=fake_request,
+        )
+
+        self.assertEqual(result["saved"], 2)
+        self.assertEqual(result["source_account"]["account_identifier"], "U123")
+        self.assertEqual(result["source_account"]["metadata"]["user_id"], "U123")
+        for capture_id in result["capture_ids"]:
+            self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+        user_hits = self.store.search(self.user_id, "concise source-backed memory", limit=5)
+        user_preference = next((hit for hit in user_hits if hit["kind"] == "preference"), None)
+        self.assertIsNotNone(user_preference)
+        self.assertEqual(user_preference["provenance"]["source_account_id"], result["source_account_id"])
+        with connect(self.db_path) as conn:
+            teammate_preference_count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM memories
+                WHERE user_id = ?
+                  AND kind = 'preference'
+                  AND status = 'active'
+                  AND content LIKE '%teammate-only Slack preferences%'
+                """,
+                (self.user_id,),
+            ).fetchone()[0]
+        self.assertEqual(teammate_preference_count, 0)
+
     def test_mcp_slack_sync_tool_fetches_records_without_exposing_token(self) -> None:
         def fake_request(url: str, headers: dict[str, str]):
+            if "/auth.test" in url:
+                self.assertEqual(headers["Authorization"], "Bearer xoxb_mcp_test")
+                return {"ok": True, "user_id": "U123", "user": "sarpt"}
             self.assertIn("/conversations.history", url)
             self.assertEqual(headers["Authorization"], "Bearer xoxb_mcp_test")
             return {

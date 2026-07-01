@@ -932,14 +932,14 @@ def _source_readiness_sync_plan(
         managed_sync_status = "backing_off"
     elif due_now:
         managed_sync_status = "due"
+    elif mode == "planned_account_sync":
+        managed_sync_status = "planned"
     elif last_completed_at:
         managed_sync_status = "healthy"
     elif active_accounts and mode in {"hosted_managed_sync", "local_app_autosync"}:
         managed_sync_status = "waiting_for_first_sync"
     elif mode == "manual_direct_sync":
         managed_sync_status = "available_advanced"
-    elif mode == "planned_account_sync":
-        managed_sync_status = "planned"
     elif mode == "direct_connector_needed":
         managed_sync_status = "connector_needed"
     else:
@@ -1133,6 +1133,9 @@ def _source_account_identity_values(account: dict[str, Any], source: str) -> lis
     values: list[Any] = [account.get("account_identifier")]
     metadata = account.get("metadata") if isinstance(account.get("metadata"), dict) else {}
     for key in (
+        "user_id",
+        "service_user_id",
+        "slack_user_id",
         "email",
         "email_address",
         "account_email",
@@ -2379,6 +2382,12 @@ class CortexStore:
             elif sync_incomplete:
                 status = "syncing"
                 next_action = "Cortex is still scanning this Obsidian vault in batches."
+            elif planned_connector and (current_captures or active_memories):
+                status = "imported"
+                next_action = "Local records are available; direct account sign-in sync is still planned for this source."
+            elif planned_connector:
+                status = "planned"
+                next_action = "Account sign-in sync is planned for this source."
             elif has_completed_sync:
                 status = "synced"
                 next_action = "Source sync has completed; review new memories as they arrive."
@@ -3520,9 +3529,12 @@ class CortexStore:
             request_json=request_json,
         )
         channel_key = ",".join(str(item.get("name") or item.get("id") or "") for item in sync.channels if item.get("id") or item.get("name"))
+        auth_identity = sync.auth_identity if isinstance(sync.auth_identity, dict) else {}
+        auth_user_id = str(auth_identity.get("user_id") or "").strip()
+        auth_user_name = str(auth_identity.get("user") or "").strip()
         resolved_account_id = (source_account_id or "").strip() or stable_id("sacct_", f"{user_id}:{SLACK_SOURCE}:{channel_key}")
-        label = (account_label or f"Slack: {channel_key}").strip()[:160]
-        identifier = (account_identifier or channel_key or "slack").strip()[:240]
+        label = (account_label or f"Slack: {auth_user_name or channel_key}").strip()[:160]
+        identifier = (account_identifier or auth_user_id or channel_key or "slack").strip()[:240]
         sync_summary = sync.to_summary()
         error_message = sync.errors[0]["error"] if sync.errors else None
         metadata = {
@@ -3535,6 +3547,15 @@ class CortexStore:
             "workspace_url_configured": bool(str(workspace_url or "").strip()),
             "api_base_url": sync.api_base_url,
         }
+        if auth_user_id:
+            metadata["user_id"] = auth_user_id
+            metadata["slack_user_id"] = auth_user_id
+        if auth_user_name:
+            metadata["user_name"] = auth_user_name
+        if auth_identity.get("team_id"):
+            metadata["team_id"] = auth_identity["team_id"]
+        if auth_identity.get("team"):
+            metadata["team"] = auth_identity["team"]
         metadata = _with_source_credential_ref(metadata, resolved_account_id, bool(str(token or "").strip()))
         account = self.upsert_source_account(
             user_id,

@@ -326,6 +326,9 @@ class ScheduledRemainingConnectorCredentialTests(unittest.TestCase):
 
         def fake_request_json(url: str, headers: dict[str, str]) -> dict[str, Any]:
             calls.append((url, headers))
+            if url == f"{SLACK_API_BASE_URL}/auth.test":
+                self.assertEqual(headers["Authorization"], f"Bearer {SLACK_TOKEN}")
+                return {"ok": True, "user_id": "U123", "user": "sarpt", "team_id": "T123", "team": "Doppl"}
             self.assertTrue(url.startswith(f"{SLACK_API_BASE_URL}/conversations.history?"))
             self.assertIn("channel=C123ABC", url)
             self.assertEqual(headers["Authorization"], f"Bearer {SLACK_TOKEN}")
@@ -344,7 +347,7 @@ class ScheduledRemainingConnectorCredentialTests(unittest.TestCase):
             request_json=fake_request_json,
         )
 
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 2)
         self.assertEqual(result["status"], "empty")
         return result["source_account"]
 

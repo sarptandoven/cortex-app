@@ -1135,7 +1135,9 @@ class FastAPIContractTests(unittest.TestCase):
         gmail_readiness = next(item for item in readiness["sources"] if item["source"] == "gmail")
         self.assertEqual(gmail_readiness["accounts"], 1)
         self.assertEqual(gmail_readiness["cursors"], 1)
-        self.assertIn(gmail_readiness["status"], {"connected", "synced", "needs_review", "needs_attention"})
+        self.assertEqual(gmail_readiness["status"], "needs_review")
+        self.assertEqual(gmail_readiness["sync_plan"]["mode"], "planned_account_sync")
+        self.assertEqual(gmail_readiness["sync_plan"]["managed_sync_status"], "planned")
 
         disconnected = self.client.post(f"/v1/source-accounts/{account['id']}/disconnect", headers=headers)
         self.assertEqual(disconnected.status_code, 200)

@@ -13,6 +13,9 @@ class SlackConnectorTests(unittest.TestCase):
         def fake_request(url: str, headers: dict[str, str]):
             calls.append((url, headers))
             parsed = urlparse(url)
+            if parsed.path.endswith("/auth.test"):
+                self.assertEqual(headers["Authorization"], "Bearer xoxb-test")
+                return {"ok": True, "user_id": "U123", "user": "sarpt", "team_id": "T123", "team": "Doppl"}
             self.assertTrue(parsed.path.endswith("/conversations.history"))
             query = parse_qs(parsed.query)
             self.assertEqual(query["channel"], ["C123ABC"])
@@ -46,10 +49,12 @@ class SlackConnectorTests(unittest.TestCase):
             request_json=fake_request,
         )
 
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 2)
         self.assertEqual(sync.records_found, 2)
         self.assertEqual(sync.records_returned, 2)
         self.assertEqual(sync.next_cursors, {"C123ABC": "cursor-next"})
+        self.assertEqual(sync.auth_identity["user_id"], "U123")
+        self.assertEqual(sync.auth_identity["team"], "Doppl")
         first = sync.records[0].to_source_account_record()
         self.assertEqual(first["external_id"], "slack:C123ABC:1782739200.000100")
         self.assertEqual(first["source_url"], "https://doppl.slack.com/archives/C123ABC/p1782739200000100")
@@ -68,6 +73,8 @@ class SlackConnectorTests(unittest.TestCase):
             calls.append(url)
             self.assertEqual(headers["Authorization"], "Bearer xoxb-thread")
             parsed = urlparse(url)
+            if parsed.path.endswith("/auth.test"):
+                return {"ok": True, "user_id": "U123", "user": "sarpt"}
             if parsed.path.endswith("/conversations.history"):
                 return {
                     "ok": True,

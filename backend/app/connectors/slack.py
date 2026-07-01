@@ -59,6 +59,7 @@ class SlackSync:
     next_cursors: dict[str, str]
     errors: list[dict[str, Any]]
     api_base_url: str
+    auth_identity: dict[str, str]
 
     def to_summary(self) -> dict[str, Any]:
         return {
@@ -72,6 +73,7 @@ class SlackSync:
             "next_cursors": self.next_cursors,
             "errors": self.errors,
             "api_base_url": self.api_base_url,
+            "auth_identity": self.auth_identity,
         }
 
 
@@ -104,6 +106,7 @@ def fetch_slack_records(
         "User-Agent": "Cortex-local-connector",
     }
     oldest = _slack_oldest_from_since(since)
+    auth_identity = _fetch_auth_identity(requester, base_url=base_url, headers=headers)
 
     records: list[SlackSyncRecord] = []
     records_found = 0
@@ -185,7 +188,28 @@ def fetch_slack_records(
         next_cursors=next_cursors,
         errors=errors,
         api_base_url=base_url,
+        auth_identity=auth_identity,
     )
+
+
+def _fetch_auth_identity(
+    requester: RequestJSON,
+    *,
+    base_url: str,
+    headers: dict[str, str],
+) -> dict[str, str]:
+    try:
+        payload = requester(f"{base_url}/auth.test", headers)
+    except Exception:
+        return {}
+    if not isinstance(payload, dict) or not payload.get("ok", False):
+        return {}
+    identity: dict[str, str] = {}
+    for key in ("user_id", "user", "team_id", "team", "url"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            identity[key] = value[:240]
+    return identity
 
 
 def _message_has_replies(message: dict[str, Any]) -> bool:

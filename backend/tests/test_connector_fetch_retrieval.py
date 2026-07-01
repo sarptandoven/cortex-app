@@ -487,6 +487,8 @@ class ConnectorFetchRetrievalTests(unittest.TestCase):
         def fake_request(url: str, headers: dict[str, str]):
             calls.append(url)
             self.assertEqual(headers["Authorization"], "Bearer xoxb-cursor-test")
+            if "auth.test" in url:
+                return {"ok": True, "user_id": "U123", "user": "sarpt"}
             self.assertIn("conversations.history", url)
             return {"ok": True, "messages": [], "response_metadata": {"next_cursor": ""}}
 
@@ -502,7 +504,8 @@ class ConnectorFetchRetrievalTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "empty")
         self.assertTrue(calls)
-        self.assertIn("cursor=cursor-one", calls[0])
+        history_call = next(url for url in calls if "conversations.history" in url)
+        self.assertIn("cursor=cursor-one", history_call)
 
     def _first_result_with_marker(self, hits: list[dict], source: str, marker: str) -> dict | None:
         for hit in hits:
