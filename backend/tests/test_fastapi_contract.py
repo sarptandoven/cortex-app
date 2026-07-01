@@ -250,6 +250,11 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertIn("citation_coverage", payload)
         self.assertIn("date_coverage", payload)
         self.assertIn("review_coverage", payload)
+        self.assertIn("provenance_coverage", payload)
+        self.assertIn("sector_coverage", payload)
+        self.assertIn("source_type_coverage", payload)
+        self.assertIn("relation_health", payload)
+        self.assertIn("vector_health", payload)
         self.assertIn("source_health", payload)
         self.assertTrue(any(source["source"] == "quality-test" for source in payload["source_health"]))
 

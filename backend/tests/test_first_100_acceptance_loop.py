@@ -193,7 +193,10 @@ I prefer Cortex answers that cite the edited Obsidian note when memory changes.
         self.assertIn(quality["status"], {"usable", "strong"})
         self.assertGreaterEqual(quality["score"], 55)
         self.assertEqual(quality["citation_coverage"], 1.0)
+        self.assertEqual(quality["provenance_coverage"], 1.0)
+        self.assertEqual(quality["source_type_coverage"], 1.0)
         self.assertEqual(quality["review_coverage"], 1.0)
+        self.assertEqual(quality["relation_health"]["status"], "ok")
         self.assertIn("obsidian", {item["source"] for item in quality["source_health"]})
 
         connectors = call_tool(self.store, self.user_id, "list_source_connectors", {})

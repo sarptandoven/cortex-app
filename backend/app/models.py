@@ -570,8 +570,17 @@ class MemoryQualitySource(BaseModel):
     temporal_memories: int = 0
     dated_temporal_memories: int = 0
     undated_temporal_memories: int = 0
+    sector_memories: int = 0
+    unsectored_memories: int = 0
+    source_type_memories: int = 0
+    missing_source_type_memories: int = 0
+    provenance_complete_memories: int = 0
+    weak_provenance_memories: int = 0
     citation_coverage: float
     date_coverage: float = 0.0
+    sector_coverage: float = 0.0
+    source_type_coverage: float = 0.0
+    provenance_coverage: float = 0.0
     last_seen: str | None = None
     status: str
     warnings: list[str] = Field(default_factory=list)
@@ -585,8 +594,16 @@ class MemoryQualityResponse(BaseModel):
     date_coverage: float = 0.0
     review_coverage: float
     layer_coverage: float
+    sector_coverage: float = 0.0
+    source_type_coverage: float = 0.0
+    provenance_coverage: float = 0.0
+    vector_coverage: float = 0.0
+    relation_coverage: float = 0.0
+    relation_integrity: float = 1.0
     layers_present: list[str]
     totals: dict[str, int]
+    relation_health: dict[str, Any] = Field(default_factory=dict)
+    vector_health: dict[str, Any] = Field(default_factory=dict)
     source_health: list[MemoryQualitySource]
     warnings: list[str]
     recommendations: list[str]

@@ -8251,9 +8251,121 @@ class CortexStore:
                     "SELECT COUNT(*) FROM memories WHERE user_id = ? AND status = 'active' AND layer IN ('episodic', 'decision') AND COALESCE(occurred_at, '') != ''",
                     (user_id,),
                 ).fetchone()[0],
+                "sector_memories": conn.execute(
+                    "SELECT COUNT(*) FROM memories WHERE user_id = ? AND status = 'active' AND COALESCE(sector, '') != ''",
+                    (user_id,),
+                ).fetchone()[0],
+                "source_type_memories": conn.execute(
+                    "SELECT COUNT(*) FROM memories WHERE user_id = ? AND status = 'active' AND COALESCE(source_type, '') != ''",
+                    (user_id,),
+                ).fetchone()[0],
+                "provenance_memories": conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM memories
+                    WHERE user_id = ?
+                      AND status = 'active'
+                      AND COALESCE(provenance_json, '') NOT IN ('', '{}')
+                      AND COALESCE(json_extract(provenance_json, '$.source'), '') != ''
+                    """,
+                    (user_id,),
+                ).fetchone()[0],
+                "provenance_complete_memories": conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM memories
+                    WHERE user_id = ?
+                      AND status = 'active'
+                      AND COALESCE(source_url, '') != ''
+                      AND COALESCE(json_extract(provenance_json, '$.source'), '') != ''
+                      AND (
+                        COALESCE(raw_excerpt, '') != ''
+                        OR COALESCE(json_extract(provenance_json, '$.external_id'), '') != ''
+                        OR json_type(provenance_json, '$.record_metadata') = 'object'
+                      )
+                    """,
+                    (user_id,),
+                ).fetchone()[0],
             }
+            vector_ready = self._vector_ready(conn)
+            active_vector_memories = (
+                conn.execute(
+                    """
+                    SELECT COUNT(DISTINCT m.id)
+                    FROM memories m
+                    JOIN memory_vec_map map
+                      ON map.memory_id = m.id
+                     AND map.user_id = m.user_id
+                    WHERE m.user_id = ?
+                      AND m.status = 'active'
+                    """,
+                    (user_id,),
+                ).fetchone()[0]
+                if vector_ready
+                else 0
+            )
+            relation_rows = conn.execute(
+                "SELECT COUNT(*) FROM memory_relations WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()[0]
+            active_relation_rows = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM memory_relations mr
+                JOIN memories source_memory
+                  ON source_memory.id = mr.source_memory_id
+                 AND source_memory.user_id = mr.user_id
+                 AND source_memory.status = 'active'
+                JOIN memories target_memory
+                  ON target_memory.id = mr.target_memory_id
+                 AND target_memory.user_id = mr.user_id
+                 AND target_memory.status = 'active'
+                WHERE mr.user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()[0]
+            related_memories = conn.execute(
+                """
+                SELECT COUNT(DISTINCT memory_id)
+                FROM (
+                  SELECT mr.source_memory_id AS memory_id
+                  FROM memory_relations mr
+                  JOIN memories source_memory
+                    ON source_memory.id = mr.source_memory_id
+                   AND source_memory.user_id = mr.user_id
+                   AND source_memory.status = 'active'
+                  JOIN memories target_memory
+                    ON target_memory.id = mr.target_memory_id
+                   AND target_memory.user_id = mr.user_id
+                   AND target_memory.status = 'active'
+                  WHERE mr.user_id = ?
+                  UNION
+                  SELECT mr.target_memory_id AS memory_id
+                  FROM memory_relations mr
+                  JOIN memories source_memory
+                    ON source_memory.id = mr.source_memory_id
+                   AND source_memory.user_id = mr.user_id
+                   AND source_memory.status = 'active'
+                  JOIN memories target_memory
+                    ON target_memory.id = mr.target_memory_id
+                   AND target_memory.user_id = mr.user_id
+                   AND target_memory.status = 'active'
+                  WHERE mr.user_id = ?
+                )
+                """,
+                (user_id, user_id),
+            ).fetchone()[0]
             totals["uncited_memories"] = max(0, totals["active_memories"] - totals["cited_memories"])
             totals["undated_temporal_memories"] = max(0, totals["temporal_memories"] - totals["dated_temporal_memories"])
+            totals["unsectored_memories"] = max(0, totals["active_memories"] - totals["sector_memories"])
+            totals["missing_source_type_memories"] = max(0, totals["active_memories"] - totals["source_type_memories"])
+            totals["weak_provenance_memories"] = max(0, totals["active_memories"] - totals["provenance_complete_memories"])
+            totals["vector_memories"] = active_vector_memories
+            totals["missing_vector_memories"] = max(0, totals["active_memories"] - active_vector_memories)
+            totals["memory_relations"] = relation_rows
+            totals["active_memory_relations"] = active_relation_rows
+            totals["orphaned_memory_relations"] = max(0, relation_rows - active_relation_rows)
+            totals["related_memories"] = related_memories
             layer_rows = conn.execute(
                 """
                 SELECT layer, COUNT(*) AS count
@@ -8276,6 +8388,18 @@ class CortexStore:
                   COUNT(m.id) AS active_memories,
                   SUM(CASE WHEN m.id IS NOT NULL AND COALESCE(m.source_url, '') != '' THEN 1 ELSE 0 END) AS cited_memories,
                   SUM(CASE WHEN m.id IS NOT NULL AND COALESCE(m.occurred_at, '') != '' THEN 1 ELSE 0 END) AS dated_memories,
+                  SUM(CASE WHEN m.id IS NOT NULL AND COALESCE(m.sector, '') != '' THEN 1 ELSE 0 END) AS sector_memories,
+                  SUM(CASE WHEN m.id IS NOT NULL AND COALESCE(m.source_type, '') != '' THEN 1 ELSE 0 END) AS source_type_memories,
+                  SUM(CASE
+                    WHEN m.id IS NOT NULL
+                     AND COALESCE(m.source_url, '') != ''
+                     AND COALESCE(json_extract(m.provenance_json, '$.source'), '') != ''
+                     AND (
+                       COALESCE(m.raw_excerpt, '') != ''
+                       OR COALESCE(json_extract(m.provenance_json, '$.external_id'), '') != ''
+                       OR json_type(m.provenance_json, '$.record_metadata') = 'object'
+                     )
+                    THEN 1 ELSE 0 END) AS provenance_complete_memories,
                   SUM(CASE WHEN m.id IS NOT NULL AND m.layer IN ('episodic', 'decision') THEN 1 ELSE 0 END) AS temporal_memories,
                   SUM(CASE WHEN m.id IS NOT NULL AND m.layer IN ('episodic', 'decision') AND COALESCE(m.occurred_at, '') != '' THEN 1 ELSE 0 END) AS dated_temporal_memories,
                   MAX(c.captured_at) AS last_seen
@@ -8293,8 +8417,21 @@ class CortexStore:
         date_coverage = 0.0 if totals["active_memories"] == 0 else (1.0 if totals["temporal_memories"] == 0 else _ratio(totals["dated_temporal_memories"], totals["temporal_memories"]))
         review_coverage = _ratio(totals["captures"] - totals["pending_captures"], totals["captures"])
         layer_coverage = _ratio(len(layers_present & expected_layers), len(expected_layers))
+        sector_coverage = _ratio(totals["sector_memories"], totals["active_memories"])
+        source_type_coverage = _ratio(totals["source_type_memories"], totals["active_memories"])
+        provenance_coverage = _ratio(totals["provenance_complete_memories"], totals["active_memories"])
+        vector_coverage = _ratio(totals["vector_memories"], totals["active_memories"])
+        relation_coverage = _ratio(totals["related_memories"], totals["active_memories"])
+        relation_integrity = 1.0 if totals["memory_relations"] == 0 else _ratio(totals["active_memory_relations"], totals["memory_relations"])
         volume_score = _ratio(min(totals["active_memories"], 50), 50)
-        score = round(citation_coverage * 30 + date_coverage * 15 + review_coverage * 20 + layer_coverage * 20 + volume_score * 15)
+        base_score = citation_coverage * 30 + date_coverage * 15 + review_coverage * 20 + layer_coverage * 20 + volume_score * 15
+        score = round(
+            base_score * 0.82
+            + provenance_coverage * 8
+            + source_type_coverage * 4
+            + sector_coverage * 3
+            + relation_integrity * 3
+        )
         score = max(0, min(100, score))
         status = "strong" if score >= 80 else "usable" if score >= 55 else "needs_sources" if totals["active_memories"] == 0 else "needs_review"
 
@@ -8315,17 +8452,35 @@ class CortexStore:
         if totals["active_memories"] > 0 and layer_coverage < 0.5:
             warnings.append("Memory coverage is concentrated in too few layers.")
             recommendations.append("Add decisions, writing samples, preferences, and rejected approaches for better adaptation.")
+        if totals["active_memories"] > 0 and provenance_coverage < 0.8:
+            warnings.append("Some active memories have weak provenance metadata.")
+            recommendations.append("Prefer connected-source sync with source URLs, excerpts, and stable external IDs.")
+        if totals["active_memories"] > 0 and sector_coverage < 0.5:
+            warnings.append("Many memories are not assigned to a sector or workspace.")
+            recommendations.append("Use source metadata such as vault, workspace, project, repository, or team to improve scoped retrieval.")
+        if totals["orphaned_memory_relations"] > 0:
+            warnings.append("Some memory relationship rows no longer point at active memories.")
+            recommendations.append("Run storage repair before relying on related-memory expansion.")
+        if totals["active_memories"] > 0 and vector_ready and vector_coverage < 0.8:
+            warnings.append("Vector retrieval coverage is still catching up.")
+            recommendations.append("Run the local worker so queued embedding jobs can finish.")
 
         source_health = []
         for row in source_rows:
             active_memories = int(row["active_memories"] or 0)
             cited_memories = int(row["cited_memories"] or 0)
             dated_memories = int(row["dated_memories"] or 0)
+            sector_memories = int(row["sector_memories"] or 0)
+            source_type_memories = int(row["source_type_memories"] or 0)
+            provenance_complete_memories = int(row["provenance_complete_memories"] or 0)
             temporal_memories = int(row["temporal_memories"] or 0)
             dated_temporal_memories = int(row["dated_temporal_memories"] or 0)
             pending = int(row["pending"] or 0)
             captures = int(row["captures"] or 0)
             source_date_coverage = 1.0 if active_memories and temporal_memories == 0 else _ratio(dated_temporal_memories, temporal_memories)
+            source_sector_coverage = _ratio(sector_memories, active_memories)
+            source_type_coverage_value = _ratio(source_type_memories, active_memories)
+            source_provenance_coverage = _ratio(provenance_complete_memories, active_memories)
             source_warnings: list[str] = []
             if active_memories and cited_memories < active_memories:
                 source_warnings.append("missing citations")
@@ -8333,6 +8488,10 @@ class CortexStore:
                 source_warnings.append("missing dates")
             if captures and pending / captures > 0.5:
                 source_warnings.append("mostly pending")
+            if active_memories and source_provenance_coverage < 0.8:
+                source_warnings.append("weak provenance")
+            if active_memories and source_sector_coverage < 0.5:
+                source_warnings.append("missing sectors")
             source_status = "ok" if not source_warnings else "needs_attention"
             source_health.append(
                 {
@@ -8348,13 +8507,41 @@ class CortexStore:
                     "temporal_memories": temporal_memories,
                     "dated_temporal_memories": dated_temporal_memories,
                     "undated_temporal_memories": max(0, temporal_memories - dated_temporal_memories),
+                    "sector_memories": sector_memories,
+                    "unsectored_memories": max(0, active_memories - sector_memories),
+                    "source_type_memories": source_type_memories,
+                    "missing_source_type_memories": max(0, active_memories - source_type_memories),
+                    "provenance_complete_memories": provenance_complete_memories,
+                    "weak_provenance_memories": max(0, active_memories - provenance_complete_memories),
                     "citation_coverage": _ratio(cited_memories, active_memories),
                     "date_coverage": source_date_coverage,
+                    "sector_coverage": source_sector_coverage,
+                    "source_type_coverage": source_type_coverage_value,
+                    "provenance_coverage": source_provenance_coverage,
                     "last_seen": row["last_seen"],
                     "status": source_status,
                     "warnings": source_warnings,
                 }
             )
+
+        relation_health = {
+            "status": "ok" if totals["orphaned_memory_relations"] == 0 else "needs_repair",
+            "relations": totals["memory_relations"],
+            "active_relations": totals["active_memory_relations"],
+            "orphaned_relations": totals["orphaned_memory_relations"],
+            "related_memories": totals["related_memories"],
+            "relation_coverage": relation_coverage,
+            "relation_integrity": relation_integrity,
+        }
+        vector_health = {
+            "status": "ok" if totals["active_memories"] == 0 or vector_coverage >= 0.8 else "catching_up" if vector_ready else "not_available",
+            "available": vector_ready,
+            "provider": embedding_status()["provider"],
+            "model": embedding_status()["model"],
+            "indexed_memories": totals["vector_memories"],
+            "missing_memories": totals["missing_vector_memories"],
+            "coverage": vector_coverage,
+        }
 
         return {
             "generated_at": now_iso(),
@@ -8364,8 +8551,16 @@ class CortexStore:
             "date_coverage": date_coverage,
             "review_coverage": review_coverage,
             "layer_coverage": layer_coverage,
+            "sector_coverage": sector_coverage,
+            "source_type_coverage": source_type_coverage,
+            "provenance_coverage": provenance_coverage,
+            "vector_coverage": vector_coverage,
+            "relation_coverage": relation_coverage,
+            "relation_integrity": relation_integrity,
             "layers_present": sorted(layers_present),
             "totals": totals,
+            "relation_health": relation_health,
+            "vector_health": vector_health,
             "source_health": source_health,
             "warnings": warnings,
             "recommendations": recommendations,
