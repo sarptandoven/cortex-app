@@ -4,15 +4,15 @@
     {
       "filename": "Cortex-0.1.0-1.dmg",
       "kind": "dmg",
-      "sha256": "c0377fc7df2d9ccb13460f180e5cb93edc12bf4c57745a54fa8b6882dc15f46e",
-      "size_bytes": 20088951,
+      "sha256": "137dd0d9abe26234e865836f6a404d945b82c9a31bc8792db189223ff2651f66",
+      "size_bytes": 20150482,
       "url": "downloads/Cortex-0.1.0-1.dmg"
     },
     {
       "filename": "Cortex-0.1.0-1.app.zip",
       "kind": "zip",
-      "sha256": "3cfa4854d2eea99d1eae1642f994bade10761e21fcc26d969e0c5a17315392c8",
-      "size_bytes": 16576637,
+      "sha256": "6f79d4bfcd1e185b7e2de6e416b07fe417eff36232fb681d97db9a6a4d5cca6c",
+      "size_bytes": 16596810,
       "url": "downloads/Cortex-0.1.0-1.app.zip"
     }
   ],
@@ -28,28 +28,28 @@
       "Open the DMG and drag Cortex.app to Applications.",
       "Launch Cortex from Applications.",
       "If macOS blocks an unnotarized local beta, Control-click Cortex.app and choose Open.",
-      "Complete first-run setup by connecting MCP or Obsidian/local notes, letting sync run, reviewing one memory, asking a cited question, and deciding on backup."
+      "Complete getting started by connecting notes, reviewing one memory, asking a cited question, and deciding on backup."
     ],
     "known_limitations": [
       "Manual app replacement is the only update path for this local beta.",
       "Live OAuth/API sync, hosted accounts, cloud backup, and remote MCP/OAuth are not enabled.",
-      "Support starts from the sanitized support bundle, not raw memory folder data.",
+      "Support starts from the sanitized support bundle, not raw vault data.",
       "Developer ID signing, notarization, hosted HTTPS downloads, and a support process are required before broad public distribution."
     ],
     "manual_qa_checklist": [
       "Install from the DMG on a clean macOS 13 or newer user profile.",
       "Launch from Applications and complete first-run setup.",
-      "Connect MCP or Obsidian/local notes through Connections & Privacy and confirm sync health.",
+      "Connect MCP or an Obsidian/local notes vault through Connections & Privacy.",
       "Approve at least one useful memory and archive obvious noise in Review.",
       "Ask a question that returns cited memory from the approved connected source.",
-      "Verify Connections & Privacy shows memory folder path, local service health, backup, export, support bundle, and update feed controls.",
+      "Verify Connections & Privacy shows vault path, backend health, backup, export, support bundle, and update feed controls.",
       "Create a backup and confirm the support bundle contains no raw memory content.",
-      "Replace the app with this build over a previous build and confirm the memory folder remains intact.",
-      "Roll back to the previous build and confirm the memory folder remains intact."
+      "Replace the app with this build over a previous build and confirm the vault remains intact.",
+      "Roll back to the previous build and confirm the vault remains intact."
     ],
     "manual_qa_required": true,
     "rollback_steps": [
-      "Keep the user's local memory folder unchanged.",
+      "Keep the user's local vault folder unchanged.",
       "Quit Cortex.",
       "Replace Cortex.app in Applications with the previous beta build.",
       "Relaunch, run the reliability report, and create a fresh backup."
@@ -57,8 +57,8 @@
     "update_steps": [
       "Quit Cortex before replacing the app.",
       "Install the new Cortex.app over the old app in Applications.",
-      "Keep the local memory folder unchanged.",
-      "Relaunch, confirm local service health, and run the reliability report."
+      "Keep the local vault folder unchanged.",
+      "Relaunch, confirm backend health, and run the reliability report."
     ]
   },
   "build": "1",
@@ -69,6 +69,12 @@
   "release_notes": [
     "Local-first Cortex beta with bundled local service, MCP/Obsidian sync, Review, cited Ask, and trust controls."
   ],
-  "released_at": "2026-06-30T21:40:24Z",
+  "released_at": "2026-07-01T01:34:39Z",
+  "source_provenance": {
+    "built_at": "2026-07-01T01:34:39Z",
+    "git_branch": "mass-scale-app-redesign",
+    "git_commit": "db880a080f9829ed92b0af27bf171a36ff303694",
+    "git_dirty": false
+  },
   "version": "0.1.0"
 }
