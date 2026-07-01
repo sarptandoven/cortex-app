@@ -21,6 +21,16 @@ GMAIL_ROTATED_REFRESH_TOKEN = "gmail_rotated_refresh_secret_123"
 GMAIL_CLIENT_SECRET = "gmail_client_secret_123"
 OUTLOOK_TOKEN = "outlook_scheduled_secret_123"
 GOOGLE_DRIVE_TOKEN = "google_drive_scheduled_secret_123"
+GOOGLE_DRIVE_EXPIRED_TOKEN = "google_drive_expired_secret_123"
+GOOGLE_DRIVE_FRESH_TOKEN = "google_drive_fresh_secret_123"
+GOOGLE_DRIVE_REFRESH_TOKEN = "google_drive_refresh_secret_123"
+GOOGLE_DRIVE_ROTATED_REFRESH_TOKEN = "google_drive_rotated_refresh_secret_123"
+GOOGLE_DRIVE_CLIENT_SECRET = "google_drive_client_secret_123"
+OUTLOOK_EXPIRED_TOKEN = "outlook_expired_secret_123"
+OUTLOOK_FRESH_TOKEN = "outlook_fresh_secret_123"
+OUTLOOK_REFRESH_TOKEN = "outlook_refresh_secret_123"
+OUTLOOK_ROTATED_REFRESH_TOKEN = "outlook_rotated_refresh_secret_123"
+OUTLOOK_CLIENT_SECRET = "outlook_client_secret_123"
 RAINDROP_TOKEN = "raindrop_scheduled_secret_123"
 ZOTERO_TOKEN = "zotero_scheduled_secret_123"
 LINEAR_TOKEN = "linear_scheduled_secret_123"
@@ -36,6 +46,16 @@ SECRET_VALUES = (
     GMAIL_CLIENT_SECRET,
     OUTLOOK_TOKEN,
     GOOGLE_DRIVE_TOKEN,
+    GOOGLE_DRIVE_EXPIRED_TOKEN,
+    GOOGLE_DRIVE_FRESH_TOKEN,
+    GOOGLE_DRIVE_REFRESH_TOKEN,
+    GOOGLE_DRIVE_ROTATED_REFRESH_TOKEN,
+    GOOGLE_DRIVE_CLIENT_SECRET,
+    OUTLOOK_EXPIRED_TOKEN,
+    OUTLOOK_FRESH_TOKEN,
+    OUTLOOK_REFRESH_TOKEN,
+    OUTLOOK_ROTATED_REFRESH_TOKEN,
+    OUTLOOK_CLIENT_SECRET,
     RAINDROP_TOKEN,
     ZOTERO_TOKEN,
     LINEAR_TOKEN,
@@ -104,7 +124,6 @@ class ScheduledTokenConnectorTests(unittest.TestCase):
                 "api_base_url": "https://gmail.invalid/gmail/v1",
             },
         )
-        calls: list[dict[str, Any]] = []
 
         def fake_refresh(token_endpoint: str, form: dict[str, str]) -> dict[str, Any]:
             self.assertEqual(token_endpoint, "https://oauth2.invalid/token")
@@ -119,19 +138,22 @@ class ScheduledTokenConnectorTests(unittest.TestCase):
                 "scope": "gmail.readonly",
             }
 
-        def fake_sync(store: CortexStore, user_id: str, **kwargs: Any) -> dict[str, Any]:
-            calls.append({"user_id": user_id, **kwargs})
-            return self._sync_result("gmail", kwargs)
+        def fake_request_json(url: str, headers: dict[str, str]) -> dict[str, Any]:
+            self.assertEqual(headers["Authorization"], f"Bearer {GMAIL_FRESH_TOKEN}")
+            if url.endswith("/users/me/profile"):
+                return {"emailAddress": "sarp@example.com"}
+            self.assertTrue(url.startswith("https://gmail.invalid/gmail/v1/users/me/messages?"))
+            return {"messages": [], "nextPageToken": None}
 
-        self.store.sync_gmail_account = MethodType(fake_sync, self.store)
-        with patch("backend.app.storage._request_oauth_token_refresh", side_effect=fake_refresh):
+        with patch("backend.app.storage._request_oauth_token_refresh", side_effect=fake_refresh), patch(
+            "backend.app.connectors.gmail._request_json",
+            side_effect=fake_request_json,
+        ):
             ran = self.store.run_due_jobs(self.user_id, limit=1)
 
         self.assertEqual(ran["processed"], 1)
         self.assertEqual(ran["jobs"][0]["status"], "succeeded")
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0]["access_token"], GMAIL_FRESH_TOKEN)
-        self.assertEqual(calls[0]["source_account_id"], account["id"])
+        self.assertEqual(ran["jobs"][0]["result"]["source"], "gmail")
         refreshed = self.store.vault.read_source_credential(user_id=self.user_id, source_account_id=account["id"])["payload"]
         self.assertEqual(refreshed["access_token"], GMAIL_FRESH_TOKEN)
         self.assertEqual(refreshed["refresh_token"], GMAIL_ROTATED_REFRESH_TOKEN)
@@ -157,6 +179,63 @@ class ScheduledTokenConnectorTests(unittest.TestCase):
             },
         )
 
+    def test_expired_google_drive_access_token_refreshes_before_scheduled_dispatch(self) -> None:
+        account = self._mark_account_due(self._connect_google_drive_account())
+        self.store.store_source_account_credential(
+            self.user_id,
+            account["id"],
+            source="google-drive",
+            payload={
+                "access_token": GOOGLE_DRIVE_EXPIRED_TOKEN,
+                "refresh_token": GOOGLE_DRIVE_REFRESH_TOKEN,
+                "token_endpoint": "https://oauth2.invalid/token",
+                "client_id": "google-drive-client-id",
+                "client_secret": GOOGLE_DRIVE_CLIENT_SECRET,
+                "access_token_expires_at": "2000-01-01T00:00:00Z",
+                "query": "name contains 'Cortex'",
+                "mime_types": ["application/vnd.google-apps.document"],
+                "include_content": False,
+                "api_base_url": "https://drive.invalid/drive/v3",
+            },
+        )
+
+        def fake_refresh(token_endpoint: str, form: dict[str, str]) -> dict[str, Any]:
+            self.assertEqual(token_endpoint, "https://oauth2.invalid/token")
+            self.assertEqual(form["refresh_token"], GOOGLE_DRIVE_REFRESH_TOKEN)
+            self.assertEqual(form["client_id"], "google-drive-client-id")
+            self.assertEqual(form["client_secret"], GOOGLE_DRIVE_CLIENT_SECRET)
+            return {
+                "access_token": GOOGLE_DRIVE_FRESH_TOKEN,
+                "refresh_token": GOOGLE_DRIVE_ROTATED_REFRESH_TOKEN,
+                "expires_in": 3600,
+                "scope": "drive.readonly",
+            }
+
+        def fake_request_value(url: str, headers: dict[str, str]) -> dict[str, Any]:
+            self.assertEqual(headers["Authorization"], f"Bearer {GOOGLE_DRIVE_FRESH_TOKEN}")
+            if url.endswith("/about?fields=user(emailAddress,displayName)"):
+                return {"user": {"emailAddress": "sarp@example.com"}}
+            self.assertTrue(url.startswith("https://drive.invalid/drive/v3/files?"))
+            return {"files": [], "nextPageToken": None}
+
+        with patch("backend.app.storage._request_oauth_token_refresh", side_effect=fake_refresh), patch(
+            "backend.app.connectors.google_drive._request_value",
+            side_effect=fake_request_value,
+        ):
+            ran = self.store.run_due_jobs(self.user_id, limit=1)
+
+        self.assertEqual(ran["processed"], 1)
+        self.assertEqual(ran["jobs"][0]["status"], "succeeded")
+        self.assertEqual(ran["jobs"][0]["result"]["source"], "google-drive")
+        refreshed = self.store.vault.read_source_credential(user_id=self.user_id, source_account_id=account["id"])["payload"]
+        self.assertEqual(refreshed["access_token"], GOOGLE_DRIVE_FRESH_TOKEN)
+        self.assertEqual(refreshed["refresh_token"], GOOGLE_DRIVE_ROTATED_REFRESH_TOKEN)
+        self.assertEqual(refreshed["scope"], "drive.readonly")
+        self.assertIn("oauth_refreshed_at", refreshed)
+        self.assertNotEqual(refreshed["access_token_expires_at"], "2000-01-01T00:00:00Z")
+        self._assert_values_absent(ran["jobs"][0]["payload"], SECRET_VALUES)
+        self._assert_values_absent(ran["jobs"][0]["result"], SECRET_VALUES)
+
     def test_outlook_dispatches_from_local_credentials(self) -> None:
         self._assert_credential_backed_dispatch(
             "outlook",
@@ -171,6 +250,100 @@ class ScheduledTokenConnectorTests(unittest.TestCase):
                 "max_records": 200,
             },
         )
+
+    def test_expired_outlook_access_token_refreshes_before_scheduled_dispatch(self) -> None:
+        account = self._mark_account_due(self._connect_outlook_account())
+        self.store.store_source_account_credential(
+            self.user_id,
+            account["id"],
+            source="outlook",
+            payload={
+                "access_token": OUTLOOK_EXPIRED_TOKEN,
+                "refresh_token": OUTLOOK_REFRESH_TOKEN,
+                "token_endpoint": "https://login.invalid/oauth2/v2.0/token",
+                "client_id": "outlook-client-id",
+                "client_secret": OUTLOOK_CLIENT_SECRET,
+                "access_token_expires_at": "2000-01-01T00:00:00Z",
+                "query": "from/emailAddress/address eq 'sarp@example.com'",
+                "include_body": False,
+                "api_base_url": "https://graph.invalid/v1.0",
+            },
+        )
+
+        def fake_refresh(token_endpoint: str, form: dict[str, str]) -> dict[str, Any]:
+            self.assertEqual(token_endpoint, "https://login.invalid/oauth2/v2.0/token")
+            self.assertEqual(form["refresh_token"], OUTLOOK_REFRESH_TOKEN)
+            self.assertEqual(form["client_id"], "outlook-client-id")
+            self.assertEqual(form["client_secret"], OUTLOOK_CLIENT_SECRET)
+            return {
+                "access_token": OUTLOOK_FRESH_TOKEN,
+                "refresh_token": OUTLOOK_ROTATED_REFRESH_TOKEN,
+                "expires_in": 3600,
+                "scope": "Mail.Read User.Read",
+            }
+
+        def fake_request_json(url: str, headers: dict[str, str]) -> dict[str, Any]:
+            self.assertEqual(headers["Authorization"], f"Bearer {OUTLOOK_FRESH_TOKEN}")
+            if url.endswith("/me?%24select=mail%2CuserPrincipalName%2CdisplayName"):
+                return {"mail": "sarp@example.com"}
+            self.assertTrue(url.startswith("https://graph.invalid/v1.0/me/messages?"))
+            return {"value": [], "@odata.nextLink": None}
+
+        with patch("backend.app.storage._request_oauth_token_refresh", side_effect=fake_refresh), patch(
+            "backend.app.connectors.outlook._request_json",
+            side_effect=fake_request_json,
+        ):
+            ran = self.store.run_due_jobs(self.user_id, limit=1)
+
+        self.assertEqual(ran["processed"], 1)
+        self.assertEqual(ran["jobs"][0]["status"], "succeeded")
+        self.assertEqual(ran["jobs"][0]["result"]["source"], "outlook")
+        refreshed = self.store.vault.read_source_credential(user_id=self.user_id, source_account_id=account["id"])["payload"]
+        self.assertEqual(refreshed["access_token"], OUTLOOK_FRESH_TOKEN)
+        self.assertEqual(refreshed["refresh_token"], OUTLOOK_ROTATED_REFRESH_TOKEN)
+        self.assertEqual(refreshed["scope"], "Mail.Read User.Read")
+        self.assertIn("oauth_refreshed_at", refreshed)
+        self.assertNotEqual(refreshed["access_token_expires_at"], "2000-01-01T00:00:00Z")
+        self._assert_values_absent(ran["jobs"][0]["payload"], SECRET_VALUES)
+        self._assert_values_absent(ran["jobs"][0]["result"], SECRET_VALUES)
+
+    def test_oauth_refresh_failure_marks_account_needs_attention_without_secret_leak(self) -> None:
+        account = self._mark_account_due(self._connect_gmail_account())
+        self.store.store_source_account_credential(
+            self.user_id,
+            account["id"],
+            source="gmail",
+            payload={
+                "access_token": GMAIL_EXPIRED_TOKEN,
+                "refresh_token": GMAIL_REFRESH_TOKEN,
+                "token_endpoint": "https://oauth2.invalid/token",
+                "client_id": "gmail-client-id",
+                "client_secret": GMAIL_CLIENT_SECRET,
+                "access_token_expires_at": "2000-01-01T00:00:00Z",
+                "query": "label:inbox",
+                "label_ids": ["INBOX"],
+                "include_body": False,
+                "api_base_url": "https://gmail.invalid/gmail/v1",
+            },
+        )
+
+        def fake_refresh(token_endpoint: str, form: dict[str, str]) -> dict[str, Any]:
+            raise RuntimeError(
+                f"invalid refresh_token={GMAIL_REFRESH_TOKEN} client_secret={GMAIL_CLIENT_SECRET}"
+            )
+
+        with patch("backend.app.storage._request_oauth_token_refresh", side_effect=fake_refresh):
+            ran = self.store.run_due_jobs(self.user_id, limit=1)
+
+        self.assertEqual(ran["processed"], 1)
+        self.assertEqual(ran["jobs"][0]["status"], "queued")
+        self.assertIn("[REDACTED_CONNECTOR_SECRET]", ran["jobs"][0]["last_error"])
+        refreshed_account = self.store.list_source_accounts(self.user_id)[0]
+        self.assertEqual(refreshed_account["status"], "needs_attention")
+        self.assertEqual(refreshed_account["auth_state"], "error")
+        self.assertIn("[REDACTED_CONNECTOR_SECRET]", refreshed_account["last_error"])
+        self._assert_values_absent(ran["jobs"][0], SECRET_VALUES)
+        self._assert_values_absent(refreshed_account, SECRET_VALUES)
 
     def test_raindrop_dispatches_from_local_credentials(self) -> None:
         self._assert_credential_backed_dispatch(
