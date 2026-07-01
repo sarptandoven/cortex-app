@@ -287,6 +287,14 @@ struct AskAnswerPanel: View {
     let answer: String
     let citations: [AskCitationItem]
 
+    @State private var showAllCitations = false
+
+    private static let collapsedCitationCount = 3
+
+    private var visibleCitations: [AskCitationItem] {
+        showAllCitations ? citations : Array(citations.prefix(Self.collapsedCitationCount))
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
@@ -305,8 +313,16 @@ struct AskAnswerPanel: View {
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundColor(.secondary)
-                    ForEach(citations) { citation in
+                    ForEach(visibleCitations) { citation in
                         AskCitationRow(citation: citation)
+                    }
+                    if citations.count > Self.collapsedCitationCount {
+                        Button(showAllCitations ? "Show fewer citations" : "Show all \(citations.count) citations") {
+                            showAllCitations.toggle()
+                        }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.accent)
                     }
                 }
             }

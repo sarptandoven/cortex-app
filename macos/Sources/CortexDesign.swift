@@ -8,3 +8,19 @@ enum CortexDesign {
     static let quietBackground = Color(red: 0.950, green: 0.955, blue: 0.940)
     static let softBorder = Color.black.opacity(0.08)
 }
+
+struct SectionHeader: View {
+    let title: String
+    let detail: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.headline)
+            Text(detail)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
