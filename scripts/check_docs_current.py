@@ -142,6 +142,41 @@ FORBIDDEN_PHRASES: dict[str, tuple[str, ...]] = {
     ),
 }
 
+PRIMARY_UI_FILES: tuple[str, ...] = (
+    "macos/Sources/ModelTab.swift",
+    "macos/Sources/ReviewTab.swift",
+    "macos/Sources/AskTab.swift",
+    "macos/Sources/ConnectionsPrivacySheet.swift",
+    "macos/Sources/OnboardingView.swift",
+    "macos/Sources/SourceConnectionComponents.swift",
+)
+
+PRIMARY_UI_FORBIDDEN_PHRASES: tuple[str, ...] = (
+    "manual setup",
+    "Manual setup",
+    "Copy manual setup",
+    "manual import",
+    "Manual import",
+    "Import sources",
+    "Import data",
+    "Upload",
+    "Drop files",
+    "memory brief",
+    "Memory brief",
+    "context pack",
+    "Context pack",
+    "Copy context",
+    "Copy MCP",
+    "MCP clients",
+    "MCP tools",
+    "Obsidian vault",
+    "Connect vault",
+    "Developer tools",
+    "Troubleshooting",
+    "Privacy settings",
+    "AI tool access",
+)
+
 
 def run_command(command: list[str]) -> dict[str, object]:
     completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
@@ -165,6 +200,21 @@ def phrase_errors() -> list[str]:
         for phrase in phrases:
             if phrase in text:
                 errors.append(f"{relative_path}: stale phrase still present: {phrase!r}")
+    errors.extend(primary_ui_errors())
+    return errors
+
+
+def primary_ui_errors() -> list[str]:
+    errors: list[str] = []
+    for relative_path in PRIMARY_UI_FILES:
+        path = ROOT / relative_path
+        if not path.exists():
+            errors.append(f"{relative_path}: missing")
+            continue
+        text = path.read_text(encoding="utf-8")
+        for phrase in PRIMARY_UI_FORBIDDEN_PHRASES:
+            if phrase in text:
+                errors.append(f"{relative_path}: primary UI regressed into forbidden phrase: {phrase!r}")
     return errors
 
 
@@ -243,7 +293,7 @@ def main() -> None:
     errors = [*phrase_errors(), *manifest_errors(), *mcp_config_errors()]
     payload = {
         "status": "error" if errors else "ok",
-        "checks": ["stale-ui-phrases", "direct-release-manifest", "mcp-config"],
+        "checks": ["stale-ui-phrases", "primary-ui-language", "direct-release-manifest", "mcp-config"],
         "errors": errors,
     }
     print(json.dumps(payload, indent=2))
