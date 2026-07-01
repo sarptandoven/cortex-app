@@ -2085,7 +2085,7 @@ class CortexStore:
         if summary["needs_review"]:
             recommendations.append("Review pending source captures so they can become trusted model memory.")
         if not summary["sources_with_data"]:
-            recommendations.append("Connect local AI tools or Obsidian notes before adding planned service connectors.")
+            recommendations.append("Connect Obsidian notes or local AI tools so Cortex can start building reviewed memory.")
         if not recommendations:
             recommendations.append("Source readiness is healthy for local beta use.")
         return {

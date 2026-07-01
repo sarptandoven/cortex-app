@@ -132,13 +132,13 @@ GET /v1/sources/readiness
 
 The catalog lists common services such as ChatGPT, Claude, Gmail, Apple Mail, Outlook, email files, docs, PDFs, cloud-doc exports, Notion, Google Drive, Google Docs, Google Keep, Microsoft 365, Slack, Google Chat, Teams, Discord, Telegram, Messages, iMessage exports, WhatsApp, Calendar, Contacts, GitHub, Linear, Jira, Zoom, Browser Bookmarks, browser history exports, Readwise, LinkedIn, Twitter/X, Apple Notes, and Obsidian. Each entry includes current connector readiness, future live-sync status, auth type, scopes, supported formats, `export_status`, and the canonical `source_ids` that captures and memories will use.
 
-Branded connectors can map to canonical memory sources. For example, Gmail, Apple Mail, and Outlook mail records can map to `email`, Google Drive and Google Docs records can map to `cloud-docs` or `docs`, PDFs map to `docs`, iMessage records map to `messages`, and GitHub records map to `github` or `work-tools`. The Sources UI should show the account/direct-integration state first and keep export/file import under Advanced/Fallback when a source cannot connect directly yet.
+Branded connectors can map to canonical memory sources. For example, Gmail, Apple Mail, and Outlook mail records can map to `email`, Google Drive and Google Docs records can map to `cloud-docs` or `docs`, PDFs map to `docs`, iMessage records map to `messages`, and GitHub records map to `github` or `work-tools`. Connections & Privacy should show working account/local-note connections first and keep export/file import under Advanced/Fallback when a source cannot connect directly yet.
 
 See `docs/CONNECTOR_COVERAGE_READINESS.md` for the first-100-user beta coverage map and the later live OAuth readiness gates.
 
 Citation URLs are service-aware when the importer can infer useful structure. Native chat/email imports include conversation, channel, subject, or message locators. Service-like file imports add fragments such as `service=notion&page=...`, `service=cloud-docs&provider=...&document=...`, `service=github&repository=...&file=...`, and `service=calendar&first_event=...`. Plain local `docs` imports keep the raw file path as the citation.
 
-`GET /v1/sources/readiness` returns the product-level source summary used by the macOS Sources view: import readiness, live connector state, connected account count, sync cursor health, review backlog, active memory count, citation coverage, warnings, and next actions. It is the main endpoint for deciding whether a user's life-data sources are ready for model adaptation.
+`GET /v1/sources/readiness` returns the product-level source summary used by the macOS Connections & Privacy surface: local-note readiness, connected account count, sync cursor health, review backlog, active memory count, citation coverage, warnings, and next actions. It is the main endpoint for deciding whether a user's life-data sources are ready for model adaptation.
 
 Source account lifecycle:
 

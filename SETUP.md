@@ -26,11 +26,11 @@ Use the setup flow:
 
 `Finish Later` opens the app without marking setup complete. Setup can be reopened from Connections & Privacy.
 
-## Connect Sources
+## Connect Notes And AI Tools
 
 Open Connections & Privacy and connect Obsidian/local notes plus supported local AI tools through MCP.
 
-Cloud OAuth/API sync is staged by service readiness in this beta. Gmail, Notion, Slack, Drive, and similar services stay planned or advanced/fallback until their direct connectors ship.
+Cloud OAuth/API sync is staged by service readiness in this beta and does not appear as a primary setup path until direct sync is ready.
 
 ## Review And Ask
 

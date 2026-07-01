@@ -59,6 +59,9 @@ Case log location: REQUIRED private tracker or spreadsheet
 Support artifact storage: REQUIRED private folder limited to support owner and incident engineer
 Business hours and timezone: REQUIRED response window
 Deletion request contact: REQUIRED channel or named owner
+Tester cohort source: REQUIRED invite list, waitlist segment, or partner group
+First batch size: REQUIRED number of users in the next invite batch
+Stop/go decision owner: REQUIRED named person
 ```
 
 Required setup:

@@ -51,6 +51,17 @@ def git_output(args: list[str]) -> str:
     return completed.stdout.strip()
 
 
+def git_tracked(path: str) -> bool:
+    completed = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "--", path],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return completed.returncode == 0
+
+
 def command_ok(args: list[str]) -> dict[str, Any]:
     completed = subprocess.run(args, cwd=ROOT, text=True, capture_output=True, check=False)
     return {
@@ -64,7 +75,8 @@ def command_ok(args: list[str]) -> dict[str, Any]:
 
 def check_required_files() -> dict[str, Any]:
     missing = [path for path in REQUIRED_FILES if not (ROOT / path).exists()]
-    return {"ok": not missing, "missing": missing}
+    untracked = [path for path in REQUIRED_FILES if (ROOT / path).exists() and not git_tracked(path)]
+    return {"ok": not missing and not untracked, "missing": missing, "untracked": untracked}
 
 
 def check_worktree() -> dict[str, Any]:
@@ -90,12 +102,29 @@ def check_release_manifest() -> dict[str, Any]:
 
     errors: list[str] = []
     artifacts: list[dict[str, Any]] = []
-    for artifact in manifest.get("artifacts") or []:
+    manifest_artifacts = manifest.get("artifacts")
+    if not isinstance(manifest_artifacts, list) or not manifest_artifacts:
+        errors.append("latest.json artifacts must be a non-empty list")
+        manifest_artifacts = []
+
+    for artifact in manifest_artifacts:
+        if not isinstance(artifact, dict):
+            errors.append("latest.json artifacts must be objects")
+            continue
         filename = str(artifact.get("filename") or "")
         expected_hash = str(artifact.get("sha256") or "")
         expected_size = int(artifact.get("size_bytes") or 0)
+        if not filename:
+            errors.append("artifact filename is missing")
+            artifacts.append({"ok": False, "filename": filename, "expected_sha256": expected_hash})
+            continue
+
+        artifact_relpath = f"site/downloads/{filename}"
         artifact_path = ROOT / "site/downloads" / filename
-        summary: dict[str, Any] = {"filename": filename, "expected_sha256": expected_hash}
+        artifact_tracked = git_tracked(artifact_relpath)
+        summary: dict[str, Any] = {"filename": filename, "expected_sha256": expected_hash, "tracked": artifact_tracked}
+        if not artifact_tracked:
+            errors.append(f"artifact is not tracked by git: {artifact_relpath}")
         if not artifact_path.exists():
             errors.append(f"artifact missing: {filename}")
             summary["ok"] = False
@@ -103,7 +132,13 @@ def check_release_manifest() -> dict[str, Any]:
             continue
         actual_hash = sha256(artifact_path)
         actual_size = artifact_path.stat().st_size
-        summary.update({"ok": actual_hash == expected_hash and actual_size == expected_size, "actual_sha256": actual_hash, "actual_size": actual_size})
+        summary.update(
+            {
+                "ok": artifact_tracked and actual_hash == expected_hash and actual_size == expected_size,
+                "actual_sha256": actual_hash,
+                "actual_size": actual_size,
+            }
+        )
         artifacts.append(summary)
         if actual_hash != expected_hash:
             errors.append(f"{filename}: sha256 mismatch")

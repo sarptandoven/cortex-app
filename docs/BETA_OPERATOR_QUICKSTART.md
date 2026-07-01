@@ -43,7 +43,9 @@ Before inviting a tester batch, run the launch gate summary:
 python3 scripts/first100_launch_gate.py
 ```
 
-This command verifies the tracked release artifacts, update manifest, docs, distribution site, issue templates, and clean worktree. It returns `needs_human` when automated checks pass but the required support packet fields still need to be filled. To make missing ownership fail the gate, pass a filled packet file:
+This command verifies the release artifacts are tracked, the update manifest matches local hashes, docs are current, distribution site files validate, issue templates exist, and the tracked worktree is clean. It returns `needs_human` with exit code 0 when automated checks pass but the required support packet fields still need to be filled.
+
+Use the strict command as the invite-blocking gate:
 
 ```bash
 python3 scripts/first100_launch_gate.py --support-packet path/to/packet.txt --require-human-packet
@@ -107,8 +109,10 @@ Support artifact storage:
 Business hours and timezone:
 Deletion request contact:
 Build version, build number, hash:
+Tester cohort source:
+First batch size:
 Known limitations sent to testers:
-Stop/go decision:
+Stop/go decision owner:
 ```
 
 For every case, open a case ID first and record only operational metadata:

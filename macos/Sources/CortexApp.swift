@@ -4864,10 +4864,6 @@ struct SourceConnectivityPanel: View {
         state.sourceConnectorCatalog.filter(\.isImportReady).count
     }
 
-    private var livePlannedCount: Int {
-        state.sourceConnectorCatalog.filter(\.isLivePlanned).count
-    }
-
     private var accountsNeedingAttention: [SourceAccountItem] {
         state.sourceAccounts.filter(\.needsAttention)
     }
@@ -4880,7 +4876,6 @@ struct SourceConnectivityPanel: View {
         VStack(alignment: .leading, spacing: 8) {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 8) {
                 SourceConnectivityMetric(title: "Notes ready", value: "\(importReadyCount)", systemImage: "folder.badge.plus", color: .accentColor)
-                SourceConnectivityMetric(title: "Direct planned", value: "\(livePlannedCount)", systemImage: "arrow.triangle.2.circlepath", color: .blue)
                 SourceConnectivityMetric(title: "Connected", value: "\(state.sourceAccounts.count)", systemImage: "link.circle.fill", color: state.sourceAccounts.isEmpty ? .secondary : .green)
                 SourceConnectivityMetric(title: "Needs attention", value: "\(accountsNeedingAttention.count + cursorErrors)", systemImage: "exclamationmark.triangle.fill", color: accountsNeedingAttention.isEmpty && cursorErrors == 0 ? .secondary : .orange)
             }

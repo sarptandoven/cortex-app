@@ -10,13 +10,13 @@ Cortex is a local-first personal memory and adaptation layer. The current beta c
 - Bundled local service on `127.0.0.1:8766`
 - User-owned memory folder at `~/Library/Application Support/Cortex/Cortex.vault/`
 - SQLite FTS search with optional `sqlite-vec` and opt-in OpenAI embeddings
-- Connected-source setup for Obsidian/local notes and local MCP AI tools; other services stay planned or Advanced/Fallback until their direct connectors ship
-- Direct local app connection helpers for supported AI tools, with Advanced/Fallback import available only when a service cannot connect directly yet
+- Connected setup for Obsidian/local notes and local MCP AI tools
+- Direct local app connection helpers for supported AI tools, with Advanced/Fallback details hidden unless they are needed
 - Simple product flow: Home, Review, Ask, with Connections & Privacy kept behind one sheet
-- Source readiness report covering the active beta source path, planned live connectors, connected accounts, review backlog, source errors, active memory, and citation coverage
+- Connection readiness report covering the active beta path, connected accounts, review backlog, source errors, active memory, and citation coverage
 - Lightweight first-run setup for the private memory folder, with source connection, Review, and Ask as guided next steps
 - Review inbox for approve/archive, decisions, recommended actions, and follow-ups
-- Ask screen with cited memory search plus secondary handoffs for ChatGPT, Claude, Cursor, direct local tools, and browser-only workflows
+- Ask screen with cited memory search and MCP retrieval for connected AI tools
 - Advanced local connection bridge and one-click setup helpers
 - Trust controls for connected AI tool reads, saves, exports, redaction, and repair actions
 - Reliability report, backup-first repair, and local memory folder backups
