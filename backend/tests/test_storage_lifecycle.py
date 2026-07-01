@@ -1000,6 +1000,156 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertIn(("source_account", "upserted"), event_pairs)
         self.assertIn(("sync_cursor", "updated"), event_pairs)
 
+    def test_direct_source_sync_uses_current_account_identity_only(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False})
+        sarpt = self.store.upsert_source_account(
+            self.user_id,
+            source="slack",
+            account_label="Sarpt Tandoven",
+            account_identifier="U1",
+            connection_type="api-token",
+            status="connected",
+            auth_state="authorized",
+            policy={"review_required": False},
+            metadata={"real_name": "Sarpt Tandoven", "user_name": "sarpt", "email": "sarpt@example.com"},
+        )
+        self.store.upsert_source_account(
+            self.user_id,
+            source="slack",
+            account_label="Dana Partner",
+            account_identifier="U2",
+            connection_type="api-token",
+            status="connected",
+            auth_state="authorized",
+            policy={"review_required": False},
+            metadata={"real_name": "Dana Partner", "user_name": "dana", "email": "dana@example.com"},
+        )
+
+        synced = self.store.sync_source_account_records(
+            self.user_id,
+            sarpt["id"],
+            records=[
+                {
+                    "content": (
+                        "Sarpt Tandoven: I prefer source-account memory to use crisp cited answers. "
+                        "Dana Partner: I prefer sprawling stakeholder recaps for everyone."
+                    ),
+                    "title": "Slack mixed-account identity",
+                    "external_id": "slack-mixed-account-identity",
+                    "source_url": "https://doppl.slack.com/archives/C123/p1782739200000100",
+                    "captured_at": "2026-06-30T10:00:00Z",
+                    "metadata": {"connector": "slack", "line_start": 9, "line_end": 10},
+                }
+            ],
+            cursor_name="messages",
+            processing="sync",
+        )
+
+        self.assertEqual(synced["status"], "complete")
+        self.assertEqual(synced["saved"], 1)
+        user_hits = self.store.search(self.user_id, "source-account memory crisp cited answers", limit=5)
+        user_hit = next((hit for hit in user_hits if hit["kind"] == "preference"), None)
+        self.assertIsNotNone(user_hit)
+        self.assertEqual(user_hit["provenance"]["source_account_id"], sarpt["id"])
+        self.assertEqual(user_hit["provenance"]["external_id"], "slack-mixed-account-identity")
+
+        teammate_hits = self.store.search(self.user_id, "sprawling stakeholder recaps for everyone", limit=5)
+        self.assertFalse(any(hit["kind"] == "preference" for hit in teammate_hits))
+
+        answer = self.store.answer_query(self.user_id, "How should source-account memory answer?", limit=5)
+        citation = next((item for item in answer["citations"] if item.get("source_account_id") == sarpt["id"]), None)
+        self.assertIsNotNone(citation)
+        self.assertEqual(citation["external_id"], "slack-mixed-account-identity")
+        self.assertEqual(citation["source_record_id"], "slack-mixed-account-identity")
+        self.assertEqual(citation["line_start"], 9)
+
+    def test_source_account_memory_ids_are_scoped_per_account(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False})
+        first = self.store.upsert_source_account(
+            self.user_id,
+            source="slack",
+            account_label="First Workspace User",
+            account_identifier="U-first",
+            connection_type="api-token",
+            status="connected",
+            auth_state="authorized",
+            policy={"review_required": False},
+            metadata={"real_name": "First Workspace User", "user_name": "first"},
+        )
+        second = self.store.upsert_source_account(
+            self.user_id,
+            source="slack",
+            account_label="Second Workspace User",
+            account_identifier="U-second",
+            connection_type="api-token",
+            status="connected",
+            auth_state="authorized",
+            policy={"review_required": False},
+            metadata={"real_name": "Second Workspace User", "user_name": "second"},
+        )
+        record_payload = {
+            "title": "Shared connector memory collision",
+            "external_id": "shared-connector-record",
+            "captured_at": "2026-06-30T10:05:00Z",
+        }
+
+        self.store.sync_source_account_records(
+            self.user_id,
+            first["id"],
+            records=[
+                {
+                    **record_payload,
+                    "content": "First Workspace User: I decided shared connector memory collision should preserve account provenance.",
+                    "source_url": "https://doppl.slack.com/archives/C123/p1782739500000100",
+                }
+            ],
+            cursor_name="messages",
+            processing="sync",
+        )
+        self.store.sync_source_account_records(
+            self.user_id,
+            second["id"],
+            records=[
+                {
+                    **record_payload,
+                    "content": "Second Workspace User: I decided shared connector memory collision should preserve account provenance.",
+                    "source_url": "https://other.slack.com/archives/C999/p1782739500000100",
+                }
+            ],
+            cursor_name="messages",
+            processing="sync",
+        )
+
+        with connect(self.db_path) as conn:
+            captures = conn.execute(
+                """
+                SELECT id, source_account_id, external_id
+                FROM captures
+                WHERE user_id = ? AND source = ? AND external_id = ?
+                ORDER BY source_account_id
+                """,
+                (self.user_id, "slack", "shared-connector-record"),
+            ).fetchall()
+            rows = conn.execute(
+                """
+                SELECT id, capture_id, source_url, provenance_json
+                FROM memories
+                WHERE user_id = ?
+                  AND content LIKE '%shared connector memory collision%'
+                  AND status = 'active'
+                ORDER BY source_url
+                """,
+                (self.user_id,),
+            ).fetchall()
+
+        self.assertEqual(len(captures), 2)
+        self.assertEqual({capture["source_account_id"] for capture in captures}, {first["id"], second["id"]})
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len({row["id"] for row in rows}), 2)
+        provenances = [json.loads(row["provenance_json"]) for row in rows]
+        self.assertEqual({item["source_account_id"] for item in provenances}, {first["id"], second["id"]})
+        self.assertEqual({item["external_id"] for item in provenances}, {"shared-connector-record"})
+
     def test_baseline_ten_catalog_services_do_not_make_fake_primary_ui_promises(self) -> None:
         catalog = {item["id"]: item for item in self.store.source_connector_catalog()}
         wired_source_paths = {

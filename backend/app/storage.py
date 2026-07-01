@@ -2897,7 +2897,7 @@ class CortexStore:
                         user_id,
                         source,
                         base_aliases=base_identity_aliases,
-                        accounts=source_accounts,
+                        accounts=[account],
                     )
                     extracted = extract_context(
                         content,
@@ -10742,7 +10742,10 @@ class CortexStore:
         source_account: dict[str, Any] | None = None,
         external_id: str | None = None,
     ) -> dict[str, Any]:
-        memory_id = record["id"]
+        base_memory_id = str(record["id"])
+        memory_id = base_memory_id
+        if source_account and external_id:
+            memory_id = stable_id("mem_", f"{user_id}:{capture_id}:{base_memory_id}")
         kind = record.get("kind", "observation")
         layer = memory_layer(kind, record.get("layer"))
         topics = record.get("topics", [])
@@ -10773,7 +10776,16 @@ class CortexStore:
         valid_from = record.get("valid_from")
         valid_to = record.get("valid_to")
         superseded_by = str(record.get("superseded_by") or "").strip()[:80] or None
-        duplicate = self._find_duplicate_memory(conn, user_id, capture_id, memory_id, kind, layer, record.get("content", ""))
+        duplicate = self._find_duplicate_memory(
+            conn,
+            user_id,
+            capture_id,
+            memory_id,
+            kind,
+            layer,
+            record.get("content", ""),
+            same_capture_only=bool(source_account and external_id),
+        )
         if duplicate:
             return self._memory_from_row(duplicate)
         conn.execute(
@@ -12613,12 +12625,25 @@ class CortexStore:
         kind: str,
         layer: str,
         content: str,
+        *,
+        same_capture_only: bool = False,
     ):
         key = _memory_duplicate_key(content)
         if len(key) < 48:
             return None
-        rows = conn.execute(
+        capture_scope = (
+            "m.capture_id = ?"
+            if same_capture_only
+            else """
+              (
+                m.capture_id = ?
+                OR m.capture_id IS NULL
+                OR c.review_status = 'approved'
+              )
             """
+        )
+        rows = conn.execute(
+            f"""
             SELECT m.*
             FROM memories m
             LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
@@ -12627,11 +12652,7 @@ class CortexStore:
               AND m.kind = ?
               AND m.layer = ?
               AND m.id != ?
-              AND (
-                m.capture_id = ?
-                OR m.capture_id IS NULL
-                OR c.review_status = 'approved'
-              )
+              AND {capture_scope}
             ORDER BY m.captured_at DESC
             LIMIT 250
             """,

@@ -150,6 +150,7 @@ NON_SPEAKER_LABELS = BOILERPLATE_PREFIXES | {
     "organizer",
     "phone",
     "summary",
+    "thread note",
     "url",
 }
 MONTHS = {
@@ -456,11 +457,18 @@ def _sentence_candidates(text: str, source: str = "unknown", author_aliases: Ite
             current_role = None
         elif current_role:
             role = current_role
-        for sentence in _sentences(line):
-            if _is_boilerplate_line(sentence):
-                continue
-            sentence_date = _extract_absolute_date(sentence) or line_date or current_date
-            candidates.append({"text": sentence, "role": role, "speaker_present": speaker_present, "occurred_at": sentence_date})
+        for segment_text, segment_role, segment_speaker_present in _inline_speaker_segments(
+            line,
+            role,
+            speaker_present,
+            aliases,
+            allow_named_speakers=allow_named_speakers,
+        ):
+            for sentence in _sentences(segment_text):
+                if _is_boilerplate_line(sentence):
+                    continue
+                sentence_date = _extract_absolute_date(sentence) or line_date or current_date
+                candidates.append({"text": sentence, "role": segment_role, "speaker_present": segment_speaker_present, "occurred_at": sentence_date})
     return candidates
 
 
@@ -578,6 +586,46 @@ def _parse_role_line(
     if allow_named_speakers and _looks_like_named_speaker(label, allow_lowercase=True):
         return NAMED_SPEAKER_ROLE, match.group("text").strip(), True
     return None, line, False
+
+
+def _inline_speaker_segments(
+    text: str,
+    current_role: str | None,
+    current_speaker_present: bool,
+    identity_aliases: set[str],
+    *,
+    allow_named_speakers: bool,
+) -> list[tuple[str, str | None, bool]]:
+    if not allow_named_speakers or ":" not in text:
+        return [(text, current_role, current_speaker_present)]
+
+    matches: list[tuple[re.Match[str], str | None, bool]] = []
+    for match in re.finditer(r"(?:(?<=^)|(?<=[.!?])\s+)(?P<label>[A-Za-z][A-Za-z0-9 _.'-]{0,40})\s*:\s*", text):
+        label = match.group("label").strip()
+        role = _normalize_role(label, identity_aliases)
+        speaker = False
+        if role:
+            speaker = True
+        elif _looks_like_named_speaker(label, allow_lowercase=True):
+            role = NAMED_SPEAKER_ROLE
+            speaker = True
+        if speaker:
+            matches.append((match, role, True))
+    if not matches:
+        return [(text, current_role, current_speaker_present)]
+
+    segments: list[tuple[str, str | None, bool]] = []
+    first_match = matches[0][0]
+    prefix = text[: first_match.start()].strip()
+    if prefix:
+        segments.append((prefix, current_role, current_speaker_present))
+    for index, (match, role, speaker_present) in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1][0].start() if index + 1 < len(matches) else len(text)
+        payload = text[start:end].strip()
+        if payload:
+            segments.append((payload, role, speaker_present))
+    return segments
 
 
 def _normalize_role(value: str, identity_aliases: set[str] | None = None) -> str | None:
