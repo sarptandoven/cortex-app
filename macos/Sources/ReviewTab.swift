@@ -153,6 +153,8 @@ struct ReviewQueueCaptureCard: View {
 
             ReviewQueuePreviewList(capture: capture)
 
+            Divider()
+
             ReviewQueueSourceBox(capture: capture)
 
             HStack(alignment: .center, spacing: 12) {
@@ -161,12 +163,15 @@ struct ReviewQueueCaptureCard: View {
                     archive()
                 } label: {
                     Label("Archive", systemImage: "archivebox")
+                        .frame(minWidth: 132, minHeight: 48)
                 }
                 .controlSize(.large)
+                .buttonStyle(.bordered)
                 Button {
                     approve()
                 } label: {
                     Label("Approve", systemImage: "checkmark.seal")
+                        .frame(minWidth: 150, minHeight: 48)
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
@@ -223,7 +228,7 @@ struct ReviewQueuePreviewList: View {
             .foregroundColor(.secondary)
         } else {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Cortex would remember")
+                Text("Will remember")
                     .font(.callout)
                     .fontWeight(.semibold)
                     .foregroundColor(.secondary)
@@ -236,10 +241,7 @@ struct ReviewQueuePreviewList: View {
                     ReviewQueuePlainPreviewRow(text: task.content)
                 }
             }
-            .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(CortexDesign.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
         }
     }
 }
@@ -290,10 +292,7 @@ struct ReviewQueueSourceBox: View {
                     .help(capture.source_url ?? citation)
             }
         }
-        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(CortexDesign.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private var sourceName: String {
