@@ -96,12 +96,12 @@ struct SourceConnectorStatusCard: View {
 
     private var statusDetail: String {
         if needsContent {
-            return "The last folder did not produce usable Markdown notes. Choose a notes folder with real content."
+            return "Cortex could not find usable notes there. Choose a notes library with real content."
         }
         if connected {
             return "Cortex keeps these notes synced and sends new memory to Review."
         }
-        return "Choose a notes folder once. Cortex reads Markdown locally and keeps citations attached."
+        return "Connect notes once. Cortex syncs locally and keeps citations attached."
     }
 
     private var primaryButtonTitle: String {

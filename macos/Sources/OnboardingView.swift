@@ -250,13 +250,13 @@ struct OnboardingFirstSourceStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Choose a notes folder once. Cortex syncs Markdown locally, sends useful memory to Review, and keeps syncing after first run.")
+            Text("Connect your notes once. Cortex syncs locally, sends useful memory to Review, and keeps syncing after first run.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             OnboardingConnectionCard(
                 title: state.hasConnectedObsidianVault ? "Notes connected" : "Connect notes",
-                detail: state.hasConnectedObsidianVault ? "Cortex syncs saved notes on launch and every 30 minutes, then sends new memory to Review with citations." : "Pick an Obsidian or Markdown folder. Cortex handles parsing, citations, and repeat sync automatically.",
+                detail: state.hasConnectedObsidianVault ? "Cortex syncs saved notes on launch and every 30 minutes, then sends new memory to Review with citations." : "Choose your notes. Cortex handles parsing, citations, and repeat sync automatically.",
                 systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "folder.badge.plus",
                 isPrimary: true,
                 status: state.onboardingHasSource ? "Synced" : (state.hasConnectedObsidianVault ? "Connected" : "Local"),

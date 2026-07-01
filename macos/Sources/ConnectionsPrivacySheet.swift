@@ -151,7 +151,7 @@ private struct ConnectionsPrivacyOverview: View {
     private func advancedControls(summary: TrustSummaryResponse) -> some View {
         DisclosureGroup(isExpanded: $advancedExpanded) {
             VStack(alignment: .leading, spacing: 16) {
-                DisclosureGroup("Source privacy and audit trail", isExpanded: $sourceAuditExpanded) {
+                DisclosureGroup("Privacy history", isExpanded: $sourceAuditExpanded) {
                     VStack(alignment: .leading, spacing: 14) {
                         TrustSourceSection(state: state, summary: summary)
                         TrustAuditSection(events: state.auditEvents, refresh: {
@@ -354,9 +354,9 @@ private struct ConnectionsOverviewHero: View {
             return "New notes sync into Review first. Ask and connected AI tools use only approved memory with citations."
         }
         if notesNeedContent {
-            return "The last folder did not produce usable Markdown notes. Choose a notes folder with real content."
+            return "Cortex could not find usable notes there. Choose a notes library with real content."
         }
-        return "Start with a notes folder. Cortex syncs locally, sends useful memory to Review, then makes approved memory available to Ask and connected AI tools."
+        return "Connect notes once. Cortex syncs locally, sends useful memory to Review, then makes approved memory available to Ask and connected AI tools."
     }
 
     private var statusIcon: String {
@@ -394,7 +394,7 @@ private struct ConnectionsObsidianSection: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
                 title: "Notes",
-                detail: "Choose a notes folder once. Cortex scans Markdown locally, keeps citations stable, and resyncs changed notes."
+                detail: "Connect notes once. Cortex keeps them synced locally with stable citations."
             )
             if state.sourceConnectorCatalog.isEmpty {
                 QuietState(title: "Checking connectors", detail: "Cortex is reading the local source registry.")

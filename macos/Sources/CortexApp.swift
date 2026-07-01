@@ -2856,7 +2856,7 @@ final class AppState: ObservableObject {
                 await loadSourceConnectivity()
                 await loadTrust()
                 if !automatic {
-                    status = "No usable notes found in \(synced.scan.vault_name). Choose a vault with Markdown notes."
+                    status = "No usable notes found in \(synced.scan.vault_name). Choose notes with real content."
                 }
                 return
             }
@@ -3156,7 +3156,7 @@ final class AppState: ObservableObject {
 
         Local Cortex service:
         Base URL: \(endpoint)
-        Token: use Copy manual setup from Troubleshooting setup only if this app asks for pasted setup.
+        Token: use Copy setup details from Connection details only if this app asks for pasted setup.
 
         Assistant rule:
         Search Cortex memory before asking the user to repeat project, person, decision, or open-loop context. Prefer cited memory search or agent adaptation when another app needs approved personal context.
@@ -4137,7 +4137,7 @@ struct IntegrationCenterView: View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 8)], spacing: 8) {
             IntegrationMetricBadge(title: "Connected", value: "\(connectedCount)", systemImage: "checkmark.seal.fill", color: .green)
             IntegrationMetricBadge(title: "Detected", value: "\(detectedCount)", systemImage: "app.badge.checkmark", color: .accentColor)
-            IntegrationMetricBadge(title: "Local API", value: state.endpoint.replacingOccurrences(of: "http://", with: ""), systemImage: "network", color: .purple)
+            IntegrationMetricBadge(title: "Local service", value: state.endpoint.replacingOccurrences(of: "http://", with: ""), systemImage: "network", color: .purple)
         }
     }
 
@@ -4165,16 +4165,16 @@ struct IntegrationCenterView: View {
     }
 
     private var troubleshootingSetupActions: some View {
-        DisclosureGroup("Troubleshooting setup") {
+        DisclosureGroup("Connection details") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Most tools connect automatically. Use these only when a local AI app asks for manual setup details.")
+                Text("Most tools connect automatically. Use these only when a local AI app asks for setup details.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 HStack {
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy manual setup", systemImage: "doc.on.doc")
+                        Label("Copy setup details", systemImage: "doc.on.doc")
                     }
                     Spacer()
                 }
@@ -4886,7 +4886,7 @@ struct SourceAccountHealthRow: View {
             return CortexRecoveryText.inlineError(error, fallback: "Refresh Connections. If it repeats, reconnect this source.")
         }
         if account.status.lowercased() == "empty" || account.auth_state.lowercased() == "needs-content" {
-            return "No usable notes found. Choose a folder with Markdown notes."
+            return "No usable notes found. Choose notes with real content."
         }
         if let synced = account.last_sync_at ?? cursor?.last_completed_at {
             if let summary = latestBatchSummary {
@@ -5327,7 +5327,7 @@ struct TrustPolicySection: View {
                     }
 
                     Stepper(value: $state.appSettings.context_pack_limit, in: 4...50, step: 2) {
-                        Text("Retrieved memories per Ask: \(state.appSettings.context_pack_limit)")
+                        Text("Memories per Ask: \(state.appSettings.context_pack_limit)")
                     }
                 }
                 .padding(.top, 8)
@@ -5406,10 +5406,10 @@ struct TrustSourceSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Source privacy")
+            Text("Memory sources")
                 .font(.headline)
             if summary.source_counts.isEmpty {
-                QuietState(title: "No sources yet", detail: "Connected source activity will appear here.")
+                QuietState(title: "No notes connected yet", detail: "Connected notes and AI-tool activity will appear here.")
             } else {
                 ForEach(summary.source_counts.prefix(8)) { source in
                     HStack(spacing: 10) {
@@ -5696,7 +5696,7 @@ struct SettingsOnboardingSection: View {
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy manual setup", systemImage: "doc.on.doc")
+                        Label("Copy setup details", systemImage: "doc.on.doc")
                             .frame(minHeight: 40)
                     }
                     .controlSize(.large)
@@ -5864,7 +5864,7 @@ struct SettingsBackendSection: View {
                 Button {
                     state.persistSettings()
                 } label: {
-                    Label("Save Settings", systemImage: "checkmark.circle")
+                    Label("Save", systemImage: "checkmark.circle")
                 }
                 Button {
                     state.openBackendHealth()

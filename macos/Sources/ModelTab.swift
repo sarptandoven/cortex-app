@@ -23,8 +23,8 @@ struct ModelTab: View {
                     } label: {
                         ModelDisclosureLabel(
                             systemImage: "square.stack.3d.up",
-                            title: "What Cortex knows",
-                            detail: "Coverage, sources, and citation health"
+                            title: "Memory snapshot",
+                            detail: "Approved memory, review queue, and connected notes"
                         )
                     }
                     .padding(12)
@@ -118,7 +118,7 @@ struct HomeHeroSection: View {
             return "Cortex is learning from your notes"
         }
         if hasEmptySource {
-            return "Choose a vault with notes"
+            return "Connect your notes"
         }
         if state.connectedAIIntegrationCount > 0 {
             return "Notes are the missing piece"
@@ -143,7 +143,7 @@ struct HomeHeroSection: View {
             return "New memories will appear in Review when sync finishes."
         }
         if hasEmptySource {
-            return "The last folder did not produce usable Markdown notes. Choose a notes folder with real content."
+            return "Cortex could not find usable notes there. Choose a notes library with real content."
         }
         if state.connectedAIIntegrationCount > 0 {
             return "Your AI tool is connected. Add notes once so Cortex has approved memory to recall."
@@ -163,7 +163,7 @@ struct HomeHeroSection: View {
         if !state.isLocalServiceReady { return state.displayBackendStatus }
         if activeSources == 0 {
             if hasEmptySource {
-                return "Pick a vault that contains Markdown notes."
+                return "Choose notes with real content."
             }
             if state.connectedAIIntegrationCount > 0 {
                 return "Your AI tool is ready; notes are the missing piece."
@@ -176,7 +176,7 @@ struct HomeHeroSection: View {
         if hasMemory {
             return "\(memoryCount) approved memor\(memoryCount == 1 ? "y" : "ies") available"
         }
-        return "Confirm the connected source is healthy."
+        return "Confirm your notes are syncing."
     }
 
     private var actionIcon: String {
@@ -397,7 +397,7 @@ struct ModelSourceCoverageSection: View {
                     Spacer(minLength: 0)
                 }
             } else if review.stats.memories == 0 {
-                QuietState(title: "No approved memory yet", detail: "Connect one source, then approve useful memory in Review before expecting Ask to answer.")
+                QuietState(title: "No approved memory yet", detail: "Connect notes, then approve useful memory in Review before expecting Ask to answer.")
             } else {
                 HStack(spacing: 8) {
                     ModelMetricPill(label: "Topics", value: "\(review.top_topics.count)", systemImage: "number")
@@ -424,7 +424,7 @@ struct ModelSignalSummarySection: View {
                 ModelMetricPill(label: "Decisions", value: "\(review.recent_decisions.count)", systemImage: "checkmark.seal")
             }
             if review.top_topics.isEmpty && review.top_entities.isEmpty {
-                QuietState(title: "Needs more approved memory", detail: "Approve more memory or connect a richer notes source to improve people, project, topic, and style coverage.")
+                QuietState(title: "Needs more approved memory", detail: "Approve more memory or connect richer notes to improve people, project, topic, and style coverage.")
             } else {
                 ModelTopicSection(topics: review.top_topics, entities: review.top_entities)
             }

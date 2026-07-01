@@ -18,7 +18,7 @@ struct AskTab: View {
                 } else {
                     QuietState(
                         title: "Ask approved memory",
-                        detail: "Ask about a source, project, person, decision, or exact phrase. Cortex answers only from approved memory and shows citations."
+                        detail: "Ask about a project, person, decision, or phrase from your notes. Cortex answers only from approved memory and shows citations."
                     )
                 }
             }
@@ -36,7 +36,7 @@ struct AskHeaderSection: View {
             Text("Ask Cortex")
                 .font(.title3)
                 .fontWeight(.semibold)
-            Text("Ask about approved memory and get an answer with sources you can inspect.")
+            Text("Ask about approved memory and get an answer with clear citations.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -78,7 +78,7 @@ struct AskQuerySection: View {
 
     private var citationSummary: String {
         if state.askCitations.isEmpty {
-            return state.searchResults.isEmpty ? "No citations yet" : "\(state.searchResults.count) source match\(state.searchResults.count == 1 ? "" : "es")"
+            return state.searchResults.isEmpty ? "No citations yet" : "\(state.searchResults.count) memory match\(state.searchResults.count == 1 ? "" : "es")"
         }
         return "\(state.askCitations.count) citation\(state.askCitations.count == 1 ? "" : "s")"
     }
@@ -102,8 +102,8 @@ struct AskResponseSection: View {
                 )
             } else {
                 QuietState(
-                    title: "Matching source found",
-                    detail: "Cortex found related memory, but no answer was returned. Open source details below."
+                    title: "Matching memory found",
+                    detail: "Cortex found related memory, but no answer was returned. Open Sources below."
                 )
             }
 
@@ -118,7 +118,7 @@ struct AskResponseSection: View {
     }
 
     private var memoryDisclosureTitle: String {
-        "Source details (\(state.searchResults.count))"
+        "Sources (\(state.searchResults.count))"
     }
 }
 
