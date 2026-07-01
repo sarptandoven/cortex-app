@@ -291,6 +291,27 @@ def release_packet_metadata_errors(path: Path | None) -> list[str]:
     return errors
 
 
+def support_release_field_errors(value: str | None) -> list[str]:
+    if not field_is_filled(value):
+        return []
+    manifest_path = ROOT / "site/downloads/latest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    haystack = value.lower()
+    expected_fragments = [
+        str(manifest.get("version") or "").lower(),
+        str(manifest.get("build") or "").lower(),
+    ]
+    expected_fragments.extend(
+        str(artifact.get("sha256") or "").lower()
+        for artifact in manifest.get("artifacts") or []
+        if isinstance(artifact, dict)
+    )
+    missing = [fragment for fragment in expected_fragments if fragment and fragment not in haystack]
+    if missing:
+        return ["Build version, build number, hash must include the current version, build, DMG hash, and ZIP hash from site/downloads/latest.json"]
+    return []
+
+
 def field_is_filled(value: str | None) -> bool:
     if value is None:
         return False
@@ -308,7 +329,7 @@ def check_support_packet(path: Path | None) -> dict[str, Any]:
         }
     values = parse_field_packet(path, SUPPORT_FIELDS)
     missing = [field for field in SUPPORT_FIELDS if not field_is_filled(values.get(field))]
-    metadata_errors = release_packet_metadata_errors(path)
+    metadata_errors = release_packet_metadata_errors(path) + support_release_field_errors(values.get("Build version, build number, hash"))
     return {
         "ok": not missing and not metadata_errors,
         "provided": True,
