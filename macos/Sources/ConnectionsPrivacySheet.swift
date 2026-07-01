@@ -62,6 +62,7 @@ private struct ConnectionsPrivacyOverview: View {
     @State private var privacySettingsExpanded = false
     @State private var connectedExpanded = false
     @State private var advancedExpanded = false
+    @State private var advancedSourcesExpanded = false
     @State private var aiToolsExpanded = false
     @State private var sourceAuditExpanded = false
     @State private var recoveryToolsExpanded = false
@@ -95,7 +96,7 @@ private struct ConnectionsPrivacyOverview: View {
                 ConnectionsOverviewHero(state: state)
 
                 ConnectionsObsidianSection(state: state)
-                ConnectionsDirectSourcesSection(state: state)
+                advancedSourceConnections
                 if state.connectedAIIntegrationCount > 0 {
                     ConnectionsAIToolsSection(state: state)
                 } else {
@@ -123,6 +124,31 @@ private struct ConnectionsPrivacyOverview: View {
                 await state.loadSourceConnectivity()
             }
         }
+    }
+
+    private var advancedSourceConnections: some View {
+        DisclosureGroup(isExpanded: $advancedSourcesExpanded) {
+            ConnectionsDirectSourcesSection(state: state)
+                .padding(.top, 10)
+        } label: {
+            ConnectionsDisclosureLabel(
+                systemImage: "slider.horizontal.3",
+                title: "Advanced source sync",
+                detail: advancedSourceDisclosureDetail
+            )
+        }
+        .padding(14)
+        .background(connectionsPanelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var advancedSourceDisclosureDetail: String {
+        let extraSources = state.activeSourceAccounts.filter { $0.source != "obsidian" }.count
+        if extraSources > 0 {
+            return "\(extraSources) extra source\(extraSources == 1 ? "" : "s") connected"
+        }
+        return "Optional token, file, and local app sync"
     }
 
     private var optionalAITools: some View {
@@ -525,14 +551,14 @@ private struct ConnectionsDirectSourcesSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
-                title: "More source connections",
-                detail: "Only working sync paths are shown here. Planned services stay hidden until they can actually connect."
+                title: "Advanced source sync",
+                detail: "Optional read-only connectors for users who already have a token, local file, or local app ready."
             )
 
             if state.sourceConnectorCatalog.isEmpty {
-                QuietState(title: "Checking source connections", detail: "Cortex is loading the local connector catalog.")
+                QuietState(title: "Checking advanced connectors", detail: "Cortex is loading local source sync options.")
             } else if wiredConnectors.isEmpty {
-                QuietState(title: "No extra source connections yet", detail: "Notes sync is ready. More direct connectors will appear here after the backend exposes them.")
+                QuietState(title: "No advanced connectors yet", detail: "Notes sync is ready. Additional direct connectors will appear here after they are wired end to end.")
             } else {
                 VStack(spacing: 10) {
                     ForEach(wiredConnectors) { connector in
