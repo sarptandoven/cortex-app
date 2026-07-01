@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 private let connectionsSheetBackground = CortexDesign.appBackground
 private let connectionsPanelBackground = CortexDesign.panelBackground
@@ -627,7 +628,7 @@ private struct ConnectionsDirectSourcesSection: View {
         }
         .sheet(item: $selectedTokenConnector) { connector in
             ConnectorTokenSetupSheet(state: state, connector: connector)
-                .frame(width: 560, height: connector.id == "jira" ? 500 : 430)
+                .frame(width: 640, height: 680)
         }
     }
 
@@ -726,12 +727,12 @@ private struct ConnectionsDirectSourceRow: View {
                 Button {
                     state.forgetDirectConnectorConfig(connector)
                 } label: {
-                    Label("Forget setup", systemImage: "trash")
-                        .frame(minWidth: 118, minHeight: 42)
+                    Label("Pause", systemImage: "pause.circle")
+                        .frame(minWidth: 98, minHeight: 42)
                 }
                 .buttonStyle(.bordered)
                 .foregroundColor(.secondary)
-                .help("Forget automatic sync setup")
+                .help("Pause automatic sync. Already synced local memory is kept.")
                 .disabled(state.isBusy || isSyncing)
             }
         }
@@ -747,9 +748,7 @@ private struct ConnectionsDirectSourceRow: View {
         if let readiness { return readiness.syncPlanModeTitle }
         if connected { return "Connected" }
         if hasStoredConfig { return "Configured" }
-        if connector.connectorReadinessStatus == "token-ready" { return "Token sync" }
-        if connector.id == "zotero" { return "Local app" }
-        if connector.id == "calendar" { return "Local feed" }
+        if let setupModeTitle { return setupModeTitle }
         return "Ready"
     }
 
@@ -759,7 +758,8 @@ private struct ConnectionsDirectSourceRow: View {
         if let readiness { return readiness.syncPlanIcon }
         if connected { return "checkmark.circle.fill" }
         if hasStoredConfig { return "checkmark.circle" }
-        if connector.connectorReadinessStatus == "token-ready" { return "key.fill" }
+        if connector.connectionSetup?.mode == "native-token-connector" { return "key.fill" }
+        if connector.connectionSetup?.mode == "native-local-connector" { return "externaldrive.fill" }
         return "link.circle"
     }
 
@@ -769,8 +769,21 @@ private struct ConnectionsDirectSourceRow: View {
         if let readiness { return readiness.syncPlanColor }
         if connected { return .green }
         if hasStoredConfig { return .green }
-        if connector.connectorReadinessStatus == "token-ready" { return .accentColor }
+        if connector.connectionSetup?.available == true { return .accentColor }
         return .secondary
+    }
+
+    private var setupModeTitle: String? {
+        switch connector.connectionSetup?.mode {
+        case "native-token-connector":
+            return "Token sync"
+        case "native-local-connector":
+            if connector.id == "zotero" { return "Local app" }
+            if connector.id == "calendar" { return "Local feed" }
+            return "Local sync"
+        default:
+            return nil
+        }
     }
 
     private var sourceIcon: String {
@@ -795,13 +808,15 @@ private struct ConnectionsDirectSourceRow: View {
         case "calendar":
             if connected { return "Calendar events are available for Review and cited Ask." }
             if hasStoredConfig { return "Calendar sync is configured. Run it again when you want fresh events." }
-            return "Sync a read-only calendar export or feed into Review."
+            return "Connect a read-only calendar export or feed. Cortex keeps synced events available for Review and cited Ask."
         case "zotero":
             return connected ? "Zotero research is available for Review and cited Ask." : "Sync from the Zotero desktop local API when Zotero is running."
         default:
             if connected { return "\(connector.name) is connected. Run sync again when you want fresh memory." }
             if hasStoredConfig { return "\(connector.name) sync is configured. Run it again when you want fresh memory." }
-            return "Connect with a read-only token, then Cortex sends useful items to Review with citations."
+            return connector.connectionSetup?.mode == "native-token-connector"
+                ? "Connect with a read-only token. Cortex sends useful items to Review with citations."
+                : "Connect this source. Cortex keeps synced items local and sends useful memory to Review first."
         }
     }
 
@@ -878,11 +893,7 @@ private struct ConnectionsDirectSourceRow: View {
     private func runAction() {
         switch connector.id {
         case "calendar":
-            if hasStoredConfig {
-                state.syncStoredDirectConnector(connector)
-            } else {
-                state.connectCalendarFile(connector)
-            }
+            hasStoredConfig ? state.syncStoredDirectConnector(connector) : openTokenSetup()
         case "zotero":
             state.syncZoteroLocal(connector)
         default:
@@ -900,13 +911,34 @@ private struct ConnectorTokenSetupSheet: View {
     let connector: SourceConnectorCatalogItem
     @Environment(\.dismiss) private var dismiss
 
-    @State private var token = ""
-    @State private var repositories = ""
-    @State private var channels = ""
-    @State private var siteURL = ""
-    @State private var email = ""
-    @State private var jql = ""
-    @State private var collectionID = "0"
+    @State private var fieldValues: [String: String] = [:]
+    @State private var boolValues: [String: Bool] = [:]
+    @State private var optionsExpanded = false
+    @State private var accountDetailsExpanded = false
+
+    private var setup: SourceConnectorConnectionSetup? {
+        connector.connectionSetup
+    }
+
+    private var requiredFields: [SourceConnectorSetupField] {
+        setupFields.filter { field in
+            field.isRequired || (setup?.require_one_of ?? []).contains(field.name)
+        }
+    }
+
+    private var optionalFields: [SourceConnectorSetupField] {
+        setupFields.filter { field in
+            !field.isRequired && !(setup?.require_one_of ?? []).contains(field.name)
+        }
+    }
+
+    private var setupFields: [SourceConnectorSetupField] {
+        (setup?.credential_fields ?? []) + (setup?.configuration_fields ?? [])
+    }
+
+    private var accountFields: [SourceConnectorSetupField] {
+        setup?.common_fields ?? []
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -924,11 +956,11 @@ private struct ConnectorTokenSetupSheet: View {
                     Text("Connect \(connector.name)")
                         .font(.title2)
                         .fontWeight(.semibold)
-                    Text("Cortex uses read-only access for this sync and sends new memory to Review first.")
+                    Text(headerDetail)
                         .font(.callout)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("Setup is stored locally on this Mac so future syncs can run automatically.")
+                    Text("Setup is stored locally on this Mac. Pausing sync keeps already-synced memory in Cortex.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -949,110 +981,205 @@ private struct ConnectorTokenSetupSheet: View {
 
             Divider()
 
-            VStack(alignment: .leading, spacing: 14) {
-                if connector.id == "jira" {
-                    labeledField("Site URL", text: $siteURL, placeholder: "https://your-team.atlassian.net")
-                    labeledField("Account email", text: $email, placeholder: "name@company.com")
-                    labeledSecureField("API token", text: $token, placeholder: "Atlassian API token")
-                    labeledField("JQL filter", text: $jql, placeholder: "Optional")
-                } else {
-                    labeledSecureField(tokenLabel, text: $token, placeholder: tokenPlaceholder)
-                }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if setup == nil {
+                        QuietState(title: "Setup contract unavailable", detail: "Update Cortex and try this connection again.")
+                    } else {
+                        if !requiredFields.isEmpty {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Required")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .foregroundColor(.secondary)
+                                ForEach(requiredFields) { field in
+                                    setupField(field)
+                                }
+                            }
+                        }
 
-                if connector.id == "github" {
-                    labeledField("Repositories", text: $repositories, placeholder: "owner/repo, org/repo")
-                }
+                        if !optionalFields.isEmpty {
+                            DisclosureGroup(isExpanded: $optionsExpanded) {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    ForEach(optionalFields) { field in
+                                        setupField(field)
+                                    }
+                                }
+                                .padding(.top, 12)
+                            } label: {
+                                Text("Sync options")
+                                    .font(.callout)
+                                    .fontWeight(.semibold)
+                            }
+                        }
 
-                if connector.id == "slack" {
-                    labeledField("Channels", text: $channels, placeholder: "C0123456789, C0987654321")
-                }
-
-                if connector.id == "raindrop" {
-                    labeledField("Collection", text: $collectionID, placeholder: "0 for all bookmarks")
-                }
-
-                HStack(spacing: 10) {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Text("Cancel")
-                            .frame(minWidth: 104, minHeight: 44)
+                        if !accountFields.isEmpty {
+                            DisclosureGroup(isExpanded: $accountDetailsExpanded) {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    ForEach(accountFields) { field in
+                                        setupField(field)
+                                    }
+                                }
+                                .padding(.top, 12)
+                            } label: {
+                                Text("Account label")
+                                    .font(.callout)
+                                    .fontWeight(.semibold)
+                            }
+                        }
                     }
-                    .controlSize(.large)
 
-                    Spacer()
-
-                    Button {
-                        sync()
-                    } label: {
-                        Label("Sync \(connector.name)", systemImage: "arrow.triangle.2.circlepath")
-                            .frame(minWidth: 156, minHeight: 46)
+                    if let validationMessage {
+                        Text(validationMessage)
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .disabled(!isValid || state.isBusy || state.connectorSyncingIDs.contains(connector.id))
                 }
+                .padding(20)
+            }
+
+            Divider()
+
+            HStack(spacing: 10) {
+                Button {
+                    dismiss()
+                } label: {
+                    Text("Cancel")
+                        .frame(minWidth: 104, minHeight: 44)
+                }
+                .controlSize(.large)
+
+                Spacer()
+
+                Button {
+                    sync()
+                } label: {
+                    Label("Sync \(connector.name)", systemImage: "arrow.triangle.2.circlepath")
+                        .frame(minWidth: 156, minHeight: 46)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(!isValid || state.isBusy || state.connectorSyncingIDs.contains(connector.id))
             }
             .padding(20)
-
-            Spacer(minLength: 0)
         }
         .background(connectionsSheetBackground)
     }
 
-    private var tokenLabel: String {
-        connector.id == "linear" ? "API key" : "Read-only token"
+    private var headerDetail: String {
+        switch setup?.mode {
+        case "native-local-connector":
+            return "Cortex reads this local source and sends useful memory to Review first."
+        case "native-token-connector":
+            return "Cortex uses your token for read-only sync and sends useful memory to Review first."
+        default:
+            return "Cortex sends useful memory to Review first, with citations preserved."
+        }
     }
 
-    private var tokenPlaceholder: String {
-        switch connector.id {
-        case "notion": return "Notion integration token"
-        case "slack": return "Slack bot or user token"
-        case "github": return "GitHub fine-grained token"
-        case "readwise": return "Readwise access token"
-        case "raindrop": return "Raindrop API token"
-        case "linear": return "Linear API key"
-        default: return "Token"
+    private var validationMessage: String? {
+        for field in setupFields where field.isRequired {
+            if !hasValue(field) {
+                return "\(field.displayLabel) is required."
+            }
         }
+        let requiredAny = setup?.require_one_of ?? []
+        if !requiredAny.isEmpty && !requiredAny.contains(where: { name in
+            guard let field = setupFields.first(where: { $0.name == name }) else { return false }
+            return hasValue(field)
+        }) {
+            let labels = requiredAny
+                .compactMap { name in setupFields.first(where: { $0.name == name })?.displayLabel }
+                .joined(separator: " or ")
+            return labels.isEmpty ? "Choose at least one source." : "Add \(labels)."
+        }
+        return nil
     }
 
     private var isValid: Bool {
-        switch connector.id {
-        case "github":
-            return !trimmed(token).isEmpty && !splitList(repositories).isEmpty
-        case "slack":
-            return !trimmed(token).isEmpty && !splitList(channels).isEmpty
-        case "jira":
-            return !trimmed(siteURL).isEmpty && !trimmed(email).isEmpty && !trimmed(token).isEmpty
-        default:
-            return !trimmed(token).isEmpty
-        }
+        setup != nil && validationMessage == nil
     }
 
     @ViewBuilder
-    private func labeledField(_ label: String, text: Binding<String>, placeholder: String) -> some View {
+    private func setupField(_ field: SourceConnectorSetupField) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(label)
+            Text(field.displayLabel + (field.isRequired ? "" : " optional"))
                 .font(.caption)
                 .fontWeight(.semibold)
                 .foregroundColor(.secondary)
-            TextField(placeholder, text: text)
-                .textFieldStyle(.roundedBorder)
-                .controlSize(.large)
+
+            if field.isSecret {
+                SecureField(placeholder(for: field), text: stringBinding(for: field))
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.large)
+            } else {
+                switch field.normalizedKind {
+                case "boolean":
+                    Toggle(isOn: boolBinding(for: field)) {
+                        Text(field.displayLabel)
+                            .font(.callout)
+                    }
+                    .toggleStyle(.checkbox)
+                case "select":
+                    Picker("", selection: stringBinding(for: field)) {
+                        ForEach(field.options ?? [], id: \.self) { option in
+                            Text(option).tag(option)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 260, alignment: .leading)
+                case "local_file", "local_folder":
+                    HStack(spacing: 8) {
+                        TextField(placeholder(for: field), text: stringBinding(for: field))
+                            .textFieldStyle(.roundedBorder)
+                            .controlSize(.large)
+                        Button {
+                            chooseLocalPath(for: field)
+                        } label: {
+                            Label("Choose", systemImage: field.normalizedKind == "local_folder" ? "folder" : "doc")
+                                .frame(minHeight: 42)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                    }
+                default:
+                    TextField(placeholder(for: field), text: stringBinding(for: field))
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.large)
+                }
+            }
         }
     }
 
-    @ViewBuilder
-    private func labeledSecureField(_ label: String, text: Binding<String>, placeholder: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(label)
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundColor(.secondary)
-            SecureField(placeholder, text: text)
-                .textFieldStyle(.roundedBorder)
-                .controlSize(.large)
+    private func stringBinding(for field: SourceConnectorSetupField) -> Binding<String> {
+        Binding(
+            get: {
+                fieldValues[field.name] ?? defaultString(for: field)
+            },
+            set: { value in
+                fieldValues[field.name] = value
+            }
+        )
+    }
+
+    private func boolBinding(for field: SourceConnectorSetupField) -> Binding<Bool> {
+        Binding(
+            get: {
+                boolValues[field.name] ?? field.defaultBool
+            },
+            set: { value in
+                boolValues[field.name] = value
+            }
+        )
+    }
+
+    private func defaultString(for field: SourceConnectorSetupField) -> String {
+        if let option = field.options?.first, field.normalizedKind == "select", field.defaultString.isEmpty {
+            return option
         }
+        return field.defaultString
     }
 
     private func sync() {
@@ -1065,39 +1192,89 @@ private struct ConnectorTokenSetupSheet: View {
 
     private func syncPayload() -> [String: Any] {
         var payload: [String: Any] = [
-            "processing": "sync"
+            "processing": setup?.default_processing ?? "sync"
         ]
-        switch connector.id {
-        case "github":
-            payload["token"] = trimmed(token)
-            payload["repositories"] = splitList(repositories)
-            payload["max_records"] = 500
-        case "slack":
-            payload["token"] = trimmed(token)
-            payload["channels"] = splitList(channels)
-            payload["max_records"] = 200
-        case "jira":
-            payload["api_token"] = trimmed(token)
-            payload["email"] = trimmed(email)
-            payload["site_url"] = trimmed(siteURL)
-            payload["max_records"] = 500
-            if !trimmed(jql).isEmpty {
-                payload["jql"] = trimmed(jql)
+        if let defaultMaxRecords = setup?.default_max_records {
+            payload["max_records"] = defaultMaxRecords
+        }
+        if let defaultCursorName = setup?.default_cursor_name {
+            payload["cursor_name"] = defaultCursorName
+        }
+        for field in accountFields + setupFields {
+            switch field.normalizedKind {
+            case "boolean":
+                payload[field.name] = boolValues[field.name] ?? field.defaultBool
+            case "integer":
+                let value = trimmed(fieldValues[field.name] ?? field.defaultString)
+                if !value.isEmpty, let number = Int(value) {
+                    payload[field.name] = number
+                }
+            case "string_list":
+                let values = splitList(fieldValues[field.name] ?? field.defaultString)
+                if !values.isEmpty {
+                    payload[field.name] = values
+                }
+            default:
+                let value = trimmed(fieldValues[field.name] ?? defaultString(for: field))
+                if !value.isEmpty {
+                    payload[field.name] = value
+                }
             }
-        case "notion":
-            payload["token"] = trimmed(token)
-            payload["max_records"] = 200
-        case "raindrop":
-            payload["token"] = trimmed(token)
-            payload["collection_id"] = trimmed(collectionID).isEmpty ? "0" : trimmed(collectionID)
-            payload["max_records"] = 500
-        case "readwise", "linear":
-            payload["token"] = trimmed(token)
-            payload["max_records"] = 500
-        default:
-            payload["token"] = trimmed(token)
         }
         return payload
+    }
+
+    private func hasValue(_ field: SourceConnectorSetupField) -> Bool {
+        switch field.normalizedKind {
+        case "boolean":
+            return true
+        case "string_list":
+            return !splitList(fieldValues[field.name] ?? field.defaultString).isEmpty
+        default:
+            return !trimmed(fieldValues[field.name] ?? defaultString(for: field)).isEmpty
+        }
+    }
+
+    private func placeholder(for field: SourceConnectorSetupField) -> String {
+        switch field.normalizedKind {
+        case "email":
+            return "name@example.com"
+        case "url":
+            return "https://..."
+        case "timestamp":
+            return "YYYY-MM-DD or ISO timestamp"
+        case "integer":
+            if let minimum = field.minimum, let maximum = field.maximum {
+                return "\(minimum)-\(maximum)"
+            }
+            return "Number"
+        case "string_list":
+            return "Separate values with commas or new lines"
+        case "local_file":
+            return "Select a local path"
+        case "local_folder":
+            return "Select a folder path"
+        case "secret":
+            return field.displayLabel
+        default:
+            return field.defaultString.isEmpty ? field.displayLabel : field.defaultString
+        }
+    }
+
+    private func chooseLocalPath(for field: SourceConnectorSetupField) {
+        let panel = NSOpenPanel()
+        panel.title = "Choose \(field.displayLabel)"
+        panel.prompt = "Choose"
+        panel.canChooseFiles = field.normalizedKind == "local_file"
+        panel.canChooseDirectories = field.normalizedKind == "local_folder"
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        if field.name == "ics_path", let calendarType = UTType(filenameExtension: "ics") {
+            panel.allowedContentTypes = [calendarType]
+        }
+        if panel.runModal() == .OK, let url = panel.url {
+            fieldValues[field.name] = url.standardizedFileURL.path
+        }
     }
 
     private func trimmed(_ value: String) -> String {

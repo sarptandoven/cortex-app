@@ -81,6 +81,7 @@ struct SourceConnectorCatalogItem: Codable, Identifiable, Hashable {
     let show_in_primary_ui: Bool?
     let baseline_10k: Bool?
     let service_baseline: SourceServiceBaseline?
+    let connection_setup: SourceConnectorConnectionSetup?
 
     var showInPrimaryUI: Bool {
         if let show_in_primary_ui {
@@ -128,6 +129,9 @@ struct SourceConnectorCatalogItem: Codable, Identifiable, Hashable {
     }
 
     var hasNativeDirectSync: Bool {
+        if let setup = connection_setup {
+            return setup.available && setup.hasEndpoint
+        }
         if service_baseline?.live_sync == true {
             return true
         }
@@ -139,6 +143,10 @@ struct SourceConnectorCatalogItem: Codable, Identifiable, Hashable {
         }
         let status = (live_status ?? "").lowercased()
         return ["api_token", "local_api", "local_only"].contains(status)
+    }
+
+    var connectionSetup: SourceConnectorConnectionSetup? {
+        connection_setup
     }
 }
 
@@ -152,6 +160,122 @@ struct SourceServiceBaseline: Codable, Hashable {
     let primary_ui: Bool?
     let path: String?
     let source_ids: [String]?
+}
+
+struct SourceConnectorConnectionSetup: Codable, Hashable {
+    let available: Bool
+    let mode: String?
+    let method: String?
+    let endpoint: String?
+    let unavailable_reason: String?
+    let managed_oauth_shipped: Bool?
+    let credential_storage: String?
+    let credential_retained_on_disconnect: Bool?
+    let disconnect_behavior: String?
+    let default_processing: String?
+    let default_cursor_name: String?
+    let default_max_records: Int?
+    let max_records_limit: Int?
+    let common_fields: [SourceConnectorSetupField]
+    let credential_fields: [SourceConnectorSetupField]
+    let configuration_fields: [SourceConnectorSetupField]
+    let require_one_of: [String]
+
+    var hasEndpoint: Bool {
+        guard let endpoint else { return false }
+        return !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var isPost: Bool {
+        (method ?? "POST").uppercased() == "POST"
+    }
+}
+
+struct SourceConnectorSetupField: Codable, Hashable, Identifiable {
+    let name: String
+    let label: String?
+    let kind: String?
+    let required: Bool?
+    let secret: Bool?
+    let local_path: Bool?
+    let max_length: Int?
+    let max_items: Int?
+    let minimum: Int?
+    let maximum: Int?
+    let options: [String]?
+    let defaultValue: JSONValue?
+
+    var id: String { name }
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case label
+        case kind
+        case required
+        case secret
+        case local_path
+        case max_length
+        case max_items
+        case minimum
+        case maximum
+        case options
+        case defaultValue = "default"
+    }
+
+    var displayLabel: String {
+        if let label, !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return label
+        }
+        return name
+            .replacingOccurrences(of: "_", with: " ")
+            .split(separator: " ")
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: " ")
+    }
+
+    var normalizedKind: String {
+        (kind ?? "text").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    var isRequired: Bool {
+        required == true
+    }
+
+    var isSecret: Bool {
+        secret == true || normalizedKind == "secret"
+    }
+
+    var defaultString: String {
+        guard let defaultValue else { return "" }
+        switch defaultValue {
+        case .string(let value):
+            return value
+        case .int(let value):
+            return String(value)
+        case .double(let value):
+            return String(value)
+        case .bool(let value):
+            return value ? "true" : "false"
+        case .object, .array, .null:
+            return ""
+        }
+    }
+
+    var defaultBool: Bool {
+        guard let defaultValue else { return false }
+        switch defaultValue {
+        case .bool(let value):
+            return value
+        case .string(let value):
+            return ["1", "true", "yes", "on"].contains(value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        case .int(let value):
+            return value != 0
+        case .double(let value):
+            return value != 0
+        case .object, .array, .null:
+            return false
+        }
+    }
 }
 
 struct SourceReadinessResponse: Codable, Hashable {
@@ -3301,7 +3425,7 @@ final class AppState: ObservableObject {
         connectorLastMessages[connector.id] = nil
         refreshStoredConnectorConfigState()
         startConnectedSourceAutoSync(initialSync: false)
-        status = "\(connector.name) automatic sync setup forgotten"
+        status = "\(connector.name) sync paused. Local memory already synced from this source is kept."
     }
 
     func syncDirectConnector(_ connector: SourceConnectorCatalogItem, payload: [String: Any], rememberPayload: Bool = false, automatic: Bool = false) async {
@@ -3335,10 +3459,18 @@ final class AppState: ObservableObject {
             }
             var requestBody = payload
             if requestBody["processing"] == nil {
-                requestBody["processing"] = "sync"
+                requestBody["processing"] = connector.connectionSetup?.default_processing ?? "sync"
             }
+            if requestBody["max_records"] == nil, let defaultMaxRecords = connector.connectionSetup?.default_max_records {
+                requestBody["max_records"] = defaultMaxRecords
+            }
+            if requestBody["cursor_name"] == nil, let defaultCursorName = connector.connectionSetup?.default_cursor_name {
+                requestBody["cursor_name"] = defaultCursorName
+            }
+            let endpoint = connector.connectionSetup?.endpoint?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let syncPath = endpoint?.isEmpty == false ? endpoint! : "/v1/connectors/\(connector.id)/sync"
             let syncData = try await request(
-                path: "/v1/connectors/\(connector.id)/sync",
+                path: syncPath,
                 method: "POST",
                 body: requestBody
             )
@@ -3401,6 +3533,9 @@ final class AppState: ObservableObject {
     func isDirectConnectorSyncWired(_ connector: SourceConnectorCatalogItem) -> Bool {
         guard Self.directConnectorSyncIDs.contains(connector.id), connector.id != "obsidian" else {
             return false
+        }
+        if let setup = connector.connectionSetup {
+            return setup.available && setup.isPost && setup.hasEndpoint
         }
         if connector.isAccountSignInPlanned || !connector.hasNativeDirectSync {
             return false
