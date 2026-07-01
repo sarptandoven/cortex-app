@@ -23,7 +23,7 @@ struct SourceConnectorStatusCard: View {
                 )
             }
             VStack(alignment: .leading, spacing: 5) {
-                Text(connector.id == "obsidian" ? "Primary notes" : "Later")
+                Text(connector.id == "obsidian" ? "Primary notes" : "Direct source")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(.secondary)
@@ -61,9 +61,9 @@ struct SourceConnectorStatusCard: View {
                 }
             } else {
                 HStack(spacing: 8) {
-                    Image(systemName: "clock")
+                    Image(systemName: "lock.shield")
                         .foregroundColor(.secondary)
-                    Text("Available later")
+                    Text("Open Connections & Privacy")
                         .font(.callout)
                         .fontWeight(.medium)
                     Spacer()
@@ -83,34 +83,36 @@ struct SourceConnectorStatusCard: View {
     private var statusTitle: String {
         if needsAttention { return "Needs attention" }
         if needsContent { return "No notes found" }
-        if connector.id != "obsidian" { return "Later" }
+        if connector.id != "obsidian" { return connector.connectorReadinessStatus == "token-ready" ? "Token sync" : "Ready" }
         return connected ? "Connected" : "Local"
     }
 
     private var statusIcon: String {
         if needsAttention { return "exclamationmark.triangle.fill" }
         if needsContent { return "folder.badge.questionmark" }
-        if connector.id != "obsidian" { return "clock" }
+        if connector.id != "obsidian" { return "link.circle.fill" }
         return connected ? "checkmark.seal.fill" : "link.badge.plus"
     }
 
     private var statusChipIcon: String {
         if needsAttention { return "exclamationmark.circle.fill" }
         if needsContent { return "exclamationmark.circle.fill" }
-        if connector.id != "obsidian" { return "clock" }
+        if connector.id != "obsidian" { return connector.connectorReadinessStatus == "token-ready" ? "key.fill" : "link.circle" }
         return connected ? "checkmark.circle.fill" : "folder.badge.plus"
     }
 
     private var statusColor: Color {
         if needsAttention { return .orange }
         if needsContent { return .orange }
-        if connector.id != "obsidian" { return .secondary }
+        if connector.id != "obsidian" { return connector.connectorReadinessStatus == "token-ready" ? .accentColor : .secondary }
         return connected ? .green : .accentColor
     }
 
     private var statusDetail: String {
         if connector.id != "obsidian" {
-            return "Available from advanced connector settings."
+            return connector.connectorReadinessStatus == "token-ready"
+                ? "Read-only token sync is available in Connections & Privacy."
+                : "This source is managed from Connections & Privacy."
         }
         if needsAttention {
             return attentionDetail ?? "Cortex needs attention before these notes can keep syncing."

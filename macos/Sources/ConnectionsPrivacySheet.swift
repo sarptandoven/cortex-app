@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 private let connectionsSheetBackground = CortexDesign.appBackground
@@ -30,10 +31,10 @@ struct ConnectionsPrivacySheet: View {
             .frame(width: 48, height: 48)
 
             VStack(alignment: .leading, spacing: 5) {
-                Text("Advanced")
+                Text("Connections & Privacy")
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text("Manage notes sync, privacy, backups, and AI tool access.")
+                Text("Connect memory sources, control AI access, and keep local recovery tools in one place.")
                     .font(.callout)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -94,6 +95,7 @@ private struct ConnectionsPrivacyOverview: View {
                 ConnectionsOverviewHero(state: state)
 
                 ConnectionsObsidianSection(state: state)
+                ConnectionsDirectSourcesSection(state: state)
                 if state.connectedAIIntegrationCount > 0 {
                     ConnectionsAIToolsSection(state: state)
                 } else {
@@ -495,6 +497,435 @@ private struct ConnectionsObsidianSection: View {
         return state.activeSourceAccounts.contains { account in
             account.source == connector.id || (connector.source_ids ?? []).contains(account.source)
         }
+    }
+}
+
+private struct ConnectionsDirectSourcesSection: View {
+    @ObservedObject var state: AppState
+    @State private var selectedTokenConnector: SourceConnectorCatalogItem?
+
+    private let connectorOrder = [
+        "calendar",
+        "zotero",
+        "notion",
+        "slack",
+        "github",
+        "readwise",
+        "raindrop",
+        "linear",
+        "jira"
+    ]
+
+    private var wiredConnectors: [SourceConnectorCatalogItem] {
+        connectorOrder.compactMap { connectorID in
+            state.sourceConnectorCatalog.first { $0.id == connectorID }
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(
+                title: "More source connections",
+                detail: "Only working sync paths are shown here. Planned services stay hidden until they can actually connect."
+            )
+
+            if state.sourceConnectorCatalog.isEmpty {
+                QuietState(title: "Checking source connections", detail: "Cortex is loading the local connector catalog.")
+            } else if wiredConnectors.isEmpty {
+                QuietState(title: "No extra source connections yet", detail: "Notes sync is ready. More direct connectors will appear here after the backend exposes them.")
+            } else {
+                VStack(spacing: 10) {
+                    ForEach(wiredConnectors) { connector in
+                        ConnectionsDirectSourceRow(
+                            state: state,
+                            connector: connector,
+                            connected: isConnected(connector),
+                            openTokenSetup: {
+                                selectedTokenConnector = connector
+                            }
+                        )
+                    }
+                }
+            }
+        }
+        .sheet(item: $selectedTokenConnector) { connector in
+            ConnectorTokenSetupSheet(state: state, connector: connector)
+                .frame(width: 560, height: connector.id == "jira" ? 500 : 430)
+        }
+    }
+
+    private func isConnected(_ connector: SourceConnectorCatalogItem) -> Bool {
+        state.activeSourceAccounts.contains { account in
+            account.source == connector.id || (connector.source_ids ?? []).contains(account.source)
+        }
+    }
+}
+
+private struct ConnectionsDirectSourceRow: View {
+    @ObservedObject var state: AppState
+    let connector: SourceConnectorCatalogItem
+    let connected: Bool
+    let openTokenSetup: () -> Void
+
+    private var isSyncing: Bool {
+        state.connectorSyncingIDs.contains(connector.id)
+    }
+
+    private var activeAccount: SourceAccountItem? {
+        state.activeSourceAccounts.first { account in
+            account.source == connector.id || (connector.source_ids ?? []).contains(account.source)
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(statusColor.opacity(0.12))
+                Image(systemName: sourceIcon)
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundColor(statusColor)
+            }
+            .frame(width: 52, height: 52)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(connector.name)
+                        .font(.headline)
+                    SourceStatusChip(
+                        title: statusTitle,
+                        systemImage: statusChipIcon,
+                        color: statusColor
+                    )
+                }
+                Text(detail)
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let lastMessage = state.connectorLastMessages[connector.id] {
+                    Text(lastMessage)
+                        .font(.caption)
+                        .foregroundColor(CortexRecoveryText.needsAttention(lastMessage) ? .orange : .secondary)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 12)
+
+            Button {
+                runAction()
+            } label: {
+                if isSyncing {
+                    ProgressView()
+                        .scaleEffect(0.78)
+                        .frame(minWidth: 126, minHeight: 46)
+                } else {
+                    Label(actionTitle, systemImage: actionIcon)
+                        .frame(minWidth: 126, minHeight: 46)
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .disabled(state.isBusy || isSyncing)
+        }
+        .padding(14)
+        .background(connectionsPanelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var statusTitle: String {
+        if activeAccount?.needsAttention == true { return "Needs attention" }
+        if connected { return "Connected" }
+        if connector.connectorReadinessStatus == "token-ready" { return "Token sync" }
+        if connector.id == "zotero" { return "Local app" }
+        if connector.id == "calendar" { return "Local feed" }
+        return "Ready"
+    }
+
+    private var statusChipIcon: String {
+        if activeAccount?.needsAttention == true { return "exclamationmark.circle.fill" }
+        if connected { return "checkmark.circle.fill" }
+        if connector.connectorReadinessStatus == "token-ready" { return "key.fill" }
+        return "link.circle"
+    }
+
+    private var statusColor: Color {
+        if activeAccount?.needsAttention == true { return .orange }
+        if connected { return .green }
+        if connector.connectorReadinessStatus == "token-ready" { return .accentColor }
+        return .secondary
+    }
+
+    private var sourceIcon: String {
+        switch connector.id {
+        case "calendar": return "calendar"
+        case "zotero": return "books.vertical.fill"
+        case "notion": return "doc.richtext"
+        case "slack": return "bubble.left.and.bubble.right.fill"
+        case "github": return "chevron.left.forwardslash.chevron.right"
+        case "readwise": return "highlighter"
+        case "raindrop": return "bookmark.fill"
+        case "linear", "jira": return "checklist.checked"
+        default: return "link.circle.fill"
+        }
+    }
+
+    private var detail: String {
+        if activeAccount?.needsAttention == true {
+            return activeAccount?.last_error ?? "This connector needs attention before it can sync again."
+        }
+        switch connector.id {
+        case "calendar":
+            return connected ? "Calendar events are available for Review and cited Ask." : "Sync a read-only calendar export or feed into Review."
+        case "zotero":
+            return connected ? "Zotero research is available for Review and cited Ask." : "Sync from the Zotero desktop local API when Zotero is running."
+        default:
+            return connected ? "\(connector.name) is connected. Run sync again when you want fresh memory." : "Connect with a read-only token, then Cortex sends useful items to Review with citations."
+        }
+    }
+
+    private var actionTitle: String {
+        if connected {
+            return connector.id == "calendar" ? "Sync" : "Sync again"
+        }
+        switch connector.id {
+        case "calendar": return "Connect"
+        case "zotero": return "Sync"
+        default: return "Set up"
+        }
+    }
+
+    private var actionIcon: String {
+        switch connector.id {
+        case "calendar": return "calendar.badge.plus"
+        case "zotero": return "arrow.triangle.2.circlepath"
+        default: return "key.fill"
+        }
+    }
+
+    private func runAction() {
+        switch connector.id {
+        case "calendar":
+            state.connectCalendarFile(connector)
+        case "zotero":
+            state.syncZoteroLocal(connector)
+        default:
+            openTokenSetup()
+        }
+    }
+}
+
+private struct ConnectorTokenSetupSheet: View {
+    @ObservedObject var state: AppState
+    let connector: SourceConnectorCatalogItem
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var token = ""
+    @State private var repositories = ""
+    @State private var channels = ""
+    @State private var siteURL = ""
+    @State private var email = ""
+    @State private var jql = ""
+    @State private var collectionID = "0"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.accentColor.opacity(0.12))
+                    Image(systemName: "key.fill")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundColor(.accentColor)
+                }
+                .frame(width: 46, height: 46)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Connect \(connector.name)")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                    Text("Cortex uses read-only access for this sync and sends new memory to Review first.")
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 38, height: 38)
+                }
+                .buttonStyle(.borderless)
+            }
+            .padding(20)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 14) {
+                if connector.id == "jira" {
+                    labeledField("Site URL", text: $siteURL, placeholder: "https://your-team.atlassian.net")
+                    labeledField("Account email", text: $email, placeholder: "name@company.com")
+                    labeledSecureField("API token", text: $token, placeholder: "Atlassian API token")
+                    labeledField("JQL filter", text: $jql, placeholder: "Optional")
+                } else {
+                    labeledSecureField(tokenLabel, text: $token, placeholder: tokenPlaceholder)
+                }
+
+                if connector.id == "github" {
+                    labeledField("Repositories", text: $repositories, placeholder: "owner/repo, org/repo")
+                }
+
+                if connector.id == "slack" {
+                    labeledField("Channels", text: $channels, placeholder: "C0123456789, C0987654321")
+                }
+
+                if connector.id == "raindrop" {
+                    labeledField("Collection", text: $collectionID, placeholder: "0 for all bookmarks")
+                }
+
+                HStack(spacing: 10) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Text("Cancel")
+                            .frame(minWidth: 104, minHeight: 44)
+                    }
+                    .controlSize(.large)
+
+                    Spacer()
+
+                    Button {
+                        sync()
+                    } label: {
+                        Label("Sync \(connector.name)", systemImage: "arrow.triangle.2.circlepath")
+                            .frame(minWidth: 156, minHeight: 46)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(!isValid || state.isBusy || state.connectorSyncingIDs.contains(connector.id))
+                }
+            }
+            .padding(20)
+
+            Spacer(minLength: 0)
+        }
+        .background(connectionsSheetBackground)
+    }
+
+    private var tokenLabel: String {
+        connector.id == "linear" ? "API key" : "Read-only token"
+    }
+
+    private var tokenPlaceholder: String {
+        switch connector.id {
+        case "notion": return "Notion integration token"
+        case "slack": return "Slack bot or user token"
+        case "github": return "GitHub fine-grained token"
+        case "readwise": return "Readwise access token"
+        case "raindrop": return "Raindrop API token"
+        case "linear": return "Linear API key"
+        default: return "Token"
+        }
+    }
+
+    private var isValid: Bool {
+        switch connector.id {
+        case "github":
+            return !trimmed(token).isEmpty && !splitList(repositories).isEmpty
+        case "slack":
+            return !trimmed(token).isEmpty && !splitList(channels).isEmpty
+        case "jira":
+            return !trimmed(siteURL).isEmpty && !trimmed(email).isEmpty && !trimmed(token).isEmpty
+        default:
+            return !trimmed(token).isEmpty
+        }
+    }
+
+    @ViewBuilder
+    private func labeledField(_ label: String, text: Binding<String>, placeholder: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundColor(.secondary)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.large)
+        }
+    }
+
+    @ViewBuilder
+    private func labeledSecureField(_ label: String, text: Binding<String>, placeholder: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundColor(.secondary)
+            SecureField(placeholder, text: text)
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.large)
+        }
+    }
+
+    private func sync() {
+        let payload = syncPayload()
+        dismiss()
+        Task {
+            await state.syncDirectConnector(connector, payload: payload)
+        }
+    }
+
+    private func syncPayload() -> [String: Any] {
+        var payload: [String: Any] = [
+            "processing": "sync"
+        ]
+        switch connector.id {
+        case "github":
+            payload["token"] = trimmed(token)
+            payload["repositories"] = splitList(repositories)
+            payload["max_records"] = 500
+        case "slack":
+            payload["token"] = trimmed(token)
+            payload["channels"] = splitList(channels)
+            payload["max_records"] = 200
+        case "jira":
+            payload["api_token"] = trimmed(token)
+            payload["email"] = trimmed(email)
+            payload["site_url"] = trimmed(siteURL)
+            payload["max_records"] = 500
+            if !trimmed(jql).isEmpty {
+                payload["jql"] = trimmed(jql)
+            }
+        case "notion":
+            payload["token"] = trimmed(token)
+            payload["max_records"] = 200
+        case "raindrop":
+            payload["token"] = trimmed(token)
+            payload["collection_id"] = trimmed(collectionID).isEmpty ? "0" : trimmed(collectionID)
+            payload["max_records"] = 500
+        case "readwise", "linear":
+            payload["token"] = trimmed(token)
+            payload["max_records"] = 500
+        default:
+            payload["token"] = trimmed(token)
+        }
+        return payload
+    }
+
+    private func trimmed(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func splitList(_ value: String) -> [String] {
+        value
+            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+            .map { trimmed($0) }
+            .filter { !$0.isEmpty }
     }
 }
 

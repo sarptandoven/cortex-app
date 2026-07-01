@@ -1697,11 +1697,11 @@ END:VCALENDAR
             "github": ("token-ready", ["repo:read"], "read-only token sync"),
             "readwise": ("token-ready", ["read"], "read-only token sync"),
             "raindrop": ("token-ready", ["read"], "read-only token sync"),
-            "calendar": ("import-ready", [], "direct local integration"),
+            "calendar": ("import-ready", [], "native local sync"),
             "linear": ("token-ready", ["read"], "read-only token sync"),
             "jira": ("token-ready", ["read:jira-work"], "read-only token sync"),
-            "zotero": ("import-ready", ["read"], "direct local integration"),
-            "obsidian": ("import-ready", [], "direct local integration"),
+            "zotero": ("import-ready", ["read"], "native local sync"),
+            "obsidian": ("import-ready", [], "native local sync"),
         }
 
         for source_id, (readiness_status, scopes, first_100_note) in expected.items():
@@ -1743,10 +1743,10 @@ END:VCALENDAR
         self.assertEqual(catalog["raindrop"]["beta_status"], "ready")
         self.assertFalse(catalog["raindrop"]["show_in_primary_ui"])
         self.assertFalse(catalog["calendar"]["primary_beta"])
-        self.assertEqual(catalog["calendar"]["beta_status"], "advanced-fallback")
+        self.assertEqual(catalog["calendar"]["beta_status"], "ready")
         self.assertFalse(catalog["calendar"]["show_in_primary_ui"])
         self.assertFalse(catalog["zotero"]["primary_beta"])
-        self.assertEqual(catalog["zotero"]["beta_status"], "advanced-fallback")
+        self.assertEqual(catalog["zotero"]["beta_status"], "ready")
         self.assertFalse(catalog["zotero"]["show_in_primary_ui"])
         self.assertTrue(catalog["obsidian"]["primary_beta"])
         self.assertEqual(catalog["obsidian"]["beta_status"], "ready")

@@ -995,40 +995,53 @@ class CortexStorageLifecycleTests(unittest.TestCase):
 
     def test_baseline_ten_catalog_services_do_not_make_fake_primary_ui_promises(self) -> None:
         catalog = {item["id"]: item for item in self.store.source_connector_catalog()}
-        baseline_ids = (
-            "obsidian",
-            "chatgpt",
-            "claude",
-            "slack",
-            "email",
-            "gmail",
-            "notion",
-            "google-drive",
-            "cloud-docs",
-            "github",
-            "calendar",
-            "google-keep",
-        )
+        wired_source_paths = {
+            "obsidian": "native-local-connector",
+            "slack": "native-token-connector",
+            "github": "native-token-connector",
+            "readwise": "native-token-connector",
+            "linear": "native-token-connector",
+            "notion": "native-token-connector",
+            "jira": "native-token-connector",
+            "raindrop": "native-token-connector",
+            "calendar": "native-local-connector",
+            "zotero": "native-local-connector",
+        }
+        wired_source_ids = tuple(wired_source_paths)
 
-        self.assertGreaterEqual(len(baseline_ids), 10)
-        for source_id in baseline_ids:
+        self.assertEqual(len(wired_source_ids), 10)
+        for source_id, primary_beta_path in wired_source_paths.items():
             with self.subTest(source_id=source_id):
                 entry = catalog[source_id]
                 baseline = entry["service_baseline"]
                 self.assertTrue(entry["baseline_10k"])
                 self.assertTrue(baseline["included"])
                 self.assertTrue(baseline["records_supported"])
+                self.assertTrue(baseline["live_sync"])
                 self.assertTrue(entry["supports_import"])
                 self.assertTrue(entry["source_ids"])
                 self.assertTrue(entry["formats"])
+                self.assertEqual(entry["beta_status"], "ready")
+                self.assertEqual(entry["primary_beta_path"], primary_beta_path)
                 self.assertEqual(baseline["primary_ui"], source_id == "obsidian")
                 self.assertEqual(entry["show_in_primary_ui"], source_id == "obsidian")
                 self.assertEqual(entry["primary_beta"], source_id == "obsidian")
+                self.assertNotEqual(entry["primary_beta_path"], "advanced-fallback-only")
+                self.assertNotEqual(baseline["path"], "connector-records-supported")
 
         readiness = self.store.source_readiness_report(self.user_id)
-        self.assertGreaterEqual(readiness["summary"]["baseline_10k_services"], len(baseline_ids))
-        self.assertGreaterEqual(readiness["summary"]["baseline_10k_records_supported"], len(baseline_ids))
-        self.assertGreaterEqual(readiness["summary"]["baseline_10k_live_sync"], 1)
+        self.assertEqual(readiness["summary"]["baseline_10k_services"], len(wired_source_ids))
+        self.assertEqual(readiness["summary"]["baseline_10k_records_supported"], len(wired_source_ids))
+        self.assertEqual(readiness["summary"]["baseline_10k_live_sync"], len(wired_source_ids))
+        readiness_by_source = {item["source"]: item for item in readiness["sources"]}
+        for source_id, primary_beta_path in wired_source_paths.items():
+            with self.subTest(readiness_source_id=source_id):
+                entry = readiness_by_source[source_id]
+                self.assertEqual(entry["beta_status"], "ready")
+                self.assertEqual(entry["primary_beta_path"], primary_beta_path)
+                self.assertEqual(entry["show_in_primary_ui"], source_id == "obsidian")
+                self.assertNotEqual(entry["status"], "advanced_fallback")
+                self.assertNotIn("Advanced/Fallback", entry["next_action"])
 
     def test_mcp_connected_source_tools_register_and_sync_cited_records(self) -> None:
         connectors = call_tool(self.store, self.user_id, "list_source_connectors", {"include_accounts": False})

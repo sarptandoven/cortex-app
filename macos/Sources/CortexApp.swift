@@ -4,6 +4,7 @@ import SwiftUI
 import Carbon
 import UserNotifications
 import Darwin
+import UniformTypeIdentifiers
 
 struct CaptureResponse: Codable {
     let capture_id: String
@@ -92,14 +93,17 @@ struct SourceConnectorCatalogItem: Codable, Identifiable, Hashable {
 
     var connectorReadinessStatus: String {
         let explicit = (readiness_status ?? "").lowercased()
-        if ["export-only", "import-ready", "live-planned"].contains(explicit) {
+        if ["export-only", "import-ready", "live-planned", "token-ready"].contains(explicit) {
             return explicit
         }
         let status = (live_status ?? "").lowercased()
         if status == "planned" {
             return "live-planned"
         }
-        if ["import_ready", "local_only", "imported"].contains(status) {
+        if status == "api_token" {
+            return "token-ready"
+        }
+        if ["import_ready", "local_api", "local_only", "imported"].contains(status) {
             return "import-ready"
         }
         return "export-only"
@@ -110,7 +114,7 @@ struct SourceConnectorCatalogItem: Codable, Identifiable, Hashable {
     }
 
     var isAccountSignInPlanned: Bool {
-        ["oauth", "api_token"].contains(authKind) || connectorReadinessStatus == "live-planned"
+        authKind == "oauth" || connectorReadinessStatus == "live-planned"
     }
 }
 
@@ -2085,11 +2089,25 @@ final class AppState: ObservableObject {
     @Published var onboardingBackupDecision: String = UserDefaults.standard.string(forKey: "onboardingBackupDecision.v1") ?? ""
     @Published var integrationStates: [String: AIIntegrationState] = [:]
     @Published var isBusy: Bool = false
+    @Published var connectorSyncingIDs: Set<String> = []
+    @Published var connectorLastMessages: [String: String] = [:]
 
     private let backend = BackendSupervisor.shared
     private var obsidianAutoSyncTask: Task<Void, Never>?
     private var obsidianSyncInFlight = false
     private var onboardingDismissedForSession = false
+
+    private static let directConnectorSyncIDs: Set<String> = [
+        "calendar",
+        "github",
+        "jira",
+        "linear",
+        "notion",
+        "raindrop",
+        "readwise",
+        "slack",
+        "zotero"
+    ]
 
     var integrations: [AIIntegration] {
         AIIntegrationCatalog.all
@@ -2787,7 +2805,7 @@ final class AppState: ObservableObject {
 
     func connectLocalNotesFolder(_ connector: SourceConnectorCatalogItem, chooseNew: Bool = false) {
         guard connector.id == "obsidian" else {
-            status = "\(connector.name) native sync is not wired yet"
+            status = "Open Connections & Privacy to connect \(connector.name)"
             return
         }
 
@@ -2806,6 +2824,101 @@ final class AppState: ObservableObject {
         panel.canCreateDirectories = false
         if panel.runModal() == .OK, let url = panel.url {
             Task { await syncLocalNotesFolder(connector, folderURL: url, rememberPath: true) }
+        }
+    }
+
+    func connectCalendarFile(_ connector: SourceConnectorCatalogItem) {
+        guard connector.id == "calendar" else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Select Calendar File"
+        panel.message = "Allow Cortex to sync this read-only calendar export into Review."
+        panel.prompt = "Sync Calendar"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        if let calendarType = UTType(filenameExtension: "ics") {
+            panel.allowedContentTypes = [calendarType]
+        }
+        if panel.runModal() == .OK, let url = panel.url {
+            Task {
+                await syncDirectConnector(
+                    connector,
+                    payload: [
+                        "ics_path": url.standardizedFileURL.path,
+                        "processing": "sync",
+                        "max_records": 500
+                    ]
+                )
+            }
+        }
+    }
+
+    func syncZoteroLocal(_ connector: SourceConnectorCatalogItem) {
+        guard connector.id == "zotero" else { return }
+        Task {
+            await syncDirectConnector(
+                connector,
+                payload: [
+                    "processing": "sync",
+                    "max_records": 500
+                ]
+            )
+        }
+    }
+
+    func syncDirectConnector(_ connector: SourceConnectorCatalogItem, payload: [String: Any]) async {
+        guard Self.directConnectorSyncIDs.contains(connector.id) else {
+            status = "\(connector.name) is not wired for direct sync yet"
+            return
+        }
+        guard !connectorSyncingIDs.contains(connector.id) else {
+            status = "\(connector.name) sync is already running"
+            return
+        }
+
+        connectorSyncingIDs.insert(connector.id)
+        isBusy = true
+        defer {
+            connectorSyncingIDs.remove(connector.id)
+            isBusy = false
+        }
+
+        do {
+            status = "Syncing \(connector.name)..."
+            var requestBody = payload
+            if requestBody["processing"] == nil {
+                requestBody["processing"] = "sync"
+            }
+            let syncData = try await request(
+                path: "/v1/connectors/\(connector.id)/sync",
+                method: "POST",
+                body: requestBody
+            )
+            let synced = try JSONDecoder().decode(SourceAccountSyncResponse.self, from: syncData)
+            firstSourceAdded = true
+            onboardingFirstSourceNames = Array(Set(onboardingFirstSourceNames + [connector.name])).sorted()
+            UserDefaults.standard.set(true, forKey: "onboardingFirstSourceImported.v1")
+            UserDefaults.standard.set(onboardingFirstSourceNames, forKey: "onboardingFirstSourceNames.v1")
+            await loadSourceConnectivity()
+            await loadTrust()
+            await refreshAfterCapture()
+
+            let changed = synced.saved + synced.queued
+            let message: String
+            if changed > 0 {
+                message = "\(connector.name) synced \(changed) item\(changed == 1 ? "" : "s") into Review"
+            } else if synced.skipped > 0 || synced.received > 0 {
+                message = "\(connector.name) already up to date"
+            } else {
+                message = "\(connector.name) sync finished"
+            }
+            connectorLastMessages[connector.id] = message
+            status = message
+        } catch {
+            let message = CortexRecoveryText.failureStatus("\(connector.name) sync", error: error)
+            connectorLastMessages[connector.id] = message
+            status = message
         }
     }
 
@@ -4022,6 +4135,15 @@ struct CortexView: View {
                         .fontWeight(.semibold)
                 }
                 Spacer()
+                Button {
+                    state.openConnectionsPrivacy()
+                } label: {
+                    Label("Connections", systemImage: "lock.shield")
+                        .labelStyle(.titleAndIcon)
+                        .frame(minHeight: 36)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
                 CortexLayerStatusPill(state: state)
             }
             .padding(.horizontal, 16)
@@ -4078,9 +4200,9 @@ struct CortexLayerStatusPill: View {
             return "Memory ready"
         }
         if activeAccounts > 0 {
-            return "Notes syncing"
+            return activeAccounts == 1 ? "1 source syncing" : "\(activeAccounts) sources syncing"
         }
-        return "No notes"
+        return "No sources"
     }
 
     private var icon: String {

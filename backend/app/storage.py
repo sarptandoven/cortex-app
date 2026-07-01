@@ -465,17 +465,15 @@ PRIMARY_BETA_CONNECTOR_IDS: frozenset[str] = frozenset({"obsidian"})
 BASELINE_10K_CONNECTOR_IDS: frozenset[str] = frozenset(
     {
         "obsidian",
-        "chatgpt",
-        "claude",
         "slack",
-        "email",
-        "gmail",
-        "notion",
-        "google-drive",
-        "cloud-docs",
         "github",
+        "readwise",
+        "linear",
+        "notion",
+        "jira",
+        "raindrop",
         "calendar",
-        "google-keep",
+        "zotero",
     }
 )
 SERVICE_MEMORY_SOURCE_KEYS: frozenset[str] = frozenset(
@@ -747,8 +745,14 @@ def _connector_first_100_note(item: dict[str, Any]) -> str:
         return explicit
 
     note = str(item.get("notes") or "").strip()
+    connector_id = _normalize_source_key(item.get("id"))
+    live_status = str(item.get("live_status") or "").lower()
     readiness_status = _connector_readiness_status(item)
-    if readiness_status == "live-planned":
+    if _connector_primary_beta(item):
+        prefix = "First-100: native local sync is the primary source path."
+    elif connector_id in BASELINE_10K_CONNECTOR_IDS and live_status in {"local_api", "local_only"}:
+        prefix = "First-100: native local sync is available from connector settings; not primary UI."
+    elif readiness_status == "live-planned":
         prefix = "First-100: account sign-in is the intended source path; recovery intake is not primary."
     elif readiness_status == "token-ready":
         prefix = "First-100: read-only token sync is available from advanced connector settings; not primary UI."
@@ -766,6 +770,10 @@ def _connector_primary_beta(item: dict[str, Any]) -> bool:
 def _connector_primary_beta_path(item: dict[str, Any]) -> str:
     if _connector_primary_beta(item):
         return "native-local-connector"
+    connector_id = _normalize_source_key(item.get("id"))
+    live_status = str(item.get("live_status") or "").lower()
+    if connector_id in BASELINE_10K_CONNECTOR_IDS and live_status in {"local_api", "local_only"}:
+        return "native-local-connector"
     readiness_status = _connector_readiness_status(item)
     if readiness_status == "live-planned":
         return "account-sign-in-planned"
@@ -778,6 +786,10 @@ def _connector_primary_beta_path(item: dict[str, Any]) -> str:
 
 def _connector_beta_status(item: dict[str, Any]) -> str:
     if _connector_primary_beta(item):
+        return "ready"
+    connector_id = _normalize_source_key(item.get("id"))
+    live_status = str(item.get("live_status") or "").lower()
+    if connector_id in BASELINE_10K_CONNECTOR_IDS and live_status in {"local_api", "local_only"}:
         return "ready"
     readiness_status = _connector_readiness_status(item)
     if readiness_status == "token-ready":
@@ -2108,6 +2120,12 @@ class CortexStore:
             elif live_status == "planned":
                 status = "planned"
                 next_action = "Account sign-in sync is planned for this source."
+            elif readiness_status == "token-ready":
+                status = "available"
+                next_action = "Connect this source with a read-only token to start sync."
+            elif source in BASELINE_10K_CONNECTOR_IDS and live_status in {"local_api", "local_only"}:
+                status = "available"
+                next_action = "Connect this source through the native local connector to start sync."
             elif readiness_status == "export-only":
                 status = "connector_needed"
                 next_action = "Needs a direct connector before becoming a primary source."
