@@ -1495,6 +1495,51 @@ def assert_focused_answer_contracts(store: CortexStore, user_id: str = USER_ID) 
     }
 
 
+def assert_no_evidence_answer_abstains(store: CortexStore, user_id: str = USER_ID) -> dict[str, Any]:
+    store.update_settings(user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+    store.save_capture(
+        user_id=user_id,
+        content="Project Atlas payroll reimbursement owner appears only in an uncited scratch note.",
+        source="eval-manual",
+        source_url=None,
+        title="Uncited no-evidence eval source",
+        extracted={
+            "_timestamp": "2026-07-01T10:05:00Z",
+            "summary": "Uncited no-evidence eval source.",
+            "records": [
+                {
+                    "id": "rq_ask_no_evidence_uncited_only",
+                    "kind": "claim",
+                    "layer": "semantic",
+                    "content": "Project Atlas payroll reimbursement owner appears only in an uncited scratch note.",
+                    "summary": "Project Atlas payroll reimbursement owner uncited scratch note.",
+                    "confidence": "confirmed",
+                    "importance": 5,
+                    "topics": ["Project Atlas", "payroll", "reimbursement"],
+                    "entity_ids": [],
+                }
+            ],
+            "tasks": [],
+            "entities": [],
+        },
+    )
+    answer = store.answer_query(user_id, "Project Atlas payroll reimbursement owner", limit=3)
+    result_ids = [item["id"] for item in answer.get("results") or []]
+    citation_ids = [citation["id"] for citation in answer.get("citations") or []]
+    if "rq_ask_no_evidence_uncited_only" not in result_ids:
+        raise AssertionError(f"No-evidence Ask regression did not surface the uncited match in results: {result_ids}")
+    if citation_ids:
+        raise AssertionError(f"No-evidence Ask returned uncited matches as citations: {citation_ids}")
+    if "did not find a cited item" not in str(answer.get("answer") or ""):
+        raise AssertionError(f"No-evidence Ask did not abstain with missing-citation copy: {answer}")
+    return {
+        "query": "Project Atlas payroll reimbursement owner",
+        "uncited_result_ids": result_ids,
+        "citation_ids": citation_ids,
+        "abstained": True,
+    }
+
+
 def assert_direct_connector_answer_contracts(
     store: CortexStore,
     direct_connector_memories: list[dict[str, Any]],
@@ -1844,6 +1889,7 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
     local_file_citation = assert_shared_local_file_citations_sanitized(store, user_id)
     state_leakage = assert_state_leakage_excluded(store, user_id)
     focused_answer_contracts = assert_focused_answer_contracts(store, user_id)
+    no_evidence_answer = assert_no_evidence_answer_abstains(store, user_id)
     direct_connector_answer_contracts = assert_direct_connector_answer_contracts(store, direct_connector_memories, user_id)
     source_backed_fallback = assert_source_backed_lexical_fallback_ranking(store, user_id, limit)
     checks.append(source_backed_fallback)
@@ -1858,6 +1904,7 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
         "local_file_citation": local_file_citation,
         "state_leakage_seeded": state_leakage,
         "focused_answer_contracts": focused_answer_contracts,
+        "no_evidence_answer": no_evidence_answer,
         "direct_connector_answer_contracts": direct_connector_answer_contracts,
         "source_backed_fallback": source_backed_fallback,
         "seeded_layers": sorted(seeded_layers),

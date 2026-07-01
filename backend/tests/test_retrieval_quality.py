@@ -314,6 +314,9 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertIn(RELATED_MEMORY_COMPANION_ID, focused_contracts["related_memory"]["citation_ids"])
         self.assertEqual(focused_contracts["related_memory"]["relationship"]["kind"], "shared_entity")
         self.assertEqual(focused_contracts["related_memory"]["relationship"]["related_to_id"], RELATED_MEMORY_PRIMARY_ID)
+        self.assertTrue(result["no_evidence_answer"]["abstained"])
+        self.assertEqual(result["no_evidence_answer"]["citation_ids"], [])
+        self.assertIn("rq_ask_no_evidence_uncited_only", result["no_evidence_answer"]["uncited_result_ids"])
 
         direct_contracts = result["direct_connector_answer_contracts"]
         expected_direct_sources = {
