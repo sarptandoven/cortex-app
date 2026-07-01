@@ -4224,6 +4224,8 @@ class CortexStore:
                   c.source AS capture_source,
                   c.source_url AS capture_source_url,
                   c.title AS capture_title,
+                  c.source_account_id AS capture_source_account_id,
+                  c.external_id AS capture_external_id,
                   c.raw_text AS capture_raw_text
                 FROM tasks t
                 LEFT JOIN captures c ON c.id = t.capture_id AND c.user_id = t.user_id
@@ -8840,6 +8842,8 @@ class CortexStore:
               c.source AS capture_source,
               c.source_url AS capture_source_url,
               c.title AS capture_title,
+              c.source_account_id AS capture_source_account_id,
+              c.external_id AS capture_external_id,
               c.raw_text AS capture_raw_text
             FROM tasks t
             LEFT JOIN captures c ON c.id = t.capture_id AND c.user_id = t.user_id
@@ -8896,6 +8900,7 @@ class CortexStore:
         keys = set(row.keys())
         source = row["capture_source"] if "capture_source" in keys and row["capture_source"] else "task"
         source_url = self._task_source_url_from_row(row)
+        provenance = self._task_provenance_from_row(row)
         topics = json.loads(row["topics_json"] or "[]")
         entity_ids = json.loads(row["entity_ids_json"] or "[]")
         return {
@@ -8909,6 +8914,7 @@ class CortexStore:
             "summary": row["content"],
             "source": source,
             "source_url": source_url,
+            "provenance": provenance,
             "confidence": "confirmed",
             "importance": row["importance"],
             "status": row["status"],
@@ -8931,6 +8937,17 @@ class CortexStore:
                 enabled=True,
             )
         return source_url
+
+    def _task_provenance_from_row(self, row: Any) -> dict[str, Any]:
+        keys = set(row.keys())
+        return {
+            key: value
+            for key, value in {
+                "source_account_id": row["capture_source_account_id"] if "capture_source_account_id" in keys else None,
+                "external_id": row["capture_external_id"] if "capture_external_id" in keys else None,
+            }.items()
+            if value not in (None, "", [], {})
+        }
 
     def _enqueue_embed_memory_job(
         self,
@@ -9958,6 +9975,7 @@ class CortexStore:
             "entity_ids": json.loads(row["entity_ids_json"] or "[]"),
             "source": row["capture_source"] if "capture_source" in keys and row["capture_source"] else "task",
             "source_url": self._task_source_url_from_row(row),
+            "provenance": self._task_provenance_from_row(row),
             "captured_at": row["captured_at"],
         }
 
