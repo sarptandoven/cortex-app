@@ -630,9 +630,19 @@ class CortexVault:
                 self._prune_empty_parents(path.parent, base)
                 counts[record_dir] += 1
 
+        # Only delete THIS user's attachments. Every other record type above filters by
+        # user_id; attachments must be scoped the same way (attachments/<user_id>/...) so a
+        # deletion in a shared vault (local/bucket mode serves many user_ids from one vault)
+        # can never destroy another tenant's attachments. Guard against path traversal in
+        # user_id so it can only ever touch a direct subdirectory of attachments/.
         attachments_dir = self.root / "attachments"
-        if attachments_dir.exists():
-            for path in sorted(attachments_dir.rglob("*"), reverse=True):
+        user_attachments = attachments_dir / user_id
+        try:
+            scoped_within_attachments = user_attachments.resolve().parent == attachments_dir.resolve()
+        except (OSError, ValueError):
+            scoped_within_attachments = False
+        if scoped_within_attachments and user_attachments.is_dir():
+            for path in sorted(user_attachments.rglob("*"), reverse=True):
                 if path.is_file():
                     path.unlink()
                     counts["attachments"] += 1
@@ -641,6 +651,10 @@ class CortexVault:
                         path.rmdir()
                     except OSError:
                         pass
+            try:
+                user_attachments.rmdir()
+            except OSError:
+                pass
 
         settings = self._read_json(self.settings_path, {"users": {}})
         users = settings.get("users")
