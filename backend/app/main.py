@@ -425,7 +425,11 @@ def _auth_query_token(token: str | None, *, required_scope: str = "write") -> st
             _assert_api_token_scope(scoped, required_scope)
             _assert_api_token_trust(scoped["user_id"], required_scope)
             return scoped["user_id"]
-    if settings.api_key:
+    # Fail closed whenever auth is actually required — a configured global key, scoped-token
+    # mode, or any non-local (hosted) shard mode. Only genuine local single-user dev
+    # (no key, local shard, scoped tokens off) may fall through to the default user, matching
+    # every other auth path which never grants access on a missing/invalid token.
+    if settings.api_key or settings.require_scoped_api_tokens or settings.shard_mode != "local":
         raise HTTPException(status_code=401, detail="Missing or invalid Cortex capture token")
     return settings.default_user_id
 

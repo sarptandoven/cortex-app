@@ -1852,7 +1852,9 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     return None
                 _require_api_token_trust(scoped["user_id"], required_scope)
                 return scoped["user_id"]
-        if settings.api_key:
+        # Fail closed whenever auth is required (global key, scoped-token mode, or non-local
+        # shard mode); only genuine local single-user dev falls through to the default user.
+        if settings.api_key or settings.require_scoped_api_tokens or settings.shard_mode != "local":
             return None
         return settings.default_user_id
 
