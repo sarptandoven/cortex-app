@@ -108,6 +108,7 @@ class TokenControlIndex:
       label TEXT NOT NULL DEFAULT '',
       token_salt TEXT NOT NULL,
       token_hash TEXT NOT NULL,
+      lookup_hash TEXT,
       scopes_json TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -116,6 +117,7 @@ class TokenControlIndex:
     );
     CREATE INDEX IF NOT EXISTS idx_scoped_token_index_audience ON scoped_token_index(audience, revoked_at);
     CREATE INDEX IF NOT EXISTS idx_scoped_token_index_user ON scoped_token_index(user_id, audience, revoked_at);
+    CREATE INDEX IF NOT EXISTS idx_scoped_token_index_lookup ON scoped_token_index(audience, lookup_hash, revoked_at);
     CREATE TABLE IF NOT EXISTS users (
       user_id TEXT PRIMARY KEY,
       display_name TEXT NOT NULL DEFAULT '',
@@ -154,9 +156,9 @@ class TokenControlIndex:
                     conn.execute(
                         """
                         INSERT OR REPLACE INTO scoped_token_index
-                        (token_id, user_id, audience, label, token_salt, token_hash, scopes_json,
+                        (token_id, user_id, audience, label, token_salt, token_hash, lookup_hash, scopes_json,
                          created_at, updated_at, last_used_at, revoked_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                                 (SELECT last_used_at FROM scoped_token_index WHERE token_id = ?), NULL)
                         """,
                         (
@@ -166,6 +168,7 @@ class TokenControlIndex:
                             str(metadata.get("label") or "")[:120],
                             salt,
                             self._token_hash(normalized, salt),
+                            self._lookup_hash(normalized),
                             json.dumps(list(metadata.get("scopes") or [])),
                             created_at,
                             str(metadata.get("updated_at") or timestamp),
@@ -174,6 +177,10 @@ class TokenControlIndex:
                     )
             finally:
                 conn.close()
+
+    _TOKEN_SELECT_COLUMNS = (
+        "token_id, user_id, audience, label, token_salt, token_hash, scopes_json, created_at, last_used_at"
+    )
 
     def authenticate(self, token: str, *, audience: str, user_id: str | None = None) -> dict[str, Any] | None:
         normalized = token.strip()
@@ -184,51 +191,75 @@ class TokenControlIndex:
         if user_id:
             filters.append("user_id = ?")
             params.append(user_id)
+        base_where = " AND ".join(filters)
         timestamp = _control_now_iso()
         conn = self._connect()
         try:
             with conn:
-                rows = conn.execute(
-                    f"""
-                    SELECT token_id, user_id, audience, label, token_salt, token_hash, scopes_json, created_at, last_used_at
-                    FROM scoped_token_index
-                    WHERE {" AND ".join(filters)}
-                    ORDER BY updated_at DESC, created_at DESC
-                    """,
+                # O(1) path: candidate rows sharing this token's deterministic
+                # lookup hash (indexed). Usually one row; verified below in
+                # constant time against the per-row salted hash.
+                indexed_rows = conn.execute(
+                    f"SELECT {self._TOKEN_SELECT_COLUMNS} FROM scoped_token_index "
+                    f"WHERE {base_where} AND lookup_hash = ? "
+                    f"ORDER BY updated_at DESC, created_at DESC",
+                    (*params, self._lookup_hash(normalized)),
+                ).fetchall()
+                matched, result = self._match_token_row(conn, indexed_rows, normalized, timestamp)
+                if matched:
+                    return result
+                # Fallback: tokens minted before lookup_hash existed have no index
+                # key yet, so scan only those un-migrated rows (a shrinking set —
+                # each is backfilled on first successful auth below).
+                legacy_rows = conn.execute(
+                    f"SELECT {self._TOKEN_SELECT_COLUMNS} FROM scoped_token_index "
+                    f"WHERE {base_where} AND (lookup_hash IS NULL OR lookup_hash = '') "
+                    f"ORDER BY updated_at DESC, created_at DESC",
                     tuple(params),
                 ).fetchall()
-                for row in rows:
-                    candidate = self._token_hash(normalized, row["token_salt"])
-                    if not secrets.compare_digest(candidate, row["token_hash"]):
-                        continue
-                    # Reject tokens whose owner is suspended/deleted in the user
-                    # registry. Tokens minted before the registry existed have no
-                    # users row and stay valid (treated as active) for backward
-                    # compatibility.
-                    status_row = conn.execute(
-                        "SELECT status FROM users WHERE user_id = ?",
-                        (row["user_id"],),
-                    ).fetchone()
-                    if status_row is not None and str(status_row["status"] or "") != self.ACTIVE_USER_STATUS:
-                        return None
-                    conn.execute(
-                        "UPDATE scoped_token_index SET last_used_at = ? WHERE token_id = ?",
-                        (timestamp, row["token_id"]),
-                    )
-                    return {
-                        "token_id": row["token_id"],
-                        "user_id": row["user_id"],
-                        "label": row["label"],
-                        "audience": row["audience"],
-                        "scopes": self._json_list(row["scopes_json"]),
-                        "created_at": row["created_at"],
-                        "last_used_at": timestamp,
-                        "admin": False,
-                        "control_index": True,
-                    }
+                matched, result = self._match_token_row(conn, legacy_rows, normalized, timestamp)
+                if matched:
+                    return result
         finally:
             conn.close()
         return None
+
+    def _match_token_row(
+        self, conn: sqlite3.Connection, rows: list[Any], normalized: str, timestamp: str
+    ) -> tuple[bool, dict[str, Any] | None]:
+        """Return (matched, result). matched=True with result=None means the token
+        matched a token row but the owner is suspended/deleted (reject outright,
+        do not keep scanning). matched=False means none of these rows matched."""
+        for row in rows:
+            candidate = self._token_hash(normalized, row["token_salt"])
+            if not secrets.compare_digest(candidate, row["token_hash"]):
+                continue
+            # Reject tokens whose owner is suspended/deleted in the registry.
+            # Tokens minted before the registry existed have no users row and stay
+            # valid (treated as active) for backward compatibility.
+            status_row = conn.execute(
+                "SELECT status FROM users WHERE user_id = ?",
+                (row["user_id"],),
+            ).fetchone()
+            if status_row is not None and str(status_row["status"] or "") != self.ACTIVE_USER_STATUS:
+                return True, None
+            # Also backfill lookup_hash so a legacy token becomes O(1) next time.
+            conn.execute(
+                "UPDATE scoped_token_index SET last_used_at = ?, lookup_hash = ? WHERE token_id = ?",
+                (timestamp, self._lookup_hash(normalized), row["token_id"]),
+            )
+            return True, {
+                "token_id": row["token_id"],
+                "user_id": row["user_id"],
+                "label": row["label"],
+                "audience": row["audience"],
+                "scopes": self._json_list(row["scopes_json"]),
+                "created_at": row["created_at"],
+                "last_used_at": timestamp,
+                "admin": False,
+                "control_index": True,
+            }
+        return False, None
 
     def revoke(self, *, user_id: str, token_id: str, revoked_at: str | None = None) -> None:
         if not self.path.exists():
@@ -494,10 +525,24 @@ class TokenControlIndex:
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
         conn.executescript(self.SCHEMA)
+        # Backward-compatible migration for control indexes created before the
+        # lookup_hash column existed (the CREATE TABLE IF NOT EXISTS above leaves
+        # pre-existing tables untouched).
+        try:
+            conn.execute("ALTER TABLE scoped_token_index ADD COLUMN lookup_hash TEXT")
+        except sqlite3.OperationalError:
+            pass
         return conn
 
     def _token_hash(self, token: str, salt: str) -> str:
         return hashlib.sha256(f"{salt}:{token}".encode("utf-8")).hexdigest()
+
+    def _lookup_hash(self, token: str) -> str:
+        # Deterministic (unsalted) index key for O(1) token lookup. Tokens are
+        # high-entropy (43+ url-safe chars), so an unsalted digest is safe as an
+        # index key; the authoritative credential check remains the per-row
+        # salted `token_hash` compared in constant time.
+        return hashlib.sha256(f"cxlookup:{token}".encode("utf-8")).hexdigest()
 
     def _json_list(self, value: str | None) -> list[str]:
         try:

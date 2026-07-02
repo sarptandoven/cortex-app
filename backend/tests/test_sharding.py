@@ -294,6 +294,56 @@ class ShardingTests(unittest.TestCase):
         # Re-accessing alice re-opens her shard from disk with data intact.
         self.assertTrue(registry.settings("alice")["allow_pending_in_context"])
 
+    def _control_lookup_hashes(self, index) -> list:
+        import sqlite3
+
+        conn = sqlite3.connect(index.path)
+        try:
+            return [row[0] for row in conn.execute("SELECT lookup_hash FROM scoped_token_index").fetchall()]
+        finally:
+            conn.close()
+
+    def test_token_index_writes_lookup_hash_for_new_tokens(self) -> None:
+        registry = StoreRegistry.from_settings(self.settings(mode="user"))
+        registry.ensure_api_token("alice", "cxa_lookup_hash_new_token_123456789", label="Lookup", scopes=["read"])
+        hashes = self._control_lookup_hashes(registry.token_index)
+        self.assertEqual(len(hashes), 1)
+        self.assertTrue(hashes[0])
+
+    def test_token_index_lookup_hash_backfills_legacy_tokens(self) -> None:
+        import sqlite3
+
+        registry = StoreRegistry.from_settings(self.settings(mode="user"))
+        token = "cxa_legacy_lookup_token_123456789"
+        registry.ensure_api_token("alice", token, label="Legacy", scopes=["read"])
+        index = registry.token_index
+
+        # Simulate a pre-migration row that predates the lookup_hash column.
+        conn = sqlite3.connect(index.path)
+        try:
+            conn.execute("UPDATE scoped_token_index SET lookup_hash = NULL")
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(self._control_lookup_hashes(index), [None])
+
+        # It still authenticates via the legacy fallback scan...
+        scoped = index.authenticate(token, audience="api")
+        self.assertIsNotNone(scoped)
+        self.assertEqual(scoped["user_id"], "alice")
+
+        # ...and its lookup_hash is backfilled so it is O(1) next time.
+        self.assertTrue(self._control_lookup_hashes(index)[0])
+        self.assertEqual(index.authenticate(token, audience="api")["user_id"], "alice")
+
+    def test_token_index_rejects_unknown_and_wrong_audience_tokens(self) -> None:
+        registry = StoreRegistry.from_settings(self.settings(mode="user"))
+        registry.ensure_api_token("alice", "cxa_known_lookup_token_123456789", label="Known", scopes=["read"])
+        index = registry.token_index
+        self.assertIsNone(index.authenticate("cxa_unknown_lookup_token_987654321", audience="api"))
+        # A real api token is not valid for the mcp audience.
+        self.assertIsNone(index.authenticate("cxa_known_lookup_token_123456789", audience="mcp"))
+
     def test_control_plane_requires_one_user_with_api_and_mcp_tokens(self) -> None:
         settings = self.settings(mode="bucket", shard_count=8)
         registry = StoreRegistry.from_settings(settings)
