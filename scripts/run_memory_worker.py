@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
 
 from backend.app.config import load_settings
 from backend.app.sharding import StoreRegistry
-from backend.app.worker import run_worker_tick
+from backend.app.worker import discover_worker_user_ids, run_worker_tick
 
 
 def _env_int(name: str, default: int) -> int:
@@ -55,13 +55,20 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     settings = load_settings()
     store = StoreRegistry.from_settings(settings)
-    user_ids = args.user_ids or [settings.default_user_id]
+    explicit_user_ids = args.user_ids
     iterations = max(0, int(args.iterations))
     interval = max(0.0, float(args.interval_seconds))
     exit_code = 0
     tick_count = 0
 
     while True:
+        # Re-discover users each tick so a long-running hosted worker picks up
+        # newly provisioned users without a restart. Explicit --user-id always wins.
+        user_ids = explicit_user_ids or discover_worker_user_ids(
+            store,
+            default_user_id=settings.default_user_id,
+            shard_mode=settings.shard_mode,
+        )
         result: dict[str, Any] = run_worker_tick(
             store,
             user_ids,

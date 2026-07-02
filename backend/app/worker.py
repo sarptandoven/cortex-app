@@ -5,6 +5,37 @@ from typing import Any, Iterable
 from .extractor import now_iso
 
 
+def discover_worker_user_ids(
+    store: Any,
+    *,
+    default_user_id: str = "local",
+    shard_mode: str = "local",
+    limit: int = 1000,
+) -> list[str]:
+    """Decide which users a worker pass should process.
+
+    Local mode has a single default user. In sharded (hosted) modes, enumerate
+    active provisioned users from the control-plane registry so newly provisioned
+    users are picked up automatically without being passed explicitly. Falls back
+    to token-ready users, then the default user, so a cold/empty control plane
+    still makes progress. The `limit` caps how many users one worker pass covers;
+    beyond it, run additional workers with explicit user ranges.
+    """
+    if str(shard_mode or "local").strip().lower() == "local":
+        return [default_user_id]
+    token_index = getattr(store, "token_index", None)
+    discovered: list[str] = []
+    if token_index is not None:
+        registered = getattr(token_index, "registered_user_ids", None)
+        if callable(registered):
+            discovered = [str(user_id) for user_id in registered(limit=limit, status="active")]
+        if not discovered:
+            ready = getattr(token_index, "ready_user_ids", None)
+            if callable(ready):
+                discovered = [str(user_id) for user_id in ready(limit=limit)]
+    return discovered or [default_user_id]
+
+
 def normalize_worker_user_ids(user_ids: Iterable[str] | None, *, default_user_id: str = "local") -> list[str]:
     """Return a stable, de-duplicated list of user ids for a worker pass."""
     values = list(user_ids or [])

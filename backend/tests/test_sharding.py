@@ -255,6 +255,45 @@ class ShardingTests(unittest.TestCase):
         self.assertIsNone(registry.get_user("alice"))
         self.assertEqual(registry.list_users(), [])
 
+    def test_store_cache_evicts_least_recently_used_shards(self) -> None:
+        registry = StoreRegistry(
+            ShardRouter.from_settings(self.settings(mode="user")),
+            default_user_id="local",
+            store_cache_size=2,
+        )
+        alice = registry.store_for_user("alice")
+        registry.store_for_user("bob")
+        self.assertEqual(len(registry._stores), 2)
+
+        # Touch alice so bob becomes least-recently-used, then open carol.
+        registry.store_for_user("alice")
+        registry.store_for_user("carol")
+
+        cached = set(registry._stores.keys())
+        self.assertEqual(len(cached), 2)
+        self.assertIn(str(registry.assignment_for("alice").db_path), cached)
+        self.assertIn(str(registry.assignment_for("carol").db_path), cached)
+        self.assertNotIn(str(registry.assignment_for("bob").db_path), cached)
+        # Alice was retained as the same cached instance (not rebuilt).
+        self.assertIs(registry.store_for_user("alice"), alice)
+
+    def test_evicted_shard_rematerializes_with_persisted_data(self) -> None:
+        registry = StoreRegistry(
+            ShardRouter.from_settings(self.settings(mode="user")),
+            default_user_id="local",
+            store_cache_size=1,
+        )
+        registry.update_settings("alice", {"allow_pending_in_context": True})
+
+        # Opening other users' shards evicts alice (cache holds only one shard).
+        for other in ("bob", "carol", "dave"):
+            registry.update_settings(other, {"allow_pending_in_context": False})
+        self.assertEqual(len(registry._stores), 1)
+        self.assertNotIn(str(registry.assignment_for("alice").db_path), set(registry._stores.keys()))
+
+        # Re-accessing alice re-opens her shard from disk with data intact.
+        self.assertTrue(registry.settings("alice")["allow_pending_in_context"])
+
     def test_control_plane_requires_one_user_with_api_and_mcp_tokens(self) -> None:
         settings = self.settings(mode="bucket", shard_count=8)
         registry = StoreRegistry.from_settings(settings)

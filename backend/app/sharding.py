@@ -5,6 +5,7 @@ import json
 import re
 import secrets
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -517,16 +518,24 @@ class StoreRegistry:
 
     USER_ID_KWARG = "user_id"
 
-    def __init__(self, router: ShardRouter, *, default_user_id: str = "local") -> None:
+    def __init__(self, router: ShardRouter, *, default_user_id: str = "local", store_cache_size: int = 512) -> None:
         self.router = router
         self.default_user_id = default_user_id
         self.token_index = TokenControlIndex(router.shard_root / "control" / "token_index.sqlite")
-        self._stores: dict[str, CortexStore] = {}
+        # LRU-bounded per-user store cache: `user` mode opens one shard per user,
+        # so an unbounded cache would leak memory/handles at 10k+ users. Local and
+        # bucket mode stay well under the cap naturally (1 / shard_count stores).
+        self._stores: "OrderedDict[str, CortexStore]" = OrderedDict()
+        self._store_cache_size = max(1, int(store_cache_size or 512))
         self._lock = threading.Lock()
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "StoreRegistry":
-        return cls(ShardRouter.from_settings(settings), default_user_id=settings.default_user_id)
+        return cls(
+            ShardRouter.from_settings(settings),
+            default_user_id=settings.default_user_id,
+            store_cache_size=getattr(settings, "store_cache_size", 512),
+        )
 
     @property
     def default_store(self) -> CortexStore:
@@ -537,13 +546,30 @@ class StoreRegistry:
         cache_key = str(assignment.db_path)
         with self._lock:
             store = self._stores.get(cache_key)
-            if store is None:
-                assignment.db_path.parent.mkdir(parents=True, exist_ok=True)
-                assignment.vault_path.mkdir(parents=True, exist_ok=True)
-                init_db(assignment.db_path)
-                store = CortexStore(assignment.db_path, assignment.vault_path)
-                self._stores[cache_key] = store
+            if store is not None:
+                self._stores.move_to_end(cache_key)
+                return store
+            assignment.db_path.parent.mkdir(parents=True, exist_ok=True)
+            assignment.vault_path.mkdir(parents=True, exist_ok=True)
+            init_db(assignment.db_path)
+            store = CortexStore(assignment.db_path, assignment.vault_path)
+            self._stores[cache_key] = store
+            self._evict_stores_if_needed()
             return store
+
+    def _evict_stores_if_needed(self) -> None:
+        # Caller holds self._lock. Evict least-recently-used shards past the cap.
+        # An evicted shard re-materializes on next access (its DB/vault persist on
+        # disk); the control index remains the source of truth for auth routing,
+        # so eviction never affects correctness, only the in-memory working set.
+        while len(self._stores) > self._store_cache_size:
+            _key, evicted = self._stores.popitem(last=False)
+            close = getattr(evicted, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
 
     def assignment_for(self, user_id: str) -> ShardAssignment:
         return self.router.assignment_for(user_id)

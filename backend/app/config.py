@@ -22,6 +22,7 @@ class Settings:
     shard_mode: str = "local"
     shard_root: Path | None = None
     shard_count: int = 16
+    store_cache_size: int = 512
     require_scoped_api_tokens: bool = False
     sync_signing_key: str = ""
     hosted_database_url: str = ""
@@ -64,6 +65,7 @@ def load_settings() -> Settings:
         shard_mode=os.environ.get("CORTEX_SHARD_MODE", "local"),
         shard_root=Path(os.environ["CORTEX_SHARD_ROOT"]).expanduser() if os.environ.get("CORTEX_SHARD_ROOT") else None,
         shard_count=max(1, int(os.environ.get("CORTEX_SHARD_COUNT", "16"))),
+        store_cache_size=max(1, int(os.environ.get("CORTEX_STORE_CACHE_SIZE", "512") or "512")),
         require_scoped_api_tokens=require_scoped_api_tokens,
         sync_signing_key=os.environ.get("CORTEX_SYNC_SIGNING_KEY", ""),
         hosted_database_url=os.environ.get("CORTEX_HOSTED_DATABASE_URL", os.environ.get("DATABASE_URL", "")).strip(),
