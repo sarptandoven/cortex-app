@@ -9501,12 +9501,12 @@ class CortexStore:
             return cleaned
         return cleaned[: max(0, limit - 1)].rstrip() + "..."
 
-    def open_tasks(self, user_id: str, limit: int = 20, *, include_pending: bool | None = None) -> list[dict[str, Any]]:
+    def open_tasks(self, user_id: str, limit: int = 20, *, include_pending: bool | None = None, sector: str | None = None) -> list[dict[str, Any]]:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
             if include_pending is False:
                 user_settings = {**user_settings, "allow_pending_in_context": False}
-            filters, params = self._task_filters(user_id, user_settings, alias="t", capture_alias="c")
+            filters, params = self._task_filters(user_id, user_settings, alias="t", capture_alias="c", sector=sector)
             where = " AND ".join(filters)
             rows = conn.execute(
                 f"""
@@ -11414,7 +11414,7 @@ class CortexStore:
             limit = int(user_settings["context_pack_limit"])
         memories = self.search(user_id, query, limit=limit, sector=sector, include_related=True) if query else self.recent(user_id, limit=limit, sector=sector)
         decisions = self._memories_by_kind(user_id, "decision", limit=5, sector=sector)
-        tasks = [] if sector else self.open_tasks(user_id, limit=8)
+        tasks = self.open_tasks(user_id, limit=8, sector=sector)
         topics = self.list_topics(user_id, limit=8, sector=sector)
         entities = self.list_entities(user_id, limit=8, sector=sector)
         redact = bool(user_settings["redact_sensitive_context"])
@@ -11524,7 +11524,7 @@ class CortexStore:
 
         focus_memories = self.search(user_id, query, limit=limit, sector=sector, include_related=True) if query else []
         focus_memories = self._approved_profile_memories(user_id, focus_memories, include_pending=include_pending)
-        open_loops = [] if sector else self.open_tasks(user_id, limit=limit, include_pending=include_pending)
+        open_loops = self.open_tasks(user_id, limit=limit, include_pending=include_pending, sector=sector)
         topics = self.list_topics(user_id, limit=8, include_pending=include_pending, sector=sector)
         entities = self.list_entities(user_id, limit=8, include_pending=include_pending, sector=sector)
         sources = self._source_freshness(user_id, limit=8, user_settings=profile_settings)

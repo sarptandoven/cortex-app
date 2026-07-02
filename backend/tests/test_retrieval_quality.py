@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -464,6 +465,26 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertNotIn("atlas_task_invite", result_ids)
         self.assertNotIn("atlas_anchor", result_ids)
         self.assertTrue(all(citation["source_url"] for citation in answer["citations"]))
+
+        # A project-scoped context pack and personal profile now include the
+        # project's open tasks (previously dropped entirely) without leaking the
+        # other project's tasks.
+        pack = self.store.context_pack(
+            self.user_id, query="Project Meridian beta outreach", limit=8, sector="Project Meridian"
+        )
+        self.assertIn("data-retention language", pack)  # unique to the Meridian task
+        self.assertNotIn("Project Atlas beta outreach invite", pack)
+
+        profile = self.store.personal_profile(
+            self.user_id,
+            query="Project Meridian beta outreach",
+            limit=8,
+            sector="Project Meridian",
+            include_pending=True,
+        )
+        profile_text = json.dumps(profile)
+        self.assertIn("mer_task_invite", profile_text)
+        self.assertNotIn("atlas_task_invite", profile_text)
 
     def test_seed_representative_memories_covers_every_layer(self) -> None:
         memories = seed_representative_memories(self.store, self.user_id)
