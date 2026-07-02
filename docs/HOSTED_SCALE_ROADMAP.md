@@ -50,6 +50,17 @@ Implemented local primitive:
 - `sync_devices`, `sync_receipts`, and `GET /v1/sync/changes?device_id=...` are implemented locally as a device-aware event manifest for future hosted materialization. They return safe event metadata, counts, shard assignment, device cursors, revocation state, manifest acknowledgement state, and optional HMAC-SHA256 signatures without capture content, memory text, imports, context packs, or vault file payloads.
 - This is not a full hosted identity provider. Public hosted deployments still need login, session management, token revocation UI, account membership checks, and control-plane token issuance.
 
+Implemented management plane:
+
+- The control-plane index now has a first-class `users` registry table (`user_id`, `display_name`, `plan`, `status`, `metadata`, `created_at`, `updated_at`) alongside the scoped-token index, so a user is a real record rather than being inferred from token existence.
+- `StoreRegistry.provision_user()` creates a hosted user end to end: register the user, materialize the isolated shard, and mint an initial API + MCP token pair (returned once). `list_users`, `get_user`, `suspend_user`, `reactivate_user`, and `deprovision_user` manage the lifecycle.
+- Admin HTTP surface, gated behind the operator's global `CORTEX_API_KEY` (scoped per-user tokens can never call it): `POST /v1/admin/users` (provision), `GET /v1/admin/users` (list/filter by status), `POST /v1/admin/users/{id}/suspend`, `POST /v1/admin/users/{id}/reactivate`, and `DELETE /v1/admin/users/{id}` (deprovision).
+- Suspension is enforced on every authentication path (control index and the per-shard fallback), so suspending a user immediately rejects their tokens; suspended users also drop out of the ready-user/worker enumeration, pausing their background jobs. Reactivation restores both.
+- Control-plane token authentication is O(1): tokens carry an indexed deterministic `lookup_hash` for a direct lookup, while the authoritative credential check remains the per-row salted hash compared in constant time. Legacy tokens without a lookup hash fall back to a scan and are backfilled on first use.
+- The per-user store cache is LRU-bounded (`CORTEX_STORE_CACHE_SIZE`, default 512) so `user` mode does not leak memory/handles at 10k+ users; evicted shards re-materialize on next access.
+- The background worker (`run_memory_worker.py`) auto-discovers active provisioned users from the registry each tick in sharded modes, so newly provisioned users are processed without a restart and suspended users are skipped.
+- Still planned in M1: `accounts`/`memberships`/`workspaces`/`billing_plans`/`quotas`/`delete_requests` tables, self-serve signup/login/session management, and per-user storage/request quotas and rate limiting.
+
 Current multi-user/token assumptions:
 
 - Local mode keeps the global app token as a compatibility admin token for the default user.
