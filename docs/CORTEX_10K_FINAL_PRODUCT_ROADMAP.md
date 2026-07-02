@@ -308,3 +308,30 @@ then (guarded) computer-use.
 - Web-scale/multi-region infra, sharded global queues, CDN edge compute.
 - Computer-use automation before memory quality + trust are proven.
 - Mobile/Windows/Linux clients (macOS-first for 10k).
+
+## 6. Progress log — 2026-07-02
+
+Shipped this session (all with regression tests; full backend suite green):
+- **A/core-loop:** fixed silent data loss in extraction — large flat captures were capped
+  at the top 40 candidates (~80% loss); LLM path truncated at 40k chars; JSONL imports
+  abandoned a whole file on one corrupt line. All fixed + `docs/PIPELINE_SILENT_LOSS_AUDIT.md`.
+- **B/retrieval:** confidence now affects ranking (was inert); per-layer precision/recall
+  metrics + CI floors; adversarial safety corpus (abstention, temporal-supersession,
+  cross-project no-leak).
+- **C/connectors:** Notion OAuth token refresh (accounts no longer lock out after ~30d) +
+  fixed sync wiping refresh material.
+- **E/security + J/QA:** security-scan CI gate (bandit + pip-audit), teeth-verified.
+- **H/observability:** metrics + structured-event foundation behind `CORTEX_OBSERVABILITY_ENABLED`
+  with an admin `/v1/metrics` surface; job-health p50/p95/p99 latency + queue-age percentiles.
+- **F/onboarding:** first-run recovery (retry/show-log) when the memory engine stalls.
+- **I/compliance:** self-maintaining DB upgrade-path test; hosted deletion isolation +
+  token-revocation HTTP test (GDPR/CCPA delete-and-stay-gone).
+
+Confirmed already-solid (verified, not rebuilt): delete-across-restore tombstone preservation,
+retrieval isolation guards, hosted multi-tenant plane, resumable imports, per-connector dedup.
+
+Blocked on external inputs before GA: production embeddings (API key), Developer-ID
+notarization (Apple creds), crash reporting (DSN), at-rest encryption/KMS, legal docs.
+Open product decisions (see `PIPELINE_SILENT_LOSS_AUDIT.md` and gap-scan): editable-memories
+UX, source-reliability weighting, LLM reranker, per-source sensitivity tiers, audit-receipt
+schema, per-parser import scale-bound handling.
