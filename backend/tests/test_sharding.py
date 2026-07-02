@@ -344,6 +344,62 @@ class ShardingTests(unittest.TestCase):
         # A real api token is not valid for the mcp audience.
         self.assertIsNone(index.authenticate("cxa_known_lookup_token_123456789", audience="mcp"))
 
+    def test_control_index_migrates_pre_lookup_hash_schema(self) -> None:
+        # Regression: an existing control index created before the lookup_hash
+        # column must upgrade cleanly. Fresh-DB tests miss this because the fresh
+        # CREATE TABLE already has the column; a real upgrade does not.
+        import hashlib
+        import sqlite3
+
+        from backend.app.sharding import TokenControlIndex
+
+        control_path = self.root / "shards" / "control" / "token_index.sqlite"
+        control_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(control_path)
+        conn.executescript(
+            """
+            CREATE TABLE scoped_token_index (
+              token_id TEXT PRIMARY KEY,
+              user_id TEXT NOT NULL,
+              audience TEXT NOT NULL,
+              label TEXT NOT NULL DEFAULT '',
+              token_salt TEXT NOT NULL,
+              token_hash TEXT NOT NULL,
+              scopes_json TEXT NOT NULL DEFAULT '[]',
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              last_used_at TEXT,
+              revoked_at TEXT
+            );
+            """
+        )
+        salt = "legacysalt123456"
+        token = "cxa_pre_migration_legacy_token_123456789"
+        token_hash = hashlib.sha256(f"{salt}:{token}".encode("utf-8")).hexdigest()
+        conn.execute(
+            "INSERT INTO scoped_token_index (token_id, user_id, audience, label, token_salt, token_hash, scopes_json, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("tok_legacy", "alice", "api", "Legacy", salt, token_hash, '["read"]', "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
+        )
+        conn.commit()
+        conn.close()
+
+        index = TokenControlIndex(control_path)
+        # authenticate() -> _connect() must migrate the old schema without raising
+        # "no such column: lookup_hash", and the legacy token must still resolve.
+        scoped = index.authenticate(token, audience="api")
+        self.assertIsNotNone(scoped)
+        self.assertEqual(scoped["user_id"], "alice")
+
+        conn = sqlite3.connect(control_path)
+        try:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(scoped_token_index)").fetchall()}
+            indexes = {row[1] for row in conn.execute("PRAGMA index_list(scoped_token_index)").fetchall()}
+        finally:
+            conn.close()
+        self.assertIn("lookup_hash", columns)
+        self.assertIn("idx_scoped_token_index_lookup", indexes)
+
     def test_control_plane_requires_one_user_with_api_and_mcp_tokens(self) -> None:
         settings = self.settings(mode="bucket", shard_count=8)
         registry = StoreRegistry.from_settings(settings)

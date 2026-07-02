@@ -117,7 +117,6 @@ class TokenControlIndex:
     );
     CREATE INDEX IF NOT EXISTS idx_scoped_token_index_audience ON scoped_token_index(audience, revoked_at);
     CREATE INDEX IF NOT EXISTS idx_scoped_token_index_user ON scoped_token_index(user_id, audience, revoked_at);
-    CREATE INDEX IF NOT EXISTS idx_scoped_token_index_lookup ON scoped_token_index(audience, lookup_hash, revoked_at);
     CREATE TABLE IF NOT EXISTS users (
       user_id TEXT PRIMARY KEY,
       display_name TEXT NOT NULL DEFAULT '',
@@ -527,11 +526,18 @@ class TokenControlIndex:
         conn.executescript(self.SCHEMA)
         # Backward-compatible migration for control indexes created before the
         # lookup_hash column existed (the CREATE TABLE IF NOT EXISTS above leaves
-        # pre-existing tables untouched).
+        # pre-existing tables untouched). The lookup_hash index MUST be created
+        # here — after the column is guaranteed to exist on both fresh and
+        # migrated tables — not inside SCHEMA, or executescript would fail with
+        # "no such column: lookup_hash" on any pre-existing control index.
         try:
             conn.execute("ALTER TABLE scoped_token_index ADD COLUMN lookup_hash TEXT")
         except sqlite3.OperationalError:
             pass
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_scoped_token_index_lookup "
+            "ON scoped_token_index(audience, lookup_hash, revoked_at)"
+        )
         return conn
 
     def _token_hash(self, token: str, salt: str) -> str:
