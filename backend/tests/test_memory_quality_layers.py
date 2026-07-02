@@ -617,6 +617,74 @@ class MemoryQualityLayerTests(unittest.TestCase):
         project_tool = call_tool(self.store, self.user_id, "get_project_context", {"name": "Project Atlas", "query": "release checklist", "limit": 5})
         self.assertEqual([item["id"] for item in project_tool["memories"]], ["mem_atlas_release_sector"])
 
+    def test_get_style_profile_prefers_current_trusted_style_over_stale_generated(self) -> None:
+        # Conflicting style guidance with similar lexical overlap: a current,
+        # trusted, user-authored concise style vs a stale, untrusted, generated,
+        # verbose/salesy style that is given HIGHER importance. get_style_profile
+        # must surface and cite the trusted one, proving the trusted-source
+        # signal (not raw lexical overlap or importance) decides the style layer.
+        extracted = {
+            "_timestamp": "2026-06-30T10:00:00+00:00",
+            "summary": "Conflicting style fixture",
+            "records": [
+                {
+                    "id": "mem_style_stale_generated",
+                    "kind": "style",
+                    "layer": "style",
+                    "content": (
+                        "Writing style for Project Atlas status updates: long, enthusiastic, "
+                        "salesy sentences that bury the tradeoff in Project Atlas status updates."
+                    ),
+                    "importance": 5,
+                    "topics": ["Project Atlas", "style"],
+                },
+                {
+                    "id": "mem_style_current_trusted",
+                    "kind": "style",
+                    "layer": "style",
+                    "content": (
+                        "Writing style for Project Atlas status updates: concise, direct "
+                        "sentences that lead with the tradeoff in Project Atlas status updates."
+                    ),
+                    "importance": 3,
+                    "topics": ["Project Atlas", "style"],
+                    "metadata": {"trusted_source": True, "quality": "trusted"},
+                },
+            ],
+            "tasks": [],
+            "entities": [],
+        }
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Conflicting style fixture",
+            source="unit-test",
+            source_url="unit-test://style-conflict",
+            title="Conflicting style fixture",
+            extracted=extracted,
+        )
+
+        result = call_tool(
+            self.store,
+            self.user_id,
+            "get_style_profile",
+            {"query": "Project Atlas status update writing style"},
+        )
+
+        self.assertTrue(result["style"])
+        # The trusted, current style must be the surfaced top style signal...
+        self.assertEqual(result["style"][0]["id"], "mem_style_current_trusted")
+        # ...and the cited style directive, not the stale generated one.
+        self.assertTrue(result["guidance"]["style_directives"])
+        self.assertEqual(
+            result["guidance"]["style_directives"][0]["memory_id"], "mem_style_current_trusted"
+        )
+        style_ids = [item["id"] for item in result["style"]]
+        if "mem_style_stale_generated" in style_ids:
+            self.assertLess(
+                style_ids.index("mem_style_current_trusted"),
+                style_ids.index("mem_style_stale_generated"),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
