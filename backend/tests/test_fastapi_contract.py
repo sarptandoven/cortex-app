@@ -297,6 +297,107 @@ class FastAPIContractTests(unittest.TestCase):
             main_module.store = original_store
             temp.cleanup()
 
+    def test_per_user_rate_limit_blocks_scoped_tokens_not_the_operator(self) -> None:
+        original_settings = main_module.settings
+        original_store = main_module.store
+        original_limiter = main_module.rate_limiter
+        temp = tempfile.TemporaryDirectory()
+        try:
+            root = Path(temp.name)
+            hosted_settings = replace(
+                original_settings,
+                db_path=root / "hosted.sqlite",
+                vault_path=root / "hosted.vault",
+                shard_root=root / "shards",
+                default_user_id="hosted-default",
+                shard_mode="user",
+                require_scoped_api_tokens=True,
+                rate_limit_per_minute=3,
+            )
+            main_module.settings = hosted_settings
+            main_module.store = main_module.StoreRegistry.from_settings(hosted_settings)
+            # Frozen clock so no tokens refill mid-test: burst of 2 then blocked.
+            main_module.rate_limiter = main_module.TokenBucketRateLimiter(3, burst=2, time_fn=lambda: 0.0)
+            admin = {"Authorization": "Bearer test-token"}
+
+            provisioned = self.client.post(
+                "/v1/admin/users",
+                json={"user_id": "alice", "api_scopes": ["read"]},
+                headers=admin,
+            )
+            self.assertEqual(provisioned.status_code, 201)
+            alice = {"Authorization": f"Bearer {provisioned.json()['api_token']['token']}"}
+
+            codes = [
+                self.client.get("/v1/ask", params={"query": "hi", "limit": 3}, headers=alice).status_code
+                for _ in range(3)
+            ]
+            self.assertEqual(codes, [200, 200, 429])
+
+            # The operator's global token is never rate limited.
+            for _ in range(6):
+                self.assertEqual(self.client.get("/v1/admin/users", headers=admin).status_code, 200)
+        finally:
+            main_module.settings = original_settings
+            main_module.store = original_store
+            main_module.rate_limiter = original_limiter
+            temp.cleanup()
+
+    def test_memory_quota_blocks_new_captures_when_reached(self) -> None:
+        original_settings = main_module.settings
+        original_store = main_module.store
+        temp = tempfile.TemporaryDirectory()
+        try:
+            root = Path(temp.name)
+            quota_settings = replace(
+                original_settings,
+                db_path=root / "quota.sqlite",
+                vault_path=root / "quota.vault",
+                shard_root=root / "shards",
+                default_memory_quota=1,
+            )
+            main_module.settings = quota_settings
+            main_module.store = main_module.StoreRegistry.from_settings(quota_settings)
+            user = quota_settings.default_user_id
+
+            # Seed the user's shard up to the quota with one active memory.
+            main_module.store.save_capture(
+                user_id=user,
+                content="seed",
+                source="unit-test",
+                source_url="unit-test://quota-seed",
+                title="seed",
+                extracted={
+                    "_timestamp": "2026-06-30T10:00:00+00:00",
+                    "summary": "seed",
+                    "records": [
+                        {
+                            "id": "quota_seed",
+                            "kind": "claim",
+                            "layer": "semantic",
+                            "content": "Quota seed memory.",
+                            "confidence": "confirmed",
+                        }
+                    ],
+                    "tasks": [],
+                    "entities": [],
+                },
+            )
+            self.assertGreaterEqual(main_module.store.active_memory_count(user), 1)
+
+            headers = {"Authorization": "Bearer test-token"}
+            blocked = self.client.post(
+                "/v1/captures",
+                json={"content": "over quota", "source": "unit-test"},
+                headers=headers,
+            )
+            self.assertEqual(blocked.status_code, 429)
+            self.assertIn("quota", blocked.json()["detail"].lower())
+        finally:
+            main_module.settings = original_settings
+            main_module.store = original_store
+            temp.cleanup()
+
     def test_hosted_ready_requires_runtime_scoped_token_control_plane(self) -> None:
         original_settings = main_module.settings
         original_store = main_module.store

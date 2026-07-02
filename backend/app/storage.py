@@ -10691,6 +10691,15 @@ class CortexStore:
                 self.vault.patch_task(task_id, {"status": "archived"})
         return True
 
+    def active_memory_count(self, user_id: str) -> int:
+        """Cheap count of a user's active memories, for per-user quota checks."""
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE user_id = ? AND status = 'active'",
+                (user_id,),
+            ).fetchone()
+        return int(row[0] or 0)
+
     def stats(self, user_id: str) -> dict[str, Any]:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)

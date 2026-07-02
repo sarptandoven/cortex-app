@@ -17,12 +17,14 @@ from .hosted_readiness import hosted_readiness_contract
 from .mcp_tools import TOOLS, call_tool, tool_call_result, tools_for_scopes
 from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CalendarSyncRequest, CalendarSyncResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GitHubRepositoryDiscoveryRequest, GitHubRepositoryDiscoveryResponse, GitHubSyncRequest, GitHubSyncResponse, GmailSyncRequest, GmailSyncResponse, GoogleDriveSyncRequest, GoogleDriveSyncResponse, GoogleOAuthCompleteRequest, GoogleOAuthCompleteResponse, GoogleOAuthStartRequest, GoogleOAuthStartResponse, GraphResponse, JiraSyncRequest, JiraSyncResponse, JobRunResponse, LinearSyncRequest, LinearSyncResponse, ListResponse, MaintenanceResponse, ManagedOAuthCompleteRequest, ManagedOAuthCompleteResponse, ManagedOAuthStartRequest, ManagedOAuthStartResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, NotionSyncRequest, NotionSyncResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, OutlookSyncRequest, OutlookSyncResponse, ProductLoopResponse, QueuedCaptureResponse, RaindropSyncRequest, RaindropSyncResponse, ReadwiseSyncRequest, ReadwiseSyncResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SlackChannelDiscoveryRequest, SlackChannelDiscoveryResponse, SlackSyncRequest, SlackSyncResponse, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse, ZoteroSyncRequest, ZoteroSyncResponse
 from .models import UserListResponse, UserProvisionRequest, UserProvisionResponse, UserStatusResponse
+from .ratelimit import TokenBucketRateLimiter
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
 
 
 settings = load_settings()
 store = StoreRegistry.from_settings(settings)
+rate_limiter = TokenBucketRateLimiter(settings.rate_limit_per_minute)
 store.ensure_vault_backfilled(settings.default_user_id)
 if settings.mcp_api_key:
     store.ensure_mcp_token(
@@ -257,6 +259,27 @@ def _hosted_readiness_contract() -> dict[str, Any]:
     return hosted_readiness_contract(settings, runtime=runtime)
 
 
+def _enforce_rate_limit(user_id: str) -> None:
+    allowed, retry_after = rate_limiter.check(user_id)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Rate limit exceeded for this user; slow down and retry.",
+            headers={"Retry-After": str(max(1, int(retry_after) + 1))},
+        )
+
+
+def _enforce_memory_quota(user_id: str) -> None:
+    quota = settings.default_memory_quota
+    if quota <= 0:
+        return
+    if store.active_memory_count(user_id) >= quota:
+        raise HTTPException(
+            status_code=429,
+            detail="Memory quota reached for this account; remove memories or raise the quota to add more.",
+        )
+
+
 def auth(request: Request, authorization: str | None = Header(default=None), x_cortex_user: str | None = Header(default=None)) -> str:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid Cortex API token")
@@ -271,6 +294,7 @@ def auth(request: Request, authorization: str | None = Header(default=None), x_c
         required_scope = _required_api_scope(request.method, request.url.path)
         _assert_api_token_scope(scoped, required_scope)
         _assert_api_token_trust(scoped["user_id"], required_scope)
+        _enforce_rate_limit(scoped["user_id"])
         return scoped["user_id"]
     raise HTTPException(status_code=401, detail="Missing or invalid Cortex API token")
 
@@ -293,6 +317,7 @@ def mcp_auth(authorization: str | None = Header(default=None), x_cortex_user: st
     if scoped:
         if x_cortex_user and scoped["user_id"] != x_cortex_user:
             raise HTTPException(status_code=403, detail="Cortex MCP token does not match requested user")
+        _enforce_rate_limit(scoped["user_id"])
         return scoped
     raise HTTPException(status_code=401, detail="Missing or invalid Cortex MCP token")
 
@@ -502,6 +527,7 @@ def create_capture(
     user_id: str = Depends(auth),
 ) -> dict[str, Any]:
     resolved_user_id = user_id or request.user_id
+    _enforce_memory_quota(resolved_user_id)
     if processing == "async":
         return store.enqueue_capture(
             user_id=resolved_user_id,
@@ -527,8 +553,10 @@ def create_capture(
 
 @app.post("/v1/captures/queue", response_model=QueuedCaptureResponse, status_code=202)
 def queue_capture(request: CaptureRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    resolved_user_id = user_id or request.user_id
+    _enforce_memory_quota(resolved_user_id)
     return store.enqueue_capture(
-        user_id=user_id or request.user_id,
+        user_id=resolved_user_id,
         content=request.content,
         source=request.source,
         source_url=request.source_url,
