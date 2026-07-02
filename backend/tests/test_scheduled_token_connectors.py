@@ -432,6 +432,49 @@ class ScheduledTokenConnectorTests(unittest.TestCase):
             },
         )
 
+    def test_scheduled_incremental_sync_never_requests_archive_missing(self) -> None:
+        # A scheduled (background) sync uses an incremental cursor, so it must
+        # never request archive_missing/complete_snapshot: a record merely absent
+        # from a later incremental batch must not be retired. Upstream-delete
+        # reconciliation only happens on a proven-complete scan (e.g. Obsidian's
+        # full vault rescan gated on `not truncated and not errors`), never on the
+        # incremental scheduled path. This guards against a future change that
+        # would silently archive valid user memory.
+        connectors = [
+            ("readwise", self._connect_readwise_account, "sync_readwise_account"),
+            ("gmail", self._connect_gmail_account, "sync_gmail_account"),
+            ("google-drive", self._connect_google_drive_account, "sync_google_drive_account"),
+            ("outlook", self._connect_outlook_account, "sync_outlook_account"),
+            ("raindrop", self._connect_raindrop_account, "sync_raindrop_account"),
+            ("zotero", self._connect_zotero_account, "sync_zotero_account"),
+            ("linear", self._connect_linear_account, "sync_linear_account"),
+            ("notion", self._connect_notion_account, "sync_notion_account"),
+        ]
+        for source, connect_account, method_name in connectors:
+            with self.subTest(source=source):
+                account = self._mark_account_due(connect_account())
+                calls: list[dict[str, Any]] = []
+
+                def fake_sync(store: CortexStore, user_id: str, _source: str = source, **kwargs: Any) -> dict[str, Any]:
+                    calls.append(kwargs)
+                    return self._sync_result(_source, kwargs)
+
+                setattr(self.store, method_name, MethodType(fake_sync, self.store))
+                ran = self.store.run_due_jobs(self.user_id, limit=1)
+
+                self.assertEqual(ran["processed"], 1)
+                self.assertEqual(ran["jobs"][0]["status"], "succeeded")
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0]["source_account_id"], account["id"])
+                self.assertFalse(
+                    calls[0].get("archive_missing", False),
+                    f"{source} scheduled sync must not request archive_missing",
+                )
+                self.assertFalse(
+                    calls[0].get("complete_snapshot", False),
+                    f"{source} scheduled sync must not request complete_snapshot",
+                )
+
     def _assert_credential_backed_dispatch(
         self,
         source: str,
