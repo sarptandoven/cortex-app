@@ -4,6 +4,7 @@ from datetime import timedelta
 import html
 import hmac
 import os
+import time
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -15,6 +16,7 @@ from .config import load_settings
 from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
 from .mcp_tools import TOOLS, call_tool, tool_call_result, tools_for_scopes
+from .observability import metrics, route_label
 from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CalendarSyncRequest, CalendarSyncResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GitHubRepositoryDiscoveryRequest, GitHubRepositoryDiscoveryResponse, GitHubSyncRequest, GitHubSyncResponse, GmailSyncRequest, GmailSyncResponse, GoogleDriveSyncRequest, GoogleDriveSyncResponse, GoogleOAuthCompleteRequest, GoogleOAuthCompleteResponse, GoogleOAuthStartRequest, GoogleOAuthStartResponse, GraphResponse, JiraSyncRequest, JiraSyncResponse, JobRunResponse, LinearSyncRequest, LinearSyncResponse, ListResponse, MaintenanceResponse, ManagedOAuthCompleteRequest, ManagedOAuthCompleteResponse, ManagedOAuthStartRequest, ManagedOAuthStartResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, NotionSyncRequest, NotionSyncResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, OutlookSyncRequest, OutlookSyncResponse, ProductLoopResponse, QueuedCaptureResponse, RaindropSyncRequest, RaindropSyncResponse, ReadwiseSyncRequest, ReadwiseSyncResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SlackChannelDiscoveryRequest, SlackChannelDiscoveryResponse, SlackSyncRequest, SlackSyncResponse, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse, ZoteroSyncRequest, ZoteroSyncResponse
 from .models import UserListResponse, UserProvisionRequest, UserProvisionResponse, UserStatusResponse
 from .ratelimit import TokenBucketRateLimiter
@@ -23,6 +25,7 @@ from .storage import BACKEND_VERSION
 
 
 settings = load_settings()
+metrics.configure(settings.observability_enabled)
 store = StoreRegistry.from_settings(settings)
 rate_limiter = TokenBucketRateLimiter(settings.rate_limit_per_minute)
 store.ensure_vault_backfilled(settings.default_user_id)
@@ -58,6 +61,39 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _observability_middleware(request: Request, call_next):
+    # No-op (single early return) unless CORTEX_OBSERVABILITY_ENABLED is set.
+    if not metrics.enabled:
+        return await call_next(request)
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = (time.perf_counter() - started) * 1000.0
+        metrics.incr("http_requests_total", method=request.method, status="500")
+        metrics.incr("http_request_errors_total", method=request.method)
+        metrics.observe("http_request_duration_ms", duration_ms, method=request.method)
+        metrics.log_event(
+            "http_request_error", method=request.method, path=request.url.path, duration_ms=round(duration_ms, 2)
+        )
+        raise
+    duration_ms = (time.perf_counter() - started) * 1000.0
+    status = str(response.status_code)
+    metrics.incr("http_requests_total", method=request.method, status=status)
+    metrics.observe("http_request_duration_ms", duration_ms, method=request.method)
+    if response.status_code >= 500:
+        metrics.incr("http_request_errors_total", method=request.method)
+    metrics.log_event(
+        "http_request",
+        method=request.method,
+        route=route_label(request),
+        status=response.status_code,
+        duration_ms=round(duration_ms, 2),
+    )
+    return response
 
 GOOGLE_OAUTH_PENDING_TTL = timedelta(minutes=10)
 
@@ -441,6 +477,16 @@ def health() -> dict[str, Any]:
     payload = store.health_payload(mode="fastapi", auth=bool(settings.api_key))
     payload["hosted_readiness"] = _hosted_readiness_contract()
     return payload
+
+
+@app.get("/v1/metrics")
+def metrics_snapshot(_admin: bool = Depends(admin_auth)) -> dict[str, Any]:
+    """Operator-only observability snapshot (counters, gauges, latency histograms, recent
+    structured events). Returns ``enabled: false`` with empty series when
+    CORTEX_OBSERVABILITY_ENABLED is unset, so operators can see the flag state."""
+    snapshot = metrics.snapshot()
+    snapshot["backend_version"] = BACKEND_VERSION
+    return snapshot
 
 
 @app.get("/ready")
