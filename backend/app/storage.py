@@ -16366,7 +16366,8 @@ class CortexStore:
                 + self._temporal_boost(row, temporal_prefixes)
                 + self._source_quality_boost(row, source_policies)
                 + self._recency_boost(row, now=now)
-                + self._importance_boost(row),
+                + self._importance_boost(row)
+                + self._confidence_boost(row),
             }
             for index, row in enumerate(rows)
         ]

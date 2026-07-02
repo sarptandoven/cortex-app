@@ -2195,6 +2195,69 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertIn("aurora_procedure", result_ids)
         self.assertIn("aurora_negative_constraint", result_ids)
 
+    def test_confidence_breaks_ranking_ties_toward_trusted_memories(self) -> None:
+        # Two memories that match the query equally (same query terms, same importance) but
+        # differ only in confidence. The low-confidence one is inserted FIRST (so its tiny
+        # order boost favors it); confidence must still rank the confirmed one above it, and
+        # the low-confidence one last. Before wiring _confidence_boost, confidence was inert.
+        self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+        self.store._vector_ready = lambda conn: False
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Orion deployment rollback procedure confidence seed.",
+            source="confidence-ranking-test",
+            source_url=None,
+            title="Confidence ranking seed",
+            extracted={
+                "_timestamp": "2026-05-01T00:00:00+00:00",
+                "summary": "Orion deployment rollback procedure confidence seed.",
+                "records": [
+                    {
+                        "id": "conf_low_rollback",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "The Orion deployment rollback procedure draft omega is unverified.",
+                        "summary": "Orion deployment rollback procedure draft omega.",
+                        "confidence": "low",
+                        "importance": 3,
+                        "topics": ["orion", "deployment", "rollback"],
+                        "entity_ids": [],
+                    },
+                    {
+                        "id": "conf_confirmed_rollback",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "The Orion deployment rollback procedure alpha is confirmed.",
+                        "summary": "Orion deployment rollback procedure alpha.",
+                        "confidence": "confirmed",
+                        "importance": 3,
+                        "topics": ["orion", "deployment", "rollback"],
+                        "entity_ids": [],
+                    },
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+
+        results = self.store.search(self.user_id, "orion deployment rollback procedure", limit=5)
+        ranked_ids = [item["id"] for item in results]
+        self.assertIn("conf_confirmed_rollback", ranked_ids)
+        self.assertIn("conf_low_rollback", ranked_ids)
+        self.assertLess(
+            ranked_ids.index("conf_confirmed_rollback"),
+            ranked_ids.index("conf_low_rollback"),
+            "confirmed memory should outrank the low-confidence near-tie",
+        )
+
+    def test_confidence_boost_is_inert_for_uniform_confirmed_confidence(self) -> None:
+        # The overwhelmingly common case: everything is "confirmed", so the boost is uniform
+        # and must not perturb ordering (guards the eval gate against confidence drift).
+        store = self.store
+        self.assertEqual(store._confidence_boost({"confidence": "confirmed"}), store._confidence_boost({"confidence": "high"}))
+        self.assertEqual(store._confidence_boost({"confidence": "unknown-label"}), 0.0)
+        self.assertGreater(store._confidence_boost({"confidence": "confirmed"}), store._confidence_boost({"confidence": "low"}))
+
 
 if __name__ == "__main__":
     unittest.main()
