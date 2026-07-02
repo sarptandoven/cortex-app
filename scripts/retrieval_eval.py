@@ -30,6 +30,21 @@ RETRIEVAL_METRIC_THRESHOLDS: dict[str, Any] = {
     "min_case_count": 45,
     "overall": {"top1_accuracy": 0.95, "recall@1": 0.95, "recall@3": 0.97},
     "per_category": {"top1_accuracy": 0.9, "recall@3": 0.9},
+    # Per-LAYER floors, set at/just below the current measured per-layer values so
+    # the gate passes today but catches a real per-layer regression. Current
+    # measured per-layer top1_accuracy/recall@1/recall@3 are all 1.0 for every
+    # expected_layer (decision, episodic, negative, preference, procedural,
+    # semantic, style); floors sit ~0.1 below that, never above current.
+    "per_layer": {"top1_accuracy": 0.9, "recall@1": 0.9, "recall@3": 0.9},
+    "required_layers": (
+        "decision",
+        "episodic",
+        "negative",
+        "preference",
+        "procedural",
+        "semantic",
+        "style",
+    ),
     "required_categories": (
         "style_recall",
         "negative_recall",
@@ -1342,11 +1357,16 @@ def _summarize_metrics(checks: list[dict[str, Any]], k_values: tuple[int, ...]) 
         return summary
 
     categories = sorted({item["category"] for item in checks})
+    layers = sorted({str(item.get("expected_layer") or "") for item in checks if item.get("expected_layer")})
     return {
         "overall": summarize(checks),
         "by_category": {
             category: summarize([item for item in checks if item["category"] == category])
             for category in categories
+        },
+        "by_layer": {
+            layer: summarize([item for item in checks if item.get("expected_layer") == layer])
+            for layer in layers
         },
     }
 
@@ -2761,6 +2781,7 @@ def check_retrieval_metric_thresholds(result: dict[str, Any]) -> list[str]:
     metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
     overall = metrics.get("overall") if isinstance(metrics.get("overall"), dict) else {}
     by_category = metrics.get("by_category") if isinstance(metrics.get("by_category"), dict) else {}
+    by_layer = metrics.get("by_layer") if isinstance(metrics.get("by_layer"), dict) else {}
 
     case_count = int(overall.get("case_count") or 0)
     if case_count < RETRIEVAL_METRIC_THRESHOLDS["min_case_count"]:
@@ -2782,6 +2803,21 @@ def check_retrieval_metric_thresholds(result: dict[str, Any]) -> list[str]:
             value = float(cat_metrics.get(key) or 0.0)
             if value < floor:
                 failures.append(f"category '{category}' {key}={value} < {floor}")
+
+    # Per-layer rollup: only enforce required-layer presence when a by_layer
+    # rollup is actually reported (synthetic gate fixtures omit it), then apply
+    # the per-layer metric floors to whatever layers are present.
+    if by_layer:
+        for layer in RETRIEVAL_METRIC_THRESHOLDS["required_layers"]:
+            if layer not in by_layer:
+                failures.append(f"missing required layer '{layer}'")
+    for layer, layer_metrics in sorted(by_layer.items()):
+        if not isinstance(layer_metrics, dict):
+            continue
+        for key, floor in RETRIEVAL_METRIC_THRESHOLDS["per_layer"].items():
+            value = float(layer_metrics.get(key) or 0.0)
+            if value < floor:
+                failures.append(f"layer '{layer}' {key}={value} < {floor}")
     return failures
 
 
