@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from backend.app.database import init_db
-from backend.app.source_ingest import analyze_sources, import_source_records
+from backend.app.source_ingest import analyze_sources, import_source_records, import_source_records_page
 from backend.app.storage import CortexStore
 
 
@@ -28,6 +28,70 @@ class SourceIngestTests(unittest.TestCase):
         store = CortexStore(db_path, vault_path)
         store.update_settings("test-user", {"allow_pending_in_context": True})
         return store
+
+    def _write_notes(self, count: int) -> Path:
+        notes = self.root / "notes"
+        notes.mkdir()
+        for index in range(count):
+            (notes / f"note-{index}.md").write_text(
+                f"Note {index}: durable memory fixture number {index}.", encoding="utf-8"
+            )
+        return notes
+
+    def test_import_source_records_page_paginates_without_skips_or_dupes(self) -> None:
+        notes = self._write_notes(5)
+
+        page0 = import_source_records_page([str(notes)], max_records=2, offset=0)
+        self.assertEqual(page0["total"], 5)
+        self.assertEqual(page0["returned"], 2)
+        self.assertTrue(page0["has_more"])
+        self.assertEqual(page0["next_offset"], 2)
+
+        page1 = import_source_records_page([str(notes)], max_records=2, offset=page0["next_offset"])
+        self.assertEqual(page1["returned"], 2)
+        self.assertTrue(page1["has_more"])
+        self.assertEqual(page1["next_offset"], 4)
+
+        page2 = import_source_records_page([str(notes)], max_records=2, offset=page1["next_offset"])
+        self.assertEqual(page2["returned"], 1)
+        self.assertFalse(page2["has_more"])
+        self.assertIsNone(page2["next_offset"])
+
+        # Every record appears exactly once across the pages: no skips, no dupes.
+        urls = [record.source_url for record in (*page0["records"], *page1["records"], *page2["records"])]
+        self.assertEqual(len(urls), 5)
+        self.assertEqual(len(set(urls)), 5)
+
+    def test_import_sources_paginates_and_dedupes_large_exports(self) -> None:
+        notes = self._write_notes(5)
+        db_path = self.root / "index.sqlite"
+        init_db(db_path)
+        store = self._store(db_path, self.root / "vault")
+
+        def run(offset: int) -> dict:
+            return store.import_sources(
+                user_id="test-user", paths=[str(notes)], processing="async", max_records=2, offset=offset
+            )
+
+        page0 = run(0)
+        self.assertEqual(page0["records_available"], 5)
+        self.assertEqual(page0["queued"], 2)
+        self.assertTrue(page0["has_more"])
+        self.assertEqual(page0["next_offset"], 2)
+
+        page1 = run(page0["next_offset"])
+        self.assertEqual(page1["queued"], 2)
+        self.assertTrue(page1["has_more"])
+
+        page2 = run(page1["next_offset"])
+        self.assertEqual(page2["queued"], 1)
+        self.assertFalse(page2["has_more"])
+
+        # After the full export is imported, re-importing any window is fully
+        # deduplicated by content hash (nothing new queued).
+        again = run(0)
+        self.assertEqual(again["queued"], 0)
+        self.assertEqual(again["skipped"], 2)
 
     def test_detects_common_service_exports(self) -> None:
         self._write_chatgpt_export()

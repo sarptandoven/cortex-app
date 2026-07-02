@@ -331,7 +331,11 @@ def _source_import_request(body: dict, *, analyze: bool = False) -> dict:
     processing = str(body.get("processing") or "async")
     if processing not in {"sync", "async"}:
         raise ValueError("processing must be sync or async")
-    return {"paths": paths, "source_hint": source_hint, "max_records": max_records, "processing": processing}
+    try:
+        offset = max(0, int(body.get("offset") or 0))
+    except (TypeError, ValueError):
+        raise ValueError("offset must be a non-negative integer")
+    return {"paths": paths, "source_hint": source_hint, "max_records": max_records, "processing": processing, "offset": offset}
 
 
 def _capture_page(message: str = "", status: str = "ready", token: str = "", title: str = "", url: str = "", content: str = "") -> str:
@@ -1333,6 +1337,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         source_hint=parsed["source_hint"],
                         processing=parsed["processing"],
                         max_records=parsed["max_records"],
+                        offset=parsed["offset"],
                     ))
                 except ValueError as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)

@@ -33,7 +33,7 @@ class FakeStore:
         self.restore_latest_backup_calls: list[str] = []
         self.agent_events: list[dict] = []
         self.import_analysis_calls: list[tuple[list[str], str, int]] = []
-        self.import_sources_calls: list[tuple[str, list[str], str, str, int]] = []
+        self.import_sources_calls: list[tuple[str, list[str], str, str, int, int]] = []
         self.list_imports_calls: list[tuple[str, int, bool]] = []
         self.get_import_calls: list[tuple[str, str]] = []
         self.delete_import_calls: list[tuple[str, str]] = []
@@ -2172,12 +2172,16 @@ class FakeStore:
         self.import_analysis_calls.append((paths, source_hint, max_records))
         return {"records_found": 1, "sources": [{"source": "chatgpt", "count": 1}], "sample": [], "supported_sources": self.supported_import_sources()}
 
-    def import_sources(self, *, user_id: str, paths: list[str], source_hint: str = "", processing: str = "async", max_records: int = 1000) -> dict:
-        self.import_sources_calls.append((user_id, paths, source_hint, processing, max_records))
+    def import_sources(self, *, user_id: str, paths: list[str], source_hint: str = "", processing: str = "async", max_records: int = 1000, offset: int = 0) -> dict:
+        self.import_sources_calls.append((user_id, paths, source_hint, processing, max_records, offset))
         return {
             "import_id": "imp_test",
             "status": "complete",
             "records_found": 1,
+            "records_available": 1,
+            "offset": offset,
+            "has_more": False,
+            "next_offset": None,
             "queued": 1 if processing == "async" else 0,
             "saved": 1 if processing == "sync" else 0,
             "failed": 0,
@@ -2588,7 +2592,7 @@ class StandaloneServerTests(unittest.TestCase):
 
         self.assertEqual(response.status, 200)
         self.assertEqual(imported["saved"], 1)
-        self.assertEqual(self.fake_store.import_sources_calls, [("local", ["/tmp/conversations.json"], "chatgpt", "sync", 1000)])
+        self.assertEqual(self.fake_store.import_sources_calls, [("local", ["/tmp/conversations.json"], "chatgpt", "sync", 1000, 0)])
 
         with self.get("/v1/imports?limit=10&include_deleted=false") as response:
             history = json.loads(response.read().decode("utf-8"))

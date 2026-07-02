@@ -30,6 +30,7 @@ class SourceImportRequest(BaseModel):
     source_hint: str = Field(default="", max_length=80)
     processing: Literal["sync", "async"] = "async"
     max_records: int = Field(default=1000, ge=1, le=5000)
+    offset: int = Field(default=0, ge=0)
     user_id: str = "local"
 
 
@@ -43,6 +44,10 @@ class SourceImportResponse(BaseModel):
     import_id: str
     status: str
     records_found: int
+    records_available: int = 0
+    offset: int = 0
+    has_more: bool = False
+    next_offset: int | None = None
     queued: int
     saved: int
     failed: int

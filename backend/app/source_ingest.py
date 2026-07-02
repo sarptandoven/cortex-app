@@ -407,11 +407,11 @@ def analyze_sources(paths: Iterable[str], source_hint: str = "", max_records: in
     }
 
 
-def import_source_records(paths: Iterable[str], source_hint: str = "", max_records: int = 1000) -> list[SourceRecord]:
+def _parsed_source_records(paths: Iterable[str], source_hint: str = "") -> list[SourceRecord]:
+    """Parse + chunk every source record from the given paths (no cap/order applied)."""
     assets = _collect_assets(paths)
     hint = _normalize_source(source_hint)
     records: list[SourceRecord] = []
-    record_limit = max(1, int(max_records or 1000))
 
     for parser in (
         _parse_chatgpt,
@@ -444,7 +444,58 @@ def import_source_records(paths: Iterable[str], source_hint: str = "", max_recor
         if not record.content.strip():
             continue
         expanded.extend(_chunk_source_record(record))
+    return expanded
+
+
+def import_source_records(paths: Iterable[str], source_hint: str = "", max_records: int = 1000) -> list[SourceRecord]:
+    record_limit = max(1, int(max_records or 1000))
+    expanded = _parsed_source_records(paths, source_hint)
     return [record.bounded() for record in _source_fair_record_cap(expanded, record_limit)]
+
+
+def _source_fair_order(records: list[SourceRecord]) -> list[SourceRecord]:
+    """Stable, source-fair total order over all records (round-robin across
+    sources). A single source keeps parse order. This ordering is consistent
+    regardless of window, so paginating with an offset never skips or reorders
+    records between pages."""
+    buckets: dict[str, list[SourceRecord]] = {}
+    for record in records:
+        buckets.setdefault(record.source, []).append(record)
+    if len(buckets) <= 1:
+        return list(records)
+    ordered: list[SourceRecord] = []
+    bucket_lists = list(buckets.values())
+    while any(bucket_lists):
+        for bucket in bucket_lists:
+            if bucket:
+                ordered.append(bucket.pop(0))
+    return ordered
+
+
+def import_source_records_page(
+    paths: Iterable[str],
+    source_hint: str = "",
+    max_records: int = 1000,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Import a resumable window of records so huge exports import fully across
+    calls instead of silently dropping everything past the cap. Returns the
+    windowed records plus `total`/`offset`/`returned`/`has_more`/`next_offset`."""
+    record_limit = max(1, int(max_records or 1000))
+    start = max(0, int(offset or 0))
+    ordered = _source_fair_order(_parsed_source_records(paths, source_hint))
+    total = len(ordered)
+    window = [record.bounded() for record in ordered[start : start + record_limit]]
+    consumed = start + len(window)
+    has_more = consumed < total
+    return {
+        "records": window,
+        "total": total,
+        "offset": start,
+        "returned": len(window),
+        "has_more": has_more,
+        "next_offset": consumed if has_more else None,
+    }
 
 
 def _source_fair_record_cap(records: list[SourceRecord], max_records: int) -> list[SourceRecord]:

@@ -20,7 +20,7 @@ from .database import connect, sqlite_vec_status
 from .embeddings import VECTOR_DIMENSIONS, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status
 from .extractor import extract_context, now_iso, stable_id
 from .sqlite_runtime import SQLITE_RUNTIME, sqlite3
-from .source_ingest import SourceRecord, analyze_sources, import_source_records, supported_sources
+from .source_ingest import SourceRecord, analyze_sources, import_source_records, import_source_records_page, supported_sources
 from .vault import CortexVault
 
 
@@ -7604,6 +7604,7 @@ class CortexStore:
         source_hint: str = "",
         processing: str = "async",
         max_records: int = 1000,
+        offset: int = 0,
     ) -> dict[str, Any]:
         cleaned_paths = [str(path).strip() for path in paths if str(path).strip()]
         if not cleaned_paths:
@@ -7611,8 +7612,16 @@ class CortexStore:
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
         max_records = min(max(int(max_records), 1), 5000)
+        offset = max(0, int(offset or 0))
         started_at = now_iso()
-        records = import_source_records(cleaned_paths, source_hint=source_hint, max_records=max_records)
+        # Paginated so a huge export imports fully across calls instead of silently
+        # dropping everything past the cap. `has_more`/`next_offset` tell the caller
+        # to run again; content-hash dedup keeps overlapping windows safe.
+        page = import_source_records_page(cleaned_paths, source_hint=source_hint, max_records=max_records, offset=offset)
+        records = page["records"]
+        records_available = int(page["total"])
+        has_more = bool(page["has_more"])
+        next_offset = page["next_offset"]
         import_id = stable_id("imp_", user_id + "|".join(cleaned_paths) + started_at + secrets.token_hex(8))
         queued = 0
         saved = 0
@@ -7786,6 +7795,10 @@ class CortexStore:
                 "paths": path_summaries,
                 "sources": source_summary,
                 "records_found": len(records),
+                "records_available": records_available,
+                "offset": offset,
+                "has_more": has_more,
+                "next_offset": next_offset,
                 "queued": queued,
                 "saved": saved,
                 "failed": len(errors),
@@ -7821,6 +7834,10 @@ class CortexStore:
             "import_id": import_id,
             "status": status,
             "records_found": len(records),
+            "records_available": records_available,
+            "offset": offset,
+            "has_more": has_more,
+            "next_offset": next_offset,
             "queued": queued,
             "saved": saved,
             "failed": len(errors),
