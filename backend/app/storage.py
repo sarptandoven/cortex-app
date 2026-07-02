@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import base64
 import json
+import math
 import os
 import platform
 import re
@@ -2023,6 +2024,35 @@ def _age_seconds(value: str | None, *, now: datetime) -> int | None:
     if parsed is None:
         return None
     return max(0, int((now - parsed).total_seconds()))
+
+
+def _duration_seconds(start: str | None, end: str | None) -> float | None:
+    started = _parse_iso_timestamp(start)
+    ended = _parse_iso_timestamp(end)
+    if started is None or ended is None:
+        return None
+    return max(0.0, (ended - started).total_seconds())
+
+
+def _nearest_rank_percentile(ordered: list[float], pct: float) -> float:
+    if not ordered:
+        return 0.0
+    rank = max(1, int(math.ceil((pct / 100.0) * len(ordered))))
+    return ordered[min(rank, len(ordered)) - 1]
+
+
+def _percentile_summary(values: list[float]) -> dict[str, float | int]:
+    """p50/p95/p99/max nearest-rank summary of a list of seconds (0 when empty)."""
+    ordered = sorted(value for value in values if value is not None)
+    if not ordered:
+        return {"count": 0, "p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0}
+    return {
+        "count": len(ordered),
+        "p50": round(_nearest_rank_percentile(ordered, 50), 3),
+        "p95": round(_nearest_rank_percentile(ordered, 95), 3),
+        "p99": round(_nearest_rank_percentile(ordered, 99), 3),
+        "max": round(ordered[-1], 3),
+    }
 
 
 def memory_layer(kind: str | None, value: str | None = None) -> str:
@@ -8187,6 +8217,22 @@ class CortexStore:
                 """,
                 (user_id,),
             ).fetchall()
+            latency_rows = conn.execute(
+                """
+                SELECT job_type, created_at, completed_at
+                FROM memory_jobs
+                WHERE user_id = ?
+                  AND status = 'succeeded'
+                  AND completed_at IS NOT NULL
+                ORDER BY completed_at DESC
+                LIMIT 2000
+                """,
+                (user_id,),
+            ).fetchall()
+            queued_created_rows = conn.execute(
+                "SELECT created_at FROM memory_jobs WHERE user_id = ? AND status = 'queued'",
+                (user_id,),
+            ).fetchall()
 
         counts = {"queued": 0, "running": 0, "succeeded": 0, "failed": 0}
         for row in count_rows:
@@ -8196,6 +8242,27 @@ class CortexStore:
             job_type = str(row["job_type"])
             by_type.setdefault(job_type, {})
             by_type[job_type][str(row["status"])] = int(row["count"] or 0)
+
+        # End-to-end latency (enqueue -> completed) percentiles, overall and per job type, plus
+        # queue-age percentiles for currently-queued work — capture-to-indexed SLA visibility.
+        latencies_overall: list[float] = []
+        latencies_by_type: dict[str, list[float]] = {}
+        for row in latency_rows:
+            duration = _duration_seconds(row["created_at"], row["completed_at"])
+            if duration is None:
+                continue
+            latencies_overall.append(duration)
+            latencies_by_type.setdefault(str(row["job_type"]), []).append(duration)
+        queue_ages = [
+            age
+            for age in (_age_seconds(row["created_at"], now=now) for row in queued_created_rows)
+            if age is not None
+        ]
+        latency_seconds = {
+            "overall": _percentile_summary(latencies_overall),
+            "by_type": {job_type: _percentile_summary(values) for job_type, values in sorted(latencies_by_type.items())},
+        }
+        queue_age_seconds = _percentile_summary([float(age) for age in queue_ages])
 
         recent_failures = [self._job_health_item(self._job_from_row(row), now=now) for row in failed_rows]
         stale_running: list[dict[str, Any]] = []
@@ -8223,6 +8290,8 @@ class CortexStore:
             "stale_after_seconds": stale_after,
             "stale_running": stale_running,
             "recent_failures": recent_failures,
+            "latency_seconds": latency_seconds,
+            "queue_age_seconds": queue_age_seconds,
         }
 
     def run_due_jobs(
