@@ -35,6 +35,14 @@ PERSONAL_MEMORY_KINDS = {"preference", "style", "negative"}
 # large multi-turn exports are meant to be chunked upstream.
 BASE_EXTRACTION_CANDIDATE_LIMIT = 40
 MAX_EXTRACTION_CANDIDATE_LIMIT = 2000
+# The LLM extraction path sends the capture text to the model in one request. A single
+# request both truncates the input and caps the output, so a large capture would silently
+# lose everything past this many characters. We window large captures into <= this size and
+# extract each window, so nothing is dropped (mirroring the deterministic path's scaling).
+CLAUDE_EXTRACTION_WINDOW_CHARS = 40000
+# Cap the number of windows so a pathologically large capture can't fan out into unbounded
+# model requests; matches the deterministic ceiling in spirit (very large but bounded).
+MAX_CLAUDE_EXTRACTION_WINDOWS = 12
 CONVERSATION_SOURCES = {
     "chatgpt",
     "claude",
@@ -207,10 +215,84 @@ def extract_context(
         return _extract_locally(raw_text, source, author_aliases=author_aliases)
     if os.environ.get("ANTHROPIC_API_KEY"):
         try:
-            return _extract_with_claude(raw_text, source, author_aliases=author_aliases)
+            return _extract_with_claude_windowed(raw_text, source, author_aliases=author_aliases)
         except Exception:
             pass
     return _extract_locally(raw_text, source, author_aliases=author_aliases)
+
+
+def _claude_extraction_windows(raw_text: str) -> list[str]:
+    """Split a large capture into <= CLAUDE_EXTRACTION_WINDOW_CHARS windows on line
+    boundaries (never mid-line, so role-prefixed turns stay intact). A capture that fits
+    in a single window returns [raw_text] unchanged."""
+    if len(raw_text) <= CLAUDE_EXTRACTION_WINDOW_CHARS:
+        return [raw_text]
+    windows: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in raw_text.splitlines(keepends=True):
+        # A single line longer than the window is hard-split as a last resort.
+        while len(line) > CLAUDE_EXTRACTION_WINDOW_CHARS:
+            if current:
+                windows.append("".join(current))
+                current, current_len = [], 0
+            windows.append(line[:CLAUDE_EXTRACTION_WINDOW_CHARS])
+            line = line[CLAUDE_EXTRACTION_WINDOW_CHARS:]
+        if current and current_len + len(line) > CLAUDE_EXTRACTION_WINDOW_CHARS:
+            windows.append("".join(current))
+            current, current_len = [], 0
+        current.append(line)
+        current_len += len(line)
+    if current:
+        windows.append("".join(current))
+    return windows[:MAX_CLAUDE_EXTRACTION_WINDOWS]
+
+
+def _merge_extractions(parts: list[dict[str, Any]], raw_text: str, source: str) -> dict[str, Any]:
+    """Merge per-window extraction results into one, de-duplicating records/tasks by id
+    (which is content-derived) and unioning entities, then re-normalizing over the full
+    capture text so top-level metadata reflects the whole capture."""
+    records: list[dict[str, Any]] = []
+    tasks: list[dict[str, Any]] = []
+    entities_by_id: dict[str, dict[str, Any]] = {}
+    summaries: list[str] = []
+    seen_records: set[str] = set()
+    seen_tasks: set[str] = set()
+    for part in parts:
+        for record in part.get("records", []):
+            key = str(record.get("id") or record.get("content") or "")
+            if key and key not in seen_records:
+                seen_records.add(key)
+                records.append(record)
+        for task in part.get("tasks", []):
+            key = str(task.get("id") or task.get("content") or "")
+            if key and key not in seen_tasks:
+                seen_tasks.add(key)
+                tasks.append(task)
+        for entity in part.get("entities", []):
+            entity_id = str(entity.get("id") or "")
+            if entity_id:
+                entities_by_id.setdefault(entity_id, entity)
+        summary = str(part.get("summary") or "").strip()
+        if summary:
+            summaries.append(summary)
+    merged = {
+        "records": records,
+        "tasks": tasks,
+        "entities": list(entities_by_id.values()),
+        "summary": " ".join(summaries)[:2000],
+    }
+    return _normalize_extraction(merged, raw_text, source)
+
+
+def _extract_with_claude_windowed(
+    raw_text: str, source: str, author_aliases: Iterable[str] | None = None
+) -> dict[str, Any]:
+    windows = _claude_extraction_windows(raw_text)
+    if len(windows) <= 1:
+        return _extract_with_claude(raw_text, source, author_aliases=author_aliases)
+    parts = [_extract_with_claude(window, source, author_aliases=author_aliases) for window in windows]
+    return _merge_extractions(parts, raw_text, source)
 
 
 def _extract_with_claude(raw_text: str, source: str, author_aliases: Iterable[str] | None = None) -> dict[str, Any]:
@@ -229,7 +311,7 @@ Use stable IDs and keep each memory atomic. Return JSON only.""" + alias_instruc
         model=os.environ.get("CORTEX_EXTRACTION_MODEL", "claude-opus-4-5"),
         max_tokens=2500,
         system=prompt,
-        messages=[{"role": "user", "content": f"Source: {source}\n\n{raw_text[:40000]}"}],
+        messages=[{"role": "user", "content": f"Source: {source}\n\n{raw_text[:CLAUDE_EXTRACTION_WINDOW_CHARS]}"}],
     )
     text = response.content[0].text.strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)

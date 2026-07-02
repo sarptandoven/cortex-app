@@ -392,6 +392,30 @@ class SourceIngestTests(unittest.TestCase):
         self.assertTrue(any("Project Longtail" in memory["content"] for memory in hits))
         self.assertTrue(any("chunk=2" in (memory["source_url"] or "") for memory in hits))
 
+    def test_jsonl_transcript_skips_corrupt_line_instead_of_dropping_whole_file(self) -> None:
+        # A single truncated/corrupt line in a large JSONL export must not discard every
+        # valid conversation already parsed. JSONL lines are independent records.
+        from backend.app.source_ingest import SourceAsset, _parse_consumer_ai_jsonl_asset
+
+        lines = [
+            json.dumps({"role": "user", "text": "First message about Project Aurora."}),
+            json.dumps({"role": "assistant", "text": "Acknowledged Project Aurora."}),
+            "{ this line is truncated and not valid json",
+            json.dumps({"role": "user", "text": "Later message about Project Zenith after the corruption."}),
+        ]
+        asset = SourceAsset(
+            name="chatgpt.jsonl",
+            display_path="export/chatgpt.jsonl",
+            data="\n".join(lines).encode("utf-8"),
+        )
+        records = _parse_consumer_ai_jsonl_asset(asset, source="chatgpt", provider="ChatGPT")
+
+        self.assertTrue(records, "a corrupt line silently abandoned the whole JSONL file")
+        joined = "\n".join(record.content for record in records)
+        # Both the pre-corruption and post-corruption messages survive.
+        self.assertIn("Project Aurora", joined)
+        self.assertIn("Project Zenith", joined)
+
     def test_service_metadata_dates_become_memory_dates(self) -> None:
         self._write_dated_service_exports()
         db_path = self.root / "service-dates.sqlite"

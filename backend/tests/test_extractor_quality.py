@@ -439,5 +439,105 @@ class LargeCaptureExtractionTests(unittest.TestCase):
         self.assertEqual(extractor._extraction_candidate_limit(ceiling + 500, False), ceiling)
 
 
+class ClaudeWindowedExtractionTests(unittest.TestCase):
+    """The LLM extraction path sent only the first CLAUDE_EXTRACTION_WINDOW_CHARS of a
+    capture to the model, silently dropping everything past it on the production path. Large
+    captures must be windowed and merged so nothing is lost, while small captures stay a
+    single call."""
+
+    def test_windows_are_lossless_and_bounded(self) -> None:
+        window = extractor.CLAUDE_EXTRACTION_WINDOW_CHARS
+        small = "one line\nsecond line\n"
+        self.assertEqual(extractor._claude_extraction_windows(small), [small])
+
+        line = ("x" * 200) + "\n"
+        big = "".join(f"line {i} {line}" for i in range(600))  # a few windows worth
+        windows = extractor._claude_extraction_windows(big)
+        self.assertGreaterEqual(len(windows), 2)
+        self.assertLessEqual(len(windows), extractor.MAX_CLAUDE_EXTRACTION_WINDOWS)
+        # No character is lost when the content fits within the window budget.
+        self.assertEqual("".join(windows), big)
+        for w in windows:
+            self.assertLessEqual(len(w), window)
+
+    def test_windows_hard_split_a_single_overlong_line(self) -> None:
+        window = extractor.CLAUDE_EXTRACTION_WINDOW_CHARS
+        big_line = "y" * (window * 2 + 100)
+        windows = extractor._claude_extraction_windows(big_line)
+        self.assertGreaterEqual(len(windows), 3)
+        self.assertEqual("".join(windows), big_line)
+
+    def test_windows_are_capped_for_pathological_input(self) -> None:
+        window = extractor.CLAUDE_EXTRACTION_WINDOW_CHARS
+        huge = "".join(f"line {i} {'z' * 300}\n" for i in range(window))  # far more than the cap
+        windows = extractor._claude_extraction_windows(huge)
+        self.assertEqual(len(windows), extractor.MAX_CLAUDE_EXTRACTION_WINDOWS)
+
+    def test_merge_dedupes_records_and_unions_entities(self) -> None:
+        parts = [
+            {
+                "records": [{"id": "a", "content": "A", "kind": "claim"}],
+                "tasks": [{"id": "t1", "content": "T1"}],
+                "entities": [{"id": "e1", "name": "E1"}],
+                "summary": "s1",
+            },
+            {
+                "records": [
+                    {"id": "a", "content": "A", "kind": "claim"},
+                    {"id": "b", "content": "B", "kind": "claim"},
+                ],
+                "tasks": [],
+                "entities": [{"id": "e1"}, {"id": "e2", "name": "E2"}],
+                "summary": "s2",
+            },
+        ]
+        merged = extractor._merge_extractions(parts, "raw capture text", "note")
+        self.assertEqual({r["id"] for r in merged["records"]}, {"a", "b"})
+        self.assertEqual(len(merged["tasks"]), 1)
+        self.assertEqual({e["id"] for e in merged["entities"]}, {"e1", "e2"})
+        self.assertEqual(merged["summary"], "s1 s2")
+
+    def test_extract_context_windows_large_capture_over_llm_path(self) -> None:
+        calls: list[str] = []
+
+        def fake_claude(raw_text, source, author_aliases=None):
+            calls.append(raw_text)
+            return {
+                "records": [{"id": f"mem_{len(calls)}", "kind": "claim", "content": raw_text}],
+                "tasks": [],
+                "entities": [],
+                "summary": "",
+            }
+
+        line = ("w" * 200) + "\n"
+        big = "STARTTOKEN\n" + "".join(f"fact {i} {line}" for i in range(500)) + "ENDTOKEN\n"
+        self.assertGreater(len(big), extractor.CLAUDE_EXTRACTION_WINDOW_CHARS)
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}, clear=False), \
+                patch.object(extractor, "_extract_with_claude", side_effect=fake_claude):
+            result = extract_context(big, source="note")
+
+        self.assertGreaterEqual(len(calls), 2, "large capture was not windowed on the LLM path")
+        merged_content = "\n".join(r["content"] for r in result["records"])
+        # Content from both the first and last window is present -> nothing silently dropped.
+        self.assertIn("STARTTOKEN", merged_content)
+        self.assertIn("ENDTOKEN", merged_content)
+
+    def test_extract_context_small_capture_stays_single_llm_call(self) -> None:
+        calls: list[str] = []
+
+        def fake_claude(raw_text, source, author_aliases=None):
+            calls.append(raw_text)
+            return {"records": [], "tasks": [], "entities": [], "summary": ""}
+
+        small = "A short capture that easily fits in one window."
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}, clear=False), \
+                patch.object(extractor, "_extract_with_claude", side_effect=fake_claude):
+            extract_context(small, source="note")
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0], small)
+
+
 if __name__ == "__main__":
     unittest.main()

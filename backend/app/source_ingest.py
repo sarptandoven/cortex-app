@@ -825,7 +825,10 @@ def _parse_consumer_ai_jsonl_asset(asset: SourceAsset, source: str, provider: st
         try:
             row = json.loads(line)
         except json.JSONDecodeError:
-            return []
+            # JSONL lines are independent records; a single truncated/corrupt line
+            # (common in large exports) must not discard every valid conversation
+            # already parsed from the file. Skip the bad line instead of aborting.
+            continue
         if isinstance(row, dict):
             rows.append(row)
     if not rows:
