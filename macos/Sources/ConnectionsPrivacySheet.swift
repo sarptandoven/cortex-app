@@ -109,7 +109,7 @@ private struct ConnectionsPrivacyOverview: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: CortexDesign.Space.lg) {
                 ConnectionsOverviewHero(state: state)
 
                 ConnectionsObsidianSection(state: state)
@@ -132,7 +132,7 @@ private struct ConnectionsPrivacyOverview: View {
                     }
                 }
             }
-            .padding(24)
+            .padding(CortexDesign.Space.lg)
         }
         .background(connectionsSheetBackground)
         .task {
