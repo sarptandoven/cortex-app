@@ -23,6 +23,12 @@ MAX_TEXT_BYTES = 12_000_000
 MAX_RECORD_CHARS = 185_000
 MAX_RECORD_CHUNK_CHARS = 45_000
 MAX_RECORD_CHUNK_LINES = 18
+# Cap on how deep we descend into nested JSON / bookmark trees. Real exports are
+# only a handful of levels deep, so 200 never trips on genuine data but stops a
+# crafted, deeply-nested import file from stack-overflowing the parser. When the
+# cap is hit we stop descending and keep whatever was collected (degrade, never
+# raise).
+MAX_PARSE_NESTING_DEPTH = 200
 CHUNK_MARKERS = {
     "--- messages ---",
     "--- rows ---",
@@ -663,7 +669,7 @@ def _parse_chatgpt(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
             continue
         try:
             payload = json.loads(asset.read_text())
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             continue
         if not isinstance(payload, list) or not payload:
             continue
@@ -807,7 +813,7 @@ def _consumer_ai_source_for_component(component: str) -> str:
 def _parse_consumer_ai_json_asset(asset: SourceAsset, source: str, provider: str) -> list[SourceRecord]:
     try:
         payload = json.loads(asset.read_text())
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         return []
     return [
         record
@@ -824,7 +830,7 @@ def _parse_consumer_ai_jsonl_asset(asset: SourceAsset, source: str, provider: st
             continue
         try:
             row = json.loads(line)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             # JSONL lines are independent records; a single truncated/corrupt line
             # (common in large exports) must not discard every valid conversation
             # already parsed from the file. Skip the bad line instead of aborting.
@@ -989,7 +995,7 @@ def _parse_claude(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
             continue
         try:
             payload = json.loads(asset.read_text())
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             continue
         conversations = payload.get("conversations") if isinstance(payload, dict) else payload
         if not isinstance(conversations, list):
@@ -1050,7 +1056,7 @@ def _parse_slack(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
     for asset in slack_assets:
         try:
             payload = json.loads(asset.read_text())
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             continue
         if not isinstance(payload, list) or not any(isinstance(item, dict) and "ts" in item for item in payload):
             continue
@@ -1080,7 +1086,7 @@ def _slack_users(assets: list[SourceAsset]) -> dict[str, str]:
             continue
         try:
             payload = json.loads(asset.read_text())
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             return {}
         if not isinstance(payload, list):
             return {}
@@ -1201,7 +1207,7 @@ def _parse_telegram(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
             continue
         try:
             payload = json.loads(asset.read_text())
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             continue
         chats = ((payload.get("chats") or {}).get("list") if isinstance(payload, dict) else None) or []
         if not isinstance(chats, list):
@@ -1257,7 +1263,7 @@ def _parse_google_chat(assets: list[SourceAsset], hint: str) -> list[SourceRecor
             continue
         try:
             payload = json.loads(asset.read_text())
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             continue
         messages = _message_list_from_payload(payload)
         if not messages:
@@ -1303,7 +1309,7 @@ def _parse_teams(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
 def _teams_json_record(asset: SourceAsset) -> SourceRecord | None:
     try:
         payload = json.loads(asset.read_text())
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         return None
     messages = _message_list_from_payload(payload)
     if not messages:
@@ -1454,7 +1460,7 @@ def _parse_google_keep(assets: list[SourceAsset], hint: str) -> list[SourceRecor
             continue
         try:
             payload = json.loads(asset.read_text())
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             continue
         if not isinstance(payload, dict) or not any(key in payload for key in ("textContent", "listContent", "title")):
             continue
@@ -1757,14 +1763,19 @@ def _parse_browser_bookmarks_json_asset(asset: SourceAsset, hint: str) -> Source
         return None
     try:
         payload = json.loads(asset.read_text())
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         return None
     roots = payload.get("roots") if isinstance(payload, dict) else None
     if not isinstance(roots, dict):
         return None
     entries: list[tuple[str, str, str]] = []
     for root_name, root in roots.items():
-        _collect_browser_bookmark_entries(str(root_name), root, entries)
+        try:
+            _collect_browser_bookmark_entries(str(root_name), root, entries)
+        except RecursionError:
+            # The depth cap should prevent this, but skip a single pathological
+            # root rather than losing the whole bookmarks file if it slips through.
+            continue
     if not entries:
         return None
     lines = [f"Source: Browser Bookmarks", f"File: {asset.name}", "", "--- Bookmarks ---"]
@@ -1776,7 +1787,7 @@ def _parse_browser_bookmarks_json_asset(asset: SourceAsset, hint: str) -> Source
     return SourceRecord(source, Path(asset.name).stem or "Browser bookmarks", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Browser Bookmarks"})
 
 
-def _collect_browser_bookmark_entries(folder: str, node: Any, entries: list[tuple[str, str, str]]) -> None:
+def _collect_browser_bookmark_entries(folder: str, node: Any, entries: list[tuple[str, str, str]], depth: int = 0) -> None:
     if not isinstance(node, dict):
         return
     node_type = str(node.get("type") or "")
@@ -1786,9 +1797,13 @@ def _collect_browser_bookmark_entries(folder: str, node: Any, entries: list[tupl
         if url:
             entries.append((folder, name or url, url))
         return
+    if depth >= MAX_PARSE_NESTING_DEPTH:
+        # Runaway nesting: keep what we have and stop descending rather than
+        # overflowing the stack on a crafted bookmark tree.
+        return
     child_folder = " / ".join(part for part in (folder, name) if part)
     for child in node.get("children") or []:
-        _collect_browser_bookmark_entries(child_folder, child, entries)
+        _collect_browser_bookmark_entries(child_folder, child, entries, depth + 1)
 
 
 def _parse_browser_history_asset(asset: SourceAsset, hint: str) -> SourceRecord | None:
@@ -1902,7 +1917,12 @@ def _format_json_export(asset: SourceAsset, text: str, source: str) -> str:
         return text
     lines = [f"Source: {source}", f"File: {asset.name}", "", "--- Rows ---"]
     for index, row in enumerate(rows[:1000], start=1):
-        parts = _structured_row_parts(row)
+        try:
+            parts = _structured_row_parts(row)
+        except RecursionError:
+            # The depth cap should prevent this, but skip a single pathological
+            # row rather than losing the whole export if it slips through.
+            continue
         if parts:
             lines.append(f"Row {index}\n" + "\n".join(parts[:24]))
     return "\n\n".join(lines) if len(lines) > 4 else text
@@ -1913,7 +1933,7 @@ def _json_export_rows(asset: SourceAsset, text: str, source: str) -> list[Any]:
         return _jsonl_export_rows(text, source)
     try:
         payload = json.loads(text)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         return _jsonl_export_rows(text, source)
     return _json_rows_from_payload(payload, source)
 
@@ -1926,7 +1946,7 @@ def _jsonl_export_rows(text: str, source: str) -> list[Any]:
             continue
         try:
             payload = json.loads(line)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             continue
         rows.extend(_json_rows_from_payload(payload, source))
         if len(rows) >= 1000:
@@ -2039,7 +2059,7 @@ def _structured_row_parts(row: Any) -> list[str]:
     return parts
 
 
-def _structured_value_text(value: Any) -> str:
+def _structured_value_text(value: Any, depth: int = 0) -> str:
     if value is None:
         return ""
     if isinstance(value, str):
@@ -2048,14 +2068,19 @@ def _structured_value_text(value: Any) -> str:
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return str(value)
+    if depth >= MAX_PARSE_NESTING_DEPTH:
+        # Runaway nesting: stop descending into a crafted deeply-nested row
+        # rather than overflowing the stack. Whatever we return here is dropped
+        # into the parent join, so we simply degrade to empty for this branch.
+        return ""
     if isinstance(value, list):
-        parts = [_structured_value_text(item) for item in value]
+        parts = [_structured_value_text(item, depth + 1) for item in value]
         return "; ".join(part for part in parts if part)
     if isinstance(value, dict):
         display = _structured_dict_display(value)
         if display:
             return display
-        text = _json_text_content(value)
+        text = _json_text_content(value, depth)
         if text:
             return _clean_structured_value(text)
         try:
@@ -2073,17 +2098,21 @@ def _structured_dict_display(value: dict[str, Any]) -> str:
     return ""
 
 
-def _json_text_content(value: Any) -> str:
+def _json_text_content(value: Any, depth: int = 0) -> str:
     parts: list[str] = []
 
-    def collect(item: Any) -> None:
+    def collect(item: Any, level: int) -> None:
         if isinstance(item, str):
             if item.strip():
                 parts.append(item.strip())
             return
+        if level >= MAX_PARSE_NESTING_DEPTH:
+            # Runaway nesting: keep the text gathered so far and stop descending
+            # rather than overflowing the stack on a crafted 'content' chain.
+            return
         if isinstance(item, list):
             for child in item:
-                collect(child)
+                collect(child, level + 1)
             return
         if isinstance(item, dict):
             text = item.get("text")
@@ -2091,9 +2120,9 @@ def _json_text_content(value: Any) -> str:
                 parts.append(text.strip())
             for key in ("content", "paragraphs", "blocks"):
                 if key in item:
-                    collect(item.get(key))
+                    collect(item.get(key), level + 1)
 
-    collect(value)
+    collect(value, depth)
     return " ".join(parts)
 
 
@@ -2149,7 +2178,7 @@ def _json_payload_from_archive_js(text: str) -> Any:
     if stripped.startswith("[") or stripped.startswith("{"):
         try:
             return json.loads(stripped)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             return None
     marker = "="
     if marker in stripped:
@@ -2158,7 +2187,7 @@ def _json_payload_from_archive_js(text: str) -> Any:
         stripped = stripped[:-1].strip()
     try:
         return json.loads(stripped)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         return None
 
 
