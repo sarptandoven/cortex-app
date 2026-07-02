@@ -7231,6 +7231,79 @@ class CortexStore:
             self.vault.write_source_account(self._source_account_from_row(account_row))
         return cursor
 
+    def remember_oauth_pending(
+        self,
+        *,
+        state: str,
+        user_id: str,
+        flow: str,
+        payload: dict[str, Any],
+        ttl_seconds: int = 600,
+    ) -> None:
+        """Persist in-flight OAuth setup state so a backend restart between the
+        authorize redirect and the callback does not lose it. Keyed by the random
+        `state` token and scoped by `flow` ("google" or "managed"). Expires after
+        `ttl_seconds`; expired rows are pruned opportunistically on write/read."""
+        normalized_state = str(state or "").strip()[:500]
+        normalized_flow = str(flow or "").strip()[:40]
+        if not normalized_state or not normalized_flow:
+            return
+        now = datetime.now(timezone.utc)
+        expires = now + timedelta(seconds=max(1, int(ttl_seconds or 600)))
+        stored = {
+            key: value
+            for key, value in (payload or {}).items()
+            if key not in {"created_at", "expires_at", "user_id", "flow", "state"}
+        }
+        with connect(self.db_path) as conn:
+            conn.execute("DELETE FROM oauth_pending WHERE expires_at < ?", (_isoformat_z(now),))
+            conn.execute(
+                """
+                INSERT INTO oauth_pending (state, user_id, flow, payload_json, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(state) DO UPDATE SET
+                  user_id = excluded.user_id,
+                  flow = excluded.flow,
+                  payload_json = excluded.payload_json,
+                  created_at = excluded.created_at,
+                  expires_at = excluded.expires_at
+                """,
+                (
+                    normalized_state,
+                    str(user_id or ""),
+                    normalized_flow,
+                    json.dumps(stored),
+                    _isoformat_z(now),
+                    _isoformat_z(expires),
+                ),
+            )
+
+    def pop_oauth_pending(self, state: str, *, flow: str) -> dict[str, Any] | None:
+        """Atomically consume and return the persisted OAuth pending state for a
+        `(state, flow)` pair, or None if it is missing or expired. Single-use:
+        the row is deleted whether or not it had expired."""
+        normalized_state = str(state or "").strip()
+        normalized_flow = str(flow or "").strip()
+        if not normalized_state or not normalized_flow:
+            return None
+        now_text = _isoformat_z(datetime.now(timezone.utc))
+        with connect(self.db_path) as conn:
+            conn.execute("DELETE FROM oauth_pending WHERE expires_at < ?", (now_text,))
+            row = conn.execute(
+                "SELECT * FROM oauth_pending WHERE state = ? AND flow = ?",
+                (normalized_state, normalized_flow),
+            ).fetchone()
+            if not row:
+                return None
+            conn.execute(
+                "DELETE FROM oauth_pending WHERE state = ? AND flow = ?",
+                (normalized_state, normalized_flow),
+            )
+        payload = self._json_or_empty(row["payload_json"])
+        payload["user_id"] = row["user_id"]
+        payload["created_at"] = row["created_at"]
+        return payload
+
     def _source_account_record_url(
         self,
         *,

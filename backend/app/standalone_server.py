@@ -7,7 +7,7 @@ import json
 import os
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -187,32 +187,18 @@ ROOT_HTML = """
 
 
 GOOGLE_OAUTH_PENDING_TTL = timedelta(minutes=10)
-_google_oauth_pending: dict[str, dict[str, Any]] = {}
-_google_oauth_pending_lock = threading.Lock()
-_managed_oauth_pending: dict[str, dict[str, Any]] = {}
-_managed_oauth_pending_lock = threading.Lock()
-
-
-def _prune_google_oauth_pending(now: datetime | None = None) -> None:
-    cutoff = (now or datetime.now(timezone.utc)) - GOOGLE_OAUTH_PENDING_TTL
-    expired = [
-        state
-        for state, pending in _google_oauth_pending.items()
-        if pending.get("created_at", cutoff) < cutoff
-    ]
-    for state in expired:
-        _google_oauth_pending.pop(state, None)
 
 
 def _remember_google_oauth_pending(user_id: str, body: dict[str, Any], started: dict[str, Any]) -> None:
     state = str(started.get("state") or "").strip()
     if not state:
         return
-    with _google_oauth_pending_lock:
-        _prune_google_oauth_pending()
-        _google_oauth_pending[state] = {
-            "created_at": datetime.now(timezone.utc),
-            "user_id": user_id,
+    store.remember_oauth_pending(
+        state=state,
+        user_id=user_id,
+        flow="google",
+        ttl_seconds=int(GOOGLE_OAUTH_PENDING_TTL.total_seconds()),
+        payload={
             "source": started.get("source") or body.get("source"),
             "redirect_uri": started.get("redirect_uri") or body.get("redirect_uri"),
             "client_id": body.get("client_id"),
@@ -227,38 +213,24 @@ def _remember_google_oauth_pending(user_id: str, body: dict[str, Any], started: 
             "mime_types": body.get("mime_types") if isinstance(body.get("mime_types"), list) else [],
             "include_body": _bool_value(body.get("include_body"), default=True),
             "include_content": _bool_value(body.get("include_content"), default=True),
-        }
+        },
+    )
 
 
 def _pop_google_oauth_pending(state: str) -> dict[str, Any] | None:
-    normalized = str(state or "").strip()
-    if not normalized:
-        return None
-    with _google_oauth_pending_lock:
-        _prune_google_oauth_pending()
-        return _google_oauth_pending.pop(normalized, None)
-
-
-def _prune_managed_oauth_pending(now: datetime | None = None) -> None:
-    cutoff = (now or datetime.now(timezone.utc)) - GOOGLE_OAUTH_PENDING_TTL
-    expired = [
-        state
-        for state, pending in _managed_oauth_pending.items()
-        if pending.get("created_at", cutoff) < cutoff
-    ]
-    for state in expired:
-        _managed_oauth_pending.pop(state, None)
+    return store.pop_oauth_pending(state or "", flow="google")
 
 
 def _remember_managed_oauth_pending(user_id: str, body: dict[str, Any], started: dict[str, Any]) -> None:
     state = str(started.get("state") or "").strip()
     if not state:
         return
-    with _managed_oauth_pending_lock:
-        _prune_managed_oauth_pending()
-        _managed_oauth_pending[state] = {
-            "created_at": datetime.now(timezone.utc),
-            "user_id": user_id,
+    store.remember_oauth_pending(
+        state=state,
+        user_id=user_id,
+        flow="managed",
+        ttl_seconds=int(GOOGLE_OAUTH_PENDING_TTL.total_seconds()),
+        payload={
             "source": started.get("source") or body.get("source"),
             "redirect_uri": started.get("redirect_uri") or body.get("redirect_uri"),
             "client_id": body.get("client_id"),
@@ -270,16 +242,12 @@ def _remember_managed_oauth_pending(user_id: str, body: dict[str, Any], started:
             "include_content": _bool_value(body.get("include_content"), default=True),
             "api_base_url": body.get("api_base_url"),
             "notion_version": body.get("notion_version"),
-        }
+        },
+    )
 
 
 def _pop_managed_oauth_pending(state: str) -> dict[str, Any] | None:
-    normalized = str(state or "").strip()
-    if not normalized:
-        return None
-    with _managed_oauth_pending_lock:
-        _prune_managed_oauth_pending()
-        return _managed_oauth_pending.pop(normalized, None)
+    return store.pop_oauth_pending(state or "", flow="managed")
 
 
 def _google_oauth_callback_page(title: str, detail: str, *, success: bool) -> str:

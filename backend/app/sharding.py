@@ -549,6 +549,26 @@ class StoreRegistry:
         self.token_index.delete_user(user_id)
         return deleted
 
+    def remember_oauth_pending(
+        self,
+        *,
+        state: str,
+        user_id: str,
+        flow: str,
+        payload: dict[str, Any],
+        ttl_seconds: int = 600,
+    ) -> None:
+        # Pending OAuth state must live in one place the unauthenticated callback
+        # can read by `state` alone, so it is kept in the default store rather than
+        # routed per-user (the resolved user_id is carried inside the payload and
+        # drives the actual token exchange on completion).
+        self.default_store.remember_oauth_pending(
+            state=state, user_id=user_id, flow=flow, payload=payload, ttl_seconds=ttl_seconds
+        )
+
+    def pop_oauth_pending(self, state: str, *, flow: str) -> dict[str, Any] | None:
+        return self.default_store.pop_oauth_pending(state, flow=flow)
+
     def __getattr__(self, name: str) -> Any:
         attr = getattr(self.default_store, name)
         if not callable(attr):

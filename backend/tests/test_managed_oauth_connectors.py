@@ -98,7 +98,8 @@ class ManagedOAuthConnectorTests(unittest.TestCase):
             public_base_url="http://127.0.0.1:8766",
         )
         main_module.store = StoreRegistry.from_settings(main_module.settings)
-        main_module._managed_oauth_pending.clear()
+        # OAuth pending state is now persisted per-store; each test gets a fresh
+        # temp DB, so there is no cross-test in-memory state to reset here.
 
     def tearDown(self) -> None:
         self.fastapi_tmp.cleanup()

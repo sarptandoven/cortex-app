@@ -70,6 +70,27 @@ class FakeStore:
         self.denied_agent_access: set[str] = set()
         self.require_agent_access_calls: list[tuple[str, str]] = []
         self.context_pack_calls: list[tuple[str, str, int, str | None]] = []
+        self.oauth_pending: dict[tuple[str, str], dict] = {}
+
+    def remember_oauth_pending(self, *, state, user_id, flow, payload, ttl_seconds: int = 600) -> None:
+        normalized_state = str(state or "").strip()
+        normalized_flow = str(flow or "").strip()
+        if not normalized_state or not normalized_flow:
+            return
+        stored = {
+            key: value
+            for key, value in (payload or {}).items()
+            if key not in {"created_at", "expires_at", "user_id", "flow", "state"}
+        }
+        self.oauth_pending[(normalized_state, normalized_flow)] = {"user_id": user_id, "payload": stored}
+
+    def pop_oauth_pending(self, state, *, flow):
+        entry = self.oauth_pending.pop((str(state or "").strip(), str(flow or "").strip()), None)
+        if not entry:
+            return None
+        result = dict(entry["payload"])
+        result["user_id"] = entry["user_id"]
+        return result
 
     def search(
         self,

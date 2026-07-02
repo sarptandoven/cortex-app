@@ -421,6 +421,16 @@ CREATE INDEX IF NOT EXISTS idx_capture_processing_user_status ON capture_process
 CREATE INDEX IF NOT EXISTS idx_memory_jobs_claim ON memory_jobs(status, run_at, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_memory_jobs_user_status ON memory_jobs(user_id, status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memory_jobs_object ON memory_jobs(user_id, object_type, object_id);
+
+CREATE TABLE IF NOT EXISTS oauth_pending (
+  state TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  flow TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_pending_expiry ON oauth_pending(expires_at);
 """
 
 
