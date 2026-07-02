@@ -93,14 +93,89 @@ class RaindropConnectorTests(unittest.TestCase):
         self.assertEqual(sync.records_returned, 1)
         self.assertEqual(sync.records[0].source_url, "raindrop://raindrop/456")
 
-    def test_truncated_scan_keeps_cursor_so_tail_items_are_not_lost(self) -> None:
-        # Items arrive sorted by -lastUpdate (newest first), so the high-water mark is
-        # taken from the FIRST consumed record. When max_records truncates the scan
-        # mid-page, the unconsumed tail items are OLDER than that mark; advancing
-        # cursor_value to it would make the next sync's `captured_at <= since` filter
-        # skip them permanently. The fix keeps cursor_value at the input `since` for a
-        # truncated scan so the next sync re-covers the unconsumed range (re-fetched
-        # duplicates are deduplicated downstream via stable external ids).
+    def test_capped_scan_resumes_via_page_continuation_without_losing_tail(self) -> None:
+        # Items arrive sorted by -lastUpdate (newest first). A record cap must not
+        # advance the watermark past unconsumed older items (they would be skipped
+        # forever by the next sync's `captured_at <= since` filter), and it must not
+        # pin the cursor without a continuation (the same head would be refetched
+        # forever with no forward progress). Instead a capped scan finishes its page,
+        # emits a next_page continuation, keeps the watermark at `since`, and carries
+        # the true newest timestamp in pending_high_water_mark until the scan
+        # completes.
+        all_items = [
+            {"_id": 1, "title": "Item 12", "lastUpdate": "2026-06-30T12:00:00Z"},
+            {"_id": 2, "title": "Item 11", "lastUpdate": "2026-06-30T11:00:00Z"},
+            {"_id": 3, "title": "Item 10", "lastUpdate": "2026-06-30T10:00:00Z"},
+            {"_id": 4, "title": "Item 0930", "lastUpdate": "2026-06-30T09:30:00Z"},
+            {"_id": 5, "title": "Item 0915", "lastUpdate": "2026-06-30T09:15:00Z"},
+        ]
+
+        def paginating_request(url: str, headers: dict[str, str]):
+            query = parse_qs(urlparse(url).query)
+            page = int(query["page"][0])
+            per_page = int(query["perpage"][0])
+            start = page * per_page
+            return {"result": True, "items": all_items[start : start + per_page]}
+
+        since = "2026-06-30T09:00:00Z"
+        first = fetch_raindrop_records(
+            token="raindrop_test",
+            since=since,
+            max_records=2,
+            request_json=paginating_request,
+        )
+        self.assertEqual([r.external_id for r in first.records], ["raindrop:item:1", "raindrop:item:2"])
+        self.assertEqual(first.next_page, "1")
+        self.assertEqual(first.high_water_mark, since)
+        self.assertEqual(first.pending_high_water_mark, "2026-06-30T12:00:00Z")
+        self.assertEqual(first.cursor_value, "1")
+
+        # Scheduled replay contract: continuation runs with since=None and the
+        # stored page + pending high-water mark.
+        second = fetch_raindrop_records(
+            token="raindrop_test",
+            since=None,
+            page=first.next_page,
+            pending_high_water_mark=first.pending_high_water_mark,
+            max_records=2,
+            request_json=paginating_request,
+        )
+        self.assertEqual([r.external_id for r in second.records], ["raindrop:item:3", "raindrop:item:4"])
+        self.assertEqual(second.next_page, "2")
+        self.assertEqual(second.pending_high_water_mark, "2026-06-30T12:00:00Z")
+
+        third = fetch_raindrop_records(
+            token="raindrop_test",
+            since=None,
+            page=second.next_page,
+            pending_high_water_mark=second.pending_high_water_mark,
+            max_records=2,
+            request_json=paginating_request,
+        )
+        self.assertEqual([r.external_id for r in third.records], ["raindrop:item:5"])
+        # Scan complete: the carried pending mark becomes the watermark, so the
+        # next incremental sync starts from the true newest item.
+        self.assertIsNone(third.next_page)
+        self.assertIsNone(third.pending_high_water_mark)
+        self.assertEqual(third.high_water_mark, "2026-06-30T12:00:00Z")
+        self.assertEqual(third.cursor_value, "2026-06-30T12:00:00Z")
+
+        # Stability: a follow-up incremental sync consumes nothing and keeps the
+        # watermark, proving the cycle terminates.
+        fourth = fetch_raindrop_records(
+            token="raindrop_test",
+            since=third.cursor_value,
+            max_records=2,
+            request_json=paginating_request,
+        )
+        self.assertEqual(fourth.records_returned, 0)
+        self.assertIsNone(fourth.next_page)
+        self.assertEqual(fourth.high_water_mark, third.cursor_value)
+        self.assertEqual(fourth.cursor_value, third.cursor_value)
+
+    def test_over_returning_page_is_fully_consumed_so_tail_is_not_lost(self) -> None:
+        # A server that ignores perpage and over-returns must not lose the tail:
+        # the page is consumed past the record cap rather than truncated mid-page.
         items = [
             {"_id": 1, "title": "Newest", "lastUpdate": "2026-06-30T12:00:00Z"},
             {"_id": 2, "title": "Middle", "lastUpdate": "2026-06-30T11:00:00Z"},
@@ -111,38 +186,20 @@ class RaindropConnectorTests(unittest.TestCase):
             return {"result": True, "items": items}
 
         since = "2026-06-30T09:00:00Z"
-        first = fetch_raindrop_records(
+        sync = fetch_raindrop_records(
             token="raindrop_test",
             since=since,
             max_records=2,
             request_json=fake_request,
         )
 
-        self.assertEqual(first.records_returned, 2)
         self.assertEqual(
-            [record.external_id for record in first.records],
-            ["raindrop:item:1", "raindrop:item:2"],
-        )
-        # Regression: the truncated scan must not advance the cursor past `since`
-        # (previously cursor_value was the 12:00 high-water mark, losing item 3),
-        # and must not emit a page continuation that skips the rest of this page.
-        self.assertIsNone(first.next_page)
-        self.assertEqual(first.cursor_value, since)
-
-        second = fetch_raindrop_records(
-            token="raindrop_test",
-            since=first.cursor_value,
-            max_records=10,
-            request_json=fake_request,
-        )
-
-        self.assertEqual(
-            [record.external_id for record in second.records],
+            [record.external_id for record in sync.records],
             ["raindrop:item:1", "raindrop:item:2", "raindrop:item:3"],
         )
-        # An untruncated scan reports the true high-water mark again.
-        self.assertEqual(second.high_water_mark, "2026-06-30T12:00:00Z")
-        self.assertEqual(second.cursor_value, "2026-06-30T12:00:00Z")
+        # The watermark only advances once the continuation completes.
+        self.assertEqual(sync.high_water_mark, since)
+        self.assertEqual(sync.pending_high_water_mark, "2026-06-30T12:00:00Z")
 
 
 if __name__ == "__main__":

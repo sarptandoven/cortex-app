@@ -331,6 +331,9 @@ struct AskAnswerPanel: View {
         .background(CortexDesign.panelBackground)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .onChange(of: answer) { _ in
+            showAllCitations = false
+        }
     }
 }
 

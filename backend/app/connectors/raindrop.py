@@ -14,6 +14,7 @@ RAINDROP_SOURCE = "raindrop"
 CONNECTOR_VERSION = "2026-07-01"
 DEFAULT_API_BASE_URL = "https://api.raindrop.io/rest/v1"
 MAX_RECORDS = 500
+MAX_PAGES_PER_SYNC = 100
 DEFAULT_COLLECTION_ID = "0"
 
 
@@ -48,6 +49,7 @@ class RaindropSync:
     high_water_mark: str | None
     cursor_value: str | None
     next_page: str | None
+    pending_high_water_mark: str | None
     errors: list[dict[str, Any]]
     api_base_url: str
     collection_id: str
@@ -61,6 +63,7 @@ class RaindropSync:
             "high_water_mark": self.high_water_mark,
             "cursor_value": self.cursor_value,
             "next_page": self.next_page,
+            "pending_high_water_mark": self.pending_high_water_mark,
             "errors": self.errors,
             "api_base_url": self.api_base_url,
             "collection_id": self.collection_id,
@@ -73,6 +76,7 @@ def fetch_raindrop_records(
     collection_id: str | int = DEFAULT_COLLECTION_ID,
     since: str | None = None,
     page: str | int | None = None,
+    pending_high_water_mark: str | None = None,
     max_records: int = 100,
     include_highlights: bool = True,
     api_base_url: str = DEFAULT_API_BASE_URL,
@@ -97,11 +101,15 @@ def fetch_raindrop_records(
     errors: list[dict[str, Any]] = []
     high_water_mark: str | None = None
     next_page: str | None = None
-    truncated_mid_page = False
     since_normalized = _text(since)
+    # Page size stays constant for the whole scan (and across scans sharing the
+    # same max_records) so page indices remain coherent: a next_page
+    # continuation must resume exactly where a capped scan stopped.
+    per_page = min(50, capped_max)
+    pages_scanned = 0
 
-    while len(records) < capped_max:
-        per_page = min(50, capped_max - len(records))
+    while pages_scanned < MAX_PAGES_PER_SYNC:
+        pages_scanned += 1
         query = {
             "page": str(current_page),
             "perpage": str(per_page),
@@ -122,39 +130,45 @@ def fetch_raindrop_records(
             break
         items = payload.get("items") if isinstance(payload.get("items"), list) else []
         records_found += len(items)
-        for index, item in enumerate(items):
+        reached_since_boundary = False
+        # The record cap never truncates mid-page: each requested page is fully
+        # consumed (overshooting max_records by at most one page) so the
+        # next_page continuation never skips items consumed part-way.
+        for item in items:
             if not isinstance(item, dict):
                 continue
             record = _record_from_item(item, normalized_collection_id, include_highlights=include_highlights)
             if record is None:
                 continue
             if since_normalized and record.captured_at and record.captured_at <= since_normalized:
+                # Descending -lastUpdate order: everything from here on is at or
+                # before `since`, so the scan is complete after this page.
+                reached_since_boundary = True
                 continue
             high_water_mark = _max_iso(high_water_mark, record.captured_at)
             records.append(record)
-            if len(records) >= capped_max:
-                truncated_mid_page = index < len(items) - 1
-                break
-        if len(items) < per_page or len(records) >= capped_max:
-            next_page = (
-                str(current_page + 1)
-                if len(items) == per_page and len(records) >= capped_max and not truncated_mid_page
-                else None
-            )
+        if reached_since_boundary or len(items) < per_page:
+            break
+        if len(records) >= capped_max:
+            next_page = str(current_page + 1)
             break
         current_page += 1
-        next_page = str(current_page)
 
-    if truncated_mid_page:
-        # Items arrive sorted by -lastUpdate, so any items left unconsumed when the
-        # record cap fires mid-page are OLDER than the high-water mark set from the
-        # first (newest) record. Advancing the cursor past them would make the next
-        # sync's `captured_at <= since` filter skip them permanently, and a page
-        # continuation cannot resume mid-page. Keep the watermark at the input
-        # `since` so the next sync re-covers the unconsumed range; the records
-        # consumed here are re-fetched then but deduplicated downstream by their
-        # stable external ids.
+    carried_high_water_mark = _text(pending_high_water_mark) or None
+    if next_page or errors:
+        # Scan interrupted (record cap with pages remaining, or an error). Items
+        # arrive newest-first, so an advanced watermark would make the next
+        # sync's `captured_at <= since` filter permanently skip the unconsumed
+        # older tail. Keep the watermark at the input `since` and carry the true
+        # newest timestamp in pending_high_water_mark; the scheduled replay
+        # resumes at next_page (with no since filter) and only a completed scan
+        # promotes the pending mark to the watermark. Re-fetched records are
+        # deduplicated downstream by their stable external ids.
+        pending_out = _max_iso(carried_high_water_mark, high_water_mark)
         high_water_mark = since_normalized or None
+    else:
+        pending_out = None
+        high_water_mark = _max_iso(carried_high_water_mark, high_water_mark) or since_normalized or None
 
     return RaindropSync(
         records=records,
@@ -163,6 +177,7 @@ def fetch_raindrop_records(
         high_water_mark=high_water_mark,
         cursor_value=next_page or high_water_mark or since_normalized,
         next_page=next_page,
+        pending_high_water_mark=pending_out,
         errors=errors,
         api_base_url=base_url,
         collection_id=normalized_collection_id,
