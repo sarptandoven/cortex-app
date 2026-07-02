@@ -35,7 +35,7 @@ struct ConnectionsPrivacySheet: View {
                 Text("Connections & Privacy")
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text("Connect a notes source, keep it synced, and manage local privacy settings.")
+                Text("Connect notes, keep memory local, and choose what AI tools can use.")
                     .font(.callout)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -113,21 +113,23 @@ private struct ConnectionsPrivacyOverview: View {
                 ConnectionsOverviewHero(state: state)
 
                 ConnectionsObsidianSection(state: state)
-                otherSourceConnections
-                if state.connectedAIIntegrationCount > 0 {
-                    ConnectionsAIToolsSection(state: state)
-                }
+                if !state.firstRunNeedsSource {
+                    otherSourceConnections
+                    if state.connectedAIIntegrationCount > 0 {
+                        ConnectionsAIToolsSection(state: state)
+                    }
 
-                if let summary = state.trustSummary {
-                    ConnectionsPrivacyDefaultsSection(state: state, summary: summary)
-                    privacySettings(summary: summary)
-                    connectedNow
-                    advancedControls(summary: summary)
-                } else {
-                    QuietState(
-                        title: "Preparing privacy controls",
-                        detail: CortexRecoveryText.needsAttention(state.displayStatus) ? state.displayStatus : "Cortex is reading local privacy settings and connection history."
-                    )
+                    if let summary = state.trustSummary {
+                        ConnectionsPrivacyDefaultsSection(state: state, summary: summary)
+                        privacySettings(summary: summary)
+                        connectedNow
+                        advancedControls(summary: summary)
+                    } else {
+                        QuietState(
+                            title: "Preparing privacy controls",
+                            detail: CortexRecoveryText.needsAttention(state.displayStatus) ? state.displayStatus : "Cortex is reading local privacy settings and connection history."
+                        )
+                    }
                 }
             }
             .padding(24)
@@ -148,7 +150,7 @@ private struct ConnectionsPrivacyOverview: View {
         } label: {
             ConnectionsDisclosureLabel(
                 systemImage: "link.badge.plus",
-                title: "Other source connections",
+                title: "More connections",
                 detail: advancedSourceDisclosureDetail
             )
         }
@@ -163,7 +165,7 @@ private struct ConnectionsPrivacyOverview: View {
         if extraSources > 0 {
             return "\(extraSources) extra source\(extraSources == 1 ? "" : "s") connected"
         }
-        return "Read-only token, local-file, and local-app sync"
+        return "Optional services with read-only sync"
     }
 
     private var optionalAITools: some View {
@@ -237,6 +239,8 @@ private struct ConnectionsPrivacyOverview: View {
                 if state.connectedAIIntegrationCount == 0 {
                     optionalAITools
                 }
+
+                ConnectionsMCPAccessSection(state: state)
 
                 DisclosureGroup("Recovery and support tools", isExpanded: $recoveryToolsExpanded) {
                     VStack(alignment: .leading, spacing: 14) {
@@ -409,16 +413,16 @@ private struct ConnectionsOverviewHero: View {
 
     private var primaryActionTitle: String {
         if notesConnected {
-            return state.hasConnectedObsidianVault ? "Sync source" : "Reconnect source"
+            return state.hasConnectedObsidianVault ? "Sync notes" : "Reconnect notes"
         }
         if !notesConnected, let _ = obsidianConnector {
-            if notesNeedAttention { return "Fix source sync" }
-            return notesNeedContent ? "Choose source" : "Start source sync"
+            if notesNeedAttention { return "Fix notes" }
+            return notesNeedContent ? "Choose notes" : "Connect notes"
         }
         if !notesConnected {
             return "Check status"
         }
-        return "Sync source"
+        return "Sync notes"
     }
 
     private var primaryActionIcon: String {
@@ -434,28 +438,28 @@ private struct ConnectionsOverviewHero: View {
 
     private var title: String {
         if notesConnected {
-            return "Source syncing"
+            return "Notes connected"
         }
         if notesNeedAttention {
-            return "Source needs attention"
+            return "Notes need attention"
         }
         if notesNeedContent {
-            return "Choose a source with content"
+            return "Choose notes with content"
         }
-        return "Start source sync once"
+        return "Connect notes once"
     }
 
     private var detail: String {
         if notesConnected {
-            return "New source memory goes to Review first. Ask uses reviewed memory with citations."
+            return "New memory goes to Review first. Ask uses reviewed memory with citations."
         }
         if notesNeedAttention {
-            return notesHealth.detail ?? "Cortex needs attention before this source can keep syncing."
+            return notesHealth.detail ?? "Cortex needs attention before notes can keep syncing."
         }
         if notesNeedContent {
-            return "Cortex could not find usable content there. Choose a source with real notes or records."
+            return "Cortex could not find usable content there. Choose a notes library with real content."
         }
-        return "Choose the source Cortex should sync. New memory goes to Review before Ask uses it."
+        return "Choose the notes Cortex should sync. New memory goes to Review before Ask uses it."
     }
 
     private var statusIcon: String {
@@ -474,7 +478,7 @@ private struct ConnectionsOverviewHero: View {
 
     private func runPrimaryAction() {
         if let connector = obsidianConnector {
-            state.connectLocalNotesFolder(connector)
+            state.connectLocalNotesFolder(connector, chooseNew: notesNeedContent)
         } else {
             Task {
                 await state.loadTrust()
@@ -509,12 +513,12 @@ private struct ConnectionsObsidianSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
-                title: "Primary source connection",
+                title: "Primary notes",
                 detail: primarySourceDetail
             )
 
             if state.sourceConnectorCatalog.isEmpty {
-                QuietState(title: "Checking source connections", detail: "Cortex is checking available local source connections.")
+                QuietState(title: "Checking notes connection", detail: "Cortex is checking available local notes.")
             } else if let connector = obsidianConnector {
                 SourceConnectorStatusCard(
                     state: state,
@@ -525,7 +529,7 @@ private struct ConnectionsObsidianSection: View {
                     attentionDetail: notesHealth.detail
                 )
             } else {
-                QuietState(title: "Source connection unavailable", detail: "Restart Cortex after the private memory store is ready.")
+                QuietState(title: "Notes connection unavailable", detail: "Restart Cortex after the private memory store is ready.")
             }
         }
     }
@@ -596,12 +600,12 @@ private struct ConnectionsDirectSourcesSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
-                title: "Other source connections",
-                detail: "Optional read-only connections that already sync into Review. Planned sign-in services stay hidden until they are real."
+                title: "More connections",
+                detail: "Optional read-only services that already sync into Review. Planned sign-in services stay hidden until they are real."
             )
 
             if state.sourceConnectorCatalog.isEmpty {
-                QuietState(title: "Checking source connections", detail: "Cortex is loading local source sync options.")
+                QuietState(title: "Checking connections", detail: "Cortex is loading available read-only connections.")
             } else if wiredConnectors.isEmpty {
                 QuietState(title: "No extra connectors ready", detail: "Use notes sync as the default source path.")
             } else {
@@ -647,6 +651,27 @@ private struct ConnectionsDirectSourceRow: View {
 
     private var isSyncing: Bool {
         state.connectorSyncingIDs.contains(connector.id)
+    }
+
+    private var isOAuthStarting: Bool {
+        state.connectorOAuthStartingIDs.contains(connector.id)
+    }
+
+    private var hasManagedOAuth: Bool {
+        connector.connectionSetup?.supportsManagedOAuth == true
+    }
+
+    private var managedOAuthConfigured: Bool {
+        !hasManagedOAuth || connected || state.managedOAuthIsConfigured(connector)
+    }
+
+    private var managedOAuthProviderName: String {
+        switch connector.connectionSetup?.oauth_provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "google": return "Google"
+        case "microsoft": return "Microsoft"
+        case "notion": return "Notion"
+        default: return "this service"
+        }
     }
 
     private var activeAccount: SourceAccountItem? {
@@ -716,7 +741,7 @@ private struct ConnectionsDirectSourceRow: View {
             Button {
                 runAction()
             } label: {
-                if isSyncing {
+                if isSyncing || isOAuthStarting {
                     ProgressView()
                         .scaleEffect(0.78)
                         .frame(minWidth: 126, minHeight: 46)
@@ -727,7 +752,7 @@ private struct ConnectionsDirectSourceRow: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.large)
-            .disabled(state.isBusy || isSyncing)
+            .disabled(state.isBusy || isSyncing || isOAuthStarting || !managedOAuthConfigured)
 
             if !isPaused && (activeAccount != nil || hasStoredConfig) {
                 Button {
@@ -739,7 +764,7 @@ private struct ConnectionsDirectSourceRow: View {
                 .buttonStyle(.bordered)
                 .foregroundColor(.secondary)
                 .help("Pause automatic sync. Already synced local memory is kept.")
-                .disabled(state.isBusy || isSyncing)
+                .disabled(state.isBusy || isSyncing || isOAuthStarting)
             }
         }
         .padding(14)
@@ -755,6 +780,7 @@ private struct ConnectionsDirectSourceRow: View {
         if let readiness { return readiness.syncPlanModeTitle }
         if connected { return "Connected" }
         if hasStoredConfig { return "Configured" }
+        if hasManagedOAuth && !managedOAuthConfigured { return "Not configured" }
         if let setupModeTitle { return setupModeTitle }
         return "Ready"
     }
@@ -766,6 +792,8 @@ private struct ConnectionsDirectSourceRow: View {
         if let readiness { return readiness.syncPlanIcon }
         if connected { return "checkmark.circle.fill" }
         if hasStoredConfig { return "checkmark.circle" }
+        if hasManagedOAuth && !managedOAuthConfigured { return "key.slash.fill" }
+        if hasManagedOAuth { return "person.crop.circle.badge.checkmark" }
         if connector.connectionSetup?.mode == "native-token-connector" { return "key.fill" }
         if connector.connectionSetup?.mode == "native-local-connector" { return "externaldrive.fill" }
         return "link.circle"
@@ -778,6 +806,7 @@ private struct ConnectionsDirectSourceRow: View {
         if let readiness { return readiness.syncPlanColor }
         if connected { return .green }
         if hasStoredConfig { return .green }
+        if hasManagedOAuth && !managedOAuthConfigured { return .secondary }
         if connector.connectionSetup?.available == true { return .accentColor }
         return .secondary
     }
@@ -817,6 +846,13 @@ private struct ConnectionsDirectSourceRow: View {
         }
         if activeAccount?.needsAttention == true {
             return activeAccount?.last_error ?? "This connector needs attention before it can sync again."
+        }
+        if hasManagedOAuth {
+            if connected { return "\(connector.name) is connected. Cortex keeps new memory local and sends useful items to Review first." }
+            if !managedOAuthConfigured {
+                return state.managedOAuthConfigurationMessage(connector) ?? "\(connector.name) sign-in is not configured for this build yet."
+            }
+            return "Sign in with \(managedOAuthProviderName). Cortex stores tokens locally, syncs read-only data, and cites every useful memory."
         }
         switch connector.id {
         case "calendar":
@@ -886,10 +922,13 @@ private struct ConnectionsDirectSourceRow: View {
     }
 
     private var actionTitle: String {
+        if isOAuthStarting { return "Waiting" }
         if isPaused { return "Resume" }
         if connected || hasStoredConfig {
             return connector.id == "calendar" ? "Sync" : "Sync again"
         }
+        if hasManagedOAuth && !managedOAuthConfigured { return "Not configured" }
+        if hasManagedOAuth { return "Sign in" }
         switch connector.id {
         case "calendar": return "Connect"
         case "zotero": return "Sync"
@@ -899,6 +938,8 @@ private struct ConnectionsDirectSourceRow: View {
 
     private var actionIcon: String {
         if isPaused { return "play.circle.fill" }
+        if hasManagedOAuth && !managedOAuthConfigured { return "key.slash.fill" }
+        if hasManagedOAuth { return connected ? "arrow.triangle.2.circlepath" : "person.crop.circle.badge.checkmark" }
         switch connector.id {
         case "calendar": return "calendar.badge.plus"
         case "zotero": return "arrow.triangle.2.circlepath"
@@ -913,11 +954,17 @@ private struct ConnectionsDirectSourceRow: View {
         }
         switch connector.id {
         case "calendar":
-            hasStoredConfig ? state.syncStoredDirectConnector(connector) : openTokenSetup()
+            hasStoredConfig ? state.syncStoredDirectConnector(connector) : state.connectCalendarFile(connector)
         case "zotero":
             state.syncZoteroLocal(connector)
         default:
-            if hasStoredConfig {
+            if hasManagedOAuth {
+                guard managedOAuthConfigured else {
+                    state.connectorLastMessages[connector.id] = state.managedOAuthConfigurationMessage(connector)
+                    return
+                }
+                connected ? state.syncConnectedSourceConnector(connector) : state.startManagedOAuthConnector(connector)
+            } else if hasStoredConfig {
                 state.syncStoredDirectConnector(connector)
             } else {
                 openTokenSetup()
@@ -935,6 +982,9 @@ private struct ConnectorTokenSetupSheet: View {
     @State private var boolValues: [String: Bool] = [:]
     @State private var optionsExpanded = false
     @State private var accountDetailsExpanded = false
+    @State private var discoveredOptions: [String: [SourceConnectorDiscoveredOption]] = [:]
+    @State private var discoveryMessages: [String: String] = [:]
+    @State private var discoveryLoadingField: String?
 
     private var setup: SourceConnectorConnectionSetup? {
         connector.connectionSetup
@@ -1170,6 +1220,83 @@ private struct ConnectorTokenSetupSheet: View {
                         .controlSize(.large)
                 }
             }
+
+            if field.hasRemoteOptions {
+                remoteOptionsControls(for: field)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func remoteOptionsControls(for field: SourceConnectorSetupField) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Button {
+                    loadRemoteOptions(for: field)
+                } label: {
+                    if discoveryLoadingField == field.name {
+                        ProgressView()
+                            .scaleEffect(0.75)
+                            .frame(minWidth: 132, minHeight: 40)
+                    } else {
+                        Label(discoveredOptions[field.name] == nil ? "Find \(field.displayLabel)" : "Refresh \(field.displayLabel)", systemImage: "magnifyingglass")
+                            .frame(minHeight: 40)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(discoveryLoadingField != nil || missingDiscoveryCredentialMessage(for: field) != nil)
+
+                if let missingDiscoveryCredentialMessage = missingDiscoveryCredentialMessage(for: field) {
+                    Text(missingDiscoveryCredentialMessage)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if let message = discoveryMessages[field.name] {
+                Text(message)
+                    .font(.caption)
+                    .foregroundColor(CortexRecoveryText.needsAttention(message) ? .orange : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let options = discoveredOptions[field.name], !options.isEmpty {
+                VStack(spacing: 6) {
+                    ForEach(options) { option in
+                        Button {
+                            toggleRemoteOption(option, for: field)
+                        } label: {
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: remoteOptionSelected(option, for: field) ? "checkmark.circle.fill" : "circle")
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundColor(remoteOptionSelected(option, for: field) ? .accentColor : .secondary)
+                                    .frame(width: 22, height: 22)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(option.label)
+                                        .font(.callout)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(.primary)
+                                    if let detail = option.detail {
+                                        Text(detail)
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                            .lineLimit(2)
+                                    }
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(remoteOptionSelected(option, for: field) ? Color.accentColor.opacity(0.09) : CortexDesign.cardBackground)
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
         }
     }
 
@@ -1193,6 +1320,65 @@ private struct ConnectorTokenSetupSheet: View {
                 boolValues[field.name] = value
             }
         )
+    }
+
+    private func loadRemoteOptions(for field: SourceConnectorSetupField) {
+        discoveryLoadingField = field.name
+        discoveryMessages[field.name] = nil
+        Task {
+            do {
+                let options = try await state.discoverDirectConnectorOptions(
+                    connector,
+                    field: field,
+                    payload: syncPayload()
+                )
+                discoveredOptions[field.name] = options
+                if options.isEmpty {
+                    discoveryMessages[field.name] = "No \(field.displayLabel.lowercased()) found for this account."
+                } else {
+                    discoveryMessages[field.name] = "Select the \(field.displayLabel.lowercased()) Cortex should keep synced."
+                }
+            } catch {
+                discoveryMessages[field.name] = CortexRecoveryText.failureStatus("Find \(field.displayLabel.lowercased())", error: error)
+            }
+            discoveryLoadingField = nil
+        }
+    }
+
+    private func missingDiscoveryCredentialMessage(for field: SourceConnectorSetupField) -> String? {
+        for credential in setup?.credential_fields ?? [] where credential.isRequired {
+            if !hasValue(credential) {
+                return "Add \(credential.displayLabel) first."
+            }
+        }
+        return nil
+    }
+
+    private func remoteOptionSelected(_ option: SourceConnectorDiscoveredOption, for field: SourceConnectorSetupField) -> Bool {
+        if field.normalizedKind == "string_list" {
+            return Set(splitList(fieldValues[field.name] ?? field.defaultString)).contains(option.value)
+        }
+        return trimmed(fieldValues[field.name] ?? defaultString(for: field)) == option.value
+    }
+
+    private func toggleRemoteOption(_ option: SourceConnectorDiscoveredOption, for field: SourceConnectorSetupField) {
+        if field.normalizedKind != "string_list" {
+            fieldValues[field.name] = option.value
+            return
+        }
+
+        var values = Set(splitList(fieldValues[field.name] ?? field.defaultString))
+        if values.contains(option.value) {
+            values.remove(option.value)
+        } else {
+            let maxItems = field.max_items ?? Int.max
+            guard values.count < maxItems else {
+                discoveryMessages[field.name] = "You can select up to \(maxItems) \(field.displayLabel.lowercased())."
+                return
+            }
+            values.insert(option.value)
+        }
+        fieldValues[field.name] = values.sorted().joined(separator: "\n")
     }
 
     private func defaultString(for field: SourceConnectorSetupField) -> String {
@@ -1572,6 +1758,163 @@ private struct ConnectionsPrivacyDefaultsSection: View {
         guard settings.allow_agent_reads else { return "tools cannot read memory" }
         let readText = settings.allow_pending_in_context ? "pending reads allowed" : "reviewed memory reads"
         return settings.allow_agent_writes ? "\(readText), saves to Review" : readText
+    }
+}
+
+private struct ConnectionsMCPAccessSection: View {
+    @ObservedObject var state: AppState
+
+    private var settings: AppSettingsResponse {
+        state.appSettings
+    }
+
+    private var activeMCPTokens: [IntegrationTokenItem] {
+        state.integrationTokens.filter { token in
+            token.audience == "mcp" && token.revoked_at == nil
+        }
+    }
+
+    private var recentToolEvents: [AuditEventItem] {
+        Array(
+            state.auditEvents
+                .filter { event in
+                    event.object_type == "agent"
+                        || event.object_type == "mcp"
+                        || event.event_type.lowercased().contains("tool")
+                        || event.metadata_text.lowercased().contains("mcp")
+                }
+                .prefix(3)
+        )
+    }
+
+    private var activeScopeSummary: String {
+        let scopes = Set(activeMCPTokens.flatMap(\.scopes))
+        if scopes.isEmpty { return "No active MCP token" }
+        return scopes.sorted().joined(separator: ", ")
+    }
+
+    private var lastUsedLabel: String {
+        let lastUsed = activeMCPTokens.compactMap(\.last_used_at).sorted().last
+        guard let lastUsed else {
+            return activeMCPTokens.isEmpty ? "No tool connected" : "Not used yet"
+        }
+        return "Last used \(shortDate(lastUsed))"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 12) {
+                SectionHeader(
+                    title: "Tool permissions",
+                    detail: "MCP-compatible tools can only use the permissions below. Recent activity is shown without raw memory content."
+                )
+                Spacer(minLength: 12)
+                Button {
+                    Task {
+                        await state.loadTrust()
+                        await state.loadIntegrationTokens()
+                    }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .controlSize(.large)
+            }
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], spacing: 10) {
+                ConnectionsTrustTile(
+                    title: settings.allow_agent_reads ? "Read" : "Read off",
+                    detail: settings.allow_agent_reads ? "reviewed memory" : "blocked",
+                    systemImage: settings.allow_agent_reads ? "eye.fill" : "eye.slash.fill",
+                    color: settings.allow_agent_reads ? .green : .secondary
+                )
+                ConnectionsTrustTile(
+                    title: settings.allow_agent_writes ? "Save" : "Save off",
+                    detail: settings.allow_agent_writes ? "new memory to Review" : "blocked",
+                    systemImage: settings.allow_agent_writes ? "square.and.pencil" : "pencil.slash",
+                    color: settings.allow_agent_writes ? .accentColor : .secondary
+                )
+                ConnectionsTrustTile(
+                    title: settings.allow_agent_exports ? "Export on" : "Export off",
+                    detail: settings.allow_agent_exports ? "redacted exports" : "blocked",
+                    systemImage: "square.and.arrow.up",
+                    color: settings.allow_agent_exports ? .orange : .secondary
+                )
+                ConnectionsTrustTile(
+                    title: settings.allow_agent_maintenance ? "Maintenance on" : "Maintenance off",
+                    detail: settings.allow_agent_destructive_actions ? "delete allowed" : "no deletion",
+                    systemImage: settings.allow_agent_maintenance ? "wrench.and.screwdriver.fill" : "wrench.and.screwdriver",
+                    color: settings.allow_agent_maintenance ? .orange : .secondary
+                )
+            }
+
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: activeMCPTokens.isEmpty ? "key.slash" : "key.fill")
+                    .foregroundColor(activeMCPTokens.isEmpty ? .secondary : .accentColor)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(activeMCPTokens.isEmpty ? "No active MCP tool token" : "\(activeMCPTokens.count) active MCP token\(activeMCPTokens.count == 1 ? "" : "s")")
+                        .font(.callout)
+                        .fontWeight(.semibold)
+                    Text("\(activeScopeSummary) · \(lastUsedLabel)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 8)
+                Button {
+                    Task { await state.resetMCPIntegrationToken() }
+                } label: {
+                    Label("Reset Token", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .controlSize(.large)
+            }
+            .padding(12)
+            .background(CortexDesign.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Recent tool activity")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
+                if recentToolEvents.isEmpty {
+                    Text("No MCP tool activity recorded yet.")
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(recentToolEvents) { event in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Image(systemName: "wand.and.stars")
+                                .foregroundColor(.accentColor)
+                                .frame(width: 20)
+                            Text(event.event_type.replacingOccurrences(of: "_", with: " ").capitalized)
+                                .font(.callout)
+                                .fontWeight(.medium)
+                            Spacer(minLength: 0)
+                            Text(shortDate(event.created_at))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+            .padding(12)
+            .background(CortexDesign.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .padding(14)
+        .background(CortexDesign.cardBackground.opacity(0.55))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .onAppear {
+            Task {
+                await state.loadIntegrationTokens()
+            }
+        }
+    }
+
+    private func shortDate(_ value: String) -> String {
+        String(value.prefix(10))
     }
 }
 

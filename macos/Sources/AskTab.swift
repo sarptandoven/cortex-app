@@ -8,18 +8,28 @@ struct AskTab: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 AskHeaderSection()
-                AskQuerySection(state: state)
+                if hasReviewedMemory {
+                    AskQuerySection(state: state)
+                    AskMemoryContextStrip(state: state)
 
-                if state.hasSearched {
-                    AskResponseSection(
-                        state: state,
-                        citedMemoriesExpanded: $citedMemoriesExpanded
-                    )
+                    if state.hasSearched {
+                        AskResponseSection(
+                            state: state,
+                            citedMemoriesExpanded: $citedMemoriesExpanded
+                        )
+                    } else {
+                        AskEmptyGuidance(
+                            state: state,
+                            title: "Ask your notes",
+                            detail: "Ask about a project, person, decision, or detail from your reviewed notes. Cortex answers with sources.",
+                            showActionsWhenMemoryExists: false
+                        )
+                    }
                 } else {
                     AskEmptyGuidance(
                         state: state,
-                        title: "Ask your notes",
-                        detail: "Ask about a project, person, decision, or detail from your reviewed notes. Cortex answers with sources.",
+                        title: askSetupTitle,
+                        detail: askSetupDetail,
                         showActionsWhenMemoryExists: false
                     )
                 }
@@ -34,6 +44,32 @@ struct AskTab: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(CortexDesign.appBackground)
+    }
+
+    private var hasReviewedMemory: Bool {
+        state.onboardingHasReviewedMemory
+            || (state.review?.stats.memories ?? 0) > 0
+            || (state.stats?.memories ?? 0) > 0
+    }
+
+    private var pendingReviewCount: Int {
+        max(state.inbox.count, state.review?.stats.pending_captures ?? 0)
+    }
+
+    private var askSetupTitle: String {
+        if pendingReviewCount > 0 { return "Review memory first" }
+        if state.hasConnectedSourceAccount || state.hasConnectedObsidianVault { return "Sync memory first" }
+        return "Connect notes first"
+    }
+
+    private var askSetupDetail: String {
+        if pendingReviewCount > 0 {
+            return "Approve one useful memory in Review. Then Ask can answer with citations."
+        }
+        if state.hasConnectedSourceAccount || state.hasConnectedObsidianVault {
+            return "Cortex needs reviewed memory before Ask can answer. Sync your source, then approve one useful item."
+        }
+        return "Choose notes or a connected source. Cortex will sync locally, send useful memory to Review, and only then answer with sources."
     }
 }
 
@@ -77,6 +113,265 @@ struct AskQuerySection: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
+}
+
+struct AskMemoryContextStrip: View {
+    @ObservedObject var state: AppState
+
+    private var report: SourceReadinessResponse? {
+        state.sourceReadinessReport
+    }
+
+    private var relevantSources: [SourceReadinessItem] {
+        guard let report else { return [] }
+        return report.sources
+            .filter { source in
+                source.active_memories > 0 || source.pending > 0 || source.accounts > 0
+            }
+            .sorted { lhs, rhs in
+                if lhs.active_memories != rhs.active_memories {
+                    return lhs.active_memories > rhs.active_memories
+                }
+                return lhs.name < rhs.name
+            }
+    }
+
+    private var sourceCount: Int {
+        relevantSources.count
+    }
+
+    private var memoryCount: Int {
+        report?.summary.active_memories ?? state.review?.stats.memories ?? state.stats?.memories ?? 0
+    }
+
+    private var pendingCount: Int {
+        report?.summary.needs_review ?? state.review?.stats.pending_captures ?? state.inbox.count
+    }
+
+    private var needsAttentionCount: Int {
+        report?.summary.needs_attention ?? 0
+    }
+
+    private var dueCount: Int {
+        relevantSources.filter { $0.sync_plan?.due_now == true }.count
+    }
+
+    private var averageCitationCoverage: Double? {
+        let sourcesWithMemory = relevantSources.filter { $0.active_memories > 0 }
+        guard !sourcesWithMemory.isEmpty else { return nil }
+        let cited = sourcesWithMemory.reduce(0.0) { total, source in
+            total + (source.citation_coverage * Double(max(source.active_memories, 0)))
+        }
+        let memories = sourcesWithMemory.reduce(0) { $0 + max($1.active_memories, 0) }
+        guard memories > 0 else { return nil }
+        return cited / Double(memories)
+    }
+
+    private var latestSync: String? {
+        let values = relevantSources.compactMap { source in
+            source.sync_plan?.last_completed_at ?? source.last_seen_at
+        }
+        return values.sorted().last
+    }
+
+    private var title: String {
+        if memoryCount > 0 { return "Memory ready for Ask" }
+        if pendingCount > 0 { return "Review memory before Ask" }
+        if sourceCount > 0 { return "Source connected" }
+        return "No reviewed memory yet"
+    }
+
+    private var detail: String {
+        if memoryCount > 0 {
+            let sourceLabel = "\(sourceCount) source\(sourceCount == 1 ? "" : "s")"
+            return "Using \(memoryCount) reviewed memor\(memoryCount == 1 ? "y" : "ies") from \(sourceLabel)."
+        }
+        if pendingCount > 0 {
+            return "\(pendingCount) synced item\(pendingCount == 1 ? "" : "s") waiting in Review before Ask can use them."
+        }
+        if sourceCount > 0 {
+            return "Cortex is connected, but reviewed memory is not ready yet."
+        }
+        return "Connect notes or a source, then approve useful memory in Review."
+    }
+
+    private var statusColor: Color {
+        if needsAttentionCount > 0 { return .orange }
+        if pendingCount > 0 { return .orange }
+        if memoryCount > 0 { return .green }
+        return .secondary
+    }
+
+    private var statusIcon: String {
+        if needsAttentionCount > 0 { return "exclamationmark.circle.fill" }
+        if pendingCount > 0 { return "tray.full.fill" }
+        if memoryCount > 0 { return "checkmark.seal.fill" }
+        return "circle"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: statusIcon)
+                    .font(.headline)
+                    .foregroundColor(statusColor)
+                    .frame(width: 28, height: 28)
+                    .background(statusColor.opacity(0.11))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.headline)
+                    Text(detail)
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 8) {
+                AskContextMetric(
+                    title: "Freshness",
+                    value: freshnessLabel,
+                    systemImage: "clock.arrow.circlepath"
+                )
+                AskContextMetric(
+                    title: "Citation confidence",
+                    value: citationConfidenceLabel,
+                    systemImage: "link.badge.plus"
+                )
+                AskContextMetric(
+                    title: "Source health",
+                    value: sourceHealthLabel,
+                    systemImage: "waveform.path.ecg"
+                )
+            }
+
+            if !relevantSources.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(Array(relevantSources.prefix(3))) { source in
+                        AskSourceConfidenceChip(source: source)
+                    }
+                    if relevantSources.count > 3 {
+                        Text("+\(relevantSources.count - 3) more")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .background(Color(nsColor: .controlBackgroundColor))
+                            .clipShape(Capsule())
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(12)
+        .background(CortexDesign.panelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.softBorder))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var freshnessLabel: String {
+        guard let latestSync else {
+            return sourceCount > 0 ? "Waiting for first sync" : "No source"
+        }
+        return "Synced \(shortDate(latestSync))"
+    }
+
+    private var citationConfidenceLabel: String {
+        guard let averageCitationCoverage else {
+            return memoryCount > 0 ? "Needs citations" : "No memory"
+        }
+        return "\(Int((averageCitationCoverage * 100).rounded()))% cited"
+    }
+
+    private var sourceHealthLabel: String {
+        if needsAttentionCount > 0 {
+            return "\(needsAttentionCount) needs attention"
+        }
+        if dueCount > 0 {
+            return "\(dueCount) sync due"
+        }
+        if pendingCount > 0 {
+            return "\(pendingCount) in Review"
+        }
+        if sourceCount > 0 {
+            return "Healthy"
+        }
+        return "Not connected"
+    }
+}
+
+struct AskContextMetric: View {
+    let title: String
+    let value: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: systemImage)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Text(value)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct AskSourceConfidenceChip: View {
+    let source: SourceReadinessItem
+
+    var body: some View {
+        Text(label)
+            .font(.caption)
+            .foregroundColor(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(Capsule())
+            .help(helpText)
+    }
+
+    private var label: String {
+        let cited = "\(Int((source.citation_coverage * 100).rounded()))% cited"
+        if let lastSeen = source.sync_plan?.last_completed_at ?? source.last_seen_at {
+            return "\(source.name) · \(cited) · \(shortDate(lastSeen))"
+        }
+        return "\(source.name) · \(cited)"
+    }
+
+    private var helpText: String {
+        let memoryLabel = "\(source.active_memories) reviewed memor\(source.active_memories == 1 ? "y" : "ies")"
+        if let warning = source.warnings.first, !warning.isEmpty {
+            return "\(source.name): \(memoryLabel). \(warning)"
+        }
+        return "\(source.name): \(memoryLabel). \(source.syncPlanDisplayTitle)."
+    }
+}
+
+private func shortDate(_ value: String) -> String {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "recently" }
+    return String(trimmed.prefix(10))
 }
 
 struct AskResponseSection: View {
@@ -129,15 +424,19 @@ struct AskEmptyGuidance: View {
         state.review?.stats.memories ?? state.stats?.memories ?? 0
     }
 
+    private var pendingReviewCount: Int {
+        max(state.inbox.count, state.review?.stats.pending_captures ?? 0)
+    }
+
     private var obsidianConnector: SourceConnectorCatalogItem? {
         state.sourceConnectorCatalog.first { $0.id == "obsidian" }
     }
 
     private func startNotesSync() {
         if let connector = obsidianConnector {
-            state.connectLocalNotesFolder(connector)
+            state.connectLocalNotesFolder(connector, chooseNew: state.notesNeedContent)
         } else {
-            state.openConnectionsPrivacy(statusMessage: "Source sync")
+            state.openConnectionsPrivacy(statusMessage: "Connect notes")
         }
     }
 
@@ -148,24 +447,26 @@ struct AskEmptyGuidance: View {
             if approvedMemoryCount == 0 || showActionsWhenMemoryExists {
                 HStack(spacing: 10) {
                     if approvedMemoryCount == 0 {
-                        Button {
-                            startNotesSync()
-                        } label: {
-                            Label("Start source sync", systemImage: "folder.badge.plus")
-                                .frame(minWidth: 172, minHeight: 46)
+                        if pendingReviewCount > 0 {
+                            Button {
+                                state.selectedTab = .review
+                                state.status = "Review memory"
+                            } label: {
+                                Label("Review memory", systemImage: "checklist")
+                                    .frame(minWidth: 164, minHeight: 46)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.large)
+                        } else {
+                            Button {
+                                startNotesSync()
+                            } label: {
+                                Label(primarySourceActionTitle, systemImage: primarySourceActionIcon)
+                                    .frame(minWidth: 172, minHeight: 46)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.large)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-
-                        Button {
-                            state.selectedTab = .review
-                            state.status = "Review memory"
-                        } label: {
-                            Label("Open Review", systemImage: "checklist")
-                                .frame(minWidth: 132, minHeight: 46)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.large)
                     } else {
                         Button {
                             state.selectedTab = .review
@@ -180,7 +481,7 @@ struct AskEmptyGuidance: View {
                         Button {
                             startNotesSync()
                         } label: {
-                            Label("Sync another source", systemImage: "folder.badge.plus")
+                            Label("Sync notes", systemImage: "folder.badge.plus")
                                 .frame(minWidth: 168, minHeight: 46)
                         }
                         .buttonStyle(.bordered)
@@ -190,6 +491,18 @@ struct AskEmptyGuidance: View {
                 .frame(maxWidth: .infinity, alignment: .center)
             }
         }
+    }
+
+    private var primarySourceActionTitle: String {
+        if state.notesNeedContent { return "Choose notes" }
+        if state.hasConnectedObsidianVault || state.hasConnectedSourceAccount { return "Sync notes" }
+        return "Connect notes"
+    }
+
+    private var primarySourceActionIcon: String {
+        if state.notesNeedContent { return "folder.badge.questionmark" }
+        if state.hasConnectedObsidianVault || state.hasConnectedSourceAccount { return "arrow.triangle.2.circlepath" }
+        return "folder.badge.plus"
     }
 }
 

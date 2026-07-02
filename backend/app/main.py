@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import html
 import hmac
 import os
+import threading
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -14,7 +16,7 @@ from .config import load_settings
 from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
 from .mcp_tools import TOOLS, call_tool, tool_call_result, tools_for_scopes
-from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CalendarSyncRequest, CalendarSyncResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GitHubSyncRequest, GitHubSyncResponse, GmailSyncRequest, GmailSyncResponse, GoogleDriveSyncRequest, GoogleDriveSyncResponse, GraphResponse, JiraSyncRequest, JiraSyncResponse, JobRunResponse, LinearSyncRequest, LinearSyncResponse, ListResponse, MaintenanceResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, NotionSyncRequest, NotionSyncResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, OutlookSyncRequest, OutlookSyncResponse, ProductLoopResponse, QueuedCaptureResponse, RaindropSyncRequest, RaindropSyncResponse, ReadwiseSyncRequest, ReadwiseSyncResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SlackSyncRequest, SlackSyncResponse, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse, ZoteroSyncRequest, ZoteroSyncResponse
+from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CalendarSyncRequest, CalendarSyncResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GitHubRepositoryDiscoveryRequest, GitHubRepositoryDiscoveryResponse, GitHubSyncRequest, GitHubSyncResponse, GmailSyncRequest, GmailSyncResponse, GoogleDriveSyncRequest, GoogleDriveSyncResponse, GoogleOAuthCompleteRequest, GoogleOAuthCompleteResponse, GoogleOAuthStartRequest, GoogleOAuthStartResponse, GraphResponse, JiraSyncRequest, JiraSyncResponse, JobRunResponse, LinearSyncRequest, LinearSyncResponse, ListResponse, MaintenanceResponse, ManagedOAuthCompleteRequest, ManagedOAuthCompleteResponse, ManagedOAuthStartRequest, ManagedOAuthStartResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, NotionSyncRequest, NotionSyncResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, OutlookSyncRequest, OutlookSyncResponse, ProductLoopResponse, QueuedCaptureResponse, RaindropSyncRequest, RaindropSyncResponse, ReadwiseSyncRequest, ReadwiseSyncResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SlackChannelDiscoveryRequest, SlackChannelDiscoveryResponse, SlackSyncRequest, SlackSyncResponse, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse, ZoteroSyncRequest, ZoteroSyncResponse
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
 
@@ -55,6 +57,148 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+GOOGLE_OAUTH_PENDING_TTL = timedelta(minutes=10)
+_google_oauth_pending: dict[str, dict[str, Any]] = {}
+_google_oauth_pending_lock = threading.Lock()
+_managed_oauth_pending: dict[str, dict[str, Any]] = {}
+_managed_oauth_pending_lock = threading.Lock()
+
+
+def _prune_google_oauth_pending(now: datetime | None = None) -> None:
+    cutoff = (now or datetime.now(timezone.utc)) - GOOGLE_OAUTH_PENDING_TTL
+    expired = [
+        state
+        for state, pending in _google_oauth_pending.items()
+        if pending.get("created_at", cutoff) < cutoff
+    ]
+    for state in expired:
+        _google_oauth_pending.pop(state, None)
+
+
+def _remember_google_oauth_pending(user_id: str, request: GoogleOAuthStartRequest, started: dict[str, Any]) -> None:
+    state = str(started.get("state") or "").strip()
+    if not state:
+        return
+    with _google_oauth_pending_lock:
+        _prune_google_oauth_pending()
+        _google_oauth_pending[state] = {
+            "created_at": datetime.now(timezone.utc),
+            "user_id": user_id,
+            "source": started.get("source") or request.source,
+            "redirect_uri": started.get("redirect_uri") or request.redirect_uri,
+            "client_id": request.client_id,
+            "client_secret": request.client_secret,
+            "token_endpoint": request.token_endpoint,
+            "code_verifier": request.code_verifier,
+            "source_account_id": request.source_account_id,
+            "account_label": request.account_label,
+            "account_identifier": request.account_identifier,
+            "query": request.query,
+            "label_ids": request.label_ids,
+            "mime_types": request.mime_types,
+            "include_body": request.include_body,
+            "include_content": request.include_content,
+        }
+
+
+def _pop_google_oauth_pending(state: str) -> dict[str, Any] | None:
+    normalized = str(state or "").strip()
+    if not normalized:
+        return None
+    with _google_oauth_pending_lock:
+        _prune_google_oauth_pending()
+        return _google_oauth_pending.pop(normalized, None)
+
+
+def _prune_managed_oauth_pending(now: datetime | None = None) -> None:
+    cutoff = (now or datetime.now(timezone.utc)) - GOOGLE_OAUTH_PENDING_TTL
+    expired = [
+        state
+        for state, pending in _managed_oauth_pending.items()
+        if pending.get("created_at", cutoff) < cutoff
+    ]
+    for state in expired:
+        _managed_oauth_pending.pop(state, None)
+
+
+def _remember_managed_oauth_pending(user_id: str, request: ManagedOAuthStartRequest, started: dict[str, Any]) -> None:
+    state = str(started.get("state") or "").strip()
+    if not state:
+        return
+    with _managed_oauth_pending_lock:
+        _prune_managed_oauth_pending()
+        _managed_oauth_pending[state] = {
+            "created_at": datetime.now(timezone.utc),
+            "user_id": user_id,
+            "source": started.get("source") or request.source,
+            "redirect_uri": started.get("redirect_uri") or request.redirect_uri,
+            "client_id": request.client_id,
+            "client_secret": request.client_secret,
+            "token_endpoint": request.token_endpoint,
+            "source_account_id": request.source_account_id,
+            "account_label": request.account_label,
+            "account_identifier": request.account_identifier,
+            "include_content": request.include_content,
+            "api_base_url": request.api_base_url,
+            "notion_version": request.notion_version,
+        }
+
+
+def _pop_managed_oauth_pending(state: str) -> dict[str, Any] | None:
+    normalized = str(state or "").strip()
+    if not normalized:
+        return None
+    with _managed_oauth_pending_lock:
+        _prune_managed_oauth_pending()
+        return _managed_oauth_pending.pop(normalized, None)
+
+
+def _google_oauth_callback_page(title: str, detail: str, *, success: bool) -> HTMLResponse:
+    icon = "checkmark.circle.fill" if success else "exclamationmark.triangle.fill"
+    color = "#136f45" if success else "#9a3412"
+    safe_title = html.escape(title)
+    safe_detail = html.escape(detail)
+    safe_icon = html.escape(icon)
+    content = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{safe_title}</title>
+  <style>
+    :root {{ color-scheme: light; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #faf9f6;
+      color: #1f2933;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }}
+    main {{
+      width: min(560px, calc(100vw - 48px));
+      padding: 32px;
+      border: 1px solid rgba(30, 41, 59, 0.12);
+      border-radius: 16px;
+      background: #ffffff;
+      box-shadow: 0 20px 70px rgba(15, 23, 42, 0.08);
+    }}
+    .icon {{ color: {color}; font-size: 28px; font-weight: 700; margin-bottom: 12px; }}
+    h1 {{ margin: 0 0 8px; font-size: 24px; letter-spacing: 0; }}
+    p {{ margin: 0; color: #53606f; font-size: 15px; line-height: 1.5; }}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="icon">{safe_icon}</div>
+    <h1>{safe_title}</h1>
+    <p>{safe_detail}</p>
+  </main>
+</body>
+</html>"""
+    return HTMLResponse(content=content, status_code=200 if success else 422)
+
 
 def _required_api_scope(method: str, path: str) -> str:
     normalized_method = method.upper()
@@ -72,6 +216,10 @@ def _required_api_scope(method: str, path: str) -> str:
     if normalized_path.startswith("/v1/integrations/tokens/"):
         return "maintenance"
     if normalized_path == "/v1/source-accounts" and normalized_method == "POST":
+        return "maintenance"
+    if normalized_path.startswith("/v1/connectors/google/oauth/") and normalized_method == "POST":
+        return "maintenance"
+    if normalized_path.startswith("/v1/connectors/oauth/") and normalized_method == "POST":
         return "maintenance"
     if normalized_path.startswith("/v1/source-accounts/") and normalized_method == "DELETE":
         return "maintenance"
@@ -132,6 +280,9 @@ def _global_token_user_id(x_cortex_user: str | None) -> str:
 
 def _hosted_readiness_contract() -> dict[str, Any]:
     runtime: dict[str, Any] = {}
+    runtime_storage_status = getattr(store, "runtime_storage_status", None)
+    if callable(runtime_storage_status):
+        runtime["storage"] = runtime_storage_status()
     if settings.shard_mode != "local":
         runtime["control_plane"] = store.control_plane_status()
         runtime["worker_queue"] = store.hosted_job_health()
@@ -531,9 +682,248 @@ def sync_github_account(request: GitHubSyncRequest, user_id: str = Depends(auth)
             include_comments=request.include_comments,
             max_comments_per_item=request.max_comments_per_item,
             cursor_name=request.cursor_name,
+            complete_snapshot=request.complete_snapshot,
             api_base_url=request.api_base_url,
         )
         return store.public_payload(user_id, result)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/v1/connectors/github/discover", response_model=GitHubRepositoryDiscoveryResponse)
+def discover_github_account_repositories(request: GitHubRepositoryDiscoveryRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    del user_id
+    try:
+        from .connectors.github import discover_github_repositories
+
+        return discover_github_repositories(
+            token=request.token,
+            limit=request.limit,
+            page=request.page,
+            api_base_url=request.api_base_url or "https://api.github.com",
+        ).to_summary()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/v1/connectors/google/oauth/start", response_model=GoogleOAuthStartResponse)
+def start_google_oauth(request: GoogleOAuthStartRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    try:
+        target_store = store.store_for_user(user_id) if hasattr(store, "store_for_user") else store
+        started = target_store.start_google_oauth(
+            request.source,
+            redirect_uri=request.redirect_uri,
+            state=request.state,
+            client_id=request.client_id,
+            code_challenge=request.code_challenge,
+            code_challenge_method=request.code_challenge_method,
+            scopes=request.scopes,
+        )
+        _remember_google_oauth_pending(user_id, request, started)
+        return started
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/v1/connectors/google/oauth/callback", response_class=HTMLResponse)
+def google_oauth_callback(
+    code: str | None = Query(default=None, max_length=4000),
+    state: str | None = Query(default=None, max_length=500),
+    error: str | None = Query(default=None, max_length=500),
+    error_description: str | None = Query(default=None, max_length=1000),
+) -> HTMLResponse:
+    if error:
+        detail = error_description or "Google did not authorize Cortex."
+        return _google_oauth_callback_page("Google sign-in was not completed", detail, success=False)
+
+    pending = _pop_google_oauth_pending(state or "")
+    if not pending:
+        return _google_oauth_callback_page(
+            "Google sign-in expired",
+            "Return to Cortex and start the connection again. No account was connected.",
+            success=False,
+        )
+    if not code:
+        return _google_oauth_callback_page(
+            "Google sign-in did not return a code",
+            "Return to Cortex and start the connection again. No account was connected.",
+            success=False,
+        )
+
+    user_id = str(pending.get("user_id") or settings.default_user_id)
+    source = str(pending.get("source") or "")
+    try:
+        result = store.complete_google_oauth(
+            user_id,
+            source,
+            code=code,
+            redirect_uri=pending.get("redirect_uri"),
+            state=state,
+            expected_state=state,
+            client_id=pending.get("client_id"),
+            client_secret=pending.get("client_secret"),
+            token_endpoint=pending.get("token_endpoint"),
+            code_verifier=pending.get("code_verifier"),
+            source_account_id=pending.get("source_account_id"),
+            account_label=pending.get("account_label"),
+            account_identifier=pending.get("account_identifier"),
+            query=pending.get("query"),
+            label_ids=pending.get("label_ids") or [],
+            mime_types=pending.get("mime_types") or [],
+            include_body=bool(pending.get("include_body", True)),
+            include_content=bool(pending.get("include_content", True)),
+        )
+        account = result.get("source_account") or {}
+        if account.get("id"):
+            try:
+                store.enqueue_source_account_sync(user_id, account["id"], processing="async", max_records=200)
+            except ValueError:
+                pass
+        label = str(account.get("account_label") or "Google")
+        return _google_oauth_callback_page(
+            "Google is connected",
+            f"{label} is connected. Return to Cortex; the first sync will start automatically.",
+            success=True,
+        )
+    except ValueError as exc:
+        return _google_oauth_callback_page(
+            "Google sign-in could not finish",
+            str(exc),
+            success=False,
+        )
+
+
+@app.post("/v1/connectors/google/oauth/complete", response_model=GoogleOAuthCompleteResponse)
+def complete_google_oauth(request: GoogleOAuthCompleteRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    try:
+        return store.public_payload(
+            user_id,
+            store.complete_google_oauth(
+                user_id,
+                request.source,
+                code=request.code,
+                redirect_uri=request.redirect_uri,
+                state=request.state,
+                expected_state=request.expected_state,
+                client_id=request.client_id,
+                client_secret=request.client_secret,
+                token_endpoint=request.token_endpoint,
+                code_verifier=request.code_verifier,
+                source_account_id=request.source_account_id,
+                account_label=request.account_label,
+                account_identifier=request.account_identifier,
+                query=request.query,
+                label_ids=request.label_ids,
+                mime_types=request.mime_types,
+                include_body=request.include_body,
+                include_content=request.include_content,
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/v1/connectors/oauth/start", response_model=ManagedOAuthStartResponse)
+def start_managed_oauth(request: ManagedOAuthStartRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    try:
+        target_store = store.store_for_user(user_id) if hasattr(store, "store_for_user") else store
+        started = target_store.start_managed_oauth(
+            request.source,
+            redirect_uri=request.redirect_uri,
+            state=request.state,
+            client_id=request.client_id,
+            scopes=request.scopes,
+        )
+        _remember_managed_oauth_pending(user_id, request, started)
+        return started
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/v1/connectors/oauth/callback", response_class=HTMLResponse)
+def managed_oauth_callback(
+    code: str | None = Query(default=None, max_length=4000),
+    state: str | None = Query(default=None, max_length=500),
+    error: str | None = Query(default=None, max_length=500),
+    error_description: str | None = Query(default=None, max_length=1000),
+) -> HTMLResponse:
+    if error:
+        detail = error_description or "The service did not authorize Cortex."
+        return _google_oauth_callback_page("Sign-in was not completed", detail, success=False)
+
+    pending = _pop_managed_oauth_pending(state or "")
+    if not pending:
+        return _google_oauth_callback_page(
+            "Sign-in expired",
+            "Return to Cortex and start the connection again. No account was connected.",
+            success=False,
+        )
+    if not code:
+        return _google_oauth_callback_page(
+            "Sign-in did not return a code",
+            "Return to Cortex and start the connection again. No account was connected.",
+            success=False,
+        )
+
+    user_id = str(pending.get("user_id") or settings.default_user_id)
+    source = str(pending.get("source") or "")
+    try:
+        result = store.complete_managed_oauth(
+            user_id,
+            source,
+            code=code,
+            redirect_uri=pending.get("redirect_uri"),
+            state=state,
+            expected_state=state,
+            client_id=pending.get("client_id"),
+            client_secret=pending.get("client_secret"),
+            token_endpoint=pending.get("token_endpoint"),
+            source_account_id=pending.get("source_account_id"),
+            account_label=pending.get("account_label"),
+            account_identifier=pending.get("account_identifier"),
+            include_content=bool(pending.get("include_content", True)),
+            api_base_url=pending.get("api_base_url"),
+            notion_version=pending.get("notion_version"),
+        )
+        account = result.get("source_account") or {}
+        if account.get("id"):
+            try:
+                store.enqueue_source_account_sync(user_id, account["id"], processing="async", max_records=200)
+            except ValueError:
+                pass
+        label = str(account.get("account_label") or "Source")
+        return _google_oauth_callback_page(
+            "Source is connected",
+            f"{label} is connected. Return to Cortex; the first sync will start automatically.",
+            success=True,
+        )
+    except ValueError as exc:
+        return _google_oauth_callback_page("Sign-in could not finish", str(exc), success=False)
+
+
+@app.post("/v1/connectors/oauth/complete", response_model=ManagedOAuthCompleteResponse)
+def complete_managed_oauth(request: ManagedOAuthCompleteRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    try:
+        return store.public_payload(
+            user_id,
+            store.complete_managed_oauth(
+                user_id,
+                request.source,
+                code=request.code,
+                redirect_uri=request.redirect_uri,
+                state=request.state,
+                expected_state=request.expected_state,
+                client_id=request.client_id,
+                client_secret=request.client_secret,
+                token_endpoint=request.token_endpoint,
+                source_account_id=request.source_account_id,
+                account_label=request.account_label,
+                account_identifier=request.account_identifier,
+                include_content=request.include_content,
+                api_base_url=request.api_base_url,
+                notion_version=request.notion_version,
+            ),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -555,6 +945,7 @@ def sync_gmail_account(request: GmailSyncRequest, user_id: str = Depends(auth)) 
             max_records=request.max_records,
             cursor_name=request.cursor_name,
             include_body=request.include_body,
+            complete_snapshot=request.complete_snapshot,
             api_base_url=request.api_base_url,
         )
         return store.public_payload(user_id, result)
@@ -579,6 +970,7 @@ def sync_google_drive_account(request: GoogleDriveSyncRequest, user_id: str = De
             max_records=request.max_records,
             cursor_name=request.cursor_name,
             include_content=request.include_content,
+            complete_snapshot=request.complete_snapshot,
             api_base_url=request.api_base_url,
         )
         return store.public_payload(user_id, result)
@@ -602,6 +994,7 @@ def sync_outlook_account(request: OutlookSyncRequest, user_id: str = Depends(aut
             max_records=request.max_records,
             cursor_name=request.cursor_name,
             include_body=request.include_body,
+            complete_snapshot=request.complete_snapshot,
             api_base_url=request.api_base_url,
         )
         return store.public_payload(user_id, result)
@@ -624,9 +1017,27 @@ def sync_slack_account(request: SlackSyncRequest, user_id: str = Depends(auth)) 
             max_records=request.max_records,
             cursor_name=request.cursor_name,
             workspace_url=request.workspace_url,
+            complete_snapshot=request.complete_snapshot,
             api_base_url=request.api_base_url,
         )
         return store.public_payload(user_id, result)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/v1/connectors/slack/discover", response_model=SlackChannelDiscoveryResponse)
+def discover_slack_account_channels(request: SlackChannelDiscoveryRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    del user_id
+    try:
+        from .connectors.slack import discover_slack_channels
+
+        return discover_slack_channels(
+            token=request.token,
+            limit=request.limit,
+            include_private=request.include_private,
+            cursor=request.cursor,
+            api_base_url=request.api_base_url or "https://slack.com/api",
+        ).to_summary()
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -645,6 +1056,7 @@ def sync_readwise_account(request: ReadwiseSyncRequest, user_id: str = Depends(a
             processing=request.processing,
             max_records=request.max_records,
             cursor_name=request.cursor_name,
+            complete_snapshot=request.complete_snapshot,
             api_base_url=request.api_base_url,
         )
         return store.public_payload(user_id, result)
@@ -666,6 +1078,7 @@ def sync_calendar_account(request: CalendarSyncRequest, user_id: str = Depends(a
             processing=request.processing,
             max_records=request.max_records,
             cursor_name=request.cursor_name,
+            complete_snapshot=request.complete_snapshot,
         )
         return store.public_payload(user_id, result)
     except ValueError as exc:
@@ -688,6 +1101,7 @@ def sync_raindrop_account(request: RaindropSyncRequest, user_id: str = Depends(a
             max_records=request.max_records,
             cursor_name=request.cursor_name,
             include_highlights=request.include_highlights,
+            complete_snapshot=request.complete_snapshot,
             api_base_url=request.api_base_url,
         )
         return store.public_payload(user_id, result)
@@ -712,6 +1126,7 @@ def sync_zotero_account(request: ZoteroSyncRequest, user_id: str = Depends(auth)
             max_records=request.max_records,
             cursor_name=request.cursor_name,
             include_attachments=request.include_attachments,
+            complete_snapshot=request.complete_snapshot,
             api_base_url=request.api_base_url,
         )
         return store.public_payload(user_id, result)
@@ -733,6 +1148,7 @@ def sync_linear_account(request: LinearSyncRequest, user_id: str = Depends(auth)
             processing=request.processing,
             max_records=request.max_records,
             cursor_name=request.cursor_name,
+            complete_snapshot=request.complete_snapshot,
             api_url=request.api_url,
         )
         return store.public_payload(user_id, result)
@@ -757,6 +1173,7 @@ def sync_jira_account(request: JiraSyncRequest, user_id: str = Depends(auth)) ->
             processing=request.processing,
             max_records=request.max_records,
             cursor_name=request.cursor_name,
+            complete_snapshot=request.complete_snapshot,
         )
         return store.public_payload(user_id, result)
     except ValueError as exc:
@@ -778,6 +1195,7 @@ def sync_notion_account(request: NotionSyncRequest, user_id: str = Depends(auth)
             max_records=request.max_records,
             cursor_name=request.cursor_name,
             include_content=request.include_content,
+            complete_snapshot=request.complete_snapshot,
             api_base_url=request.api_base_url,
             notion_version=request.notion_version,
         )
@@ -928,13 +1346,21 @@ def get_job(job_id: str, user_id: str = Depends(auth)) -> dict[str, Any]:
 
 
 @app.post("/v1/jobs/run", response_model=JobRunResponse)
-def run_jobs(limit: int = Query(default=10, ge=1, le=100), user_id: str = Depends(auth)) -> dict[str, Any]:
-    return store.run_due_jobs(user_id, limit=limit)
+def run_jobs(
+    limit: int = Query(default=10, ge=1, le=100),
+    schedule_source_syncs: bool = Query(default=True),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return store.run_due_jobs(user_id, limit=limit, schedule_source_syncs=schedule_source_syncs)
 
 
 @app.post("/v1/maintenance/jobs/run", response_model=JobRunResponse)
-def run_maintenance_jobs(limit: int = Query(default=10, ge=1, le=100), user_id: str = Depends(auth)) -> dict[str, Any]:
-    return store.run_due_jobs(user_id, limit=limit)
+def run_maintenance_jobs(
+    limit: int = Query(default=10, ge=1, le=100),
+    schedule_source_syncs: bool = Query(default=True),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return store.run_due_jobs(user_id, limit=limit, schedule_source_syncs=schedule_source_syncs)
 
 
 @app.post("/v1/sources/sync-due", response_model=JobRunResponse)
@@ -1022,6 +1448,33 @@ def ask(
     )
 
 
+@app.get("/v1/action-brief", response_model=None)
+def action_brief(
+    task: str = Query(..., max_length=500),
+    limit: int = Query(default=8, ge=1, le=20),
+    sector: str | None = Query(default=None, max_length=120),
+    as_of: str | None = Query(default=None, max_length=80),
+    format: str = Query(default="json", pattern="^(json|markdown)$"),
+    user_id: str = Depends(auth),
+) -> dict[str, Any] | Response:
+    brief = store.action_brief(user_id, task, limit=limit, sector=sector, as_of=as_of)
+    if format == "markdown":
+        return Response(content=brief["markdown"], media_type="text/markdown")
+    return brief
+
+
+@app.get("/v1/decisions/history")
+def decision_history(
+    query: str = Query(default="", max_length=240),
+    limit: int = Query(default=12, ge=1, le=30),
+    sector: str | None = Query(default=None, max_length=120),
+    include_superseded: bool = Query(default=True),
+    as_of: str | None = Query(default=None, max_length=80),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return store.decision_history(user_id, query, limit=limit, sector=sector, include_superseded=include_superseded, as_of=as_of)
+
+
 @app.get("/v1/tasks/open")
 def open_tasks(limit: int = Query(default=20, ge=1, le=100), user_id: str = Depends(auth)) -> dict[str, Any]:
     return {"results": store.open_tasks(user_id, limit)}
@@ -1048,6 +1501,11 @@ def entities(
 @app.get("/v1/people/{name}")
 def about_person(name: str, limit: int = Query(default=12, ge=1, le=50), user_id: str = Depends(auth)) -> dict[str, Any]:
     return {"results": store.about_person(user_id, name, limit)}
+
+
+@app.get("/v1/people/{name}/context")
+def person_context(name: str, limit: int = Query(default=8, ge=1, le=20), user_id: str = Depends(auth)) -> dict[str, Any]:
+    return store.person_context(user_id, name, limit=limit)
 
 
 @app.get("/v1/entities/{name}")

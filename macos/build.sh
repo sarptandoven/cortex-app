@@ -18,6 +18,7 @@ DISTRIBUTION_MODE="${CORTEX_DISTRIBUTION_MODE:-direct}"
 TIMESTAMP="${CORTEX_CODESIGN_TIMESTAMP:-1}"
 PYTHON_FRAMEWORK_SOURCE="${CORTEX_PYTHON_FRAMEWORK_SOURCE:-/Library/Frameworks/Python.framework/Versions/3.12}"
 BUNDLE_PYTHON="${CORTEX_BUNDLE_PYTHON:-}"
+BUNDLE_BACKEND_DEPS="${CORTEX_BUNDLE_BACKEND_DEPS:-1}"
 NESTED_SIGN_IDENTITY="${CORTEX_NESTED_CODESIGN_IDENTITY:-$SIGN_IDENTITY}"
 if [[ -z "$CHILD_ENTITLEMENTS" && "$DISTRIBUTION_MODE" == "app-store" && -f "$ROOT/AppStoreChild.entitlements" ]]; then
   CHILD_ENTITLEMENTS="$ROOT/AppStoreChild.entitlements"
@@ -53,6 +54,21 @@ fi
 if [[ -f "$ROOT/Assets/AppIcon.icns" ]]; then
   cp "$ROOT/Assets/AppIcon.icns" "$RES/AppIcon.icns"
 fi
+PLUGIN_DIR="$ROOT/../packages/obsidian-cortex-plugin"
+if [[ -d "$PLUGIN_DIR" ]]; then
+  for plugin_file in manifest.json main.js versions.json; do
+    if [[ ! -f "$PLUGIN_DIR/$plugin_file" ]]; then
+      echo "Obsidian plugin package is missing $plugin_file. Run scripts/check_obsidian_plugin.sh before building Cortex." >&2
+      exit 2
+    fi
+  done
+  PLUGIN_RES="$RES/obsidian-cortex-plugin"
+  rm -rf "$PLUGIN_RES"
+  mkdir -p "$PLUGIN_RES"
+  cp "$PLUGIN_DIR/manifest.json" "$PLUGIN_RES/manifest.json"
+  cp "$PLUGIN_DIR/main.js" "$PLUGIN_RES/main.js"
+  cp "$PLUGIN_DIR/versions.json" "$PLUGIN_RES/versions.json"
+fi
 if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON" != "no" ]]; then
   if [[ ! -x "$PYTHON_FRAMEWORK_SOURCE/bin/python3.12" || ! -f "$PYTHON_FRAMEWORK_SOURCE/Python" ]]; then
     echo "Bundled Python requested, but Python.framework 3.12 was not found at $PYTHON_FRAMEWORK_SOURCE" >&2
@@ -83,6 +99,18 @@ if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON"
   install_name_tool -id "@rpath/Python.framework/Versions/3.12/Python" "$PY_VERSION/Python"
   install_name_tool -change "$PYTHON_FRAMEWORK_SOURCE/Python" "@executable_path/../Python" "$PY_VERSION/bin/python3.12"
   install_name_tool -change "$PYTHON_FRAMEWORK_SOURCE/Python" "@executable_path/../../../../Python" "$PY_VERSION/Resources/Python.app/Contents/MacOS/Python"
+  if [[ "$BUNDLE_BACKEND_DEPS" != "0" && "$BUNDLE_BACKEND_DEPS" != "false" && "$BUNDLE_BACKEND_DEPS" != "no" ]]; then
+    PY_RUNTIME_DEPS="$RES/python"
+    rm -rf "$PY_RUNTIME_DEPS"
+    mkdir -p "$PY_RUNTIME_DEPS"
+    "$PYTHON_FRAMEWORK_SOURCE/bin/python3.12" -m pip install \
+      --disable-pip-version-check \
+      --only-binary=:all: \
+      --target "$PY_RUNTIME_DEPS" \
+      -r "$ROOT/../backend/runtime-requirements.txt"
+    find "$PY_RUNTIME_DEPS" -type d -name "__pycache__" -prune -exec rm -rf {} +
+    find "$PY_RUNTIME_DEPS" -type f -name "*.pyc" -delete
+  fi
 fi
 
 export CLANG_MODULE_CACHE_PATH="$CACHE"
@@ -151,6 +179,12 @@ if [[ -d "${PY_VERSION:-}" ]]; then
     PY_APP_SIGN_ARGS+=("$PY_VERSION/Resources/Python.app")
     codesign "${PY_APP_SIGN_ARGS[@]}" >/dev/null
   fi
+fi
+
+if [[ -d "$RES/python" ]]; then
+  while IFS= read -r macho_file; do
+    sign_file_if_macho "$macho_file" "0"
+  done < <(find "$RES/python" -type f \( -name "*.so" -o -name "*.dylib" \))
 fi
 
 SIGN_ARGS=(--force --deep)

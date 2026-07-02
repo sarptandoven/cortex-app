@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Foundation
 import SwiftUI
 import Carbon
@@ -55,6 +56,18 @@ struct SupportedSource: Codable, Hashable {
 
 struct SourceConnectorCatalogResponse: Codable {
     let results: [SourceConnectorCatalogItem]
+}
+
+struct GoogleOAuthStartResponse: Codable {
+    let source: String
+    let provider: String
+    let authorization_url: String
+    let authorization_endpoint: String
+    let token_endpoint: String
+    let redirect_uri: String
+    let state: String
+    let scopes: [String]
+    let access_type: String
 }
 
 struct SourceConnectorCatalogItem: Codable, Identifiable, Hashable {
@@ -125,7 +138,10 @@ struct SourceConnectorCatalogItem: Codable, Identifiable, Hashable {
     }
 
     var isAccountSignInPlanned: Bool {
-        authKind == "oauth" || connectorReadinessStatus == "live-planned"
+        if connectionSetup?.supportsManagedOAuth == true {
+            return false
+        }
+        return authKind == "oauth" || connectorReadinessStatus == "live-planned"
     }
 
     var hasNativeDirectSync: Bool {
@@ -167,8 +183,13 @@ struct SourceConnectorConnectionSetup: Codable, Hashable {
     let mode: String?
     let method: String?
     let endpoint: String?
+    let discovery_endpoint: String?
+    let discovery_target_field: String?
     let unavailable_reason: String?
     let managed_oauth_shipped: Bool?
+    let oauth_provider: String?
+    let oauth_start_endpoint: String?
+    let oauth_complete_endpoint: String?
     let credential_storage: String?
     let credential_retained_on_disconnect: Bool?
     let disconnect_behavior: String?
@@ -186,8 +207,25 @@ struct SourceConnectorConnectionSetup: Codable, Hashable {
         return !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    var hasDiscoveryEndpoint: Bool {
+        guard let discovery_endpoint else { return false }
+        return !discovery_endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var isPost: Bool {
         (method ?? "POST").uppercased() == "POST"
+    }
+
+    var supportsManagedOAuth: Bool {
+        guard managed_oauth_shipped == true else { return false }
+        guard let provider = oauth_provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              ["google", "microsoft", "notion"].contains(provider) else {
+            return false
+        }
+        guard let endpoint = oauth_start_endpoint?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return false
+        }
+        return !endpoint.isEmpty
     }
 }
 
@@ -203,6 +241,9 @@ struct SourceConnectorSetupField: Codable, Hashable, Identifiable {
     let minimum: Int?
     let maximum: Int?
     let options: [String]?
+    let options_endpoint: String?
+    let option_label_key: String?
+    let option_value_key: String?
     let defaultValue: JSONValue?
 
     var id: String { name }
@@ -219,6 +260,9 @@ struct SourceConnectorSetupField: Codable, Hashable, Identifiable {
         case minimum
         case maximum
         case options
+        case options_endpoint
+        case option_label_key
+        case option_value_key
         case defaultValue = "default"
     }
 
@@ -276,6 +320,18 @@ struct SourceConnectorSetupField: Codable, Hashable, Identifiable {
             return false
         }
     }
+
+    var hasRemoteOptions: Bool {
+        guard let options_endpoint else { return false }
+        return !options_endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+struct SourceConnectorDiscoveredOption: Hashable, Identifiable {
+    let id: String
+    let label: String
+    let value: String
+    let detail: String?
 }
 
 struct SourceReadinessResponse: Codable, Hashable {
@@ -502,7 +558,7 @@ struct SourceReadinessItem: Codable, Identifiable, Hashable {
         case "export-only":
             return "Advanced sync"
         default:
-            return "Source sync"
+            return "Connection"
         }
     }
 
@@ -595,6 +651,19 @@ struct SourceAccountSyncResponse: Codable, Hashable {
     let saved: Int
     let skipped: Int
     let failed: Int
+    let archived_missing: Int?
+    let archive_missing_decision: SourceArchiveMissingDecision?
+    let archive_missing_suppressed: Bool?
+}
+
+struct SourceArchiveMissingDecision: Codable, Hashable {
+    let requested: Bool?
+    let allowed: Bool?
+    let reason: String?
+    let error_count: Int?
+    let records_returned: Int?
+    let max_records: Int?
+    let pagination_field: String?
 }
 
 struct ObsidianConnectorSyncResponse: Codable, Hashable {
@@ -867,6 +936,7 @@ struct AskCitationItem: Codable, Identifiable, Hashable {
 
 struct AskResponse: Codable {
     let query: String
+    let status: String?
     let answer: String
     let citations: [AskCitationItem]
     let results: [MemoryItem]
@@ -1325,6 +1395,15 @@ struct IntegrationTokenListResponse: Codable {
     let results: [IntegrationTokenItem]
 }
 
+struct IntegrationTokenRegistrationResponse: Codable {
+    let token_id: String
+    let user_id: String
+    let label: String
+    let audience: String
+    let scopes: [String]
+    let updated_at: String
+}
+
 struct IntegrationTokenItem: Codable, Identifiable {
     var id: String { token_id }
     let token_id: String
@@ -1441,7 +1520,6 @@ struct RepairAction: Codable, Identifiable, Hashable {
 
 extension Notification.Name {
     static let cortexOnboardingCompleted = Notification.Name("CortexOnboardingCompleted")
-    static let cortexHotkeyPreferenceChanged = Notification.Name("CortexHotkeyPreferenceChanged")
 }
 
 enum IntegrationCategory: String, CaseIterable, Hashable {
@@ -2147,7 +2225,11 @@ final class BackendSupervisor {
         }
         launched.currentDirectoryURL = backendURL
         var environment = ProcessInfo.processInfo.environment
-        environment["PYTHONPATH"] = backendURL.path
+        let runtimeDepsURL = resources.appendingPathComponent("python", isDirectory: true)
+        let pythonPaths = [backendURL.path, runtimeDepsURL.path]
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        environment["PYTHONPATH"] = pythonPaths.joined(separator: ":")
+        environment["PYTHONNOUSERSITE"] = "1"
         environment["PYTHONUNBUFFERED"] = "1"
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         environment["CORTEX_VAULT_PATH"] = vaultURL.path
@@ -2156,6 +2238,38 @@ final class BackendSupervisor {
         environment["CORTEX_MCP_API_KEY"] = normalizedMCPAPIKey
         environment["CORTEX_MCP_API_KEY_SCOPES"] = "read,write,export,maintenance"
         environment["CORTEX_PUBLIC_BASE_URL"] = "http://127.0.0.1:8766"
+        if let googleClientID = Bundle.main.object(forInfoDictionaryKey: "CortexGoogleOAuthClientID") as? String {
+            let trimmedGoogleClientID = googleClientID.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedGoogleClientID.isEmpty {
+                environment["CORTEX_GOOGLE_OAUTH_CLIENT_ID"] = trimmedGoogleClientID
+            }
+        }
+        if let notionClientID = Bundle.main.object(forInfoDictionaryKey: "CortexNotionOAuthClientID") as? String {
+            let trimmedNotionClientID = notionClientID.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedNotionClientID.isEmpty {
+                environment["CORTEX_NOTION_OAUTH_CLIENT_ID"] = trimmedNotionClientID
+            }
+        }
+        if let notionClientSecret = Bundle.main.object(forInfoDictionaryKey: "CortexNotionOAuthClientSecret") as? String {
+            let trimmedNotionClientSecret = notionClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedNotionClientSecret.isEmpty {
+                environment["CORTEX_NOTION_OAUTH_CLIENT_SECRET"] = trimmedNotionClientSecret
+            }
+        }
+        if let microsoftClientID = Bundle.main.object(forInfoDictionaryKey: "CortexMicrosoftOAuthClientID") as? String {
+            let trimmedMicrosoftClientID = microsoftClientID.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedMicrosoftClientID.isEmpty {
+                environment["CORTEX_MICROSOFT_OAUTH_CLIENT_ID"] = trimmedMicrosoftClientID
+                environment["CORTEX_OUTLOOK_OAUTH_CLIENT_ID"] = trimmedMicrosoftClientID
+            }
+        }
+        if let microsoftClientSecret = Bundle.main.object(forInfoDictionaryKey: "CortexMicrosoftOAuthClientSecret") as? String {
+            let trimmedMicrosoftClientSecret = microsoftClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedMicrosoftClientSecret.isEmpty {
+                environment["CORTEX_MICROSOFT_OAUTH_CLIENT_SECRET"] = trimmedMicrosoftClientSecret
+                environment["CORTEX_OUTLOOK_OAUTH_CLIENT_SECRET"] = trimmedMicrosoftClientSecret
+            }
+        }
         environment["PATH"] = "/Library/Frameworks/Python.framework/Versions/3.12/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         launched.environment = environment
         launched.standardOutput = handle
@@ -2457,6 +2571,8 @@ final class AppState: ObservableObject {
     private static let mcpAPIKeyDefaultsKey = "localBetaMCPAPIKey.v1"
     private static let obsidianVaultPathDefaultsKey = "connectedObsidianVaultPath.v1"
     private static let obsidianVaultBookmarkDefaultsKey = "connectedObsidianVaultBookmark.v1"
+    private static let obsidianPluginAPIKeyDefaultsKey = "obsidianPluginAPIKey.v1"
+    private static let obsidianPluginID = "cortex-memory"
 
     private static func loadOrCreateAPIKey() -> String {
         if let existing = CortexCredentialStore.loadSecret(forKey: apiKeyDefaultsKey),
@@ -2495,6 +2611,16 @@ final class AppState: ObservableObject {
 
     private static func generateMCPAPIKey() -> String {
         generateSecret(prefix: "cxm_")
+    }
+
+    private static func loadOrCreateObsidianPluginAPIKey() -> String {
+        if let existing = CortexCredentialStore.loadSecret(forKey: obsidianPluginAPIKeyDefaultsKey),
+           existing.hasPrefix("cx_") {
+            return existing
+        }
+        let generated = generateAPIKey()
+        CortexCredentialStore.saveSecret(generated, forKey: obsidianPluginAPIKeyDefaultsKey)
+        return generated
     }
 
     private static func generateSecret(prefix: String) -> String {
@@ -2548,7 +2674,6 @@ final class AppState: ObservableObject {
     @Published var updateManifest: UpdateManifestResponse?
     @Published var selectedTab: AppTab = .model
     @Published var vaultPath: String = UserDefaults.standard.string(forKey: "vaultPath") ?? BackendSupervisor.defaultVaultURL.path
-    @Published var globalClipboardHotkeyEnabled: Bool = UserDefaults.standard.bool(forKey: "globalClipboardHotkeyEnabled.v1")
     @Published var onboardingComplete: Bool = UserDefaults.standard.bool(forKey: "onboardingComplete.v1")
     @Published var showOnboarding: Bool = false
     @Published var showConnectionsPrivacy: Bool = false
@@ -2561,6 +2686,7 @@ final class AppState: ObservableObject {
     @Published var integrationStates: [String: AIIntegrationState] = [:]
     @Published var isBusy: Bool = false
     @Published var connectorSyncingIDs: Set<String> = []
+    @Published var connectorOAuthStartingIDs: Set<String> = []
     @Published var connectorLastMessages: [String: String] = [:]
     @Published var configuredDirectConnectorIDs: Set<String> = []
 
@@ -2568,6 +2694,7 @@ final class AppState: ObservableObject {
     private var obsidianAutoSyncTask: Task<Void, Never>?
     private var directConnectorAutoSyncTask: Task<Void, Never>?
     private var obsidianSyncInFlight = false
+    private var jobDrainInFlight = false
     private var onboardingDismissedForSession = false
 
     private static let directConnectorConfigSecretPrefix = "directConnectorConfig.v1."
@@ -2586,17 +2713,17 @@ final class AppState: ObservableObject {
         "zotero"
     ]
     private static let directConnectorSyncOrder = [
-        "calendar",
-        "zotero",
-        "notion",
-        "slack",
         "gmail",
-        "outlook",
         "google-drive",
-        "github",
+        "notion",
+        "outlook",
+        "zotero",
+        "calendar",
         "readwise",
         "raindrop",
         "linear",
+        "slack",
+        "github",
         "jira"
     ]
 
@@ -2646,20 +2773,69 @@ final class AppState: ObservableObject {
     }
 
     var onboardingHasSyncedMemory: Bool {
-        if !inbox.isEmpty || (stats?.pending_captures ?? 0) > 0 || (stats?.memories ?? 0) > 0 {
-            return true
+        if sourceReadinessReport != nil {
+            return !onboardingHealthyMemorySources.isEmpty
         }
-        return sourceReadinessReport?.sources.contains { source in
-            let hasUsableData = source.captures > 0
-                || source.pending > 0
-                || source.approved > 0
-                || source.active_memories > 0
-            return hasUsableData && ["needs_review", "synced", "imported"].contains(source.status)
-        } ?? false
+        return !inbox.isEmpty || (stats?.pending_captures ?? 0) > 0 || (stats?.memories ?? 0) > 0
     }
 
     var onboardingHasSource: Bool {
         onboardingHasConnectedMemoryLayer && onboardingHasSyncedMemory
+    }
+
+    var onboardingHealthyMemorySources: [SourceReadinessItem] {
+        guard let sources = sourceReadinessReport?.sources else { return [] }
+        return sources.filter { source in
+            onboardingSourceIsHealthyAndUsable(source)
+        }
+    }
+
+    var onboardingSourceHealthMessage: String? {
+        guard onboardingHasConnectedMemoryLayer else { return nil }
+        guard let report = sourceReadinessReport else {
+            return "Checking source health before setup can continue."
+        }
+        if !onboardingHealthyMemorySources.isEmpty {
+            return nil
+        }
+        if report.summary.needs_attention > 0 {
+            return "A connected source needs attention before Cortex can finish setup."
+        }
+        if report.sources.contains(where: { $0.status == "empty" }) {
+            return "The connected source has no usable content yet. Choose notes or a source with real memory."
+        }
+        if report.sources.contains(where: { $0.sync_plan?.due_now == true }) {
+            return "The connected source is ready to sync. Sync it before setup finishes."
+        }
+        if report.sources.contains(where: { $0.sync_plan?.managed_sync_status == "waiting_for_first_sync" }) {
+            return "The connected source is waiting for its first completed sync."
+        }
+        if report.sources.contains(where: { $0.captures > 0 || $0.pending > 0 || $0.approved > 0 || $0.active_memories > 0 }) {
+            return "Source data exists, but Cortex is still checking whether it is fresh and citable."
+        }
+        return "Waiting for synced memory from the connected source."
+    }
+
+    private func onboardingSourceIsHealthyAndUsable(_ source: SourceReadinessItem) -> Bool {
+        let hasUsableData = source.captures > 0
+            || source.pending > 0
+            || source.approved > 0
+            || source.active_memories > 0
+        guard hasUsableData else { return false }
+        if source.status == "needs_attention" || source.status == "empty" {
+            return false
+        }
+        if source.sync_plan?.due_now == true {
+            return false
+        }
+        let syncStatus = source.sync_plan?.managed_sync_status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if ["needs_attention", "backing_off", "waiting_for_first_sync"].contains(syncStatus) {
+            return false
+        }
+        if !source.warnings.isEmpty {
+            return false
+        }
+        return ["needs_review", "synced", "imported", "connected"].contains(source.status)
     }
 
     var hasConnectedSourceAccount: Bool {
@@ -2695,6 +2871,26 @@ final class AppState: ObservableObject {
 
     var hasConnectedObsidianVault: Bool {
         storedObsidianVaultURL() != nil
+    }
+
+    var obsidianReadiness: SourceReadinessItem? {
+        sourceReadinessReport?.sources.first { source in
+            source.source == "obsidian" || (source.source_ids ?? []).contains("obsidian")
+        }
+    }
+
+    var notesNeedContent: Bool {
+        if obsidianReadiness?.status == "empty" {
+            return true
+        }
+        if activeSourceAccounts.contains(where: { $0.source == "obsidian" && $0.needsContent }) {
+            return true
+        }
+        return false
+    }
+
+    var firstRunNeedsSource: Bool {
+        !onboardingComplete && !onboardingHasSource
     }
 
     var detectedAIIntegrationCount: Int {
@@ -2803,12 +2999,6 @@ final class AppState: ObservableObject {
         status = "Settings saved"
     }
 
-    func saveHotkeyPreference() {
-        UserDefaults.standard.set(globalClipboardHotkeyEnabled, forKey: "globalClipboardHotkeyEnabled.v1")
-        NotificationCenter.default.post(name: .cortexHotkeyPreferenceChanged, object: nil)
-        status = globalClipboardHotkeyEnabled ? "Global clipboard hotkey enabled" : "Global clipboard hotkey disabled"
-    }
-
     func saveUpdateSettings() {
         UserDefaults.standard.set(updateFeedURL.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "updateFeedURL")
         updateStatus = "Update feed saved"
@@ -2870,6 +3060,21 @@ final class AppState: ObservableObject {
             status = CortexRecoveryText.failureStatus("tool access registration", error: error)
             return false
         }
+    }
+
+    private func registerObsidianPluginToken() async throws -> String {
+        let token = Self.loadOrCreateObsidianPluginAPIKey()
+        let data = try await performRequest(
+            path: "/v1/integrations/api-token",
+            method: "POST",
+            body: [
+                "token": token,
+                "label": "Obsidian vault bridge",
+                "scopes": ["read", "write"]
+            ]
+        )
+        _ = try JSONDecoder().decode(IntegrationTokenRegistrationResponse.self, from: data)
+        return token
     }
 
     private func ensureUsableAPIKey() {
@@ -2940,20 +3145,6 @@ final class AppState: ObservableObject {
         Task { await bootstrap() }
     }
 
-    func captureClipboard() {
-        let text = NSPasteboard.general.string(forType: .string) ?? ""
-        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            status = "Clipboard is empty"
-            notify("Cortex", "Clipboard is empty")
-            return
-        }
-        Task {
-            if await capture(text: text, source: "macos-clipboard", title: "Clipboard note") {
-                status = "Clipboard note saved to Review"
-            }
-        }
-    }
-
     func capture(text: String, source: String, title: String, sourceURL: String? = nil) async -> Bool {
         isBusy = true
         status = "Saving..."
@@ -3020,7 +3211,7 @@ final class AppState: ObservableObject {
             let data = try await request(path: "/v1/imports?limit=12&include_deleted=false", method: "GET")
             importHistory = try JSONDecoder().decode(SourceImportHistoryResponse.self, from: data).results
         } catch {
-            status = CortexRecoveryText.failureStatus("Source sync history", error: error)
+            status = CortexRecoveryText.failureStatus("Connection history", error: error)
         }
     }
 
@@ -3049,7 +3240,15 @@ final class AppState: ObservableObject {
             askAnswer = answer.answer
             askCitations = answer.citations
             hasSearched = true
-            status = searchResults.isEmpty ? "No cited memory found" : "Found \(answer.citations.count) citation\(answer.citations.count == 1 ? "" : "s")"
+            if answer.status == "conflicted" {
+                status = "Found cited memory with a conflict"
+            } else if answer.status == "low_confidence" {
+                status = "Found related citations"
+            } else if answer.status == "no_cited_evidence" || searchResults.isEmpty {
+                status = "No cited memory found"
+            } else {
+                status = "Found \(answer.citations.count) citation\(answer.citations.count == 1 ? "" : "s")"
+            }
             if hasUsableOnboardingCitation(answer.citations) {
                 markCortexUsed()
             }
@@ -3112,7 +3311,7 @@ final class AppState: ObservableObject {
     func performProductLoopAction(_ action: ProductLoopAction) {
         switch action.action {
         case "capture":
-            openConnectionsPrivacy(statusMessage: "Start source sync")
+            openConnectionsPrivacy(statusMessage: "Connect notes")
         case "review":
             selectedTab = .review
             status = "Review new signals below"
@@ -3321,10 +3520,12 @@ final class AppState: ObservableObject {
             await syncSavedObsidianVaultIfAvailable(automatic: true)
         }
         await syncDueConnectedSources(automatic: true)
+        await drainQueuedMemoryJobs(automatic: true)
         if directConnectorIDsNeedingClientFallbackSync().isEmpty {
             return
         }
         await syncConfiguredDirectConnectorsIfAvailable(automatic: true)
+        await drainQueuedMemoryJobs(automatic: true)
     }
 
     @discardableResult
@@ -3344,7 +3545,29 @@ final class AppState: ObservableObject {
             return response
         } catch {
             if !automatic {
-                status = CortexRecoveryText.failureStatus("Connected source sync", error: error)
+                status = CortexRecoveryText.failureStatus("Connected source", error: error)
+            }
+            return nil
+        }
+    }
+
+    @discardableResult
+    private func drainQueuedMemoryJobs(limit: Int = 50, automatic: Bool = true) async -> JobRunResponse? {
+        guard !jobDrainInFlight else { return nil }
+        jobDrainInFlight = true
+        defer { jobDrainInFlight = false }
+
+        let boundedLimit = min(max(limit, 1), 100)
+        do {
+            let data = try await request(path: "/v1/jobs/run?limit=\(boundedLimit)&schedule_source_syncs=false", method: "POST")
+            let response = try JSONDecoder().decode(JobRunResponse.self, from: data)
+            if !automatic, response.processed > 0 {
+                status = "Prepared \(response.processed) background job\(response.processed == 1 ? "" : "s") for Ask"
+            }
+            return response
+        } catch {
+            if !automatic {
+                status = CortexRecoveryText.failureStatus("Prepare memory", error: error)
             }
             return nil
         }
@@ -3453,6 +3676,208 @@ final class AppState: ObservableObject {
         }
     }
 
+    func startManagedOAuthConnector(_ connector: SourceConnectorCatalogItem) {
+        guard let setup = connector.connectionSetup, setup.supportsManagedOAuth else {
+            status = "\(connector.name) sign-in is not available in this build"
+            return
+        }
+        guard !connectorOAuthStartingIDs.contains(connector.id) else {
+            status = "\(connector.name) sign-in is already open"
+            return
+        }
+        Task {
+            await startManagedOAuthConnectorNow(connector, setup: setup)
+        }
+    }
+
+    func managedOAuthIsConfigured(_ connector: SourceConnectorCatalogItem) -> Bool {
+        guard let setup = connector.connectionSetup, setup.supportsManagedOAuth else {
+            return false
+        }
+        let provider = setup.oauth_provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        guard !configuredManagedOAuthClientID(provider: provider).isEmpty else {
+            return false
+        }
+        if ["notion", "microsoft"].contains(provider) {
+            return !configuredManagedOAuthClientSecret(provider: provider).isEmpty
+        }
+        return true
+    }
+
+    func managedOAuthConfigurationMessage(_ connector: SourceConnectorCatalogItem) -> String? {
+        guard let setup = connector.connectionSetup, setup.supportsManagedOAuth else {
+            return nil
+        }
+        let provider = setup.oauth_provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        guard !managedOAuthIsConfigured(connector) else {
+            return nil
+        }
+        return "\(managedOAuthProviderDisplayName(provider)) sign-in is not configured for this Cortex build yet."
+    }
+
+    private func startManagedOAuthConnectorNow(_ connector: SourceConnectorCatalogItem, setup: SourceConnectorConnectionSetup) async {
+        guard let startEndpoint = setup.oauth_start_endpoint?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !startEndpoint.isEmpty else {
+            status = "\(connector.name) sign-in is not available in this build"
+            return
+        }
+        let provider = setup.oauth_provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let providerName = managedOAuthProviderDisplayName(provider)
+        let clientID = configuredManagedOAuthClientID(provider: provider)
+        guard !clientID.isEmpty else {
+            status = "\(connector.name) sign-in needs a \(providerName) OAuth client ID in this build"
+            connectorLastMessages[connector.id] = "\(providerName) sign-in is not configured for this Cortex build yet."
+            return
+        }
+        let clientSecret = configuredManagedOAuthClientSecret(provider: provider)
+        if ["notion", "microsoft"].contains(provider) && clientSecret.isEmpty {
+            status = "\(connector.name) sign-in needs a \(providerName) OAuth client secret in this build"
+            connectorLastMessages[connector.id] = "\(providerName) sign-in is not configured for this Cortex build yet."
+            return
+        }
+        let pkce: (verifier: String, challenge: String)
+        if provider == "google" {
+            do {
+                pkce = try Self.googleOAuthPKCEPair()
+            } catch {
+                status = CortexRecoveryText.failureStatus("\(connector.name) sign-in", error: error)
+                return
+            }
+        } else {
+            pkce = ("", "")
+        }
+        connectorOAuthStartingIDs.insert(connector.id)
+        defer {
+            connectorOAuthStartingIDs.remove(connector.id)
+        }
+
+        do {
+            status = "Opening \(connector.name) sign-in..."
+            var body: [String: Any] = [
+                "source": connector.id,
+                "client_id": clientID
+            ]
+            if !clientSecret.isEmpty {
+                body["client_secret"] = clientSecret
+            }
+            if !pkce.verifier.isEmpty {
+                body["code_verifier"] = pkce.verifier
+                body["code_challenge"] = pkce.challenge
+                body["code_challenge_method"] = "S256"
+            }
+            let data = try await request(
+                path: startEndpoint,
+                method: "POST",
+                body: body
+            )
+            let started = try JSONDecoder().decode(GoogleOAuthStartResponse.self, from: data)
+            guard let authURL = URL(string: started.authorization_url) else {
+                status = "\(connector.name) sign-in returned an invalid link"
+                return
+            }
+            NSWorkspace.shared.open(authURL)
+            connectorLastMessages[connector.id] = "Finish sign-in in your browser. Cortex will start the first sync automatically."
+            status = "Finish \(connector.name) sign-in in your browser"
+            await waitForManagedOAuthCompletion(connector)
+        } catch {
+            let message = CortexRecoveryText.failureStatus("\(connector.name) sign-in", error: error)
+            connectorLastMessages[connector.id] = message
+            status = message
+        }
+    }
+
+    private func managedOAuthProviderDisplayName(_ provider: String) -> String {
+        switch provider {
+        case "google": return "Google"
+        case "microsoft": return "Microsoft"
+        case "notion": return "Notion"
+        default: return provider.isEmpty ? "service" : provider.capitalized
+        }
+    }
+
+    private func configuredManagedOAuthClientID(provider: String) -> String {
+        let envKey = "CORTEX_\(provider.replacingOccurrences(of: "-", with: "_").uppercased())_OAUTH_CLIENT_ID"
+        let envValue = ProcessInfo.processInfo.environment[envKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !envValue.isEmpty {
+            return envValue
+        }
+        return (Bundle.main.object(forInfoDictionaryKey: managedOAuthClientIDInfoKey(provider: provider)) as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private func configuredManagedOAuthClientSecret(provider: String) -> String {
+        let envKey = "CORTEX_\(provider.replacingOccurrences(of: "-", with: "_").uppercased())_OAUTH_CLIENT_SECRET"
+        let envValue = ProcessInfo.processInfo.environment[envKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !envValue.isEmpty {
+            return envValue
+        }
+        return (Bundle.main.object(forInfoDictionaryKey: managedOAuthClientSecretInfoKey(provider: provider)) as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private func managedOAuthClientIDInfoKey(provider: String) -> String {
+        switch provider {
+        case "microsoft": return "CortexMicrosoftOAuthClientID"
+        case "notion": return "CortexNotionOAuthClientID"
+        default: return "CortexGoogleOAuthClientID"
+        }
+    }
+
+    private func managedOAuthClientSecretInfoKey(provider: String) -> String {
+        switch provider {
+        case "microsoft": return "CortexMicrosoftOAuthClientSecret"
+        case "notion": return "CortexNotionOAuthClientSecret"
+        default: return "CortexGoogleOAuthClientSecret"
+        }
+    }
+
+    private static func googleOAuthPKCEPair() throws -> (verifier: String, challenge: String) {
+        var random = [UInt8](repeating: 0, count: 32)
+        let status = random.withUnsafeMutableBytes { buffer in
+            SecRandomCopyBytes(kSecRandomDefault, buffer.count, buffer.baseAddress!)
+        }
+        guard status == errSecSuccess else {
+            throw NSError(domain: "CortexOAuth", code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Could not create a secure OAuth challenge"])
+        }
+        let verifier = base64URLEncoded(Data(random))
+        let challenge = base64URLEncoded(Data(SHA256.hash(data: Data(verifier.utf8))))
+        return (verifier, challenge)
+    }
+
+    private static func base64URLEncoded(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private func waitForManagedOAuthCompletion(_ connector: SourceConnectorCatalogItem) async {
+        for _ in 0..<18 {
+            do {
+                try await Task.sleep(nanoseconds: 5 * 1_000_000_000)
+            } catch {
+                return
+            }
+            await loadSourceConnectivity()
+            if sourceAccount(connector) != nil {
+                firstSourceAdded = true
+                onboardingFirstSourceNames = Array(Set(onboardingFirstSourceNames + [connector.name])).sorted()
+                UserDefaults.standard.set(true, forKey: "onboardingFirstSourceImported.v1")
+                UserDefaults.standard.set(onboardingFirstSourceNames, forKey: "onboardingFirstSourceNames.v1")
+                _ = await syncDueConnectedSources(automatic: true)
+                await drainQueuedMemoryJobs(automatic: true)
+                await refreshAfterCapture()
+                connectorLastMessages[connector.id] = "\(connector.name) connected. First sync is starting."
+                status = "\(connector.name) connected"
+                return
+            }
+        }
+        connectorLastMessages[connector.id] = "Sign-in is still waiting. Finish in the browser, then click Sync again."
+        status = "\(connector.name) sign-in is still waiting"
+    }
+
     func syncStoredDirectConnector(_ connector: SourceConnectorCatalogItem) {
         guard let payload = storedDirectConnectorPayload(for: connector.id) else {
             status = "Set up \(connector.name) before syncing again"
@@ -3460,6 +3885,25 @@ final class AppState: ObservableObject {
         }
         Task {
             await syncDirectConnector(connector, payload: payload)
+        }
+    }
+
+    func syncConnectedSourceConnector(_ connector: SourceConnectorCatalogItem) {
+        guard !connectorSyncingIDs.contains(connector.id) else {
+            status = "\(connector.name) sync is already running"
+            return
+        }
+        Task {
+            connectorSyncingIDs.insert(connector.id)
+            defer { connectorSyncingIDs.remove(connector.id) }
+            status = "Checking \(connector.name) for new memory..."
+            _ = await syncDueConnectedSources(automatic: false)
+            await drainQueuedMemoryJobs(automatic: true)
+            await loadSourceConnectivity()
+            await refreshAfterCapture()
+            if sourceAccount(connector) != nil {
+                connectorLastMessages[connector.id] = "\(connector.name) is connected and ready for cited Ask."
+            }
         }
     }
 
@@ -3569,21 +4013,14 @@ final class AppState: ObservableObject {
             onboardingFirstSourceNames = Array(Set(onboardingFirstSourceNames + [connector.name])).sorted()
             UserDefaults.standard.set(true, forKey: "onboardingFirstSourceImported.v1")
             UserDefaults.standard.set(onboardingFirstSourceNames, forKey: "onboardingFirstSourceNames.v1")
+            await drainQueuedMemoryJobs(automatic: true)
             await loadSourceConnectivity()
             if !automatic {
                 await loadTrust()
             }
             await refreshAfterCapture()
 
-            let changed = synced.saved + synced.queued
-            let message: String
-            if changed > 0 {
-                message = "\(connector.name) synced \(changed) item\(changed == 1 ? "" : "s") into Review"
-            } else if synced.skipped > 0 || synced.received > 0 {
-                message = "\(connector.name) already up to date"
-            } else {
-                message = "\(connector.name) sync finished"
-            }
+            let message = directConnectorSyncMessage(connector: connector, synced: synced)
             connectorLastMessages[connector.id] = message
             if !automatic {
                 status = message
@@ -3595,6 +4032,152 @@ final class AppState: ObservableObject {
                 status = message
             }
         }
+    }
+
+    private func directConnectorSyncMessage(connector: SourceConnectorCatalogItem, synced: SourceAccountSyncResponse) -> String {
+        let changed = synced.saved + synced.queued
+        let archived = synced.archived_missing ?? 0
+        let base: String
+        if changed > 0 {
+            base = "\(connector.name) synced \(changed) item\(changed == 1 ? "" : "s") into Review"
+        } else if synced.skipped > 0 || synced.received > 0 {
+            base = "\(connector.name) already up to date"
+        } else {
+            base = "\(connector.name) sync finished"
+        }
+
+        if archived > 0 {
+            return "\(base). Archived \(archived) stale item\(archived == 1 ? "" : "s") from Ask."
+        }
+        if synced.archive_missing_suppressed == true, let decision = synced.archive_missing_decision {
+            return "\(base). Kept older memory because \(archiveSuppressionReason(decision))."
+        }
+        return base
+    }
+
+    private func archiveSuppressionReason(_ decision: SourceArchiveMissingDecision) -> String {
+        switch decision.reason {
+        case "connector_errors":
+            return "sync was incomplete"
+        case "pagination_incomplete":
+            return "more source pages remain"
+        case "record_cap_reached":
+            if let maxRecords = decision.max_records, maxRecords > 0 {
+                return "the sync reached \(maxRecords) items"
+            }
+            return "the sync reached its item limit"
+        case "truncated":
+            return "the source scan was truncated"
+        default:
+            return "the latest source view was incomplete"
+        }
+    }
+
+    func discoverDirectConnectorOptions(
+        _ connector: SourceConnectorCatalogItem,
+        field: SourceConnectorSetupField,
+        payload: [String: Any]
+    ) async throws -> [SourceConnectorDiscoveredOption] {
+        guard isDirectConnectorSyncWired(connector) else {
+            return []
+        }
+        let endpoint = (
+            field.options_endpoint ?? connector.connectionSetup?.discovery_endpoint ?? ""
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !endpoint.isEmpty else {
+            return []
+        }
+
+        var requestBody = payload
+        if requestBody["limit"] == nil {
+            requestBody["limit"] = min(max(field.max_items ?? 25, 1), 100)
+        }
+
+        let data = try await request(path: endpoint, method: "POST", body: requestBody)
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return []
+        }
+
+        let targetKey = connector.connectionSetup?.discovery_target_field?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rows = remoteOptionRows(root, key: targetKey)
+            ?? remoteOptionRows(root, key: field.name)
+            ?? remoteOptionRows(root, key: "results")
+            ?? []
+        let labelKey = (field.option_label_key ?? "label").trimmingCharacters(in: .whitespacesAndNewlines)
+        let valueKey = (field.option_value_key ?? "sync_value").trimmingCharacters(in: .whitespacesAndNewlines)
+        let maxItems = min(max(field.max_items ?? rows.count, 1), rows.count)
+
+        return rows.prefix(maxItems).compactMap { row in
+            let value = remoteOptionString(row[valueKey])
+                ?? remoteOptionString(row["sync_value"])
+                ?? remoteOptionString(row["id"])
+                ?? remoteOptionString(row["full_name"])
+                ?? remoteOptionString(row["name"])
+            guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return nil
+            }
+            let label = remoteOptionString(row[labelKey])
+                ?? remoteOptionString(row["label"])
+                ?? remoteOptionString(row["full_name"])
+                ?? remoteOptionString(row["name"])
+                ?? value
+            return SourceConnectorDiscoveredOption(
+                id: "\(field.name):\(value)",
+                label: label,
+                value: value,
+                detail: remoteOptionDetail(row)
+            )
+        }
+    }
+
+    private func remoteOptionRows(_ root: [String: Any], key: String?) -> [[String: Any]]? {
+        guard let key, !key.isEmpty else { return nil }
+        return root[key] as? [[String: Any]]
+    }
+
+    private func remoteOptionString(_ value: Any?) -> String? {
+        if let string = value as? String {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if let int = value as? Int {
+            return String(int)
+        }
+        if let double = value as? Double {
+            return String(double)
+        }
+        if let bool = value as? Bool {
+            return bool ? "true" : "false"
+        }
+        return nil
+    }
+
+    private func remoteOptionDetail(_ row: [String: Any]) -> String? {
+        var parts: [String] = []
+        if let owner = remoteOptionString(row["owner"]) {
+            parts.append(owner)
+        }
+        if let topic = remoteOptionString(row["topic"]) ?? remoteOptionString(row["purpose"]) {
+            parts.append(topic)
+        }
+        if row["private"] as? Bool == true || row["is_private"] as? Bool == true {
+            parts.append("Private")
+        }
+        if row["archived"] as? Bool == true || row["is_archived"] as? Bool == true {
+            parts.append("Archived")
+        }
+        if let members = remoteOptionString(row["num_members"]) {
+            parts.append("\(members) members")
+        }
+        if let updated = remoteOptionString(row["updated_at"]) ?? remoteOptionString(row["pushed_at"]) {
+            parts.append("Updated \(String(updated.prefix(10)))")
+        }
+        let detail = parts
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .prefix(3)
+            .joined(separator: " · ")
+        return detail.isEmpty ? nil : detail
     }
 
     private static func directConnectorConfigSecretKey(for connectorID: String) -> String {
@@ -3731,6 +4314,83 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func installObsidianPluginIfPossible(vaultURL: URL) async -> Bool {
+        let obsidianConfigURL = vaultURL.appendingPathComponent(".obsidian", isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: obsidianConfigURL.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return false
+        }
+
+        do {
+            let pluginToken = try await registerObsidianPluginToken()
+            try installBundledObsidianPlugin(vaultURL: vaultURL, apiToken: pluginToken)
+            return true
+        } catch {
+            NSLog("Cortex Obsidian plugin install failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    private func installBundledObsidianPlugin(vaultURL: URL, apiToken: String) throws {
+        guard let sourceURL = Bundle.main.resourceURL?.appendingPathComponent("obsidian-cortex-plugin", isDirectory: true) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+
+        let manager = FileManager.default
+        let targetURL = vaultURL
+            .appendingPathComponent(".obsidian", isDirectory: true)
+            .appendingPathComponent("plugins", isDirectory: true)
+            .appendingPathComponent(Self.obsidianPluginID, isDirectory: true)
+        try manager.createDirectory(at: targetURL, withIntermediateDirectories: true)
+
+        for fileName in ["manifest.json", "main.js", "versions.json"] {
+            let sourceFile = sourceURL.appendingPathComponent(fileName)
+            guard manager.fileExists(atPath: sourceFile.path) else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            let targetFile = targetURL.appendingPathComponent(fileName)
+            if manager.fileExists(atPath: targetFile.path) {
+                try manager.removeItem(at: targetFile)
+            }
+            try manager.copyItem(at: sourceFile, to: targetFile)
+        }
+
+        let settings: [String: Any] = [
+            "endpoint": endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+            "apiToken": apiToken,
+            "autoSyncOnStartup": true,
+            "maxRecords": 5000
+        ]
+        let settingsData = try JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys])
+        try settingsData.write(to: targetURL.appendingPathComponent("data.json"), options: .atomic)
+        try enableBundledObsidianPlugin(vaultURL: vaultURL)
+    }
+
+    private func enableBundledObsidianPlugin(vaultURL: URL) throws {
+        let enabledPluginsURL = vaultURL
+            .appendingPathComponent(".obsidian", isDirectory: true)
+            .appendingPathComponent("community-plugins.json")
+        let manager = FileManager.default
+        var enabledPlugins: [String] = []
+
+        if manager.fileExists(atPath: enabledPluginsURL.path) {
+            let data = try Data(contentsOf: enabledPluginsURL)
+            let parsed = try JSONSerialization.jsonObject(with: data)
+            guard let plugins = parsed as? [String] else {
+                return
+            }
+            enabledPlugins = plugins
+        }
+
+        guard !enabledPlugins.contains(Self.obsidianPluginID) else {
+            return
+        }
+        enabledPlugins.append(Self.obsidianPluginID)
+        let data = try JSONSerialization.data(withJSONObject: enabledPlugins, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: enabledPluginsURL, options: .atomic)
+    }
+
     private func syncLocalNotesFolder(_ connector: SourceConnectorCatalogItem, folderURL: URL, rememberPath: Bool, automatic: Bool = false) async {
         guard !obsidianSyncInFlight else {
             if !automatic {
@@ -3759,6 +4419,7 @@ final class AppState: ObservableObject {
                     folderURL.stopAccessingSecurityScopedResource()
                 }
             }
+            let pluginInstalled = await installObsidianPluginIfPossible(vaultURL: folderURL)
             let syncData = try await request(
                 path: "/v1/connectors/obsidian/sync",
                 method: "POST",
@@ -3786,6 +4447,7 @@ final class AppState: ObservableObject {
             onboardingFirstSourceNames = Array(Set(onboardingFirstSourceNames + [connector.name])).sorted()
             UserDefaults.standard.set(true, forKey: "onboardingFirstSourceImported.v1")
             UserDefaults.standard.set(onboardingFirstSourceNames, forKey: "onboardingFirstSourceNames.v1")
+            await drainQueuedMemoryJobs(automatic: true)
             await loadSourceConnectivity()
             await loadTrust()
             await refreshAfterCapture()
@@ -3794,11 +4456,12 @@ final class AppState: ObservableObject {
                 status = "\(connector.name) synced \(synced.scan.records_returned) of \(synced.scan.records_found) notes. Larger-vault sync is partial."
             } else if synced.saved > 0 || synced.queued > 0 {
                 let count = synced.saved + synced.queued
-                status = "\(connector.name) synced \(count) note\(count == 1 ? "" : "s") into Review"
+                let bridge = pluginInstalled ? " Obsidian bridge installed." : ""
+                status = "\(connector.name) synced \(count) note\(count == 1 ? "" : "s") into Review.\(bridge)"
             } else if synced.skipped > 0, !automatic {
-                status = "\(connector.name) already up to date"
+                status = pluginInstalled ? "\(connector.name) already up to date. Obsidian bridge installed." : "\(connector.name) already up to date"
             } else if !automatic {
-                status = "\(connector.name) sync finished"
+                status = pluginInstalled ? "\(connector.name) sync finished. Obsidian bridge installed." : "\(connector.name) sync finished"
             }
         } catch {
             if automatic {
@@ -4289,7 +4952,7 @@ final class AppState: ObservableObject {
             case .privateVault:
                 status = "Start the local memory engine before continuing"
             case .firstSource:
-                status = "Start source sync, then review memory"
+                status = onboardingSourceHealthMessage ?? "Connect a source, then review memory"
             case .reviewMemory:
                 status = "Approve one review item before asking Cortex"
             case .askUse:
@@ -4426,6 +5089,7 @@ final class AppState: ObservableObject {
                 _ = try await request(path: "/v1/captures/\(capture.id)/approve", method: "POST")
                 status = "Approved review item"
                 markFirstMemoryReviewed(capture: capture)
+                await drainQueuedMemoryJobs(automatic: true)
                 await loadInbox()
                 await loadRecent()
                 await loadStats()
@@ -4471,6 +5135,7 @@ final class AppState: ObservableObject {
                     markFirstMemoryReviewed(capture: capture)
                 }
                 status = "Approved \(visibleCaptures.count) visible review item\(visibleCaptures.count == 1 ? "" : "s")"
+                await drainQueuedMemoryJobs(automatic: true)
                 await loadInbox()
                 await loadRecent()
                 await loadStats()
@@ -4536,13 +5201,13 @@ final class AppState: ObservableObject {
                 let data = try await request(path: "/v1/imports/\(item.import_id)", method: "DELETE")
                 let response = try JSONDecoder().decode(SourceImportDeleteResponse.self, from: data)
                 if response.deleted {
-                    status = "Removed \(response.deleted_captures) review item\(response.deleted_captures == 1 ? "" : "s") from source sync"
+                    status = "Removed \(response.deleted_captures) review item\(response.deleted_captures == 1 ? "" : "s") from this connection"
                 } else {
-                    status = "Source sync already removed"
+                    status = "Connection already removed"
                 }
                 await refreshAfterCapture()
             } catch {
-                status = CortexRecoveryText.failureStatus("Remove source sync", error: error)
+                status = CortexRecoveryText.failureStatus("Remove connection", error: error)
             }
         }
     }
@@ -4939,7 +5604,7 @@ struct CortexLayerStatusPill: View {
             return "Memory ready"
         }
         if activeAccounts > 0 {
-            return activeAccounts == 1 ? "1 source syncing" : "\(activeAccounts) sources syncing"
+            return activeAccounts == 1 ? "1 connection syncing" : "\(activeAccounts) connections syncing"
         }
         return "No sources"
     }
@@ -7407,60 +8072,12 @@ struct GraphCanvas: View {
     }
 }
 
-final class HotKeyManager {
-    private var hotKeyRef: EventHotKeyRef?
-    private var eventHandler: EventHandlerRef?
-    private let handler: () -> Void
-
-    init(handler: @escaping () -> Void) {
-        self.handler = handler
-    }
-
-    func register() {
-        guard hotKeyRef == nil else { return }
-        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        let callback: EventHandlerUPP = { _, _, userData in
-            guard let userData else { return noErr }
-            let manager = Unmanaged<HotKeyManager>.fromOpaque(userData).takeUnretainedValue()
-            DispatchQueue.main.async { manager.handler() }
-            return noErr
-        }
-        InstallEventHandler(GetApplicationEventTarget(), callback, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), &eventHandler)
-        let hotKeyID = EventHotKeyID(signature: fourCharCode("CRTX"), id: 1)
-        RegisterEventHotKey(UInt32(kVK_ANSI_V), UInt32(cmdKey | shiftKey), hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
-    }
-
-    func unregister() {
-        if let hotKeyRef {
-            UnregisterEventHotKey(hotKeyRef)
-            self.hotKeyRef = nil
-        }
-        if let eventHandler {
-            RemoveEventHandler(eventHandler)
-            self.eventHandler = nil
-        }
-    }
-
-    deinit {
-        unregister()
-    }
-}
-
-func fourCharCode(_ string: String) -> OSType {
-    var result: OSType = 0
-    for scalar in string.unicodeScalars.prefix(4) {
-        result = (result << 8) + OSType(scalar.value)
-    }
-    return result
-}
-
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let state = AppState()
     private var statusItem: NSStatusItem!
     private var mainWindow: NSWindow!
     private var mainWindowController: NSWindowController!
-    private var hotKey: HotKeyManager!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         logApp("applicationDidFinishLaunching")
@@ -7468,12 +8085,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         setupStatusItem()
         setupMainWindow()
         NotificationCenter.default.addObserver(self, selector: #selector(onboardingCompleted), name: .cortexOnboardingCompleted, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(hotkeyPreferenceChanged), name: .cortexHotkeyPreferenceChanged, object: nil)
-        hotKey = HotKeyManager { [weak self] in
-            self?.state.captureClipboard()
-            self?.showMainWindow()
-        }
-        applyHotkeyPreference()
         showMainWindow()
         DispatchQueue.main.async { [weak self] in
             self?.showMainWindow()
@@ -7548,18 +8159,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         mainWindow?.level = .normal
         mainWindow?.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         showMainWindow()
-    }
-
-    @objc private func hotkeyPreferenceChanged() {
-        applyHotkeyPreference()
-    }
-
-    private func applyHotkeyPreference() {
-        if UserDefaults.standard.bool(forKey: "globalClipboardHotkeyEnabled.v1") {
-            hotKey.register()
-        } else {
-            hotKey.unregister()
-        }
     }
 
     private func showMainWindow() {

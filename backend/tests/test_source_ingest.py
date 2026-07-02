@@ -1161,6 +1161,62 @@ class SourceIngestTests(unittest.TestCase):
                 self.assertTrue(hits)
                 self.assertTrue(all(item["source_url"] for item in hits))
 
+    def test_capped_multi_service_import_keeps_later_service_sources_retrievable(self) -> None:
+        chatgpt = self.root / "chatgpt-heavy"
+        chatgpt.mkdir()
+        chatgpt_payload = []
+        for index in range(30):
+            chatgpt_payload.append(
+                {
+                    "title": f"Project Fairshare noisy chat {index}",
+                    "create_time": 1_700_000_000 + index,
+                    "mapping": {
+                        "a": {
+                            "message": {
+                                "author": {"role": "user"},
+                                "create_time": 1_700_000_001 + index,
+                                "content": {
+                                    "parts": [
+                                        f"Project Fairshare noisy chat filler {index} should not crowd out every other service."
+                                    ]
+                                },
+                            }
+                        }
+                    },
+                }
+            )
+        (chatgpt / "conversations.json").write_text(json.dumps(chatgpt_payload), encoding="utf-8")
+        github = self.root / "GitHub" / "Project Cortex"
+        github.mkdir(parents=True)
+        (github / "issues.csv").write_text(
+            "Title,Body\n"
+            "Fairshare canonical issue,We decided Project Fairshare canonical GitHub issue should survive capped multi-service import.\n",
+            encoding="utf-8",
+        )
+
+        db_path = self.root / "fairshare.sqlite"
+        init_db(db_path)
+        store = self._store(db_path, self.root / "fairshare-vault")
+        result = store.import_sources(
+            user_id="test-user",
+            paths=[str(chatgpt), str(github)],
+            processing="sync",
+            max_records=10,
+        )
+
+        self.assertEqual(result["failed"], 0)
+        sources = {item["source"] for item in result["sources"]}
+        self.assertIn("chatgpt", sources)
+        self.assertIn("github", sources)
+        results = store.search("test-user", "Project Fairshare canonical GitHub issue", limit=5)
+        github_hit = next((item for item in results if item["source"] == "github"), None)
+
+        self.assertIsNotNone(github_hit)
+        assert github_hit is not None
+        self.assertIn("service=github", github_hit["source_url"])
+        self.assertIn("line=", github_hit["source_url"])
+        self.assertIn("excerpt=", github_hit["source_url"])
+
     def test_imported_memories_get_granular_source_url_fragments(self) -> None:
         slack = self.root / "granular-slack" / "general"
         slack.mkdir(parents=True)

@@ -8,6 +8,9 @@ struct ReviewTab: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 ReviewHeaderSection(state: state)
+                if shouldShowSourceHealth {
+                    ReviewSourceHealthStrip(state: state)
+                }
                 ReviewInboxSection(state: state, captures: state.inbox)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -20,6 +23,13 @@ struct ReviewTab: View {
             await state.loadProductLoop()
         }
         .background(CortexDesign.appBackground)
+    }
+
+    private var shouldShowSourceHealth: Bool {
+        state.hasConnectedSourceAccount
+            || state.hasConnectedObsidianVault
+            || state.onboardingHasReviewedMemory
+            || !state.inbox.isEmpty
     }
 }
 
@@ -39,9 +49,237 @@ struct ReviewHeaderSection: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
-                ReviewPendingBadge(count: state.inbox.count)
+                if shouldShowPendingBadge {
+                    ReviewPendingBadge(count: state.inbox.count)
+                }
             }
         }
+    }
+
+    private var shouldShowPendingBadge: Bool {
+        state.inbox.count > 0
+            || state.hasConnectedSourceAccount
+            || state.hasConnectedObsidianVault
+            || state.onboardingHasReviewedMemory
+    }
+}
+
+struct ReviewSourceHealthStrip: View {
+    @ObservedObject var state: AppState
+
+    private var sources: [SourceReadinessItem] {
+        state.sourceReadinessReport?.sources
+            .filter { source in
+                source.pending > 0 || source.active_memories > 0 || source.accounts > 0
+            }
+            .sorted { lhs, rhs in
+                if lhs.pending != rhs.pending {
+                    return lhs.pending > rhs.pending
+                }
+                if lhs.active_memories != rhs.active_memories {
+                    return lhs.active_memories > rhs.active_memories
+                }
+                return lhs.name < rhs.name
+            } ?? []
+    }
+
+    private var pendingCount: Int {
+        state.inbox.count
+    }
+
+    private var needsAttentionCount: Int {
+        state.sourceReadinessReport?.summary.needs_attention ?? 0
+    }
+
+    private var dueCount: Int {
+        sources.filter { $0.sync_plan?.due_now == true }.count
+    }
+
+    private var latestSync: String? {
+        sources.compactMap { $0.sync_plan?.last_completed_at ?? $0.last_seen_at }.sorted().last
+    }
+
+    private var title: String {
+        if needsAttentionCount > 0 { return "Check source health before approving" }
+        if pendingCount > 0 { return "Review synced memory with source context" }
+        if !sources.isEmpty { return "Sources are ready for new memory" }
+        return "No connected source context yet"
+    }
+
+    private var detail: String {
+        if needsAttentionCount > 0 {
+            return "\(needsAttentionCount) source\(needsAttentionCount == 1 ? "" : "s") need attention. Already synced local memory stays available."
+        }
+        if pendingCount > 0 {
+            return "Approve useful items, archive noise, and Cortex will use approved memory in Ask and MCP retrieval."
+        }
+        if !sources.isEmpty {
+            return "Cortex will place new synced memories here before they are used."
+        }
+        return "Connect notes or a source to start building reviewed memory."
+    }
+
+    private var statusColor: Color {
+        if needsAttentionCount > 0 { return .orange }
+        if pendingCount > 0 { return .orange }
+        if !sources.isEmpty { return .green }
+        return .secondary
+    }
+
+    private var statusIcon: String {
+        if needsAttentionCount > 0 { return "exclamationmark.circle.fill" }
+        if pendingCount > 0 { return "tray.full.fill" }
+        if !sources.isEmpty { return "checkmark.seal.fill" }
+        return "circle"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: statusIcon)
+                    .font(.headline)
+                    .foregroundColor(statusColor)
+                    .frame(width: 28, height: 28)
+                    .background(statusColor.opacity(0.11))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.headline)
+                    Text(detail)
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 8) {
+                ReviewHealthMetric(
+                    title: "Queue",
+                    value: pendingCount == 0 ? "Clear" : "\(pendingCount) pending",
+                    systemImage: "tray.full"
+                )
+                ReviewHealthMetric(
+                    title: "Freshness",
+                    value: freshnessLabel,
+                    systemImage: "clock.arrow.circlepath"
+                )
+                ReviewHealthMetric(
+                    title: "Health",
+                    value: sourceHealthLabel,
+                    systemImage: "waveform.path.ecg"
+                )
+            }
+
+            if !sources.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(Array(sources.prefix(3))) { source in
+                        ReviewSourceHealthChip(source: source)
+                    }
+                    if sources.count > 3 {
+                        Text("+\(sources.count - 3) more")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .background(Color(nsColor: .controlBackgroundColor))
+                            .clipShape(Capsule())
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(12)
+        .background(CortexDesign.panelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.softBorder))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var freshnessLabel: String {
+        guard let latestSync else {
+            return sources.isEmpty ? "No source" : "Waiting"
+        }
+        return "Synced \(reviewShortDate(latestSync))"
+    }
+
+    private var sourceHealthLabel: String {
+        if needsAttentionCount > 0 {
+            return "\(needsAttentionCount) needs attention"
+        }
+        if dueCount > 0 {
+            return "\(dueCount) sync due"
+        }
+        if !sources.isEmpty {
+            return "Healthy"
+        }
+        return "Not connected"
+    }
+}
+
+struct ReviewHealthMetric: View {
+    let title: String
+    let value: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: systemImage)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Text(value)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct ReviewSourceHealthChip: View {
+    let source: SourceReadinessItem
+
+    var body: some View {
+        Text(label)
+            .font(.caption)
+            .foregroundColor(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(Capsule())
+            .help(helpText)
+    }
+
+    private var label: String {
+        if source.pending > 0 {
+            return "\(source.name) · \(source.pending) pending"
+        }
+        if let lastSeen = source.sync_plan?.last_completed_at ?? source.last_seen_at {
+            return "\(source.name) · \(reviewShortDate(lastSeen))"
+        }
+        return source.name
+    }
+
+    private var helpText: String {
+        if let warning = source.warnings.first, !warning.isEmpty {
+            return "\(source.name): \(warning)"
+        }
+        return "\(source.name): \(source.syncPlanDisplayTitle), \(source.active_memories) reviewed memories."
     }
 }
 
@@ -118,7 +356,10 @@ struct ReviewInboxSection: View {
 
     private var emptyDetail: String {
         if (state.review?.stats.memories ?? 0) == 0 {
-            return "Start source sync first. New memories will appear here before Cortex uses them."
+            if state.hasConnectedSourceAccount || state.hasConnectedObsidianVault {
+                return "Sync your source. New memories will appear here before Cortex uses them."
+            }
+            return "Connect notes first. New memories will appear here before Cortex uses them."
         }
         return "All caught up. New synced items will appear here before Cortex uses them."
     }
@@ -136,9 +377,16 @@ struct ReviewEmptyState: View {
         state.sourceConnectorCatalog.first { $0.id == "obsidian" }
     }
 
+    private var emptyTitle: String {
+        if approvedMemoryCount == 0, !(state.hasConnectedSourceAccount || state.hasConnectedObsidianVault) {
+            return "Connect notes to start review"
+        }
+        return "Nothing to review"
+    }
+
     var body: some View {
         VStack(spacing: 12) {
-            QuietState(title: "Nothing to review", detail: detail)
+            QuietState(title: emptyTitle, detail: detail)
 
             HStack(spacing: 10) {
                 if approvedMemoryCount > 0 {
@@ -153,9 +401,9 @@ struct ReviewEmptyState: View {
                     .controlSize(.large)
                 } else if state.hasConnectedObsidianVault, let connector = obsidianConnector {
                     Button {
-                        state.connectLocalNotesFolder(connector)
+                        state.connectLocalNotesFolder(connector, chooseNew: state.notesNeedContent)
                     } label: {
-                        Label("Sync source", systemImage: "arrow.triangle.2.circlepath")
+                        Label(state.notesNeedContent ? "Choose notes" : "Sync notes", systemImage: state.notesNeedContent ? "folder.badge.questionmark" : "arrow.triangle.2.circlepath")
                             .frame(minWidth: 148, minHeight: 46)
                     }
                     .buttonStyle(.borderedProminent)
@@ -164,32 +412,34 @@ struct ReviewEmptyState: View {
                 } else {
                     Button {
                         if let connector = obsidianConnector {
-                            state.connectLocalNotesFolder(connector)
+                            state.connectLocalNotesFolder(connector, chooseNew: state.notesNeedContent)
                         } else {
-                            state.openConnectionsPrivacy(statusMessage: "Source sync")
+                            state.openConnectionsPrivacy(statusMessage: "Connect notes")
                         }
                     } label: {
-                        Label("Start source sync", systemImage: "folder.badge.plus")
+                        Label("Connect notes", systemImage: "folder.badge.plus")
                             .frame(minWidth: 172, minHeight: 46)
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
                 }
 
-                Button {
-                    Task {
-                        await state.loadSourceConnectivity()
-                        await state.loadInbox()
-                        await state.loadReview()
-                        await state.loadStats()
+                if state.hasConnectedSourceAccount || state.hasConnectedObsidianVault || approvedMemoryCount > 0 {
+                    Button {
+                        Task {
+                            await state.loadSourceConnectivity()
+                            await state.loadInbox()
+                            await state.loadReview()
+                            await state.loadStats()
+                        }
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                            .frame(minWidth: 112, minHeight: 46)
                     }
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                        .frame(minWidth: 112, minHeight: 46)
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .disabled(state.isBusy)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                .disabled(state.isBusy)
             }
             .frame(maxWidth: .infinity, alignment: .center)
         }
@@ -387,6 +637,12 @@ struct ReviewQueueSourceBox: View {
     private var citation: String? {
         CitationDisplay.label(sourceURL: capture.source_url)
     }
+}
+
+private func reviewShortDate(_ value: String) -> String {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "recently" }
+    return String(trimmed.prefix(10))
 }
 
 struct ReviewCaptureCard: View {

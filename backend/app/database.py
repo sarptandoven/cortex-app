@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
 from .embeddings import VECTOR_DIMENSIONS
+from .sqlite_runtime import sqlite3
 
 
 SCHEMA = """

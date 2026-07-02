@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import base64
 import json
 import os
 import platform
 import re
 import secrets
-import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,6 +19,7 @@ from .connectors._redaction import redact_error_message
 from .database import connect, sqlite_vec_status
 from .embeddings import VECTOR_DIMENSIONS, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status
 from .extractor import extract_context, now_iso, stable_id
+from .sqlite_runtime import SQLITE_RUNTIME, sqlite3
 from .source_ingest import SourceRecord, analyze_sources, import_source_records, supported_sources
 from .vault import CortexVault
 
@@ -37,6 +38,8 @@ BACKEND_FEATURES = (
     "source-imports",
     "source-account-registry",
     "source-account-sync",
+    "google-managed-oauth",
+    "service-managed-oauth",
     "obsidian-connector",
     "github-token-connector",
     "slack-token-connector",
@@ -67,6 +70,12 @@ MEMORY_LAYER_BY_KIND = {
     "style": "style",
     "negative": "negative",
 }
+_PERSON_QUERY_INTENT_RE = re.compile(
+    r"(?i)\b(?:talk(?:ing)?\s+to|meet(?:ing)?\s+with|brief\s+me|briefing\s+(?:on|for)|call\s+with|"
+    r"catch(?:ing)?\s+up\s+with|follow(?:ing)?\s+up\s+with|1:1\s+with|one[- ]on[- ]one\s+with|"
+    r"email(?:ing)?\s+to|message\s+to|promised?\s+(?:to\s+)?|prepare\s+(?:me\s+)?for\s+(?:my\s+)?(?:meeting|call|chat))\b"
+)
+
 LAYER_RETRIEVAL_BOOST = 0.02
 TEMPORAL_RETRIEVAL_BOOST = 0.025
 # Near-tie boosts: must stay below LAYER_RETRIEVAL_BOOST and the temporal
@@ -80,6 +89,7 @@ RECENCY_RETRIEVAL_BOOST_STEPS: tuple[tuple[float, float], ...] = (
 )
 IMPORTANCE_RETRIEVAL_BOOST_STEP = 0.0008
 IMPORTANCE_RETRIEVAL_BOOST_MAX = 0.0024
+SOURCE_QUALITY_RETRIEVAL_BOOST_MAX = 0.012
 SAME_CAPTURE_RELATION_FULL_PAIR_LIMIT = 80
 SAME_CAPTURE_RELATION_PER_MEMORY_LIMIT = 6
 SAME_CAPTURE_RELATION_TOTAL_LIMIT = 2000
@@ -237,6 +247,7 @@ LAYER_QUERY_INTENTS: tuple[tuple[set[str], set[str]], ...] = (
 )
 QUERY_FTS_STOPWORDS = QUERY_TEMPORAL_STOPWORDS | {
     "am",
+    "and",
     "are",
     "be",
     "been",
@@ -252,12 +263,65 @@ QUERY_FTS_STOPWORDS = QUERY_TEMPORAL_STOPWORDS | {
     "i",
     "me",
     "my",
+    "or",
+    "our",
     "please",
     "should",
     "stated",
     "to",
     "usually",
+    "we",
+    "why",
+    "you",
+    "your",
 }
+ANSWER_REASON_TERMS = {"why", "reason", "reasons", "rationale", "because"}
+ANSWER_SUPPORT_QUERY_EXCLUDE = ANSWER_REASON_TERMS | {
+    "decide",
+    "decided",
+    "decision",
+    "decisions",
+    "did",
+}
+ANSWER_DATE_CLAIM_RE = re.compile(
+    rf"\b(?:{QUERY_MONTH_PATTERN})\.?\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+(?:19|20)\d{{2}})?\b|\b\d{{4}}-\d{{2}}-\d{{2}}\b",
+    re.IGNORECASE,
+)
+ANSWER_CLAIM_FIELDS = (
+    "backup owner",
+    "database",
+    "default connector",
+    "handoff owner",
+    "incident owner",
+    "launch channel",
+    "owner",
+    "primary connector",
+    "primary source",
+    "release channel",
+    "retrieval engine",
+    "storage backend",
+    "support owner",
+)
+ANSWER_CLAIM_RE = re.compile(
+    rf"\b(?P<field>{'|'.join(re.escape(field) for field in ANSWER_CLAIM_FIELDS)})\b\s+"
+    r"(?:(?:is|was|uses?|choose|chooses|chosen as|should be|should use|will be|will use|"
+    r"changed to|moved to|switched to|now is|now uses|replaces)\s+)"
+    r"(?P<value>[^.;\n]+)",
+    re.IGNORECASE,
+)
+ANSWER_FIELD_REQUIREMENTS: tuple[tuple[str, set[str], set[str]], ...] = (
+    ("owner", {"owner"}, {"owner", "owns", "responsible"}),
+    ("launch channel", {"launch", "channel"}, {"channel"}),
+    ("release channel", {"release", "channel"}, {"channel"}),
+    ("storage backend", {"storage", "backend"}, {"backend", "database", "sqlite", "postgres", "pgvector"}),
+    ("retrieval engine", {"retrieval", "engine"}, {"engine", "fts", "vector", "pgvector", "sqlite", "hybrid"}),
+    ("primary connector", {"primary", "connector"}, {"connector"}),
+    ("default connector", {"default", "connector"}, {"connector"}),
+    ("date", {"date"}, {"date", "deadline", "timing", "schedule"}),
+    ("deadline", {"deadline"}, {"date", "deadline", "timing", "schedule"}),
+    ("budget", {"budget"}, {"budget", "cost", "price", "spend"}),
+    ("cost", {"cost"}, {"budget", "cost", "price", "spend"}),
+)
 QUERY_LEXICAL_FALLBACK_STOPWORDS = QUERY_FTS_STOPWORDS | {
     "a",
     "an",
@@ -391,15 +455,15 @@ SOURCE_CONNECTOR_CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "grok", "name": "Grok", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Grok account connector is required before this can be a primary source."},
     {"id": "poe", "name": "Poe", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Poe account connector is required before this can be a primary source."},
     {"id": "notebooklm", "name": "NotebookLM", "category": "AI chats", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct NotebookLM account connector is required before this can be a primary source."},
-    {"id": "gmail", "name": "Gmail", "category": "Email", "auth": "oauth", "live_status": "api_token", "scopes": ["gmail.readonly"], "notes": "Backend read-only Gmail sync works when a trusted OAuth token is already available; consumer Google sign-in remains planned."},
+    {"id": "gmail", "name": "Gmail", "category": "Email", "auth": "oauth", "live_status": "api_token", "scopes": ["gmail.readonly"], "notes": "Read-only Gmail sync works through browser Google sign-in when this build has OAuth credentials configured."},
     {"id": "apple-mail", "name": "Apple Mail", "category": "Email", "auth": "local_file", "live_status": "import_ready", "scopes": [], "notes": "Local Mail integration requires explicit app data access."},
-    {"id": "outlook", "name": "Outlook", "category": "Email", "auth": "oauth", "live_status": "api_token", "scopes": ["Mail.Read", "User.Read"], "notes": "Backend read-only Outlook mail sync works when a trusted Microsoft Graph token is already available; consumer Microsoft sign-in remains planned."},
+    {"id": "outlook", "name": "Outlook", "category": "Email", "auth": "oauth", "live_status": "api_token", "scopes": ["Mail.Read", "User.Read"], "notes": "Read-only Outlook mail sync works through browser Microsoft sign-in when this build has OAuth credentials configured."},
     {"id": "email", "name": "Email", "category": "Email", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Email connector coverage for local and account-backed mail sources."},
     {"id": "docs", "name": "Docs and writing", "category": "Docs", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Document connector coverage for notes, drafts, and writing."},
     {"id": "pdfs", "name": "PDFs", "category": "Docs", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "PDF connector coverage for readable documents."},
     {"id": "cloud-docs", "name": "Cloud docs", "category": "Docs", "auth": "export", "live_status": "import_ready", "scopes": [], "notes": "Cloud document connector coverage for Drive, OneDrive, and Dropbox Paper account sources."},
-    {"id": "notion", "name": "Notion", "category": "Docs", "auth": "api_token", "live_status": "api_token", "scopes": ["read_content"], "notes": "Read-only Notion page sync works with an internal integration token shared into selected pages."},
-    {"id": "google-drive", "name": "Google Drive", "category": "Docs", "auth": "oauth", "live_status": "api_token", "scopes": ["drive.readonly"], "notes": "Backend read-only Drive sync works when a trusted OAuth token is already available; consumer Google sign-in remains planned."},
+    {"id": "notion", "name": "Notion", "category": "Docs", "auth": "oauth", "live_status": "api_token", "scopes": ["read_content"], "notes": "Read-only Notion page sync works through browser Notion sign-in when this build has OAuth credentials configured."},
+    {"id": "google-drive", "name": "Google Drive", "category": "Docs", "auth": "oauth", "live_status": "api_token", "scopes": ["drive.readonly"], "notes": "Read-only Drive sync works through browser Google sign-in when this build has OAuth credentials configured."},
     {"id": "google-docs", "name": "Google Docs", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["drive.readonly", "documents.readonly"], "notes": "Drive and Docs account sync is the intended connector path."},
     {"id": "google-keep", "name": "Google Keep", "category": "Notes", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Google Keep account connector is required before this can be a primary source."},
     {"id": "microsoft-365", "name": "Microsoft 365", "category": "Docs", "auth": "oauth", "live_status": "planned", "scopes": ["Files.Read", "Mail.Read", "Calendars.Read"], "notes": "Microsoft 365 account sync is the intended connector path."},
@@ -501,6 +565,25 @@ COMMON_CONNECTOR_SETUP_FIELDS: tuple[dict[str, Any], ...] = (
     {"name": "account_label", "label": "Account label", "kind": "text", "required": False, "secret": False, "max_length": 160},
     {"name": "account_identifier", "label": "Account identifier", "kind": "text", "required": False, "secret": False, "max_length": 240},
 )
+
+GOOGLE_OAUTH_REFRESH_SETUP_FIELDS: tuple[dict[str, Any], ...] = (
+    {"name": "refresh_token", "label": "OAuth refresh token", "kind": "secret", "required": False, "secret": True, "max_length": 4000},
+    {"name": "access_token_expires_at", "label": "Access token expires at", "kind": "timestamp", "required": False, "secret": False, "max_length": 80},
+    {"name": "client_id", "label": "OAuth client ID", "kind": "secret", "required": False, "secret": True, "max_length": 4000},
+    {"name": "client_secret", "label": "OAuth client secret", "kind": "secret", "required": False, "secret": True, "max_length": 4000},
+    {"name": "token_endpoint", "label": "OAuth token endpoint", "kind": "url", "required": False, "secret": False, "default": "https://oauth2.googleapis.com/token", "max_length": 500},
+    {"name": "scope", "label": "OAuth scope", "kind": "text", "required": False, "secret": False, "max_length": 1000},
+)
+
+MICROSOFT_OAUTH_REFRESH_SETUP_FIELDS: tuple[dict[str, Any], ...] = (
+    {"name": "refresh_token", "label": "OAuth refresh token", "kind": "secret", "required": False, "secret": True, "max_length": 4000},
+    {"name": "access_token_expires_at", "label": "Access token expires at", "kind": "timestamp", "required": False, "secret": False, "max_length": 80},
+    {"name": "client_id", "label": "OAuth client ID", "kind": "secret", "required": False, "secret": True, "max_length": 4000},
+    {"name": "client_secret", "label": "OAuth client secret", "kind": "secret", "required": False, "secret": True, "max_length": 4000},
+    {"name": "token_endpoint", "label": "OAuth token endpoint", "kind": "url", "required": False, "secret": False, "default": "https://login.microsoftonline.com/common/oauth2/v2.0/token", "max_length": 500},
+    {"name": "scope", "label": "OAuth scope", "kind": "text", "required": False, "secret": False, "max_length": 1000},
+)
+
 CONNECTOR_SETUP_BLUEPRINTS: dict[str, dict[str, Any]] = {
     "obsidian": {
         "mode": "native-local-connector",
@@ -516,12 +599,14 @@ CONNECTOR_SETUP_BLUEPRINTS: dict[str, dict[str, Any]] = {
     "github": {
         "mode": "native-token-connector",
         "endpoint": "/v1/connectors/github/sync",
+        "discovery_endpoint": "/v1/connectors/github/discover",
+        "discovery_target_field": "repositories",
         "default_cursor_name": "issues",
         "default_max_records": 100,
         "max_records_limit": 500,
         "credential_fields": [{"name": "token", "label": "GitHub token", "kind": "secret", "required": True, "secret": True, "max_length": 4000}],
         "configuration_fields": [
-            {"name": "repositories", "label": "Repositories", "kind": "string_list", "required": True, "secret": False, "max_items": 25},
+            {"name": "repositories", "label": "Repositories", "kind": "string_list", "required": True, "secret": False, "max_items": 25, "options_endpoint": "/v1/connectors/github/discover", "option_label_key": "label", "option_value_key": "sync_value"},
             {"name": "include_comments", "label": "Include comments and reviews", "kind": "boolean", "required": False, "default": True, "secret": False},
             {"name": "max_comments_per_item", "label": "Max comments per item", "kind": "integer", "required": False, "default": 10, "minimum": 0, "maximum": 50, "secret": False},
             {"name": "since", "label": "Sync after", "kind": "timestamp", "required": False, "secret": False, "max_length": 80},
@@ -531,10 +616,17 @@ CONNECTOR_SETUP_BLUEPRINTS: dict[str, dict[str, Any]] = {
     "gmail": {
         "mode": "native-token-connector",
         "endpoint": "/v1/connectors/gmail/sync",
+        "managed_oauth_shipped": True,
+        "oauth_provider": "google",
+        "oauth_start_endpoint": "/v1/connectors/google/oauth/start",
+        "oauth_complete_endpoint": "/v1/connectors/google/oauth/complete",
         "default_cursor_name": "messages",
         "default_max_records": 50,
         "max_records_limit": 200,
-        "credential_fields": [{"name": "access_token", "label": "Gmail access token", "kind": "secret", "required": True, "secret": True, "max_length": 4000}],
+        "credential_fields": [
+            {"name": "access_token", "label": "Gmail access token", "kind": "secret", "required": True, "secret": True, "max_length": 4000},
+            *GOOGLE_OAUTH_REFRESH_SETUP_FIELDS,
+        ],
         "configuration_fields": [
             {"name": "query", "label": "Gmail query", "kind": "text", "required": False, "secret": False, "max_length": 500},
             {"name": "label_ids", "label": "Label IDs", "kind": "string_list", "required": False, "secret": False, "max_items": 20},
@@ -546,10 +638,17 @@ CONNECTOR_SETUP_BLUEPRINTS: dict[str, dict[str, Any]] = {
     "google-drive": {
         "mode": "native-token-connector",
         "endpoint": "/v1/connectors/google-drive/sync",
+        "managed_oauth_shipped": True,
+        "oauth_provider": "google",
+        "oauth_start_endpoint": "/v1/connectors/google/oauth/start",
+        "oauth_complete_endpoint": "/v1/connectors/google/oauth/complete",
         "default_cursor_name": "files",
         "default_max_records": 50,
         "max_records_limit": 200,
-        "credential_fields": [{"name": "access_token", "label": "Google Drive access token", "kind": "secret", "required": True, "secret": True, "max_length": 4000}],
+        "credential_fields": [
+            {"name": "access_token", "label": "Google Drive access token", "kind": "secret", "required": True, "secret": True, "max_length": 4000},
+            *GOOGLE_OAUTH_REFRESH_SETUP_FIELDS,
+        ],
         "configuration_fields": [
             {"name": "query", "label": "Drive query", "kind": "text", "required": False, "secret": False, "max_length": 500},
             {"name": "mime_types", "label": "MIME types", "kind": "string_list", "required": False, "secret": False, "max_items": 20},
@@ -561,10 +660,17 @@ CONNECTOR_SETUP_BLUEPRINTS: dict[str, dict[str, Any]] = {
     "outlook": {
         "mode": "native-token-connector",
         "endpoint": "/v1/connectors/outlook/sync",
+        "managed_oauth_shipped": True,
+        "oauth_provider": "microsoft",
+        "oauth_start_endpoint": "/v1/connectors/oauth/start",
+        "oauth_complete_endpoint": "/v1/connectors/oauth/complete",
         "default_cursor_name": "messages",
         "default_max_records": 50,
         "max_records_limit": 200,
-        "credential_fields": [{"name": "access_token", "label": "Microsoft Graph access token", "kind": "secret", "required": True, "secret": True, "max_length": 4000}],
+        "credential_fields": [
+            {"name": "access_token", "label": "Microsoft Graph access token", "kind": "secret", "required": True, "secret": True, "max_length": 4000},
+            *MICROSOFT_OAUTH_REFRESH_SETUP_FIELDS,
+        ],
         "configuration_fields": [
             {"name": "query", "label": "Outlook query", "kind": "text", "required": False, "secret": False, "max_length": 1000},
             {"name": "include_body", "label": "Include message body", "kind": "boolean", "required": False, "default": True, "secret": False},
@@ -575,12 +681,14 @@ CONNECTOR_SETUP_BLUEPRINTS: dict[str, dict[str, Any]] = {
     "slack": {
         "mode": "native-token-connector",
         "endpoint": "/v1/connectors/slack/sync",
+        "discovery_endpoint": "/v1/connectors/slack/discover",
+        "discovery_target_field": "channels",
         "default_cursor_name": "messages",
         "default_max_records": 100,
         "max_records_limit": 200,
         "credential_fields": [{"name": "token", "label": "Slack token", "kind": "secret", "required": True, "secret": True, "max_length": 4000}],
         "configuration_fields": [
-            {"name": "channels", "label": "Channel IDs", "kind": "string_list", "required": True, "secret": False, "max_items": 20},
+            {"name": "channels", "label": "Channels", "kind": "string_list", "required": True, "secret": False, "max_items": 20, "options_endpoint": "/v1/connectors/slack/discover", "option_label_key": "label", "option_value_key": "sync_value"},
             {"name": "workspace_url", "label": "Workspace URL", "kind": "url", "required": False, "secret": False, "max_length": 500},
             {"name": "since", "label": "Sync after", "kind": "timestamp", "required": False, "secret": False, "max_length": 80},
             {"name": "api_base_url", "label": "API base URL", "kind": "url", "required": False, "secret": False, "max_length": 500},
@@ -673,6 +781,10 @@ CONNECTOR_SETUP_BLUEPRINTS: dict[str, dict[str, Any]] = {
     "notion": {
         "mode": "native-token-connector",
         "endpoint": "/v1/connectors/notion/sync",
+        "managed_oauth_shipped": True,
+        "oauth_provider": "notion",
+        "oauth_start_endpoint": "/v1/connectors/oauth/start",
+        "oauth_complete_endpoint": "/v1/connectors/oauth/complete",
         "default_cursor_name": "pages",
         "default_max_records": 50,
         "max_records_limit": 200,
@@ -753,6 +865,28 @@ SENSITIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 SENSITIVE_KEY_PATTERN = re.compile(
     r"(?i)^(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|client[_-]?id|client[_-]?secret|secret|password|passwd|pwd)$"
+)
+SOURCE_ACCOUNT_METADATA_SAFE_SECRET_LIKE_KEYS = frozenset(
+    {
+        "api_token_configured",
+        "credential_ref",
+        "refresh_token_configured",
+        "token_configured",
+    }
+)
+SOURCE_ACCOUNT_METADATA_SECRET_KEY_PATTERN = re.compile(
+    r"(?i)(?:^|[_-])(?:api[_-]?key|api[_-]?token|access[_-]?token|auth[_-]?token|refresh[_-]?token|client[_-]?id|client[_-]?secret|private[_-]?key|secret|password|passwd|pwd|token|credential|credentials)(?:$|[_-])"
+)
+SOURCE_ACCOUNT_METADATA_SECRET_VALUE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"), "[REDACTED_OPENAI_KEY]"),
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"), "[REDACTED_GITHUB_TOKEN]"),
+    (re.compile(r"\b(?:xox[baprs]-[A-Za-z0-9-]{16,})\b"), "[REDACTED_SLACK_TOKEN]"),
+    (
+        re.compile(
+            r"(?i)\b(api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|client[_-]?id|client[_-]?secret|secret|password|passwd|pwd)\s*[:=]\s*['\"]?[^'\"\s,;]{8,}"
+        ),
+        r"\1=[REDACTED_SECRET]",
+    ),
 )
 
 LOCAL_PATH_PATTERN = re.compile(
@@ -1024,13 +1158,19 @@ def _connector_connection_setup(item: dict[str, Any], service_baseline: dict[str
     mode = str(blueprint.get("mode") or _connector_primary_beta_path(item))
     credential_fields = _copy_setup_fields(blueprint.get("credential_fields") or [])
     configuration_fields = _copy_setup_fields(blueprint.get("configuration_fields") or [])
+    managed_oauth_shipped = bool(blueprint.get("managed_oauth_shipped"))
     return {
         "available": bool(service_baseline.get("live_sync")),
         "mode": mode,
         "method": "POST",
         "endpoint": blueprint.get("endpoint"),
+        "discovery_endpoint": blueprint.get("discovery_endpoint"),
+        "discovery_target_field": blueprint.get("discovery_target_field"),
         "unavailable_reason": None,
-        "managed_oauth_shipped": False,
+        "managed_oauth_shipped": managed_oauth_shipped,
+        "oauth_provider": blueprint.get("oauth_provider") if managed_oauth_shipped else None,
+        "oauth_start_endpoint": blueprint.get("oauth_start_endpoint") if managed_oauth_shipped else None,
+        "oauth_complete_endpoint": blueprint.get("oauth_complete_endpoint") if managed_oauth_shipped else None,
         "credential_storage": "local_vault_credentials" if service_baseline.get("live_sync") else "none",
         "credential_retained_on_disconnect": bool(service_baseline.get("live_sync")),
         "disconnect_behavior": "pause_sync_keep_local_data_and_credentials" if service_baseline.get("live_sync") else "no_live_sync_configuration",
@@ -1076,7 +1216,7 @@ def _bounded_int(value: Any, *, minimum: int, maximum: int) -> int | None:
     return parsed
 
 
-def _request_oauth_token_refresh(token_endpoint: str, form: dict[str, str]) -> dict[str, Any]:
+def _request_oauth_token(token_endpoint: str, form: dict[str, str]) -> dict[str, Any]:
     request = Request(
         token_endpoint,
         data=urlencode(form).encode("utf-8"),
@@ -1085,6 +1225,35 @@ def _request_oauth_token_refresh(token_endpoint: str, form: dict[str, str]) -> d
     )
     with urlopen(request, timeout=30) as response:  # noqa: S310 - caller supplies trusted OAuth token endpoint.
         return json.loads(response.read().decode("utf-8"))
+
+
+def _request_basic_json_oauth_token(
+    token_endpoint: str,
+    payload: dict[str, Any],
+    *,
+    client_id: str,
+    client_secret: str,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    credentials = f"{client_id}:{client_secret}".encode("utf-8")
+    request_headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Basic {base64.b64encode(credentials).decode('ascii')}",
+    }
+    request_headers.update(headers or {})
+    request = Request(
+        token_endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=request_headers,
+        method="POST",
+    )
+    with urlopen(request, timeout=30) as response:  # noqa: S310 - caller supplies trusted OAuth token endpoint.
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _request_oauth_token_refresh(token_endpoint: str, form: dict[str, str]) -> dict[str, Any]:
+    return _request_oauth_token(token_endpoint, form)
 
 
 def _credential_access_token_expired(payload: dict[str, Any], *, now: datetime | None = None, skew_seconds: int = 60) -> bool:
@@ -1130,6 +1299,57 @@ def _oauth_refresh_credential_fields(payload: dict[str, Any]) -> dict[str, Any]:
 
 SCHEDULED_CREDENTIAL_SYNC_SOURCES = {"github", "gmail", "outlook", "google-drive", "readwise", "raindrop", "zotero", "linear", "notion", "slack", "calendar", "jira"}
 OAUTH_REFRESH_CREDENTIAL_SOURCES = {"gmail", "google-drive", "outlook"}
+GOOGLE_OAUTH_AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_OAUTH_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+GOOGLE_OAUTH_DEFAULT_REDIRECT_URI = "http://127.0.0.1:8766/v1/connectors/google/oauth/callback"
+GOOGLE_OAUTH_CONNECTOR_SCOPES: dict[str, tuple[str, ...]] = {
+    "gmail": ("https://www.googleapis.com/auth/gmail.readonly",),
+    "google-drive": ("https://www.googleapis.com/auth/drive.readonly",),
+}
+GOOGLE_OAUTH_CONNECTOR_DEFAULTS: dict[str, dict[str, Any]] = {
+    "gmail": {
+        "account_label": "Gmail",
+        "account_identifier": "google-gmail",
+        "api_base_url": "https://gmail.googleapis.com/gmail/v1",
+        "cursor_name": "messages",
+    },
+    "google-drive": {
+        "account_label": "Google Drive",
+        "account_identifier": "google-drive",
+        "api_base_url": "https://www.googleapis.com/drive/v3",
+        "cursor_name": "files",
+    },
+}
+MANAGED_OAUTH_AUTHORIZATION_ENDPOINTS: dict[str, str] = {
+    "notion": "https://api.notion.com/v1/oauth/authorize",
+    "outlook": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+}
+MANAGED_OAUTH_TOKEN_ENDPOINTS: dict[str, str] = {
+    "notion": "https://api.notion.com/v1/oauth/token",
+    "outlook": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+}
+MANAGED_OAUTH_DEFAULT_REDIRECT_URI = "http://127.0.0.1:8766/v1/connectors/oauth/callback"
+MANAGED_OAUTH_CONNECTOR_SCOPES: dict[str, tuple[str, ...]] = {
+    "notion": (),
+    "outlook": ("offline_access", "User.Read", "Mail.Read"),
+}
+MANAGED_OAUTH_CONNECTOR_DEFAULTS: dict[str, dict[str, Any]] = {
+    "notion": {
+        "provider": "notion",
+        "account_label": "Notion",
+        "account_identifier": "notion-workspace",
+        "api_base_url": "https://api.notion.com/v1",
+        "cursor_name": "pages",
+        "notion_version": "2026-03-11",
+    },
+    "outlook": {
+        "provider": "microsoft",
+        "account_label": "Outlook",
+        "account_identifier": "microsoft-outlook",
+        "api_base_url": "https://graph.microsoft.com/v1.0",
+        "cursor_name": "messages",
+    },
+}
 SOURCE_SYNC_CURSOR_NAMES = {
     "obsidian": "local-folder",
     "gmail": "messages",
@@ -1149,6 +1369,131 @@ SOURCE_SYNC_CURSOR_NAMES = {
 
 def _default_source_sync_cursor_name(source: str) -> str:
     return SOURCE_SYNC_CURSOR_NAMES.get(_normalize_source_key(source), "default")
+
+
+def _google_oauth_source(source: str) -> str:
+    normalized = _normalize_source_key(source)
+    if normalized in {"drive", "google-docs"}:
+        normalized = "google-drive"
+    if normalized not in GOOGLE_OAUTH_CONNECTOR_SCOPES:
+        raise ValueError("Google OAuth is only supported for gmail and google-drive")
+    return normalized
+
+
+def _google_oauth_env_prefix(source: str) -> str:
+    return "CORTEX_GMAIL" if source == "gmail" else "CORTEX_GOOGLE_DRIVE"
+
+
+def _google_oauth_config_value(source: str, name: str, explicit: str | None = None) -> str:
+    value = str(explicit or "").strip()
+    if value:
+        return value
+    specific = os.environ.get(f"{_google_oauth_env_prefix(source)}_OAUTH_{name}", "")
+    if specific.strip():
+        return specific.strip()
+    return os.environ.get(f"CORTEX_GOOGLE_OAUTH_{name}", "").strip()
+
+
+def _google_oauth_redirect_uri(source: str, explicit: str | None = None) -> str:
+    return _google_oauth_config_value(source, "REDIRECT_URI", explicit) or GOOGLE_OAUTH_DEFAULT_REDIRECT_URI
+
+
+def _google_oauth_scopes(source: str, scopes: list[str] | None = None) -> list[str]:
+    allowed = set(GOOGLE_OAUTH_CONNECTOR_SCOPES[source])
+    requested = [str(scope or "").strip() for scope in (scopes or []) if str(scope or "").strip()]
+    if not requested:
+        return list(GOOGLE_OAUTH_CONNECTOR_SCOPES[source])
+    disallowed = sorted(scope for scope in requested if scope not in allowed)
+    if disallowed:
+        raise ValueError(f"Unsupported Google OAuth scope for {source}: {', '.join(disallowed)}")
+    return list(dict.fromkeys(requested))
+
+
+def _managed_oauth_source(source: str) -> str:
+    normalized = _normalize_source_key(source)
+    if normalized not in MANAGED_OAUTH_CONNECTOR_DEFAULTS:
+        raise ValueError("Managed OAuth is only supported for notion and outlook")
+    return normalized
+
+
+def _managed_oauth_env_prefix(source: str) -> str:
+    return f"CORTEX_{source.replace('-', '_').upper()}"
+
+
+def _managed_oauth_config_value(source: str, name: str, explicit: str | None = None) -> str:
+    value = str(explicit or "").strip()
+    if value:
+        return value
+    prefixes = [_managed_oauth_env_prefix(source)]
+    provider = str((MANAGED_OAUTH_CONNECTOR_DEFAULTS.get(source) or {}).get("provider") or "").strip()
+    if provider:
+        provider_prefix = f"CORTEX_{provider.replace('-', '_').upper()}"
+        if provider_prefix not in prefixes:
+            prefixes.append(provider_prefix)
+    for prefix in prefixes:
+        specific = os.environ.get(f"{prefix}_OAUTH_{name}", "")
+        if specific.strip():
+            return specific.strip()
+    return os.environ.get(f"CORTEX_MANAGED_OAUTH_{name}", "").strip()
+
+
+def _managed_oauth_redirect_uri(source: str, explicit: str | None = None) -> str:
+    return _managed_oauth_config_value(source, "REDIRECT_URI", explicit) or MANAGED_OAUTH_DEFAULT_REDIRECT_URI
+
+
+def _managed_oauth_scopes(source: str, scopes: list[str] | None = None) -> list[str]:
+    allowed = set(MANAGED_OAUTH_CONNECTOR_SCOPES[source])
+    requested = [str(scope or "").strip() for scope in (scopes or []) if str(scope or "").strip()]
+    if not requested:
+        return list(MANAGED_OAUTH_CONNECTOR_SCOPES[source])
+    if allowed:
+        disallowed = sorted(scope for scope in requested if scope not in allowed)
+        if disallowed:
+            raise ValueError(f"Unsupported managed OAuth scope for {source}: {', '.join(disallowed)}")
+    return list(dict.fromkeys(requested))
+
+
+def _decode_oauth_jwt_payload(token: str) -> dict[str, Any]:
+    pieces = str(token or "").split(".")
+    if len(pieces) < 2:
+        return {}
+    payload = pieces[1]
+    padding = "=" * (-len(payload) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(f"{payload}{padding}".encode("ascii"))
+        parsed = json.loads(decoded.decode("utf-8"))
+    except (ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _microsoft_oauth_claims(payload: dict[str, Any]) -> dict[str, Any]:
+    claims = payload.get("claims") if isinstance(payload.get("claims"), dict) else {}
+    if claims:
+        return claims
+    id_token_claims = _decode_oauth_jwt_payload(str(payload.get("id_token") or ""))
+    return id_token_claims if id_token_claims else {}
+
+
+def _microsoft_oauth_account_identifier(payload: dict[str, Any]) -> str:
+    claims = _microsoft_oauth_claims(payload)
+    for key in ("preferred_username", "email", "upn", "unique_name"):
+        value = str(claims.get(key) or payload.get(key) or "").strip()
+        if value:
+            return value[:240]
+    oid = str(claims.get("oid") or claims.get("sub") or payload.get("account_identifier") or "").strip()
+    return oid[:240]
+
+
+def _microsoft_oauth_account_label(payload: dict[str, Any]) -> str:
+    claims = _microsoft_oauth_claims(payload)
+    name = str(claims.get("name") or payload.get("name") or "").strip()
+    identifier = _microsoft_oauth_account_identifier(payload)
+    if name and identifier:
+        return f"Outlook: {name}"[:160]
+    if identifier:
+        return f"Outlook: {identifier}"[:160]
+    return ""
 
 
 def _source_sync_interval_seconds(
@@ -1201,6 +1546,34 @@ def _with_source_credential_ref(metadata: dict[str, Any], account_id: str, enabl
     if not enabled:
         return metadata
     return {**metadata, "credential_ref": _source_credential_ref(account_id)}
+
+
+def _source_account_metadata_secret_key(key: Any) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(key or "").strip().lower()).strip("_")
+    if not normalized or normalized in SOURCE_ACCOUNT_METADATA_SAFE_SECRET_LIKE_KEYS:
+        return False
+    return bool(SOURCE_ACCOUNT_METADATA_SECRET_KEY_PATTERN.search(normalized))
+
+
+def _sanitize_source_account_metadata(value: Any) -> Any:
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for key, child in value.items():
+            key_text = str(key or "").strip()
+            if not key_text or _source_account_metadata_secret_key(key_text):
+                continue
+            sanitized[key_text] = _sanitize_source_account_metadata(child)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_source_account_metadata(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_source_account_metadata(item) for item in value]
+    if isinstance(value, str):
+        redacted = value
+        for pattern, replacement in SOURCE_ACCOUNT_METADATA_SECRET_VALUE_PATTERNS:
+            redacted = pattern.sub(replacement, redacted)
+        return redacted
+    return value
 
 
 def _connector_failure_summary(errors: list[dict[str, Any]] | None, *, now: datetime | None = None) -> dict[str, Any] | None:
@@ -1378,7 +1751,11 @@ def _connector_permission_requirements(item: dict[str, Any]) -> list[str]:
     elif auth == "api_token":
         requirements = ["First-100: read-only account token required for direct sync."]
     elif auth == "oauth":
-        requirements = ["First-100: account sign-in planned."]
+        blueprint = CONNECTOR_SETUP_BLUEPRINTS.get(_normalize_source_key(item.get("id"))) or {}
+        if blueprint.get("managed_oauth_shipped"):
+            requirements = ["First-100: browser account sign-in for read-only sync."]
+        else:
+            requirements = ["First-100: account sign-in planned."]
     else:
         requirements = ["First-100: connected source data."]
 
@@ -1396,10 +1773,13 @@ def _connector_first_100_note(item: dict[str, Any]) -> str:
     connector_id = _normalize_source_key(item.get("id"))
     live_status = str(item.get("live_status") or "").lower()
     readiness_status = _connector_readiness_status(item)
+    managed_oauth_shipped = bool((CONNECTOR_SETUP_BLUEPRINTS.get(connector_id) or {}).get("managed_oauth_shipped"))
     if _connector_primary_beta(item):
         prefix = "First-100: native local sync is the primary source path."
     elif connector_id in BASELINE_10K_CONNECTOR_IDS and live_status in {"local_api", "local_only"}:
         prefix = "First-100: native local sync is available from connector settings; not primary UI."
+    elif managed_oauth_shipped:
+        prefix = "First-100: browser sign-in sync is available from Connections & Privacy; not primary UI."
     elif readiness_status == "live-planned":
         prefix = "First-100: account sign-in is the intended source path; recovery intake is not primary."
     elif readiness_status == "token-ready":
@@ -1748,6 +2128,9 @@ SOURCE_RECORD_REFRESH_METADATA_KEYS = {
     "repository",
     "issue",
     "url",
+    "canvas_node_id",
+    "canvas_node_type",
+    "canvas_node_edges",
 }
 
 
@@ -1794,6 +2177,32 @@ def _source_record_metadata_topics(metadata: dict[str, Any]) -> list[str]:
             if key == "repository" and "/" in value:
                 topics.extend(part.strip() for part in value.split("/") if part.strip())
     return _unique_preserving_order(topic for topic in topics if topic)[:12]
+
+
+def _normalize_obsidian_wikilink_target(value: str) -> str:
+    target = str(value or "").strip().replace("\\", "/")
+    target = target.split("#", 1)[0].strip()
+    while target.startswith("./"):
+        target = target[2:]
+    return target.strip("/")
+
+
+def _obsidian_wikilink_candidate_paths(value: str) -> list[str]:
+    target = _normalize_obsidian_wikilink_target(value)
+    if not target:
+        return []
+    candidates = [target]
+    suffix = Path(target).suffix.lower()
+    if not suffix:
+        candidates.extend(f"{target}.{extension}" for extension in ("md", "markdown", "txt"))
+    return _unique_preserving_order(candidate.lower() for candidate in candidates if candidate)
+
+
+def _obsidian_wikilink_target_basename(value: str) -> str:
+    target = _normalize_obsidian_wikilink_target(value)
+    if not target:
+        return ""
+    return Path(target).stem.strip()
 
 
 def _unique_preserving_order(values: Iterable[Any]) -> list[str]:
@@ -2931,6 +3340,30 @@ class CortexStore:
             "needs_attention": sum(1 for row in rows if row["status"] == "needs_attention"),
             "active_memories": sum(int(row["active_memories"]) for row in rows),
         }
+        baseline_rows = [row for row in rows if row["baseline_10k"]]
+        summary.update(
+            {
+                "baseline_10k_ready_for_beta": all(
+                    row["beta_status"] == "ready"
+                    and row["sync_plan"]["mode"] in {"local_app_autosync", "hosted_managed_sync"}
+                    and row["sync_plan"]["mode"] != "planned_account_sync"
+                    for row in baseline_rows
+                ),
+                "baseline_10k_service_ids": sorted(row["source"] for row in baseline_rows),
+                "baseline_10k_primary_ui_ids": sorted(row["source"] for row in baseline_rows if row["show_in_primary_ui"]),
+                "baseline_10k_advanced_sync_ids": sorted(row["source"] for row in baseline_rows if not row["show_in_primary_ui"]),
+                "baseline_10k_token_sync_ids": sorted(
+                    row["source"]
+                    for row in baseline_rows
+                    if row["primary_beta_path"] == "native-token-connector"
+                ),
+                "baseline_10k_local_sync_ids": sorted(
+                    row["source"]
+                    for row in baseline_rows
+                    if row["primary_beta_path"] == "native-local-connector"
+                ),
+            }
+        )
         recommendations: list[str] = []
         if summary["needs_attention"]:
             recommendations.append("Resolve source account or sync errors before relying on those memories.")
@@ -3086,6 +3519,435 @@ class CortexStore:
         if plan.get("managed_sync_status") in {"due", "waiting_for_first_sync", "healthy", "not_configured"}:
             plan["managed_sync_status"] = "needs_attention"
         return plan
+
+    def start_google_oauth(
+        self,
+        source: str,
+        *,
+        redirect_uri: str | None = None,
+        state: str | None = None,
+        client_id: str | None = None,
+        code_challenge: str | None = None,
+        code_challenge_method: str | None = None,
+        scopes: list[str] | None = None,
+    ) -> dict[str, Any]:
+        normalized_source = _google_oauth_source(source)
+        resolved_client_id = _google_oauth_config_value(normalized_source, "CLIENT_ID", client_id)
+        if not resolved_client_id:
+            raise ValueError("Google OAuth client ID is not configured")
+        resolved_redirect_uri = _google_oauth_redirect_uri(normalized_source, redirect_uri)
+        if not resolved_redirect_uri:
+            raise ValueError("Google OAuth redirect URI is not configured")
+        resolved_state = str(state or "").strip() or secrets.token_urlsafe(24)
+        resolved_scopes = _google_oauth_scopes(normalized_source, scopes)
+        normalized_code_challenge = str(code_challenge or "").strip()
+        normalized_challenge_method = str(code_challenge_method or "").strip() or ("S256" if normalized_code_challenge else "")
+        if normalized_code_challenge:
+            if normalized_challenge_method not in {"S256", "plain"}:
+                raise ValueError("Google OAuth code challenge method must be S256 or plain")
+        query = {
+            "client_id": resolved_client_id,
+            "redirect_uri": resolved_redirect_uri,
+            "response_type": "code",
+            "scope": " ".join(resolved_scopes),
+            "access_type": "offline",
+            "prompt": "consent",
+            "include_granted_scopes": "true",
+            "state": resolved_state,
+        }
+        if normalized_code_challenge:
+            query["code_challenge"] = normalized_code_challenge
+            query["code_challenge_method"] = normalized_challenge_method
+        return {
+            "source": normalized_source,
+            "provider": "google",
+            "authorization_url": f"{GOOGLE_OAUTH_AUTHORIZATION_ENDPOINT}?{urlencode(query)}",
+            "authorization_endpoint": GOOGLE_OAUTH_AUTHORIZATION_ENDPOINT,
+            "token_endpoint": GOOGLE_OAUTH_TOKEN_ENDPOINT,
+            "redirect_uri": resolved_redirect_uri,
+            "state": resolved_state,
+            "scopes": resolved_scopes,
+            "access_type": "offline",
+        }
+
+    def complete_google_oauth(
+        self,
+        user_id: str,
+        source: str,
+        *,
+        code: str,
+        redirect_uri: str | None = None,
+        state: str | None = None,
+        expected_state: str | None = None,
+        client_id: str | None = None,
+        client_secret: str | None = None,
+        token_endpoint: str | None = None,
+        code_verifier: str | None = None,
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        query: str | None = None,
+        label_ids: list[str] | None = None,
+        mime_types: list[str] | None = None,
+        include_body: bool = True,
+        include_content: bool = True,
+        request_token: Any | None = None,
+    ) -> dict[str, Any]:
+        normalized_source = _google_oauth_source(source)
+        normalized_state = str(state or "").strip()
+        normalized_expected_state = str(expected_state or "").strip()
+        if normalized_expected_state and normalized_state != normalized_expected_state:
+            raise ValueError("Google OAuth state did not match")
+        normalized_code = str(code or "").strip()
+        if not normalized_code:
+            raise ValueError("Google OAuth authorization code is required")
+        resolved_client_id = _google_oauth_config_value(normalized_source, "CLIENT_ID", client_id)
+        resolved_client_secret = _google_oauth_config_value(normalized_source, "CLIENT_SECRET", client_secret)
+        resolved_redirect_uri = _google_oauth_redirect_uri(normalized_source, redirect_uri)
+        resolved_token_endpoint = str(token_endpoint or "").strip() or _google_oauth_config_value(normalized_source, "TOKEN_ENDPOINT") or GOOGLE_OAUTH_TOKEN_ENDPOINT
+        if not resolved_client_id:
+            raise ValueError("Google OAuth client ID is not configured")
+        normalized_code_verifier = str(code_verifier or "").strip()
+        if not resolved_client_secret and not normalized_code_verifier:
+            raise ValueError("Google OAuth client secret or PKCE verifier is required")
+        defaults = GOOGLE_OAUTH_CONNECTOR_DEFAULTS[normalized_source]
+        identifier = (account_identifier or defaults["account_identifier"]).strip()[:240]
+        resolved_account_id = (source_account_id or "").strip() or stable_id("sacct_", f"{user_id}:{normalized_source}:{identifier}")
+        existing_payload = self._read_source_account_credential_payload(user_id, resolved_account_id)
+        form = {
+            "grant_type": "authorization_code",
+            "code": normalized_code,
+            "client_id": resolved_client_id,
+            "redirect_uri": resolved_redirect_uri,
+        }
+        if resolved_client_secret:
+            form["client_secret"] = resolved_client_secret
+        if normalized_code_verifier:
+            form["code_verifier"] = normalized_code_verifier
+        requester = request_token or _request_oauth_token
+        try:
+            token_payload = requester(resolved_token_endpoint, form)
+        except Exception as exc:
+            raise ValueError(redact_error_message(exc, [normalized_code, resolved_client_id, resolved_client_secret, normalized_code_verifier])) from exc
+        if not isinstance(token_payload, dict):
+            raise ValueError("Google OAuth token response was not an object")
+        access_token = str(token_payload.get("access_token") or "").strip()
+        if not access_token:
+            raise ValueError("Google OAuth token response did not include an access token")
+        refresh_token = str(token_payload.get("refresh_token") or existing_payload.get("refresh_token") or "").strip()
+        if not refresh_token:
+            raise ValueError("Google OAuth token response did not include a refresh token; reconnect with consent")
+        refreshed_at = datetime.now(timezone.utc).replace(microsecond=0)
+        expires_at = _oauth_refresh_expires_at(token_payload, now=refreshed_at)
+        token_scope = str(token_payload.get("scope") or " ".join(GOOGLE_OAUTH_CONNECTOR_SCOPES[normalized_source])).strip()
+        label = (account_label or defaults["account_label"]).strip()[:160]
+        metadata: dict[str, Any] = _with_source_credential_ref(
+            {
+                "connector": normalized_source,
+                "oauth_provider": "google",
+                "managed_oauth": True,
+                "token_configured": True,
+                "refresh_token_configured": True,
+                "scope": token_scope,
+                "scopes": token_scope.split(),
+                "token_endpoint": resolved_token_endpoint,
+                "api_base_url": defaults["api_base_url"],
+                "content_sync_enabled": bool(include_body if normalized_source == "gmail" else include_content),
+                "oauth_connected_at": refreshed_at.isoformat().replace("+00:00", "Z"),
+            },
+            resolved_account_id,
+            True,
+        )
+        if normalized_source == "gmail":
+            normalized_label_ids = [str(label_id).strip() for label_id in (label_ids or []) if str(label_id).strip()]
+            if query:
+                metadata["query"] = str(query).strip()
+                metadata["query_configured"] = True
+            if normalized_label_ids:
+                metadata["label_ids"] = normalized_label_ids
+        else:
+            normalized_mime_types = [str(mime).strip() for mime in (mime_types or []) if str(mime).strip()]
+            if query:
+                metadata["query"] = str(query).strip()
+                metadata["query_configured"] = True
+            if normalized_mime_types:
+                metadata["mime_types"] = normalized_mime_types
+        account = self.upsert_source_account(
+            user_id,
+            source=normalized_source,
+            account_label=label,
+            account_identifier=identifier,
+            connection_type="oauth_token",
+            status="connected",
+            auth_state="healthy",
+            policy={"review_required": True, "allow_ai_context": True},
+            metadata=metadata,
+            account_id=resolved_account_id,
+        )
+        credential_payload: dict[str, Any] = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_endpoint": resolved_token_endpoint,
+            "client_id": resolved_client_id,
+            "scope": token_scope,
+            "oauth_refreshed_at": refreshed_at.isoformat().replace("+00:00", "Z"),
+            "api_base_url": defaults["api_base_url"],
+        }
+        if resolved_client_secret:
+            credential_payload["client_secret"] = resolved_client_secret
+        if expires_at:
+            credential_payload["access_token_expires_at"] = expires_at
+        if normalized_source == "gmail":
+            credential_payload.update({
+                "query": str(query or ""),
+                "label_ids": metadata.get("label_ids") or [],
+                "include_body": bool(include_body),
+            })
+        else:
+            credential_payload.update({
+                "query": str(query or ""),
+                "mime_types": metadata.get("mime_types") or [],
+                "include_content": bool(include_content),
+            })
+        credential = self.store_source_account_credential(
+            user_id,
+            account["id"],
+            source=normalized_source,
+            payload=credential_payload,
+        )
+        return {
+            "source": normalized_source,
+            "provider": "google",
+            "source_account": self._source_account_by_id(user_id, account["id"]) or account,
+            "credential_ref": credential["credential_ref"],
+            "scope": token_scope,
+            "scopes": token_scope.split(),
+            "access_token_expires_at": expires_at,
+            "sync_plan": self._source_account_readiness_sync_plan(
+                self._source_account_by_id(user_id, account["id"]) or account,
+                self.list_sync_cursors(user_id, source_account_id=account["id"]),
+            ),
+        }
+
+    def start_managed_oauth(
+        self,
+        source: str,
+        *,
+        redirect_uri: str | None = None,
+        state: str | None = None,
+        client_id: str | None = None,
+        scopes: list[str] | None = None,
+    ) -> dict[str, Any]:
+        normalized_source = _managed_oauth_source(source)
+        defaults = MANAGED_OAUTH_CONNECTOR_DEFAULTS[normalized_source]
+        provider = defaults["provider"]
+        resolved_client_id = _managed_oauth_config_value(normalized_source, "CLIENT_ID", client_id)
+        if not resolved_client_id:
+            raise ValueError(f"{provider.title()} OAuth client ID is not configured")
+        resolved_redirect_uri = _managed_oauth_redirect_uri(normalized_source, redirect_uri)
+        if not resolved_redirect_uri:
+            raise ValueError(f"{provider.title()} OAuth redirect URI is not configured")
+        resolved_state = str(state or "").strip() or secrets.token_urlsafe(24)
+        resolved_scopes = _managed_oauth_scopes(normalized_source, scopes)
+        query: dict[str, str] = {
+            "client_id": resolved_client_id,
+            "redirect_uri": resolved_redirect_uri,
+            "response_type": "code",
+            "state": resolved_state,
+        }
+        if normalized_source == "notion":
+            query["owner"] = "user"
+        elif provider == "microsoft":
+            query["response_mode"] = "query"
+        if resolved_scopes:
+            query["scope"] = " ".join(resolved_scopes)
+        authorization_endpoint = MANAGED_OAUTH_AUTHORIZATION_ENDPOINTS[normalized_source]
+        return {
+            "source": normalized_source,
+            "provider": provider,
+            "authorization_url": f"{authorization_endpoint}?{urlencode(query)}",
+            "authorization_endpoint": authorization_endpoint,
+            "token_endpoint": MANAGED_OAUTH_TOKEN_ENDPOINTS[normalized_source],
+            "redirect_uri": resolved_redirect_uri,
+            "state": resolved_state,
+            "scopes": resolved_scopes,
+            "access_type": "offline",
+        }
+
+    def complete_managed_oauth(
+        self,
+        user_id: str,
+        source: str,
+        *,
+        code: str,
+        redirect_uri: str | None = None,
+        state: str | None = None,
+        expected_state: str | None = None,
+        client_id: str | None = None,
+        client_secret: str | None = None,
+        token_endpoint: str | None = None,
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        include_content: bool = True,
+        api_base_url: str | None = None,
+        notion_version: str | None = None,
+        request_token: Any | None = None,
+    ) -> dict[str, Any]:
+        normalized_source = _managed_oauth_source(source)
+        defaults = MANAGED_OAUTH_CONNECTOR_DEFAULTS[normalized_source]
+        provider = str(defaults["provider"])
+        normalized_state = str(state or "").strip()
+        normalized_expected_state = str(expected_state or "").strip()
+        if normalized_expected_state and normalized_state != normalized_expected_state:
+            raise ValueError(f"{provider.title()} OAuth state did not match")
+        normalized_code = str(code or "").strip()
+        if not normalized_code:
+            raise ValueError(f"{provider.title()} OAuth authorization code is required")
+        resolved_client_id = _managed_oauth_config_value(normalized_source, "CLIENT_ID", client_id)
+        resolved_client_secret = _managed_oauth_config_value(normalized_source, "CLIENT_SECRET", client_secret)
+        resolved_redirect_uri = _managed_oauth_redirect_uri(normalized_source, redirect_uri)
+        resolved_token_endpoint = str(token_endpoint or "").strip() or _managed_oauth_config_value(normalized_source, "TOKEN_ENDPOINT") or MANAGED_OAUTH_TOKEN_ENDPOINTS[normalized_source]
+        if not resolved_client_id:
+            raise ValueError(f"{provider.title()} OAuth client ID is not configured")
+        if normalized_source == "notion" and not resolved_client_secret:
+            raise ValueError(f"{provider.title()} OAuth client secret is not configured")
+
+        token_request = {
+            "grant_type": "authorization_code",
+            "code": normalized_code,
+        }
+        if resolved_redirect_uri:
+            token_request["redirect_uri"] = resolved_redirect_uri
+        if provider == "microsoft":
+            token_request["client_id"] = resolved_client_id
+            if resolved_client_secret:
+                token_request["client_secret"] = resolved_client_secret
+            token_request["scope"] = " ".join(MANAGED_OAUTH_CONNECTOR_SCOPES[normalized_source])
+        resolved_notion_version = str(notion_version or defaults.get("notion_version") or "2026-03-11").strip()
+        token_headers = {"Notion-Version": resolved_notion_version} if normalized_source == "notion" else {}
+        try:
+            if normalized_source == "notion":
+                requester = request_token or _request_basic_json_oauth_token
+                token_payload = requester(
+                    resolved_token_endpoint,
+                    token_request,
+                    client_id=resolved_client_id,
+                    client_secret=resolved_client_secret,
+                    headers=token_headers,
+                )
+            else:
+                requester = request_token or _request_oauth_token
+                token_payload = requester(resolved_token_endpoint, token_request)
+        except Exception as exc:
+            raise ValueError(
+                redact_error_message(
+                    exc,
+                    [normalized_code, resolved_client_id, resolved_client_secret],
+                )
+            ) from exc
+        if not isinstance(token_payload, dict):
+            raise ValueError(f"{provider.title()} OAuth token response was not an object")
+        access_token = str(token_payload.get("access_token") or "").strip()
+        if not access_token:
+            raise ValueError(f"{provider.title()} OAuth token response did not include an access token")
+        refresh_token = str(token_payload.get("refresh_token") or "").strip()
+        if provider == "microsoft" and not refresh_token:
+            raise ValueError("Microsoft OAuth token response did not include a refresh token; reconnect with offline access")
+        connected_at_dt = datetime.now(timezone.utc).replace(microsecond=0)
+        expires_at = _oauth_refresh_expires_at(token_payload, now=connected_at_dt)
+        token_scope = str(token_payload.get("scope") or " ".join(MANAGED_OAUTH_CONNECTOR_SCOPES[normalized_source])).strip()
+        workspace_name = str(token_payload.get("workspace_name") or "").strip()
+        workspace_id = str(token_payload.get("workspace_id") or "").strip()
+        bot_id = str(token_payload.get("bot_id") or "").strip()
+        identifier = (account_identifier or workspace_id or _microsoft_oauth_account_identifier(token_payload) or defaults["account_identifier"]).strip()[:240]
+        resolved_account_id = (source_account_id or "").strip() or stable_id("sacct_", f"{user_id}:{normalized_source}:{identifier}")
+        label = (account_label or workspace_name or _microsoft_oauth_account_label(token_payload) or defaults["account_label"]).strip()[:160]
+        resolved_api_base_url = str(api_base_url or defaults["api_base_url"]).strip()
+        connected_at = connected_at_dt.isoformat().replace("+00:00", "Z")
+        metadata_payload = {
+            "connector": normalized_source,
+            "oauth_provider": provider,
+            "managed_oauth": True,
+            "token_configured": True,
+            "refresh_token_configured": bool(refresh_token),
+            "api_base_url": resolved_api_base_url,
+            "content_sync_enabled": bool(include_content),
+            "oauth_connected_at": connected_at,
+            "scope": token_scope,
+            "scopes": token_scope.split(),
+            "token_endpoint": resolved_token_endpoint,
+        }
+        if normalized_source == "notion":
+            metadata_payload.update({
+                "workspace_name": workspace_name,
+                "workspace_id": workspace_id,
+                "bot_id": bot_id,
+                "notion_version": resolved_notion_version,
+            })
+        elif normalized_source == "outlook":
+            metadata_payload.update({
+                "email": _microsoft_oauth_account_identifier(token_payload),
+                "user_email": _microsoft_oauth_account_identifier(token_payload),
+                "query_configured": False,
+            })
+        metadata = _with_source_credential_ref(metadata_payload, resolved_account_id, True)
+        account = self.upsert_source_account(
+            user_id,
+            source=normalized_source,
+            account_label=label,
+            account_identifier=identifier,
+            connection_type="oauth_token",
+            status="connected",
+            auth_state="healthy",
+            policy={"review_required": True, "allow_ai_context": True},
+            metadata=metadata,
+            account_id=resolved_account_id,
+        )
+        if normalized_source == "notion":
+            credential_payload: dict[str, Any] = {
+                "token": access_token,
+                "refresh_token": refresh_token,
+                "api_base_url": resolved_api_base_url,
+                "include_content": bool(include_content),
+                "notion_version": resolved_notion_version,
+                "oauth_refreshed_at": connected_at,
+            }
+        else:
+            credential_payload = {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "token_endpoint": resolved_token_endpoint,
+                "client_id": resolved_client_id,
+                "scope": token_scope,
+                "api_base_url": resolved_api_base_url,
+                "include_body": bool(include_content),
+                "query": "",
+                "oauth_refreshed_at": connected_at,
+            }
+            if resolved_client_secret:
+                credential_payload["client_secret"] = resolved_client_secret
+            if expires_at:
+                credential_payload["access_token_expires_at"] = expires_at
+        credential = self.store_source_account_credential(
+            user_id,
+            account["id"],
+            source=normalized_source,
+            payload=credential_payload,
+        )
+        return {
+            "source": normalized_source,
+            "provider": provider,
+            "source_account": self._source_account_by_id(user_id, account["id"]) or account,
+            "credential_ref": credential["credential_ref"],
+            "scope": token_scope,
+            "scopes": token_scope.split(),
+            "access_token_expires_at": expires_at,
+            "sync_plan": self._source_account_readiness_sync_plan(
+                self._source_account_by_id(user_id, account["id"]) or account,
+                self.list_sync_cursors(user_id, source_account_id=account["id"]),
+            ),
+        }
 
     def enqueue_source_account_sync(
         self,
@@ -3294,8 +4156,16 @@ class CortexStore:
         auth = _normalize_account_state_key(auth_state or "not_configured") or "not_configured"
         timestamp = now_iso()
         resolved_id = account_id or stable_id("sacct_", f"{user_id}:{normalized_source}:{identifier or label}")
-        resolved_policy = _normalize_source_account_policy(policy)
-        resolved_metadata = metadata or {}
+        existing_policy: dict[str, Any] | None = None
+        with connect(self.db_path) as conn:
+            existing_for_policy = conn.execute(
+                "SELECT policy_json FROM source_accounts WHERE user_id = ? AND id = ?",
+                (user_id, resolved_id),
+            ).fetchone()
+        if policy is None and existing_for_policy:
+            existing_policy = self._json_or_empty(existing_for_policy["policy_json"])
+        resolved_policy = _normalize_source_account_policy(existing_policy if existing_policy is not None else policy)
+        resolved_metadata = _sanitize_source_account_metadata(metadata if isinstance(metadata, dict) else {})
         if _planned_connector_without_native_sync(catalog_entry):
             requested_status = account_status
             requested_auth = auth
@@ -3378,7 +4248,7 @@ class CortexStore:
             raise ValueError("source account is required")
         if processing not in {"sync", "async"}:
             raise ValueError("processing must be sync or async")
-        if not records:
+        if not records and not (archive_missing and complete_snapshot):
             raise ValueError("records are required")
         if len(records) > 500:
             raise ValueError("too many records")
@@ -3884,6 +4754,93 @@ class CortexStore:
         result["scan"] = scan_summary
         return result
 
+    def _direct_connector_can_archive_missing(
+        self,
+        *,
+        complete_snapshot: bool,
+        sync_summary: dict[str, Any],
+        sync_errors: list[dict[str, Any]] | None = None,
+        max_records: int | None = None,
+    ) -> bool:
+        return bool(
+            self._direct_connector_archive_missing_decision(
+                complete_snapshot=complete_snapshot,
+                sync_summary=sync_summary,
+                sync_errors=sync_errors,
+                max_records=max_records,
+            )["allowed"]
+        )
+
+    def _direct_connector_archive_missing_decision(
+        self,
+        *,
+        complete_snapshot: bool,
+        sync_summary: dict[str, Any],
+        sync_errors: list[dict[str, Any]] | None = None,
+        max_records: int | None = None,
+    ) -> dict[str, Any]:
+        requested = bool(complete_snapshot)
+        decision: dict[str, Any] = {
+            "requested": requested,
+            "allowed": False,
+            "reason": "not_requested" if not requested else None,
+        }
+        if not complete_snapshot:
+            return decision
+        if sync_errors:
+            decision["reason"] = "connector_errors"
+            decision["error_count"] = len(sync_errors)
+            return decision
+        summary = sync_summary if isinstance(sync_summary, dict) else {}
+        if summary.get("truncated"):
+            decision["reason"] = "truncated"
+            return decision
+        for key in ("next_page_token", "next_page_cursor", "next_cursor", "next_page", "pending_high_water_mark"):
+            if summary.get(key):
+                decision["reason"] = "pagination_incomplete"
+                decision["pagination_field"] = key
+                return decision
+        next_cursors = summary.get("next_cursors")
+        if isinstance(next_cursors, dict) and any(str(value or "").strip() for value in next_cursors.values()):
+            decision["reason"] = "pagination_incomplete"
+            decision["pagination_field"] = "next_cursors"
+            return decision
+        if max_records is not None:
+            try:
+                returned = int(summary.get("records_returned") or 0)
+                capped = int(max_records)
+            except (TypeError, ValueError):
+                returned = 0
+                capped = 0
+            if capped > 0 and returned >= capped:
+                decision["reason"] = "record_cap_reached"
+                decision["records_returned"] = returned
+                decision["max_records"] = capped
+                return decision
+        decision["allowed"] = True
+        decision["reason"] = "complete_snapshot"
+        return decision
+
+    def _with_direct_connector_archive_decision(
+        self,
+        result: dict[str, Any],
+        *,
+        complete_snapshot: bool,
+        sync_summary: dict[str, Any],
+        sync_errors: list[dict[str, Any]] | None = None,
+        max_records: int | None = None,
+    ) -> dict[str, Any]:
+        decision = self._direct_connector_archive_missing_decision(
+            complete_snapshot=complete_snapshot,
+            sync_summary=sync_summary,
+            sync_errors=sync_errors,
+            max_records=max_records,
+        )
+        result["archive_missing_decision"] = decision
+        if decision["requested"] and not decision["allowed"]:
+            result["archive_missing_suppressed"] = True
+        return result
+
     def sync_github_account(
         self,
         user_id: str,
@@ -3899,6 +4856,7 @@ class CortexStore:
         include_comments: bool = True,
         max_comments_per_item: int = 10,
         cursor_name: str = "issues",
+        complete_snapshot: bool = False,
         api_base_url: str | None = None,
         request_json: Any | None = None,
     ) -> dict[str, Any]:
@@ -3996,6 +4954,15 @@ class CortexStore:
             "api_base_url": sync.api_base_url,
         }
         records = [record.to_source_account_record() for record in sync.records]
+        archive_decision = self._direct_connector_archive_missing_decision(
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
+        empty_archived_missing = 0
+        if not records and archive_decision["allowed"]:
+            empty_archived_missing = self._archive_missing_source_account_records(user_id, account["id"], set())
         if not records:
             cursor = self.upsert_sync_cursor(
                 user_id,
@@ -4011,6 +4978,7 @@ class CortexStore:
                     "last_batch_queued": 0,
                     "last_batch_skipped": 0,
                     "last_batch_failed": 0,
+                    "last_batch_archived_missing": empty_archived_missing,
                 },
                 last_error=error_message,
                 completed=not bool(error_message),
@@ -4026,7 +4994,9 @@ class CortexStore:
                 "saved": 0,
                 "skipped": 0,
                 "failed": len(sync.errors),
-                "archived_missing": 0,
+                "archived_missing": empty_archived_missing,
+                "archive_missing_decision": archive_decision,
+                "archive_missing_suppressed": bool(archive_decision["requested"] and not archive_decision["allowed"]),
                 "capture_ids": [],
                 "records": [],
                 "errors": sync.errors,
@@ -4044,6 +5014,13 @@ class CortexStore:
             high_water_mark=sync.high_water_mark,
             state=state,
             processing=processing,
+            archive_missing=self._direct_connector_can_archive_missing(
+                complete_snapshot=bool(complete_snapshot),
+                sync_summary=sync_summary,
+                sync_errors=sync.errors,
+                max_records=capped_max_records,
+            ),
+            complete_snapshot=bool(complete_snapshot),
         )
         if sync.errors:
             result["errors"] = [*(result.get("errors") or []), *sync.errors]
@@ -4052,6 +5029,13 @@ class CortexStore:
                 result["status"] = "partial"
         result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
         result["sync"] = sync_summary
+        result = self._with_direct_connector_archive_decision(
+            result,
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
         return result
 
     def sync_gmail_account(
@@ -4070,6 +5054,7 @@ class CortexStore:
         max_records: int = 50,
         cursor_name: str = "messages",
         include_body: bool = True,
+        complete_snapshot: bool = False,
         api_base_url: str | None = None,
         request_json: Any | None = None,
     ) -> dict[str, Any]:
@@ -4158,6 +5143,15 @@ class CortexStore:
             "api_base_url": sync.api_base_url,
         }
         records = [record.to_source_account_record() for record in sync.records]
+        archive_decision = self._direct_connector_archive_missing_decision(
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
+        empty_archived_missing = 0
+        if not records and archive_decision["allowed"]:
+            empty_archived_missing = self._archive_missing_source_account_records(user_id, account["id"], set())
         if not records:
             cursor = self.upsert_sync_cursor(
                 user_id,
@@ -4173,6 +5167,7 @@ class CortexStore:
                     "last_batch_queued": 0,
                     "last_batch_skipped": 0,
                     "last_batch_failed": 0,
+                    "last_batch_archived_missing": empty_archived_missing,
                 },
                 last_error=error_message,
                 completed=not bool(error_message),
@@ -4188,7 +5183,9 @@ class CortexStore:
                 "saved": 0,
                 "skipped": 0,
                 "failed": len(sync.errors),
-                "archived_missing": 0,
+                "archived_missing": empty_archived_missing,
+                "archive_missing_decision": archive_decision,
+                "archive_missing_suppressed": bool(archive_decision["requested"] and not archive_decision["allowed"]),
                 "capture_ids": [],
                 "records": [],
                 "errors": sync.errors,
@@ -4206,6 +5203,13 @@ class CortexStore:
             high_water_mark=sync.high_water_mark,
             state=state,
             processing=processing,
+            archive_missing=self._direct_connector_can_archive_missing(
+                complete_snapshot=bool(complete_snapshot),
+                sync_summary=sync_summary,
+                sync_errors=sync.errors,
+                max_records=capped_max_records,
+            ),
+            complete_snapshot=bool(complete_snapshot),
         )
         if sync.errors:
             result["errors"] = [*(result.get("errors") or []), *sync.errors]
@@ -4214,6 +5218,13 @@ class CortexStore:
                 result["status"] = "partial"
         result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
         result["sync"] = sync_summary
+        result = self._with_direct_connector_archive_decision(
+            result,
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
         return result
 
     def sync_google_drive_account(
@@ -4232,6 +5243,7 @@ class CortexStore:
         max_records: int = 50,
         cursor_name: str = "files",
         include_content: bool = True,
+        complete_snapshot: bool = False,
         api_base_url: str | None = None,
         request_value: Any | None = None,
     ) -> dict[str, Any]:
@@ -4322,6 +5334,15 @@ class CortexStore:
             "api_base_url": sync.api_base_url,
         }
         records = [record.to_source_account_record() for record in sync.records]
+        archive_decision = self._direct_connector_archive_missing_decision(
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
+        empty_archived_missing = 0
+        if not records and archive_decision["allowed"]:
+            empty_archived_missing = self._archive_missing_source_account_records(user_id, account["id"], set())
         if not records:
             cursor = self.upsert_sync_cursor(
                 user_id,
@@ -4337,6 +5358,7 @@ class CortexStore:
                     "last_batch_queued": 0,
                     "last_batch_skipped": sync.skipped_unsupported,
                     "last_batch_failed": 0,
+                    "last_batch_archived_missing": empty_archived_missing,
                 },
                 last_error=error_message,
                 completed=not bool(error_message),
@@ -4352,7 +5374,9 @@ class CortexStore:
                 "saved": 0,
                 "skipped": sync.skipped_unsupported,
                 "failed": len(sync.errors),
-                "archived_missing": 0,
+                "archived_missing": empty_archived_missing,
+                "archive_missing_decision": archive_decision,
+                "archive_missing_suppressed": bool(archive_decision["requested"] and not archive_decision["allowed"]),
                 "capture_ids": [],
                 "records": [],
                 "errors": sync.errors,
@@ -4370,6 +5394,13 @@ class CortexStore:
             high_water_mark=sync.high_water_mark,
             state=state,
             processing=processing,
+            archive_missing=self._direct_connector_can_archive_missing(
+                complete_snapshot=bool(complete_snapshot),
+                sync_summary=sync_summary,
+                sync_errors=sync.errors,
+                max_records=capped_max_records,
+            ),
+            complete_snapshot=bool(complete_snapshot),
         )
         if sync.errors:
             result["errors"] = [*(result.get("errors") or []), *sync.errors]
@@ -4379,6 +5410,13 @@ class CortexStore:
         result["skipped"] = int(result.get("skipped") or 0) + sync.skipped_unsupported
         result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
         result["sync"] = sync_summary
+        result = self._with_direct_connector_archive_decision(
+            result,
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
         return result
 
     def sync_outlook_account(
@@ -4396,6 +5434,7 @@ class CortexStore:
         max_records: int = 50,
         cursor_name: str = "messages",
         include_body: bool = True,
+        complete_snapshot: bool = False,
         api_base_url: str | None = None,
         request_json: Any | None = None,
     ) -> dict[str, Any]:
@@ -4480,6 +5519,15 @@ class CortexStore:
             "api_base_url": sync.api_base_url,
         }
         records = [record.to_source_account_record() for record in sync.records]
+        archive_decision = self._direct_connector_archive_missing_decision(
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
+        empty_archived_missing = 0
+        if not records and archive_decision["allowed"]:
+            empty_archived_missing = self._archive_missing_source_account_records(user_id, account["id"], set())
         if not records:
             cursor = self.upsert_sync_cursor(
                 user_id,
@@ -4495,6 +5543,7 @@ class CortexStore:
                     "last_batch_queued": 0,
                     "last_batch_skipped": 0,
                     "last_batch_failed": len(sync.errors),
+                    "last_batch_archived_missing": empty_archived_missing,
                 },
                 last_error=error_message,
                 completed=not bool(error_message),
@@ -4510,7 +5559,9 @@ class CortexStore:
                 "saved": 0,
                 "skipped": 0,
                 "failed": len(sync.errors),
-                "archived_missing": 0,
+                "archived_missing": empty_archived_missing,
+                "archive_missing_decision": archive_decision,
+                "archive_missing_suppressed": bool(archive_decision["requested"] and not archive_decision["allowed"]),
                 "capture_ids": [],
                 "records": [],
                 "errors": sync.errors,
@@ -4528,6 +5579,13 @@ class CortexStore:
             high_water_mark=sync.high_water_mark,
             state=state,
             processing=processing,
+            archive_missing=self._direct_connector_can_archive_missing(
+                complete_snapshot=bool(complete_snapshot),
+                sync_summary=sync_summary,
+                sync_errors=sync.errors,
+                max_records=capped_max_records,
+            ),
+            complete_snapshot=bool(complete_snapshot),
         )
         if sync.errors:
             result["errors"] = [*(result.get("errors") or []), *sync.errors]
@@ -4536,6 +5594,13 @@ class CortexStore:
                 result["status"] = "partial"
         result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
         result["sync"] = sync_summary
+        result = self._with_direct_connector_archive_decision(
+            result,
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
         return result
 
     def sync_slack_account(
@@ -4553,6 +5618,7 @@ class CortexStore:
         max_records: int = 100,
         cursor_name: str = "messages",
         workspace_url: str | None = None,
+        complete_snapshot: bool = False,
         api_base_url: str | None = None,
         request_json: Any | None = None,
     ) -> dict[str, Any]:
@@ -4644,6 +5710,15 @@ class CortexStore:
             "api_base_url": sync.api_base_url,
         }
         records = [record.to_source_account_record() for record in sync.records]
+        archive_decision = self._direct_connector_archive_missing_decision(
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
+        empty_archived_missing = 0
+        if not records and archive_decision["allowed"]:
+            empty_archived_missing = self._archive_missing_source_account_records(user_id, account["id"], set())
         if not records:
             cursor = self.upsert_sync_cursor(
                 user_id,
@@ -4659,6 +5734,7 @@ class CortexStore:
                     "last_batch_queued": 0,
                     "last_batch_skipped": 0,
                     "last_batch_failed": 0,
+                    "last_batch_archived_missing": empty_archived_missing,
                 },
                 last_error=error_message,
                 completed=not bool(error_message),
@@ -4674,7 +5750,9 @@ class CortexStore:
                 "saved": 0,
                 "skipped": 0,
                 "failed": len(sync.errors),
-                "archived_missing": 0,
+                "archived_missing": empty_archived_missing,
+                "archive_missing_decision": archive_decision,
+                "archive_missing_suppressed": bool(archive_decision["requested"] and not archive_decision["allowed"]),
                 "capture_ids": [],
                 "records": [],
                 "errors": sync.errors,
@@ -4692,6 +5770,13 @@ class CortexStore:
             high_water_mark=sync.high_water_mark,
             state=state,
             processing=processing,
+            archive_missing=self._direct_connector_can_archive_missing(
+                complete_snapshot=bool(complete_snapshot),
+                sync_summary=sync_summary,
+                sync_errors=sync.errors,
+                max_records=capped_max_records,
+            ),
+            complete_snapshot=bool(complete_snapshot),
         )
         if sync.errors:
             result["errors"] = [*(result.get("errors") or []), *sync.errors]
@@ -4700,6 +5785,13 @@ class CortexStore:
                 result["status"] = "partial"
         result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
         result["sync"] = sync_summary
+        result = self._with_direct_connector_archive_decision(
+            result,
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
         return result
 
     def sync_readwise_account(
@@ -4715,6 +5807,7 @@ class CortexStore:
         processing: str = "sync",
         max_records: int = 100,
         cursor_name: str = "highlights",
+        complete_snapshot: bool = False,
         api_base_url: str | None = None,
         request_json: Any | None = None,
     ) -> dict[str, Any]:
@@ -4786,6 +5879,15 @@ class CortexStore:
             "api_base_url": sync.api_base_url,
         }
         records = [record.to_source_account_record() for record in sync.records]
+        archive_decision = self._direct_connector_archive_missing_decision(
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
+        empty_archived_missing = 0
+        if not records and archive_decision["allowed"]:
+            empty_archived_missing = self._archive_missing_source_account_records(user_id, account["id"], set())
         if not records:
             cursor = self.upsert_sync_cursor(
                 user_id,
@@ -4801,6 +5903,7 @@ class CortexStore:
                     "last_batch_queued": 0,
                     "last_batch_skipped": 0,
                     "last_batch_failed": 0,
+                    "last_batch_archived_missing": empty_archived_missing,
                 },
                 last_error=error_message,
                 completed=not bool(error_message),
@@ -4816,7 +5919,9 @@ class CortexStore:
                 "saved": 0,
                 "skipped": 0,
                 "failed": len(sync.errors),
-                "archived_missing": 0,
+                "archived_missing": empty_archived_missing,
+                "archive_missing_decision": archive_decision,
+                "archive_missing_suppressed": bool(archive_decision["requested"] and not archive_decision["allowed"]),
                 "capture_ids": [],
                 "records": [],
                 "errors": sync.errors,
@@ -4834,6 +5939,13 @@ class CortexStore:
             high_water_mark=sync.high_water_mark,
             state=state,
             processing=processing,
+            archive_missing=self._direct_connector_can_archive_missing(
+                complete_snapshot=bool(complete_snapshot),
+                sync_summary=sync_summary,
+                sync_errors=sync.errors,
+                max_records=capped_max_records,
+            ),
+            complete_snapshot=bool(complete_snapshot),
         )
         if sync.errors:
             result["errors"] = [*(result.get("errors") or []), *sync.errors]
@@ -4842,6 +5954,13 @@ class CortexStore:
                 result["status"] = "partial"
         result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
         result["sync"] = sync_summary
+        result = self._with_direct_connector_archive_decision(
+            result,
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
         return result
 
     def sync_calendar_account(
@@ -4857,6 +5976,7 @@ class CortexStore:
         processing: str = "sync",
         max_records: int = 100,
         cursor_name: str = "events",
+        complete_snapshot: bool = False,
         read_text: Any | None = None,
         request_text: Any | None = None,
     ) -> dict[str, Any]:
@@ -4935,6 +6055,15 @@ class CortexStore:
             "feed_url_redacted": True,
         }
         records = [record.to_source_account_record() for record in sync.records]
+        archive_decision = self._direct_connector_archive_missing_decision(
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
+        empty_archived_missing = 0
+        if not records and archive_decision["allowed"]:
+            empty_archived_missing = self._archive_missing_source_account_records(user_id, account["id"], set())
         if not records:
             cursor_payload = self.upsert_sync_cursor(
                 user_id,
@@ -4950,6 +6079,7 @@ class CortexStore:
                     "last_batch_queued": 0,
                     "last_batch_skipped": 0,
                     "last_batch_failed": 0,
+                    "last_batch_archived_missing": empty_archived_missing,
                 },
                 last_error=error_message,
                 completed=not bool(error_message),
@@ -4965,7 +6095,9 @@ class CortexStore:
                 "saved": 0,
                 "skipped": 0,
                 "failed": len(sync.errors),
-                "archived_missing": 0,
+                "archived_missing": empty_archived_missing,
+                "archive_missing_decision": archive_decision,
+                "archive_missing_suppressed": bool(archive_decision["requested"] and not archive_decision["allowed"]),
                 "capture_ids": [],
                 "records": [],
                 "errors": sync.errors,
@@ -4983,6 +6115,13 @@ class CortexStore:
             high_water_mark=sync.high_water_mark,
             state=state,
             processing=processing,
+            archive_missing=self._direct_connector_can_archive_missing(
+                complete_snapshot=bool(complete_snapshot),
+                sync_summary=sync_summary,
+                sync_errors=sync.errors,
+                max_records=capped_max_records,
+            ),
+            complete_snapshot=bool(complete_snapshot),
         )
         if sync.errors:
             result["errors"] = [*(result.get("errors") or []), *sync.errors]
@@ -4991,6 +6130,13 @@ class CortexStore:
                 result["status"] = "partial"
         result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
         result["sync"] = sync_summary
+        result = self._with_direct_connector_archive_decision(
+            result,
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
         return result
 
     def sync_raindrop_account(
@@ -5009,6 +6155,7 @@ class CortexStore:
         max_records: int = 100,
         cursor_name: str = "raindrops",
         include_highlights: bool = True,
+        complete_snapshot: bool = False,
         api_base_url: str | None = None,
         request_json: Any | None = None,
     ) -> dict[str, Any]:
@@ -5090,6 +6237,15 @@ class CortexStore:
             "include_highlights": bool(include_highlights),
         }
         records = [record.to_source_account_record() for record in sync.records]
+        archive_decision = self._direct_connector_archive_missing_decision(
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
+        empty_archived_missing = 0
+        if not records and archive_decision["allowed"]:
+            empty_archived_missing = self._archive_missing_source_account_records(user_id, account["id"], set())
         if not records:
             cursor_payload = self.upsert_sync_cursor(
                 user_id,
@@ -5105,6 +6261,7 @@ class CortexStore:
                     "last_batch_queued": 0,
                     "last_batch_skipped": 0,
                     "last_batch_failed": 0,
+                    "last_batch_archived_missing": empty_archived_missing,
                 },
                 last_error=error_message,
                 completed=not bool(error_message),
@@ -5120,7 +6277,9 @@ class CortexStore:
                 "saved": 0,
                 "skipped": 0,
                 "failed": len(sync.errors),
-                "archived_missing": 0,
+                "archived_missing": empty_archived_missing,
+                "archive_missing_decision": archive_decision,
+                "archive_missing_suppressed": bool(archive_decision["requested"] and not archive_decision["allowed"]),
                 "capture_ids": [],
                 "records": [],
                 "errors": sync.errors,
@@ -5138,6 +6297,13 @@ class CortexStore:
             high_water_mark=sync.high_water_mark,
             state=state,
             processing=processing,
+            archive_missing=self._direct_connector_can_archive_missing(
+                complete_snapshot=bool(complete_snapshot),
+                sync_summary=sync_summary,
+                sync_errors=sync.errors,
+                max_records=capped_max_records,
+            ),
+            complete_snapshot=bool(complete_snapshot),
         )
         if sync.errors:
             result["errors"] = [*(result.get("errors") or []), *sync.errors]
@@ -5146,6 +6312,13 @@ class CortexStore:
                 result["status"] = "partial"
         result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
         result["sync"] = sync_summary
+        result = self._with_direct_connector_archive_decision(
+            result,
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
         return result
 
     def sync_zotero_account(
@@ -5164,6 +6337,7 @@ class CortexStore:
         max_records: int = 100,
         cursor_name: str = "items",
         include_attachments: bool = False,
+        complete_snapshot: bool = False,
         api_base_url: str | None = None,
         request_json: Any | None = None,
     ) -> dict[str, Any]:
@@ -5252,6 +6426,15 @@ class CortexStore:
             "attachment_content_imported": False,
         }
         records = [record.to_source_account_record() for record in sync.records]
+        archive_decision = self._direct_connector_archive_missing_decision(
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
+        empty_archived_missing = 0
+        if not records and archive_decision["allowed"]:
+            empty_archived_missing = self._archive_missing_source_account_records(user_id, account["id"], set())
         if not records:
             cursor_payload = self.upsert_sync_cursor(
                 user_id,
@@ -5267,6 +6450,7 @@ class CortexStore:
                     "last_batch_queued": 0,
                     "last_batch_skipped": 0,
                     "last_batch_failed": 0,
+                    "last_batch_archived_missing": empty_archived_missing,
                 },
                 last_error=error_message,
                 completed=not bool(error_message),
@@ -5282,7 +6466,9 @@ class CortexStore:
                 "saved": 0,
                 "skipped": 0,
                 "failed": len(sync.errors),
-                "archived_missing": 0,
+                "archived_missing": empty_archived_missing,
+                "archive_missing_decision": archive_decision,
+                "archive_missing_suppressed": bool(archive_decision["requested"] and not archive_decision["allowed"]),
                 "capture_ids": [],
                 "records": [],
                 "errors": sync.errors,
@@ -5300,6 +6486,13 @@ class CortexStore:
             high_water_mark=sync.high_water_mark,
             state=state,
             processing=processing,
+            archive_missing=self._direct_connector_can_archive_missing(
+                complete_snapshot=bool(complete_snapshot),
+                sync_summary=sync_summary,
+                sync_errors=sync.errors,
+                max_records=capped_max_records,
+            ),
+            complete_snapshot=bool(complete_snapshot),
         )
         if sync.errors:
             result["errors"] = [*(result.get("errors") or []), *sync.errors]
@@ -5308,6 +6501,13 @@ class CortexStore:
                 result["status"] = "partial"
         result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
         result["sync"] = sync_summary
+        result = self._with_direct_connector_archive_decision(
+            result,
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
         return result
 
     def sync_linear_account(
@@ -5323,6 +6523,7 @@ class CortexStore:
         processing: str = "sync",
         max_records: int = 100,
         cursor_name: str = "issues",
+        complete_snapshot: bool = False,
         api_url: str | None = None,
         request_json: Any | None = None,
     ) -> dict[str, Any]:
@@ -5393,6 +6594,15 @@ class CortexStore:
             "next_cursor": sync.next_cursor,
         }
         records = [record.to_source_account_record() for record in sync.records]
+        archive_decision = self._direct_connector_archive_missing_decision(
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
+        empty_archived_missing = 0
+        if not records and archive_decision["allowed"]:
+            empty_archived_missing = self._archive_missing_source_account_records(user_id, account["id"], set())
         if not records:
             cursor_payload = self.upsert_sync_cursor(
                 user_id,
@@ -5408,6 +6618,7 @@ class CortexStore:
                     "last_batch_queued": 0,
                     "last_batch_skipped": 0,
                     "last_batch_failed": 0,
+                    "last_batch_archived_missing": empty_archived_missing,
                 },
                 last_error=error_message,
                 completed=not bool(error_message),
@@ -5423,7 +6634,9 @@ class CortexStore:
                 "saved": 0,
                 "skipped": 0,
                 "failed": len(sync.errors),
-                "archived_missing": 0,
+                "archived_missing": empty_archived_missing,
+                "archive_missing_decision": archive_decision,
+                "archive_missing_suppressed": bool(archive_decision["requested"] and not archive_decision["allowed"]),
                 "capture_ids": [],
                 "records": [],
                 "errors": sync.errors,
@@ -5441,6 +6654,13 @@ class CortexStore:
             high_water_mark=sync.high_water_mark,
             state=state,
             processing=processing,
+            archive_missing=self._direct_connector_can_archive_missing(
+                complete_snapshot=bool(complete_snapshot),
+                sync_summary=sync_summary,
+                sync_errors=sync.errors,
+                max_records=capped_max_records,
+            ),
+            complete_snapshot=bool(complete_snapshot),
         )
         if sync.errors:
             result["errors"] = [*(result.get("errors") or []), *sync.errors]
@@ -5449,6 +6669,13 @@ class CortexStore:
                 result["status"] = "partial"
         result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
         result["sync"] = sync_summary
+        result = self._with_direct_connector_archive_decision(
+            result,
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
         return result
 
     def sync_jira_account(
@@ -5467,6 +6694,7 @@ class CortexStore:
         processing: str = "sync",
         max_records: int = 100,
         cursor_name: str = "issues",
+        complete_snapshot: bool = False,
         request_json: Any | None = None,
     ) -> dict[str, Any]:
         from .connectors.jira import JIRA_SOURCE, fetch_jira_records
@@ -5544,6 +6772,15 @@ class CortexStore:
             "jql": sync.jql,
         }
         records = [record.to_source_account_record() for record in sync.records]
+        archive_decision = self._direct_connector_archive_missing_decision(
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
+        empty_archived_missing = 0
+        if not records and archive_decision["allowed"]:
+            empty_archived_missing = self._archive_missing_source_account_records(user_id, account["id"], set())
         if not records:
             cursor_payload = self.upsert_sync_cursor(
                 user_id,
@@ -5559,6 +6796,7 @@ class CortexStore:
                     "last_batch_queued": 0,
                     "last_batch_skipped": 0,
                     "last_batch_failed": 0,
+                    "last_batch_archived_missing": empty_archived_missing,
                 },
                 last_error=error_message,
                 completed=not bool(error_message),
@@ -5574,7 +6812,9 @@ class CortexStore:
                 "saved": 0,
                 "skipped": 0,
                 "failed": len(sync.errors),
-                "archived_missing": 0,
+                "archived_missing": empty_archived_missing,
+                "archive_missing_decision": archive_decision,
+                "archive_missing_suppressed": bool(archive_decision["requested"] and not archive_decision["allowed"]),
                 "capture_ids": [],
                 "records": [],
                 "errors": sync.errors,
@@ -5592,6 +6832,13 @@ class CortexStore:
             high_water_mark=sync.high_water_mark,
             state=state,
             processing=processing,
+            archive_missing=self._direct_connector_can_archive_missing(
+                complete_snapshot=bool(complete_snapshot),
+                sync_summary=sync_summary,
+                sync_errors=sync.errors,
+                max_records=capped_max_records,
+            ),
+            complete_snapshot=bool(complete_snapshot),
         )
         if sync.errors:
             result["errors"] = [*(result.get("errors") or []), *sync.errors]
@@ -5600,6 +6847,13 @@ class CortexStore:
                 result["status"] = "partial"
         result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
         result["sync"] = sync_summary
+        result = self._with_direct_connector_archive_decision(
+            result,
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
         return result
 
     def sync_notion_account(
@@ -5616,6 +6870,7 @@ class CortexStore:
         max_records: int = 50,
         cursor_name: str = "pages",
         include_content: bool = True,
+        complete_snapshot: bool = False,
         api_base_url: str | None = None,
         notion_version: str | None = None,
         request_json: Any | None = None,
@@ -5693,6 +6948,15 @@ class CortexStore:
             "notion_version": sync.notion_version,
         }
         records = [record.to_source_account_record() for record in sync.records]
+        archive_decision = self._direct_connector_archive_missing_decision(
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
+        empty_archived_missing = 0
+        if not records and archive_decision["allowed"]:
+            empty_archived_missing = self._archive_missing_source_account_records(user_id, account["id"], set())
         if not records:
             cursor_payload = self.upsert_sync_cursor(
                 user_id,
@@ -5708,6 +6972,7 @@ class CortexStore:
                     "last_batch_queued": 0,
                     "last_batch_skipped": 0,
                     "last_batch_failed": 0,
+                    "last_batch_archived_missing": empty_archived_missing,
                 },
                 last_error=error_message,
                 completed=not bool(error_message),
@@ -5723,7 +6988,9 @@ class CortexStore:
                 "saved": 0,
                 "skipped": 0,
                 "failed": len(sync.errors),
-                "archived_missing": 0,
+                "archived_missing": empty_archived_missing,
+                "archive_missing_decision": archive_decision,
+                "archive_missing_suppressed": bool(archive_decision["requested"] and not archive_decision["allowed"]),
                 "capture_ids": [],
                 "records": [],
                 "errors": sync.errors,
@@ -5741,6 +7008,13 @@ class CortexStore:
             high_water_mark=sync.high_water_mark,
             state=state,
             processing=processing,
+            archive_missing=self._direct_connector_can_archive_missing(
+                complete_snapshot=bool(complete_snapshot),
+                sync_summary=sync_summary,
+                sync_errors=sync.errors,
+                max_records=capped_max_records,
+            ),
+            complete_snapshot=bool(complete_snapshot),
         )
         if sync.errors:
             result["errors"] = [*(result.get("errors") or []), *sync.errors]
@@ -5749,6 +7023,13 @@ class CortexStore:
                 result["status"] = "partial"
         result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
         result["sync"] = sync_summary
+        result = self._with_direct_connector_archive_decision(
+            result,
+            complete_snapshot=bool(complete_snapshot),
+            sync_summary=sync_summary,
+            sync_errors=sync.errors,
+            max_records=capped_max_records,
+        )
         return result
 
     def _latest_sync_cursor(self, user_id: str, account_id: str, cursor_name: str) -> dict[str, Any] | None:
@@ -7012,6 +8293,8 @@ class CortexStore:
 
             self._save_memory_relations_for_capture(conn, user_id, capture_id, memories, captured_at)
             self._save_cross_capture_memory_relations(conn, user_id, capture_id, memories, captured_at)
+            self._save_obsidian_canvas_memory_relations(conn, user_id, capture_id, memories, captured_at)
+            self._save_obsidian_wikilink_memory_relations(conn, user_id, capture_id, memories, captured_at)
 
             if stable_source_record and memories:
                 self._link_superseded_capture_memories_in_conn(
@@ -7225,6 +8508,7 @@ class CortexStore:
 
         fts_query = self._fts_query(query)
         candidate_limit = max(limit * 8, 50)
+        ranked_limit = max(limit * 4, min(candidate_limit, 80))
         task_intent = self._query_has_task_intent(query)
         task_rows = []
         mode_counts: dict[str, int] = {
@@ -7327,9 +8611,12 @@ class CortexStore:
                 vector_rows,
                 temporal_rows,
                 intent_rows,
-                limit,
+                ranked_limit,
                 user_settings=user_settings,
             )
+            scoped_to_memory = bool(source or source_account_id or _normalize_retrieval_metadata_filters(metadata_filters))
+            if rows:
+                rows = self._diversify_memory_rows(rows, limit, scoped_to_source=scoped_to_memory)
             if not rows:
                 like = f"%{query}%"
                 fallback_rows = conn.execute(
@@ -7342,8 +8629,9 @@ class CortexStore:
                     [*params, like, like, like, candidate_limit],
                 ).fetchall()
                 mode_counts["fallback_like"] = len(fallback_rows)
-                rows = self._rank_rows_with_layer_boosts(query, fallback_rows, limit, user_settings=user_settings)
-            if not vector_available and not rows:
+                rows = self._rank_rows_with_layer_boosts(query, fallback_rows, ranked_limit, user_settings=user_settings)
+                rows = self._diversify_memory_rows(rows, limit, scoped_to_source=scoped_to_memory)
+            if not rows:
                 existing_ids = {row["id"] for row in rows}
                 lexical_rows = self._lexical_fallback_search(
                     conn,
@@ -7361,8 +8649,7 @@ class CortexStore:
                 )
                 mode_counts["lexical_fallback"] = len(lexical_rows)
                 rows.extend(row for row in lexical_rows if row["id"] not in existing_ids)
-                rows = rows[:limit]
-            scoped_to_memory = bool(source or source_account_id or _normalize_retrieval_metadata_filters(metadata_filters))
+                rows = self._diversify_memory_rows(rows, limit, scoped_to_source=scoped_to_memory)
             if sector is None and layer is None and not scoped_to_memory and (task_intent or not rows):
                 task_rows = self._task_search_rows(conn, user_id, query, candidate_limit, kind, user_settings)
                 mode_counts["task"] = len(task_rows)
@@ -7588,6 +8875,40 @@ class CortexStore:
             include_related=True,
             as_of=as_of,
         )
+        person_entity = self._query_person_entity(user_id, query)
+        if person_entity:
+            person_memories = self._person_linked_memories(
+                user_id,
+                person_entity["id"],
+                limit=search_limit,
+                sector=sector,
+                source=source,
+                source_account_id=source_account_id,
+                metadata_filters=metadata_filters,
+                as_of=as_of,
+            )
+            if person_memories:
+                person_ids = {str(item.get("id") or "") for item in person_memories}
+                candidates = [*person_memories, *(item for item in candidates if str(item.get("id") or "") not in person_ids)][:search_limit]
+        support_query = self._answer_support_query(query)
+        if support_query:
+            support_candidates = self.search(
+                user_id,
+                support_query,
+                limit=search_limit,
+                sector=sector,
+                source=source,
+                source_account_id=source_account_id,
+                metadata_filters=metadata_filters,
+                include_related=True,
+                as_of=as_of,
+            )
+            if support_candidates:
+                candidate_ids = {str(item.get("id") or "") for item in candidates}
+                candidates = [
+                    *candidates,
+                    *(item for item in support_candidates if str(item.get("id") or "") not in candidate_ids),
+                ][:search_limit]
         primary_candidates = [item for item in candidates if not self._is_related_result(item)]
         primary_by_id = {str(item.get("id") or ""): item for item in primary_candidates}
         primary_source_backed = [item for item in primary_candidates if self._has_source_citation(item)]
@@ -7627,11 +8948,37 @@ class CortexStore:
                     "relationship": item.get("relationship"),
                 }
             )
+        conflicts = self._answer_conflicts(query, cited_results, citations)
+        evidence = self._answer_evidence_quality(query, cited_results)
         if citations:
             lines = [f"Cortex found {len(citations)} cited item{'s' if len(citations) != 1 else ''} for this question:"]
             for citation in citations[:5]:
                 citation_source = citation["source_url"] or citation["source"]
                 lines.append(f"[{citation['index']}] {citation['excerpt']} ({citation_source})")
+            if evidence.get("status") == "low_confidence":
+                missing_fields = ", ".join(evidence.get("missing_fields") or [])
+                lines.append("")
+                lines.append(
+                    f"Coverage check: Cortex found related citations, but not enough evidence for {missing_fields}. "
+                    "Use these citations as context and verify before acting."
+                )
+            if conflicts:
+                lines.append("")
+                for conflict in conflicts[:2]:
+                    primary_index = conflict.get("primary_index")
+                    primary_text = f"[{primary_index}]" if primary_index else str(conflict.get("primary_id") or "the newest cited item")
+                    if conflict.get("type") == "date_conflict":
+                        date_values = ", ".join(conflict.get("date_claims") or [])
+                        lines.append(
+                            f"Conflict check: cited sources mention different dates ({date_values}); "
+                            f"prefer {primary_text} as the newest/current evidence and verify before acting."
+                        )
+                    else:
+                        claim_key = conflict.get("claim_key") or "this claim"
+                        lines.append(
+                            f"Conflict check: cited sources disagree on {claim_key}; "
+                            f"prefer {primary_text} as the newest/current evidence and verify before acting."
+                        )
             answer = "\n".join(lines)
             with connect(self.db_path) as conn:
                 self._event(
@@ -7649,13 +8996,294 @@ class CortexStore:
                 )
         else:
             answer = "Cortex did not find a cited item for this question yet. Import or approve more source material, then ask again."
+        if conflicts:
+            answer_status = "conflicted"
+        elif citations and evidence.get("status") == "low_confidence":
+            answer_status = "low_confidence"
+        elif citations:
+            answer_status = "cited"
+        else:
+            answer_status = "no_cited_evidence"
         return {
             "query": query,
+            "status": answer_status,
             "filters": _retrieval_filter_payload(source=source, source_account_id=source_account_id, metadata_filters=metadata_filters, as_of=as_of),
             "answer": answer,
             "citations": citations,
+            "conflicts": conflicts,
+            "evidence": evidence,
             "results": self._shared_payload(results, redact_sensitive=redact_sensitive),
         }
+
+    def _answer_evidence_quality(self, query: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+        if not items:
+            return {"status": "no_cited_evidence", "checked_fields": [], "missing_fields": []}
+        query_terms = set(self._lexical_fallback_terms(query, limit=20))
+        checked_fields: list[str] = []
+        missing_fields: list[str] = []
+        for field, required_terms, evidence_terms in ANSWER_FIELD_REQUIREMENTS:
+            if not required_terms.issubset(query_terms):
+                continue
+            checked_fields.append(field)
+            if not any(self._answer_item_supports_field(item, field=field, evidence_terms=evidence_terms) for item in items):
+                missing_fields.append(field)
+        status = "low_confidence" if missing_fields else "cited"
+        return {
+            "status": status,
+            "checked_fields": checked_fields,
+            "missing_fields": missing_fields,
+        }
+
+    def _answer_item_supports_field(self, item: dict[str, Any], *, field: str, evidence_terms: set[str]) -> bool:
+        if field in self._answer_field_claims(item):
+            return True
+        if field in {"date", "deadline"} and self._answer_date_claims(item):
+            return True
+        item_terms = self._answer_item_terms(item)
+        if item_terms & evidence_terms:
+            return True
+        if field == "owner" and item_terms & {"owns", "owner", "responsible", "assignee", "assigned"}:
+            return True
+        return False
+
+    def _answer_item_terms(self, item: dict[str, Any]) -> set[str]:
+        topics = item.get("topics") if isinstance(item.get("topics"), list) else []
+        text = " ".join(
+            str(value or "")
+            for value in (
+                item.get("content"),
+                item.get("summary"),
+                item.get("raw_excerpt"),
+                " ".join(str(topic or "") for topic in topics),
+            )
+        )
+        terms: set[str] = set()
+        for token in re.findall(r"[a-z0-9_]+", text.casefold().replace("'", "")):
+            clean = token.strip("_")
+            if not clean:
+                continue
+            if len(clean) > 3 and clean.endswith("s") and not clean.endswith(("ss", "ies")):
+                clean = clean[:-1]
+            terms.add(clean)
+        return terms
+
+    def _answer_conflicts(self, query: str, items: list[dict[str, Any]], citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if len(items) < 2:
+            return []
+        query_terms = set(self._lexical_fallback_terms(query, limit=12))
+        citation_by_id = {str(citation.get("id") or ""): citation for citation in citations}
+        conflicts: list[dict[str, Any]] = []
+        seen_pairs: set[tuple[str, str]] = set()
+        for left_index, left in enumerate(items):
+            for right in items[left_index + 1 :]:
+                left_id = str(left.get("id") or "")
+                right_id = str(right.get("id") or "")
+                if not left_id or not right_id or left_id == right_id:
+                    continue
+                pair = tuple(sorted((left_id, right_id)))
+                if pair in seen_pairs:
+                    continue
+                seen_pairs.add(pair)
+                if not self._answer_items_share_scope(query_terms, left, right):
+                    continue
+                left_dates = self._answer_date_claims(left)
+                right_dates = self._answer_date_claims(right)
+                if left_dates and right_dates and left_dates != right_dates:
+                    primary, conflicting, reason = self._answer_current_item(left, right)
+                    primary_id = str(primary.get("id") or "")
+                    conflicting_id = str(conflicting.get("id") or "")
+                    primary_citation = citation_by_id.get(primary_id, {})
+                    conflicting_citation = citation_by_id.get(conflicting_id, {})
+                    date_claims = sorted(left_dates | right_dates)
+                    conflicts.append(
+                        {
+                            "type": "date_conflict",
+                            "message": "Cited sources mention different dates for the same answer scope.",
+                            "primary_id": primary_id,
+                            "primary_index": primary_citation.get("index"),
+                            "primary_source": primary_citation.get("source") or primary.get("source"),
+                            "primary_source_url": primary_citation.get("source_url") or primary.get("source_url"),
+                            "primary_dates": sorted(self._answer_date_claims(primary)),
+                            "conflicting_id": conflicting_id,
+                            "conflicting_index": conflicting_citation.get("index"),
+                            "conflicting_source": conflicting_citation.get("source") or conflicting.get("source"),
+                            "conflicting_source_url": conflicting_citation.get("source_url") or conflicting.get("source_url"),
+                            "conflicting_dates": sorted(self._answer_date_claims(conflicting)),
+                            "date_claims": date_claims,
+                            "reason": reason,
+                        }
+                    )
+                    if len(conflicts) >= 3:
+                        return conflicts
+                    continue
+                claim_conflict = self._answer_claim_conflict(left, right, citation_by_id)
+                if claim_conflict:
+                    conflicts.append(claim_conflict)
+                if len(conflicts) >= 3:
+                    return conflicts
+        return conflicts
+
+    def _answer_items_share_scope(self, query_terms: set[str], left: dict[str, Any], right: dict[str, Any]) -> bool:
+        left_sector = str(left.get("sector") or "").strip().casefold()
+        right_sector = str(right.get("sector") or "").strip().casefold()
+        if left_sector and right_sector and left_sector == right_sector:
+            return True
+
+        left_entities = {str(value) for value in left.get("entity_ids") or [] if str(value)}
+        right_entities = {str(value) for value in right.get("entity_ids") or [] if str(value)}
+        if left_entities & right_entities:
+            return True
+
+        left_topics = {str(value).casefold() for value in left.get("topics") or [] if str(value)}
+        right_topics = {str(value).casefold() for value in right.get("topics") or [] if str(value)}
+        if len(left_topics & right_topics) >= 2:
+            return True
+
+        if query_terms:
+            left_matches = self._item_matched_query_terms(left, list(query_terms))
+            right_matches = self._item_matched_query_terms(right, list(query_terms))
+            return len(left_matches & right_matches) >= min(3, max(2, len(query_terms) // 2))
+        return False
+
+    def _answer_date_claims(self, item: dict[str, Any]) -> set[str]:
+        text = " ".join(str(item.get(key) or "") for key in ("content", "summary", "raw_excerpt"))
+        dates: set[str] = set()
+        for match in ANSWER_DATE_CLAIM_RE.finditer(text):
+            value = match.group(0).casefold()
+            value = re.sub(r"\b(\d{1,2})(?:st|nd|rd|th)\b", r"\1", value)
+            value = re.sub(r",\s*", " ", value)
+            dates.add(re.sub(r"\s+", " ", value).strip())
+        return dates
+
+    def _answer_claim_conflict(
+        self,
+        left: dict[str, Any],
+        right: dict[str, Any],
+        citation_by_id: dict[str, dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        left_claims = self._answer_field_claims(left)
+        right_claims = self._answer_field_claims(right)
+        for claim_key, left_value in left_claims.items():
+            right_value = right_claims.get(claim_key)
+            if not right_value or left_value == right_value:
+                continue
+            primary, conflicting, reason = self._answer_current_item(left, right)
+            primary_id = str(primary.get("id") or "")
+            conflicting_id = str(conflicting.get("id") or "")
+            primary_citation = citation_by_id.get(primary_id, {})
+            conflicting_citation = citation_by_id.get(conflicting_id, {})
+            primary_claims = self._answer_field_claims(primary)
+            conflicting_claims = self._answer_field_claims(conflicting)
+            return {
+                "type": "claim_conflict",
+                "message": "Cited sources disagree on the same decision claim.",
+                "claim_key": claim_key,
+                "primary_id": primary_id,
+                "primary_index": primary_citation.get("index"),
+                "primary_source": primary_citation.get("source") or primary.get("source"),
+                "primary_source_url": primary_citation.get("source_url") or primary.get("source_url"),
+                "primary_claim": primary_claims.get(claim_key),
+                "conflicting_id": conflicting_id,
+                "conflicting_index": conflicting_citation.get("index"),
+                "conflicting_source": conflicting_citation.get("source") or conflicting.get("source"),
+                "conflicting_source_url": conflicting_citation.get("source_url") or conflicting.get("source_url"),
+                "conflicting_claim": conflicting_claims.get(claim_key),
+                "reason": reason,
+            }
+        return None
+
+    def _answer_field_claims(self, item: dict[str, Any]) -> dict[str, str]:
+        text = " ".join(str(item.get(key) or "") for key in ("content", "summary", "raw_excerpt"))
+        claims: dict[str, str] = {}
+        for match in ANSWER_CLAIM_RE.finditer(text):
+            field = re.sub(r"\s+", " ", match.group("field").casefold()).strip()
+            value = self._normalize_answer_claim_value(match.group("value"))
+            if field and value:
+                claims[field] = value
+        return claims
+
+    def _normalize_answer_claim_value(self, value: str) -> str:
+        normalized = re.sub(r"\s+", " ", str(value or "").casefold()).strip(" .,:;")
+        normalized = re.sub(r"^(?:the|a|an)\s+", "", normalized)
+        normalized = re.split(
+            r"\b(?:according to|because|before|after|for now|from|in the|instead of|rather than|until|with)\b",
+            normalized,
+            maxsplit=1,
+        )[0].strip(" .,:;")
+        return normalized[:120]
+
+    def _answer_current_item(self, left: dict[str, Any], right: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], str]:
+        left_authority = self._answer_authority_score(left)
+        right_authority = self._answer_authority_score(right)
+        if abs(left_authority - right_authority) >= 3:
+            if left_authority > right_authority:
+                return left, right, "trusted_canonical_source"
+            return right, left, "trusted_canonical_source"
+
+        left_time = _parse_iso_timestamp(str(left.get("occurred_at") or left.get("captured_at") or ""))
+        right_time = _parse_iso_timestamp(str(right.get("occurred_at") or right.get("captured_at") or ""))
+        if left_time and right_time and left_time != right_time:
+            if left_time > right_time:
+                return left, right, "newer_timestamp"
+            return right, left, "newer_timestamp"
+
+        left_current = self._answer_current_language_score(left)
+        right_current = self._answer_current_language_score(right)
+        if left_current != right_current:
+            if left_current > right_current:
+                return left, right, "current_language"
+            return right, left, "current_language"
+
+        return left, right, "ranking_order"
+
+    def _answer_authority_score(self, item: dict[str, Any]) -> int:
+        provenance = item.get("provenance") if isinstance(item.get("provenance"), dict) else {}
+        account_policy = provenance.get("source_account_policy") if isinstance(provenance.get("source_account_policy"), dict) else {}
+        metadata = provenance.get("record_metadata") if isinstance(provenance.get("record_metadata"), dict) else {}
+        score = 0
+        if _normalize_source_key(str(account_policy.get("mode") or "")) == "trusted":
+            score += 3
+
+        quality_values = {
+            str(metadata.get(key) or "").strip().lower()
+            for key in ("source_quality", "quality", "trust", "trust_level", "verification")
+        }
+        if any(value in {"trusted", "high", "canonical", "verified"} for value in quality_values):
+            score += 2
+        if any(bool(metadata.get(key)) for key in ("trusted_source", "verified", "canonical")):
+            score += 2
+        if any(value in {"stale", "draft", "deprecated", "outdated", "noisy", "low"} for value in quality_values):
+            score -= 2
+        return score
+
+    def _answer_current_language_score(self, item: dict[str, Any]) -> int:
+        text = str(item.get("content") or item.get("summary") or "").casefold()
+        score = 0
+        for marker in ("now", "current", "currently", "updated", "moved", "changed", "instead", "supersedes", "replaces"):
+            if marker in text:
+                score += 1
+        return score
+
+    def _answer_support_query(self, query: str) -> str:
+        tokens = [token.strip("_") for token in re.findall(r"[a-z0-9_]+", query.lower().replace("'", ""))]
+        if not any(token in ANSWER_REASON_TERMS for token in tokens):
+            return ""
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for token in tokens:
+            if (
+                not token
+                or token in QUERY_FTS_STOPWORDS
+                or token in ANSWER_SUPPORT_QUERY_EXCLUDE
+                or len(token) < 3
+            ):
+                continue
+            if token not in seen:
+                seen.add(token)
+                normalized.append(token)
+        if len(normalized) < 2:
+            return ""
+        return " ".join(normalized[:8])
 
     def _has_source_citation(self, item: dict[str, Any]) -> bool:
         source_url = str(item.get("source_url") or "").strip()
@@ -7676,6 +9304,11 @@ class CortexStore:
         primary = primary_by_id.get(related_to_id)
         if not primary:
             return False
+        relation_kind = str(relationship.get("kind") or "").strip()
+        if relation_kind == "canvas_edge":
+            return True
+        if relation_kind == "obsidian_link":
+            return True
 
         item_sector = str(item.get("sector") or "").strip().casefold()
         primary_sector = str(primary.get("sector") or "").strip().casefold()
@@ -7889,6 +9522,781 @@ class CortexStore:
             if any(entity_id.endswith(entity_suffix) for entity_id in item.get("entity_ids", []))
             or name.lower() in item.get("content", "").lower()
         ]
+
+    def person_context(self, user_id: str, name: str, *, limit: int = 8) -> dict[str, Any]:
+        name = str(name or "").strip()
+        limit = max(1, min(20, int(limit)))
+        slug = "person_" + re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+        redact_sensitive = bool(self.settings(user_id)["redact_sensitive_context"])
+        with connect(self.db_path) as conn:
+            user_settings = self._settings(conn, user_id)
+            entity_row = self._person_entity_row(conn, user_id, name, slug)
+            entity = self._entity_from_row(entity_row) if entity_row else None
+            open_commitments: list[dict[str, Any]] = []
+            if entity:
+                task_filters, task_params = self._task_filters(user_id, user_settings, alias="t", capture_alias="c")
+                task_where = " AND ".join(task_filters)
+                task_rows = conn.execute(
+                    f"""
+                    SELECT
+                      t.*,
+                      c.source AS capture_source,
+                      c.source_url AS capture_source_url,
+                      c.title AS capture_title,
+                      c.source_account_id AS capture_source_account_id,
+                      c.external_id AS capture_external_id,
+                      c.raw_text AS capture_raw_text
+                    FROM tasks t
+                    JOIN task_entities te ON te.task_id = t.id AND te.user_id = t.user_id
+                    LEFT JOIN captures c ON c.id = t.capture_id AND c.user_id = t.user_id
+                    WHERE te.entity_id = ? AND {task_where}
+                    ORDER BY t.importance DESC, t.captured_at DESC
+                    LIMIT ?
+                    """,
+                    [entity["id"], *task_params, limit],
+                ).fetchall()
+                open_commitments = [self._task_from_row(row) for row in task_rows]
+        memories: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        linked_memories = self._person_linked_memories(user_id, entity["id"], limit=limit * 2) if entity else []
+        fallback_memories = self.about_person(user_id, name, limit=limit) if name else []
+        for item in [*linked_memories, *fallback_memories]:
+            memory_id = str(item.get("id") or "")
+            if memory_id in seen_ids:
+                continue
+            seen_ids.add(memory_id)
+            memories.append(item)
+        resolved = bool(entity) or bool(memories)
+        decisions = [item for item in memories if item.get("kind") == "decision"][:limit]
+        decision_ids = {str(item.get("id") or "") for item in decisions}
+        recent_context = [item for item in memories if str(item.get("id") or "") not in decision_ids][:limit]
+        interaction_times = [
+            str(item.get("occurred_at") or item.get("captured_at") or "")
+            for item in memories
+            if item.get("layer") == "episodic" or item.get("kind") == "event"
+        ]
+        interaction_times = [value for value in interaction_times if value]
+        topic_counts: dict[str, int] = {}
+        for item in memories:
+            for topic in item.get("topics") or []:
+                topic_counts[str(topic)] = topic_counts.get(str(topic), 0) + 1
+        top_topics = [
+            {"topic": topic, "count": count}
+            for topic, count in sorted(topic_counts.items(), key=lambda entry: (-entry[1], entry[0]))[:8]
+        ]
+        citation_index = 0
+        cited_commitments: list[dict[str, Any]] = []
+        for item in open_commitments:
+            citation_index += 1
+            cited_commitments.append({**item, "citation": self._person_context_citation(item, citation_index, redact_sensitive=redact_sensitive)})
+        cited_decisions: list[dict[str, Any]] = []
+        for item in decisions:
+            citation_index += 1
+            cited_decisions.append({**item, "citation": self._person_context_citation(item, citation_index, redact_sensitive=redact_sensitive)})
+        cited_context: list[dict[str, Any]] = []
+        for item in recent_context:
+            citation_index += 1
+            cited_context.append({**item, "citation": self._person_context_citation(item, citation_index, redact_sensitive=redact_sensitive)})
+        with connect(self.db_path) as conn:
+            self._event(
+                conn,
+                user_id,
+                entity["id"] if entity else slug,
+                "entity",
+                "person_context",
+                {
+                    "name": name[:80],
+                    "resolved": resolved,
+                    "memory_count": len(memories),
+                    "open_commitment_count": len(open_commitments),
+                    "decision_count": len(decisions),
+                },
+            )
+        payload = {
+            "person": {
+                "id": entity["id"] if entity else None,
+                "name": entity["name"] if entity else name,
+                "aliases": entity["aliases"] if entity else [],
+                "last_seen": entity["last_seen"] if entity else None,
+            },
+            "resolved": resolved,
+            "last_interaction": max(interaction_times) if interaction_times else None,
+            "open_commitments": cited_commitments,
+            "decisions": cited_decisions,
+            "recent_context": cited_context,
+            "top_topics": top_topics,
+        }
+        return self._shared_payload(payload, redact_sensitive=redact_sensitive)
+
+    def _person_entity_row(self, conn, user_id: str, name: str, slug: str):
+        target = name.strip().casefold()
+        if not target:
+            return None
+        alias_row = None
+        for row in conn.execute(
+            "SELECT * FROM entities WHERE user_id = ? AND kind = 'person' ORDER BY last_seen DESC, id",
+            (user_id,),
+        ).fetchall():
+            if row["id"] == slug or str(row["name"] or "").strip().casefold() == target:
+                return row
+            if alias_row is None and any(str(alias or "").strip().casefold() == target for alias in json.loads(row["aliases_json"] or "[]")):
+                alias_row = row
+        return alias_row
+
+    def _person_linked_memories(
+        self,
+        user_id: str,
+        entity_id: str,
+        *,
+        limit: int,
+        sector: str | None = None,
+        source: str | None = None,
+        source_account_id: str | None = None,
+        metadata_filters: dict[str, Any] | None = None,
+        as_of: str | None = None,
+    ) -> list[dict[str, Any]]:
+        with connect(self.db_path) as conn:
+            user_settings = self._settings(conn, user_id)
+            filters, params = self._memory_filters(
+                user_id,
+                user_settings,
+                alias="m",
+                sector=sector,
+                source=source,
+                source_account_id=source_account_id,
+                metadata_filters=metadata_filters,
+                as_of=as_of,
+            )
+            where = " AND ".join(filters)
+            rows = conn.execute(
+                f"""
+                SELECT m.*
+                FROM memories m
+                JOIN memory_entities me ON me.memory_id = m.id AND me.user_id = m.user_id
+                WHERE me.entity_id = ? AND {where}
+                ORDER BY m.captured_at DESC
+                LIMIT ?
+                """,
+                [entity_id, *params, limit],
+            ).fetchall()
+        return [self._memory_from_row(row) for row in rows]
+
+    def _person_context_citation(self, item: dict[str, Any], index: int, *, redact_sensitive: bool) -> dict[str, Any]:
+        result_type = item.get("result_type") or "memory"
+        provenance = item.get("provenance") if isinstance(item.get("provenance"), dict) else {}
+        excerpt = self._shared_text(item.get("content") or item.get("summary") or "", redact_sensitive=redact_sensitive)
+        return {
+            "index": index,
+            "id": item["id"],
+            "result_type": result_type,
+            "kind": item["kind"],
+            "layer": item.get("layer") or result_type,
+            "status": item.get("status"),
+            "source": item["source"],
+            "source_url": self._safe_source_locator(item.get("source_url"), force_local=True),
+            **self._citation_metadata(item, provenance),
+            "captured_at": item.get("captured_at"),
+            "occurred_at": item.get("occurred_at"),
+            "excerpt": self._answer_excerpt(excerpt),
+            "topics": item.get("topics") or [],
+            "relationship": item.get("relationship"),
+        }
+
+    def _query_person_entity(self, user_id: str, query: str) -> dict[str, Any] | None:
+        # The implicit Ask hook only fires for person-briefing intent. Generic
+        # queries routinely contain capitalized tokens (projects, products)
+        # that the extractor may have classified as person entities; merging
+        # person context into those would reorder unrelated answers.
+        if not _PERSON_QUERY_INTENT_RE.search(str(query or "")):
+            return None
+        stop = {"I", "The", "This", "That", "We", "You", "Next", "Open"}
+        candidates: list[str] = []
+        for match in re.findall(r"\b[A-Z][a-zA-Z0-9]+(?:\s+[A-Z][a-zA-Z0-9]+){0,3}\b", str(query or "")):
+            for candidate in (match, *match.split()):
+                if candidate not in stop and len(candidate) >= 3 and candidate not in candidates:
+                    candidates.append(candidate)
+        if not candidates:
+            return None
+        with connect(self.db_path) as conn:
+            for candidate in candidates:
+                slug = "person_" + re.sub(r"[^a-z0-9]+", "-", candidate.lower()).strip("-")
+                row = self._person_entity_row(conn, user_id, candidate, slug)
+                if row:
+                    return self._entity_from_row(row)
+        return None
+
+    def decision_history(
+        self,
+        user_id: str,
+        query: str = "",
+        *,
+        limit: int = 12,
+        sector: str | None = None,
+        include_superseded: bool = True,
+        as_of: str | None = None,
+    ) -> dict[str, Any]:
+        query = str(query or "").strip()
+        limit = max(1, min(30, int(limit)))
+        sector = _normalize_sector_filter(sector) or None
+        redact_sensitive = bool(self.settings(user_id)["redact_sensitive_context"])
+        current = self._decision_history_memories(
+            user_id,
+            query=query,
+            limit=limit,
+            sector=sector,
+            superseded_only=False,
+            include_superseded=False,
+            as_of=as_of,
+        )
+        superseded = (
+            self._decision_history_memories(
+                user_id,
+                query=query,
+                limit=limit,
+                sector=sector,
+                superseded_only=True,
+                include_superseded=True,
+                as_of=as_of,
+            )
+            if include_superseded
+            else []
+        )
+        seen: set[str] = set()
+        timeline = []
+        for item in sorted(
+            [*current, *superseded],
+            key=lambda memory: str(memory.get("occurred_at") or memory.get("captured_at") or ""),
+            reverse=True,
+        ):
+            memory_id = str(item.get("id") or "")
+            if memory_id in seen:
+                continue
+            seen.add(memory_id)
+            timeline.append(item)
+        topic_counts: dict[str, int] = {}
+        for item in timeline:
+            for topic in item.get("topics") or []:
+                topic_counts[str(topic)] = topic_counts.get(str(topic), 0) + 1
+        citation_index = 0
+
+        def cite(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            nonlocal citation_index
+            cited: list[dict[str, Any]] = []
+            for item in items:
+                citation_index += 1
+                cited.append({**item, "citation": self._person_context_citation(item, citation_index, redact_sensitive=redact_sensitive)})
+            return cited
+
+        cited_current = cite(current)
+        cited_superseded = cite(superseded)
+        timeline_by_id = {item["id"]: item for item in [*cited_current, *cited_superseded]}
+        cited_timeline = [timeline_by_id[item["id"]] for item in timeline if item["id"] in timeline_by_id]
+        with connect(self.db_path) as conn:
+            self._event(
+                conn,
+                user_id,
+                "decision_history",
+                "memory",
+                "decision_history",
+                {
+                    "query": query[:160],
+                    "sector": sector,
+                    "current_count": len(current),
+                    "superseded_count": len(superseded),
+                },
+            )
+        return self._shared_payload(
+            {
+                "query": query,
+                "sector": sector,
+                "generated_at": now_iso(),
+                "current_decisions": cited_current,
+                "superseded_decisions": cited_superseded,
+                "timeline": cited_timeline,
+                "top_topics": [
+                    {"topic": topic, "count": count}
+                    for topic, count in sorted(topic_counts.items(), key=lambda entry: (-entry[1], entry[0]))[:10]
+                ],
+                "counts": {
+                    "current": len(current),
+                    "superseded": len(superseded),
+                    "timeline": len(cited_timeline),
+                },
+            },
+            redact_sensitive=redact_sensitive,
+        )
+
+    def _decision_history_memories(
+        self,
+        user_id: str,
+        *,
+        query: str,
+        limit: int,
+        sector: str | None,
+        superseded_only: bool,
+        include_superseded: bool,
+        as_of: str | None,
+    ) -> list[dict[str, Any]]:
+        if query and not superseded_only and not include_superseded:
+            return self.search(user_id, query, limit=limit, kind="decision", sector=sector, as_of=as_of)
+        with connect(self.db_path) as conn:
+            user_settings = self._settings(conn, user_id)
+            filters, params = self._memory_filters(user_id, user_settings, alias="m", kind="decision", sector=sector, as_of=as_of)
+            if include_superseded:
+                filters = [item for item in filters if item != "(m.superseded_by IS NULL OR m.superseded_by = '')"]
+            if superseded_only:
+                filters.append("COALESCE(m.superseded_by, '') != ''")
+            elif not include_superseded:
+                filters.append("COALESCE(m.superseded_by, '') = ''")
+            if query:
+                terms = [term for term in self._lexical_fallback_terms(query, limit=6) if len(term) >= 3]
+                if terms:
+                    like_clauses = []
+                    for term in terms:
+                        like_clauses.append("(lower(m.content) LIKE ? OR lower(m.summary) LIKE ? OR lower(m.source) LIKE ? OR lower(COALESCE(m.sector, '')) LIKE ?)")
+                        value = f"%{term.lower()}%"
+                        params.extend([value, value, value, value])
+                    filters.append(f"({' OR '.join(like_clauses)})")
+            where = " AND ".join(filters)
+            rows = conn.execute(
+                f"""
+                SELECT m.*
+                FROM memories m
+                LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
+                WHERE {where}
+                ORDER BY COALESCE(m.occurred_at, m.captured_at) DESC, m.importance DESC, m.captured_at DESC
+                LIMIT ?
+                """,
+                [*params, limit],
+            ).fetchall()
+        return [self._memory_from_row(row) for row in rows]
+
+    def action_brief(
+        self,
+        user_id: str,
+        task: str,
+        *,
+        limit: int = 8,
+        sector: str | None = None,
+        as_of: str | None = None,
+    ) -> dict[str, Any]:
+        task = str(task or "").strip()
+        limit = max(1, min(20, int(limit)))
+        sector = _normalize_sector_filter(sector) or None
+        redact_sensitive = bool(self.settings(user_id)["redact_sensitive_context"])
+        primary = self.search(user_id, task, limit=limit, sector=sector, include_related=True, as_of=as_of) if task else []
+
+        def section_search(
+            *,
+            layer: str | None = None,
+            kind: str | None = None,
+            fallback_query: str,
+            section_limit: int,
+        ) -> list[dict[str, Any]]:
+            items = self.search(user_id, task, limit=section_limit, kind=kind, layer=layer, sector=sector, as_of=as_of) if task else []
+            if not items:
+                items = self.search(user_id, fallback_query, limit=section_limit, kind=kind, layer=layer, sector=sector, as_of=as_of)
+            if not items:
+                items = self.search(user_id, "", limit=section_limit, kind=kind, layer=layer, sector=sector, as_of=as_of)
+            return items
+
+        procedures = section_search(layer="procedural", fallback_query="procedure checklist workflow", section_limit=min(limit, 6))
+        decisions = section_search(kind="decision", fallback_query="decision", section_limit=min(limit, 6))
+        preferences = section_search(layer="preference", fallback_query="preference prefer default", section_limit=min(limit, 6))
+        negative_constraints = section_search(layer="negative", fallback_query="avoid reject dislike constraint", section_limit=min(limit, 6))
+        style = section_search(layer="style", fallback_query="writing style tone phrasing", section_limit=min(limit, 4))
+        with connect(self.db_path) as conn:
+            task_rows = self._task_search_rows(
+                conn,
+                user_id,
+                f"{task} next action todo follow up",
+                min(limit, 6),
+                "action",
+                self._settings(conn, user_id),
+            )
+        open_actions = [self._task_search_result_from_row(row) for row in task_rows]
+
+        citation_index = 0
+
+        def cite_section(items: list[dict[str, Any]], section: str, max_items: int) -> list[dict[str, Any]]:
+            nonlocal citation_index
+            cited: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for item in items:
+                memory_id = str(item.get("id") or "")
+                if not memory_id or memory_id in seen:
+                    continue
+                seen.add(memory_id)
+                citation_index += 1
+                cited.append(
+                    {
+                        **item,
+                        "brief_section": section,
+                        "citation": self._person_context_citation(item, citation_index, redact_sensitive=redact_sensitive),
+                    }
+                )
+                if len(cited) >= max_items:
+                    break
+            return cited
+
+        cited_primary = cite_section(primary, "primary_context", limit)
+        cited_procedures = cite_section(procedures, "procedures", min(limit, 6))
+        cited_decisions = cite_section(decisions, "current_decisions", min(limit, 6))
+        cited_preferences = cite_section(preferences, "preferences", min(limit, 6))
+        cited_negative = cite_section(negative_constraints, "negative_constraints", min(limit, 6))
+        cited_style = cite_section(style, "style_signals", min(limit, 4))
+        cited_open_actions = cite_section(open_actions, "open_actions", min(limit, 6))
+        sections = {
+            "primary_context": cited_primary,
+            "open_actions": cited_open_actions,
+            "procedures": cited_procedures,
+            "current_decisions": cited_decisions,
+            "preferences": cited_preferences,
+            "negative_constraints": cited_negative,
+            "style_signals": cited_style,
+        }
+        all_items = [item for values in sections.values() for item in values]
+        unique_items = {str(item.get("id") or ""): item for item in all_items if str(item.get("id") or "")}
+        cited_count = sum(1 for item in unique_items.values() if self._has_source_citation(item))
+        source_counts: dict[str, int] = {}
+        for item in unique_items.values():
+            source = str(item.get("source") or "unknown")
+            source_counts[source] = source_counts.get(source, 0) + 1
+        risk_flags: list[dict[str, str]] = []
+        if not cited_primary:
+            risk_flags.append({"code": "no_primary_context", "message": "No directly relevant approved memory was found for this task."})
+        if not cited_procedures:
+            risk_flags.append({"code": "no_known_procedure", "message": "No known procedure was found; ask before taking irreversible steps."})
+        if not cited_decisions:
+            risk_flags.append({"code": "no_prior_decision", "message": "No prior decision was found for this task or sector."})
+        if cited_negative:
+            risk_flags.append({"code": "constraints_present", "message": "Negative memory exists; avoid the listed rejected patterns."})
+        if unique_items and cited_count < len(unique_items):
+            risk_flags.append({"code": "citation_gap", "message": "Some retrieved memories do not have precise source URLs."})
+        status = "strong" if cited_count >= 4 and (cited_procedures or cited_decisions) else "usable" if cited_count >= 2 else "limited"
+        next_actions: list[str] = []
+        if cited_negative:
+            next_actions.append("Start by checking the negative constraints so the action avoids known rejected patterns.")
+        if cited_decisions:
+            next_actions.append("Use the current decisions as the policy boundary for the task.")
+        if cited_procedures:
+            next_actions.append("Follow the cited procedure before improvising a new workflow.")
+        if cited_open_actions:
+            next_actions.append("Work through the cited open actions in priority order before adding new tasks.")
+        if cited_preferences or cited_style:
+            next_actions.append("Shape the output using the cited preferences and style signals.")
+        if status == "limited":
+            next_actions.append("Ask the user for confirmation before taking action because Cortex has limited cited context.")
+        if not next_actions:
+            next_actions.append("Ask for more context before acting.")
+        instructions = [
+            "Use this brief as cited working context for the requested action.",
+            "Prefer current decisions and procedures over generic memories.",
+            "Honor negative constraints before style or preference signals.",
+            "Treat open actions as the concrete queue, then use procedures and decisions to execute them.",
+            "If the brief is limited or lacks a known procedure, ask for confirmation before acting.",
+            "Keep citation IDs attached to any action rationale passed to another tool or AI surface.",
+        ]
+        action_plan = self._action_brief_plan(
+            open_actions=cited_open_actions,
+            procedures=cited_procedures,
+            decisions=cited_decisions,
+            negative_constraints=cited_negative,
+            preferences=cited_preferences,
+            style=cited_style,
+        )
+        execution_checklist = self._action_brief_execution_checklist(
+            open_actions=cited_open_actions,
+            procedures=cited_procedures,
+            decisions=cited_decisions,
+            negative_constraints=cited_negative,
+            action_plan=action_plan,
+        )
+        payload: dict[str, Any] = {
+            "generated_at": now_iso(),
+            "task": task,
+            "sector": sector,
+            "status": status,
+            "instructions": instructions,
+            "next_actions": next_actions,
+            "coverage": {
+                "unique_memories": len(unique_items),
+                "cited_memories": cited_count,
+                "source_mix": [{"source": source, "count": count} for source, count in sorted(source_counts.items(), key=lambda entry: (-entry[1], entry[0]))],
+                "sections": {name: len(items) for name, items in sections.items()},
+            },
+            "risk_flags": risk_flags,
+            "action_plan": action_plan,
+            "execution_checklist": execution_checklist,
+            **sections,
+        }
+        payload["markdown"] = self._action_brief_markdown(payload)
+        with connect(self.db_path) as conn:
+            self._event(
+                conn,
+                user_id,
+                "action_brief",
+                "memory",
+                "action_brief",
+                {
+                    "task": task[:160],
+                    "sector": sector,
+                    "status": status,
+                    "cited_memories": cited_count,
+                    "risk_flags": [item["code"] for item in risk_flags],
+                },
+            )
+        return self._shared_payload(payload, redact_sensitive=redact_sensitive)
+
+    def _action_brief_plan(
+        self,
+        *,
+        open_actions: list[dict[str, Any]],
+        procedures: list[dict[str, Any]],
+        decisions: list[dict[str, Any]],
+        negative_constraints: list[dict[str, Any]],
+        preferences: list[dict[str, Any]],
+        style: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        plan: list[dict[str, Any]] = []
+
+        def add_item(section: str, action: str, item: dict[str, Any], reason: str, priority: int) -> None:
+            if not action.strip():
+                return
+            citation = item.get("citation") if isinstance(item.get("citation"), dict) else {}
+            plan.append(
+                {
+                    "rank": 0,
+                    "section": section,
+                    "action": action.strip(),
+                    "reason": reason,
+                    "priority": priority,
+                    "evidence_id": item.get("id"),
+                    "citation": citation,
+                }
+            )
+
+        for item in negative_constraints[:2]:
+            add_item(
+                "negative_constraints",
+                f"Check constraint before acting: {item.get('content') or item.get('summary') or ''}",
+                item,
+                "Avoids a known rejected pattern before work begins.",
+                100 + int(item.get("importance") or 3),
+            )
+        for item in open_actions:
+            add_item(
+                "open_actions",
+                item.get("content") or item.get("summary") or "",
+                item,
+                "Open task captured from source data.",
+                90 + int(item.get("importance") or 3),
+            )
+        for item in procedures[:2]:
+            add_item(
+                "procedures",
+                f"Follow procedure: {item.get('content') or item.get('summary') or ''}",
+                item,
+                "Known workflow for executing this kind of task.",
+                80 + int(item.get("importance") or 3),
+            )
+        for item in decisions[:2]:
+            add_item(
+                "current_decisions",
+                f"Apply decision boundary: {item.get('content') or item.get('summary') or ''}",
+                item,
+                "Prior decision constrains the action.",
+                70 + int(item.get("importance") or 3),
+            )
+        for item in preferences[:1]:
+            add_item(
+                "preferences",
+                f"Apply preference: {item.get('content') or item.get('summary') or ''}",
+                item,
+                "User preference affects how the action should be shaped.",
+                60 + int(item.get("importance") or 3),
+            )
+        for item in style[:1]:
+            add_item(
+                "style_signals",
+                f"Use style signal: {item.get('content') or item.get('summary') or ''}",
+                item,
+                "Writing style affects the output surface.",
+                50 + int(item.get("importance") or 3),
+            )
+        plan.sort(key=lambda item: (-int(item["priority"]), str(item["action"])))
+        for index, item in enumerate(plan[:8], start=1):
+            item["rank"] = index
+        return plan[:8]
+
+    def _action_brief_execution_checklist(
+        self,
+        *,
+        open_actions: list[dict[str, Any]],
+        procedures: list[dict[str, Any]],
+        decisions: list[dict[str, Any]],
+        negative_constraints: list[dict[str, Any]],
+        action_plan: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        checklist: list[dict[str, Any]] = []
+        seen_steps: set[str] = set()
+
+        def add_step(phase: str, step: str, item: dict[str, Any] | None, reason: str, required: bool = True) -> None:
+            clean = self._clean_action_brief_step(step)
+            if not clean:
+                return
+            signature = re.sub(r"[^a-z0-9]+", " ", clean.casefold()).strip()
+            if not signature or signature in seen_steps:
+                return
+            seen_steps.add(signature)
+            citation = item.get("citation") if isinstance(item, dict) and isinstance(item.get("citation"), dict) else {}
+            checklist.append(
+                {
+                    "rank": 0,
+                    "phase": phase,
+                    "step": clean,
+                    "reason": reason,
+                    "required": required,
+                    "evidence_id": item.get("id") if isinstance(item, dict) else None,
+                    "citation": citation,
+                }
+            )
+
+        for item in negative_constraints[:2]:
+            add_step(
+                "guardrails",
+                f"Confirm this constraint is not violated: {item.get('content') or item.get('summary') or ''}",
+                item,
+                "Known rejected patterns should block or reshape the work before execution.",
+            )
+        for item in decisions[:2]:
+            add_step(
+                "decision_boundary",
+                f"Apply this decision boundary: {item.get('content') or item.get('summary') or ''}",
+                item,
+                "Prior decisions define what the agent should not reopen without approval.",
+            )
+        for item in procedures[:3]:
+            procedure_steps = self._action_brief_procedure_steps(item.get("content") or item.get("summary") or "")
+            for step in procedure_steps[:5]:
+                add_step(
+                    "procedure",
+                    step,
+                    item,
+                    "Cited procedure step for executing this task.",
+                )
+        for item in open_actions[:4]:
+            add_step(
+                "open_action",
+                f"Complete open action: {item.get('content') or item.get('summary') or ''}",
+                item,
+                "Concrete open task from connected source data.",
+            )
+        verification_source = next((item for item in [*procedures, *open_actions, *action_plan] if isinstance(item, dict)), None)
+        if checklist:
+            add_step(
+                "verification",
+                "Before handoff, cite what changed, what remains open, and which checklist steps were completed.",
+                verification_source,
+                "Keeps downstream AI/tool use grounded in auditable evidence.",
+            )
+        for index, item in enumerate(checklist[:12], start=1):
+            item["rank"] = index
+        return checklist[:12]
+
+    def _action_brief_procedure_steps(self, text: str) -> list[str]:
+        text = str(text or "").strip()
+        text = re.sub(r"(?i)^\s*(?:procedure|runbook|checklist|workflow)\s*:\s*", "", text).strip()
+        if not text:
+            return []
+        lines = [line.strip(" \t-*0123456789.)") for line in text.splitlines() if line.strip()]
+        candidates: list[str] = []
+        for line in lines or [text]:
+            normalized = re.sub(r"(?i)\b(?:and then|then)\b", ";", line)
+            normalized = re.sub(
+                r",\s*(?=(?:approve|ask|back up|backup|build|check|confirm|connect|create|export|invite|review|run|send|sync|test|verify)\b)",
+                "; ",
+                normalized,
+            )
+            parts = [part.strip(" .,:;") for part in normalized.split(";") if part.strip(" .,:;")]
+            candidates.extend(parts or [line.strip(" .,:;")])
+        steps: list[str] = []
+        for candidate in candidates:
+            clean = self._clean_action_brief_step(candidate)
+            if not clean:
+                continue
+            if len(clean) > 180:
+                clean = clean[:177].rstrip() + "..."
+            if clean not in steps:
+                steps.append(clean)
+        return steps[:8]
+
+    def _clean_action_brief_step(self, value: str) -> str:
+        clean = re.sub(r"\s+", " ", str(value or "")).strip(" .,:;")
+        clean = re.sub(r"(?i)^before\s+[^,]{3,120},\s*", "", clean).strip(" .,:;")
+        if not clean:
+            return ""
+        return clean[:220]
+
+    def _action_brief_markdown(self, brief: dict[str, Any]) -> str:
+        lines = [
+            "# Cortex Action Brief",
+            "",
+            f"Generated: {brief['generated_at']}",
+            f"Task: {brief.get('task') or 'unspecified'}",
+            f"Status: {brief['status']}",
+        ]
+        if brief.get("sector"):
+            lines.append(f"Sector: {brief['sector']}")
+        lines.extend(["", "## Instructions", ""])
+        for instruction in brief.get("instructions") or []:
+            lines.append(f"- {instruction}")
+        if brief.get("next_actions"):
+            lines.extend(["", "## Next Actions", ""])
+            for action in brief["next_actions"]:
+                lines.append(f"- {action}")
+        if brief.get("risk_flags"):
+            lines.extend(["", "## Risk Flags", ""])
+            for flag in brief["risk_flags"]:
+                lines.append(f"- {flag['code']}: {flag['message']}")
+        if brief.get("action_plan"):
+            lines.extend(["", "## Action Plan", ""])
+            for item in brief["action_plan"]:
+                citation = item.get("citation") if isinstance(item.get("citation"), dict) else {}
+                source = citation.get("source_url") or "unknown source"
+                lines.append(f"- {item['rank']}. {item['action']} Reason: {item['reason']} Source: {source}.")
+        if brief.get("execution_checklist"):
+            lines.extend(["", "## Execution Checklist", ""])
+            for item in brief["execution_checklist"]:
+                citation = item.get("citation") if isinstance(item.get("citation"), dict) else {}
+                source = citation.get("source_url") or "unknown source"
+                required = "required" if item.get("required", True) else "optional"
+                lines.append(f"- {item['rank']}. [{item['phase']}, {required}] {item['step']} Source: {source}.")
+        for key, title in (
+            ("primary_context", "Primary Context"),
+            ("open_actions", "Open Actions"),
+            ("procedures", "Procedures"),
+            ("current_decisions", "Current Decisions"),
+            ("preferences", "Preferences"),
+            ("negative_constraints", "Negative Constraints"),
+            ("style_signals", "Style Signals"),
+        ):
+            lines.extend(["", f"## {title}", ""])
+            items = brief.get(key) or []
+            if not items:
+                lines.append("- No cited memory found.")
+                continue
+            for item in items:
+                citation = item.get("citation") if isinstance(item.get("citation"), dict) else {}
+                source = citation.get("source_url") or item.get("source_url") or item.get("source") or "unknown source"
+                lines.append(f"- [{item['id']}] {item.get('content') or item.get('summary') or ''} Source: {source}.")
+        lines.extend(["", "## Coverage", ""])
+        coverage = brief.get("coverage") or {}
+        lines.append(f"- Unique memories: {coverage.get('unique_memories', 0)}")
+        lines.append(f"- Cited memories: {coverage.get('cited_memories', 0)}")
+        if coverage.get("source_mix"):
+            lines.append("- Sources: " + ", ".join(f"{item['source']} ({item['count']})" for item in coverage["source_mix"]))
+        return "\n".join(lines)
 
     def archive_memory(self, user_id: str, memory_id: str) -> bool:
         timestamp = now_iso()
@@ -8206,70 +10614,94 @@ class CortexStore:
 
     def stats(self, user_id: str) -> dict[str, Any]:
         with connect(self.db_path) as conn:
+            user_settings = self._settings(conn, user_id)
+            stats_settings = {**user_settings, "allow_pending_in_context": False}
+            memory_filters, memory_params = self._memory_filters(user_id, stats_settings, alias="m")
+            memory_where = " AND ".join(memory_filters)
+            decision_filters, decision_params = self._memory_filters(user_id, stats_settings, alias="m", kind="decision")
+            decision_where = " AND ".join(decision_filters)
+            task_filters, task_params = self._task_filters(user_id, stats_settings, alias="t", capture_alias="c")
+            task_where = " AND ".join(task_filters)
             counts = {
                 "captures": conn.execute("SELECT COUNT(*) FROM captures WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "pending_captures": conn.execute("SELECT COUNT(*) FROM captures WHERE user_id = ? AND review_status = 'pending'", (user_id,)).fetchone()[0],
                 "memories": conn.execute(
-                    """
+                    f"""
                     SELECT COUNT(*)
                     FROM memories m
-                    LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
-                    WHERE m.user_id = ?
-                      AND m.status = 'active'
-                      AND (m.capture_id IS NULL OR c.review_status = 'approved')
+                    WHERE {memory_where}
                     """,
-                    (user_id,),
+                    memory_params,
                 ).fetchone()[0],
                 "decisions": conn.execute(
-                    """
+                    f"""
                     SELECT COUNT(*)
                     FROM memories m
-                    LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
-                    WHERE m.user_id = ?
-                      AND m.status = 'active'
-                      AND m.kind = 'decision'
-                      AND (m.capture_id IS NULL OR c.review_status = 'approved')
+                    WHERE {decision_where}
                     """,
-                    (user_id,),
+                    decision_params,
                 ).fetchone()[0],
                 "tasks": conn.execute(
-                    """
+                    f"""
                     SELECT COUNT(*)
                     FROM tasks t
                     LEFT JOIN captures c ON c.id = t.capture_id AND c.user_id = t.user_id
-                    WHERE t.user_id = ?
-                      AND t.status = 'open'
-                      AND (t.capture_id IS NULL OR c.review_status = 'approved')
+                    WHERE {task_where}
                     """,
-                    (user_id,),
+                    task_params,
                 ).fetchone()[0],
                 "entities": conn.execute(
-                    """
+                    f"""
                     SELECT COUNT(DISTINCT e.id)
                     FROM entities e
                     JOIN memory_entities me ON me.entity_id = e.id AND me.user_id = e.user_id
                     JOIN memories m ON m.id = me.memory_id AND m.user_id = me.user_id AND m.status = 'active'
-                    LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
-                    WHERE e.user_id = ?
-                      AND (m.capture_id IS NULL OR c.review_status = 'approved')
+                    WHERE e.user_id = ? AND {memory_where}
                     """,
-                    (user_id,),
+                    [user_id, *memory_params],
                 ).fetchone()[0],
                 "edges": conn.execute(
                     """
                     SELECT COUNT(*)
                     FROM graph_edges ge
                     LEFT JOIN captures c ON c.id = ge.evidence_id AND c.user_id = ge.user_id
+                    LEFT JOIN source_accounts csa ON csa.id = c.source_account_id AND csa.user_id = c.user_id
                     LEFT JOIN memories m ON m.id = ge.evidence_id AND m.user_id = ge.user_id
                     LEFT JOIN captures mc ON mc.id = m.capture_id AND mc.user_id = m.user_id
+                    LEFT JOIN source_accounts mcsa ON mcsa.id = mc.source_account_id AND mcsa.user_id = mc.user_id
                     LEFT JOIN tasks t ON t.id = ge.evidence_id AND t.user_id = ge.user_id
                     LEFT JOIN captures tc ON tc.id = t.capture_id AND tc.user_id = t.user_id
+                    LEFT JOIN source_accounts tcsa ON tcsa.id = tc.source_account_id AND tcsa.user_id = tc.user_id
                     WHERE ge.user_id = ?
                       AND (
                         ge.evidence_id IS NULL
-                        OR c.review_status = 'approved'
-                        OR (m.status = 'active' AND (m.capture_id IS NULL OR mc.review_status = 'approved'))
-                        OR (t.status = 'open' AND (t.capture_id IS NULL OR tc.review_status = 'approved'))
+                        OR (
+                          c.id IS NOT NULL
+                          AND (c.review_status = 'approved' OR COALESCE(json_extract(csa.policy_json, '$.review_required'), 1) = 0)
+                          AND COALESCE(json_extract(csa.policy_json, '$.allow_ai_context'), 1) != 0
+                        )
+                        OR (
+                          m.status = 'active'
+                          AND (
+                            m.capture_id IS NULL
+                            OR (
+                              mc.id IS NOT NULL
+                              AND (mc.review_status = 'approved' OR COALESCE(json_extract(mcsa.policy_json, '$.review_required'), 1) = 0)
+                              AND COALESCE(json_extract(mcsa.policy_json, '$.allow_ai_context'), 1) != 0
+                            )
+                          )
+                        )
+                        OR (
+                          t.status = 'open'
+                          AND (
+                            t.capture_id IS NULL
+                            OR (
+                              tc.id IS NOT NULL
+                              AND (tc.review_status = 'approved' OR COALESCE(json_extract(tcsa.policy_json, '$.review_required'), 1) = 0)
+                              AND COALESCE(json_extract(tcsa.policy_json, '$.allow_ai_context'), 1) != 0
+                            )
+                          )
+                        )
                       )
                     """,
                     (user_id,),
@@ -8278,69 +10710,58 @@ class CortexStore:
             by_kind = [
                 {"kind": row["kind"], "count": row["count"]}
                 for row in conn.execute(
-                    """
+                    f"""
                     SELECT m.kind, COUNT(*) AS count
                     FROM memories m
-                    LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
-                    WHERE m.user_id = ?
-                      AND m.status = 'active'
-                      AND (m.capture_id IS NULL OR c.review_status = 'approved')
+                    WHERE {memory_where}
                     GROUP BY m.kind
                     ORDER BY count DESC
                     """,
-                    (user_id,),
+                    memory_params,
                 ).fetchall()
             ]
             by_layer = [
                 {"layer": row["layer"], "count": row["count"]}
                 for row in conn.execute(
-                    """
+                    f"""
                     SELECT m.layer, COUNT(*) AS count
                     FROM memories m
-                    LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
-                    WHERE m.user_id = ?
-                      AND m.status = 'active'
-                      AND (m.capture_id IS NULL OR c.review_status = 'approved')
+                    WHERE {memory_where}
                     GROUP BY m.layer
                     ORDER BY count DESC
                     """,
-                    (user_id,),
+                    memory_params,
                 ).fetchall()
             ]
             top_topics = [
                 {"topic": row["topic"], "count": row["count"]}
                 for row in conn.execute(
-                    """
+                    f"""
                     SELECT mt.topic, COUNT(*) AS count
                     FROM memory_topics mt
                     JOIN memories m ON m.id = mt.memory_id AND m.user_id = mt.user_id
-                    LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
-                    WHERE mt.user_id = ?
-                      AND m.status = 'active'
-                      AND (m.capture_id IS NULL OR c.review_status = 'approved')
+                    WHERE mt.user_id = ? AND {memory_where}
                     GROUP BY mt.topic
                     ORDER BY count DESC, mt.topic
                     LIMIT 12
                     """,
-                    (user_id,),
+                    [user_id, *memory_params],
                 ).fetchall()
             ]
             top_entities = [
                 {"id": row["id"], "name": row["name"], "kind": row["kind"], "count": row["count"]}
                 for row in conn.execute(
-                    """
+                    f"""
                     SELECT e.id, e.name, e.kind, COUNT(m.id) AS count
                     FROM entities e
                     JOIN memory_entities me ON me.entity_id = e.id AND me.user_id = e.user_id
                     JOIN memories m ON m.id = me.memory_id AND m.user_id = me.user_id AND m.status = 'active'
-                    LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
-                    WHERE e.user_id = ?
-                      AND (m.capture_id IS NULL OR c.review_status = 'approved')
+                    WHERE e.user_id = ? AND {memory_where}
                     GROUP BY e.id
                     ORDER BY count DESC, e.last_seen DESC
                     LIMIT 12
                     """,
-                    (user_id,),
+                    [user_id, *memory_params],
                 ).fetchall()
             ]
         return {**counts, "by_kind": by_kind, "by_layer": by_layer, "top_topics": top_topics, "top_entities": top_entities}
@@ -9420,25 +11841,26 @@ class CortexStore:
     def _source_freshness(self, user_id: str, limit: int = 8, *, user_settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         source_policies = _normalize_source_policies((user_settings or {}).get("source_policies"))
         excluded_sources = _source_policy_sources(source_policies, lambda policy: not policy.get("allow_ai_context", True))
-        filters = ["user_id = ?"]
+        filters = ["c.user_id = ?", "COALESCE(json_extract(sa.policy_json, '$.allow_ai_context'), 1) != 0"]
         params: list[Any] = [user_id]
         if user_settings and not user_settings.get("allow_pending_in_context", True):
-            filters.append("review_status = 'approved'")
+            filters.append("(c.review_status = 'approved' OR COALESCE(json_extract(sa.policy_json, '$.review_required'), 1) = 0)")
         if excluded_sources:
-            filters.append(f"source NOT IN ({','.join('?' for _ in excluded_sources)})")
+            filters.append(f"c.source NOT IN ({','.join('?' for _ in excluded_sources)})")
             params.extend(excluded_sources)
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 f"""
                 SELECT
-                  source,
+                  c.source,
                   COUNT(*) AS total,
-                  SUM(CASE WHEN review_status = 'approved' THEN 1 ELSE 0 END) AS approved,
-                  SUM(CASE WHEN review_status = 'pending' THEN 1 ELSE 0 END) AS pending,
-                  MAX(captured_at) AS last_seen
-                FROM captures
+                  SUM(CASE WHEN c.review_status = 'approved' OR COALESCE(json_extract(sa.policy_json, '$.review_required'), 1) = 0 THEN 1 ELSE 0 END) AS approved,
+                  SUM(CASE WHEN c.review_status = 'pending' AND COALESCE(json_extract(sa.policy_json, '$.review_required'), 1) != 0 THEN 1 ELSE 0 END) AS pending,
+                  MAX(c.captured_at) AS last_seen
+                FROM captures c
+                LEFT JOIN source_accounts sa ON sa.id = c.source_account_id AND sa.user_id = c.user_id
                 WHERE {' AND '.join(filters)}
-                GROUP BY source
+                GROUP BY c.source
                 ORDER BY total DESC, last_seen DESC
                 LIMIT ?
                 """,
@@ -9452,16 +11874,17 @@ class CortexStore:
         ids = [item["id"] for item in memories]
         placeholders = ",".join("?" for _ in ids)
         with connect(self.db_path) as conn:
+            user_settings = self._settings(conn, user_id)
+            profile_settings = {**user_settings, "allow_pending_in_context": False}
+            filters, params = self._memory_filters(user_id, profile_settings, alias="m")
+            filters.append(f"m.id IN ({placeholders})")
             rows = conn.execute(
                 f"""
                 SELECT m.id
                 FROM memories m
-                LEFT JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
-                WHERE m.user_id = ?
-                  AND m.id IN ({placeholders})
-                  AND (m.capture_id IS NULL OR c.review_status = 'approved')
+                WHERE {' AND '.join(filters)}
                 """,
-                [user_id, *ids],
+                [*params, *ids],
             ).fetchall()
         approved_ids = {row["id"] for row in rows}
         return [item for item in memories if item["id"] in approved_ids]
@@ -9473,21 +11896,22 @@ class CortexStore:
             user_settings = self._settings(conn, user_id)
             source_policies = _normalize_source_policies(user_settings.get("source_policies"))
             excluded_sources = _source_policy_sources(source_policies, lambda policy: not policy.get("allow_ai_context", True))
-            capture_filters = ["user_id = ?"]
+            capture_filters = ["c.user_id = ?", "COALESCE(json_extract(sa.policy_json, '$.allow_ai_context'), 1) != 0"]
             capture_params: list[Any] = [user_id]
             if not user_settings["allow_pending_in_context"]:
-                capture_filters.append("review_status = 'approved'")
+                capture_filters.append("(c.review_status = 'approved' OR COALESCE(json_extract(sa.policy_json, '$.review_required'), 1) = 0)")
             else:
-                capture_filters.append("review_status IN ('pending', 'approved')")
+                capture_filters.append("c.review_status IN ('pending', 'approved')")
             if excluded_sources:
-                capture_filters.append(f"source NOT IN ({','.join('?' for _ in excluded_sources)})")
+                capture_filters.append(f"c.source NOT IN ({','.join('?' for _ in excluded_sources)})")
                 capture_params.extend(excluded_sources)
             for row in conn.execute(
                 f"""
-                SELECT id, source, title, summary, captured_at, review_status
-                FROM captures
+                SELECT c.id, c.source, c.title, c.summary, c.captured_at, c.review_status
+                FROM captures c
+                LEFT JOIN source_accounts sa ON sa.id = c.source_account_id AND sa.user_id = c.user_id
                 WHERE {' AND '.join(capture_filters)}
-                ORDER BY captured_at DESC
+                ORDER BY c.captured_at DESC
                 LIMIT ?
                 """,
                 [*capture_params, limit // 3],
@@ -9597,7 +12021,24 @@ class CortexStore:
     def _filter_export_by_source_policy(self, payload: dict[str, Any], user_settings: dict[str, Any]) -> dict[str, Any]:
         source_policies = _normalize_source_policies(user_settings.get("source_policies"))
         excluded_sources = set(_source_policy_sources(source_policies, lambda policy: not policy.get("allow_ai_context", True)))
-        if not excluded_sources:
+        blocked_account_capture_ids: set[str] = set()
+        user_id = str(payload.get("user_id") or "").strip()
+        if user_id:
+            with connect(self.db_path) as conn:
+                blocked_account_capture_ids = {
+                    row["id"]
+                    for row in conn.execute(
+                        """
+                        SELECT c.id
+                        FROM captures c
+                        JOIN source_accounts sa ON sa.id = c.source_account_id AND sa.user_id = c.user_id
+                        WHERE c.user_id = ?
+                          AND COALESCE(json_extract(sa.policy_json, '$.allow_ai_context'), 1) = 0
+                        """,
+                        (user_id,),
+                    ).fetchall()
+                }
+        if not excluded_sources and not blocked_account_capture_ids:
             return payload
 
         captures = list(payload.get("captures") or [])
@@ -9606,21 +12047,24 @@ class CortexStore:
         def source_blocked(source: Any) -> bool:
             return _normalize_source_key(source) in excluded_sources
 
-        filtered_captures = [capture for capture in captures if not source_blocked(capture.get("source"))]
+        def capture_blocked(capture_id: Any, source: Any) -> bool:
+            return str(capture_id or "") in blocked_account_capture_ids or source_blocked(source)
+
+        filtered_captures = [capture for capture in captures if not capture_blocked(capture.get("id"), capture.get("source"))]
         allowed_capture_ids = {capture.get("id") for capture in filtered_captures if capture.get("id")}
 
         def memory_allowed(memory: dict[str, Any]) -> bool:
             if source_blocked(memory.get("source")):
                 return False
             capture_id = memory.get("capture_id")
-            return not capture_id or not source_blocked(all_capture_sources.get(capture_id))
+            return not capture_id or not capture_blocked(capture_id, all_capture_sources.get(capture_id))
 
         filtered_memories = [memory for memory in payload.get("memories") or [] if memory_allowed(memory)]
         allowed_memory_ids = {memory.get("id") for memory in filtered_memories if memory.get("id")}
 
         def task_allowed(task: dict[str, Any]) -> bool:
             capture_id = task.get("capture_id")
-            return not capture_id or not source_blocked(all_capture_sources.get(capture_id))
+            return not capture_id or not capture_blocked(capture_id, all_capture_sources.get(capture_id))
 
         filtered_tasks = [task for task in payload.get("tasks") or [] if task_allowed(task)]
         allowed_task_ids = {task.get("id") for task in filtered_tasks if task.get("id")}
@@ -9830,6 +12274,20 @@ class CortexStore:
             "vault": vault_diagnostics,
         }
 
+    def runtime_storage_status(self) -> dict[str, Any]:
+        with connect(self.db_path) as conn:
+            vector_status = sqlite_vec_status(conn)
+        vector_available = bool(vector_status.get("available"))
+        return {
+            "database_backend": "sqlite",
+            "database_live": self.db_path.exists(),
+            "vector_backend": "sqlite-vec" if vector_available else "none",
+            "vector_live": vector_available,
+            "vector_available": vector_available,
+            "vector_reason": vector_status.get("reason"),
+            "embedding": embedding_status(),
+        }
+
     def health_payload(self, *, mode: str, auth: bool) -> dict[str, Any]:
         return {
             "status": "ok",
@@ -9978,6 +12436,7 @@ class CortexStore:
                 "version": BACKEND_VERSION,
                 "health_contract": HEALTH_CONTRACT,
                 "features": list(BACKEND_FEATURES),
+                "sqlite_runtime": SQLITE_RUNTIME,
                 "sqlite_version": sqlite3.sqlite_version,
             },
             "runtime": {
@@ -12483,6 +14942,26 @@ class CortexStore:
             same_capture_only=bool(source_account and external_id),
         )
         if duplicate:
+            if source_account and external_id:
+                return self._refresh_duplicate_source_memory(
+                    conn,
+                    duplicate,
+                    user_id=user_id,
+                    record=record,
+                    source=source,
+                    memory_source_url=memory_source_url,
+                    captured_at=captured_at,
+                    source_type=source_type,
+                    provenance=provenance,
+                    topics=topics,
+                    entity_ids=entity_ids,
+                    sector=sector,
+                    layer=layer,
+                    occurred_at=occurred_at,
+                    valid_from=valid_from,
+                    valid_to=valid_to,
+                    superseded_by=superseded_by,
+                )
             return self._memory_from_row(duplicate)
         conn.execute(
             """
@@ -12571,6 +15050,95 @@ class CortexStore:
             "updated_at": captured_at,
             "raw_excerpt": raw_excerpt,
         }
+
+    def _refresh_duplicate_source_memory(
+        self,
+        conn,
+        duplicate,
+        *,
+        user_id: str,
+        record: dict[str, Any],
+        source: str,
+        memory_source_url: str | None,
+        captured_at: str,
+        source_type: str,
+        provenance: dict[str, Any],
+        topics: list[str],
+        entity_ids: list[str],
+        sector: str,
+        layer: str,
+        occurred_at: str | None,
+        valid_from: str | None,
+        valid_to: str | None,
+        superseded_by: str | None,
+    ) -> dict[str, Any]:
+        memory_id = duplicate["id"]
+        conn.execute(
+            """
+            UPDATE memories
+            SET source_url = ?,
+                sector = ?,
+                source_type = ?,
+                provenance_json = ?,
+                topics_json = ?,
+                entity_ids_json = ?,
+                occurred_at = ?,
+                valid_from = ?,
+                valid_to = ?,
+                superseded_by = ?,
+                updated_at = ?
+            WHERE user_id = ? AND id = ?
+            """,
+            (
+                memory_source_url,
+                sector,
+                source_type,
+                json.dumps(provenance),
+                json.dumps(topics),
+                json.dumps(entity_ids),
+                occurred_at,
+                valid_from,
+                valid_to,
+                superseded_by,
+                captured_at,
+                user_id,
+                memory_id,
+            ),
+        )
+        conn.execute("DELETE FROM memory_entities WHERE memory_id = ?", (memory_id,))
+        conn.execute("DELETE FROM memory_topics WHERE memory_id = ?", (memory_id,))
+        for entity_id in entity_ids:
+            conn.execute(
+                "INSERT OR REPLACE INTO memory_entities(memory_id, entity_id, user_id, created_at) VALUES (?, ?, ?, ?)",
+                (memory_id, entity_id, user_id, captured_at),
+            )
+        for topic in topics:
+            conn.execute(
+                "INSERT OR REPLACE INTO memory_topics(memory_id, topic, user_id, created_at) VALUES (?, ?, ?, ?)",
+                (memory_id, topic, user_id, captured_at),
+            )
+        conn.execute("DELETE FROM memory_fts WHERE memory_id = ?", (memory_id,))
+        conn.execute(
+            "INSERT INTO memory_fts(memory_id, content, summary, source, topics) VALUES (?, ?, ?, ?, ?)",
+            (memory_id, record.get("content", ""), record.get("summary", ""), source, " ".join(topics)),
+        )
+        self._enqueue_embed_memory_job(
+            conn,
+            memory_id=memory_id,
+            capture_id=duplicate["capture_id"],
+            user_id=user_id,
+            content=record.get("content", ""),
+            summary=record.get("summary", ""),
+            source=source,
+            layer=layer,
+            topics=topics,
+            captured_at=captured_at,
+        )
+        row = conn.execute(
+            "SELECT * FROM memories WHERE user_id = ? AND id = ?",
+            (user_id, memory_id),
+        ).fetchone()
+        return self._memory_from_row(row)
 
     def _save_memory_relations_for_capture(
         self,
@@ -12859,6 +15427,461 @@ class CortexStore:
                     break
         return relations
 
+    def _save_obsidian_canvas_memory_relations(
+        self,
+        conn,
+        user_id: str,
+        capture_id: str,
+        memories: list[dict[str, Any]],
+        captured_at: str,
+        *,
+        per_memory_limit: int = 12,
+    ) -> list[dict[str, Any]]:
+        active = [memory for memory in memories if memory.get("id") and memory.get("status", "active") == "active"]
+        canvas_memories: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for memory in active:
+            metadata = self._obsidian_canvas_memory_metadata(memory)
+            if metadata:
+                canvas_memories.append((memory, metadata))
+        if not canvas_memories:
+            return []
+
+        memory_ids = [str(memory["id"]) for memory, _metadata in canvas_memories]
+        placeholders = ",".join("?" for _ in memory_ids)
+        conn.execute(
+            f"""
+            DELETE FROM memory_relations
+            WHERE user_id = ?
+              AND kind = 'canvas_edge'
+              AND (source_memory_id IN ({placeholders}) OR target_memory_id IN ({placeholders}))
+            """,
+            [user_id, *memory_ids, *memory_ids],
+        )
+
+        relations: list[dict[str, Any]] = []
+        seen_pairs: set[tuple[str, str, str]] = set()
+        for memory, metadata in canvas_memories:
+            edge_rows = metadata.get("canvas_node_edges") if isinstance(metadata.get("canvas_node_edges"), list) else []
+            node_id = str(metadata.get("canvas_node_id") or "").strip()
+            if not node_id or not edge_rows:
+                continue
+            related_node_ids = sorted(
+                {
+                    other
+                    for edge in edge_rows
+                    if isinstance(edge, dict)
+                    for other in [self._canvas_edge_other_node(edge, node_id)]
+                    if other
+                }
+            )
+            if not related_node_ids:
+                continue
+            candidate_memories = self._obsidian_canvas_related_memory_candidates(
+                conn,
+                user_id,
+                metadata,
+                related_node_ids,
+                limit=max(per_memory_limit * 4, len(related_node_ids) * 4),
+            )
+            candidates_by_node: dict[str, list[dict[str, Any]]] = {}
+            for candidate in candidate_memories:
+                candidate_metadata = self._obsidian_canvas_memory_metadata(candidate)
+                candidate_node_id = str((candidate_metadata or {}).get("canvas_node_id") or "").strip()
+                if not candidate_node_id or candidate_node_id == node_id:
+                    continue
+                candidates_by_node.setdefault(candidate_node_id, []).append(candidate)
+
+            added_for_memory = 0
+            for edge in edge_rows:
+                if not isinstance(edge, dict):
+                    continue
+                other_node = self._canvas_edge_other_node(edge, node_id)
+                if not other_node:
+                    continue
+                edge_id = str(edge.get("id") or "").strip()
+                edge_label = str(edge.get("label") or "").strip()
+                for related in candidates_by_node.get(other_node, []):
+                    source_id, target_id = sorted([str(memory["id"]), str(related["id"])])
+                    pair_key = (source_id, target_id, edge_id or f"{node_id}->{other_node}")
+                    if source_id == target_id or pair_key in seen_pairs:
+                        continue
+                    seen_pairs.add(pair_key)
+                    metadata_payload = {
+                        "capture_id": capture_id,
+                        "related_capture_id": related.get("capture_id"),
+                        "source": "obsidian",
+                        "relation_source": "obsidian_canvas",
+                        "canvas_relative_path": metadata.get("relative_path"),
+                        "canvas_vault_id": metadata.get("vault_id"),
+                        "canvas_edge_id": edge_id,
+                        "canvas_edge_label": edge_label,
+                        "canvas_from_node": str(edge.get("from") or "").strip(),
+                        "canvas_to_node": str(edge.get("to") or "").strip(),
+                        "canvas_anchor_node": node_id,
+                        "canvas_related_node": other_node,
+                    }
+                    relation_id = stable_id(
+                        "rel_",
+                        json.dumps(
+                            {
+                                "user_id": user_id,
+                                "source_id": source_id,
+                                "target_id": target_id,
+                                "kind": "canvas_edge",
+                                "edge_id": edge_id,
+                                "from": metadata_payload["canvas_from_node"],
+                                "to": metadata_payload["canvas_to_node"],
+                            },
+                            sort_keys=True,
+                        ),
+                    )
+                    weight = 0.92 if edge_label else 0.86
+                    relation = {
+                        "id": relation_id,
+                        "user_id": user_id,
+                        "source_memory_id": source_id,
+                        "target_memory_id": target_id,
+                        "kind": "canvas_edge",
+                        "weight": weight,
+                        "metadata": metadata_payload,
+                        "created_at": captured_at,
+                    }
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO memory_relations
+                        (id, user_id, source_memory_id, target_memory_id, kind, weight, metadata_json, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            relation_id,
+                            user_id,
+                            source_id,
+                            target_id,
+                            "canvas_edge",
+                            weight,
+                            json.dumps(metadata_payload),
+                            captured_at,
+                        ),
+                    )
+                    relations.append(relation)
+                    added_for_memory += 1
+                    if added_for_memory >= per_memory_limit:
+                        break
+                if added_for_memory >= per_memory_limit:
+                    break
+        return relations
+
+    def _obsidian_canvas_memory_metadata(self, memory: dict[str, Any]) -> dict[str, Any] | None:
+        provenance = memory.get("provenance") if isinstance(memory.get("provenance"), dict) else {}
+        if _normalize_source_key(str(provenance.get("source") or memory.get("source") or "")) != "obsidian":
+            return None
+        metadata = provenance.get("record_metadata") if isinstance(provenance.get("record_metadata"), dict) else {}
+        if str(metadata.get("record_scope") or "").strip() != "canvas_node":
+            return None
+        node_id = str(metadata.get("canvas_node_id") or "").strip()
+        relative_path = str(metadata.get("relative_path") or "").strip()
+        if not node_id or not relative_path:
+            return None
+        return metadata
+
+    def _canvas_edge_other_node(self, edge: dict[str, Any], node_id: str) -> str | None:
+        from_node = str(edge.get("from") or "").strip()
+        to_node = str(edge.get("to") or "").strip()
+        if from_node == node_id and to_node:
+            return to_node
+        if to_node == node_id and from_node:
+            return from_node
+        return None
+
+    def _obsidian_canvas_related_memory_candidates(
+        self,
+        conn,
+        user_id: str,
+        metadata: dict[str, Any],
+        node_ids: list[str],
+        *,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        normalized_node_ids = [str(node_id).strip() for node_id in node_ids if str(node_id).strip()]
+        if not normalized_node_ids:
+            return []
+        placeholders = ",".join("?" for _ in normalized_node_ids)
+        relative_path = str(metadata.get("relative_path") or "").strip()
+        vault_id = str(metadata.get("vault_id") or "").strip()
+        params: list[Any] = [user_id, relative_path, *normalized_node_ids]
+        vault_filter = ""
+        if vault_id:
+            vault_filter = "AND COALESCE(json_extract(provenance_json, '$.record_metadata.vault_id'), '') = ?"
+            params.append(vault_id)
+        params.append(max(1, min(200, limit)))
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM memories
+            WHERE user_id = ?
+              AND source = 'obsidian'
+              AND status = 'active'
+              AND COALESCE(json_extract(provenance_json, '$.record_metadata.record_scope'), '') = 'canvas_node'
+              AND COALESCE(json_extract(provenance_json, '$.record_metadata.relative_path'), '') = ?
+              AND COALESCE(json_extract(provenance_json, '$.record_metadata.canvas_node_id'), '') IN ({placeholders})
+              {vault_filter}
+              AND (valid_from IS NULL OR valid_from = '' OR valid_from <= ?)
+              AND (valid_to IS NULL OR valid_to = '' OR valid_to > ?)
+              AND (superseded_by IS NULL OR superseded_by = '')
+            ORDER BY importance DESC, COALESCE(occurred_at, captured_at) DESC, captured_at DESC
+            LIMIT ?
+            """,
+            [*params[:-1], now_iso(), now_iso(), params[-1]],
+        ).fetchall()
+        return [self._memory_from_row(row) for row in rows]
+
+    def _save_obsidian_wikilink_memory_relations(
+        self,
+        conn,
+        user_id: str,
+        capture_id: str,
+        memories: list[dict[str, Any]],
+        captured_at: str,
+        *,
+        per_memory_limit: int = 16,
+    ) -> list[dict[str, Any]]:
+        active = [memory for memory in memories if memory.get("id") and memory.get("status", "active") == "active"]
+        obsidian_memories: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for memory in active:
+            metadata = self._obsidian_note_memory_metadata(memory)
+            if metadata:
+                obsidian_memories.append((memory, metadata))
+        if not obsidian_memories:
+            return []
+
+        memory_ids = [str(memory["id"]) for memory, _metadata in obsidian_memories]
+        placeholders = ",".join("?" for _ in memory_ids)
+        conn.execute(
+            f"""
+            DELETE FROM memory_relations
+            WHERE user_id = ?
+              AND kind = 'obsidian_link'
+              AND (source_memory_id IN ({placeholders}) OR target_memory_id IN ({placeholders}))
+            """,
+            [user_id, *memory_ids, *memory_ids],
+        )
+
+        relations: list[dict[str, Any]] = []
+        seen_pairs: set[tuple[str, str, str]] = set()
+        for memory, metadata in obsidian_memories:
+            wikilinks = metadata.get("wikilinks") if isinstance(metadata.get("wikilinks"), list) else []
+            if not wikilinks:
+                continue
+            source_relative_path = str(metadata.get("relative_path") or "").strip()
+            if not source_relative_path:
+                continue
+            added_for_memory = 0
+            for link in wikilinks:
+                if not isinstance(link, dict):
+                    continue
+                target = str(link.get("target") or "").strip()
+                if not target:
+                    continue
+                candidates = self._obsidian_wikilink_related_memory_candidates(
+                    conn,
+                    user_id,
+                    metadata,
+                    target,
+                    limit=per_memory_limit * 4,
+                )
+                for related in candidates:
+                    related_metadata = self._obsidian_note_memory_metadata(related)
+                    if not related_metadata:
+                        continue
+                    target_relative_path = str(related_metadata.get("relative_path") or "").strip()
+                    if not target_relative_path or target_relative_path == source_relative_path:
+                        continue
+                    source_id, target_id = sorted([str(memory["id"]), str(related["id"])])
+                    pair_key = (source_id, target_id, _normalize_obsidian_wikilink_target(target))
+                    if source_id == target_id or pair_key in seen_pairs:
+                        continue
+                    seen_pairs.add(pair_key)
+                    display = str(link.get("display") or "").strip()
+                    metadata_payload = {
+                        "capture_id": capture_id,
+                        "related_capture_id": related.get("capture_id"),
+                        "source": "obsidian",
+                        "relation_source": "obsidian_wikilink",
+                        "source_relative_path": source_relative_path,
+                        "target_relative_path": target_relative_path,
+                        "vault_id": metadata.get("vault_id"),
+                        "link_target": target,
+                        "link_display": display,
+                        "embedded": str(link.get("embedded") or "").strip(),
+                    }
+                    relation_id = stable_id(
+                        "rel_",
+                        json.dumps(
+                            {
+                                "user_id": user_id,
+                                "source_id": source_id,
+                                "target_id": target_id,
+                                "kind": "obsidian_link",
+                                "link_target": _normalize_obsidian_wikilink_target(target),
+                            },
+                            sort_keys=True,
+                        ),
+                    )
+                    relation = {
+                        "id": relation_id,
+                        "user_id": user_id,
+                        "source_memory_id": source_id,
+                        "target_memory_id": target_id,
+                        "kind": "obsidian_link",
+                        "weight": 0.84,
+                        "metadata": metadata_payload,
+                        "created_at": captured_at,
+                    }
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO memory_relations
+                        (id, user_id, source_memory_id, target_memory_id, kind, weight, metadata_json, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            relation_id,
+                            user_id,
+                            source_id,
+                            target_id,
+                            "obsidian_link",
+                            relation["weight"],
+                            json.dumps(metadata_payload),
+                            captured_at,
+                        ),
+                    )
+                    relations.append(relation)
+                    added_for_memory += 1
+                    if added_for_memory >= per_memory_limit:
+                        break
+                if added_for_memory >= per_memory_limit:
+                    break
+        return relations
+
+    def _obsidian_note_memory_metadata(self, memory: dict[str, Any]) -> dict[str, Any] | None:
+        provenance = memory.get("provenance") if isinstance(memory.get("provenance"), dict) else {}
+        if _normalize_source_key(str(provenance.get("source") or memory.get("source") or "")) != "obsidian":
+            return None
+        metadata = provenance.get("record_metadata") if isinstance(provenance.get("record_metadata"), dict) else {}
+        relative_path = str(metadata.get("relative_path") or "").strip()
+        extension = str(metadata.get("extension") or "").strip().lower()
+        if not relative_path or extension == "canvas":
+            return None
+        return metadata
+
+    def _obsidian_wikilink_related_memory_candidates(
+        self,
+        conn,
+        user_id: str,
+        metadata: dict[str, Any],
+        target: str,
+        *,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        vault_id = str(metadata.get("vault_id") or "").strip()
+        target_paths = _obsidian_wikilink_candidate_paths(target)
+        if not target_paths:
+            return []
+        exact_matches = self._obsidian_wikilink_candidate_rows(
+            conn,
+            user_id,
+            vault_id=vault_id,
+            target_paths=target_paths,
+            limit=limit,
+        )
+        if exact_matches:
+            return exact_matches
+
+        basename = _obsidian_wikilink_target_basename(target)
+        if not basename:
+            return []
+        fallback_rows = self._obsidian_vault_memory_rows(conn, user_id, vault_id=vault_id, limit=max(200, limit))
+        by_relative_path: dict[str, list[dict[str, Any]]] = {}
+        for row in fallback_rows:
+            candidate = self._memory_from_row(row)
+            candidate_metadata = self._obsidian_note_memory_metadata(candidate)
+            candidate_path = str((candidate_metadata or {}).get("relative_path") or "").strip()
+            if not candidate_path:
+                continue
+            if Path(candidate_path).stem.casefold() != basename.casefold():
+                continue
+            by_relative_path.setdefault(candidate_path, []).append(candidate)
+        if len(by_relative_path) != 1:
+            return []
+        return list(by_relative_path.values())[0][:limit]
+
+    def _obsidian_wikilink_candidate_rows(
+        self,
+        conn,
+        user_id: str,
+        *,
+        vault_id: str,
+        target_paths: list[str],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        placeholders = ",".join("?" for _ in target_paths)
+        params: list[Any] = [user_id, *target_paths]
+        vault_filter = ""
+        if vault_id:
+            vault_filter = "AND COALESCE(json_extract(provenance_json, '$.record_metadata.vault_id'), '') = ?"
+            params.append(vault_id)
+        params.append(max(1, min(200, limit)))
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM memories
+            WHERE user_id = ?
+              AND source = 'obsidian'
+              AND status = 'active'
+              AND lower(COALESCE(json_extract(provenance_json, '$.record_metadata.relative_path'), '')) IN ({placeholders})
+              {vault_filter}
+              AND COALESCE(json_extract(provenance_json, '$.record_metadata.extension'), '') != 'canvas'
+              AND (valid_from IS NULL OR valid_from = '' OR valid_from <= ?)
+              AND (valid_to IS NULL OR valid_to = '' OR valid_to > ?)
+              AND (superseded_by IS NULL OR superseded_by = '')
+            ORDER BY importance DESC, COALESCE(occurred_at, captured_at) DESC, captured_at DESC
+            LIMIT ?
+            """,
+            [*params[:-1], now_iso(), now_iso(), params[-1]],
+        ).fetchall()
+        return [self._memory_from_row(row) for row in rows]
+
+    def _obsidian_vault_memory_rows(
+        self,
+        conn,
+        user_id: str,
+        *,
+        vault_id: str,
+        limit: int,
+    ) -> list[Any]:
+        params: list[Any] = [user_id]
+        vault_filter = ""
+        if vault_id:
+            vault_filter = "AND COALESCE(json_extract(provenance_json, '$.record_metadata.vault_id'), '') = ?"
+            params.append(vault_id)
+        params.append(max(1, min(500, limit)))
+        return conn.execute(
+            f"""
+            SELECT *
+            FROM memories
+            WHERE user_id = ?
+              AND source = 'obsidian'
+              AND status = 'active'
+              {vault_filter}
+              AND COALESCE(json_extract(provenance_json, '$.record_metadata.extension'), '') != 'canvas'
+              AND (valid_from IS NULL OR valid_from = '' OR valid_from <= ?)
+              AND (valid_to IS NULL OR valid_to = '' OR valid_to > ?)
+              AND (superseded_by IS NULL OR superseded_by = '')
+            ORDER BY importance DESC, COALESCE(occurred_at, captured_at) DESC, captured_at DESC
+            LIMIT ?
+            """,
+            [*params[:-1], now_iso(), now_iso(), params[-1]],
+        ).fetchall()
+
     def _vector_ready(self, conn) -> bool:
         if embedding_status()["dimensions"] != VECTOR_DIMENSIONS:
             return False
@@ -13093,6 +16116,7 @@ class CortexStore:
         layer_boosts = query_layer_boosts(query)
         temporal_prefixes = query_temporal_prefixes(query)
         source_policies = _normalize_source_policies(user_settings.get("source_policies"))
+        now = datetime.now(timezone.utc)
         for index, row in enumerate(rows):
             matched = self._lexical_matched_terms(row, terms)
             if len(matched) < min_matches:
@@ -13104,7 +16128,9 @@ class CortexStore:
                     + (0.05 / (60 + index))
                     + self._layer_boost(row, layer_boosts)
                     + self._temporal_boost(row, temporal_prefixes)
-                    + self._source_quality_boost(row, source_policies),
+                    + self._source_quality_boost(row, source_policies)
+                    + self._recency_boost(row, now=now)
+                    + self._importance_boost(row),
                 }
             )
         return [item["row"] for item in sorted(ranked, key=lambda item: item["score"], reverse=True)]
@@ -13170,6 +16196,99 @@ class CortexStore:
             for index, row in enumerate(rows)
         ]
         return [item["row"] for item in sorted(ranked, key=lambda item: item["score"], reverse=True)[:limit]]
+
+    def _diversify_memory_rows(self, rows: list[Any], limit: int, *, scoped_to_source: bool) -> list[Any]:
+        if limit <= 0 or len(rows) <= 1:
+            return rows[: max(0, limit)]
+
+        selected: list[Any] = []
+        seen_ids: set[str] = set()
+        seen_signatures: set[str] = set()
+        bucket_counts: dict[tuple[str, str], int] = {}
+
+        def can_select(row: Any, *, strict: bool) -> bool:
+            memory_id = str(self._row_value(row, "id") or "").strip()
+            if not memory_id or memory_id in seen_ids:
+                return False
+            signature = self._row_content_signature(row)
+            if signature and signature in seen_signatures:
+                return False
+            if not strict:
+                return True
+            for bucket in self._row_evidence_buckets(row, scoped_to_source=scoped_to_source):
+                cap = 2
+                if bucket_counts.get(bucket, 0) >= cap:
+                    return False
+            return True
+
+        def select(row: Any) -> None:
+            selected.append(row)
+            seen_ids.add(str(self._row_value(row, "id") or ""))
+            signature = self._row_content_signature(row)
+            if signature:
+                seen_signatures.add(signature)
+            for bucket in self._row_evidence_buckets(row, scoped_to_source=scoped_to_source):
+                bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
+
+        for row in rows:
+            if can_select(row, strict=True):
+                select(row)
+                if len(selected) >= limit:
+                    return selected[:limit]
+
+        for row in rows:
+            if can_select(row, strict=False):
+                select(row)
+                if len(selected) >= limit:
+                    return selected[:limit]
+
+        return selected[:limit]
+
+    def _row_content_signature(self, row: Any) -> str:
+        text = " ".join(
+            str(self._row_value(row, key) or "")
+            for key in ("kind", "layer", "content", "summary")
+        )
+        normalized = re.sub(r"[^a-z0-9]+", " ", text.casefold()).strip()
+        if not normalized:
+            return ""
+        tokens = [token for token in normalized.split() if not token.isdigit()]
+        if len(tokens) < 8:
+            return ""
+        return " ".join(tokens[:80])
+
+    def _row_evidence_buckets(self, row: Any, *, scoped_to_source: bool) -> list[tuple[str, str]]:
+        buckets: list[tuple[str, str]] = []
+        capture_id = str(self._row_value(row, "capture_id") or "").strip()
+        if capture_id:
+            buckets.append(("capture", capture_id))
+
+        provenance = self._json_or_empty(str(self._row_value(row, "provenance_json") or "{}"))
+        metadata = provenance.get("record_metadata") if isinstance(provenance.get("record_metadata"), dict) else {}
+        if not scoped_to_source:
+            source_account_id = str(provenance.get("source_account_id") or "").strip()
+            if source_account_id:
+                buckets.append(("source_account", source_account_id))
+            source = str(self._row_value(row, "source") or provenance.get("source") or "").strip()
+            external_id = str(provenance.get("external_id") or "").strip()
+            if source and external_id:
+                buckets.append(("source_record", f"{source}:{external_id}"))
+            for key in (
+                "conversation",
+                "thread",
+                "thread_id",
+                "channel",
+                "repository",
+                "issue",
+                "subject",
+                "page",
+                "document",
+                "relative_path",
+            ):
+                value = str(metadata.get(key) or "").strip()
+                if value:
+                    buckets.append((key, value.casefold()))
+        return buckets
 
     def _related_memory_rows(
         self,
@@ -13271,7 +16390,7 @@ class CortexStore:
             + self._source_type_boost(row)
             + self._trusted_source_boost(row, source_policies)
         )
-        return min(0.006, score)
+        return min(SOURCE_QUALITY_RETRIEVAL_BOOST_MAX, score)
 
     def _recency_boost(self, row: Any, *, now: datetime) -> float:
         age_seconds = _age_seconds(str(self._row_value(row, "captured_at") or ""), now=now)
@@ -14023,18 +17142,18 @@ class CortexStore:
             f"""(
               {alias}.capture_id IS NULL
               OR NOT EXISTS (
-                SELECT 1
-                FROM captures c_review_required
-                JOIN source_accounts sa_review_required
-                  ON sa_review_required.id = c_review_required.source_account_id
-                 AND sa_review_required.user_id = c_review_required.user_id
-                WHERE c_review_required.id = {alias}.capture_id
-                  AND c_review_required.user_id = {alias}.user_id
-                  AND sa_review_required.policy_json NOT LIKE '%"review_required": false%'
-              )
-              OR EXISTS (
-                SELECT 1
-                FROM captures c_review_approved
+                    SELECT 1
+                    FROM captures c_review_required
+                    JOIN source_accounts sa_review_required
+                      ON sa_review_required.id = c_review_required.source_account_id
+                     AND sa_review_required.user_id = c_review_required.user_id
+                    WHERE c_review_required.id = {alias}.capture_id
+                      AND c_review_required.user_id = {alias}.user_id
+                      AND COALESCE(json_extract(sa_review_required.policy_json, '$.review_required'), 1) != 0
+                  )
+                  OR EXISTS (
+                    SELECT 1
+                    FROM captures c_review_approved
                 WHERE c_review_approved.id = {alias}.capture_id
                   AND c_review_approved.user_id = {alias}.user_id
                   AND c_review_approved.review_status = 'approved'
@@ -14047,18 +17166,37 @@ class CortexStore:
               OR NOT EXISTS (
                 SELECT 1
                 FROM captures c_ai_block
-                JOIN source_accounts sa_ai_block
-                  ON sa_ai_block.id = c_ai_block.source_account_id
-                 AND sa_ai_block.user_id = c_ai_block.user_id
-                WHERE c_ai_block.id = {alias}.capture_id
-                  AND c_ai_block.user_id = {alias}.user_id
-                  AND sa_ai_block.policy_json LIKE '%"allow_ai_context": false%'
-              )
+                    JOIN source_accounts sa_ai_block
+                      ON sa_ai_block.id = c_ai_block.source_account_id
+                     AND sa_ai_block.user_id = c_ai_block.user_id
+                    WHERE c_ai_block.id = {alias}.capture_id
+                      AND c_ai_block.user_id = {alias}.user_id
+                      AND COALESCE(json_extract(sa_ai_block.policy_json, '$.allow_ai_context'), 1) = 0
+                  )
             )"""
         )
         if not user_settings["allow_pending_in_context"]:
             filters.append(
-                f"({alias}.capture_id IS NULL OR EXISTS (SELECT 1 FROM captures c WHERE c.id = {alias}.capture_id AND c.user_id = {alias}.user_id AND c.review_status = 'approved'))"
+                f"""(
+                  {alias}.capture_id IS NULL
+                  OR EXISTS (
+                    SELECT 1
+                    FROM captures c
+                    WHERE c.id = {alias}.capture_id
+                      AND c.user_id = {alias}.user_id
+                      AND c.review_status = 'approved'
+                  )
+                  OR EXISTS (
+                    SELECT 1
+                    FROM captures c_account_review
+                    JOIN source_accounts sa_account_review
+                      ON sa_account_review.id = c_account_review.source_account_id
+                     AND sa_account_review.user_id = c_account_review.user_id
+                    WHERE c_account_review.id = {alias}.capture_id
+                      AND c_account_review.user_id = {alias}.user_id
+                      AND COALESCE(json_extract(sa_account_review.policy_json, '$.review_required'), 1) = 0
+                  )
+                )"""
             )
         source_policies = _normalize_source_policies(user_settings.get("source_policies"))
         excluded_sources = _source_policy_sources(source_policies, lambda policy: not policy.get("allow_ai_context", True))
@@ -14100,7 +17238,7 @@ class CortexStore:
                 FROM source_accounts sa_review_required
                 WHERE sa_review_required.id = {capture_alias}.source_account_id
                   AND sa_review_required.user_id = {capture_alias}.user_id
-                  AND sa_review_required.policy_json NOT LIKE '%"review_required": false%'
+                  AND COALESCE(json_extract(sa_review_required.policy_json, '$.review_required'), 1) != 0
               )
               OR {capture_alias}.review_status = 'approved'
             )"""
@@ -14113,12 +17251,24 @@ class CortexStore:
                 FROM source_accounts sa_ai_block
                 WHERE sa_ai_block.id = {capture_alias}.source_account_id
                   AND sa_ai_block.user_id = {capture_alias}.user_id
-                  AND sa_ai_block.policy_json LIKE '%"allow_ai_context": false%'
+                  AND COALESCE(json_extract(sa_ai_block.policy_json, '$.allow_ai_context'), 1) = 0
               )
             )"""
         )
         if not user_settings["allow_pending_in_context"]:
-            filters.append(f"({capture_missing} OR {capture_alias}.review_status = 'approved')")
+            filters.append(
+                f"""(
+                  {capture_missing}
+                  OR {capture_alias}.review_status = 'approved'
+                  OR EXISTS (
+                    SELECT 1
+                    FROM source_accounts sa_account_review
+                    WHERE sa_account_review.id = {capture_alias}.source_account_id
+                      AND sa_account_review.user_id = {capture_alias}.user_id
+                      AND COALESCE(json_extract(sa_account_review.policy_json, '$.review_required'), 1) = 0
+                  )
+                )"""
+            )
         source_policies = _normalize_source_policies(user_settings.get("source_policies"))
         excluded_sources = _source_policy_sources(source_policies, lambda policy: not policy.get("allow_ai_context", True))
         if excluded_sources:

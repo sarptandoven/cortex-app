@@ -23,6 +23,12 @@ REQUIRED_FILES = [
     "site/downloads/Cortex-0.1.0-1.checksums.txt",
 ]
 
+LOCAL_DMG_REQUIRED_FILES = [
+    path
+    for path in REQUIRED_FILES
+    if not path.startswith("site/downloads/")
+]
+
 SUPPORT_FIELDS = [
     "Support channel",
     "Primary support owner",
@@ -79,6 +85,15 @@ QA_BOOLEAN_FIELDS = {
 YES_VALUES = {"yes", "true", "pass", "passed", "ok", "done", "verified"}
 PLACEHOLDER_VALUES = {"fill_me", "todo", "tbd", "n/a", "na", "unknown", "unset"}
 
+RELEASE_INPUT_PATH_PREFIXES = (
+    ".github/workflows/",
+    "backend/",
+    "docs/",
+    "macos/",
+    "packages/",
+    "scripts/",
+)
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -117,27 +132,65 @@ def command_ok(args: list[str]) -> dict[str, Any]:
     }
 
 
-def check_required_files() -> dict[str, Any]:
-    missing = [path for path in REQUIRED_FILES if not (ROOT / path).exists()]
-    untracked = [path for path in REQUIRED_FILES if (ROOT / path).exists() and not git_tracked(path)]
+def resolve_release_dir(path: Path | None) -> Path | None:
+    if path is None:
+        return None
+    expanded = path.expanduser()
+    if not expanded.is_absolute():
+        expanded = ROOT / expanded
+    return expanded.resolve()
+
+
+def release_manifest_path(release_dir: Path | None) -> Path:
+    return (release_dir / "latest.json") if release_dir else ROOT / "site/downloads/latest.json"
+
+
+def release_artifact_dir(release_dir: Path | None) -> Path:
+    return release_dir if release_dir else ROOT / "site/downloads"
+
+
+def check_required_files(release_dir: Path | None = None) -> dict[str, Any]:
+    required_files = LOCAL_DMG_REQUIRED_FILES if release_dir else REQUIRED_FILES
+    missing = [path for path in required_files if not (ROOT / path).exists()]
+    untracked = [path for path in required_files if (ROOT / path).exists() and not git_tracked(path)]
+    if release_dir:
+        for filename in ("latest.json",):
+            if not (release_dir / filename).exists():
+                missing.append(str(release_dir / filename))
     return {"ok": not missing and not untracked, "missing": missing, "untracked": untracked}
 
 
 def check_worktree() -> dict[str, Any]:
     raw_status = git_output(["status", "--porcelain", "--untracked-files=no"])
     tracked_dirty = [line for line in raw_status.splitlines() if line.strip()]
+    raw_untracked = git_output(["status", "--porcelain", "--untracked-files=all"])
+    untracked_release_inputs = sorted(
+        path
+        for line in raw_untracked.splitlines()
+        if line.startswith("?? ")
+        for path in [line[3:].strip()]
+        if path and release_input_path(path)
+    )
     return {
-        "ok": not tracked_dirty,
+        "ok": not tracked_dirty and not untracked_release_inputs,
         "git_commit": git_output(["rev-parse", "HEAD"]) or "unknown",
         "git_branch": git_output(["branch", "--show-current"]) or "",
         "dirty": tracked_dirty,
+        "untracked_release_inputs": untracked_release_inputs,
     }
 
 
-def check_release_manifest() -> dict[str, Any]:
-    manifest_path = ROOT / "site/downloads/latest.json"
+def release_input_path(path: str) -> bool:
+    if path.startswith(".context/") or path.startswith("site/downloads/"):
+        return False
+    return path.startswith(RELEASE_INPUT_PATH_PREFIXES)
+
+
+def check_release_manifest(release_dir: Path | None = None) -> dict[str, Any]:
+    manifest_path = release_manifest_path(release_dir)
+    artifact_dir = release_artifact_dir(release_dir)
     if not manifest_path.exists():
-        return {"ok": False, "errors": ["site/downloads/latest.json is missing"]}
+        return {"ok": False, "errors": [f"{manifest_path} is missing"]}
 
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -165,8 +218,8 @@ def check_release_manifest() -> dict[str, Any]:
             continue
 
         artifact_relpath = f"site/downloads/{filename}"
-        artifact_path = ROOT / "site/downloads" / filename
-        artifact_tracked = git_tracked(artifact_relpath)
+        artifact_path = artifact_dir / filename
+        artifact_tracked = True if release_dir else git_tracked(artifact_relpath)
         summary: dict[str, Any] = {"filename": filename, "expected_sha256": expected_hash, "tracked": artifact_tracked}
         if not artifact_tracked:
             errors.append(f"artifact is not tracked by git: {artifact_relpath}")
@@ -211,12 +264,12 @@ def check_release_manifest() -> dict[str, Any]:
             )
 
     checksum_filename = f"Cortex-{manifest.get('version')}-{manifest.get('build')}.checksums.txt"
-    checksum_path = ROOT / "site/downloads" / checksum_filename
+    checksum_path = artifact_dir / checksum_filename
     checksum_entries: dict[str, str] = {}
     if not checksum_path.exists():
-        errors.append(f"checksum file missing: site/downloads/{checksum_filename}")
+            errors.append(f"checksum file missing: {checksum_path}")
     else:
-        if not git_tracked(f"site/downloads/{checksum_filename}"):
+        if release_dir is None and not git_tracked(f"site/downloads/{checksum_filename}"):
             errors.append(f"checksum file is not tracked by git: site/downloads/{checksum_filename}")
         for raw_line in checksum_path.read_text(encoding="utf-8").splitlines():
             parts = raw_line.split()
@@ -269,11 +322,11 @@ def parse_packet_metadata(path: Path | None) -> dict[str, str]:
     return values
 
 
-def release_packet_metadata_errors(path: Path | None) -> list[str]:
+def release_packet_metadata_errors(path: Path | None, release_dir: Path | None = None) -> list[str]:
     metadata = parse_packet_metadata(path)
     if not metadata:
         return []
-    manifest_path = ROOT / "site/downloads/latest.json"
+    manifest_path = release_manifest_path(release_dir)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     artifacts = {
         str(artifact.get("filename") or ""): str(artifact.get("sha256") or "")
@@ -282,9 +335,9 @@ def release_packet_metadata_errors(path: Path | None) -> list[str]:
     }
     errors: list[str] = []
     if metadata.get("Version") and metadata["Version"] != str(manifest.get("version") or ""):
-        errors.append("packet Version does not match site/downloads/latest.json")
+        errors.append(f"packet Version does not match {manifest_path}")
     if metadata.get("Build") and metadata["Build"] != str(manifest.get("build") or ""):
-        errors.append("packet Build does not match site/downloads/latest.json")
+        errors.append(f"packet Build does not match {manifest_path}")
     for key in ("DMG", "ZIP"):
         value = metadata.get(key)
         if not value:
@@ -295,19 +348,19 @@ def release_packet_metadata_errors(path: Path | None) -> list[str]:
             continue
         filename, digest = parts[0], parts[-1]
         if artifacts.get(filename) != digest:
-            errors.append(f"packet {key} metadata does not match site/downloads/latest.json")
+            errors.append(f"packet {key} metadata does not match {manifest_path}")
     dmg_hash = metadata.get("DMG SHA-256")
     if dmg_hash:
         manifest_dmg_hashes = [digest for filename, digest in artifacts.items() if filename.endswith(".dmg")]
         if dmg_hash not in manifest_dmg_hashes:
-            errors.append("packet DMG SHA-256 does not match site/downloads/latest.json")
+            errors.append(f"packet DMG SHA-256 does not match {manifest_path}")
     return errors
 
 
-def support_release_field_errors(value: str | None) -> list[str]:
+def support_release_field_errors(value: str | None, release_dir: Path | None = None) -> list[str]:
     if not field_is_filled(value):
         return []
-    manifest_path = ROOT / "site/downloads/latest.json"
+    manifest_path = release_manifest_path(release_dir)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     haystack = value.lower()
     expected_fragments = [
@@ -321,7 +374,7 @@ def support_release_field_errors(value: str | None) -> list[str]:
     )
     missing = [fragment for fragment in expected_fragments if fragment and fragment not in haystack]
     if missing:
-        return ["Build version, build number, hash must include the current version, build, DMG hash, and ZIP hash from site/downloads/latest.json"]
+        return [f"Build version, build number, hash must include the current version, build, DMG hash, and ZIP hash from {manifest_path}"]
     return []
 
 
@@ -332,7 +385,7 @@ def field_is_filled(value: str | None) -> bool:
     return bool(normalized) and normalized not in PLACEHOLDER_VALUES
 
 
-def check_support_packet(path: Path | None) -> dict[str, Any]:
+def check_support_packet(path: Path | None, release_dir: Path | None = None) -> dict[str, Any]:
     if path is None:
         return {
             "ok": False,
@@ -342,7 +395,7 @@ def check_support_packet(path: Path | None) -> dict[str, Any]:
         }
     values = parse_field_packet(path, SUPPORT_FIELDS)
     missing = [field for field in SUPPORT_FIELDS if not field_is_filled(values.get(field))]
-    metadata_errors = release_packet_metadata_errors(path) + support_release_field_errors(values.get("Build version, build number, hash"))
+    metadata_errors = release_packet_metadata_errors(path, release_dir) + support_release_field_errors(values.get("Build version, build number, hash"), release_dir)
     return {
         "ok": not missing and not metadata_errors,
         "provided": True,
@@ -353,7 +406,7 @@ def check_support_packet(path: Path | None) -> dict[str, Any]:
     }
 
 
-def check_clean_profile_qa(path: Path | None) -> dict[str, Any]:
+def check_clean_profile_qa(path: Path | None, release_dir: Path | None = None) -> dict[str, Any]:
     if path is None:
         return {
             "ok": False,
@@ -364,7 +417,7 @@ def check_clean_profile_qa(path: Path | None) -> dict[str, Any]:
         }
     values = parse_field_packet(path, CLEAN_PROFILE_QA_FIELDS)
     missing = [field for field in CLEAN_PROFILE_QA_FIELDS if not field_is_filled(values.get(field))]
-    metadata_errors = release_packet_metadata_errors(path)
+    metadata_errors = release_packet_metadata_errors(path, release_dir)
     failed = [
         field
         for field in QA_BOOLEAN_FIELDS
@@ -385,19 +438,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Summarize first-100 automated and human launch readiness gates.")
     parser.add_argument("--support-packet", type=Path, help="Optional filled support packet with 'Field: value' lines.")
     parser.add_argument("--clean-profile-qa", type=Path, help="Optional filled clean-profile QA packet with 'Field: value' lines.")
+    parser.add_argument("--release-dir", type=Path, help="Local packaged release directory containing latest.json and artifacts. Skips site/downloads checks.")
     parser.add_argument("--require-human-packet", action="store_true", help="Fail unless --support-packet is provided and complete.")
     parser.add_argument("--require-clean-profile-qa", action="store_true", help="Fail unless --clean-profile-qa is provided and complete.")
     args = parser.parse_args()
+    release_dir = resolve_release_dir(args.release_dir)
 
     checks = {
-        "required_files": check_required_files(),
+        "required_files": check_required_files(release_dir),
         "worktree": check_worktree(),
-        "release_manifest": check_release_manifest(),
+        "release_manifest": check_release_manifest(release_dir),
         "docs_current": command_ok(["python3", "scripts/check_docs_current.py"]),
-        "distribution_site": command_ok(["python3", "scripts/check_distribution_site.py"]),
-        "site_update_manifest": command_ok(["python3", "scripts/validate_update_manifest.py", "site/downloads/latest.json"]),
-        "support_packet": check_support_packet(args.support_packet),
-        "clean_profile_qa": check_clean_profile_qa(args.clean_profile_qa),
+        "distribution_site": {"ok": True, "skipped": True, "reason": "local release directory provided"} if release_dir else command_ok(["python3", "scripts/check_distribution_site.py"]),
+        "site_update_manifest": {"ok": True, "skipped": True, "reason": "local release directory provided"} if release_dir else command_ok(["python3", "scripts/validate_update_manifest.py", "site/downloads/latest.json"]),
+        "support_packet": check_support_packet(args.support_packet, release_dir),
+        "clean_profile_qa": check_clean_profile_qa(args.clean_profile_qa, release_dir),
     }
 
     automated_names = ["required_files", "worktree", "release_manifest", "docs_current", "distribution_site", "site_update_manifest"]
@@ -417,6 +472,7 @@ def main() -> int:
         "human_gates_ok": human_ok,
         "support_packet_ok": support_ok,
         "clean_profile_qa_ok": clean_profile_qa_ok,
+        "release_dir": str(release_dir) if release_dir else None,
         "checks": checks,
         "next_actions": [],
     }

@@ -11,6 +11,7 @@ from backend.app.connectors.obsidian import (
     parse_note,
     scan_vault,
     stable_block_external_id,
+    stable_canvas_node_external_id,
     stable_external_id,
     stable_section_external_id,
 )
@@ -177,6 +178,242 @@ Decision: Cortex should cite the stable-source fixture from its note URI.
         self.assertIn("stable-source fixture", second["content"])
         self.assertNotIn("Metadata-only import noise", second["content"])
         self.assertNotIn("TABLE file.mtime", second["content"])
+
+    def test_scan_vault_extracts_obsidian_canvas_nodes_with_stable_citations(self) -> None:
+        canvas = self.write_note(
+            "Maps/Product.canvas",
+            """{
+  "nodes": [
+    {
+      "id": "decision-node",
+      "type": "text",
+      "text": "Decision: Cortex should treat Obsidian Canvas strategy nodes as reviewed memory. #product/strategy"
+    },
+    {
+      "id": "spec-file",
+      "type": "file",
+      "file": "Specs/Cortex MVP.md"
+    },
+    {
+      "id": "reference-link",
+      "type": "link",
+      "url": "https://trydoppl.com"
+    },
+    {
+      "id": "sprint-group",
+      "type": "group",
+      "label": "First 100 user launch"
+    }
+  ],
+  "edges": [
+    {"id": "edge-1", "fromNode": "decision-node", "toNode": "spec-file", "label": "drives"},
+    {"id": "edge-2", "fromNode": "reference-link", "toNode": "decision-node"}
+  ]
+}
+""",
+        )
+
+        records = [record.to_source_account_record() for record in scan_vault(self.vault, max_records=20).records]
+        by_node = {record["metadata"]["canvas_node_id"]: record for record in records}
+
+        self.assertEqual(set(by_node), {"decision-node", "spec-file", "reference-link", "sprint-group"})
+        decision = by_node["decision-node"]
+        self.assertEqual(decision["external_id"], stable_canvas_node_external_id(self.vault, canvas, "decision-node"))
+        self.assertEqual(decision["source_url"], f"{canvas.resolve().as_uri()}#node=decision-node")
+        self.assertEqual(decision["metadata"]["record_scope"], "canvas_node")
+        self.assertEqual(decision["metadata"]["canvas_node_type"], "text")
+        self.assertEqual(decision["metadata"]["tags"], ["product/strategy"])
+        self.assertEqual(len(decision["metadata"]["canvas_node_edges"]), 2)
+        self.assertIn("Canvas strategy nodes", decision["content"])
+        self.assertNotIn("#product/strategy", decision["content"])
+
+        self.assertIn("Specs/Cortex MVP.md", by_node["spec-file"]["content"])
+        self.assertEqual(by_node["spec-file"]["metadata"]["file"], "Specs/Cortex MVP.md")
+        self.assertIn("https://trydoppl.com", by_node["reference-link"]["content"])
+        self.assertEqual(by_node["sprint-group"]["content"], "Canvas group: First 100 user launch")
+
+    def test_canvas_edges_create_related_retrieval_context(self) -> None:
+        self.write_note(
+            "Maps/Launch.canvas",
+            """{
+  "nodes": [
+    {
+      "id": "delta-decision",
+      "type": "text",
+      "text": "Decision: Delta route uses privacy-first launch sequencing for the first customer cohort."
+    },
+    {
+      "id": "support-runbook",
+      "type": "text",
+      "text": "Runbook: Before inviting users, verify support bundles, local backup, and rollback checklist."
+    }
+  ],
+  "edges": [
+    {"id": "edge-support", "fromNode": "delta-decision", "toNode": "support-runbook", "label": "requires"}
+  ]
+}
+""",
+        )
+
+        synced = self.store.sync_obsidian_vault(
+            self.user_id,
+            vault_path=str(self.vault),
+            processing="sync",
+            max_records=20,
+        )
+
+        self.assertEqual(synced["saved"], 2)
+        for capture_id in synced["capture_ids"]:
+            self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+        with connect(self.db_path) as conn:
+            relation = conn.execute(
+                """
+                SELECT kind, metadata_json
+                FROM memory_relations
+                WHERE user_id = ?
+                  AND kind = 'canvas_edge'
+                """,
+                (self.user_id,),
+            ).fetchone()
+        self.assertIsNotNone(relation)
+        self.assertIn("edge-support", relation["metadata_json"])
+
+        results = self.store.search(
+            self.user_id,
+            "what was the delta route decision",
+            limit=2,
+            include_related=True,
+        )
+
+        self.assertEqual(results[0]["provenance"]["record_metadata"]["canvas_node_id"], "delta-decision")
+        related = next(item for item in results if item["provenance"]["record_metadata"]["canvas_node_id"] == "support-runbook")
+        self.assertEqual(related["relationship"]["kind"], "canvas_edge")
+        self.assertEqual(related["relationship"]["related_to_id"], results[0]["id"])
+
+        answer = self.store.answer_query(
+            self.user_id,
+            "what was the delta route decision",
+            limit=2,
+        )
+        citation_external_ids = {citation["external_id"] for citation in answer["citations"]}
+        self.assertIn("Maps/Launch.canvas#canvas=delta-decision", citation_external_ids)
+        self.assertIn("Maps/Launch.canvas#canvas=support-runbook", citation_external_ids)
+
+        self.write_note(
+            "Maps/Launch.canvas",
+            """{
+  "nodes": [
+    {
+      "id": "delta-decision",
+      "type": "text",
+      "text": "Decision: Delta route uses privacy-first launch sequencing for the first customer cohort."
+    },
+    {
+      "id": "support-runbook",
+      "type": "text",
+      "text": "Runbook: Before inviting users, verify support bundles, local backup, and rollback checklist."
+    }
+  ],
+  "edges": []
+}
+""",
+        )
+
+        refreshed = self.store.sync_obsidian_vault(
+            self.user_id,
+            vault_path=str(self.vault),
+            processing="sync",
+            max_records=20,
+        )
+        self.assertEqual(refreshed["saved"], 2)
+        with connect(self.db_path) as conn:
+            relation_count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM memory_relations
+                WHERE user_id = ?
+                  AND kind = 'canvas_edge'
+                """,
+                (self.user_id,),
+            ).fetchone()[0]
+        self.assertEqual(relation_count, 0)
+
+    def test_wikilinks_create_related_retrieval_context_and_refresh_when_removed(self) -> None:
+        atlas = self.write_note(
+            "Projects/Atlas.md",
+            """# Atlas Decision
+
+Decision: Atlas should use source-backed retrieval for beta planning.
+Dana owner: [[People/Dana|Dana]]
+""",
+        )
+        self.write_note(
+            "People/Dana.md",
+            """# Dana
+
+Dana owns launch quality review, rollback checks, and cited answer approval.
+""",
+        )
+
+        synced = self.store.sync_obsidian_vault(
+            self.user_id,
+            vault_path=str(self.vault),
+            processing="sync",
+            max_records=20,
+        )
+        self.assertEqual(synced["saved"], 2)
+        for capture_id in synced["capture_ids"]:
+            self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+
+        with connect(self.db_path) as conn:
+            relation = conn.execute(
+                """
+                SELECT kind, metadata_json
+                FROM memory_relations
+                WHERE user_id = ?
+                  AND kind = 'obsidian_link'
+                """,
+                (self.user_id,),
+            ).fetchone()
+        self.assertIsNotNone(relation)
+        self.assertIn("People/Dana", relation["metadata_json"])
+
+        answer = self.store.answer_query(
+            self.user_id,
+            "what was the Atlas source backed retrieval decision",
+            limit=2,
+        )
+        citation_paths = {citation["citation_path"] for citation in answer["citations"]}
+        self.assertIn("Projects/Atlas.md", citation_paths)
+        self.assertIn("People/Dana.md", citation_paths)
+
+        atlas.write_text(
+            """# Atlas Decision
+
+Decision: Atlas should use source-backed retrieval for beta planning.
+Dana owner: Dana
+""",
+            encoding="utf-8",
+        )
+
+        refreshed = self.store.sync_obsidian_vault(
+            self.user_id,
+            vault_path=str(self.vault),
+            processing="sync",
+            max_records=20,
+        )
+        self.assertGreaterEqual(refreshed["saved"], 1)
+        with connect(self.db_path) as conn:
+            relation_count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM memory_relations
+                WHERE user_id = ?
+                  AND kind = 'obsidian_link'
+                """,
+                (self.user_id,),
+            ).fetchone()[0]
+        self.assertEqual(relation_count, 0)
 
     def test_scan_vault_cleans_obsidian_markdown_and_keeps_file_citations(self) -> None:
         note_text = """---

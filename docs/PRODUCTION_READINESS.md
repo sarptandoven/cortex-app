@@ -79,6 +79,7 @@ The remaining roadmap should stay non-overengineered:
 - Dogfood with at least 1,000 captures across clipboard, notes, ChatGPT, Claude, docs, and meetings
 - Run `python3 -m unittest discover backend/tests` before every app package
 - Run `python3 scripts/retrieval_eval.py` before every app package
+- Run `python3 scripts/check_connector_baseline.py` before claiming the 10k baseline connector set is intact
 - Run `python3 scripts/backend_beta_smoke.py` before inviting beta users; it must pass the Obsidian/MCP -> Review -> Ask loop with sockets blocked
 - Run `python3 scripts/first100_live_smoke.py` against the launched packaged app before inviting beta users
 - Run `python3 scripts/reliability_check.py` against the packaged app backend before every app package

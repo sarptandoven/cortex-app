@@ -36,6 +36,14 @@ struct HomeHeroSection: View {
         }
     }
 
+    private var needsAttentionSources: Int {
+        state.sourceReadinessReport?.summary.needs_attention ?? 0
+    }
+
+    private var dueSyncSources: Int {
+        state.sourceReadinessReport?.sources.filter { $0.sync_plan?.due_now == true }.count ?? 0
+    }
+
     private var memoryCount: Int {
         review?.stats.memories ?? state.stats?.memories ?? 0
     }
@@ -63,8 +71,14 @@ struct HomeHeroSection: View {
             }
             return ("Starting", "power", .accentColor)
         }
+        if needsAttentionSources > 0 {
+            return ("Source needs attention", "exclamationmark.triangle.fill", .orange)
+        }
         if pendingCount > 0 {
             return ("Ready for Review", "tray.full.fill", .orange)
+        }
+        if dueSyncSources > 0 {
+            return ("Sync due", "arrow.triangle.2.circlepath.circle.fill", .accentColor)
         }
         if hasMemory {
             return ("Ready to ask", "checkmark.seal.fill", .green)
@@ -85,8 +99,14 @@ struct HomeHeroSection: View {
         if !state.isLocalServiceReady {
             return "Cortex is starting"
         }
+        if needsAttentionSources > 0 {
+            return "Check your source connection"
+        }
         if pendingCount > 0 {
             return "Review new memory"
+        }
+        if dueSyncSources > 0 {
+            return "Refresh connected memory"
         }
         if hasMemory {
             return "Ask about your memory"
@@ -98,9 +118,9 @@ struct HomeHeroSection: View {
             return "Choose a source with content"
         }
         if state.connectedAIIntegrationCount > 0 {
-            return "Start source sync"
+            return "Connect your notes"
         }
-        return "Start source sync"
+        return "Connect your notes"
     }
 
     private var detail: String {
@@ -110,8 +130,14 @@ struct HomeHeroSection: View {
             }
             return "This usually takes a moment."
         }
+        if needsAttentionSources > 0 {
+            return "Cortex keeps already synced memory local, but one or more sources need attention before fresh items arrive."
+        }
         if pendingCount > 0 {
             return "Choose what Cortex should remember before it appears in Ask."
+        }
+        if dueSyncSources > 0 {
+            return "A connected source is ready to sync. Cortex will keep new memory local and bring useful items to Review."
         }
         if hasMemory {
             return "Cortex answers from saved memory and shows which source each answer came from."
@@ -123,27 +149,35 @@ struct HomeHeroSection: View {
             return "Cortex could not find usable content there. Pick a source with real notes or records."
         }
         if state.connectedAIIntegrationCount > 0 {
-            return "Sync a source so Ask can answer with citations."
+            return "Connect notes so Ask can answer with citations."
         }
-        return "Connect one source once. Cortex keeps it in sync and brings new memory to Review."
+        return "Connect your notes once. Cortex keeps them synced and brings new memory to Review."
     }
 
     private var actionTitle: String {
         if !state.isLocalServiceReady { return "Start Cortex" }
-        if activeSources == 0 { return hasEmptySource ? "Choose source" : "Start source sync" }
+        if needsAttentionSources > 0 { return "Open Connections" }
+        if dueSyncSources > 0 { return "Sync now" }
+        if activeSources == 0 { return hasEmptySource ? "Choose notes" : "Connect notes" }
         if pendingCount > 0 { return "Review memory" }
         if hasMemory { return "Ask a question" }
-        return canSyncSource ? "Sync source" : "View source status"
+        return canSyncSource ? "Sync notes" : "View notes"
     }
 
     private var actionDetail: String {
         if !state.isLocalServiceReady { return "Start Cortex on this Mac." }
+        if needsAttentionSources > 0 {
+            return "\(needsAttentionSources) source\(needsAttentionSources == 1 ? "" : "s") need attention"
+        }
+        if dueSyncSources > 0 {
+            return "\(dueSyncSources) source\(dueSyncSources == 1 ? "" : "s") ready"
+        }
         if activeSources == 0 {
             if hasEmptySource {
-                return "Pick a different folder with useful notes."
+                return "Pick a folder with useful notes."
             }
             if state.connectedAIIntegrationCount > 0 {
-                return "A synced source gives Ask something to cite."
+                return "Synced notes give Ask something to cite."
             }
             return "Cortex syncs automatically after notes are selected."
         }
@@ -158,6 +192,8 @@ struct HomeHeroSection: View {
 
     private var actionIcon: String {
         if !state.isLocalServiceReady { return "power" }
+        if needsAttentionSources > 0 { return "exclamationmark.circle" }
+        if dueSyncSources > 0 { return "arrow.triangle.2.circlepath" }
         if activeSources == 0 { return hasEmptySource ? "folder.badge.questionmark" : "folder.badge.plus" }
         if pendingCount > 0 { return "checklist" }
         if hasMemory { return "magnifyingglass" }
@@ -226,13 +262,19 @@ struct HomeHeroSection: View {
     }
 
     private var sourceStatus: (detail: String, systemImage: String, color: Color) {
+        if needsAttentionSources > 0 {
+            return ("\(needsAttentionSources) source\(needsAttentionSources == 1 ? "" : "s") need attention", "exclamationmark.triangle.fill", .orange)
+        }
+        if dueSyncSources > 0 {
+            return ("\(dueSyncSources) connected source\(dueSyncSources == 1 ? "" : "s") ready to sync", "arrow.triangle.2.circlepath.circle.fill", .accentColor)
+        }
         if activeSources > 0 {
             return ("\(activeSources) connected and syncing", "folder.fill.badge.checkmark", .green)
         }
         if hasEmptySource {
             return ("No usable content found", "folder.badge.questionmark", .orange)
         }
-        return ("Source sync not set up", "folder.badge.plus", .accentColor)
+        return ("Notes not connected", "folder.badge.plus", .accentColor)
     }
 
     private var memoryStatus: (detail: String, systemImage: String, color: Color) {
@@ -253,11 +295,15 @@ struct HomeHeroSection: View {
                 await state.loadReview()
                 await state.loadStats()
             }
+        } else if needsAttentionSources > 0 {
+            state.openConnectionsPrivacy(statusMessage: "Check source connection")
+        } else if dueSyncSources > 0 {
+            state.openConnectionsPrivacy(statusMessage: "Sync connected sources")
         } else if activeSources == 0 {
             if let connector = obsidianConnector {
                 state.connectLocalNotesFolder(connector, chooseNew: hasEmptySource)
             } else {
-                state.openConnectionsPrivacy(statusMessage: "Source sync")
+                state.openConnectionsPrivacy(statusMessage: "Connect notes")
             }
         } else if pendingCount > 0 {
             state.selectedTab = .review
@@ -269,7 +315,7 @@ struct HomeHeroSection: View {
             if canSyncSource, let connector = obsidianConnector {
                 state.connectLocalNotesFolder(connector)
             } else {
-                state.openConnectionsPrivacy(statusMessage: "Source sync status")
+                state.openConnectionsPrivacy(statusMessage: "Notes status")
             }
         }
     }

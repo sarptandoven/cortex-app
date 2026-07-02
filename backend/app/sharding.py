@@ -4,7 +4,6 @@ import hashlib
 import json
 import re
 import secrets
-import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -13,6 +12,7 @@ from typing import Any, Callable
 
 from .config import Settings
 from .database import init_db
+from .sqlite_runtime import sqlite3
 from .storage import CortexStore
 
 
@@ -382,6 +382,14 @@ class StoreRegistry:
             payload["sharding"]["control_plane"] = self.control_plane_status()
         return payload
 
+    def runtime_storage_status(self) -> dict[str, Any]:
+        return {
+            **self.default_store.runtime_storage_status(),
+            "shard_mode": self.router.mode,
+            "active_store_count": len(self._stores),
+            "default_shard": self.assignment_for(self.default_user_id).as_dict(),
+        }
+
     def control_plane_status(self) -> dict[str, Any]:
         summary = self.token_index.summary()
         ready = summary["active_ready_users"] > 0
@@ -392,7 +400,10 @@ class StoreRegistry:
         }
 
     def hosted_job_health(self, *, ready_user_limit: int = 20) -> dict[str, Any]:
-        ready_users = self.token_index.ready_user_ids(limit=ready_user_limit)
+        capped_ready_user_limit = max(1, min(int(ready_user_limit or 20), 500))
+        control_summary = self.token_index.summary()
+        total_ready_users = int(control_summary.get("active_ready_users") or 0)
+        ready_users = self.token_index.ready_user_ids(limit=capped_ready_user_limit)
         aggregate_counts = {"queued": 0, "running": 0, "succeeded": 0, "failed": 0}
         status_counts = {"ok": 0, "attention": 0, "blocked": 0}
         stale_running_count = 0
@@ -424,8 +435,9 @@ class StoreRegistry:
         return {
             "status": status,
             "ready_user_count": len(ready_users),
-            "ready_user_limit": max(1, min(int(ready_user_limit or 20), 500)),
-            "truncated": len(ready_users) >= max(1, min(int(ready_user_limit or 20), 500)),
+            "total_ready_user_count": total_ready_users,
+            "ready_user_limit": capped_ready_user_limit,
+            "truncated": total_ready_users > len(ready_users),
             "counts": aggregate_counts,
             "user_status_counts": status_counts,
             "stale_running_count": stale_running_count,

@@ -1523,11 +1523,128 @@ def assert_focused_answer_contracts(store: CortexStore, user_id: str = USER_ID) 
     if missing_source_urls:
         raise AssertionError(f"Ask source-backed rerank emitted uncited citations: {missing_source_urls}")
 
+    claim_conflict_fixtures = [
+        (
+            "slack",
+            "cortex-source://slack#service=slack&channel=C456&message=1782900000000200&line=1&excerpt=eval-icarus-email",
+            "2026-06-02T00:00:00+00:00",
+            "rq_ask_claim_conflict_original",
+            "Project Icarus launch channel should use email according to the original GTM thread.",
+        ),
+        (
+            "github",
+            "cortex-source://github#service=github&repository=cortex&file=issues.json&line=45&excerpt=eval-icarus-slack",
+            "2026-06-16T00:00:00+00:00",
+            "rq_ask_claim_conflict_updated",
+            "Project Icarus launch channel now uses Slack because tester replies need fast triage.",
+        ),
+    ]
+    for source, source_url, timestamp, record_id, content in claim_conflict_fixtures:
+        store.save_capture(
+            user_id=user_id,
+            content=content,
+            source=source,
+            source_url=source_url,
+            title=f"{source} Project Icarus launch channel",
+            extracted={
+                "_timestamp": timestamp,
+                "summary": content,
+                "records": [
+                    {
+                        "id": record_id,
+                        "kind": "decision",
+                        "layer": "decision",
+                        "content": content,
+                        "summary": content,
+                        "confidence": "confirmed",
+                        "importance": 4,
+                        "sector": "Project Icarus",
+                        "topics": ["project-icarus", "launch", "channel"],
+                        "entity_ids": ["project_icarus"],
+                        "occurred_at": timestamp,
+                    }
+                ],
+                "tasks": [],
+                "entities": [
+                    {
+                        "id": "project_icarus",
+                        "kind": "project",
+                        "name": "Project Icarus",
+                        "aliases": ["Icarus"],
+                    }
+                ],
+            },
+        )
+    claim_conflict_answer = store.answer_query(user_id, "Project Icarus launch channel", limit=4, sector="Project Icarus")
+    claim_conflicts = claim_conflict_answer.get("conflicts") or []
+    if claim_conflict_answer.get("status") != "conflicted" or not claim_conflicts:
+        raise AssertionError(f"Ask claim-conflict contract missed conflicted status: {claim_conflict_answer}")
+    first_claim_conflict = claim_conflicts[0]
+    if first_claim_conflict.get("type") != "claim_conflict":
+        raise AssertionError(f"Ask claim-conflict contract returned wrong conflict type: {first_claim_conflict}")
+    if first_claim_conflict.get("claim_key") != "launch channel":
+        raise AssertionError(f"Ask claim-conflict contract missed claim key: {first_claim_conflict}")
+    if first_claim_conflict.get("primary_id") != "rq_ask_claim_conflict_updated":
+        raise AssertionError(f"Ask claim-conflict contract missed newer/current primary source: {first_claim_conflict}")
+    if first_claim_conflict.get("primary_claim") != "slack" or first_claim_conflict.get("conflicting_claim") != "email":
+        raise AssertionError(f"Ask claim-conflict contract missed disagreeing claims: {first_claim_conflict}")
+
+    store.save_capture(
+        user_id=user_id,
+        content="Project Atlas payroll reimbursement policy is approved for local beta expenses.",
+        source="github",
+        source_url="cortex-source://github#service=github&file=issues.json&line=88&excerpt=atlas-payroll-policy",
+        title="Atlas payroll reimbursement policy",
+        extracted={
+            "_timestamp": "2026-07-01T10:10:00Z",
+            "summary": "Atlas payroll reimbursement policy.",
+            "records": [
+                {
+                    "id": "rq_ask_low_confidence_related_cited",
+                    "kind": "claim",
+                    "layer": "semantic",
+                    "content": "Project Atlas payroll reimbursement policy is approved for local beta expenses.",
+                    "summary": "Atlas payroll reimbursement policy is approved.",
+                    "confidence": "confirmed",
+                    "importance": 4,
+                    "sector": "Project Atlas",
+                    "topics": ["project-atlas", "payroll", "reimbursement"],
+                    "entity_ids": ["project_atlas"],
+                }
+            ],
+            "tasks": [],
+            "entities": [
+                {
+                    "id": "project_atlas",
+                    "kind": "project",
+                    "name": "Project Atlas",
+                    "aliases": ["Atlas"],
+                }
+            ],
+        },
+    )
+    low_confidence_answer = store.answer_query(
+        user_id,
+        "Project Atlas payroll reimbursement owner",
+        limit=3,
+        sector="Project Atlas",
+    )
+    low_confidence_evidence = low_confidence_answer.get("evidence") if isinstance(low_confidence_answer.get("evidence"), dict) else {}
+    if low_confidence_answer.get("status") != "low_confidence":
+        raise AssertionError(f"Ask low-confidence contract missed low_confidence status: {low_confidence_answer}")
+    if low_confidence_evidence.get("missing_fields") != ["owner"]:
+        raise AssertionError(f"Ask low-confidence contract missed owner evidence gap: {low_confidence_evidence}")
+    low_confidence_ids = [citation["id"] for citation in low_confidence_answer.get("citations") or []]
+    if not low_confidence_ids or low_confidence_ids[0] != "rq_ask_low_confidence_related_cited":
+        raise AssertionError(f"Ask low-confidence contract missed related citation: {low_confidence_ids}")
+
     for label, answer in (
         ("sector_scoping", sector_answer),
         ("temporal_validity", validity_answer),
         ("related_memory", related_answer),
         ("source_backed_rerank", source_backed_answer),
+        ("claim_conflict", claim_conflict_answer),
+        ("low_confidence", low_confidence_answer),
     ):
         missing_citations = [citation["id"] for citation in answer.get("citations") or [] if not citation.get("source_url")]
         if missing_citations:
@@ -1552,6 +1669,16 @@ def assert_focused_answer_contracts(store: CortexStore, user_id: str = USER_ID) 
         },
         "source_backed_rerank": {
             "citation_ids": source_backed_ids,
+        },
+        "claim_conflict": {
+            "status": claim_conflict_answer.get("status"),
+            "citation_ids": [citation["id"] for citation in claim_conflict_answer.get("citations") or []],
+            "conflict": first_claim_conflict,
+        },
+        "low_confidence": {
+            "status": low_confidence_answer.get("status"),
+            "citation_ids": low_confidence_ids,
+            "evidence": low_confidence_evidence,
         },
     }
 
@@ -1663,6 +1790,204 @@ def assert_direct_connector_answer_contracts(
         "sources": sorted(contracts),
         "source_count": len(contracts),
         "contracts": contracts,
+    }
+
+
+def assert_automatic_connector_account_scope_contract(store: CortexStore, user_id: str = USER_ID) -> dict[str, Any]:
+    query = "Project Meridian automatic connector review bypass source ledger"
+    expected_phrase = "automatic connector review bypass source ledger"
+    trusted_external_id = "auto-account-scope-trusted"
+    blocked_external_id = "auto-account-scope-blocked"
+    trusted_content = (
+        "Decision: Project Meridian automatic connector review bypass source ledger stays retrievable "
+        "by cited Ask and search when global pending context is disabled."
+    )
+    blocked_content = (
+        "Decision: Project Meridian automatic connector review bypass source ledger should not leak "
+        "from the review-required Gmail account while pending."
+    )
+
+    store.update_settings(user_id, {"review_new_captures": True, "allow_pending_in_context": False})
+    trusted_account = store.upsert_source_account(
+        user_id,
+        source="slack",
+        account_id="sacct_retrieval_eval_auto_connector_trusted",
+        account_label="Project Meridian Slack automatic eval",
+        account_identifier="project-meridian-slack-auto-eval",
+        connection_type="api-token",
+        status="connected",
+        auth_state="connected",
+        policy={"review_required": False, "allow_ai_context": True},
+        metadata={"retrieval_eval": True, "automatic_connector_scope": True},
+    )
+    blocked_account = store.upsert_source_account(
+        user_id,
+        source="gmail",
+        account_id="sacct_retrieval_eval_auto_connector_review_required",
+        account_label="Project Meridian Gmail review-required eval",
+        account_identifier="project-meridian-gmail-review-required-eval",
+        connection_type="oauth-token",
+        status="connected",
+        auth_state="connected",
+        policy={"review_required": True, "allow_ai_context": True},
+        metadata={"retrieval_eval": True, "automatic_connector_scope": True},
+    )
+
+    trusted_sync = store.sync_source_account_records(
+        user_id,
+        trusted_account["id"],
+        records=[
+            {
+                "external_id": trusted_external_id,
+                "title": "Project Meridian automatic connector account scope",
+                "content": trusted_content,
+                "source_url": (
+                    "cortex-source://slack#service=slack&channel=CACCT"
+                    "&message=1782920000000100&line=1&excerpt=auto-account-review-bypass"
+                ),
+                "captured_at": "2026-07-01T12:20:00Z",
+                "metadata": {
+                    "retrieval_eval": True,
+                    "line_start": 1,
+                    "record_scope": "message",
+                    "source_quality": "canonical",
+                },
+            }
+        ],
+        processing="sync",
+        cursor_name="automatic-connector-account-scope",
+        cursor_value="trusted",
+        high_water_mark="2026-07-01T12:20:00Z",
+        state={"retrieval_eval": True, "automatic_connector_scope": True},
+    )
+    blocked_sync = store.sync_source_account_records(
+        user_id,
+        blocked_account["id"],
+        records=[
+            {
+                "external_id": blocked_external_id,
+                "title": "Project Meridian review-required account distractor",
+                "content": blocked_content,
+                "source_url": (
+                    "cortex-source://gmail#service=gmail&subject=Project%20Meridian%20Review"
+                    "&line=1&excerpt=auto-account-review-required"
+                ),
+                "captured_at": "2026-07-01T12:21:00Z",
+                "metadata": {
+                    "retrieval_eval": True,
+                    "line_start": 1,
+                    "record_scope": "message",
+                    "source_quality": "review_required",
+                },
+            }
+        ],
+        processing="sync",
+        cursor_name="automatic-connector-account-scope",
+        cursor_value="review-required",
+        high_water_mark="2026-07-01T12:21:00Z",
+        state={"retrieval_eval": True, "automatic_connector_scope": True},
+    )
+    for label, sync_result in (("trusted", trusted_sync), ("review_required", blocked_sync)):
+        if sync_result["failed"] or sync_result["saved"] != 1:
+            raise AssertionError(f"Automatic connector account-scope sync failed for {label}: {sync_result}")
+        record_counts = [int(record.get("memories") or 0) for record in sync_result.get("records") or []]
+        if not record_counts or record_counts[0] < 1:
+            raise AssertionError(f"Automatic connector account-scope sync produced no memories for {label}: {sync_result}")
+
+    trusted_capture_id = trusted_sync["capture_ids"][0]
+    blocked_capture_id = blocked_sync["capture_ids"][0]
+    settings = store.settings(user_id)
+    if settings.get("allow_pending_in_context") is not False:
+        raise AssertionError(f"Automatic connector account-scope eval requires global pending context disabled: {settings}")
+    pending_capture_ids = {capture["id"] for capture in store.inbox(user_id, limit=20)}
+    for capture_id in (trusted_capture_id, blocked_capture_id):
+        if capture_id not in pending_capture_ids:
+            raise AssertionError(f"Automatic connector account-scope capture was not pending as expected: {capture_id}")
+
+    scoped_results = store.search(user_id, query, limit=4, source_account_id=trusted_account["id"])
+    if not scoped_results:
+        raise AssertionError("Automatic connector account-scoped search returned no results")
+    top = scoped_results[0]
+    scoped_ids = [item["id"] for item in scoped_results]
+    if expected_phrase not in str(top.get("content") or ""):
+        raise AssertionError(f"Automatic connector account-scoped search missed expected content: {top}")
+    provenance = top.get("provenance") if isinstance(top.get("provenance"), dict) else {}
+    source_account_policy = provenance.get("source_account_policy") if isinstance(provenance.get("source_account_policy"), dict) else {}
+    if provenance.get("source_account_id") != trusted_account["id"]:
+        raise AssertionError(f"Automatic connector account-scoped search missed source account provenance: {top}")
+    if provenance.get("external_id") != trusted_external_id:
+        raise AssertionError(f"Automatic connector account-scoped search missed external_id provenance: {top}")
+    if source_account_policy.get("review_required") is not False:
+        raise AssertionError(f"Automatic connector account-scoped search missed review bypass policy: {top}")
+    top_source_url = str(top.get("source_url") or "")
+    if "line=1" not in top_source_url or "excerpt=auto-account-review-bypass" not in top_source_url:
+        raise AssertionError(f"Automatic connector account-scoped search missed granular source URL: {top}")
+
+    answer = store.answer_query(user_id, query, limit=4, source_account_id=trusted_account["id"])
+    citations = answer.get("citations") or []
+    citation_ids = [citation["id"] for citation in citations]
+    if answer.get("status") != "cited" or not citations:
+        raise AssertionError(f"Automatic connector account-scoped Ask did not return a cited answer: {answer}")
+    citation = citations[0]
+    if citation["id"] != top["id"]:
+        raise AssertionError(f"Automatic connector account-scoped Ask disagreed with search top result: {citation_ids} vs {top['id']}")
+    if citation.get("source_account_id") != trusted_account["id"]:
+        raise AssertionError(f"Automatic connector account-scoped Ask missed source account citation metadata: {citation}")
+    if citation.get("source_record_id") != trusted_external_id or citation.get("external_id") != trusted_external_id:
+        raise AssertionError(f"Automatic connector account-scoped Ask missed source record metadata: {citation}")
+    if citation.get("source_type") != "service" or not citation.get("source_url"):
+        raise AssertionError(f"Automatic connector account-scoped Ask missed service citation details: {citation}")
+    if str(citation.get("line_start") or "") != "1" or citation.get("record_scope") != "message":
+        raise AssertionError(f"Automatic connector account-scoped Ask missed structured locator metadata: {citation}")
+
+    blocked_results = store.search(user_id, query, limit=4, source_account_id=blocked_account["id"])
+    if blocked_results:
+        raise AssertionError(f"Review-required pending connector account leaked into search: {[item['id'] for item in blocked_results]}")
+    blocked_answer = store.answer_query(user_id, query, limit=4, source_account_id=blocked_account["id"])
+    blocked_citation_ids = [citation["id"] for citation in blocked_answer.get("citations") or []]
+    if blocked_citation_ids:
+        raise AssertionError(f"Review-required pending connector account leaked into Ask citations: {blocked_citation_ids}")
+
+    broad_results = store.search(user_id, query, limit=6)
+    broad_ids = [item["id"] for item in broad_results]
+    if top["id"] not in broad_ids:
+        raise AssertionError(f"Automatic connector review-bypass memory was not retrievable without source-account scope: {broad_ids}")
+    if any(blocked_external_id == (item.get("provenance") or {}).get("external_id") for item in broad_results):
+        raise AssertionError(f"Review-required pending connector account leaked into broad search: {broad_ids}")
+
+    search_check = {
+        "name": "automatic_connector_account_scope_review_bypass",
+        "category": "direct_connector_account_policy",
+        "query": query,
+        "sector": None,
+        "include_related": False,
+        "expected_layer": top["layer"],
+        "expected_id": top["id"],
+        "expected_rank": 1,
+        "top_result": top["id"],
+        "top_layer": top["layer"],
+        "top_sector": top.get("sector"),
+        "top_source_url": top.get("source_url"),
+        "top_occurred_at": top.get("occurred_at"),
+        "result_ids": scoped_ids,
+        "disallowed_ids": [],
+        "related_result": None,
+        "layer_filtered_results": scoped_ids,
+        "metrics": _metrics_for_results(top["id"], scoped_ids, METRIC_K_VALUES),
+    }
+    return {
+        "trusted_account_id": trusted_account["id"],
+        "blocked_account_id": blocked_account["id"],
+        "trusted_capture_id": trusted_capture_id,
+        "blocked_capture_id": blocked_capture_id,
+        "pending_capture_ids": sorted(pending_capture_ids),
+        "search_result_ids": scoped_ids,
+        "ask_status": answer.get("status"),
+        "ask_citation_ids": citation_ids,
+        "broad_result_ids": broad_ids,
+        "blocked_search_result_ids": [item["id"] for item in blocked_results],
+        "blocked_ask_status": blocked_answer.get("status"),
+        "check": search_check,
     }
 
 
@@ -1782,6 +2107,417 @@ def assert_source_backed_lexical_fallback_ranking(
         "layer_filtered_results": result_ids,
         "retrieval_modes": diagnostics.get("used_modes", []),
         "metrics": _metrics_for_results(expected_id, result_ids, METRIC_K_VALUES),
+    }
+
+
+def assert_mixed_source_trusted_authority_ranking(
+    store: CortexStore,
+    user_id: str = USER_ID,
+    limit: int = 5,
+) -> dict[str, Any]:
+    expected_id = "rq_mixed_source_authority_notion_canonical"
+    query = "Project Solaris launch owner budget source of truth"
+    store.update_settings(
+        user_id,
+        {
+            "review_new_captures": False,
+            "allow_pending_in_context": True,
+            "source_policies": {"notion": {"mode": "trusted"}},
+        },
+    )
+
+    distractors: tuple[tuple[str, str, str, str], ...] = (
+        ("slack", "cortex-source://slack#service=slack&channel=CSOLARIS&line=11&excerpt=solaris-old-slack", "Marco", "Slack thread"),
+        ("gmail", "cortex-source://gmail#service=gmail&subject=Project%20Solaris&line=3&excerpt=solaris-old-gmail", "Nina", "email recap"),
+        ("google-drive", "cortex-source://google-drive#service=google-drive&document=solaris-plan&line=27&excerpt=solaris-old-drive", "Omar", "planning doc"),
+        ("chatgpt", "", "Priya", "generated summary"),
+        ("slack", "cortex-source://slack#service=slack&channel=CSOLARIS&line=18&excerpt=solaris-digest-slack", "Ren", "standup digest"),
+        ("gmail", "cortex-source://gmail#service=gmail&subject=Solaris%20Followup&line=9&excerpt=solaris-followup", "Ava", "follow-up email"),
+        ("google-drive", "cortex-source://google-drive#service=google-drive&document=solaris-budget&line=42&excerpt=solaris-budget-draft", "Theo", "budget draft"),
+        ("chatgpt", "", "Lena", "meeting digest"),
+    )
+    for index, (source, source_url, owner, label) in enumerate(distractors, start=1):
+        store.save_capture(
+            user_id=user_id,
+            content=f"Project Solaris launch owner budget source of truth noisy {label}.",
+            source=source,
+            source_url=source_url or None,
+            title=f"Project Solaris noisy {label}",
+            extracted={
+                "_timestamp": f"2026-07-01T09:{index:02d}:00Z",
+                "summary": f"Project Solaris noisy {label}.",
+                "records": [
+                    {
+                        "id": f"rq_mixed_source_authority_noise_{index}",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": (
+                            "Project Solaris launch owner budget source of truth says "
+                            f"{owner} owns the launch budget according to a stale {label}."
+                        ),
+                        "summary": f"Project Solaris stale {label} owner is {owner}.",
+                        "confidence": "confirmed",
+                        "importance": 5,
+                        "sector": "Project Solaris",
+                        "topics": ["project-solaris", "launch", "owner", "budget"],
+                        "entity_ids": ["project_solaris"],
+                    }
+                ],
+                "tasks": [],
+                "entities": [
+                    {"id": "project_solaris", "kind": "project", "name": "Project Solaris", "aliases": ["Solaris"]}
+                ],
+            },
+        )
+
+    store.save_capture(
+        user_id=user_id,
+        content="Project Solaris canonical Notion source of truth.",
+        source="notion",
+        source_url="cortex-source://notion#service=notion&page=solaris-canonical&line=4&excerpt=solaris-source-truth",
+        title="Project Solaris canonical launch source",
+        extracted={
+            "_timestamp": "2026-07-01T09:30:00Z",
+            "summary": "Project Solaris canonical launch source.",
+            "records": [
+                {
+                    "id": expected_id,
+                    "kind": "claim",
+                    "layer": "semantic",
+                    "content": (
+                        "Project Solaris launch owner budget source of truth says Mira owns the launch budget; "
+                        "this Notion page is the verified canonical record."
+                    ),
+                    "summary": "Project Solaris canonical owner is Mira.",
+                    "confidence": "confirmed",
+                    "importance": 1,
+                    "sector": "Project Solaris",
+                    "topics": ["project-solaris", "launch", "owner", "budget", "canonical"],
+                    "entity_ids": ["project_solaris"],
+                    "metadata": {"source_quality": "canonical", "verified": True},
+                }
+            ],
+            "tasks": [],
+            "entities": [
+                {"id": "project_solaris", "kind": "project", "name": "Project Solaris", "aliases": ["Solaris"]}
+            ],
+        },
+    )
+
+    results = store.search(user_id, query, limit=limit, sector="Project Solaris")
+    if not results:
+        raise AssertionError("Mixed-source authority ranking returned no results")
+    result_ids = [item["id"] for item in results]
+    top = results[0]
+    if top["id"] != expected_id:
+        raise AssertionError(f"Mixed-source authority ranking expected trusted canonical top result {expected_id}, got {result_ids}")
+    if top.get("source") != "notion":
+        raise AssertionError(f"Mixed-source authority ranking top result was not Notion: {top}")
+    if "Mira owns the launch budget" not in str(top.get("content") or ""):
+        raise AssertionError(f"Mixed-source authority ranking missed canonical content: {top}")
+    if not str(top.get("source_url") or "").startswith("cortex-source://notion#"):
+        raise AssertionError(f"Mixed-source authority ranking missed canonical citation: {top}")
+    noisy_top3 = [item["id"] for item in results[:3] if item["id"].startswith("rq_mixed_source_authority_noise_")]
+    if len(noisy_top3) >= 3:
+        raise AssertionError(f"Mixed-source authority ranking let noisy duplicates dominate top results: {result_ids}")
+
+    return {
+        "name": "mixed_source_trusted_authority_ranking",
+        "category": "mixed_source_authority",
+        "query": query,
+        "sector": "Project Solaris",
+        "include_related": False,
+        "expected_layer": "semantic",
+        "expected_id": expected_id,
+        "expected_rank": 1,
+        "top_result": top["id"],
+        "top_layer": top["layer"],
+        "top_sector": top.get("sector"),
+        "top_source_url": top.get("source_url"),
+        "top_occurred_at": top.get("occurred_at"),
+        "result_ids": result_ids,
+        "disallowed_ids": [],
+        "related_result": None,
+        "layer_filtered_results": result_ids,
+        "top_source": top.get("source"),
+        "metrics": _metrics_for_results(expected_id, result_ids, METRIC_K_VALUES),
+    }
+
+
+def seed_mixed_source_project_memories(store: CortexStore, user_id: str = USER_ID) -> list[dict[str, Any]]:
+    store.update_settings(user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+    fixtures: tuple[tuple[str, str, str, tuple[dict[str, Any], ...]], ...] = (
+        (
+            "obsidian",
+            "local-file://Project%20Meridian/Launch.md#line=12&excerpt=meridian-beta",
+            "Project Meridian launch note",
+            (
+                {
+                    "id": "rq_mixed_meridian_decision",
+                    "kind": "decision",
+                    "layer": "decision",
+                    "content": "Project Meridian beta outreach decision: invite only design partners first because support load is still unknown.",
+                    "summary": "Project Meridian should start with design partners.",
+                    "importance": 5,
+                    "sector": "Project Meridian",
+                    "topics": ["project-meridian", "beta", "outreach", "decision"],
+                },
+                {
+                    "id": "rq_mixed_meridian_procedure",
+                    "kind": "procedure",
+                    "layer": "procedural",
+                    "content": "Project Meridian beta outreach procedure: verify source sync health, approve at least one memory, ask a cited question, then send the invite.",
+                    "summary": "Project Meridian beta outreach checklist.",
+                    "importance": 5,
+                    "sector": "Project Meridian",
+                    "topics": ["project-meridian", "beta", "procedure"],
+                },
+            ),
+        ),
+        (
+            "gmail",
+            "https://mail.example.com/thread/meridian-beta-support",
+            "Project Meridian support email",
+            (
+                {
+                    "id": "rq_mixed_meridian_reason",
+                    "kind": "claim",
+                    "layer": "semantic",
+                    "content": "Project Meridian beta outreach reason: support risk means early users need founder-reviewed replies until onboarding confusion is understood.",
+                    "summary": "Founder-reviewed replies are needed during early Meridian onboarding.",
+                    "importance": 4,
+                    "sector": "Project Meridian",
+                    "topics": ["project-meridian", "support", "onboarding"],
+                },
+                {
+                    "id": "rq_mixed_meridian_person",
+                    "kind": "event",
+                    "layer": "episodic",
+                    "content": "Alex Rivera asked for the Project Meridian beta invite to include exact data-retention language before Friday.",
+                    "summary": "Alex needs data-retention language in the Meridian invite.",
+                    "importance": 4,
+                    "sector": "Project Meridian",
+                    "topics": ["project-meridian", "alex", "deadline"],
+                },
+            ),
+        ),
+        (
+            "slack",
+            "https://slack.example.com/archives/C123/p1782912000",
+            "Project Meridian product channel",
+            (
+                {
+                    "id": "rq_mixed_meridian_negative",
+                    "kind": "negative",
+                    "layer": "negative",
+                    "content": "Project Meridian beta outreach constraint: do not ask users to manually upload private data; use connected sources and local sync instead.",
+                    "summary": "Do not ask Meridian users to manually upload private data.",
+                    "importance": 5,
+                    "sector": "Project Meridian",
+                    "topics": ["project-meridian", "privacy", "negative"],
+                },
+                {
+                    "id": "rq_mixed_meridian_open_loop",
+                    "kind": "claim",
+                    "layer": "semantic",
+                    "content": "Project Meridian open loop: confirm whether the Obsidian plugin installed cleanly before inviting the next tester cohort.",
+                    "summary": "Confirm Obsidian plugin install before inviting more Meridian testers.",
+                    "importance": 3,
+                    "sector": "Project Meridian",
+                    "topics": ["project-meridian", "obsidian", "open-loop"],
+                },
+            ),
+        ),
+        (
+            "notion",
+            "https://notion.example.com/project-meridian-style",
+            "Project Meridian messaging",
+            (
+                {
+                    "id": "rq_mixed_meridian_preference",
+                    "kind": "preference",
+                    "layer": "preference",
+                    "content": "I prefer Project Meridian beta invites that lead with privacy, then show exactly what Cortex can cite.",
+                    "summary": "Lead Meridian beta invites with privacy and citations.",
+                    "importance": 4,
+                    "sector": "Project Meridian",
+                    "topics": ["project-meridian", "preference", "invite"],
+                },
+                {
+                    "id": "rq_mixed_meridian_style",
+                    "kind": "style",
+                    "layer": "style",
+                    "content": "Project Meridian writing style: warm, direct, spare, and concrete, with short paragraphs and no hype.",
+                    "summary": "Project Meridian style is warm, direct, spare, and concrete.",
+                    "importance": 4,
+                    "sector": "Project Meridian",
+                    "topics": ["project-meridian", "style", "invite"],
+                },
+            ),
+        ),
+    )
+    memories: list[dict[str, Any]] = []
+    for source, source_url, title, records in fixtures:
+        tasks = []
+        if title == "Project Meridian product channel":
+            tasks = [
+                {
+                    "id": "rq_mixed_meridian_task_plugin_check",
+                    "kind": "action",
+                    "content": "Confirm whether the Obsidian plugin installed cleanly before inviting the next Project Meridian tester cohort.",
+                    "status": "open",
+                    "importance": 5,
+                    "topics": ["project-meridian", "obsidian", "open-loop"],
+                }
+            ]
+        result = store.save_capture(
+            user_id=user_id,
+            content="\n".join([*(str(record["content"]) for record in records), *(str(task["content"]) for task in tasks)]),
+            source=source,
+            source_url=source_url,
+            title=title,
+            extracted={
+                "_timestamp": "2026-07-01T12:00:00Z",
+                "summary": title,
+                "records": [
+                    {
+                        **record,
+                        "confidence": "confirmed",
+                        "entity_ids": [],
+                    }
+                    for record in records
+                ],
+                "tasks": tasks,
+                "entities": [],
+            },
+        )
+        memories.extend(result["memories"])
+    return memories
+
+
+def assert_mixed_source_project_contracts(store: CortexStore, user_id: str = USER_ID) -> dict[str, Any]:
+    answer = store.answer_query(
+        user_id,
+        "what did we decide for Project Meridian beta outreach and why",
+        limit=6,
+        sector="Project Meridian",
+    )
+    citations = answer.get("citations") or []
+    citation_ids = [citation["id"] for citation in citations]
+    citation_sources = sorted({str(citation.get("source") or "") for citation in citations})
+    for expected_id in ("rq_mixed_meridian_decision", "rq_mixed_meridian_reason"):
+        if expected_id not in citation_ids:
+            raise AssertionError(f"Mixed-source Ask missed {expected_id}: {citation_ids}")
+    if len(citation_sources) < 3:
+        raise AssertionError(f"Mixed-source Ask did not diversify source citations: {citation_sources}")
+    missing_source_urls = [citation["id"] for citation in citations if not citation.get("source_url")]
+    if missing_source_urls:
+        raise AssertionError(f"Mixed-source Ask emitted uncited evidence: {missing_source_urls}")
+
+    brief = store.action_brief(
+        user_id,
+        "prepare Project Meridian beta outreach invite for Alex",
+        sector="Project Meridian",
+        limit=8,
+    )
+    required_sections = ("current_decisions", "procedures", "preferences", "negative_constraints", "style_signals")
+    empty_sections = [section for section in required_sections if not brief.get(section)]
+    if empty_sections:
+        raise AssertionError(f"Mixed-source Action Brief missed sections: {empty_sections}")
+    if brief.get("status") != "strong":
+        raise AssertionError(f"Mixed-source Action Brief should be strong, got {brief.get('status')}: {brief.get('coverage')}")
+    if int((brief.get("coverage") or {}).get("cited_memories") or 0) < 6:
+        raise AssertionError(f"Mixed-source Action Brief had weak citation coverage: {brief.get('coverage')}")
+    source_mix = sorted({item["source"] for item in (brief.get("coverage") or {}).get("source_mix") or []})
+    if len(source_mix) < 4:
+        raise AssertionError(f"Mixed-source Action Brief missed source mix: {source_mix}")
+    primary_ids = {item["id"] for item in brief.get("primary_context") or []}
+    expected_primary_ids = {
+        "rq_mixed_meridian_decision",
+        "rq_mixed_meridian_person",
+        "rq_mixed_meridian_negative",
+        "rq_mixed_meridian_preference",
+        "rq_mixed_meridian_style",
+        "rq_mixed_meridian_open_loop",
+    }
+    missing_primary_ids = sorted(expected_primary_ids - primary_ids)
+    if missing_primary_ids:
+        raise AssertionError(f"Mixed-source Action Brief missed user-action evidence: {missing_primary_ids}")
+    brief_markdown = str(brief.get("markdown") or "")
+    for phrase in (
+        "data-retention language",
+        "do not ask users to manually upload private data",
+        "warm, direct, spare, and concrete",
+        "confirm whether the Obsidian plugin installed cleanly",
+    ):
+        if phrase not in brief_markdown:
+            raise AssertionError(f"Mixed-source Action Brief missed required phrase {phrase!r}")
+    next_actions = " ".join(str(item) for item in brief.get("next_actions") or [])
+    for phrase in ("negative constraints", "current decisions", "cited procedure", "preferences and style"):
+        if phrase not in next_actions:
+            raise AssertionError(f"Mixed-source Action Brief missed next-action guidance {phrase!r}: {next_actions!r}")
+    action_plan = brief.get("action_plan") or []
+    if not action_plan:
+        raise AssertionError("Mixed-source Action Brief missed ranked action_plan")
+    action_plan_sections = {str(item.get("section") or "") for item in action_plan}
+    for section in ("negative_constraints", "open_actions", "procedures", "current_decisions"):
+        if section not in action_plan_sections:
+            raise AssertionError(f"Mixed-source Action Brief action_plan missed {section}: {action_plan!r}")
+    if not any("Obsidian plugin installed cleanly" in str(item.get("action") or "") for item in action_plan):
+        raise AssertionError(f"Mixed-source Action Brief action_plan missed concrete Obsidian plugin task: {action_plan!r}")
+    execution_checklist = brief.get("execution_checklist") or []
+    if not execution_checklist:
+        raise AssertionError("Mixed-source Action Brief missed execution_checklist")
+    checklist_phases = {str(item.get("phase") or "") for item in execution_checklist}
+    for phase in ("guardrails", "decision_boundary", "procedure", "open_action", "verification"):
+        if phase not in checklist_phases:
+            raise AssertionError(f"Mixed-source Action Brief execution_checklist missed {phase}: {execution_checklist!r}")
+    if not any("Obsidian plugin installed cleanly" in str(item.get("step") or "") for item in execution_checklist):
+        raise AssertionError(f"Mixed-source Action Brief execution_checklist missed concrete Obsidian plugin task: {execution_checklist!r}")
+    checklist_uncited = [
+        item.get("rank")
+        for item in execution_checklist
+        if item.get("phase") != "verification"
+        and not (isinstance(item.get("citation"), dict) and item["citation"].get("source_url"))
+    ]
+    if checklist_uncited:
+        raise AssertionError(f"Mixed-source Action Brief execution_checklist emitted uncited steps: {checklist_uncited!r}")
+
+    adaptation = store.agent_adaptation(
+        user_id,
+        query="Project Meridian beta outreach invite for Alex",
+        target="Claude",
+        limit=8,
+        sector="Project Meridian",
+    )
+    rule_layers = {rule["layer"] for rule in adaptation.get("rules") or []}
+    expected_layers = {"decision", "procedural", "preference", "negative", "style", "episodic", "semantic"}
+    if not expected_layers.issubset(rule_layers):
+        raise AssertionError(f"Mixed-source adaptation missed rule layers: {sorted(expected_layers - rule_layers)}")
+    rule_ids = {rule["memory_id"] for rule in adaptation.get("rules") or []}
+    for expected_id in expected_primary_ids:
+        if expected_id not in rule_ids:
+            raise AssertionError(f"Mixed-source adaptation missed actionable rule evidence: {expected_id}")
+    uncited_rules = [rule["memory_id"] for rule in adaptation.get("rules") or [] if not rule.get("source_url")]
+    if uncited_rules:
+        raise AssertionError(f"Mixed-source adaptation emitted uncited rules: {uncited_rules}")
+    if adaptation.get("coverage_warnings"):
+        raise AssertionError(f"Mixed-source adaptation should not warn on the complete fixture: {adaptation['coverage_warnings']}")
+    adaptation_markdown = str(adaptation.get("markdown") or "")
+    for phrase in ("data-retention language", "manually upload private data", "warm, direct, spare"):
+        if phrase not in adaptation_markdown:
+            raise AssertionError(f"Mixed-source adaptation markdown missed phrase {phrase!r}")
+
+    return {
+        "ask_citation_ids": citation_ids,
+        "ask_sources": citation_sources,
+        "brief_status": brief.get("status"),
+        "brief_source_mix": source_mix,
+        "brief_primary_ids": sorted(primary_ids),
+        "brief_next_actions": brief.get("next_actions") or [],
+        "brief_execution_checklist_phases": sorted(checklist_phases),
+        "adaptation_rule_layers": sorted(rule_layers),
+        "adaptation_rule_ids": sorted(rule_ids),
     }
 
 
@@ -1947,6 +2683,12 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
     for case in direct_cases:
         checks.append(_evaluate_case(store, user_id, case, limit))
 
+    mixed_source_project_memories = seed_mixed_source_project_memories(store, user_id)
+    mixed_source_project_contracts = assert_mixed_source_project_contracts(store, user_id)
+    mixed_source_authority = assert_mixed_source_trusted_authority_ranking(store, user_id)
+    checks.append(mixed_source_authority)
+    automatic_connector_account_scope = assert_automatic_connector_account_scope_contract(store, user_id)
+    checks.append(automatic_connector_account_scope["check"])
     local_file_citation = assert_shared_local_file_citations_sanitized(store, user_id)
     state_leakage = assert_state_leakage_excluded(store, user_id)
     focused_answer_contracts = assert_focused_answer_contracts(store, user_id)
@@ -1962,6 +2704,10 @@ def evaluate_retrieval(store: CortexStore, user_id: str = USER_ID, limit: int = 
         "focused_retrieval_memories": len(focused_memories),
         "noisy_import_memories": len(noisy_memories),
         "direct_connector_memories": len(direct_connector_memories),
+        "mixed_source_project_memories": len(mixed_source_project_memories),
+        "mixed_source_project_contracts": mixed_source_project_contracts,
+        "mixed_source_authority": mixed_source_authority,
+        "automatic_connector_account_scope": automatic_connector_account_scope,
         "local_file_citation": local_file_citation,
         "state_leakage_seeded": state_leakage,
         "focused_answer_contracts": focused_answer_contracts,

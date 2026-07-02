@@ -51,6 +51,7 @@ Operator scripts:
 - `python3 scripts/battle_test_http.py`
 - `python3 scripts/export_support_bundle.py`
 - `python3 scripts/ops_readiness_check.py`
+- `python3 scripts/check_connector_baseline.py` verifies the 10k baseline connector claim against real modules, routes, catalog setup, disconnect behavior, and tests
 - `python3 scripts/check_distribution_site.py`
 - `python3 scripts/validate_update_manifest.py`
 - `python3 scripts/check_docs_current.py`
@@ -84,6 +85,7 @@ The local readiness gate checks:
 - beta docs and committed direct-release manifest currency
 - backend beta smoke on temp data with network sockets blocked
 - backend unit tests
+- 10k connector baseline contract for real source-account sync coverage
 - macOS local build
 - DMG/ZIP packaging when `--include-package` is set
 - static distribution links and artifact hashes

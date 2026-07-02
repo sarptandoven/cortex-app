@@ -71,6 +71,15 @@ def relpath(path: Path) -> str:
         return str(path)
 
 
+def resolve_release_dir(path: Path | None) -> Path | None:
+    if path is None:
+        return None
+    expanded = path.expanduser()
+    if not expanded.is_absolute():
+        expanded = ROOT / expanded
+    return expanded.resolve()
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -99,6 +108,7 @@ class RunLog:
                     f"Started: {utc_now()}",
                     f"Workspace: {ROOT}",
                     f"Base URL: {args.base_url}",
+                    f"Release dir: {args.release_dir or ''}",
                     f"Write clean-profile packet: {args.update_clean_profile_packet}",
                     "",
                     "This is isolated-home packaged DMG automation. It is not a real clean macOS profile,",
@@ -169,11 +179,15 @@ def run_command(
     return completed
 
 
-def load_site_manifest() -> dict[str, Any]:
-    manifest_path = ROOT / "site" / "downloads" / "latest.json"
+def load_manifest(manifest_path: Path) -> dict[str, Any]:
     if not manifest_path.exists():
         return {}
     return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+
+def load_release_manifest(release_dir: Path | None = None) -> dict[str, Any]:
+    manifest_path = (release_dir / "latest.json") if release_dir else ROOT / "site" / "downloads" / "latest.json"
+    return load_manifest(manifest_path)
 
 
 def manifest_dmg_name(manifest: dict[str, Any]) -> str:
@@ -187,10 +201,14 @@ def manifest_dmg_name(manifest: dict[str, Any]) -> str:
     return ""
 
 
-def find_default_dmg() -> Path:
-    manifest = load_site_manifest()
+def find_default_dmg(release_dir: Path | None = None) -> Path:
+    manifest = load_release_manifest(release_dir)
     dmg_name = manifest_dmg_name(manifest)
     candidates: list[Path] = []
+    if release_dir and dmg_name:
+        candidates.append(release_dir / dmg_name)
+    elif release_dir:
+        candidates.extend(release_dir.glob("*.dmg"))
     if dmg_name:
         candidates.extend(
             [
@@ -204,7 +222,7 @@ def find_default_dmg() -> Path:
     for candidate in candidates:
         if candidate.exists():
             return candidate
-    raise QAError("Could not find a default DMG under site/downloads or outputs. Pass --dmg.")
+    raise QAError("Could not find a default DMG under the release dir, site/downloads, or outputs. Pass --dmg.")
 
 
 def parse_checksum_file(path: Path) -> dict[str, str]:
@@ -218,16 +236,17 @@ def parse_checksum_file(path: Path) -> dict[str, str]:
     return entries
 
 
-def expected_sha256_for(dmg: Path, override: str | None = None) -> tuple[str, str]:
+def expected_sha256_for(dmg: Path, override: str | None = None, release_dir: Path | None = None) -> tuple[str, str]:
     if override:
         return override.lower(), "--expected-sha256"
 
-    manifest = load_site_manifest()
+    manifest = load_release_manifest(release_dir)
+    manifest_source = str((release_dir / "latest.json") if release_dir else ROOT / "site" / "downloads" / "latest.json")
     for artifact in manifest.get("artifacts") or []:
         if not isinstance(artifact, dict):
             continue
         if str(artifact.get("filename") or "") == dmg.name and artifact.get("sha256"):
-            return str(artifact["sha256"]).lower(), "site/downloads/latest.json"
+            return str(artifact["sha256"]).lower(), manifest_source
 
     checksum_candidates = [
         dmg.with_name(dmg.name.replace(".dmg", ".checksums.txt")),
@@ -589,6 +608,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     parser.add_argument("--dmg", type=Path, default=None, help="DMG to verify. Defaults to the current site/downloads DMG, then outputs.")
+    parser.add_argument("--release-dir", type=Path, help="Local packaged release directory containing latest.json and artifacts.")
     parser.add_argument("--expected-sha256", default="", help="Override the expected DMG SHA-256.")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Packaged backend URL to smoke.")
     parser.add_argument("--log-path", type=Path, default=DEFAULT_LOG_PATH, help="Private run log path.")
@@ -606,7 +626,8 @@ def main(argv: list[str] | None = None) -> int:
     log = RunLog(log_path)
     log.reset(args=args)
 
-    dmg = (args.dmg or find_default_dmg()).expanduser()
+    release_dir = resolve_release_dir(args.release_dir)
+    dmg = (args.dmg or find_default_dmg(release_dir)).expanduser()
     if not dmg.is_absolute():
         dmg = ROOT / dmg
     dmg = dmg.resolve()
@@ -621,7 +642,7 @@ def main(argv: list[str] | None = None) -> int:
             raise QAError(f"DMG does not exist: {dmg}")
 
         log.section("Checksum")
-        expected_hash, expected_source = expected_sha256_for(dmg, args.expected_sha256.strip() or None)
+        expected_hash, expected_source = expected_sha256_for(dmg, args.expected_sha256.strip() or None, release_dir)
         log.line(f"Expected hash source: {expected_source}")
         actual_hash = verify_checksum(dmg, expected_hash, log=log)
 

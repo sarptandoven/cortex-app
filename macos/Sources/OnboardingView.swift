@@ -187,7 +187,6 @@ struct OnboardingStepRow: View {
 
 struct OnboardingVaultStep: View {
     @ObservedObject var state: AppState
-    @State private var vaultLocationExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -200,49 +199,6 @@ struct OnboardingVaultStep: View {
             } else {
                 OnboardingCheckRow(title: "Starting private memory", detail: state.displayBackendStatus, systemImage: "clock", color: .orange)
             }
-
-            DisclosureGroup("Memory folder", isExpanded: $vaultLocationExpanded) {
-                VStack(alignment: .leading, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Memory folder")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Text(state.vaultPath)
-                            .font(.system(.caption, design: .monospaced))
-                            .lineLimit(2)
-                            .textSelection(.enabled)
-                    }
-                    HStack {
-                        Button {
-                            state.useDefaultVaultFolder()
-                        } label: {
-                            Label("Use Default", systemImage: "house")
-                        }
-                        Button {
-                            state.chooseVaultFolder()
-                        } label: {
-                            Label("Change", systemImage: "folder")
-                        }
-                        Button {
-                            state.openVaultFolder()
-                        } label: {
-                            Label("Reveal", systemImage: "arrow.up.right.square")
-                        }
-                        Spacer()
-                    }
-                    if let vault = state.diagnostics?.vault {
-                        VStack(alignment: .leading, spacing: 8) {
-                            OnboardingCheckRow(title: "Local folder", detail: vault.path, systemImage: "externaldrive", color: .secondary)
-                            OnboardingCheckRow(title: "Local index", detail: vault.index_path, systemImage: "bolt.horizontal.circle.fill", color: .accentColor)
-                            OnboardingCheckRow(title: "Activity log", detail: "\(vault.event_count) events", systemImage: "list.bullet.rectangle", color: .secondary)
-                        }
-                    }
-                }
-                .padding(.top, 6)
-            }
-            .padding(12)
-            .background(CortexDesign.panelBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
         }
     }
 }
@@ -261,11 +217,11 @@ struct OnboardingFirstSourceStep: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             OnboardingConnectionCard(
-                title: state.hasConnectedObsidianVault ? "Source sync connected" : "Start source sync",
-                detail: state.hasConnectedObsidianVault ? "Cortex checks the connected source on launch and every 30 minutes, then sends new memory to Review with citations." : "Choose Obsidian or a local notes folder to start. Direct service sync lives in Connections & Privacy when you need it.",
-                systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "folder.badge.plus",
+                title: sourceCardTitle,
+                detail: sourceCardDetail,
+                systemImage: sourceCardIcon,
                 isPrimary: true,
-                status: state.onboardingHasSource ? "Synced" : (state.hasConnectedObsidianVault ? "Connected" : "Local"),
+                status: sourceCardStatus,
                 buttonTitle: firstSourceButtonTitle,
                 buttonSystemImage: firstSourceButtonIcon
             ) {
@@ -288,7 +244,7 @@ struct OnboardingFirstSourceStep: View {
                 title: connectionCheckTitle,
                 detail: connectionCheckDetail,
                 systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "link.circle",
-                color: state.onboardingHasSource ? .green : (state.onboardingHasConnectedMemoryLayer ? .orange : .secondary)
+                color: sourceCheckColor
             )
         }
         .task {
@@ -299,41 +255,112 @@ struct OnboardingFirstSourceStep: View {
         }
     }
 
+    private var sourceCardTitle: String {
+        if state.onboardingHasSource {
+            return "Source ready"
+        }
+        if state.onboardingHasConnectedMemoryLayer {
+            return "Source connected"
+        }
+        return "Connect notes"
+    }
+
+    private var sourceCardDetail: String {
+        if state.onboardingHasSource {
+            return "Cortex found fresh, usable memory from the connected source. Review one useful item next."
+        }
+        if let message = state.onboardingSourceHealthMessage {
+            return message
+        }
+        if state.hasConnectedObsidianVault {
+            return "Cortex checks connected notes on launch and every 30 minutes, then sends new memory to Review with citations."
+        }
+        return "Choose Obsidian or a local notes folder to start. Cortex will keep it synced and send useful memory to Review."
+    }
+
+    private var sourceCardIcon: String {
+        if state.onboardingHasSource {
+            return "checkmark.seal.fill"
+        }
+        if state.onboardingHasConnectedMemoryLayer {
+            return "exclamationmark.circle"
+        }
+        return "folder.badge.plus"
+    }
+
+    private var sourceCardStatus: String {
+        if state.onboardingHasSource {
+            return "Fresh"
+        }
+        if state.onboardingSourceHealthMessage != nil {
+            return "Check"
+        }
+        if state.onboardingHasConnectedMemoryLayer {
+            return "Waiting"
+        }
+        return "Local"
+    }
+
+    private var sourceCheckColor: Color {
+        if state.onboardingHasSource {
+            return .green
+        }
+        if state.onboardingHasConnectedMemoryLayer {
+            return .orange
+        }
+        return .secondary
+    }
+
     private var connectionCheckTitle: String {
         if state.onboardingHasSource {
             return "Source synced"
         }
         if state.onboardingHasConnectedMemoryLayer {
-            return "Waiting for synced memory"
+            return "Source not ready yet"
         }
-        return "Start source sync"
+        return "Connect a source"
     }
 
     private var connectionCheckDetail: String {
         if state.onboardingHasSource {
-            return "Review has memory from the synced source."
+            return "Review has fresh, citable memory from your source."
+        }
+        if let message = state.onboardingSourceHealthMessage {
+            return message
         }
         if state.onboardingHasConnectedMemoryLayer {
-            return "Cortex is checking the connected source so useful memory appears in Review."
+            return "Cortex is checking source health so useful memory appears in Review."
         }
-        return "Choose a source when ready. Reviewed memory becomes available to Ask with citations."
+        return "Choose notes when ready. Reviewed memory becomes available to Ask with citations."
     }
 
     private var firstSourceButtonTitle: String {
-        if state.hasConnectedObsidianVault { return "Sync source" }
-        if obsidianConnector != nil { return "Start source sync" }
+        if state.onboardingHasConnectedMemoryLayer, !state.hasConnectedObsidianVault {
+            return "Open Connections"
+        }
+        if state.notesNeedContent { return "Choose notes" }
+        if state.hasConnectedObsidianVault { return "Sync notes" }
+        if obsidianConnector != nil { return "Connect notes" }
         return "Refresh"
     }
 
     private var firstSourceButtonIcon: String {
+        if state.onboardingHasConnectedMemoryLayer, !state.hasConnectedObsidianVault {
+            return "link.circle"
+        }
+        if state.notesNeedContent { return "folder.badge.questionmark" }
         if state.hasConnectedObsidianVault { return "arrow.triangle.2.circlepath" }
         if obsidianConnector != nil { return "folder.badge.plus" }
         return "arrow.clockwise"
     }
 
     private func runFirstSourceAction() {
+        if state.onboardingHasConnectedMemoryLayer, !state.hasConnectedObsidianVault {
+            state.openConnectionsPrivacy(statusMessage: "Check source health")
+            return
+        }
         if let connector = obsidianConnector {
-            state.connectLocalNotesFolder(connector)
+            state.connectLocalNotesFolder(connector, chooseNew: state.notesNeedContent)
         } else {
             Task { await state.loadSourceConnectivity() }
             state.status = "Checking source connector"
@@ -455,7 +482,7 @@ struct OnboardingReviewMemoryStep: View {
                 Button {
                     state.connectLocalNotesFolder(connector)
                 } label: {
-                    Label("Sync source", systemImage: "arrow.triangle.2.circlepath")
+                    Label("Sync notes", systemImage: "arrow.triangle.2.circlepath")
                         .frame(minWidth: 158, minHeight: 42)
                 }
                 .buttonStyle(.borderedProminent)
@@ -465,7 +492,7 @@ struct OnboardingReviewMemoryStep: View {
                 Button {
                     state.previousOnboardingStep()
                 } label: {
-                    Label("Start source sync", systemImage: "folder.badge.plus")
+                    Label("Connect notes", systemImage: "folder.badge.plus")
                         .frame(minWidth: 146, minHeight: 42)
                 }
                 .buttonStyle(.borderedProminent)
@@ -503,10 +530,13 @@ struct OnboardingReviewMemoryStep: View {
         if state.onboardingHasReviewedMemory {
             return "You already reviewed memory from your first connection."
         }
-        if state.onboardingHasSource {
-            return "No reviewable memory is waiting yet. Let source sync finish, then approve one useful item."
+        if let message = state.onboardingSourceHealthMessage {
+            return message
         }
-        return "Start source sync first; synced memory appears here before Cortex uses it."
+        if state.onboardingHasSource {
+            return "No reviewable memory is waiting yet. Let notes finish syncing, then approve one useful item."
+        }
+        return "Connect notes first; synced memory appears here before Cortex uses it."
     }
 
     private var reviewPathTitle: String {
@@ -520,10 +550,13 @@ struct OnboardingReviewMemoryStep: View {
         if state.onboardingHasReviewedMemory {
             return "Cortex has reviewed memory it can cite."
         }
+        if let message = state.onboardingSourceHealthMessage {
+            return message
+        }
         if state.onboardingHasSource {
             return "Approve one useful memory to let Cortex cite it in Ask."
         }
-        return "Review unlocks after a connected source syncs memory."
+        return "Review unlocks after connected notes sync memory."
     }
 }
 
@@ -611,6 +644,9 @@ struct OnboardingAskUseStep: View {
         if state.onboardingHasReviewedMemory {
             return "This step is optional now that reviewed notes exist. Ask once to see citations before you continue."
         }
+        if let message = state.onboardingSourceHealthMessage {
+            return message
+        }
         return "Ask becomes useful after reviewed notes exist."
     }
 
@@ -630,6 +666,9 @@ struct OnboardingAskUseStep: View {
         }
         if state.onboardingHasReviewedMemory {
             return "Ask is available now. Continue setup when ready."
+        }
+        if let message = state.onboardingSourceHealthMessage {
+            return message
         }
         if state.onboardingHasSource {
             return "Ask becomes useful after one memory is approved in Review."

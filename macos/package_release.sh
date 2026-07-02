@@ -132,6 +132,7 @@ ZIP="$OUT_DIR/$RELEASE_NAME.app.zip"
 MANIFEST="$OUT_DIR/latest.json"
 CHECKSUMS="$OUT_DIR/$RELEASE_NAME.checksums.txt"
 HANDOFF="$OUT_DIR/BETA_HANDOFF.md"
+OBSIDIAN_PLUGIN_ZIP=""
 
 detach_existing_dmg_image() {
   local image_path="$1"
@@ -166,6 +167,9 @@ mkdir -p "$OUT_DIR"
 
 CORTEX_BUNDLE_PYTHON="$BUNDLE_PYTHON" "$ROOT/build.sh"
 codesign --verify --deep --strict "$APP"
+if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON" != "no" ]]; then
+  python3 "$PROJECT_ROOT/scripts/check_vector_runtime.py" --app "$APP"
+fi
 
 rm -rf "$STAGING"
 mkdir -p "$STAGING"
@@ -195,7 +199,8 @@ Rollback:
 
 Known local-beta limits:
 - Manual app replacement is the only update path.
-- Managed OAuth sign-in, hosted accounts, cloud backup, and automatic updates are not enabled.
+- Google, Notion, and Outlook managed OAuth sign-in require configured OAuth app credentials in the app build.
+- Hosted accounts, cloud backup, and automatic updates are not enabled.
 - Broad public distribution requires Developer ID signing, notarization, hosted HTTPS downloads, and a support process.
 
 Channel: ${CHANNEL}
@@ -206,6 +211,7 @@ detach_existing_dmg_image "$DMG"
 rm -f "$DMG" "$ZIP" "$CHECKSUMS" "$MANIFEST" "$HANDOFF"
 COPYFILE_DISABLE=1 hdiutil create -volname "Cortex ${VERSION}" -srcfolder "$STAGING" -ov -format UDZO "$DMG" >/dev/null
 (cd "$ROOT/build" && COPYFILE_DISABLE=1 zip -qry -X "$ZIP" Cortex.app)
+OBSIDIAN_PLUGIN_ZIP="$("$PROJECT_ROOT/scripts/package_obsidian_plugin.sh" "$OUT_DIR")"
 
 if [[ "$SIGN_IDENTITY" != "-" ]]; then
   codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG" >/dev/null
@@ -249,17 +255,22 @@ PY
 
 DMG_FILE="$(basename "$DMG")"
 ZIP_FILE="$(basename "$ZIP")"
+OBSIDIAN_PLUGIN_FILE="$(basename "$OBSIDIAN_PLUGIN_ZIP")"
 DMG_SHA="$(sha256 "$DMG")"
 ZIP_SHA="$(sha256 "$ZIP")"
+OBSIDIAN_PLUGIN_SHA="$(sha256 "$OBSIDIAN_PLUGIN_ZIP")"
 DMG_SIZE="$(size_bytes "$DMG")"
 ZIP_SIZE="$(size_bytes "$ZIP")"
+OBSIDIAN_PLUGIN_SIZE="$(size_bytes "$OBSIDIAN_PLUGIN_ZIP")"
 DMG_URL="$(url_for "$DMG_FILE")"
 ZIP_URL="$(url_for "$ZIP_FILE")"
+OBSIDIAN_PLUGIN_URL="$(url_for "$OBSIDIAN_PLUGIN_FILE")"
 NOTES_JSON="$(printf '%s\n' "${NOTES[@]}" | python3 -c 'import json,sys; print(json.dumps([line.rstrip("\n") for line in sys.stdin]))')"
 
 {
   echo "$DMG_SHA  $DMG_FILE"
   echo "$ZIP_SHA  $ZIP_FILE"
+  echo "$OBSIDIAN_PLUGIN_SHA  $OBSIDIAN_PLUGIN_FILE"
 } > "$CHECKSUMS"
 
 python3 - "$MANIFEST" <<PY
@@ -307,7 +318,8 @@ payload = {
         ],
         "known_limitations": [
             "Manual app replacement is the only update path for this local beta.",
-            "Managed OAuth sign-in, hosted accounts, cloud backup, and remote MCP/OAuth are not enabled.",
+            "Google, Notion, and Outlook managed OAuth sign-in require configured OAuth app credentials in the app build.",
+            "Hosted accounts, cloud backup, and remote MCP/OAuth are not enabled.",
             "Support starts from the sanitized support bundle, not raw memory folder data.",
             "Developer ID signing, notarization, hosted HTTPS downloads, and a support process are required before broad public distribution.",
         ],
@@ -325,6 +337,7 @@ payload = {
         "generated_artifact_verification": [
             "shasum -a 256 -c $RELEASE_NAME.checksums.txt",
             "python3 scripts/validate_update_manifest.py <release-dir>/latest.json",
+            "python3 scripts/check_vector_runtime.py --app macos/build/Cortex.app",
             "python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir <release-dir>",
         ],
     },
@@ -343,6 +356,13 @@ payload = {
             "size_bytes": int("$ZIP_SIZE"),
             "sha256": "$ZIP_SHA",
         },
+        {
+            "kind": "obsidian-plugin",
+            "filename": "$OBSIDIAN_PLUGIN_FILE",
+            "url": "$OBSIDIAN_PLUGIN_URL",
+            "size_bytes": int("$OBSIDIAN_PLUGIN_SIZE"),
+            "sha256": "$OBSIDIAN_PLUGIN_SHA",
+        },
     ],
 }
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
@@ -355,6 +375,7 @@ python3 "$PROJECT_ROOT/scripts/validate_update_manifest.py" "$MANIFEST"
 detach_existing_dmg_image "$DMG"
 hdiutil verify "$DMG" >/dev/null
 unzip -tq "$ZIP" >/dev/null
+unzip -tq "$OBSIDIAN_PLUGIN_ZIP" >/dev/null
 
 cat > "$HANDOFF" <<EOF
 # Cortex Local Beta Handoff
@@ -374,7 +395,8 @@ browser automation, hosted accounts, Redis, Docker, or cloud sync.
 
 - ${DMG_FILE}: tester-facing installer DMG
 - ${ZIP_FILE}: zipped app bundle for direct QA or update tooling
-- $(basename "$CHECKSUMS"): SHA-256 checksums for the DMG and ZIP
+- ${OBSIDIAN_PLUGIN_FILE}: standalone Obsidian plugin package built from packages/obsidian-cortex-plugin
+- $(basename "$CHECKSUMS"): SHA-256 checksums for the DMG, ZIP, and Obsidian plugin package
 - latest.json: local update manifest for Connections & Privacy diagnostics
 
 ## Generated Artifact Verification
@@ -390,6 +412,7 @@ Run from the repository root, with RELEASE_DIR pointed at this release directory
 ~~~bash
 RELEASE_DIR="/path/to/${RELEASE_NAME}"
 python3 scripts/validate_update_manifest.py "\$RELEASE_DIR/latest.json"
+python3 scripts/check_vector_runtime.py --app macos/build/Cortex.app
 ~~~
 
 Run the package-artifact readiness check from the repository root:
@@ -462,6 +485,7 @@ Run source and package checks from the repository root:
 
 ~~~bash
 python3 -W error::ResourceWarning -m unittest discover backend/tests
+python3 scripts/check_vector_runtime.py
 python3 scripts/retrieval_eval.py
 python3 scripts/adaptation_eval.py
 ./macos/build.sh
@@ -517,7 +541,8 @@ Use the product flow without browser automation:
 ## Known Limitations
 
 - User data stays in the Cortex data folder.
-- Managed OAuth sign-in, hosted accounts, cloud backup, and remote MCP/OAuth are not enabled for this local beta.
+- Google, Notion, and Outlook managed OAuth sign-in require configured OAuth app credentials in the app build.
+- Hosted accounts, cloud backup, and remote MCP/OAuth are not enabled for this local beta.
 - Manual app replacement is the update path.
 - Developer ID notarization is required before broad public distribution.
 - Support should ask for the sanitized support bundle before any raw memory folder data.
@@ -527,6 +552,7 @@ EOF
 echo "Release packaged:"
 echo "  $DMG"
 echo "  $ZIP"
+echo "  $OBSIDIAN_PLUGIN_ZIP"
 echo "  $MANIFEST"
 echo "  $CHECKSUMS"
 echo "  $HANDOFF"

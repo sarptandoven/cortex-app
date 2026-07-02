@@ -46,6 +46,12 @@ class HostedReadinessTests(unittest.TestCase):
                 "counts": {"queued": 0, "running": 0, "succeeded": 0, "failed": 0},
                 "stale_running_count": 0,
             },
+            "storage": {
+                "database_backend": "postgres",
+                "database_live": True,
+                "vector_backend": "pgvector",
+                "vector_live": True,
+            },
         }
 
     def test_local_mode_is_ready_with_local_defaults(self) -> None:
@@ -69,6 +75,7 @@ class HostedReadinessTests(unittest.TestCase):
         self.assertIn("hosted_database", blocked)
         self.assertIn("embedding_provider", blocked)
         self.assertIn("hosted_vector_backend", blocked)
+        self.assertIn("runtime_hosted_storage", blocked)
         self.assertIn("background_workers", blocked)
         self.assertIn("background_worker_queue", blocked)
         self.assertIn("observability", blocked)
@@ -101,6 +108,28 @@ class HostedReadinessTests(unittest.TestCase):
         self.assertIn("status attention", queue_check["detail"])
         self.assertIn("2 queued job", queue_check["detail"])
         self.assertIn("1 running job", queue_check["detail"])
+
+    def test_hosted_mode_blocks_partial_worker_queue_evidence(self) -> None:
+        runtime = self.ready_runtime()
+        runtime["worker_queue"] = {
+            **runtime["worker_queue"],
+            "status": "ok",
+            "ready_user_count": 20,
+            "total_ready_user_count": 42,
+            "ready_user_limit": 20,
+            "truncated": True,
+            "counts": {"queued": 0, "running": 0, "succeeded": 120, "failed": 0},
+            "stale_running_count": 0,
+        }
+
+        contract = hosted_readiness_contract(self.ready_hosted_settings(), runtime=runtime)
+
+        self.assertEqual(contract["status"], "blocked")
+        blocked = {check["name"] for check in contract["checks"] if check["status"] == "blocked"}
+        self.assertEqual(blocked, {"background_worker_queue"})
+        queue_check = next(check for check in contract["checks"] if check["name"] == "background_worker_queue")
+        self.assertIn("20 of 42 ready user", queue_check["detail"])
+        self.assertIn("complete queue-health evidence", queue_check["detail"])
 
     def test_hosted_mode_passes_when_10k_platform_controls_are_declared_and_proven(self) -> None:
         contract = hosted_readiness_contract(

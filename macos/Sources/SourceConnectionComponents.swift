@@ -39,7 +39,7 @@ struct SourceConnectorStatusCard: View {
             if connector.id == "obsidian" {
                 HStack(spacing: 8) {
                     Button {
-                        state.connectLocalNotesFolder(connector)
+                        state.connectLocalNotesFolder(connector, chooseNew: needsContent)
                     } label: {
                         Label(primaryButtonTitle, systemImage: primaryButtonIcon)
                             .frame(maxWidth: .infinity, minHeight: 46)
@@ -130,12 +130,12 @@ struct SourceConnectorStatusCard: View {
     }
 
     private var primaryButtonTitle: String {
-        if needsAttention { return "Fix source sync" }
-        if needsContent { return "Choose source" }
+        if needsAttention { return "Fix notes" }
+        if needsContent { return "Choose notes" }
         if connected {
-            return state.hasConnectedObsidianVault ? "Sync source" : "Reconnect source"
+            return state.hasConnectedObsidianVault ? "Sync notes" : "Reconnect notes"
         }
-        return "Start source sync"
+        return "Connect notes"
     }
 
     private var primaryButtonIcon: String {

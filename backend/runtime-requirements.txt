@@ -1,0 +1,2 @@
+pysqlite3>=0.6.0
+sqlite-vec>=0.1.9

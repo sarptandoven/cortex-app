@@ -5,6 +5,7 @@ import os
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from pathlib import Path
 from urllib import error, request
 
@@ -43,6 +44,11 @@ class FakeStore:
         self.github_sync_calls: list[dict] = []
         self.gmail_sync_calls: list[dict] = []
         self.google_drive_sync_calls: list[dict] = []
+        self.google_oauth_start_calls: list[dict] = []
+        self.google_oauth_complete_calls: list[dict] = []
+        self.managed_oauth_start_calls: list[dict] = []
+        self.managed_oauth_complete_calls: list[dict] = []
+        self.source_account_sync_enqueue_calls: list[dict] = []
         self.outlook_sync_calls: list[dict] = []
         self.slack_sync_calls: list[dict] = []
         self.readwise_sync_calls: list[dict] = []
@@ -56,6 +62,7 @@ class FakeStore:
         self.sync_device_calls: list[tuple[str, str]] = []
         self.sync_receipt_calls: list[tuple[str, str, str, str]] = []
         self.sync_feed_calls: list[tuple[str, str, int, str, str, dict | None]] = []
+        self.job_run_calls: list[tuple[str, int, str, bool]] = []
         self.source_sync_run_calls: list[tuple[str, int, str]] = []
         self.source_account_disconnected = False
         self.sync_device_revoked = False
@@ -323,6 +330,237 @@ class FakeStore:
             }
         ]
 
+    def start_google_oauth(
+        self,
+        source: str,
+        *,
+        redirect_uri: str | None = None,
+        state: str | None = None,
+        client_id: str | None = None,
+        code_challenge: str | None = None,
+        code_challenge_method: str | None = None,
+        scopes: list[str] | None = None,
+    ) -> dict:
+        call = {
+            "source": source,
+            "redirect_uri": redirect_uri,
+            "state": state,
+            "client_id": client_id,
+            "code_challenge": code_challenge,
+            "code_challenge_method": code_challenge_method,
+            "scopes": scopes or [],
+        }
+        self.google_oauth_start_calls.append(call)
+        resolved_state = state or "standalone-oauth-state"
+        authorization_url = (
+            "https://accounts.google.test/o/oauth2/v2/auth?"
+            f"client_id={client_id}&state={resolved_state}&code_challenge={code_challenge}&code_challenge_method={code_challenge_method}"
+        )
+        return {
+            "source": source,
+            "provider": "google",
+            "authorization_url": authorization_url,
+            "authorization_endpoint": "https://accounts.google.test/o/oauth2/v2/auth",
+            "token_endpoint": "https://oauth2.google.test/token",
+            "redirect_uri": redirect_uri or "http://127.0.0.1:8766/v1/connectors/google/oauth/callback",
+            "state": resolved_state,
+            "scopes": scopes or ["https://www.googleapis.com/auth/gmail.readonly"],
+            "access_type": "offline",
+        }
+
+    def complete_google_oauth(
+        self,
+        user_id: str,
+        source: str,
+        *,
+        code: str,
+        redirect_uri: str | None = None,
+        state: str | None = None,
+        expected_state: str | None = None,
+        client_id: str | None = None,
+        client_secret: str | None = None,
+        token_endpoint: str | None = None,
+        code_verifier: str | None = None,
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        query: str | None = None,
+        label_ids: list[str] | None = None,
+        mime_types: list[str] | None = None,
+        include_body: bool = True,
+        include_content: bool = True,
+    ) -> dict:
+        call = {
+            "user_id": user_id,
+            "source": source,
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "state": state,
+            "expected_state": expected_state,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "token_endpoint": token_endpoint,
+            "code_verifier": code_verifier,
+            "source_account_id": source_account_id,
+            "account_label": account_label,
+            "account_identifier": account_identifier,
+            "query": query,
+            "label_ids": label_ids or [],
+            "mime_types": mime_types or [],
+            "include_body": include_body,
+            "include_content": include_content,
+        }
+        self.google_oauth_complete_calls.append(call)
+        account_id = source_account_id or "sacct_google_oauth_test"
+        return {
+            "source": source,
+            "provider": "google",
+            "source_account": {
+                "id": account_id,
+                "user_id": user_id,
+                "source": source,
+                "account_label": account_label or "Google",
+                "account_identifier": account_identifier or "google",
+                "connection_type": "oauth-token",
+                "status": "connected",
+                "auth_state": "healthy",
+                "policy": {"review_required": True, "allow_ai_context": True},
+                "metadata": {"managed_oauth": True, "oauth_provider": "google"},
+                "last_sync_at": None,
+                "last_error": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "disconnected_at": None,
+            },
+            "credential_ref": "credential://source/sacct_google_oauth_test",
+            "scope": "https://www.googleapis.com/auth/gmail.readonly",
+            "scopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+            "access_token_expires_at": "2026-01-01T01:00:00Z",
+            "sync_plan": {"scheduler_supported": True, "due_now": True},
+        }
+
+    def enqueue_source_account_sync(
+        self,
+        user_id: str,
+        account_id: str,
+        *,
+        processing: str = "async",
+        cursor_name: str | None = None,
+        max_records: int = 200,
+        run_at: str | None = None,
+        schedule_token: str | None = None,
+    ) -> dict:
+        call = {
+            "user_id": user_id,
+            "account_id": account_id,
+            "processing": processing,
+            "cursor_name": cursor_name,
+            "max_records": max_records,
+            "run_at": run_at,
+            "schedule_token": schedule_token,
+        }
+        self.source_account_sync_enqueue_calls.append(call)
+        return {"id": "job_google_oauth_sync", "status": "queued", "object_id": account_id}
+
+    def start_managed_oauth(
+        self,
+        source: str,
+        *,
+        redirect_uri: str | None = None,
+        state: str | None = None,
+        client_id: str | None = None,
+        scopes: list[str] | None = None,
+    ) -> dict:
+        call = {
+            "source": source,
+            "redirect_uri": redirect_uri,
+            "state": state,
+            "client_id": client_id,
+            "scopes": scopes or [],
+        }
+        self.managed_oauth_start_calls.append(call)
+        resolved_state = state or "standalone-managed-oauth-state"
+        authorization_url = (
+            "https://api.notion.test/v1/oauth/authorize?"
+            f"client_id={client_id}&state={resolved_state}&owner=user"
+        )
+        return {
+            "source": source,
+            "provider": source,
+            "authorization_url": authorization_url,
+            "authorization_endpoint": "https://api.notion.test/v1/oauth/authorize",
+            "token_endpoint": "https://api.notion.test/v1/oauth/token",
+            "redirect_uri": redirect_uri or "http://127.0.0.1:8766/v1/connectors/oauth/callback",
+            "state": resolved_state,
+            "scopes": scopes or [],
+            "access_type": "offline",
+        }
+
+    def complete_managed_oauth(
+        self,
+        user_id: str,
+        source: str,
+        *,
+        code: str,
+        redirect_uri: str | None = None,
+        state: str | None = None,
+        expected_state: str | None = None,
+        client_id: str | None = None,
+        client_secret: str | None = None,
+        token_endpoint: str | None = None,
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        account_identifier: str | None = None,
+        include_content: bool = True,
+        api_base_url: str | None = None,
+        notion_version: str | None = None,
+    ) -> dict:
+        call = {
+            "user_id": user_id,
+            "source": source,
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "state": state,
+            "expected_state": expected_state,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "token_endpoint": token_endpoint,
+            "source_account_id": source_account_id,
+            "account_label": account_label,
+            "account_identifier": account_identifier,
+            "include_content": include_content,
+            "api_base_url": api_base_url,
+            "notion_version": notion_version,
+        }
+        self.managed_oauth_complete_calls.append(call)
+        account_id = source_account_id or "sacct_managed_oauth_test"
+        return {
+            "source": source,
+            "provider": source,
+            "source_account": {
+                "id": account_id,
+                "user_id": user_id,
+                "source": source,
+                "account_label": account_label or "Notion",
+                "account_identifier": account_identifier or "notion-workspace",
+                "connection_type": "oauth-token",
+                "status": "connected",
+                "auth_state": "healthy",
+                "policy": {"review_required": True, "allow_ai_context": True},
+                "metadata": {"managed_oauth": True, "oauth_provider": source},
+                "last_sync_at": None,
+                "last_error": None,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "disconnected_at": None,
+            },
+            "credential_ref": "credential://source/sacct_managed_oauth_test",
+            "scope": "",
+            "scopes": [],
+            "access_token_expires_at": None,
+            "sync_plan": {"scheduler_supported": True, "due_now": True},
+        }
+
     def source_readiness_report(self, user_id: str) -> dict:
         return {
             "generated_at": "2026-01-01T00:00:00Z",
@@ -370,6 +608,24 @@ class FakeStore:
             "processed": 1,
             "jobs": [{"id": "job_source_sync", "job_type": "source_account_sync", "status": "succeeded"}],
             "scheduled_source_syncs": {"scheduled": 1, "jobs": [], "skipped": []},
+            "pending": 0,
+            "failed": 0,
+        }
+
+    def run_due_jobs(
+        self,
+        user_id: str,
+        *,
+        limit: int = 10,
+        worker_id: str = "local-worker",
+        schedule_source_syncs: bool = True,
+    ) -> dict:
+        self.job_run_calls.append((user_id, limit, worker_id, schedule_source_syncs))
+        return {
+            "ran_at": "2026-01-01T00:00:00Z",
+            "processed": 1,
+            "jobs": [{"id": "job_general", "job_type": "extract_capture", "status": "succeeded"}],
+            "scheduled_source_syncs": {"scheduled": 1, "jobs": [], "skipped": []} if schedule_source_syncs else None,
             "pending": 0,
             "failed": 0,
         }
@@ -2053,6 +2309,39 @@ class StandaloneServerTests(unittest.TestCase):
         data = json.dumps(payload).encode("utf-8")
         return request.urlopen(request.Request(self.base_url + path, data=data, headers=headers, method="POST"), timeout=5)
 
+    def test_standalone_worker_enabled_only_for_local_inline_mode(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            standalone_server.settings = Settings(
+                vault_path=Path(self.tmp.name) / "vault",
+                db_path=Path(self.tmp.name) / "index.sqlite",
+                api_key="test-token",
+                public_base_url="http://127.0.0.1:8766",
+                shard_mode="local",
+                worker_mode="inline",
+            )
+            self.assertTrue(standalone_server._standalone_worker_enabled())
+
+            standalone_server.settings = Settings(
+                vault_path=Path(self.tmp.name) / "vault",
+                db_path=Path(self.tmp.name) / "index.sqlite",
+                api_key="test-token",
+                public_base_url="http://127.0.0.1:8766",
+                shard_mode="local",
+                worker_mode="external",
+            )
+            self.assertFalse(standalone_server._standalone_worker_enabled())
+
+        with mock.patch.dict(os.environ, {"CORTEX_STANDALONE_WORKER_ENABLED": "0"}):
+            self.assertFalse(standalone_server._standalone_worker_enabled())
+        with mock.patch.dict(os.environ, {"CORTEX_STANDALONE_WORKER_ENABLED": "1"}):
+            self.assertTrue(standalone_server._standalone_worker_enabled())
+
+    def test_standalone_worker_tick_drains_memory_jobs_without_source_scheduling(self):
+        result = standalone_server._run_standalone_worker_tick(limit=7)
+        self.assertEqual(result["processed"], 1)
+        self.assertEqual(self.fake_store.job_run_calls[-1], ("local", 7, "standalone-local-worker", False))
+        self.assertIsNone(result["scheduled_source_syncs"])
+
     def test_capture_page_does_not_echo_invalid_token(self) -> None:
         with self.assertRaises(error.HTTPError) as context:
             request.urlopen(self.base_url + "/capture?token=wrong-token&content=Remember", timeout=5)
@@ -2334,6 +2623,14 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(source_sync["processed"], 1)
         self.assertEqual(self.fake_store.source_sync_run_calls, [("local", 7, "api-source-sync")])
+
+        with self.post("/v1/jobs/run?limit=9&schedule_source_syncs=false") as response:
+            general_jobs = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(general_jobs["processed"], 1)
+        self.assertIsNone(general_jobs["scheduled_source_syncs"])
+        self.assertEqual(self.fake_store.job_run_calls, [("local", 9, "local-worker", False)])
 
         with self.post_json(
             "/v1/source-accounts",
@@ -2780,6 +3077,201 @@ class StandaloneServerTests(unittest.TestCase):
             )
         self.assertEqual(context.exception.code, 422)
         self.assertEqual(len(self.fake_store.google_drive_sync_calls), 1)
+
+    def test_google_oauth_start_route_forwards_pkce_setup_to_store(self) -> None:
+        with self.post_json(
+            "/v1/connectors/google/oauth/start",
+            {
+                "source": "gmail",
+                "redirect_uri": "http://127.0.0.1:8766/v1/connectors/google/oauth/callback",
+                "client_id": "google-client-id",
+                "code_verifier": "pkce-verifier-secret",
+                "code_challenge": "pkce-challenge",
+                "code_challenge_method": "S256",
+                "label_ids": ["INBOX"],
+            },
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["source"], "gmail")
+        self.assertIn("code_challenge=pkce-challenge", payload["authorization_url"])
+        self.assertNotIn("pkce-verifier-secret", json.dumps(payload))
+        self.assertEqual(
+            self.fake_store.google_oauth_start_calls,
+            [
+                {
+                    "source": "gmail",
+                    "redirect_uri": "http://127.0.0.1:8766/v1/connectors/google/oauth/callback",
+                    "state": None,
+                    "client_id": "google-client-id",
+                    "code_challenge": "pkce-challenge",
+                    "code_challenge_method": "S256",
+                    "scopes": [],
+                }
+            ],
+        )
+
+    def test_google_oauth_callback_completes_pending_sign_in_and_queues_sync(self) -> None:
+        with self.post_json(
+            "/v1/connectors/google/oauth/start",
+            {
+                "source": "gmail",
+                "redirect_uri": "http://127.0.0.1:8766/v1/connectors/google/oauth/callback",
+                "client_id": "google-client-id",
+                "token_endpoint": "https://oauth2.invalid/token",
+                "code_verifier": "pkce-verifier-secret",
+                "code_challenge": "pkce-challenge",
+                "code_challenge_method": "S256",
+                "account_label": "Sarp Gmail",
+                "account_identifier": "sarp@example.com",
+                "query": "label:inbox",
+                "label_ids": ["INBOX"],
+            },
+        ) as response:
+            state = json.loads(response.read().decode("utf-8"))["state"]
+
+        with request.urlopen(
+            self.base_url + f"/v1/connectors/google/oauth/callback?code=google-code-secret&state={state}",
+            timeout=5,
+        ) as response:
+            html = response.read().decode("utf-8")
+
+        self.assertEqual(response.status, 200)
+        self.assertIn("Google is connected", html)
+        self.assertNotIn("google-code-secret", html)
+        self.assertNotIn("pkce-verifier-secret", html)
+        self.assertEqual(
+            self.fake_store.google_oauth_complete_calls[-1],
+            {
+                "user_id": "local",
+                "source": "gmail",
+                "code": "google-code-secret",
+                "redirect_uri": "http://127.0.0.1:8766/v1/connectors/google/oauth/callback",
+                "state": state,
+                "expected_state": state,
+                "client_id": "google-client-id",
+                "client_secret": None,
+                "token_endpoint": "https://oauth2.invalid/token",
+                "code_verifier": "pkce-verifier-secret",
+                "source_account_id": None,
+                "account_label": "Sarp Gmail",
+                "account_identifier": "sarp@example.com",
+                "query": "label:inbox",
+                "label_ids": ["INBOX"],
+                "mime_types": [],
+                "include_body": True,
+                "include_content": True,
+            },
+        )
+        self.assertEqual(
+            self.fake_store.source_account_sync_enqueue_calls[-1],
+            {
+                "user_id": "local",
+                "account_id": "sacct_google_oauth_test",
+                "processing": "async",
+                "cursor_name": None,
+                "max_records": 200,
+                "run_at": None,
+                "schedule_token": None,
+            },
+        )
+
+    def test_managed_oauth_start_route_forwards_notion_setup_to_store(self) -> None:
+        with self.post_json(
+            "/v1/connectors/oauth/start",
+            {
+                "source": "notion",
+                "redirect_uri": "http://127.0.0.1:8766/v1/connectors/oauth/callback",
+                "client_id": "notion-client-id",
+                "client_secret": "notion-client-secret",
+                "token_endpoint": "https://oauth2.invalid/notion-token",
+                "account_label": "Cortex Notion",
+                "account_identifier": "notion-workspace",
+                "include_content": True,
+                "api_base_url": "https://api.notion.test/v1",
+                "notion_version": "2026-03-11",
+            },
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["source"], "notion")
+        self.assertIn("owner=user", payload["authorization_url"])
+        self.assertNotIn("notion-client-secret", json.dumps(payload))
+        self.assertEqual(
+            self.fake_store.managed_oauth_start_calls,
+            [
+                {
+                    "source": "notion",
+                    "redirect_uri": "http://127.0.0.1:8766/v1/connectors/oauth/callback",
+                    "state": None,
+                    "client_id": "notion-client-id",
+                    "scopes": [],
+                }
+            ],
+        )
+
+    def test_managed_oauth_callback_completes_pending_notion_sign_in_and_queues_sync(self) -> None:
+        with self.post_json(
+            "/v1/connectors/oauth/start",
+            {
+                "source": "notion",
+                "redirect_uri": "http://127.0.0.1:8766/v1/connectors/oauth/callback",
+                "client_id": "notion-client-id",
+                "client_secret": "notion-client-secret",
+                "token_endpoint": "https://oauth2.invalid/notion-token",
+                "account_label": "Cortex Notion",
+                "account_identifier": "notion-workspace",
+                "include_content": True,
+                "api_base_url": "https://api.notion.test/v1",
+                "notion_version": "2026-03-11",
+            },
+        ) as response:
+            state = json.loads(response.read().decode("utf-8"))["state"]
+
+        with request.urlopen(
+            self.base_url + f"/v1/connectors/oauth/callback?code=notion-code-secret&state={state}",
+            timeout=5,
+        ) as response:
+            html = response.read().decode("utf-8")
+
+        self.assertEqual(response.status, 200)
+        self.assertIn("Source is connected", html)
+        self.assertNotIn("notion-code-secret", html)
+        self.assertNotIn("notion-client-secret", html)
+        self.assertEqual(
+            self.fake_store.managed_oauth_complete_calls[-1],
+            {
+                "user_id": "local",
+                "source": "notion",
+                "code": "notion-code-secret",
+                "redirect_uri": "http://127.0.0.1:8766/v1/connectors/oauth/callback",
+                "state": state,
+                "expected_state": state,
+                "client_id": "notion-client-id",
+                "client_secret": "notion-client-secret",
+                "token_endpoint": "https://oauth2.invalid/notion-token",
+                "source_account_id": None,
+                "account_label": "Cortex Notion",
+                "account_identifier": "notion-workspace",
+                "include_content": True,
+                "api_base_url": "https://api.notion.test/v1",
+                "notion_version": "2026-03-11",
+            },
+        )
+        self.assertEqual(
+            self.fake_store.source_account_sync_enqueue_calls[-1],
+            {
+                "user_id": "local",
+                "account_id": "sacct_managed_oauth_test",
+                "processing": "async",
+                "cursor_name": None,
+                "max_records": 200,
+                "run_at": None,
+                "schedule_token": None,
+            },
+        )
 
     def test_outlook_connector_route_forwards_to_store(self) -> None:
         with self.post_json(
@@ -3440,6 +3932,34 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(context.exception.code, 403)
         self.assertIn("maintenance scope", context.exception.read().decode("utf-8"))
         self.assertEqual(self.fake_store.source_account_calls, [])
+
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/connectors/google/oauth/start",
+                    data=json.dumps({"source": "gmail", "client_id": "google-client-id"}).encode("utf-8"),
+                    headers={**scoped_headers, "Content-Type": "application/json"},
+                    method="POST",
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 403)
+        self.assertIn("maintenance scope", context.exception.read().decode("utf-8"))
+        self.assertEqual(self.fake_store.google_oauth_start_calls, [])
+
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/connectors/oauth/start",
+                    data=json.dumps({"source": "notion", "client_id": "notion-client-id"}).encode("utf-8"),
+                    headers={**scoped_headers, "Content-Type": "application/json"},
+                    method="POST",
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 403)
+        self.assertIn("maintenance scope", context.exception.read().decode("utf-8"))
+        self.assertEqual(self.fake_store.managed_oauth_start_calls, [])
 
         with self.assertRaises(error.HTTPError) as context:
             request.urlopen(

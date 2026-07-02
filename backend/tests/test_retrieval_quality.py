@@ -150,6 +150,220 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
             },
         )
 
+    def _seed_project_meridian_mixed_sources(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+        self.store._vector_ready = lambda conn: False
+        fixtures = [
+            (
+                "obsidian",
+                "local-file://Project%20Meridian/Launch.md#line=12&excerpt=meridian-beta",
+                "Project Meridian launch note",
+                [
+                    {
+                        "id": "meridian_decision_rollout",
+                        "kind": "decision",
+                        "layer": "decision",
+                        "content": "Project Meridian beta outreach decision: invite only design partners first because support load is still unknown.",
+                        "summary": "Project Meridian should start with design partners.",
+                        "importance": 5,
+                        "sector": "Project Meridian",
+                        "topics": ["project-meridian", "beta", "outreach", "decision"],
+                    },
+                    {
+                        "id": "meridian_procedure_launch",
+                        "kind": "procedure",
+                        "layer": "procedural",
+                        "content": "Project Meridian beta outreach procedure: verify source sync health, approve at least one memory, ask a cited question, then send the invite.",
+                        "summary": "Project Meridian beta outreach checklist.",
+                        "importance": 5,
+                        "sector": "Project Meridian",
+                        "topics": ["project-meridian", "beta", "procedure"],
+                    },
+                ],
+            ),
+            (
+                "gmail",
+                "https://mail.example.com/thread/meridian-beta-support",
+                "Project Meridian support email",
+                [
+                    {
+                        "id": "meridian_reason_support",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "Project Meridian beta outreach reason: support risk means early users need founder-reviewed replies until onboarding confusion is understood.",
+                        "summary": "Founder-reviewed replies are needed during early Meridian onboarding.",
+                        "importance": 4,
+                        "sector": "Project Meridian",
+                        "topics": ["project-meridian", "support", "onboarding"],
+                    },
+                    {
+                        "id": "meridian_person_alex",
+                        "kind": "event",
+                        "layer": "episodic",
+                        "content": "Alex Rivera asked for the Project Meridian beta invite to include exact data-retention language before Friday.",
+                        "summary": "Alex needs data-retention language in the Meridian invite.",
+                        "importance": 4,
+                        "sector": "Project Meridian",
+                        "topics": ["project-meridian", "alex", "deadline"],
+                    },
+                ],
+            ),
+            (
+                "slack",
+                "https://slack.example.com/archives/C123/p1782912000",
+                "Project Meridian product channel",
+                [
+                    {
+                        "id": "meridian_negative_manual",
+                        "kind": "negative",
+                        "layer": "negative",
+                        "content": "Project Meridian beta outreach constraint: do not ask users to manually upload private data; use connected sources and local sync instead.",
+                        "summary": "Do not ask Meridian users to manually upload private data.",
+                        "importance": 5,
+                        "sector": "Project Meridian",
+                        "topics": ["project-meridian", "privacy", "negative"],
+                    },
+                    {
+                        "id": "meridian_open_loop",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "Project Meridian open loop: confirm whether the Obsidian plugin installed cleanly before inviting the next tester cohort.",
+                        "summary": "Confirm Obsidian plugin install before inviting more Meridian testers.",
+                        "importance": 3,
+                        "sector": "Project Meridian",
+                        "topics": ["project-meridian", "obsidian", "open-loop"],
+                    },
+                ],
+            ),
+            (
+                "notion",
+                "https://notion.example.com/project-meridian-style",
+                "Project Meridian messaging",
+                [
+                    {
+                        "id": "meridian_preference_invite",
+                        "kind": "preference",
+                        "layer": "preference",
+                        "content": "I prefer Project Meridian beta invites that lead with privacy, then show exactly what Cortex can cite.",
+                        "summary": "Lead Meridian beta invites with privacy and citations.",
+                        "importance": 4,
+                        "sector": "Project Meridian",
+                        "topics": ["project-meridian", "preference", "invite"],
+                    },
+                    {
+                        "id": "meridian_style_invite",
+                        "kind": "style",
+                        "layer": "style",
+                        "content": "Project Meridian writing style: warm, direct, spare, and concrete, with short paragraphs and no hype.",
+                        "summary": "Project Meridian style is warm, direct, spare, and concrete.",
+                        "importance": 4,
+                        "sector": "Project Meridian",
+                        "topics": ["project-meridian", "style", "invite"],
+                    },
+                ],
+            ),
+        ]
+        for source, source_url, title, records in fixtures:
+            self.store.save_capture(
+                user_id=self.user_id,
+                content="\n".join(str(record["content"]) for record in records),
+                source=source,
+                source_url=source_url,
+                title=title,
+                extracted={
+                    "_timestamp": "2026-07-01T12:00:00Z",
+                    "summary": title,
+                    "records": [
+                        {
+                            **record,
+                            "confidence": "confirmed",
+                            "entity_ids": [],
+                        }
+                        for record in records
+                    ],
+                    "tasks": [],
+                    "entities": [],
+                },
+            )
+
+    def test_realistic_mixed_source_project_fixture_feeds_ask_brief_and_adaptation(self) -> None:
+        self._seed_project_meridian_mixed_sources()
+
+        answer = self.store.answer_query(
+            self.user_id,
+            "what did we decide for Project Meridian beta outreach and why",
+            limit=6,
+            sector="Project Meridian",
+        )
+        citation_ids = {citation["id"] for citation in answer["citations"]}
+        citation_sources = {citation["source"] for citation in answer["citations"]}
+
+        self.assertIn("meridian_decision_rollout", citation_ids)
+        self.assertIn("meridian_reason_support", citation_ids)
+        self.assertGreaterEqual(len(citation_sources), 3)
+        self.assertTrue(all(citation["source_url"] for citation in answer["citations"]))
+
+        brief = self.store.action_brief(
+            self.user_id,
+            "prepare Project Meridian beta outreach invite for Alex",
+            sector="Project Meridian",
+            limit=8,
+        )
+
+        self.assertEqual(brief["status"], "strong")
+        self.assertTrue(brief["current_decisions"])
+        self.assertTrue(brief["procedures"])
+        self.assertTrue(brief["preferences"])
+        self.assertTrue(brief["negative_constraints"])
+        self.assertTrue(brief["style_signals"])
+        self.assertTrue(brief["execution_checklist"])
+        checklist_phases = {item["phase"] for item in brief["execution_checklist"]}
+        self.assertTrue({"guardrails", "decision_boundary", "procedure", "verification"}.issubset(checklist_phases))
+        self.assertTrue(any("verify source sync health" in item["step"] for item in brief["execution_checklist"]))
+        self.assertTrue(any("manually upload private data" in item["step"] for item in brief["execution_checklist"]))
+        self.assertGreaterEqual(brief["coverage"]["cited_memories"], 6)
+        self.assertGreaterEqual(len({item["source"] for item in brief["coverage"]["source_mix"]}), 4)
+        self.assertIn("constraints_present", {item["code"] for item in brief["risk_flags"]})
+        primary_ids = {item["id"] for item in brief["primary_context"]}
+        for expected_id in (
+            "meridian_decision_rollout",
+            "meridian_person_alex",
+            "meridian_negative_manual",
+            "meridian_preference_invite",
+            "meridian_style_invite",
+            "meridian_open_loop",
+        ):
+            self.assertIn(expected_id, primary_ids)
+        for phrase in (
+            "data-retention language",
+            "do not ask users to manually upload private data",
+            "warm, direct, spare, and concrete",
+            "Obsidian plugin installed cleanly",
+        ):
+            self.assertIn(phrase, brief["markdown"])
+
+        adaptation = self.store.agent_adaptation(
+            self.user_id,
+            query="Project Meridian beta outreach invite for Alex",
+            target="Claude",
+            limit=8,
+            sector="Project Meridian",
+        )
+        rule_layers = {rule["layer"] for rule in adaptation["rules"]}
+        self.assertTrue({"decision", "procedural", "preference", "negative", "style", "episodic", "semantic"}.issubset(rule_layers))
+        rule_ids = {rule["memory_id"] for rule in adaptation["rules"]}
+        for expected_id in (
+            "meridian_decision_rollout",
+            "meridian_person_alex",
+            "meridian_negative_manual",
+            "meridian_preference_invite",
+            "meridian_style_invite",
+            "meridian_open_loop",
+        ):
+            self.assertIn(expected_id, rule_ids)
+        self.assertFalse([rule["memory_id"] for rule in adaptation["rules"] if not rule.get("source_url")])
+        self.assertFalse(adaptation["coverage_warnings"])
+
     def test_seed_representative_memories_covers_every_layer(self) -> None:
         memories = seed_representative_memories(self.store, self.user_id)
 
@@ -249,6 +463,77 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in results], ["strict_taipei_positioning"])
 
+    def test_lexical_fallback_applies_recency_and_importance_boosts(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+        self.store._vector_ready = lambda conn: False
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Project Lattice fallback ranking stale note.",
+            source="lexical-fallback-test",
+            source_url=None,
+            title="Stale fallback ranking seed",
+            extracted={
+                "_timestamp": "2024-01-01T00:00:00+00:00",
+                "summary": "Stale fallback ranking seed.",
+                "records": [
+                    {
+                        "id": "lexical_fallback_stale_low_importance",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": (
+                            "Project Lattice fallback ranking stale note repeats lattice fallback ranking "
+                            "so strict FTS rank prefers it before near-tie boosts."
+                        ),
+                        "summary": "Project Lattice fallback ranking stale note.",
+                        "confidence": "confirmed",
+                        "importance": 1,
+                        "topics": ["lattice", "fallback", "ranking"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Project Lattice fallback ranking current note.",
+            source="lexical-fallback-test",
+            source_url=None,
+            title="Fresh fallback ranking seed",
+            extracted={
+                "_timestamp": "2026-06-30T00:00:00+00:00",
+                "summary": "Fresh fallback ranking seed.",
+                "records": [
+                    {
+                        "id": "lexical_fallback_fresh_high_importance",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "Project Lattice fallback ranking current note should win the fallback near tie.",
+                        "summary": "Project Lattice fallback ranking current note.",
+                        "confidence": "confirmed",
+                        "importance": 5,
+                        "topics": ["lattice", "fallback", "ranking"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+        diagnostics: dict[str, object] = {}
+
+        results = self.store.search(
+            self.user_id,
+            "Project Lattice fallback ranking unmatchednonce",
+            limit=2,
+            _diagnostics=diagnostics,
+        )
+
+        self.assertEqual(diagnostics["mode_counts"]["fts"], 0)
+        self.assertGreaterEqual(diagnostics["mode_counts"]["lexical_fallback"], 2)
+        self.assertEqual(results[0]["id"], "lexical_fallback_fresh_high_importance")
+
     def test_focused_queries_retrieve_expected_layer_and_content(self) -> None:
         result = evaluate_retrieval(self.store, self.user_id)
 
@@ -262,7 +547,16 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         expected_noisy_cases = 11
         expected_direct_connector_cases = 13
         expected_source_backed_cases = 1
-        expected_case_count = len(RETRIEVAL_CASES) + expected_noisy_cases + expected_direct_connector_cases + expected_source_backed_cases
+        expected_direct_connector_account_policy_cases = 1
+        expected_mixed_source_authority_cases = 1
+        expected_case_count = (
+            len(RETRIEVAL_CASES)
+            + expected_noisy_cases
+            + expected_direct_connector_cases
+            + expected_source_backed_cases
+            + expected_direct_connector_account_policy_cases
+            + expected_mixed_source_authority_cases
+        )
         self.assertEqual(len(result["checks"]), expected_case_count)
         self.assertEqual(result["metrics"]["overall"]["case_count"], expected_case_count)
         self.assertEqual(result["metrics"]["overall"]["top1_accuracy"], 1.0)
@@ -279,12 +573,21 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertEqual(result["metrics"]["by_category"]["noisy_import_calendar"]["case_count"], 1)
         self.assertEqual(result["metrics"]["by_category"]["noisy_import_github"]["case_count"], 1)
         self.assertEqual(result["metrics"]["by_category"]["direct_connector"]["case_count"], expected_direct_connector_cases)
+        self.assertEqual(
+            result["metrics"]["by_category"]["direct_connector_account_policy"]["case_count"],
+            expected_direct_connector_account_policy_cases,
+        )
         self.assertEqual(result["metrics"]["by_category"]["sector_scoping"]["case_count"], 2)
         self.assertEqual(result["metrics"]["by_category"]["temporal_validity"]["case_count"], 1)
         self.assertEqual(result["metrics"]["by_category"]["related_memory"]["case_count"], 2)
         self.assertEqual(result["metrics"]["by_category"]["source_backed_ranking"]["case_count"], 1)
+        self.assertEqual(result["metrics"]["by_category"]["mixed_source_authority"]["case_count"], expected_mixed_source_authority_cases)
         self.assertEqual(result["source_backed_fallback"]["top_result"], "rq_source_backed_lexical_fallback_cited")
         self.assertIn("lexical_fallback", result["source_backed_fallback"]["retrieval_modes"])
+        self.assertEqual(result["mixed_source_authority"]["top_result"], "rq_mixed_source_authority_notion_canonical")
+        self.assertEqual(result["mixed_source_authority"]["top_source"], "notion")
+        self.assertEqual(result["automatic_connector_account_scope"]["ask_status"], "cited")
+        self.assertEqual(result["automatic_connector_account_scope"]["blocked_ask_status"], "no_cited_evidence")
 
         categories = {case.category for case in RETRIEVAL_CASES} | {
             "noisy_import",
@@ -298,7 +601,9 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
             "noisy_import_calendar",
             "noisy_import_github",
             "direct_connector",
+            "direct_connector_account_policy",
             "source_backed_ranking",
+            "mixed_source_authority",
         }
         self.assertIn("paraphrase", categories)
         self.assertIn("style_recall", categories)
@@ -315,6 +620,21 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertIn(RELATED_MEMORY_COMPANION_ID, focused_contracts["related_memory"]["citation_ids"])
         self.assertEqual(focused_contracts["related_memory"]["relationship"]["kind"], "shared_entity")
         self.assertEqual(focused_contracts["related_memory"]["relationship"]["related_to_id"], RELATED_MEMORY_PRIMARY_ID)
+        self.assertEqual(focused_contracts["claim_conflict"]["status"], "conflicted")
+        self.assertEqual(focused_contracts["claim_conflict"]["conflict"]["type"], "claim_conflict")
+        self.assertEqual(focused_contracts["claim_conflict"]["conflict"]["claim_key"], "launch channel")
+        self.assertEqual(focused_contracts["claim_conflict"]["conflict"]["primary_id"], "rq_ask_claim_conflict_updated")
+        self.assertEqual(focused_contracts["claim_conflict"]["conflict"]["primary_claim"], "slack")
+        self.assertEqual(focused_contracts["claim_conflict"]["conflict"]["conflicting_claim"], "email")
+        self.assertEqual(focused_contracts["low_confidence"]["status"], "low_confidence")
+        self.assertEqual(focused_contracts["low_confidence"]["evidence"]["missing_fields"], ["owner"])
+        self.assertEqual(focused_contracts["low_confidence"]["citation_ids"][0], "rq_ask_low_confidence_related_cited")
+        mixed_source = result["mixed_source_project_contracts"]
+        self.assertTrue(
+            {"guardrails", "decision_boundary", "procedure", "open_action", "verification"}.issubset(
+                set(mixed_source["brief_execution_checklist_phases"])
+            )
+        )
         self.assertTrue(result["no_evidence_answer"]["abstained"])
         self.assertEqual(result["no_evidence_answer"]["citation_ids"], [])
         self.assertIn("rq_ask_no_evidence_uncited_only", result["no_evidence_answer"]["uncited_result_ids"])
@@ -693,12 +1013,385 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
 
         answer = self.store.answer_query(self.user_id, "atlas ask source-backed ranking", limit=2)
 
+        self.assertEqual(answer["status"], "cited")
         self.assertEqual(answer["citations"][0]["id"], "ask_source_backed_cited")
         self.assertEqual(answer["citations"][0]["line_start"], "34")
         self.assertEqual(answer["citations"][0]["source_excerpt"], "atlas-ask-source")
         self.assertTrue(all(citation["source_url"] for citation in answer["citations"]))
         self.assertNotIn("ask_source_backed_uncited", {citation["id"] for citation in answer["citations"]})
         self.assertEqual(answer["results"][0]["id"], "ask_source_backed_cited")
+
+    def test_answer_query_surfaces_conflicting_cited_dates_without_flattening_them(self) -> None:
+        self.store.update_settings(
+            self.user_id,
+            {
+                "review_new_captures": False,
+                "allow_pending_in_context": True,
+            },
+        )
+        fixtures = [
+            (
+                "slack",
+                "cortex-source://slack#service=slack&channel=C123&message=1782900000000100&line=1&excerpt=helios-july-10",
+                "2026-06-01T00:00:00+00:00",
+                "helios_launch_original",
+                "Project Helios launch date is July 10 according to the original team channel plan.",
+            ),
+            (
+                "github",
+                "cortex-source://github#service=github&repository=cortex&file=issues.json&line=44&excerpt=helios-july-17",
+                "2026-06-15T00:00:00+00:00",
+                "helios_launch_updated",
+                "Project Helios launch date moved to July 17 in the current release issue.",
+            ),
+        ]
+        for source, source_url, timestamp, record_id, content in fixtures:
+            self.store.save_capture(
+                user_id=self.user_id,
+                content=content,
+                source=source,
+                source_url=source_url,
+                title=f"{source} Project Helios launch date",
+                extracted={
+                    "_timestamp": timestamp,
+                    "summary": content,
+                    "records": [
+                        {
+                            "id": record_id,
+                            "kind": "decision",
+                            "layer": "decision",
+                            "content": content,
+                            "summary": content,
+                            "confidence": "confirmed",
+                            "importance": 4,
+                            "sector": "Project Helios",
+                            "topics": ["project-helios", "launch", "date"],
+                            "entity_ids": ["project_helios"],
+                            "occurred_at": timestamp,
+                        }
+                    ],
+                    "tasks": [],
+                    "entities": [
+                        {
+                            "id": "project_helios",
+                            "kind": "project",
+                            "name": "Project Helios",
+                            "aliases": ["Helios"],
+                        }
+                    ],
+                },
+            )
+
+        answer = self.store.answer_query(self.user_id, "Project Helios launch date", limit=4, sector="Project Helios")
+
+        self.assertEqual(answer["status"], "conflicted")
+        self.assertEqual(answer["conflicts"][0]["type"], "date_conflict")
+        self.assertEqual(answer["conflicts"][0]["primary_id"], "helios_launch_updated")
+        self.assertEqual(answer["conflicts"][0]["reason"], "newer_timestamp")
+        self.assertEqual(set(answer["conflicts"][0]["date_claims"]), {"july 10", "july 17"})
+        self.assertIn("Conflict check", answer["answer"])
+        self.assertIn("verify before acting", answer["answer"])
+        citation_ids = {citation["id"] for citation in answer["citations"]}
+        self.assertIn("helios_launch_original", citation_ids)
+        self.assertIn("helios_launch_updated", citation_ids)
+
+    def test_answer_query_keeps_years_in_cited_date_conflicts(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+        for source, timestamp, record_id, content in (
+            (
+                "slack",
+                "2026-06-01T00:00:00+00:00",
+                "helios_renewal_2025",
+                "Project Helios renewal date is July 10, 2025 according to the stale billing thread.",
+            ),
+            (
+                "github",
+                "2026-06-15T00:00:00+00:00",
+                "helios_renewal_2026",
+                "Project Helios renewal date moved to July 10, 2026 in the current contract issue.",
+            ),
+        ):
+            self.store.save_capture(
+                user_id=self.user_id,
+                content=content,
+                source=source,
+                source_url=f"cortex-source://{source}#service={source}&line=1&excerpt={record_id}",
+                title=f"{source} Project Helios renewal date",
+                extracted={
+                    "_timestamp": timestamp,
+                    "summary": content,
+                    "records": [
+                        {
+                            "id": record_id,
+                            "kind": "decision",
+                            "layer": "decision",
+                            "content": content,
+                            "summary": content,
+                            "confidence": "confirmed",
+                            "importance": 4,
+                            "sector": "Project Helios",
+                            "topics": ["project-helios", "renewal", "date"],
+                            "entity_ids": ["project_helios"],
+                            "occurred_at": timestamp,
+                        }
+                    ],
+                    "tasks": [],
+                    "entities": [{"id": "project_helios", "kind": "project", "name": "Project Helios", "aliases": ["Helios"]}],
+                },
+            )
+
+        answer = self.store.answer_query(self.user_id, "Project Helios renewal date", limit=4, sector="Project Helios")
+
+        self.assertEqual(answer["status"], "conflicted")
+        self.assertEqual(answer["conflicts"][0]["type"], "date_conflict")
+        self.assertEqual(set(answer["conflicts"][0]["date_claims"]), {"july 10 2025", "july 10 2026"})
+
+    def test_answer_query_surfaces_conflicting_cited_decision_claims(self) -> None:
+        self.store.update_settings(
+            self.user_id,
+            {
+                "review_new_captures": False,
+                "allow_pending_in_context": True,
+            },
+        )
+        fixtures = [
+            (
+                "slack",
+                "cortex-source://slack#service=slack&channel=C456&message=1782900000000200&line=1&excerpt=icarus-email",
+                "2026-06-02T00:00:00+00:00",
+                "icarus_launch_channel_original",
+                "Project Icarus launch channel should use email according to the original GTM thread.",
+            ),
+            (
+                "github",
+                "cortex-source://github#service=github&repository=cortex&file=issues.json&line=45&excerpt=icarus-slack",
+                "2026-06-16T00:00:00+00:00",
+                "icarus_launch_channel_updated",
+                "Project Icarus launch channel now uses Slack because tester replies need fast triage.",
+            ),
+        ]
+        for source, source_url, timestamp, record_id, content in fixtures:
+            self.store.save_capture(
+                user_id=self.user_id,
+                content=content,
+                source=source,
+                source_url=source_url,
+                title=f"{source} Project Icarus launch channel",
+                extracted={
+                    "_timestamp": timestamp,
+                    "summary": content,
+                    "records": [
+                        {
+                            "id": record_id,
+                            "kind": "decision",
+                            "layer": "decision",
+                            "content": content,
+                            "summary": content,
+                            "confidence": "confirmed",
+                            "importance": 4,
+                            "sector": "Project Icarus",
+                            "topics": ["project-icarus", "launch", "channel"],
+                            "entity_ids": ["project_icarus"],
+                            "occurred_at": timestamp,
+                        }
+                    ],
+                    "tasks": [],
+                    "entities": [
+                        {
+                            "id": "project_icarus",
+                            "kind": "project",
+                            "name": "Project Icarus",
+                            "aliases": ["Icarus"],
+                        }
+                    ],
+                },
+            )
+
+        answer = self.store.answer_query(self.user_id, "Project Icarus launch channel", limit=4, sector="Project Icarus")
+
+        self.assertEqual(answer["status"], "conflicted")
+        self.assertEqual(answer["conflicts"][0]["type"], "claim_conflict")
+        self.assertEqual(answer["conflicts"][0]["claim_key"], "launch channel")
+        self.assertEqual(answer["conflicts"][0]["primary_id"], "icarus_launch_channel_updated")
+        self.assertEqual(answer["conflicts"][0]["primary_claim"], "slack")
+        self.assertEqual(answer["conflicts"][0]["conflicting_claim"], "email")
+        self.assertEqual(answer["conflicts"][0]["reason"], "newer_timestamp")
+        self.assertIn("disagree on launch channel", answer["answer"])
+        self.assertIn("verify before acting", answer["answer"])
+
+    def test_mixed_source_trusted_conflict_respects_source_account_scope(self) -> None:
+        self.store.update_settings(
+            self.user_id,
+            {
+                "review_new_captures": True,
+                "allow_pending_in_context": False,
+            },
+        )
+
+        accounts: dict[str, dict[str, object]] = {}
+        for source, label, policy in (
+            ("gmail", "Quasar Gmail", {"review_required": False, "allow_ai_context": True}),
+            ("slack", "Quasar Slack", {"review_required": False, "allow_ai_context": True}),
+            ("google-drive", "Quasar Drive", {"review_required": False, "allow_ai_context": True}),
+            ("notion", "Quasar Notion Canonical", {"mode": "trusted", "review_required": False, "allow_ai_context": True}),
+        ):
+            accounts[source] = self.store.upsert_source_account(
+                self.user_id,
+                source=source,
+                account_label=label,
+                account_identifier=f"{source}-quasar",
+                connection_type="api-token",
+                status="connected",
+                auth_state="healthy",
+                policy=policy,
+            )
+
+        records = {
+            "gmail": {
+                "external_id": "quasar-gmail-email",
+                "title": "Quasar Gmail stale launch channel",
+                "content": "Project Quasar launch channel is email according to the stale Gmail launch thread.",
+                "source_url": "cortex-source://gmail#service=gmail&subject=Project%20Quasar&line=1&excerpt=quasar-gmail",
+                "metadata": {"project": "Project Quasar", "line_start": 1, "source_quality": "stale"},
+            },
+            "slack": {
+                "external_id": "quasar-slack-channel",
+                "title": "Quasar Slack stale launch channel",
+                "content": "Project Quasar launch channel is Slack according to the stale GTM Slack thread.",
+                "source_url": "cortex-source://slack#service=slack&channel=CQUASAR&line=1&excerpt=quasar-slack",
+                "metadata": {"project": "Project Quasar", "line_start": 1, "source_quality": "stale"},
+            },
+            "google-drive": {
+                "external_id": "quasar-drive-plan",
+                "title": "Quasar Drive stale launch channel",
+                "content": "Project Quasar launch channel is Drive according to the stale planning document.",
+                "source_url": "cortex-source://google-drive#service=google-drive&document=quasar-plan&line=1&excerpt=quasar-drive",
+                "metadata": {"project": "Project Quasar", "line_start": 1, "source_quality": "draft"},
+            },
+            "notion": {
+                "external_id": "quasar-notion-canonical",
+                "title": "Quasar Notion canonical launch channel",
+                "content": "Project Quasar launch channel now uses Notion. This is the current canonical source of truth.",
+                "source_url": "cortex-source://notion#service=notion&page=quasar-canonical&line=1&excerpt=quasar-notion",
+                "metadata": {"project": "Project Quasar", "line_start": 1, "source_quality": "canonical", "verified": True},
+            },
+        }
+        for source, record in records.items():
+            synced = self.store.sync_source_account_records(
+                self.user_id,
+                str(accounts[source]["id"]),
+                records=[{"captured_at": "2026-07-02T10:00:00Z", **record}],
+                processing="sync",
+            )
+            self.assertEqual(synced["saved"], 1)
+            self.assertGreater(sum(int(item.get("memories") or 0) for item in synced["records"]), 0)
+
+        search_results = self.store.search(self.user_id, "Project Quasar launch channel", limit=6, sector="Project Quasar")
+        self.assertTrue(search_results)
+        self.assertEqual(search_results[0]["provenance"]["external_id"], "quasar-notion-canonical")
+        self.assertEqual(search_results[0]["provenance"]["source_account_id"], accounts["notion"]["id"])
+
+        broad_answer = self.store.answer_query(self.user_id, "Project Quasar launch channel", limit=6, sector="Project Quasar")
+        self.assertEqual(broad_answer["status"], "conflicted")
+        self.assertEqual(broad_answer["citations"][0]["source_account_id"], accounts["notion"]["id"])
+        self.assertEqual(broad_answer["citations"][0]["source_record_id"], "quasar-notion-canonical")
+        self.assertEqual(broad_answer["conflicts"][0]["type"], "claim_conflict")
+        self.assertEqual(broad_answer["conflicts"][0]["primary_source"], "notion")
+        self.assertIn("notion", broad_answer["conflicts"][0]["primary_claim"])
+
+        gmail_search = self.store.search(
+            self.user_id,
+            "Project Quasar launch channel",
+            limit=6,
+            source_account_id=str(accounts["gmail"]["id"]),
+        )
+        self.assertTrue(gmail_search)
+        self.assertTrue(all(item["provenance"]["source_account_id"] == accounts["gmail"]["id"] for item in gmail_search))
+        self.assertEqual(gmail_search[0]["provenance"]["external_id"], "quasar-gmail-email")
+
+        gmail_answer = self.store.answer_query(
+            self.user_id,
+            "Project Quasar launch channel",
+            limit=6,
+            source_account_id=str(accounts["gmail"]["id"]),
+        )
+        self.assertEqual(gmail_answer["status"], "cited")
+        self.assertEqual(gmail_answer["conflicts"], [])
+        self.assertTrue(gmail_answer["citations"])
+        self.assertTrue(all(citation["source_account_id"] == accounts["gmail"]["id"] for citation in gmail_answer["citations"]))
+        self.assertIn("email", gmail_answer["answer"].lower())
+        self.assertNotIn("Notion", gmail_answer["answer"])
+
+    def test_trusted_canonical_conflict_primary_beats_newer_stale_source(self) -> None:
+        self.store.update_settings(
+            self.user_id,
+            {
+                "review_new_captures": True,
+                "allow_pending_in_context": False,
+            },
+        )
+        notion = self.store.upsert_source_account(
+            self.user_id,
+            source="notion",
+            account_label="Vega Notion Canonical",
+            account_identifier="notion-vega",
+            connection_type="api-token",
+            status="connected",
+            auth_state="healthy",
+            policy={"mode": "trusted", "review_required": False, "allow_ai_context": True},
+        )
+        slack = self.store.upsert_source_account(
+            self.user_id,
+            source="slack",
+            account_label="Vega Slack Noise",
+            account_identifier="slack-vega",
+            connection_type="api-token",
+            status="connected",
+            auth_state="healthy",
+            policy={"review_required": False, "allow_ai_context": True},
+        )
+        self.store.sync_source_account_records(
+            self.user_id,
+            notion["id"],
+            records=[
+                {
+                    "external_id": "vega-notion-canonical",
+                    "title": "Vega canonical launch channel",
+                    "content": "Project Vega launch channel is Notion. This is the verified canonical source of truth.",
+                    "source_url": "cortex-source://notion#service=notion&page=vega-canonical&line=1&excerpt=vega-notion",
+                    "captured_at": "2026-05-01T00:00:00Z",
+                    "metadata": {"project": "Project Vega", "source_quality": "canonical", "verified": True, "line_start": 1},
+                }
+            ],
+            processing="sync",
+        )
+        self.store.sync_source_account_records(
+            self.user_id,
+            slack["id"],
+            records=[
+                {
+                    "external_id": "vega-slack-stale",
+                    "title": "Vega stale Slack launch channel",
+                    "content": "Project Vega launch channel is email according to a newer but stale Slack thread.",
+                    "source_url": "cortex-source://slack#service=slack&channel=CVEGA&line=1&excerpt=vega-slack",
+                    "captured_at": "2026-06-15T00:00:00Z",
+                    "metadata": {"project": "Project Vega", "source_quality": "stale", "line_start": 1},
+                }
+            ],
+            processing="sync",
+        )
+
+        answer = self.store.answer_query(self.user_id, "Project Vega launch channel", limit=4, sector="Project Vega")
+
+        self.assertEqual(answer["status"], "conflicted")
+        self.assertEqual(answer["conflicts"][0]["type"], "claim_conflict")
+        self.assertEqual(answer["conflicts"][0]["primary_source"], "notion")
+        self.assertEqual(answer["conflicts"][0]["primary_claim"], "notion")
+        self.assertEqual(answer["conflicts"][0]["conflicting_source"], "slack")
+        self.assertEqual(answer["conflicts"][0]["conflicting_claim"], "email")
+        self.assertEqual(answer["conflicts"][0]["reason"], "trusted_canonical_source")
+        self.assertEqual(answer["citations"][0]["source_account_id"], notion["id"])
+        self.assertEqual(answer["citations"][0]["source_record_id"], "vega-notion-canonical")
 
     def test_answer_query_does_not_cite_weak_related_source_backed_neighbors(self) -> None:
         self.store.update_settings(
@@ -817,10 +1510,64 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
 
         answer = self.store.answer_query(self.user_id, "Atlas unsupported reimbursement owner", limit=3)
 
+        self.assertEqual(answer["status"], "no_cited_evidence")
         self.assertEqual(answer["citations"], [])
         self.assertIn("did not find a cited item", answer["answer"])
         self.assertEqual(answer["results"][0]["id"], "ask_uncited_match_only")
         self.assertIsNone(answer["results"][0]["source_url"])
+
+    def test_answer_query_marks_related_but_incomplete_cited_evidence_low_confidence(self) -> None:
+        self.store.update_settings(
+            self.user_id,
+            {
+                "review_new_captures": False,
+                "allow_pending_in_context": True,
+            },
+        )
+        self.store._vector_ready = lambda conn: False
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Project Atlas payroll reimbursement policy is approved for local beta expenses.",
+            source="github",
+            source_url="cortex-source://github#service=github&file=issues.json&line=88&excerpt=atlas-payroll-policy",
+            title="Atlas payroll reimbursement policy",
+            extracted={
+                "_timestamp": "2026-05-01T00:00:00+00:00",
+                "summary": "Atlas payroll reimbursement policy.",
+                "records": [
+                    {
+                        "id": "ask_low_confidence_related_cited",
+                        "kind": "claim",
+                        "layer": "semantic",
+                        "content": "Project Atlas payroll reimbursement policy is approved for local beta expenses.",
+                        "summary": "Atlas payroll reimbursement policy is approved.",
+                        "confidence": "confirmed",
+                        "importance": 4,
+                        "sector": "Project Atlas",
+                        "topics": ["project-atlas", "payroll", "reimbursement"],
+                        "entity_ids": ["project_atlas"],
+                    }
+                ],
+                "tasks": [],
+                "entities": [
+                    {
+                        "id": "project_atlas",
+                        "kind": "project",
+                        "name": "Project Atlas",
+                        "aliases": ["Atlas"],
+                    }
+                ],
+            },
+        )
+
+        answer = self.store.answer_query(self.user_id, "Project Atlas payroll reimbursement owner", limit=3, sector="Project Atlas")
+
+        self.assertEqual(answer["status"], "low_confidence")
+        self.assertEqual(answer["evidence"]["missing_fields"], ["owner"])
+        self.assertEqual(answer["citations"][0]["id"], "ask_low_confidence_related_cited")
+        self.assertIn("Coverage check", answer["answer"])
+        self.assertIn("not enough evidence for owner", answer["answer"])
+        self.assertIn("verify before acting", answer["answer"])
 
     def test_source_filter_uses_service_family_aliases_without_overexpanding(self) -> None:
         self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
@@ -1209,6 +1956,122 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertEqual(diagnostics["candidate_limit"], 50)
         self.assertGreaterEqual(diagnostics["mode_counts"]["fts"], 1)
         self.assertLessEqual(len(results), 3)
+
+    def test_search_diversifies_redundant_same_thread_evidence(self) -> None:
+        self.store.update_settings(
+            self.user_id,
+            {
+                "review_new_captures": False,
+                "allow_pending_in_context": True,
+            },
+        )
+        duplicate_prefix = (
+            "Project Aurora launch retrieval safety same thread duplicate evidence says the rollout notes, "
+            "beta onboarding, support triage, retry behavior, memory retrieval safety, citation review, "
+            "and approval routing all came from the same status thread and should not crowd out other evidence. "
+        )
+        for index in range(8):
+            self.store.save_capture(
+                user_id=self.user_id,
+                content=f"{duplicate_prefix}Duplicate variant {index} repeats the same Slack status context.",
+                source="slack",
+                source_url=f"cortex-source://slack#channel=launch&message=aurora-duplicate-{index}",
+                title=f"Aurora duplicate Slack note {index}",
+                extracted={
+                    "_timestamp": f"2026-05-01T00:0{index}:00+00:00",
+                    "summary": "Aurora redundant Slack thread.",
+                    "records": [
+                        {
+                            "id": f"aurora_duplicate_{index}",
+                            "kind": "claim",
+                            "layer": "semantic",
+                            "content": f"{duplicate_prefix}Duplicate variant {index} repeats the same Slack status context.",
+                            "summary": "Aurora redundant Slack thread.",
+                            "confidence": "confirmed",
+                            "importance": 5,
+                            "topics": ["aurora", "launch", "retrieval", "safety"],
+                            "entity_ids": [],
+                            "metadata": {"conversation": "aurora-launch-same-thread"},
+                        }
+                    ],
+                    "tasks": [],
+                    "entities": [],
+                },
+            )
+
+        distinct_records = [
+            {
+                "id": "aurora_canonical_decision",
+                "source": "github",
+                "source_url": "cortex-source://github#repository=cortex&issue=aurora-decision&line=10",
+                "kind": "decision",
+                "layer": "decision",
+                "content": "Project Aurora launch retrieval safety decision: cite the canonical GitHub issue before same-thread status chatter.",
+                "summary": "Canonical Aurora retrieval safety decision.",
+                "topics": ["aurora", "launch", "retrieval", "safety", "decision"],
+            },
+            {
+                "id": "aurora_procedure",
+                "source": "notion",
+                "source_url": "cortex-source://notion#page=aurora-runbook",
+                "kind": "procedure",
+                "layer": "procedural",
+                "content": "Project Aurora launch retrieval safety procedure: verify citations, backup state, and rollback steps before inviting beta users.",
+                "summary": "Aurora launch retrieval safety procedure.",
+                "topics": ["aurora", "launch", "retrieval", "safety", "procedure"],
+            },
+            {
+                "id": "aurora_negative_constraint",
+                "source": "gmail",
+                "source_url": "cortex-source://gmail#thread=aurora-risk",
+                "kind": "negative",
+                "layer": "negative",
+                "content": "Project Aurora launch retrieval safety constraint: do not let duplicated Slack thread notes replace decision and runbook evidence.",
+                "summary": "Aurora retrieval safety negative constraint.",
+                "topics": ["aurora", "launch", "retrieval", "safety", "constraint"],
+            },
+        ]
+        for record in distinct_records:
+            self.store.save_capture(
+                user_id=self.user_id,
+                content=record["content"],
+                source=record["source"],
+                source_url=record["source_url"],
+                title=record["summary"],
+                extracted={
+                    "_timestamp": "2026-05-02T00:00:00+00:00",
+                    "summary": record["summary"],
+                    "records": [
+                        {
+                            "id": record["id"],
+                            "kind": record["kind"],
+                            "layer": record["layer"],
+                            "content": record["content"],
+                            "summary": record["summary"],
+                            "confidence": "confirmed",
+                            "importance": 3,
+                            "topics": record["topics"],
+                            "entity_ids": [],
+                            "metadata": {"source_quality": "canonical"},
+                        }
+                    ],
+                    "tasks": [],
+                    "entities": [],
+                },
+            )
+
+        results = self.store.search(
+            self.user_id,
+            "Project Aurora launch retrieval safety",
+            limit=5,
+        )
+        result_ids = [item["id"] for item in results]
+        duplicate_ids = [item_id for item_id in result_ids if item_id.startswith("aurora_duplicate_")]
+
+        self.assertLessEqual(len(duplicate_ids), 1)
+        self.assertIn("aurora_canonical_decision", result_ids)
+        self.assertIn("aurora_procedure", result_ids)
+        self.assertIn("aurora_negative_constraint", result_ids)
 
 
 if __name__ == "__main__":

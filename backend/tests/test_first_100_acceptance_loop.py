@@ -177,6 +177,7 @@ I prefer Cortex answers that cite the edited Obsidian note when memory changes.
             "sync_connected_sources",
             "get_personal_profile",
             "get_agent_adaptation",
+            "prepare_action_brief",
             "get_style_profile",
             "get_project_context",
             "get_procedure",
@@ -187,6 +188,7 @@ I prefer Cortex answers that cite the edited Obsidian note when memory changes.
         self.assertEqual(tool_required_capabilities("sync_source_records"), ["write"])
         self.assertEqual(tool_required_capabilities("sync_connected_sources"), ["maintenance"])
         self.assertEqual(tool_required_capabilities("approve_memory_capture"), ["write"])
+        self.assertEqual(tool_required_capabilities("approve_memory_capture", scoped=True), ["write", "maintenance"])
         self.assertEqual(tool_required_capabilities("get_agent_adaptation"), ["read", "export"])
 
         quality = call_tool(self.store, self.user_id, "get_memory_quality_report", {})

@@ -77,6 +77,116 @@ class SlackSync:
         }
 
 
+@dataclass(frozen=True)
+class SlackChannelDiscovery:
+    channels: list[dict[str, Any]]
+    channels_found: int
+    channels_returned: int
+    next_cursor: str | None
+    errors: list[dict[str, Any]]
+    api_base_url: str
+    auth_identity: dict[str, str]
+
+    def to_summary(self) -> dict[str, Any]:
+        return {
+            "connector": SLACK_SOURCE,
+            "connector_version": CONNECTOR_VERSION,
+            "channels": self.channels,
+            "channels_found": self.channels_found,
+            "channels_returned": self.channels_returned,
+            "next_cursor": self.next_cursor,
+            "errors": self.errors,
+            "api_base_url": self.api_base_url,
+            "auth_identity": self.auth_identity,
+        }
+
+
+def discover_slack_channels(
+    *,
+    token: str,
+    limit: int = 100,
+    include_private: bool = True,
+    cursor: str | None = None,
+    api_base_url: str = DEFAULT_API_BASE_URL,
+    request_json: RequestJSON | None = None,
+) -> SlackChannelDiscovery:
+    cleaned_token = str(token or "").strip()
+    if not cleaned_token:
+        raise ValueError("Slack token is required")
+    capped_limit = max(1, min(int(limit or 100), 200))
+    requester = request_json or _request_json
+    base_url = str(api_base_url or DEFAULT_API_BASE_URL).rstrip("/")
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {cleaned_token}",
+        "User-Agent": "Cortex-local-connector",
+    }
+    auth_identity = _fetch_auth_identity(requester, base_url=base_url, headers=headers)
+    query = {
+        "exclude_archived": "true",
+        "limit": str(capped_limit),
+        "types": "public_channel,private_channel" if include_private else "public_channel",
+    }
+    if str(cursor or "").strip():
+        query["cursor"] = str(cursor).strip()
+    try:
+        payload = requester(f"{base_url}/conversations.list?{urlencode(query)}", headers)
+    except Exception as exc:
+        return SlackChannelDiscovery(
+            channels=[],
+            channels_found=0,
+            channels_returned=0,
+            next_cursor=None,
+            errors=[connector_error_payload(exc, [cleaned_token, headers.get("Authorization")])],
+            api_base_url=base_url,
+            auth_identity=auth_identity,
+        )
+    errors: list[dict[str, Any]] = []
+    if not isinstance(payload, dict):
+        errors.append({"error": "Slack conversations.list response was not an object"})
+        channel_payloads: list[Any] = []
+    elif not payload.get("ok", False):
+        errors.append(connector_error_payload(payload.get("error") or "Slack conversations.list API error"))
+        channel_payloads = []
+    else:
+        channel_payloads = payload.get("channels") if isinstance(payload.get("channels"), list) else []
+
+    channels: list[dict[str, Any]] = []
+    for channel in channel_payloads:
+        if not isinstance(channel, dict):
+            continue
+        channel_id = str(channel.get("id") or "").strip()
+        if not channel_id:
+            continue
+        name = str(channel.get("name") or channel.get("name_normalized") or "").strip()
+        channels.append(
+            {
+                "id": channel_id[:120],
+                "name": name[:160],
+                "label": f"#{name}" if name else channel_id[:120],
+                "sync_value": f"{channel_id}|{name}"[:240] if name else channel_id[:120],
+                "is_private": bool(channel.get("is_private")),
+                "is_member": bool(channel.get("is_member")),
+                "is_archived": bool(channel.get("is_archived")),
+                "num_members": _safe_int(channel.get("num_members")),
+                "purpose": _slack_channel_text(channel.get("purpose")),
+                "topic": _slack_channel_text(channel.get("topic")),
+            }
+        )
+    next_cursor = None
+    if isinstance(payload, dict):
+        next_cursor = str((payload.get("response_metadata") or {}).get("next_cursor") or "").strip() or None
+    return SlackChannelDiscovery(
+        channels=channels,
+        channels_found=len(channel_payloads),
+        channels_returned=len(channels),
+        next_cursor=next_cursor,
+        errors=errors,
+        api_base_url=base_url,
+        auth_identity=auth_identity,
+    )
+
+
 def fetch_slack_records(
     *,
     token: str,
@@ -417,6 +527,19 @@ def _clean_slack_text(value: Any) -> str:
     text = re.sub(r"<(https?://[^>|]+)\|([^>]+)>", r"\2 (\1)", text)
     text = re.sub(r"<(https?://[^>]+)>", r"\1", text)
     return re.sub(r"\s+", " ", text).strip()[:20_000]
+
+
+def _slack_channel_text(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    return _clean_slack_text(value.get("value"))[:500]
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _clean_channel_name(value: str) -> str | None:

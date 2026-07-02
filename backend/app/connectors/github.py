@@ -80,6 +80,109 @@ class GitHubSync:
         }
 
 
+@dataclass(frozen=True)
+class GitHubRepositoryDiscovery:
+    repositories: list[dict[str, Any]]
+    repositories_found: int
+    repositories_returned: int
+    next_page: int | None
+    errors: list[dict[str, Any]]
+    api_base_url: str
+
+    def to_summary(self) -> dict[str, Any]:
+        return {
+            "connector": GITHUB_SOURCE,
+            "connector_version": CONNECTOR_VERSION,
+            "repositories": self.repositories,
+            "repositories_found": self.repositories_found,
+            "repositories_returned": self.repositories_returned,
+            "next_page": self.next_page,
+            "errors": self.errors,
+            "api_base_url": self.api_base_url,
+        }
+
+
+def discover_github_repositories(
+    *,
+    token: str,
+    limit: int = 100,
+    page: int = 1,
+    api_base_url: str = DEFAULT_API_BASE_URL,
+    request_json: RequestJSON | None = None,
+) -> GitHubRepositoryDiscovery:
+    cleaned_token = str(token or "").strip()
+    if not cleaned_token:
+        raise ValueError("GitHub token is required")
+    capped_limit = max(1, min(int(limit or 100), 100))
+    current_page = max(1, int(page or 1))
+    requester = request_json or _request_json
+    base_url = str(api_base_url or DEFAULT_API_BASE_URL).rstrip("/")
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {cleaned_token}",
+        "User-Agent": "Cortex-local-connector",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    query = {
+        "affiliation": "owner,collaborator,organization_member",
+        "per_page": str(capped_limit),
+        "page": str(current_page),
+        "sort": "updated",
+        "visibility": "all",
+    }
+    errors: list[dict[str, Any]] = []
+    try:
+        payload = requester(f"{base_url}/user/repos?{urlencode(query)}", headers)
+    except Exception as exc:
+        return GitHubRepositoryDiscovery(
+            repositories=[],
+            repositories_found=0,
+            repositories_returned=0,
+            next_page=None,
+            errors=[connector_error_payload(exc, [cleaned_token, headers.get("Authorization")])],
+            api_base_url=base_url,
+        )
+    if not isinstance(payload, list):
+        errors.append({"error": "GitHub repositories response was not a list"})
+        repo_payloads: list[Any] = []
+    else:
+        repo_payloads = payload
+
+    repositories: list[dict[str, Any]] = []
+    for item in repo_payloads:
+        if not isinstance(item, dict):
+            continue
+        full_name = _normalize_repository(item.get("full_name") or item.get("name") or "")
+        if not full_name:
+            continue
+        owner = item.get("owner") if isinstance(item.get("owner"), dict) else {}
+        repositories.append(
+            {
+                "full_name": full_name,
+                "name": str(item.get("name") or full_name.split("/")[-1])[:160],
+                "owner": str(owner.get("login") or full_name.split("/")[0])[:160],
+                "label": full_name,
+                "sync_value": full_name,
+                "html_url": str(item.get("html_url") or f"https://github.com/{full_name}")[:500],
+                "private": bool(item.get("private")),
+                "archived": bool(item.get("archived")),
+                "fork": bool(item.get("fork")),
+                "pushed_at": str(item.get("pushed_at") or "")[:80] or None,
+                "updated_at": str(item.get("updated_at") or "")[:80] or None,
+                "permissions": _repository_permissions(item.get("permissions")),
+            }
+        )
+    next_page = current_page + 1 if len(repo_payloads) >= capped_limit else None
+    return GitHubRepositoryDiscovery(
+        repositories=repositories,
+        repositories_found=len(repo_payloads),
+        repositories_returned=len(repositories),
+        next_page=next_page,
+        errors=errors,
+        api_base_url=base_url,
+    )
+
+
 def fetch_github_records(
     *,
     token: str,
@@ -431,6 +534,16 @@ def _normalize_repository(value: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", owner) or not re.fullmatch(r"[A-Za-z0-9_.-]+", repo):
         return ""
     return f"{owner}/{repo}"
+
+
+def _repository_permissions(value: Any) -> dict[str, bool]:
+    if not isinstance(value, dict):
+        return {}
+    permissions: dict[str, bool] = {}
+    for key in ("admin", "maintain", "push", "triage", "pull"):
+        if key in value:
+            permissions[key] = bool(value.get(key))
+    return permissions
 
 
 def _record_from_issue(

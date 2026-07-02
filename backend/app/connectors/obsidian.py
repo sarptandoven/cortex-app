@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 import os
 from pathlib import Path
 import re
@@ -10,7 +11,7 @@ from typing import Any
 
 OBSIDIAN_SOURCE = "obsidian"
 CONNECTOR_VERSION = "2026-06-30"
-ALLOWED_EXTENSIONS = {"md", "markdown", "txt"}
+ALLOWED_EXTENSIONS = {"canvas", "md", "markdown", "txt"}
 SKIPPED_DIRECTORIES = {".git", ".obsidian", ".trash", "node_modules"}
 MAX_NOTE_BYTES = 200_000
 MAX_RECORD_CHARS = 160_000
@@ -206,7 +207,12 @@ def scan_obsidian_vault(vault_path: str | Path, *, limit: int = 200, cursor_valu
             errors.append({"path": _safe_relative(root, path), "error": str(exc)})
             skipped += 1
             continue
-        note_records = _records_for_note(root, path, raw, modified=modified, size=size)
+        try:
+            note_records = _records_for_note(root, path, raw, modified=modified, size=size)
+        except ValueError as exc:
+            errors.append({"path": _safe_relative(root, path), "error": str(exc)})
+            skipped += 1
+            continue
         if not note_records:
             skipped += 1
             continue
@@ -289,6 +295,9 @@ def _cursor_offset(cursor_value: str | None, manifest_hash: str, total_records: 
 
 
 def _records_for_note(root: Path, path: Path, raw: str, *, modified: float, size: int) -> list[ObsidianVaultRecord]:
+    if path.suffix.lower() == ".canvas":
+        return _records_for_canvas(root, path, raw, modified=modified, size=size)
+
     cleaned, frontmatter, tags, wikilinks, callouts, removed_blocks = _parse_obsidian_markdown(raw)
     if not cleaned:
         return []
@@ -401,6 +410,164 @@ def _records_for_note(root: Path, path: Path, raw: str, *, modified: float, size
             )
         ]
     return records
+
+
+def _records_for_canvas(root: Path, path: Path, raw: str, *, modified: float, size: int) -> list[ObsidianVaultRecord]:
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid Obsidian Canvas JSON: {exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid Obsidian Canvas JSON: root must be an object")
+
+    nodes_payload = payload.get("nodes")
+    edges_payload = payload.get("edges")
+    nodes = nodes_payload if isinstance(nodes_payload, list) else []
+    edges = edges_payload if isinstance(edges_payload, list) else []
+    if not nodes:
+        return []
+
+    relative_id = _relative_external_id(root, path)
+    canvas_title = _canvas_title(path)
+    captured_at = _iso_from_timestamp(modified)
+    base_source_url = path.resolve().as_uri()[:500]
+    base_metadata = {
+        "connector": "obsidian",
+        "connector_version": CONNECTOR_VERSION,
+        "vault_name": root.name,
+        "vault_id": _stable_scan_id(str(root)),
+        "relative_path": relative_id,
+        "extension": "canvas",
+        "size_bytes": size,
+        "record_scope": "canvas_node",
+        "canvas_edge_count": len(edges),
+    }
+
+    records: list[ObsidianVaultRecord] = []
+    node_counts: dict[str, int] = {}
+    for index, node in enumerate(nodes):
+        if not isinstance(node, dict):
+            continue
+        node_type = str(node.get("type") or "unknown").strip().lower() or "unknown"
+        node_id = str(node.get("id") or "").strip() or f"node-{index + 1}"
+        ordinal = node_counts.get(node_id, 0) + 1
+        node_counts[node_id] = ordinal
+        content, node_metadata = _canvas_node_content(node, node_type)
+        if not content or not _has_meaningful_body(content):
+            continue
+        safe_node = _safe_anchor(node_id)
+        source_url = f"{base_source_url}#node={safe_node}"[:500]
+        records.append(
+            ObsidianVaultRecord(
+                content=content[:MAX_RECORD_CHARS],
+                title=f"{canvas_title} / {node_metadata.get('label') or node_type.title()}"[:200],
+                external_id=stable_canvas_node_external_id(root, path, node_id, ordinal),
+                source_url=source_url,
+                captured_at=captured_at,
+                metadata={
+                    **base_metadata,
+                    "canvas_node_id": node_id,
+                    "canvas_node_type": node_type,
+                    "canvas_node_index": index + 1,
+                    "canvas_node_edges": _canvas_node_edges(edges, node_id),
+                    **node_metadata,
+                },
+            )
+        )
+    return records
+
+
+def stable_canvas_node_external_id(root: str | Path, path: str | Path, node_id: str, node_ordinal: int = 1) -> str:
+    canvas_id = stable_external_id(root, path)
+    safe_node = _safe_anchor(node_id)[:80] or "node"
+    suffix = f"#canvas={safe_node}"
+    if node_ordinal > 1:
+        suffix = f"{suffix}~{node_ordinal}"
+    external_id = f"{canvas_id}{suffix}"
+    if len(external_id) <= 240:
+        return external_id
+    digest = _stable_scan_id(external_id).removeprefix("obs_")[:16]
+    return f"{canvas_id[: max(1, 240 - len(suffix) - 17)]}#{digest}{suffix}"[:240]
+
+
+def _canvas_node_content(node: dict[str, Any], node_type: str) -> tuple[str, dict[str, Any]]:
+    metadata: dict[str, Any] = {}
+    if node_type == "text":
+        text = str(node.get("text") or "").strip()
+        cleaned, _frontmatter, tags, wikilinks, callouts, removed_blocks = _parse_obsidian_markdown(text)
+        metadata.update(
+            {
+                "tags": sorted(tags),
+                "wikilinks": wikilinks,
+                "callouts": callouts,
+                "removed_blocks": removed_blocks,
+                "label": _first_content_line(cleaned)[:80] if cleaned else "Text",
+            }
+        )
+        return cleaned, metadata
+    if node_type == "file":
+        file_target = str(node.get("file") or "").strip()
+        if not file_target:
+            return "", metadata
+        metadata.update({"file": file_target, "label": Path(file_target).name or "File"})
+        return f"Canvas file reference: {file_target}", metadata
+    if node_type == "link":
+        url = str(node.get("url") or "").strip()
+        if not url:
+            return "", metadata
+        metadata.update({"url": url[:500], "label": "Link"})
+        return f"Canvas link reference: {url}", metadata
+    if node_type == "group":
+        label = str(node.get("label") or "").strip()
+        if not label:
+            return "", metadata
+        metadata.update({"label": label})
+        return f"Canvas group: {label}", metadata
+
+    label = str(node.get("label") or node.get("text") or "").strip()
+    if not label:
+        return "", metadata
+    metadata.update({"label": label[:120]})
+    return label, metadata
+
+
+def _canvas_node_edges(edges: list[Any], node_id: str) -> list[dict[str, str]]:
+    related: list[dict[str, str]] = []
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        from_node = str(edge.get("fromNode") or "").strip()
+        to_node = str(edge.get("toNode") or "").strip()
+        if node_id not in {from_node, to_node}:
+            continue
+        related.append(
+            {
+                "id": str(edge.get("id") or "").strip(),
+                "from": from_node,
+                "to": to_node,
+                "label": str(edge.get("label") or "").strip(),
+            }
+        )
+        if len(related) >= 12:
+            break
+    return related
+
+
+def _canvas_title(path: Path) -> str:
+    return path.stem.strip() or "Obsidian canvas"
+
+
+def _first_content_line(text: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip("# ").strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+def _safe_anchor(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "-", str(value or "").strip()).strip("-")
+    return safe or "node"
 
 
 def _markdown_sections(raw: str) -> list[_MarkdownSection]:

@@ -591,6 +591,55 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(self.store.list_tokens(self.user_id, audience="api"), [])
         self.assertEqual(self.store.list_tokens(self.user_id, audience="api", include_revoked=True)[0]["revoked_at"], revoked["revoked_at"])
 
+    def test_source_account_metadata_does_not_persist_generic_secrets(self) -> None:
+        account = self.store.upsert_source_account(
+            self.user_id,
+            source="github",
+            account_label="Secret metadata account",
+            account_identifier="doppl-tech/cortex-app",
+            connection_type="mcp",
+            status="connected",
+            auth_state="healthy",
+            metadata={
+                "workspace": "doppl",
+                "token_configured": True,
+                "credential_ref": "source_credential:external-safe-ref",
+                "api_token": "ghp_" + ("a" * 36),
+                "refresh_token": "refresh_secret_123456789",
+                "nested": {
+                    "client_secret": "client_secret_123456789",
+                    "notes": "access_token=secretvalue123456789 and keep this operational note",
+                },
+                "items": [
+                    {"password": "password_secret_123456789"},
+                    {"label": "safe label"},
+                ],
+            },
+        )
+
+        refreshed = self.store.list_source_accounts(self.user_id)[0]
+        metadata = refreshed["metadata"]
+        self.assertEqual(metadata["workspace"], "doppl")
+        self.assertTrue(metadata["token_configured"])
+        self.assertEqual(metadata["credential_ref"], "source_credential:external-safe-ref")
+        self.assertNotIn("api_token", metadata)
+        self.assertNotIn("refresh_token", metadata)
+        self.assertNotIn("client_secret", metadata["nested"])
+        self.assertNotIn("password", metadata["items"][0])
+        serialized = json.dumps(refreshed, sort_keys=True)
+        self.assertNotIn("ghp_" + ("a" * 36), serialized)
+        self.assertNotIn("refresh_secret_123456789", serialized)
+        self.assertNotIn("client_secret_123456789", serialized)
+        self.assertNotIn("password_secret_123456789", serialized)
+        self.assertIn("access_token=[REDACTED_SECRET]", metadata["nested"]["notes"])
+
+        vault_path = self.store.vault.root / "source_accounts" / self.user_id / "github" / f"{account['id']}.json"
+        vault_record = json.loads(vault_path.read_text(encoding="utf-8"))
+        vault_serialized = json.dumps(vault_record, sort_keys=True)
+        self.assertNotIn("ghp_" + ("a" * 36), vault_serialized)
+        self.assertNotIn("refresh_secret_123456789", vault_serialized)
+        self.assertNotIn("client_secret_123456789", vault_serialized)
+
     def test_source_accounts_and_sync_cursors_track_connector_health(self) -> None:
         catalog = {item["id"]: item for item in self.store.source_connector_catalog()}
         self.assertIn("gmail", catalog)
@@ -1295,6 +1344,192 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(second_answer["citations"][0]["source_account_id"], second["id"])
 
+    def test_source_account_scoped_retrieval_survives_noisy_same_service_accounts(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False})
+        accounts = []
+        for index in range(12):
+            account = self.store.upsert_source_account(
+                self.user_id,
+                source="slack",
+                account_label=f"Noise Workspace {index}",
+                account_identifier=f"C-noise-{index}",
+                connection_type="api-token",
+                status="connected",
+                auth_state="authorized",
+                policy={"review_required": False},
+                metadata={"channel": f"noise-{index}", "channel_id": f"CNOISE{index}"},
+            )
+            accounts.append(account)
+            self.store.sync_source_account_records(
+                self.user_id,
+                account["id"],
+                records=[
+                    {
+                        "content": f"I decided scopesaturation retrieval should use Noise Workspace {index} as the launch workspace.",
+                        "title": f"Noise workspace {index}",
+                        "external_id": f"slack:noise-{index}:1782739{index:03d}",
+                        "source_url": f"https://noise{index}.slack.com/archives/CNOISE{index}/p1782739{index:03d}",
+                        "captured_at": f"2026-06-30T10:{index:02d}:00Z",
+                        "metadata": {"connector": "slack", "channel": f"noise-{index}", "channel_id": f"CNOISE{index}"},
+                    }
+                ],
+                cursor_name="messages",
+                processing="sync",
+            )
+
+        target = self.store.upsert_source_account(
+            self.user_id,
+            source="slack",
+            account_label="Target Workspace",
+            account_identifier="C-target",
+            connection_type="api-token",
+            status="connected",
+            auth_state="authorized",
+            policy={"review_required": False},
+            metadata={"channel": "target", "channel_id": "CTARGET"},
+        )
+        self.store.sync_source_account_records(
+            self.user_id,
+            target["id"],
+            records=[
+                {
+                    "content": "I decided scopesaturation retrieval should use Target Workspace as the launch workspace.",
+                    "title": "Target workspace",
+                    "external_id": "slack:target:1782739999",
+                    "source_url": "https://target.slack.com/archives/CTARGET/p1782739999",
+                    "captured_at": "2026-06-30T10:59:00Z",
+                    "metadata": {"connector": "slack", "channel": "target", "channel_id": "CTARGET"},
+                }
+            ],
+            cursor_name="messages",
+            processing="sync",
+        )
+
+        scoped_hits = self.store.search(
+            self.user_id,
+            "scopesaturation retrieval launch workspace",
+            source_account_id=target["id"],
+            limit=10,
+        )
+        self.assertTrue(scoped_hits)
+        self.assertTrue(
+            all(hit["provenance"]["source_account_id"] == target["id"] for hit in scoped_hits),
+            [hit["provenance"].get("source_account_id") for hit in scoped_hits],
+        )
+        scoped_text = json.dumps(scoped_hits)
+        self.assertIn("Target Workspace", scoped_text)
+        self.assertNotIn("Noise Workspace", scoped_text)
+
+        answer = self.store.answer_query(
+            self.user_id,
+            "What did I decide about scopesaturation retrieval launch workspace?",
+            source_account_id=target["id"],
+            limit=5,
+        )
+        self.assertEqual(answer["status"], "cited")
+        self.assertTrue(answer["citations"])
+        self.assertTrue(
+            all(citation["source_account_id"] == target["id"] for citation in answer["citations"]),
+            [citation.get("source_account_id") for citation in answer["citations"]],
+        )
+        self.assertIn("Target Workspace", answer["answer"])
+        self.assertNotIn("Noise Workspace", answer["answer"])
+
+    def test_source_account_scoped_ask_ignores_mixed_service_conflicts(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False})
+
+        def connect(source: str, label: str, identifier: str) -> dict[str, object]:
+            return self.store.upsert_source_account(
+                self.user_id,
+                source=source,
+                account_label=label,
+                account_identifier=identifier,
+                connection_type="api-token",
+                status="connected",
+                auth_state="authorized",
+                policy={"review_required": False},
+                metadata={"workspace": label},
+            )
+
+        gmail = connect("gmail", "Gmail Founder Mail", "founder@example.com")
+        slack = connect("slack", "Slack GTM Channel", "C-GTM")
+        drive = connect("google-drive", "Drive Planning Docs", "drive-team")
+        fixtures = [
+            (
+                gmail,
+                "gmail",
+                "gmail-msg-lyra",
+                "https://mail.google.com/mail/u/0/#inbox/lyra",
+                "I decided Project Scopeplex launch channel is email and the owner is Alice from the founder mailbox.",
+            ),
+            (
+                slack,
+                "slack",
+                "slack-msg-lyra",
+                "https://doppl.slack.com/archives/C-GTM/p1782739000000100",
+                "I decided Project Scopeplex launch channel is Slack and the owner is Marco from the GTM channel.",
+            ),
+            (
+                drive,
+                "google-drive",
+                "drive-doc-lyra",
+                "https://docs.google.com/document/d/scopeplex",
+                "I decided Project Scopeplex launch channel is the planning doc and the owner is Priya from Drive.",
+            ),
+        ]
+        for account, source, external_id, source_url, content in fixtures:
+            synced = self.store.sync_source_account_records(
+                self.user_id,
+                account["id"],
+                records=[
+                    {
+                        "content": content,
+                        "title": f"Project Scopeplex {source}",
+                        "external_id": external_id,
+                        "source_url": source_url,
+                        "captured_at": "2026-06-30T13:00:00Z",
+                        "metadata": {"project": "Scopeplex", "source_kind": source},
+                    }
+                ],
+                cursor_name="records",
+                processing="sync",
+            )
+            self.assertEqual(synced["saved"], 1)
+
+        gmail_answer = self.store.answer_query(
+            self.user_id,
+            "What is Project Scopeplex launch channel and owner?",
+            source_account_id=gmail["id"],
+            limit=5,
+        )
+        self.assertEqual(gmail_answer["status"], "cited")
+        self.assertEqual(gmail_answer["conflicts"], [])
+        self.assertTrue(gmail_answer["citations"])
+        self.assertTrue(
+            all(citation["source_account_id"] == gmail["id"] for citation in gmail_answer["citations"]),
+            [citation.get("source_account_id") for citation in gmail_answer["citations"]],
+        )
+        self.assertIn("email", gmail_answer["answer"].lower())
+        self.assertIn("alice", gmail_answer["answer"].lower())
+        self.assertNotIn("Marco", gmail_answer["answer"])
+        self.assertNotIn("Priya", gmail_answer["answer"])
+
+        scoped_search = self.store.search(
+            self.user_id,
+            "Project Scopeplex launch channel owner",
+            source_account_id=slack["id"],
+            limit=10,
+        )
+        self.assertTrue(scoped_search)
+        self.assertTrue(
+            all(hit["provenance"]["source_account_id"] == slack["id"] for hit in scoped_search),
+            [hit["provenance"].get("source_account_id") for hit in scoped_search],
+        )
+        scoped_search_text = json.dumps(scoped_search)
+        self.assertIn("Marco", scoped_search_text)
+        self.assertNotIn("Alice", scoped_search_text)
+        self.assertNotIn("Priya", scoped_search_text)
+
     def test_disconnect_retains_local_memory_credentials_and_citations_but_stops_sync(self) -> None:
         self.store.update_settings(self.user_id, {"review_new_captures": False})
         account_id = "sacct_disconnect_github"
@@ -1574,6 +1809,456 @@ class CortexStorageLifecycleTests(unittest.TestCase):
             {(first["id"], "archived"), (second["id"], "approved")},
         )
 
+    def test_empty_complete_snapshot_archives_account_records_without_deleting_history(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False})
+        account = self.store.upsert_source_account(
+            self.user_id,
+            source="slack",
+            account_label="Slack Snapshot",
+            account_identifier="T123",
+            connection_type="mcp",
+            status="connected",
+            auth_state="authorized",
+            policy={"review_required": False},
+        )
+        initial = self.store.sync_source_account_records(
+            self.user_id,
+            account["id"],
+            records=[
+                {
+                    "content": "I decided empty complete snapshots should archive stale Slack source records.",
+                    "title": "Empty snapshot stale record",
+                    "external_id": "slack-stale-1",
+                    "captured_at": "2026-06-30T12:10:00Z",
+                }
+            ],
+            cursor_name="messages",
+            processing="sync",
+        )
+        self.assertEqual(initial["saved"], 1)
+        self.assertTrue(self.store.search(self.user_id, "empty complete snapshots", source_account_id=account["id"]))
+
+        empty_snapshot = self.store.sync_source_account_records(
+            self.user_id,
+            account["id"],
+            records=[],
+            cursor_name="messages",
+            cursor_value="cursor-empty",
+            processing="sync",
+            archive_missing=True,
+            complete_snapshot=True,
+        )
+
+        self.assertEqual(empty_snapshot["status"], "empty")
+        self.assertEqual(empty_snapshot["received"], 0)
+        self.assertEqual(empty_snapshot["archived_missing"], 1)
+        self.assertEqual(empty_snapshot["cursor"]["cursor_value"], "cursor-empty")
+        self.assertEqual(empty_snapshot["cursor"]["state"]["last_batch_received"], 0)
+        self.assertEqual(empty_snapshot["cursor"]["state"]["last_batch_archived_missing"], 1)
+        self.assertEqual(self.store.search(self.user_id, "empty complete snapshots", source_account_id=account["id"]), [])
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT review_status
+                FROM captures
+                WHERE user_id = ?
+                  AND source_account_id = ?
+                  AND external_id = 'slack-stale-1'
+                """,
+                (self.user_id, account["id"]),
+            ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["review_status"], "archived")
+
+    def test_native_connector_complete_snapshot_archives_missing_source_records(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False})
+        responses = [
+            [
+                {
+                    "number": 301,
+                    "title": "Snapshot keep issue",
+                    "state": "open",
+                    "html_url": "https://github.com/doppl-tech/cortex-app/issues/301",
+                    "created_at": "2026-06-30T09:00:00Z",
+                    "updated_at": "2026-06-30T10:00:00Z",
+                    "user": {"login": "sarp"},
+                    "body": "I decided native connector complete snapshots should keep current records.",
+                },
+                {
+                    "number": 302,
+                    "title": "Snapshot stale issue",
+                    "state": "closed",
+                    "html_url": "https://github.com/doppl-tech/cortex-app/issues/302",
+                    "created_at": "2026-06-30T09:10:00Z",
+                    "updated_at": "2026-06-30T10:05:00Z",
+                    "user": {"login": "sarp"},
+                    "body": "I decided native connector complete snapshots should archive stale records.",
+                },
+            ],
+            [
+                {
+                    "number": 301,
+                    "title": "Snapshot keep issue updated",
+                    "state": "open",
+                    "html_url": "https://github.com/doppl-tech/cortex-app/issues/301",
+                    "created_at": "2026-06-30T09:00:00Z",
+                    "updated_at": "2026-06-30T11:00:00Z",
+                    "user": {"login": "sarp"},
+                    "body": "I decided native connector complete snapshots should keep only current records.",
+                }
+            ],
+        ]
+        calls = 0
+
+        def fake_request(url: str, headers: dict[str, str]):
+            nonlocal calls
+            self.assertEqual(headers["Authorization"], "Bearer ghp_snapshot")
+            self.assertIn("/repos/doppl-tech/cortex-app/issues", url)
+            payload = responses[calls]
+            calls += 1
+            return payload
+
+        first = self.store.sync_github_account(
+            self.user_id,
+            token="ghp_snapshot",
+            repositories=["doppl-tech/cortex-app"],
+            processing="sync",
+            include_comments=False,
+            request_json=fake_request,
+        )
+        self.assertEqual(first["saved"], 2)
+        self.assertEqual(first["archived_missing"], 0)
+        account_id = first["source_account_id"]
+        for capture_id in first["capture_ids"]:
+            self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+        with connect(self.db_path) as conn:
+            initial_rows = conn.execute(
+                """
+                SELECT external_id, review_status
+                FROM captures
+                WHERE user_id = ? AND source_account_id = ?
+                ORDER BY external_id
+                """,
+                (self.user_id, account_id),
+            ).fetchall()
+        self.assertEqual(
+            {(row["external_id"], row["review_status"]) for row in initial_rows},
+            {
+                ("github:doppl-tech/cortex-app:issue:301", "approved"),
+                ("github:doppl-tech/cortex-app:issue:302", "approved"),
+            },
+        )
+
+        second = self.store.sync_github_account(
+            self.user_id,
+            token="ghp_snapshot",
+            repositories=["doppl-tech/cortex-app"],
+            source_account_id=account_id,
+            processing="sync",
+            include_comments=False,
+            complete_snapshot=True,
+            request_json=fake_request,
+        )
+
+        self.assertEqual(calls, 2)
+        self.assertEqual(second["saved"], 1)
+        self.assertEqual(second["archived_missing"], 1)
+        self.assertEqual(second["archive_missing_decision"]["reason"], "complete_snapshot")
+        self.assertTrue(second["archive_missing_decision"]["allowed"])
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT external_id, review_status
+                FROM captures
+                WHERE user_id = ? AND source_account_id = ?
+                ORDER BY external_id
+                """,
+                (self.user_id, account_id),
+            ).fetchall()
+            memory_rows = conn.execute(
+                """
+                SELECT c.external_id, m.status
+                FROM memories m
+                JOIN captures c ON c.id = m.capture_id AND c.user_id = m.user_id
+                WHERE m.user_id = ? AND c.source_account_id = ?
+                ORDER BY c.external_id, m.status
+                """,
+                (self.user_id, account_id),
+            ).fetchall()
+        status_by_external_id = {row["external_id"]: row["review_status"] for row in rows}
+        self.assertEqual(status_by_external_id["github:doppl-tech/cortex-app:issue:301"], "pending")
+        self.assertEqual(status_by_external_id["github:doppl-tech/cortex-app:issue:302"], "archived")
+        self.assertNotIn(("github:doppl-tech/cortex-app:issue:302", "active"), {(row["external_id"], row["status"]) for row in memory_rows})
+
+    def test_native_connector_complete_snapshot_with_errors_does_not_archive_missing_records(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False})
+
+        def initial_request(url: str, headers: dict[str, str]):
+            self.assertEqual(headers["Authorization"], "Bearer ghp_partial_snapshot")
+            self.assertIn("/repos/doppl-tech/cortex-app/issues", url)
+            return [
+                {
+                    "number": 401,
+                    "title": "Partial snapshot keep issue",
+                    "state": "open",
+                    "html_url": "https://github.com/doppl-tech/cortex-app/issues/401",
+                    "created_at": "2026-06-30T09:00:00Z",
+                    "updated_at": "2026-06-30T10:00:00Z",
+                    "user": {"login": "sarp"},
+                    "body": "I decided partial connector snapshots should keep current records.",
+                },
+                {
+                    "number": 402,
+                    "title": "Partial snapshot stale issue",
+                    "state": "open",
+                    "html_url": "https://github.com/doppl-tech/cortex-app/issues/402",
+                    "created_at": "2026-06-30T09:05:00Z",
+                    "updated_at": "2026-06-30T10:05:00Z",
+                    "user": {"login": "sarp"},
+                    "body": "I decided partial connector snapshots must not archive this approved record.",
+                },
+            ]
+
+        first = self.store.sync_github_account(
+            self.user_id,
+            token="ghp_partial_snapshot",
+            repositories=["doppl-tech/cortex-app"],
+            processing="sync",
+            include_comments=False,
+            request_json=initial_request,
+        )
+        self.assertEqual(first["saved"], 2)
+        account_id = first["source_account_id"]
+        for capture_id in first["capture_ids"]:
+            self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+
+        def partial_request(url: str, headers: dict[str, str]):
+            self.assertEqual(headers["Authorization"], "Bearer ghp_partial_snapshot")
+            if "/repos/doppl-tech/cortex-app/issues" in url:
+                return [
+                    {
+                        "number": 401,
+                        "title": "Partial snapshot keep issue updated",
+                        "state": "open",
+                        "html_url": "https://github.com/doppl-tech/cortex-app/issues/401",
+                        "created_at": "2026-06-30T09:00:00Z",
+                        "updated_at": "2026-06-30T11:00:00Z",
+                        "user": {"login": "sarp"},
+                        "body": "I decided partial connector snapshots can update returned records.",
+                    }
+                ]
+            if "/repos/doppl-tech/private-app/issues" in url:
+                raise RuntimeError("secondary repository unavailable")
+            raise AssertionError(f"unexpected GitHub URL: {url}")
+
+        second = self.store.sync_github_account(
+            self.user_id,
+            token="ghp_partial_snapshot",
+            repositories=["doppl-tech/cortex-app", "doppl-tech/private-app"],
+            source_account_id=account_id,
+            processing="sync",
+            include_comments=False,
+            complete_snapshot=True,
+            request_json=partial_request,
+        )
+
+        self.assertEqual(second["status"], "partial")
+        self.assertEqual(second["saved"], 1)
+        self.assertEqual(second["failed"], 1)
+        self.assertEqual(second["archived_missing"], 0)
+        self.assertTrue(second["archive_missing_suppressed"])
+        self.assertEqual(second["archive_missing_decision"]["reason"], "connector_errors")
+        self.assertEqual(second["archive_missing_decision"]["error_count"], 1)
+        self.assertTrue(second["errors"])
+        self.assertTrue(self.store.search(self.user_id, "partial connector snapshots must not archive", source_account_id=account_id))
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT external_id, review_status
+                FROM captures
+                WHERE user_id = ? AND source_account_id = ?
+                ORDER BY external_id
+                """,
+                (self.user_id, account_id),
+            ).fetchall()
+        status_by_external_id = {row["external_id"]: row["review_status"] for row in rows}
+        self.assertEqual(status_by_external_id["github:doppl-tech/cortex-app:issue:402"], "approved")
+
+    def test_native_connector_complete_snapshot_at_record_cap_does_not_archive_missing_records(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False})
+
+        def initial_request(url: str, headers: dict[str, str]):
+            self.assertEqual(headers["Authorization"], "Bearer ghp_capped_snapshot")
+            self.assertIn("/repos/doppl-tech/cortex-app/issues", url)
+            return [
+                {
+                    "number": 501,
+                    "title": "Capped snapshot keep issue",
+                    "state": "open",
+                    "html_url": "https://github.com/doppl-tech/cortex-app/issues/501",
+                    "created_at": "2026-06-30T09:00:00Z",
+                    "updated_at": "2026-06-30T10:00:00Z",
+                    "user": {"login": "sarp"},
+                    "body": "I decided capped connector snapshots should update returned records.",
+                },
+                {
+                    "number": 502,
+                    "title": "Capped snapshot hidden issue",
+                    "state": "open",
+                    "html_url": "https://github.com/doppl-tech/cortex-app/issues/502",
+                    "created_at": "2026-06-30T09:05:00Z",
+                    "updated_at": "2026-06-30T10:05:00Z",
+                    "user": {"login": "sarp"},
+                    "body": "I decided capped connector snapshots must keep this approved hidden record.",
+                },
+            ]
+
+        first = self.store.sync_github_account(
+            self.user_id,
+            token="ghp_capped_snapshot",
+            repositories=["doppl-tech/cortex-app"],
+            processing="sync",
+            include_comments=False,
+            request_json=initial_request,
+        )
+        self.assertEqual(first["saved"], 2)
+        account_id = first["source_account_id"]
+        for capture_id in first["capture_ids"]:
+            self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+
+        def capped_request(url: str, headers: dict[str, str]):
+            self.assertEqual(headers["Authorization"], "Bearer ghp_capped_snapshot")
+            self.assertIn("/repos/doppl-tech/cortex-app/issues", url)
+            self.assertIn("per_page=1", url)
+            return [
+                {
+                    "number": 501,
+                    "title": "Capped snapshot keep issue updated",
+                    "state": "open",
+                    "html_url": "https://github.com/doppl-tech/cortex-app/issues/501",
+                    "created_at": "2026-06-30T09:00:00Z",
+                    "updated_at": "2026-06-30T11:00:00Z",
+                    "user": {"login": "sarp"},
+                    "body": "I decided capped connector snapshots can update returned records only.",
+                }
+            ]
+
+        second = self.store.sync_github_account(
+            self.user_id,
+            token="ghp_capped_snapshot",
+            repositories=["doppl-tech/cortex-app"],
+            source_account_id=account_id,
+            processing="sync",
+            include_comments=False,
+            max_records=1,
+            complete_snapshot=True,
+            request_json=capped_request,
+        )
+
+        self.assertEqual(second["status"], "complete")
+        self.assertEqual(second["saved"], 1)
+        self.assertEqual(second["failed"], 0)
+        self.assertEqual(second["archived_missing"], 0)
+        self.assertTrue(second["archive_missing_suppressed"])
+        self.assertEqual(second["archive_missing_decision"]["reason"], "record_cap_reached")
+        self.assertEqual(second["archive_missing_decision"]["records_returned"], 1)
+        self.assertEqual(second["archive_missing_decision"]["max_records"], 1)
+        self.assertTrue(self.store.search(self.user_id, "capped connector snapshots must keep", source_account_id=account_id))
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT external_id, review_status
+                FROM captures
+                WHERE user_id = ? AND source_account_id = ?
+                ORDER BY external_id
+                """,
+                (self.user_id, account_id),
+            ).fetchall()
+        status_by_external_id = {row["external_id"]: row["review_status"] for row in rows}
+        self.assertEqual(status_by_external_id["github:doppl-tech/cortex-app:issue:502"], "approved")
+
+    def test_native_connector_empty_complete_snapshot_archives_missing_source_records(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False})
+        responses = [
+            [
+                {
+                    "number": 601,
+                    "title": "Empty direct snapshot stale issue one",
+                    "state": "open",
+                    "html_url": "https://github.com/doppl-tech/cortex-app/issues/601",
+                    "created_at": "2026-06-30T09:00:00Z",
+                    "updated_at": "2026-06-30T10:00:00Z",
+                    "user": {"login": "sarp"},
+                    "body": "I decided empty direct connector snapshots should archive stale record one.",
+                },
+                {
+                    "number": 602,
+                    "title": "Empty direct snapshot stale issue two",
+                    "state": "open",
+                    "html_url": "https://github.com/doppl-tech/cortex-app/issues/602",
+                    "created_at": "2026-06-30T09:05:00Z",
+                    "updated_at": "2026-06-30T10:05:00Z",
+                    "user": {"login": "sarp"},
+                    "body": "I decided empty direct connector snapshots should archive stale record two.",
+                },
+            ],
+            [],
+        ]
+        calls = 0
+
+        def fake_request(url: str, headers: dict[str, str]):
+            nonlocal calls
+            self.assertEqual(headers["Authorization"], "Bearer ghp_empty_snapshot")
+            self.assertIn("/repos/doppl-tech/cortex-app/issues", url)
+            payload = responses[calls]
+            calls += 1
+            return payload
+
+        first = self.store.sync_github_account(
+            self.user_id,
+            token="ghp_empty_snapshot",
+            repositories=["doppl-tech/cortex-app"],
+            processing="sync",
+            include_comments=False,
+            request_json=fake_request,
+        )
+        self.assertEqual(first["saved"], 2)
+        account_id = first["source_account_id"]
+        for capture_id in first["capture_ids"]:
+            self.assertTrue(self.store.approve_capture(self.user_id, capture_id))
+        self.assertTrue(self.store.search(self.user_id, "empty direct connector snapshots", source_account_id=account_id))
+
+        empty_snapshot = self.store.sync_github_account(
+            self.user_id,
+            token="ghp_empty_snapshot",
+            repositories=["doppl-tech/cortex-app"],
+            source_account_id=account_id,
+            processing="sync",
+            include_comments=False,
+            complete_snapshot=True,
+            request_json=fake_request,
+        )
+
+        self.assertEqual(calls, 2)
+        self.assertEqual(empty_snapshot["status"], "empty")
+        self.assertEqual(empty_snapshot["received"], 0)
+        self.assertEqual(empty_snapshot["archived_missing"], 2)
+        self.assertTrue(empty_snapshot["archive_missing_decision"]["allowed"])
+        self.assertEqual(empty_snapshot["archive_missing_decision"]["reason"], "complete_snapshot")
+        self.assertEqual(empty_snapshot["cursor"]["state"]["last_batch_archived_missing"], 2)
+        self.assertEqual(self.store.search(self.user_id, "empty direct connector snapshots", source_account_id=account_id), [])
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT external_id, review_status
+                FROM captures
+                WHERE user_id = ? AND source_account_id = ?
+                ORDER BY external_id
+                """,
+                (self.user_id, account_id),
+            ).fetchall()
+        self.assertEqual({row["review_status"] for row in rows}, {"archived"})
+
     def test_baseline_thirteen_catalog_services_do_not_make_fake_primary_ui_promises(self) -> None:
         catalog = {item["id"]: item for item in self.store.source_connector_catalog()}
         wired_source_paths = {
@@ -1623,6 +2308,29 @@ class CortexStorageLifecycleTests(unittest.TestCase):
         self.assertEqual(readiness["summary"]["baseline_10k_local_app_autosync"], len(wired_source_ids))
         self.assertEqual(readiness["summary"]["baseline_10k_manual_direct_sync"], 0)
         self.assertEqual(readiness["summary"]["baseline_10k_hosted_managed_sync"], 0)
+        self.assertTrue(readiness["summary"]["baseline_10k_ready_for_beta"])
+        self.assertEqual(readiness["summary"]["baseline_10k_service_ids"], sorted(wired_source_ids))
+        self.assertEqual(readiness["summary"]["baseline_10k_primary_ui_ids"], ["obsidian"])
+        self.assertEqual(
+            readiness["summary"]["baseline_10k_advanced_sync_ids"],
+            sorted(source_id for source_id in wired_source_ids if source_id != "obsidian"),
+        )
+        self.assertEqual(
+            readiness["summary"]["baseline_10k_token_sync_ids"],
+            sorted(
+                source_id
+                for source_id, primary_beta_path in wired_source_paths.items()
+                if primary_beta_path == "native-token-connector"
+            ),
+        )
+        self.assertEqual(
+            readiness["summary"]["baseline_10k_local_sync_ids"],
+            sorted(
+                source_id
+                for source_id, primary_beta_path in wired_source_paths.items()
+                if primary_beta_path == "native-local-connector"
+            ),
+        )
         readiness_by_source = {item["source"]: item for item in readiness["sources"]}
         for source_id, primary_beta_path in wired_source_paths.items():
             with self.subTest(readiness_source_id=source_id):
@@ -1701,6 +2409,22 @@ class CortexStorageLifecycleTests(unittest.TestCase):
                 secret = next(field for field in setup["credential_fields"] if field["name"] == secret_name)
                 self.assertTrue(secret["secret"])
                 self.assertEqual(secret["kind"], "secret")
+
+        for source_id, expected_endpoint in {
+            "gmail": "https://oauth2.googleapis.com/token",
+            "google-drive": "https://oauth2.googleapis.com/token",
+            "outlook": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        }.items():
+            with self.subTest(oauth_refresh_source=source_id):
+                fields = {field["name"]: field for field in catalog[source_id]["connection_setup"]["credential_fields"]}
+                self.assertTrue(fields["refresh_token"]["secret"])
+                self.assertFalse(fields["refresh_token"]["required"])
+                self.assertEqual(fields["access_token_expires_at"]["kind"], "timestamp")
+                self.assertTrue(fields["client_id"]["secret"])
+                self.assertTrue(fields["client_secret"]["secret"])
+                self.assertEqual(fields["token_endpoint"]["kind"], "url")
+                self.assertEqual(fields["token_endpoint"]["default"], expected_endpoint)
+                self.assertEqual(fields["scope"]["kind"], "text")
 
         google_docs_setup = catalog["google-docs"]["connection_setup"]
         self.assertFalse(google_docs_setup["available"])
@@ -1976,7 +2700,9 @@ class CortexStorageLifecycleTests(unittest.TestCase):
                 "account_label": "Demo Drive",
                 "account_identifier": "drive-demo",
                 "connection_type": "mcp",
-                "policy": {"sync": "docs_and_files"},
+                # Write-scoped MCP tokens register with the safe default policy
+                # (review_required=True); setting a custom policy requires the
+                # maintenance scope, so it is not provided here.
                 "metadata": {"workspace": "first-100"},
             },
             token_scopes=["write"],
@@ -3189,6 +3915,25 @@ END:VCALENDAR
             "remain blocked from AI context",
             self.store.context_pack(self.user_id, query="Private Gmail Alpha"),
         )
+        self.store.update_settings(self.user_id, {"allow_agent_exports": True})
+        self.assertNotIn("Private Gmail Alpha", json.dumps(self.store.export_json(self.user_id), sort_keys=True))
+        self.assertNotIn("Private Gmail Alpha", self.store.export_markdown(self.user_id))
+        mcp_export_json = call_tool(
+            self.store,
+            self.user_id,
+            "export_memory",
+            {"format": "json"},
+            token_scopes=["read", "export"],
+        )
+        mcp_export_markdown = call_tool(
+            self.store,
+            self.user_id,
+            "export_memory",
+            {"format": "markdown"},
+            token_scopes=["read", "export"],
+        )
+        self.assertNotIn("Private Gmail Alpha", json.dumps(mcp_export_json, sort_keys=True))
+        self.assertNotIn("Private Gmail Alpha", mcp_export_markdown)
 
         updated = self.store.upsert_source_account(
             self.user_id,
@@ -4694,6 +5439,86 @@ Never use [[Templates/Marketing]] boilerplate in memory.
         self.assertTrue(self.store.approve_capture(self.user_id, pending["capture_id"]))
         approved_graph_text = json.dumps(self.store.graph(self.user_id))
         self.assertIn("Pending Graph Alpha", approved_graph_text)
+
+    def test_automatic_source_account_memory_surfaces_without_manual_review(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": True, "allow_pending_in_context": False})
+        trusted = self.store.upsert_source_account(
+            self.user_id,
+            source="slack",
+            account_label="Trusted Slack Auto Surface",
+            account_identifier="trusted-auto-surface",
+            connection_type="api-token",
+            status="connected",
+            auth_state="healthy",
+            policy={"review_required": False, "allow_ai_context": True},
+        )
+        blocked = self.store.upsert_source_account(
+            self.user_id,
+            source="gmail",
+            account_label="Review Required Auto Surface",
+            account_identifier="review-auto-surface",
+            connection_type="api-token",
+            status="connected",
+            auth_state="healthy",
+            policy={"review_required": True, "allow_ai_context": True},
+        )
+
+        trusted_sync = self.store.sync_source_account_records(
+            self.user_id,
+            trusted["id"],
+            records=[
+                {
+                    "content": "Decision: Auto Surface Alpha connector memory should appear in stats profile and graph without manual approval.",
+                    "title": "Auto Surface Alpha trusted connector",
+                    "external_id": "auto-surface-alpha-trusted",
+                    "source_url": "cortex-source://slack#service=slack&channel=CASURF&line=1&excerpt=auto-surface-trusted",
+                    "captured_at": "2026-07-02T09:30:00Z",
+                    "metadata": {"line_start": 1, "record_scope": "message"},
+                }
+            ],
+            processing="sync",
+        )
+        blocked_sync = self.store.sync_source_account_records(
+            self.user_id,
+            blocked["id"],
+            records=[
+                {
+                    "content": "Decision: Auto Surface Alpha review-required distractor should never appear before approval.",
+                    "title": "Auto Surface Alpha review required",
+                    "external_id": "auto-surface-alpha-blocked",
+                    "source_url": "cortex-source://gmail#service=gmail&line=1&excerpt=auto-surface-blocked",
+                    "captured_at": "2026-07-02T09:31:00Z",
+                    "metadata": {"line_start": 1, "record_scope": "message"},
+                }
+            ],
+            processing="sync",
+        )
+
+        trusted_memory_count = sum(int(record.get("memories") or 0) for record in trusted_sync["records"])
+        self.assertGreater(trusted_memory_count, 0)
+        self.assertEqual(blocked_sync["saved"], 1)
+        pending_ids = {item["id"] for item in self.store.inbox(self.user_id, limit=10)}
+        self.assertIn(trusted_sync["capture_ids"][0], pending_ids)
+        self.assertIn(blocked_sync["capture_ids"][0], pending_ids)
+
+        stats = self.store.stats(self.user_id)
+        self.assertEqual(stats["captures"], 2)
+        self.assertEqual(stats["pending_captures"], 2)
+        self.assertEqual(stats["memories"], trusted_memory_count)
+        self.assertTrue(stats["by_kind"])
+        self.assertEqual(sum(item["count"] for item in stats["by_kind"]), trusted_memory_count)
+
+        profile_text = json.dumps(self.store.personal_profile(self.user_id, query="Auto Surface Alpha", limit=5))
+        self.assertIn("without manual approval", profile_text)
+        self.assertIn("slack", profile_text)
+        self.assertNotIn("review-required distractor", profile_text)
+        self.assertNotIn("gmail", profile_text)
+
+        graph_text = json.dumps(self.store.graph(self.user_id))
+        self.assertIn("without manual approval", graph_text)
+        self.assertIn("Auto Surface Alpha trusted connector", graph_text)
+        self.assertNotIn("review-required distractor", graph_text)
+        self.assertNotIn("Auto Surface Alpha review required", graph_text)
 
     def test_source_policy_exclusion_filters_exports_and_mcp_export(self) -> None:
         private = self.store.save_capture(

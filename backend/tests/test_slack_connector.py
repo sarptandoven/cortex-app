@@ -3,10 +3,64 @@ from __future__ import annotations
 import unittest
 from urllib.parse import parse_qs, urlparse
 
-from backend.app.connectors.slack import fetch_slack_records
+from backend.app.connectors.slack import discover_slack_channels, fetch_slack_records
 
 
 class SlackConnectorTests(unittest.TestCase):
+    def test_discover_slack_channels_returns_sync_values_and_identity(self) -> None:
+        calls: list[str] = []
+
+        def fake_request(url: str, headers: dict[str, str]):
+            calls.append(url)
+            self.assertEqual(headers["Authorization"], "Bearer xoxb-discover")
+            parsed = urlparse(url)
+            if parsed.path.endswith("/auth.test"):
+                return {"ok": True, "user_id": "U123", "team_id": "T123", "team": "Doppl"}
+            self.assertTrue(parsed.path.endswith("/conversations.list"))
+            query = parse_qs(parsed.query)
+            self.assertEqual(query["exclude_archived"], ["true"])
+            self.assertEqual(query["types"], ["public_channel,private_channel"])
+            self.assertEqual(query["limit"], ["2"])
+            return {
+                "ok": True,
+                "channels": [
+                    {
+                        "id": "C123ABC",
+                        "name": "general",
+                        "is_private": False,
+                        "is_member": True,
+                        "num_members": 42,
+                        "purpose": {"value": "Company-wide updates"},
+                        "topic": {"value": "Launch work"},
+                    },
+                    {
+                        "id": "G456DEF",
+                        "name": "founders",
+                        "is_private": True,
+                        "is_member": True,
+                        "num_members": 3,
+                    },
+                ],
+                "response_metadata": {"next_cursor": "next-page"},
+            }
+
+        discovered = discover_slack_channels(
+            token="xoxb-discover",
+            limit=2,
+            request_json=fake_request,
+            api_base_url="https://slack.test/api",
+        )
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(discovered.auth_identity["team"], "Doppl")
+        self.assertEqual(discovered.channels_found, 2)
+        self.assertEqual(discovered.channels_returned, 2)
+        self.assertEqual(discovered.next_cursor, "next-page")
+        self.assertEqual(discovered.channels[0]["label"], "#general")
+        self.assertEqual(discovered.channels[0]["sync_value"], "C123ABC|general")
+        self.assertEqual(discovered.channels[0]["purpose"], "Company-wide updates")
+        self.assertTrue(discovered.channels[1]["is_private"])
+
     def test_fetch_slack_records_normalizes_messages_with_cursors(self) -> None:
         calls: list[tuple[str, dict[str, str]]] = []
 

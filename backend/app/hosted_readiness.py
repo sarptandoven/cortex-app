@@ -25,6 +25,7 @@ def hosted_readiness_contract(settings: Settings, runtime: dict | None = None) -
         _hosted_database_check(hosted_mode, settings.hosted_database_url),
         _embedding_provider_check(hosted_mode, settings.embedding_provider),
         _vector_backend_check(hosted_mode, settings.hosted_vector_backend),
+        _runtime_storage_check(hosted_mode, runtime),
         _worker_check(hosted_mode, settings.worker_mode),
         _worker_queue_check(hosted_mode, settings.worker_mode, runtime),
         _observability_check(hosted_mode, settings.observability_enabled),
@@ -187,6 +188,41 @@ def _vector_backend_check(hosted_mode: bool, hosted_vector_backend: str) -> dict
     }
 
 
+def _runtime_storage_check(hosted_mode: bool, runtime: dict | None) -> dict:
+    if not hosted_mode:
+        return {
+            "name": "runtime_hosted_storage",
+            "status": "ok",
+            "detail": "Local mode is expected to use SQLite/FTS and optional sqlite-vec.",
+        }
+    storage = (runtime or {}).get("storage") if isinstance(runtime, dict) else None
+    if not isinstance(storage, dict):
+        return {
+            "name": "runtime_hosted_storage",
+            "status": "blocked",
+            "detail": "Hosted readiness needs runtime storage evidence from the active store.",
+        }
+    database_backend = str(storage.get("database_backend") or "").strip().lower()
+    vector_backend = str(storage.get("vector_backend") or "").strip().lower()
+    database_live = bool(storage.get("database_live"))
+    vector_live = bool(storage.get("vector_live") or storage.get("vector_available"))
+    if database_backend == "postgres" and database_live and vector_backend in HOSTED_VECTOR_BACKENDS and vector_live:
+        return {
+            "name": "runtime_hosted_storage",
+            "status": "ok",
+            "detail": "Runtime storage reports live Postgres primary storage and pgvector retrieval.",
+        }
+    return {
+        "name": "runtime_hosted_storage",
+        "status": "blocked",
+        "detail": (
+            "Hosted mode is configured, but runtime storage is not a live Postgres/pgvector backend "
+            f"(database_backend={database_backend or 'unknown'}, database_live={database_live}, "
+            f"vector_backend={vector_backend or 'unknown'}, vector_live={vector_live})."
+        ),
+    }
+
+
 def _worker_check(hosted_mode: bool, worker_mode: str) -> dict:
     mode = (worker_mode or "inline").strip().lower()
     if not hosted_mode or mode in HOSTED_WORKER_MODES:
@@ -231,6 +267,20 @@ def _worker_queue_check(hosted_mode: bool, worker_mode: str, runtime: dict | Non
     failed = int(counts.get("failed") or 0)
     stale_running = int(queue.get("stale_running_count") or 0)
     oldest_queued_age_seconds = queue.get("oldest_queued_age_seconds")
+    truncated = bool(queue.get("truncated"))
+    ready_user_limit = int(queue.get("ready_user_limit") or 0)
+    total_ready_user_count = int(queue.get("total_ready_user_count") or ready_user_count)
+    if truncated:
+        return {
+            "name": "background_worker_queue",
+            "status": "blocked",
+            "detail": (
+                "Hosted worker queue health is incomplete "
+                f"({ready_user_count} of {total_ready_user_count} ready user(s) checked; "
+                f"limit {ready_user_limit or 'unknown'}). Readiness needs complete queue-health evidence "
+                "or an aggregate worker queue backend before hosted rollout."
+            ),
+        }
     if queue_status != "ok" or queued or running or failed or stale_running or ready_user_count <= 0:
         return {
             "name": "background_worker_queue",

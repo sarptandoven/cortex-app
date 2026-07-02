@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from first100_launch_gate import CLEAN_PROFILE_QA_FIELDS, SUPPORT_FIELDS, ROOT, git_output
+try:
+    from scripts.first100_launch_gate import CLEAN_PROFILE_QA_FIELDS, SUPPORT_FIELDS, ROOT, git_output, resolve_release_dir
+except ModuleNotFoundError:
+    from first100_launch_gate import CLEAN_PROFILE_QA_FIELDS, SUPPORT_FIELDS, ROOT, git_output, resolve_release_dir
 
 
 DEFAULT_OUTPUT_DIR = ROOT / ".context" / "first100_launch_packets"
@@ -22,8 +26,7 @@ KNOWN_LIMITATIONS = (
 )
 
 
-def load_manifest() -> dict[str, Any]:
-    manifest_path = ROOT / "site/downloads/latest.json"
+def load_manifest(manifest_path: Path) -> dict[str, Any]:
     return json.loads(manifest_path.read_text(encoding="utf-8"))
 
 
@@ -38,22 +41,42 @@ def artifact_hashes(manifest: dict[str, Any]) -> dict[str, str]:
     return hashes
 
 
-def release_summary(manifest: dict[str, Any]) -> dict[str, str]:
+def artifact_hash_summary(manifest: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for artifact in manifest.get("artifacts") or []:
+        if not isinstance(artifact, dict):
+            continue
+        filename = str(artifact.get("filename") or "")
+        digest = str(artifact.get("sha256") or "")
+        if filename and digest:
+            parts.append(f"{filename} {digest}")
+    return "; ".join(parts)
+
+
+def release_summary(manifest: dict[str, Any], *, manifest_path: Path, release_dir: Path | None) -> dict[str, str]:
     provenance = manifest.get("source_provenance") if isinstance(manifest.get("source_provenance"), dict) else {}
     hashes = artifact_hashes(manifest)
     dmg_name = next((name for name in hashes if name.endswith(".dmg")), "")
     zip_name = next((name for name in hashes if name.endswith(".app.zip")), "")
+    artifact_root = release_dir or ROOT / "site" / "downloads"
+    dmg_path = artifact_root / dmg_name if dmg_name else artifact_root / "Cortex-0.1.0-1.dmg"
+    zip_path = artifact_root / zip_name if zip_name else artifact_root / "Cortex-0.1.0-1.app.zip"
     return {
         "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "git_head": git_output(["rev-parse", "HEAD"]) or "",
         "git_branch": git_output(["branch", "--show-current"]) or "",
+        "manifest_path": str(manifest_path),
+        "release_dir": str(release_dir) if release_dir else "",
         "version": str(manifest.get("version") or ""),
         "build": str(manifest.get("build") or ""),
         "released_at": str(manifest.get("released_at") or ""),
         "manifest_source_commit": str(provenance.get("git_commit") or ""),
+        "artifact_hash_summary": artifact_hash_summary(manifest),
         "dmg_name": dmg_name,
+        "dmg_path": str(dmg_path),
         "dmg_sha256": hashes.get(dmg_name, ""),
         "zip_name": zip_name,
+        "zip_path": str(zip_path),
         "zip_sha256": hashes.get(zip_name, ""),
     }
 
@@ -76,7 +99,7 @@ def support_packet(summary: dict[str, str]) -> str:
         "Support artifact storage": SUPPORT_ARTIFACT_STORAGE,
         "Business hours and timezone": "Founder-monitored weekdays, America/Los_Angeles",
         "Deletion request contact": FOUNDER_EMAIL,
-        "Build version, build number, hash": f"{summary['version']} build {summary['build']}; DMG {summary['dmg_sha256']}; ZIP {summary['zip_sha256']}",
+        "Build version, build number, hash": f"{summary['version']} build {summary['build']}; {summary['artifact_hash_summary']}",
         "Tester cohort source": "Founder-selected first-100 local beta cohort",
         "First batch size": "10 initial testers, then 25, then 100 after no open SEV 0/1 issues",
         "Known limitations sent to testers": KNOWN_LIMITATIONS,
@@ -88,6 +111,7 @@ def support_packet(summary: dict[str, str]) -> str:
         "Fill every FILL_ME/blank field before inviting testers. Keep this file private.\n\n"
         f"Generated at: {summary['generated_at']}\n"
         f"PR or commit: {summary['git_head']}\n"
+        f"Manifest: {summary['manifest_path']}\n"
         f"Version: {summary['version']}\n"
         f"Build: {summary['build']}\n"
         f"DMG: {summary['dmg_name']} {summary['dmg_sha256']}\n"
@@ -100,7 +124,7 @@ def support_packet(summary: dict[str, str]) -> str:
 
 
 def clean_profile_packet(summary: dict[str, str]) -> str:
-    artifact = f"site/downloads/{summary['dmg_name']}" if summary["dmg_name"] else "site/downloads/Cortex-0.1.0-1.dmg"
+    artifact = summary["dmg_path"]
     defaults = {
         "QA date": summary["generated_at"][:10],
         "Artifact source": artifact,
@@ -124,6 +148,7 @@ def clean_profile_packet(summary: dict[str, str]) -> str:
         "Replace FILL_ME with yes/passed/ok/done/verified only after the exact pass is complete. Keep this file private.\n\n"
         f"Generated at: {summary['generated_at']}\n"
         f"PR or commit: {summary['git_head']}\n"
+        f"Manifest: {summary['manifest_path']}\n"
         f"Version: {summary['version']}\n"
         f"Build: {summary['build']}\n"
         f"DMG SHA-256: {summary['dmg_sha256']}\n\n"
@@ -147,20 +172,31 @@ def append_strict_command(packet: str, command: str) -> str:
     )
 
 
-def strict_command(output_dir: Path) -> str:
+def strict_command(output_dir: Path, release_dir: Path | None) -> str:
     support = output_dir / "support-packet.txt"
     qa = output_dir / "clean-profile-qa.txt"
-    return (
-        "python3 scripts/first100_launch_gate.py "
-        f"--support-packet {support} "
-        f"--clean-profile-qa {qa} "
-        "--require-human-packet --require-clean-profile-qa"
-    )
+    parts = [
+        "python3",
+        "scripts/first100_launch_gate.py",
+        "--support-packet",
+        str(support),
+        "--clean-profile-qa",
+        str(qa),
+    ]
+    if release_dir:
+        parts.extend(["--release-dir", str(release_dir)])
+    parts.extend(["--require-human-packet", "--require-clean-profile-qa"])
+    return " ".join(shlex.quote(part) for part in parts)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate private first-100 support and clean-profile QA packet templates.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR, help="Directory for generated packet templates.")
+    parser.add_argument(
+        "--release-dir",
+        type=Path,
+        help="Local packaged release directory containing latest.json and artifacts. Defaults to site/downloads/latest.json.",
+    )
     args = parser.parse_args()
 
     output_dir = args.output_dir
@@ -168,11 +204,13 @@ def main() -> int:
         output_dir = ROOT / output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    manifest = load_manifest()
-    summary = release_summary(manifest)
+    release_dir = resolve_release_dir(args.release_dir)
+    manifest_path = (release_dir / "latest.json") if release_dir else ROOT / "site" / "downloads" / "latest.json"
+    manifest = load_manifest(manifest_path)
+    summary = release_summary(manifest, manifest_path=manifest_path, release_dir=release_dir)
     support_path = output_dir / "support-packet.txt"
     qa_path = output_dir / "clean-profile-qa.txt"
-    command = strict_command(output_dir)
+    command = strict_command(output_dir, release_dir)
     support_path.write_text(append_strict_command(support_packet(summary), command), encoding="utf-8")
     qa_path.write_text(append_strict_command(clean_profile_packet(summary), command), encoding="utf-8")
 

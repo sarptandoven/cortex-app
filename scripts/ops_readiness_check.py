@@ -58,6 +58,15 @@ REQUIRED_MANUAL_QA_TERMS = (
     "roll back",
 )
 
+RELEASE_INPUT_PATH_PREFIXES = (
+    ".github/workflows/",
+    "backend/",
+    "docs/",
+    "macos/",
+    "packages/",
+    "scripts/",
+)
+
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -92,16 +101,32 @@ def current_git_provenance(root: Path) -> dict:
         for line in raw_status.splitlines()
         if "site/downloads/" not in line
     ]
+    raw_untracked = git_output(root, ["status", "--porcelain", "--untracked-files=all"])
+    untracked_release_inputs = sorted(
+        path
+        for line in raw_untracked.splitlines()
+        if line.startswith("?? ")
+        for path in [line[3:].strip()]
+        if path and release_input_path(path)
+    )
     return {
         "git_commit": git_output(root, ["rev-parse", "HEAD"]) or "unknown",
         "git_branch": git_output(root, ["branch", "--show-current"]) or "",
-        "git_dirty": bool(source_status),
+        "git_dirty": bool(source_status or untracked_release_inputs),
+        "tracked_dirty_lines": source_status,
+        "untracked_release_inputs": untracked_release_inputs,
         "ignored_dirty_paths": ["site/downloads/"],
     }
 
 
 def release_ignored_path(path: str) -> bool:
     return path.startswith("site/downloads/")
+
+
+def release_input_path(path: str) -> bool:
+    if release_ignored_path(path) or path.startswith(".context/"):
+        return False
+    return path.startswith(RELEASE_INPUT_PATH_PREFIXES)
 
 
 def source_changes_since(root: Path, commit: str) -> list[str]:
@@ -227,7 +252,12 @@ def verify_release_artifacts(
         if manifest_provenance.get("git_dirty") is True:
             provenance_issue("Packaged release was built from a dirty tracked worktree.")
     if require_current_provenance and current_provenance["git_dirty"] and not allow_stale_package:
-        errors.append("Current tracked worktree is dirty; commit changes before requiring package-artifact freshness.")
+        errors.append("Current release inputs are dirty or untracked; commit changes before requiring package-artifact freshness.")
+    if current_provenance.get("untracked_release_inputs"):
+        provenance_issue(
+            "Untracked release inputs exist and could be packaged without provenance: "
+            f"{current_provenance['untracked_release_inputs'][:12]}"
+        )
 
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts:
@@ -393,6 +423,74 @@ def verify_site_matches_release(root: Path, release_dir: Path) -> dict:
     }
 
 
+def site_match_payload(root: Path, release_dir: Path, *, skip_site: bool) -> dict:
+    if skip_site:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "Static website artifacts are intentionally ignored for a local-DMG-only beta gate.",
+            "release_manifest": str(release_dir / "latest.json"),
+        }
+    return verify_site_matches_release(root, release_dir)
+
+
+def verify_obsidian_plugin_bundle(root: Path, app_path: Path) -> dict:
+    errors: list[str] = []
+    required_files = ("manifest.json", "main.js", "versions.json")
+    source_dir = root / "packages" / "obsidian-cortex-plugin"
+    bundle_dir = app_path / "Contents" / "Resources" / "obsidian-cortex-plugin"
+    compared: list[dict] = []
+
+    if not app_path.exists():
+        return {"ok": False, "errors": [f"Cortex.app is missing: {app_path}"], "app": str(app_path)}
+    if not source_dir.exists():
+        return {"ok": False, "errors": [f"Source Obsidian plugin package is missing: {source_dir}"], "app": str(app_path)}
+    if not bundle_dir.exists():
+        return {"ok": False, "errors": [f"Bundled Obsidian plugin resources are missing: {bundle_dir}"], "app": str(app_path)}
+
+    for filename in required_files:
+        source_file = source_dir / filename
+        bundle_file = bundle_dir / filename
+        if not source_file.exists():
+            errors.append(f"Source Obsidian plugin file is missing: {filename}")
+            continue
+        if not bundle_file.exists():
+            errors.append(f"Bundled Obsidian plugin file is missing: {filename}")
+            continue
+        source_hash = sha256(source_file)
+        bundle_hash = sha256(bundle_file)
+        if source_hash != bundle_hash:
+            errors.append(f"Bundled Obsidian plugin file is stale: {filename}")
+        compared.append({"filename": filename, "sha256": bundle_hash, "size_bytes": bundle_file.stat().st_size})
+
+    manifest_path = bundle_dir / "manifest.json"
+    versions_path = bundle_dir / "versions.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        versions = json.loads(versions_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        errors.append(f"Bundled Obsidian plugin metadata is invalid: {exc}")
+        manifest = {}
+        versions = {}
+    if manifest:
+        for key in ("id", "name", "version", "minAppVersion"):
+            if not manifest.get(key):
+                errors.append(f"Bundled Obsidian plugin manifest is missing {key}.")
+        version = str(manifest.get("version") or "")
+        min_app_version = str(manifest.get("minAppVersion") or "")
+        if version and isinstance(versions, dict) and versions.get(version) != min_app_version:
+            errors.append(f"Bundled Obsidian plugin versions.json does not map {version} to {min_app_version}.")
+
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "app": str(app_path),
+        "source_dir": str(source_dir),
+        "bundle_dir": str(bundle_dir),
+        "files": compared,
+    }
+
+
 def live_get(base_url: str, token: str, path: str) -> dict:
     request = urllib.request.Request(base_url.rstrip("/") + path, headers={"Authorization": f"Bearer {token}"}, method="GET")
     with urllib.request.urlopen(request, timeout=10) as response:
@@ -442,6 +540,7 @@ def main() -> None:
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--refresh-site", action="store_true", help="Run prepare_distribution_site.py before validating the static site.")
     parser.add_argument("--include-package", action="store_true", help="Run macos/package_release.sh. This may require macOS disk-image permissions.")
+    parser.add_argument("--skip-site", action="store_true", help="Skip static website/download checks for local-DMG-only beta readiness.")
     parser.add_argument("--output-root", default=None, help="Directory containing packaged Cortex-* releases. Defaults to the workspace outputs directory.")
     parser.add_argument("--release-dir", type=Path, help="Specific packaged Cortex release directory to verify.")
     parser.add_argument("--require-package-artifacts", action="store_true", help="Fail unless release artifacts, checksums, beta handoff, and beta-readiness manifest metadata verify.")
@@ -470,6 +569,10 @@ def main() -> None:
     add_check(checks, "docs_current", docs_current_result["ok"], "Beta docs match the current Home/Review/Ask local-first app and release manifest.", docs_current_result)
     smoke_result = run_command(root, [sys.executable, "scripts/backend_beta_smoke.py"], timeout=120)
     add_check(checks, "backend_beta_smoke", smoke_result["ok"], "Backend beta smoke passes with temp data and blocked network sockets.", smoke_result)
+    vector_runtime = run_command(root, [sys.executable, "scripts/check_vector_runtime.py"], timeout=60)
+    add_check(checks, "source_vector_runtime", vector_runtime["ok"], "Source runtime loads sqlite-vec and creates Cortex vector tables.", vector_runtime)
+    connector_baseline = run_command(root, [sys.executable, "scripts/check_connector_baseline.py"], timeout=60)
+    add_check(checks, "connector_baseline", connector_baseline["ok"], "10k baseline connectors have real modules, tests, routes, catalog setup, and preserve-on-disconnect semantics.", connector_baseline)
 
     if not args.skip_tests:
         test_result = run_command(root, [sys.executable, "-W", "error::ResourceWarning", "-m", "unittest", "discover", "backend/tests"], timeout=120)
@@ -487,15 +590,36 @@ def main() -> None:
         package_result = run_command(root, ["./macos/package_release.sh", "--output", str(output_root)], timeout=240)
         add_check(checks, "macos_package", package_result["ok"], "macOS DMG/ZIP package is generated.", package_result)
 
+    if args.skip_site and args.refresh_site:
+        raise SystemExit("--skip-site cannot be combined with --refresh-site.")
+
     if args.refresh_site or args.include_package:
         prepare_result = run_command(root, [sys.executable, "scripts/prepare_distribution_site.py"], timeout=60)
         add_check(checks, "prepare_distribution_site", prepare_result["ok"], "Static site downloads refreshed from latest package.", prepare_result)
 
-    site_result = run_command(root, [sys.executable, "scripts/check_distribution_site.py"], timeout=60)
-    add_check(checks, "distribution_site", site_result["ok"], "Static site links, artifacts, sizes, and hashes validate.", site_result)
+    if args.skip_site:
+        add_check(
+            checks,
+            "distribution_site",
+            True,
+            "Static site checks skipped for local-DMG-only beta readiness.",
+            {"skipped": True, "reason": "local-dmg-only"},
+        )
+    else:
+        site_result = run_command(root, [sys.executable, "scripts/check_distribution_site.py"], timeout=60)
+        add_check(checks, "distribution_site", site_result["ok"], "Static site links, artifacts, sizes, and hashes validate.", site_result)
 
-    site_manifest_result = run_command(root, [sys.executable, "scripts/validate_update_manifest.py", "site/downloads/latest.json"], timeout=60)
-    add_check(checks, "site_update_manifest", site_manifest_result["ok"], "Site update feed validates.", site_manifest_result)
+    if args.skip_site:
+        add_check(
+            checks,
+            "site_update_manifest",
+            True,
+            "Site update feed validation skipped for local-DMG-only beta readiness.",
+            {"skipped": True, "reason": "local-dmg-only"},
+        )
+    else:
+        site_manifest_result = run_command(root, [sys.executable, "scripts/validate_update_manifest.py", "site/downloads/latest.json"], timeout=60)
+        add_check(checks, "site_update_manifest", site_manifest_result["ok"], "Site update feed validates.", site_manifest_result)
 
     release_dir = release_dir_arg or latest_release_dir(output_root)
     strict_package_artifacts = args.include_package or args.require_package_artifacts or release_dir_arg is not None
@@ -514,8 +638,22 @@ def main() -> None:
         else:
             release_detail = "Packaged DMG, ZIP, checksums, and latest.json verify. Beta handoff/readiness metadata warnings are nonblocking unless --require-package-artifacts or --include-package is used."
         add_check(checks, "release_artifacts", release_artifacts["ok"], release_detail, release_artifacts)
-        site_match = verify_site_matches_release(root, release_dir)
-        add_check(checks, "site_matches_release", site_match["ok"], "Static site downloads match the latest packaged release.", site_match)
+        site_match = site_match_payload(root, release_dir, skip_site=args.skip_site)
+        site_match_detail = "Static site downloads match the latest packaged release."
+        if args.skip_site:
+            site_match_detail = "Static site comparison skipped for local-DMG-only beta readiness."
+        add_check(checks, "site_matches_release", site_match["ok"], site_match_detail, site_match)
+        package_app = release_dir / "Cortex.app"
+        staged_app = root / "macos" / "build" / "release-staging" / "Cortex.app"
+        app_for_vector_check = package_app if package_app.exists() else staged_app
+        if app_for_vector_check.exists():
+            packaged_vector = run_command(root, [sys.executable, "scripts/check_vector_runtime.py", "--app", str(app_for_vector_check)], timeout=60)
+            add_check(checks, "packaged_vector_runtime", packaged_vector["ok"], "Packaged app runtime loads sqlite-vec and creates Cortex vector tables.", packaged_vector)
+            obsidian_bundle = verify_obsidian_plugin_bundle(root, app_for_vector_check)
+            add_check(checks, "packaged_obsidian_plugin", obsidian_bundle["ok"], "Packaged app contains the current repo-owned Obsidian plugin resources.", obsidian_bundle)
+        elif strict_package_artifacts:
+            add_check(checks, "packaged_vector_runtime", False, "Packaged app runtime could not be checked because no staged Cortex.app was found.")
+            add_check(checks, "packaged_obsidian_plugin", False, "Packaged app Obsidian plugin resources could not be checked because no staged Cortex.app was found.")
     elif args.include_package or args.refresh_site or args.require_package_artifacts:
         add_check(checks, "release_update_manifest", False, f"No packaged Cortex release found under {output_root}.")
         add_check(checks, "release_artifacts", False, f"No packaged Cortex release found under {output_root}.")

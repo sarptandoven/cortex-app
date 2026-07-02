@@ -3,10 +3,62 @@ from __future__ import annotations
 import unittest
 from urllib.parse import parse_qs, urlparse
 
-from backend.app.connectors.github import fetch_github_records
+from backend.app.connectors.github import discover_github_repositories, fetch_github_records
 
 
 class GitHubConnectorTests(unittest.TestCase):
+    def test_discover_github_repositories_returns_sync_values(self) -> None:
+        calls: list[str] = []
+
+        def fake_request(url: str, headers: dict[str, str]):
+            calls.append(url)
+            self.assertEqual(headers["Authorization"], "Bearer ghp_discover")
+            parsed = urlparse(url)
+            self.assertTrue(parsed.path.endswith("/user/repos"))
+            query = parse_qs(parsed.query)
+            self.assertEqual(query["affiliation"], ["owner,collaborator,organization_member"])
+            self.assertEqual(query["visibility"], ["all"])
+            self.assertEqual(query["per_page"], ["2"])
+            return [
+                {
+                    "full_name": "doppl-tech/cortex-app",
+                    "name": "cortex-app",
+                    "owner": {"login": "doppl-tech"},
+                    "html_url": "https://github.com/doppl-tech/cortex-app",
+                    "private": True,
+                    "archived": False,
+                    "fork": False,
+                    "updated_at": "2026-07-01T00:00:00Z",
+                    "permissions": {"pull": True, "push": False},
+                },
+                {
+                    "full_name": "doppl-tech/cortex-site",
+                    "name": "cortex-site",
+                    "owner": {"login": "doppl-tech"},
+                    "html_url": "https://github.com/doppl-tech/cortex-site",
+                    "private": False,
+                    "archived": False,
+                    "fork": False,
+                    "permissions": {"pull": True},
+                },
+            ]
+
+        discovered = discover_github_repositories(
+            token="ghp_discover",
+            limit=2,
+            api_base_url="https://api.github.test",
+            request_json=fake_request,
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(discovered.repositories_found, 2)
+        self.assertEqual(discovered.repositories_returned, 2)
+        self.assertEqual(discovered.next_page, 2)
+        self.assertEqual(discovered.repositories[0]["label"], "doppl-tech/cortex-app")
+        self.assertEqual(discovered.repositories[0]["sync_value"], "doppl-tech/cortex-app")
+        self.assertTrue(discovered.repositories[0]["private"])
+        self.assertEqual(discovered.repositories[0]["permissions"], {"pull": True, "push": False})
+
     def test_fetch_github_records_normalizes_issues_and_pull_requests(self) -> None:
         calls: list[tuple[str, dict[str, str]]] = []
 

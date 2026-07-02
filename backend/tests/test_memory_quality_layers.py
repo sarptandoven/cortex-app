@@ -123,6 +123,75 @@ class MemoryQualityLayerTests(unittest.TestCase):
         self.assertEqual(results[0]["provenance"]["source_account_id"], trusted["id"])
         self.assertEqual(results[0]["provenance"]["source_account_policy"]["mode"], "trusted")
 
+    def test_trusted_source_survives_noisy_duplicate_corpus(self) -> None:
+        self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+        untrusted = self.store.upsert_source_account(
+            self.user_id,
+            source="slack",
+            account_label="Noisy Slack",
+            account_identifier="noisy-slack",
+            connection_type="api_token",
+            status="connected",
+            auth_state="connected",
+            policy={"mode": "default", "review_required": False, "allow_ai_context": True},
+        )
+        trusted = self.store.upsert_source_account(
+            self.user_id,
+            source="github",
+            account_label="Trusted GitHub",
+            account_identifier="trusted-github",
+            connection_type="api_token",
+            status="connected",
+            auth_state="connected",
+            policy={"mode": "trusted", "review_required": False, "allow_ai_context": True},
+        )
+        for index in range(18):
+            self.store.sync_source_account_records(
+                self.user_id,
+                untrusted["id"],
+                records=[
+                    {
+                        "external_id": f"noisy-aurora-ranking-{index}",
+                        "title": f"Noisy Aurora duplicate {index}",
+                        "content": (
+                            "Project Aurora source trust ranking duplicate corpus repeats generic launch notes "
+                            f"without the canonical rollback constraint. Duplicate {index}."
+                        ),
+                        "source_url": f"https://slack.example.com/archives/CNOISY/p{index:04d}",
+                    }
+                ],
+                processing="sync",
+            )
+        self.store.sync_source_account_records(
+            self.user_id,
+            trusted["id"],
+            records=[
+                {
+                    "external_id": "trusted-aurora-ranking",
+                    "title": "Trusted Aurora launch issue",
+                    "content": "Project Aurora source trust ranking canonical rollback constraint: keep the previous DMG available before inviting testers.",
+                    "source_url": "https://github.com/doppl-tech/cortex-app/issues/424",
+                    "metadata": {"canonical": True},
+                }
+            ],
+            processing="sync",
+        )
+
+        results = self.store.search(
+            self.user_id,
+            "Project Aurora source trust ranking canonical rollback constraint previous DMG testers",
+            limit=5,
+        )
+        result_ids = [item["id"] for item in results]
+
+        self.assertTrue(results)
+        self.assertTrue(result_ids[0])
+        self.assertEqual(results[0]["provenance"]["external_id"], "trusted-aurora-ranking")
+        self.assertEqual(results[0]["provenance"]["source_account_id"], trusted["id"])
+        self.assertEqual(results[0]["provenance"]["source_account_policy"]["mode"], "trusted")
+        duplicate_results = [item for item in results if str(item["provenance"].get("external_id") or "").startswith("noisy-aurora-ranking")]
+        self.assertLessEqual(len(duplicate_results), 2)
+
     def test_retrieval_filters_expired_future_and_superseded_memories(self) -> None:
         extracted = {
             "_timestamp": "2026-06-30T10:00:00+00:00",
@@ -249,6 +318,22 @@ class MemoryQualityLayerTests(unittest.TestCase):
                     "topics": ["Project Atlas", "style"],
                 },
                 {
+                    "id": "mem_preference_recommend_first",
+                    "kind": "preference",
+                    "layer": "preference",
+                    "content": "I prefer Project Atlas answers that lead with the recommended path before caveats.",
+                    "importance": 4,
+                    "topics": ["Project Atlas", "preference"],
+                },
+                {
+                    "id": "mem_negative_no_hype",
+                    "kind": "negative",
+                    "layer": "negative",
+                    "content": "Do not use hype-heavy launch language when answering Project Atlas questions.",
+                    "importance": 4,
+                    "topics": ["Project Atlas", "negative"],
+                },
+                {
                     "id": "mem_project_atlas_fact",
                     "kind": "claim",
                     "layer": "semantic",
@@ -284,22 +369,93 @@ class MemoryQualityLayerTests(unittest.TestCase):
         self.assertIn("get_project_context", tool_names)
         self.assertIn("get_procedure", tool_names)
 
-        style = call_tool(self.store, self.user_id, "get_style_profile", {"query": "Project Atlas questions"})
+        style = call_tool(
+            self.store,
+            self.user_id,
+            "get_style_profile",
+            {
+                "query": "Project Atlas questions",
+                "draft": "This is a game-changing update for Project Atlas, and it is incredibly powerful because it unlocks many possibilities before we explain the actual recommendation.",
+            },
+        )
         self.assertTrue(style["style"])
         self.assertEqual(style["style"][0]["layer"], "style")
+        self.assertIn("rewrite_checklist", style)
+        self.assertIn("style_contract", style)
+        self.assertEqual(style["style_contract"]["confidence"], "strong")
+        self.assertTrue(style["style_contract"]["must_do"])
+        self.assertTrue(style["style_contract"]["must_avoid"])
+        self.assertTrue(any(rule["memory_id"] == "mem_preference_recommend_first" for rule in style["style_contract"]["must_do"]))
+        self.assertTrue(any(rule["memory_id"] == "mem_negative_no_hype" for rule in style["style_contract"]["must_avoid"]))
+        self.assertTrue(style["guidance"]["style_directives"])
+        self.assertEqual(style["guidance"]["style_directives"][0]["memory_id"], "mem_style_direct")
+        self.assertIn("Project Atlas questions", style["guidance"]["style_directives"][0]["instruction"])
+        self.assertTrue(style["guidance"]["preference_directives"])
+        self.assertTrue(style["guidance"]["negative_directives"])
+        self.assertTrue(style["rewrite_examples"])
+        self.assertEqual(style["rewrite_examples"][0]["name"], "recommended_path_first")
+        self.assertIn("Recommended path: Project Atlas questions", style["rewrite_examples"][0]["after"])
+        self.assertTrue(style["rewrite_examples"][0]["citations"])
+        self.assertTrue(style["rewrite_examples"][0]["rules_applied"])
+        self.assertTrue(style["rewrite_examples"][0]["quality_checks"])
+        self.assertTrue(any(citation["memory_id"] == "mem_preference_recommend_first" for citation in style["rewrite_examples"][0]["citations"]))
+        self.assertTrue(any(example["name"] == "remove_rejected_pattern" for example in style["rewrite_examples"]))
+        self.assertEqual(style["draft_review"]["status"], "needs_revision")
+        self.assertTrue(any(finding["memory_id"] == "mem_negative_no_hype" for finding in style["draft_review"]["findings"]))
+        self.assertTrue(any(finding["memory_id"] == "mem_preference_recommend_first" for finding in style["draft_review"]["findings"]))
+        self.assertIn("Recommended path: Project Atlas questions", style["draft_review"]["recommended_opening"])
+
+        style_markdown = call_tool(
+            self.store,
+            self.user_id,
+            "get_style_profile",
+            {
+                "query": "Project Atlas questions",
+                "format": "markdown",
+                "draft": "This is a game-changing update for Project Atlas, and it is incredibly powerful.",
+            },
+        )
+        self.assertIn("## Rewrite Checklist", style_markdown)
+        self.assertIn("## Style Contract", style_markdown)
+        self.assertIn("## Draft Review", style_markdown)
+        self.assertIn("## Style Directives", style_markdown)
+        self.assertIn("## Negative Constraints", style_markdown)
+        self.assertIn("## Rewrite Examples", style_markdown)
+        self.assertIn("recommended_path_first", style_markdown)
+        self.assertIn("remove_rejected_pattern", style_markdown)
+        self.assertIn("mem_style_direct", style_markdown)
+        self.assertIn("mem_negative_no_hype", style_markdown)
 
         project = call_tool(self.store, self.user_id, "get_project_context", {"name": "Project Atlas"})
         self.assertTrue(project["memories"])
         self.assertTrue(any(memory["sector"] == "Project Atlas" for memory in project["memories"]))
+        self.assertIn("agent_brief", project)
+        self.assertEqual(project["agent_brief"]["project"], "Project Atlas")
+        self.assertTrue(project["agent_brief"]["citations"])
+        self.assertIn("procedures", project["agent_brief"]["sections"])
+        self.assertTrue(any("Follow the cited procedure" in action for action in project["agent_brief"]["next_actions"]))
 
         procedure = call_tool(self.store, self.user_id, "get_procedure", {"query": "Project Atlas release health"})
         self.assertTrue(procedure["procedures"])
         self.assertEqual(procedure["procedures"][0]["layer"], "procedural")
+        self.assertTrue(procedure["execution_checklist"])
+        self.assertEqual(procedure["procedure_contract"]["status"], "strong")
+        self.assertTrue(any("run backend tests" in item["step"] for item in procedure["execution_checklist"]))
+
+        procedure_markdown = call_tool(
+            self.store,
+            self.user_id,
+            "get_procedure",
+            {"query": "Project Atlas release health", "format": "markdown"},
+        )
+        self.assertIn("## Execution Checklist", procedure_markdown)
+        self.assertIn("Source:", procedure_markdown)
 
         recent_procedures = self.store.search(self.user_id, "", limit=5, layer="procedural")
         self.assertEqual([item["id"] for item in recent_procedures], ["mem_project_atlas_procedure"])
         default_procedure = call_tool(self.store, self.user_id, "get_procedure", {"query": "", "limit": 5})
         self.assertEqual([item["id"] for item in default_procedure["procedures"]], ["mem_project_atlas_procedure"])
+        self.assertTrue(default_procedure["execution_checklist"])
 
     def test_mcp_project_context_falls_back_to_entity_search_and_includes_related_citations(self) -> None:
         self.store.save_capture(

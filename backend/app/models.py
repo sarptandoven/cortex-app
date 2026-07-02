@@ -135,6 +135,8 @@ class SourceAccountSyncResponse(BaseModel):
     skipped: int
     failed: int
     archived_missing: int = 0
+    archive_missing_decision: dict[str, Any] | None = None
+    archive_missing_suppressed: bool = False
     capture_ids: list[str]
     records: list[dict[str, Any]]
     errors: list[dict[str, Any]]
@@ -168,12 +170,151 @@ class GitHubSyncRequest(BaseModel):
     include_comments: bool = True
     max_comments_per_item: int = Field(default=10, ge=0, le=50)
     cursor_name: str = Field(default="issues", min_length=1, max_length=120)
+    complete_snapshot: bool = False
     api_base_url: str | None = Field(default=None, max_length=500)
+
+
+class GitHubRepositoryDiscoveryRequest(BaseModel):
+    token: str = Field(..., min_length=1, max_length=4000)
+    limit: int = Field(default=100, ge=1, le=100)
+    page: int = Field(default=1, ge=1, le=1000)
+    api_base_url: str | None = Field(default=None, max_length=500)
+
+
+class GitHubRepositoryDiscoveryResponse(BaseModel):
+    connector: str
+    connector_version: str
+    repositories: list[dict[str, Any]]
+    repositories_found: int
+    repositories_returned: int
+    next_page: int | None = None
+    errors: list[dict[str, Any]]
+    api_base_url: str
 
 
 class GitHubSyncResponse(SourceAccountSyncResponse):
     source_account: SourceAccountResponse
     sync: dict[str, Any]
+
+
+class GoogleOAuthStartRequest(BaseModel):
+    source: Literal["gmail", "google-drive"]
+    redirect_uri: str | None = Field(default=None, max_length=500)
+    state: str | None = Field(default=None, max_length=500)
+    client_id: str | None = Field(default=None, max_length=4000)
+    client_secret: str | None = Field(default=None, max_length=4000)
+    token_endpoint: str | None = Field(default=None, max_length=500)
+    code_verifier: str | None = Field(default=None, max_length=256)
+    code_challenge: str | None = Field(default=None, max_length=256)
+    code_challenge_method: str | None = Field(default=None, max_length=20)
+    source_account_id: str | None = Field(default=None, max_length=80)
+    account_label: str | None = Field(default=None, max_length=160)
+    account_identifier: str | None = Field(default=None, max_length=240)
+    query: str | None = Field(default=None, max_length=500)
+    label_ids: list[str] = Field(default_factory=list, max_length=20)
+    mime_types: list[str] = Field(default_factory=list, max_length=20)
+    include_body: bool = True
+    include_content: bool = True
+    scopes: list[str] = Field(default_factory=list, max_length=10)
+
+
+class GoogleOAuthStartResponse(BaseModel):
+    source: str
+    provider: str
+    authorization_url: str
+    authorization_endpoint: str
+    token_endpoint: str
+    redirect_uri: str
+    state: str
+    scopes: list[str]
+    access_type: str
+
+
+class GoogleOAuthCompleteRequest(BaseModel):
+    source: Literal["gmail", "google-drive"]
+    code: str = Field(..., min_length=1, max_length=4000)
+    redirect_uri: str | None = Field(default=None, max_length=500)
+    state: str | None = Field(default=None, max_length=500)
+    expected_state: str | None = Field(default=None, max_length=500)
+    client_id: str | None = Field(default=None, max_length=4000)
+    client_secret: str | None = Field(default=None, max_length=4000)
+    token_endpoint: str | None = Field(default=None, max_length=500)
+    code_verifier: str | None = Field(default=None, max_length=256)
+    source_account_id: str | None = Field(default=None, max_length=80)
+    account_label: str | None = Field(default=None, max_length=160)
+    account_identifier: str | None = Field(default=None, max_length=240)
+    query: str | None = Field(default=None, max_length=500)
+    label_ids: list[str] = Field(default_factory=list, max_length=20)
+    mime_types: list[str] = Field(default_factory=list, max_length=20)
+    include_body: bool = True
+    include_content: bool = True
+
+
+class GoogleOAuthCompleteResponse(BaseModel):
+    source: str
+    provider: str
+    source_account: SourceAccountResponse
+    credential_ref: str
+    scope: str
+    scopes: list[str]
+    access_token_expires_at: str | None = None
+    sync_plan: dict[str, Any]
+
+
+class ManagedOAuthStartRequest(BaseModel):
+    source: Literal["notion", "outlook"]
+    redirect_uri: str | None = Field(default=None, max_length=500)
+    state: str | None = Field(default=None, max_length=500)
+    client_id: str | None = Field(default=None, max_length=4000)
+    client_secret: str | None = Field(default=None, max_length=4000)
+    token_endpoint: str | None = Field(default=None, max_length=500)
+    source_account_id: str | None = Field(default=None, max_length=80)
+    account_label: str | None = Field(default=None, max_length=160)
+    account_identifier: str | None = Field(default=None, max_length=240)
+    include_content: bool = True
+    api_base_url: str | None = Field(default=None, max_length=500)
+    notion_version: str | None = Field(default=None, max_length=80)
+    scopes: list[str] = Field(default_factory=list, max_length=10)
+
+
+class ManagedOAuthStartResponse(BaseModel):
+    source: str
+    provider: str
+    authorization_url: str
+    authorization_endpoint: str
+    token_endpoint: str
+    redirect_uri: str
+    state: str
+    scopes: list[str]
+    access_type: str
+
+
+class ManagedOAuthCompleteRequest(BaseModel):
+    source: Literal["notion", "outlook"]
+    code: str = Field(..., min_length=1, max_length=4000)
+    redirect_uri: str | None = Field(default=None, max_length=500)
+    state: str | None = Field(default=None, max_length=500)
+    expected_state: str | None = Field(default=None, max_length=500)
+    client_id: str | None = Field(default=None, max_length=4000)
+    client_secret: str | None = Field(default=None, max_length=4000)
+    token_endpoint: str | None = Field(default=None, max_length=500)
+    source_account_id: str | None = Field(default=None, max_length=80)
+    account_label: str | None = Field(default=None, max_length=160)
+    account_identifier: str | None = Field(default=None, max_length=240)
+    include_content: bool = True
+    api_base_url: str | None = Field(default=None, max_length=500)
+    notion_version: str | None = Field(default=None, max_length=80)
+
+
+class ManagedOAuthCompleteResponse(BaseModel):
+    source: str
+    provider: str
+    source_account: SourceAccountResponse
+    credential_ref: str
+    scope: str
+    scopes: list[str]
+    access_token_expires_at: str | None = None
+    sync_plan: dict[str, Any]
 
 
 class GmailSyncRequest(BaseModel):
@@ -189,6 +330,7 @@ class GmailSyncRequest(BaseModel):
     max_records: int = Field(default=50, ge=1, le=200)
     cursor_name: str = Field(default="messages", min_length=1, max_length=120)
     include_body: bool = True
+    complete_snapshot: bool = False
     api_base_url: str | None = Field(default=None, max_length=500)
 
 
@@ -210,6 +352,7 @@ class GoogleDriveSyncRequest(BaseModel):
     max_records: int = Field(default=50, ge=1, le=200)
     cursor_name: str = Field(default="files", min_length=1, max_length=120)
     include_content: bool = True
+    complete_snapshot: bool = False
     api_base_url: str | None = Field(default=None, max_length=500)
 
 
@@ -230,6 +373,7 @@ class OutlookSyncRequest(BaseModel):
     max_records: int = Field(default=50, ge=1, le=200)
     cursor_name: str = Field(default="messages", min_length=1, max_length=120)
     include_body: bool = True
+    complete_snapshot: bool = False
     api_base_url: str | None = Field(default=None, max_length=500)
 
 
@@ -249,7 +393,28 @@ class SlackSyncRequest(BaseModel):
     max_records: int = Field(default=100, ge=1, le=200)
     cursor_name: str = Field(default="messages", min_length=1, max_length=120)
     workspace_url: str | None = Field(default=None, max_length=500)
+    complete_snapshot: bool = False
     api_base_url: str | None = Field(default=None, max_length=500)
+
+
+class SlackChannelDiscoveryRequest(BaseModel):
+    token: str = Field(..., min_length=1, max_length=4000)
+    limit: int = Field(default=100, ge=1, le=200)
+    include_private: bool = True
+    cursor: str | None = Field(default=None, max_length=2000)
+    api_base_url: str | None = Field(default=None, max_length=500)
+
+
+class SlackChannelDiscoveryResponse(BaseModel):
+    connector: str
+    connector_version: str
+    channels: list[dict[str, Any]]
+    channels_found: int
+    channels_returned: int
+    next_cursor: str | None = None
+    errors: list[dict[str, Any]]
+    api_base_url: str
+    auth_identity: dict[str, str]
 
 
 class SlackSyncResponse(SourceAccountSyncResponse):
@@ -267,6 +432,7 @@ class ReadwiseSyncRequest(BaseModel):
     processing: Literal["sync", "async"] = "sync"
     max_records: int = Field(default=100, ge=1, le=500)
     cursor_name: str = Field(default="highlights", min_length=1, max_length=120)
+    complete_snapshot: bool = False
     api_base_url: str | None = Field(default=None, max_length=500)
 
 
@@ -285,6 +451,7 @@ class CalendarSyncRequest(BaseModel):
     processing: Literal["sync", "async"] = "sync"
     max_records: int = Field(default=100, ge=1, le=500)
     cursor_name: str = Field(default="events", min_length=1, max_length=120)
+    complete_snapshot: bool = False
 
 
 class CalendarSyncResponse(SourceAccountSyncResponse):
@@ -304,6 +471,7 @@ class RaindropSyncRequest(BaseModel):
     max_records: int = Field(default=100, ge=1, le=500)
     cursor_name: str = Field(default="raindrops", min_length=1, max_length=120)
     include_highlights: bool = True
+    complete_snapshot: bool = False
     api_base_url: str | None = Field(default=None, max_length=500)
 
 
@@ -325,6 +493,7 @@ class ZoteroSyncRequest(BaseModel):
     max_records: int = Field(default=100, ge=1, le=500)
     cursor_name: str = Field(default="items", min_length=1, max_length=120)
     include_attachments: bool = False
+    complete_snapshot: bool = False
     api_base_url: str | None = Field(default=None, max_length=500)
 
 
@@ -343,6 +512,7 @@ class LinearSyncRequest(BaseModel):
     processing: Literal["sync", "async"] = "sync"
     max_records: int = Field(default=100, ge=1, le=500)
     cursor_name: str = Field(default="issues", min_length=1, max_length=120)
+    complete_snapshot: bool = False
     api_url: str | None = Field(default=None, max_length=500)
 
 
@@ -364,6 +534,7 @@ class JiraSyncRequest(BaseModel):
     processing: Literal["sync", "async"] = "sync"
     max_records: int = Field(default=100, ge=1, le=500)
     cursor_name: str = Field(default="issues", min_length=1, max_length=120)
+    complete_snapshot: bool = False
 
 
 class JiraSyncResponse(SourceAccountSyncResponse):
@@ -382,6 +553,7 @@ class NotionSyncRequest(BaseModel):
     max_records: int = Field(default=50, ge=1, le=200)
     cursor_name: str = Field(default="pages", min_length=1, max_length=120)
     include_content: bool = True
+    complete_snapshot: bool = False
     api_base_url: str | None = Field(default=None, max_length=500)
     notion_version: str | None = Field(default=None, max_length=80)
 
@@ -393,7 +565,7 @@ class NotionSyncResponse(SourceAccountSyncResponse):
 
 class SourceReadinessResponse(BaseModel):
     generated_at: str
-    summary: dict[str, int]
+    summary: dict[str, Any]
     sources: list[dict[str, Any]]
     recommendations: list[str]
 
@@ -528,9 +700,12 @@ class SearchResponse(BaseModel):
 
 class AskResponse(BaseModel):
     query: str
+    status: str = "cited"
     filters: dict[str, Any] | None = None
     answer: str
     citations: list[dict[str, Any]]
+    conflicts: list[dict[str, Any]] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
     results: list[dict[str, Any]]
 
 

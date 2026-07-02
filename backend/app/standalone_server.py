@@ -5,6 +5,9 @@ import html
 import hmac
 import json
 import os
+import threading
+import time
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -48,6 +51,51 @@ def _cors_origins() -> set[str]:
 ALLOWED_CORS_ORIGINS = _cors_origins()
 
 
+def _env_int(name: str, default: int, low: int, high: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        value = default
+    return min(high, max(low, value))
+
+
+def _standalone_worker_enabled() -> bool:
+    configured = os.environ.get("CORTEX_STANDALONE_WORKER_ENABLED")
+    if configured is not None:
+        return _bool_value(configured, default=True)
+    return settings.shard_mode == "local" and settings.worker_mode != "external"
+
+
+def _run_standalone_worker_tick(limit: int | None = None, worker_id: str = "standalone-local-worker") -> dict[str, Any]:
+    resolved_limit = limit if limit is not None else _env_int("CORTEX_STANDALONE_WORKER_LIMIT", 25, 1, 100)
+    return store.run_due_jobs(
+        settings.default_user_id,
+        limit=resolved_limit,
+        worker_id=worker_id,
+        schedule_source_syncs=False,
+    )
+
+
+def _start_standalone_worker() -> threading.Thread | None:
+    if not _standalone_worker_enabled():
+        return None
+
+    interval_seconds = _env_int("CORTEX_STANDALONE_WORKER_INTERVAL_SECONDS", 15, 2, 3600)
+    limit = _env_int("CORTEX_STANDALONE_WORKER_LIMIT", 25, 1, 100)
+
+    def worker_loop() -> None:
+        while True:
+            try:
+                _run_standalone_worker_tick(limit=limit)
+            except Exception as exc:  # pragma: no cover - defensive server loop
+                print(f"Cortex standalone worker error: {exc}", flush=True)
+            time.sleep(interval_seconds)
+
+    thread = threading.Thread(target=worker_loop, name="cortex-standalone-worker", daemon=True)
+    thread.start()
+    return thread
+
+
 def _required_api_scope(method: str, path: str) -> str:
     normalized_method = method.upper()
     normalized_path = path.rstrip("/") or "/"
@@ -64,6 +112,10 @@ def _required_api_scope(method: str, path: str) -> str:
     if normalized_path.startswith("/v1/integrations/tokens/"):
         return "maintenance"
     if normalized_path == "/v1/source-accounts" and normalized_method == "POST":
+        return "maintenance"
+    if normalized_path.startswith("/v1/connectors/google/oauth/") and normalized_method == "POST":
+        return "maintenance"
+    if normalized_path.startswith("/v1/connectors/oauth/") and normalized_method == "POST":
         return "maintenance"
     if normalized_path.startswith("/v1/source-accounts/") and normalized_method == "DELETE":
         return "maintenance"
@@ -100,6 +152,9 @@ def _require_api_token_trust(user_id: str, required_scope: str) -> None:
 
 def _hosted_readiness_contract() -> dict:
     runtime: dict[str, Any] = {}
+    runtime_storage_status = getattr(store, "runtime_storage_status", None)
+    if callable(runtime_storage_status):
+        runtime["storage"] = runtime_storage_status()
     control_plane_status = getattr(store, "control_plane_status", None)
     if settings.shard_mode != "local" and callable(control_plane_status):
         runtime["control_plane"] = control_plane_status()
@@ -129,6 +184,148 @@ ROOT_HTML = """
   </body>
 </html>
 """
+
+
+GOOGLE_OAUTH_PENDING_TTL = timedelta(minutes=10)
+_google_oauth_pending: dict[str, dict[str, Any]] = {}
+_google_oauth_pending_lock = threading.Lock()
+_managed_oauth_pending: dict[str, dict[str, Any]] = {}
+_managed_oauth_pending_lock = threading.Lock()
+
+
+def _prune_google_oauth_pending(now: datetime | None = None) -> None:
+    cutoff = (now or datetime.now(timezone.utc)) - GOOGLE_OAUTH_PENDING_TTL
+    expired = [
+        state
+        for state, pending in _google_oauth_pending.items()
+        if pending.get("created_at", cutoff) < cutoff
+    ]
+    for state in expired:
+        _google_oauth_pending.pop(state, None)
+
+
+def _remember_google_oauth_pending(user_id: str, body: dict[str, Any], started: dict[str, Any]) -> None:
+    state = str(started.get("state") or "").strip()
+    if not state:
+        return
+    with _google_oauth_pending_lock:
+        _prune_google_oauth_pending()
+        _google_oauth_pending[state] = {
+            "created_at": datetime.now(timezone.utc),
+            "user_id": user_id,
+            "source": started.get("source") or body.get("source"),
+            "redirect_uri": started.get("redirect_uri") or body.get("redirect_uri"),
+            "client_id": body.get("client_id"),
+            "client_secret": body.get("client_secret"),
+            "token_endpoint": body.get("token_endpoint"),
+            "code_verifier": body.get("code_verifier"),
+            "source_account_id": body.get("source_account_id"),
+            "account_label": body.get("account_label"),
+            "account_identifier": body.get("account_identifier"),
+            "query": body.get("query"),
+            "label_ids": body.get("label_ids") if isinstance(body.get("label_ids"), list) else [],
+            "mime_types": body.get("mime_types") if isinstance(body.get("mime_types"), list) else [],
+            "include_body": _bool_value(body.get("include_body"), default=True),
+            "include_content": _bool_value(body.get("include_content"), default=True),
+        }
+
+
+def _pop_google_oauth_pending(state: str) -> dict[str, Any] | None:
+    normalized = str(state or "").strip()
+    if not normalized:
+        return None
+    with _google_oauth_pending_lock:
+        _prune_google_oauth_pending()
+        return _google_oauth_pending.pop(normalized, None)
+
+
+def _prune_managed_oauth_pending(now: datetime | None = None) -> None:
+    cutoff = (now or datetime.now(timezone.utc)) - GOOGLE_OAUTH_PENDING_TTL
+    expired = [
+        state
+        for state, pending in _managed_oauth_pending.items()
+        if pending.get("created_at", cutoff) < cutoff
+    ]
+    for state in expired:
+        _managed_oauth_pending.pop(state, None)
+
+
+def _remember_managed_oauth_pending(user_id: str, body: dict[str, Any], started: dict[str, Any]) -> None:
+    state = str(started.get("state") or "").strip()
+    if not state:
+        return
+    with _managed_oauth_pending_lock:
+        _prune_managed_oauth_pending()
+        _managed_oauth_pending[state] = {
+            "created_at": datetime.now(timezone.utc),
+            "user_id": user_id,
+            "source": started.get("source") or body.get("source"),
+            "redirect_uri": started.get("redirect_uri") or body.get("redirect_uri"),
+            "client_id": body.get("client_id"),
+            "client_secret": body.get("client_secret"),
+            "token_endpoint": body.get("token_endpoint"),
+            "source_account_id": body.get("source_account_id"),
+            "account_label": body.get("account_label"),
+            "account_identifier": body.get("account_identifier"),
+            "include_content": _bool_value(body.get("include_content"), default=True),
+            "api_base_url": body.get("api_base_url"),
+            "notion_version": body.get("notion_version"),
+        }
+
+
+def _pop_managed_oauth_pending(state: str) -> dict[str, Any] | None:
+    normalized = str(state or "").strip()
+    if not normalized:
+        return None
+    with _managed_oauth_pending_lock:
+        _prune_managed_oauth_pending()
+        return _managed_oauth_pending.pop(normalized, None)
+
+
+def _google_oauth_callback_page(title: str, detail: str, *, success: bool) -> str:
+    icon = "Connected" if success else "Needs attention"
+    color = "#136f45" if success else "#9a3412"
+    safe_title = html.escape(title)
+    safe_detail = html.escape(detail)
+    safe_icon = html.escape(icon)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{safe_title}</title>
+  <style>
+    :root {{ color-scheme: light; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #faf9f6;
+      color: #1f2933;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }}
+    main {{
+      width: min(560px, calc(100vw - 48px));
+      padding: 32px;
+      border: 1px solid rgba(30, 41, 59, 0.12);
+      border-radius: 16px;
+      background: #ffffff;
+      box-shadow: 0 20px 70px rgba(15, 23, 42, 0.08);
+    }}
+    .status {{ color: {color}; font-size: 13px; font-weight: 700; margin-bottom: 12px; text-transform: uppercase; }}
+    h1 {{ margin: 0 0 8px; font-size: 24px; letter-spacing: 0; }}
+    p {{ margin: 0; color: #53606f; font-size: 15px; line-height: 1.5; }}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="status">{safe_icon}</div>
+    <h1>{safe_title}</h1>
+    <p>{safe_detail}</p>
+  </main>
+</body>
+</html>"""
 
 
 def _int_param(params: dict[str, list[str]], name: str, default: int, low: int, high: int) -> int:
@@ -323,6 +520,161 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     return
                 self._send_text(_capture_page(f"Saved {len(saved.get('memories', []))} memories.", "saved", token, title, source_url), media_type="text/html")
                 return
+            if method == "GET" and path == "/v1/connectors/google/oauth/callback":
+                error_value = (params.get("error") or [""])[0]
+                if error_value:
+                    detail = (params.get("error_description") or ["Google did not authorize Cortex."])[0]
+                    self._send_text(
+                        _google_oauth_callback_page("Google sign-in was not completed", detail, success=False),
+                        status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                        media_type="text/html",
+                    )
+                    return
+                state_value = (params.get("state") or [""])[0]
+                code_value = (params.get("code") or [""])[0]
+                pending = _pop_google_oauth_pending(state_value)
+                if not pending:
+                    self._send_text(
+                        _google_oauth_callback_page(
+                            "Google sign-in expired",
+                            "Return to Cortex and start the connection again. No account was connected.",
+                            success=False,
+                        ),
+                        status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                        media_type="text/html",
+                    )
+                    return
+                if not code_value:
+                    self._send_text(
+                        _google_oauth_callback_page(
+                            "Google sign-in did not return a code",
+                            "Return to Cortex and start the connection again. No account was connected.",
+                            success=False,
+                        ),
+                        status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                        media_type="text/html",
+                    )
+                    return
+                try:
+                    callback_user = str(pending.get("user_id") or settings.default_user_id)
+                    result = store.complete_google_oauth(
+                        callback_user,
+                        str(pending.get("source") or ""),
+                        code=code_value,
+                        redirect_uri=pending.get("redirect_uri"),
+                        state=state_value,
+                        expected_state=state_value,
+                        client_id=pending.get("client_id"),
+                        client_secret=pending.get("client_secret"),
+                        token_endpoint=pending.get("token_endpoint"),
+                        code_verifier=pending.get("code_verifier"),
+                        source_account_id=pending.get("source_account_id"),
+                        account_label=pending.get("account_label"),
+                        account_identifier=pending.get("account_identifier"),
+                        query=pending.get("query"),
+                        label_ids=pending.get("label_ids") or [],
+                        mime_types=pending.get("mime_types") or [],
+                        include_body=_bool_value(pending.get("include_body"), default=True),
+                        include_content=_bool_value(pending.get("include_content"), default=True),
+                    )
+                    account = result.get("source_account") or {}
+                    if account.get("id"):
+                        try:
+                            store.enqueue_source_account_sync(callback_user, account["id"], processing="async", max_records=200)
+                        except ValueError:
+                            pass
+                    label = str(account.get("account_label") or "Google")
+                    self._send_text(
+                        _google_oauth_callback_page(
+                            "Google is connected",
+                            f"{label} is connected. Return to Cortex; the first sync will start automatically.",
+                            success=True,
+                        ),
+                        media_type="text/html",
+                    )
+                except ValueError as exc:
+                    self._send_text(
+                        _google_oauth_callback_page("Google sign-in could not finish", str(exc), success=False),
+                        status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                        media_type="text/html",
+                    )
+                return
+            if method == "GET" and path == "/v1/connectors/oauth/callback":
+                error_value = (params.get("error") or [""])[0]
+                if error_value:
+                    detail = (params.get("error_description") or ["The service did not authorize Cortex."])[0]
+                    self._send_text(
+                        _google_oauth_callback_page("Sign-in was not completed", detail, success=False),
+                        status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                        media_type="text/html",
+                    )
+                    return
+                state_value = (params.get("state") or [""])[0]
+                code_value = (params.get("code") or [""])[0]
+                pending = _pop_managed_oauth_pending(state_value)
+                if not pending:
+                    self._send_text(
+                        _google_oauth_callback_page(
+                            "Sign-in expired",
+                            "Return to Cortex and start the connection again. No account was connected.",
+                            success=False,
+                        ),
+                        status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                        media_type="text/html",
+                    )
+                    return
+                if not code_value:
+                    self._send_text(
+                        _google_oauth_callback_page(
+                            "Sign-in did not return a code",
+                            "Return to Cortex and start the connection again. No account was connected.",
+                            success=False,
+                        ),
+                        status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                        media_type="text/html",
+                    )
+                    return
+                try:
+                    callback_user = str(pending.get("user_id") or settings.default_user_id)
+                    result = store.complete_managed_oauth(
+                        callback_user,
+                        str(pending.get("source") or ""),
+                        code=code_value,
+                        redirect_uri=pending.get("redirect_uri"),
+                        state=state_value,
+                        expected_state=state_value,
+                        client_id=pending.get("client_id"),
+                        client_secret=pending.get("client_secret"),
+                        token_endpoint=pending.get("token_endpoint"),
+                        source_account_id=pending.get("source_account_id"),
+                        account_label=pending.get("account_label"),
+                        account_identifier=pending.get("account_identifier"),
+                        include_content=_bool_value(pending.get("include_content"), default=True),
+                        api_base_url=pending.get("api_base_url"),
+                        notion_version=pending.get("notion_version"),
+                    )
+                    account = result.get("source_account") or {}
+                    if account.get("id"):
+                        try:
+                            store.enqueue_source_account_sync(callback_user, account["id"], processing="async", max_records=200)
+                        except ValueError:
+                            pass
+                    label = str(account.get("account_label") or "Source")
+                    self._send_text(
+                        _google_oauth_callback_page(
+                            "Source is connected",
+                            f"{label} is connected. Return to Cortex; the first sync will start automatically.",
+                            success=True,
+                        ),
+                        media_type="text/html",
+                    )
+                except ValueError as exc:
+                    self._send_text(
+                        _google_oauth_callback_page("Sign-in could not finish", str(exc), success=False),
+                        status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                        media_type="text/html",
+                    )
+                return
             if method == "POST" and path == "/mcp":
                 context = self._auth_mcp()
                 if not context:
@@ -385,6 +737,95 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and path == "/v1/source-accounts/catalog":
                 self._send_json({"results": store.source_connector_catalog()})
+                return
+            if method == "POST" and path == "/v1/connectors/google/oauth/start":
+                body = self._json_body()
+                try:
+                    target_store = store.store_for_user(user_id) if hasattr(store, "store_for_user") else store
+                    scopes = body.get("scopes") if isinstance(body.get("scopes"), list) else []
+                    started = target_store.start_google_oauth(
+                        str(body.get("source") or ""),
+                        redirect_uri=str(body.get("redirect_uri") or "") or None,
+                        state=str(body.get("state") or "") or None,
+                        client_id=str(body.get("client_id") or "") or None,
+                        code_challenge=str(body.get("code_challenge") or "") or None,
+                        code_challenge_method=str(body.get("code_challenge_method") or "") or None,
+                        scopes=[str(item) for item in scopes],
+                    )
+                    _remember_google_oauth_pending(user_id, body, started)
+                    self._send_json(started)
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path == "/v1/connectors/google/oauth/complete":
+                body = self._json_body()
+                try:
+                    label_ids = body.get("label_ids") if isinstance(body.get("label_ids"), list) else []
+                    mime_types = body.get("mime_types") if isinstance(body.get("mime_types"), list) else []
+                    result = store.complete_google_oauth(
+                        user_id,
+                        str(body.get("source") or ""),
+                        code=str(body.get("code") or ""),
+                        redirect_uri=str(body.get("redirect_uri") or "") or None,
+                        state=str(body.get("state") or "") or None,
+                        expected_state=str(body.get("expected_state") or "") or None,
+                        client_id=str(body.get("client_id") or "") or None,
+                        client_secret=str(body.get("client_secret") or "") or None,
+                        token_endpoint=str(body.get("token_endpoint") or "") or None,
+                        code_verifier=str(body.get("code_verifier") or "") or None,
+                        source_account_id=str(body.get("source_account_id") or "") or None,
+                        account_label=str(body.get("account_label") or "") or None,
+                        account_identifier=str(body.get("account_identifier") or "") or None,
+                        query=str(body.get("query") or "") or None,
+                        label_ids=[str(item) for item in label_ids],
+                        mime_types=[str(item) for item in mime_types],
+                        include_body=_bool_value(body.get("include_body"), default=True),
+                        include_content=_bool_value(body.get("include_content"), default=True),
+                    )
+                    self._send_json(store.public_payload(user_id, result) if hasattr(store, "public_payload") else result)
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path == "/v1/connectors/oauth/start":
+                body = self._json_body()
+                try:
+                    target_store = store.store_for_user(user_id) if hasattr(store, "store_for_user") else store
+                    scopes = body.get("scopes") if isinstance(body.get("scopes"), list) else []
+                    started = target_store.start_managed_oauth(
+                        str(body.get("source") or ""),
+                        redirect_uri=str(body.get("redirect_uri") or "") or None,
+                        state=str(body.get("state") or "") or None,
+                        client_id=str(body.get("client_id") or "") or None,
+                        scopes=[str(item) for item in scopes],
+                    )
+                    _remember_managed_oauth_pending(user_id, body, started)
+                    self._send_json(started)
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path == "/v1/connectors/oauth/complete":
+                body = self._json_body()
+                try:
+                    result = store.complete_managed_oauth(
+                        user_id,
+                        str(body.get("source") or ""),
+                        code=str(body.get("code") or ""),
+                        redirect_uri=str(body.get("redirect_uri") or "") or None,
+                        state=str(body.get("state") or "") or None,
+                        expected_state=str(body.get("expected_state") or "") or None,
+                        client_id=str(body.get("client_id") or "") or None,
+                        client_secret=str(body.get("client_secret") or "") or None,
+                        token_endpoint=str(body.get("token_endpoint") or "") or None,
+                        source_account_id=str(body.get("source_account_id") or "") or None,
+                        account_label=str(body.get("account_label") or "") or None,
+                        account_identifier=str(body.get("account_identifier") or "") or None,
+                        include_content=_bool_value(body.get("include_content"), default=True),
+                        api_base_url=str(body.get("api_base_url") or "") or None,
+                        notion_version=str(body.get("notion_version") or "") or None,
+                    )
+                    self._send_json(store.public_payload(user_id, result) if hasattr(store, "public_payload") else result)
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
             if method == "GET" and path == "/v1/sources/readiness":
                 self._send_json(store.source_readiness_report(user_id))
@@ -959,10 +1400,18 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 ))
                 return
             if method == "POST" and path == "/v1/jobs/run":
-                self._send_json(store.run_due_jobs(user_id, limit=_int_param(params, "limit", 10, 1, 100)))
+                self._send_json(store.run_due_jobs(
+                    user_id,
+                    limit=_int_param(params, "limit", 10, 1, 100),
+                    schedule_source_syncs=_bool_value((params.get("schedule_source_syncs") or [True])[0], default=True),
+                ))
                 return
             if method == "POST" and path == "/v1/maintenance/jobs/run":
-                self._send_json(store.run_due_jobs(user_id, limit=_int_param(params, "limit", 10, 1, 100)))
+                self._send_json(store.run_due_jobs(
+                    user_id,
+                    limit=_int_param(params, "limit", 10, 1, 100),
+                    schedule_source_syncs=_bool_value((params.get("schedule_source_syncs") or [True])[0], default=True),
+                ))
                 return
             if method == "POST" and path == "/v1/sources/sync-due":
                 self._send_json(store.run_due_source_sync_jobs(user_id, limit=_int_param(params, "limit", 10, 1, 100), worker_id="api-source-sync"))
@@ -1065,6 +1514,32 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     )
                 )
                 return
+            if method == "GET" and path == "/v1/action-brief":
+                brief = store.action_brief(
+                    user_id,
+                    (params.get("task") or [""])[0],
+                    limit=_int_param(params, "limit", 8, 1, 20),
+                    sector=(params.get("sector") or [None])[0],
+                    as_of=(params.get("as_of") or [None])[0],
+                )
+                if (params.get("format") or ["json"])[0] == "markdown":
+                    self._send_text(brief["markdown"], media_type="text/markdown")
+                else:
+                    self._send_json(brief)
+                return
+            if method == "GET" and path == "/v1/decisions/history":
+                include_superseded = (params.get("include_superseded") or ["true"])[0].strip().lower() not in {"0", "false", "no"}
+                self._send_json(
+                    store.decision_history(
+                        user_id,
+                        (params.get("query") or [""])[0],
+                        limit=_int_param(params, "limit", 12, 1, 30),
+                        sector=(params.get("sector") or [None])[0],
+                        include_superseded=include_superseded,
+                        as_of=(params.get("as_of") or [None])[0],
+                    )
+                )
+                return
             if method == "GET" and path == "/v1/tasks/open":
                 self._send_json({"results": store.open_tasks(user_id, _int_param(params, "limit", 20, 1, 100))})
                 return
@@ -1075,6 +1550,10 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/v1/entities":
                 sector = (params.get("sector") or [None])[0]
                 self._send_json({"sector": sector, "results": store.list_entities(user_id, _int_param(params, "limit", 30, 1, 100), sector=sector)})
+                return
+            if method == "GET" and path.startswith("/v1/people/") and path.endswith("/context"):
+                name = unquote(path.removeprefix("/v1/people/").removesuffix("/context").strip("/"))
+                self._send_json(store.person_context(user_id, name, limit=_int_param(params, "limit", 8, 1, 20)))
                 return
             if method == "GET" and path.startswith("/v1/people/"):
                 name = unquote(path.removeprefix("/v1/people/"))
@@ -1457,6 +1936,9 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
 def serve(host: str = "127.0.0.1", port: int | None = None) -> None:
     resolved_port = port or int(os.environ.get("CORTEX_PORT", "8766"))
     server = ThreadingHTTPServer((host, resolved_port), CortexRequestHandler)
+    worker_thread = _start_standalone_worker()
+    if worker_thread is not None:
+        print("Cortex standalone worker running for queued memory jobs", flush=True)
     print(f"Cortex standalone backend running on http://{host}:{resolved_port}", flush=True)
     server.serve_forever()
 

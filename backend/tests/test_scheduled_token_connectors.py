@@ -105,6 +105,34 @@ class ScheduledTokenConnectorTests(unittest.TestCase):
             },
         )
 
+    def test_successful_scheduled_token_sync_clears_due_state_and_reports_healthy(self) -> None:
+        account = self._mark_account_due(self._connect_gmail_account())
+        before = next(item for item in self.store.source_readiness_report(self.user_id)["sources"] if item["source"] == "gmail")
+        self.assertTrue(before["sync_plan"]["due_now"])
+        self.assertEqual(before["sync_plan"]["managed_sync_status"], "due")
+
+        def fake_request_json(url: str, headers: dict[str, str]) -> dict[str, Any]:
+            self.assertEqual(headers["Authorization"], f"Bearer {GMAIL_TOKEN}")
+            if url.endswith("/users/me/profile"):
+                return {"emailAddress": "sarp@example.com"}
+            self.assertTrue(url.startswith("https://gmail.invalid/gmail/v1/users/me/messages?"))
+            return {"messages": [], "nextPageToken": None}
+
+        with patch("backend.app.connectors.gmail._request_json", side_effect=fake_request_json):
+            ran = self.store.run_due_jobs(self.user_id, limit=1)
+
+        self.assertEqual(ran["processed"], 1)
+        self.assertEqual(ran["jobs"][0]["status"], "succeeded")
+        refreshed_account = next(item for item in self.store.list_source_accounts(self.user_id) if item["id"] == account["id"])
+        self.assertNotIn("next_sync_due_at", refreshed_account["metadata"])
+        self.assertEqual(refreshed_account["metadata"]["last_scheduler_status"], "empty")
+        after = next(item for item in self.store.source_readiness_report(self.user_id)["sources"] if item["source"] == "gmail")
+        self.assertFalse(after["sync_plan"]["due_now"])
+        self.assertEqual(after["sync_plan"]["managed_sync_status"], "healthy")
+        self.assertIsNotNone(after["sync_plan"]["last_completed_at"])
+        self.assertIsNotNone(after["sync_plan"]["next_sync_due_at"])
+        self._assert_values_absent(ran, SECRET_VALUES)
+
     def test_expired_gmail_access_token_refreshes_before_scheduled_dispatch(self) -> None:
         account = self._mark_account_due(self._connect_gmail_account())
         self.store.store_source_account_credential(

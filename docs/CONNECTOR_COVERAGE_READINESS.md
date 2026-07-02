@@ -60,6 +60,14 @@ First-100 primary UI rule: MCP AI tools and Obsidian/local notes are allowed in 
 
 This checklist is the narrow readiness statement for the thirteen connector modules wired into the local backend and included in the 10k baseline catalog. "Wired" means there is an in-tree connector, a local sync route, request/response models, source-account sync integration, cursor/readiness reporting, and focused connector tests. It does not mean managed OAuth, first-run UI placement, or hosted multi-tenant production readiness.
 
+Run this gate before claiming the baseline connector set is intact:
+
+```bash
+python3 scripts/check_connector_baseline.py
+```
+
+The gate verifies module/package exports, focused connector tests, catalog setup, real sync routes, and preserve-on-disconnect semantics for every connector in `BASELINE_10K_CONNECTOR_IDS`.
+
 First-100 launch copy should still treat MCP AI tools and Obsidian/local notes as the normal default path. The other wired connectors are advanced, explicit, read-only sync paths for users or operators who can provide a local folder, local API, feed URL, or service token.
 
 | Connector | Functional now | Local-only / local-first boundary | Explicitly not promised |

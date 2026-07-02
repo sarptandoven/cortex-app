@@ -6,7 +6,6 @@ import html
 import json
 import mailbox
 import re
-import sqlite3
 import tempfile
 import zipfile
 from dataclasses import dataclass, field
@@ -16,6 +15,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import quote
+
+from .sqlite_runtime import sqlite3
 
 
 MAX_TEXT_BYTES = 12_000_000
@@ -410,6 +411,7 @@ def import_source_records(paths: Iterable[str], source_hint: str = "", max_recor
     assets = _collect_assets(paths)
     hint = _normalize_source(source_hint)
     records: list[SourceRecord] = []
+    record_limit = max(1, int(max_records or 1000))
 
     for parser in (
         _parse_chatgpt,
@@ -431,8 +433,6 @@ def import_source_records(paths: Iterable[str], source_hint: str = "", max_recor
 
     consumed = {_record_asset_key(record) for record in records if _record_asset_key(record)}
     for asset in assets:
-        if len(records) >= max_records:
-            break
         if asset.display_path in consumed:
             continue
         parsed = _parse_single_asset(asset, hint)
@@ -444,9 +444,34 @@ def import_source_records(paths: Iterable[str], source_hint: str = "", max_recor
         if not record.content.strip():
             continue
         expanded.extend(_chunk_source_record(record))
-        if len(expanded) >= max_records:
+    return [record.bounded() for record in _source_fair_record_cap(expanded, record_limit)]
+
+
+def _source_fair_record_cap(records: list[SourceRecord], max_records: int) -> list[SourceRecord]:
+    if max_records <= 0:
+        return []
+    if len(records) <= max_records:
+        return records
+
+    buckets: dict[str, list[SourceRecord]] = {}
+    for record in records:
+        buckets.setdefault(record.source, []).append(record)
+    if len(buckets) <= 1:
+        return records[:max_records]
+
+    selected: list[SourceRecord] = []
+    while len(selected) < max_records:
+        added = False
+        for bucket in buckets.values():
+            if not bucket:
+                continue
+            selected.append(bucket.pop(0))
+            added = True
+            if len(selected) >= max_records:
+                break
+        if not added:
             break
-    return [record.bounded() for record in expanded[:max_records]]
+    return selected
 
 
 def _chunk_source_record(record: SourceRecord) -> list[SourceRecord]:

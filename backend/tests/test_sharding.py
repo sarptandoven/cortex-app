@@ -203,6 +203,23 @@ class ShardingTests(unittest.TestCase):
         self.assertEqual(ready["active_ready_users"], 1)
         self.assertEqual(ready["status"], "ok")
 
+    def test_hosted_job_health_only_marks_truncated_when_ready_users_exceed_limit(self) -> None:
+        settings = self.settings(mode="bucket", shard_count=8)
+        registry = StoreRegistry.from_settings(settings)
+        for user_id in ("alice", "bob"):
+            registry.ensure_api_token(user_id, f"cxa_{user_id}_hosted_queue_token_123456789", label=f"{user_id} API", scopes=["read"])
+            registry.ensure_mcp_token(user_id, f"cxm_{user_id}_hosted_queue_token_123456789", label=f"{user_id} MCP", scopes=["read"])
+
+        exact = registry.hosted_job_health(ready_user_limit=2)
+        partial = registry.hosted_job_health(ready_user_limit=1)
+
+        self.assertEqual(exact["ready_user_count"], 2)
+        self.assertEqual(exact["total_ready_user_count"], 2)
+        self.assertFalse(exact["truncated"])
+        self.assertEqual(partial["ready_user_count"], 1)
+        self.assertEqual(partial["total_ready_user_count"], 2)
+        self.assertTrue(partial["truncated"])
+
     def test_control_index_respects_user_hint_revoke_and_user_deletion(self) -> None:
         settings = self.settings(mode="user")
         registry = StoreRegistry.from_settings(settings)

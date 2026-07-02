@@ -9,9 +9,13 @@ run_mode = "concurrent"
 general = """
 Usage guardrail for long-running Cortex work:
 - Treat the user's 5-hour Codex/agent window as a finite launch resource.
-- While visible 5-hour usage remaining is above 10%, do not throttle for usage conservation; work normally, move quickly, and use parallel agents when their tasks are independent and materially speed up the goal.
-- Reassess visible usage at major checkpoints, before launching subagents, and after any usage-limit error.
-- If the visible remaining 5-hour usage drops to 10% or below, enter slow mode: stop spawning subagents, avoid broad searches, batch file reads, run only narrow tests/builds needed for the immediate checkpoint, and prefer concise checkpoints over exploration.
-- If the visible remaining 5-hour usage drops to 5% or below, enter conservation mode: keep the active goal/plan intact, write or update a lightweight checkpoint only if needed, then avoid tool calls, builds, tests, subagents, package generation, and code edits until the usage window resets to 100%.
-- If usage cannot be inspected from tools, infer pressure from usage-limit errors and ask the user for the visible remaining percentage before launching more agents or starting expensive verification.
+- This 15% pause rule supersedes any older 20%/10%/5% usage guardrail mentioned in prior context.
+- This is an operational agent rule, not a hard Conductor quota throttle. Current shell/tool telemetry does not expose the hidden rolling 5-hour percentage, so the visible Conductor/UI percentage or an explicit user-provided percentage is the source of truth.
+- At the start of long-running work, after roughly each 10-minute work interval, at major checkpoints, before launching subagents, and after any usage-limit warning/error, evaluate whether a visible usage percentage is available.
+- While visible 5-hour usage remaining is above 15%, do not throttle for usage conservation; work normally, move quickly, and use parallel agents when their tasks are independent and materially speed up the goal.
+- If the visible remaining 5-hour usage drops below 15%, enter pause mode immediately: keep the active goal and current plan intact, write a lightweight checkpoint only if needed, then stop coding, code edits, tool calls, builds, tests, package generation, commits, pushes, and subagent launches.
+- Stay active and waiting while below 15% remaining. The only allowed work in pause mode is a brief status response or a lightweight checkpoint if the user explicitly asks for handoff state. Do not mark the goal complete or blocked solely because usage is low.
+- When the visible remaining 5-hour usage resets above 15%, resume full-speed work on the same goal and continue using parallel agents where they materially improve speed.
+- If usage cannot be inspected from tools and no usage warning/error is present, continue normally above the threshold by assumption. After any usage warning/error, before launching subagents, starting expensive verification, packaging, or broad code edits, ask the user for the visible remaining percentage.
+- While in pause mode, resume only after the user says the visible remaining usage is above 15% or the environment exposes a visible value above 15%. When resuming, continue from `.context/current-checkpoint.md` and the active plan rather than restarting.
 """
