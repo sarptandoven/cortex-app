@@ -1256,6 +1256,26 @@ def _request_oauth_token_refresh(token_endpoint: str, form: dict[str, str]) -> d
     return _request_oauth_token(token_endpoint, form)
 
 
+def _request_notion_oauth_token_refresh(
+    token_endpoint: str,
+    *,
+    refresh_token: str,
+    client_id: str,
+    client_secret: str,
+    notion_version: str = "",
+) -> dict[str, Any]:
+    """Notion's token endpoint authenticates the client with HTTP Basic auth and a JSON
+    body (not the form-encoded body the generic OAuth providers use), so refresh mirrors
+    the authorization-code exchange in complete_managed_oauth."""
+    return _request_basic_json_oauth_token(
+        token_endpoint,
+        {"grant_type": "refresh_token", "refresh_token": refresh_token},
+        client_id=client_id,
+        client_secret=client_secret,
+        headers={"Notion-Version": notion_version} if notion_version else None,
+    )
+
+
 def _credential_access_token_expired(payload: dict[str, Any], *, now: datetime | None = None, skew_seconds: int = 60) -> bool:
     expires_at = _parse_iso_timestamp(
         str(payload.get("access_token_expires_at") or payload.get("expires_at") or "").strip()
@@ -1298,7 +1318,7 @@ def _oauth_refresh_credential_fields(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 SCHEDULED_CREDENTIAL_SYNC_SOURCES = {"github", "gmail", "outlook", "google-drive", "readwise", "raindrop", "zotero", "linear", "notion", "slack", "calendar", "jira"}
-OAUTH_REFRESH_CREDENTIAL_SOURCES = {"gmail", "google-drive", "outlook"}
+OAUTH_REFRESH_CREDENTIAL_SOURCES = {"gmail", "google-drive", "outlook", "notion"}
 GOOGLE_OAUTH_AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_OAUTH_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 GOOGLE_OAUTH_DEFAULT_REDIRECT_URI = "http://127.0.0.1:8766/v1/connectors/google/oauth/callback"
@@ -3907,12 +3927,23 @@ class CortexStore:
         if normalized_source == "notion":
             credential_payload: dict[str, Any] = {
                 "token": access_token,
+                # access_token mirrors token so the shared OAuth-refresh path (which keys off
+                # access_token / access_token_expires_at) can refresh Notion the same way it
+                # refreshes Gmail/Outlook; the notion sync dispatch continues to read "token".
+                "access_token": access_token,
                 "refresh_token": refresh_token,
+                "token_endpoint": resolved_token_endpoint,
+                "client_id": resolved_client_id,
+                "scope": token_scope,
                 "api_base_url": resolved_api_base_url,
                 "include_content": bool(include_content),
                 "notion_version": resolved_notion_version,
                 "oauth_refreshed_at": connected_at,
             }
+            if resolved_client_secret:
+                credential_payload["client_secret"] = resolved_client_secret
+            if expires_at:
+                credential_payload["access_token_expires_at"] = expires_at
         else:
             credential_payload = {
                 "access_token": access_token,
@@ -4063,27 +4094,40 @@ class CortexStore:
         token_endpoint = str(payload.get("token_endpoint") or "").strip()
         client_id = str(payload.get("client_id") or "").strip()
         client_secret = str(payload.get("client_secret") or "").strip()
+        # Notion stores its access token under "token" and authenticates refresh with Basic auth.
+        current_access_token = str(payload.get("access_token") or payload.get("token") or "").strip()
         if not refresh_token or not token_endpoint or not client_id:
             raise ValueError(f"{source} access token expired and refresh configuration is missing")
+        if source == "notion" and not client_secret:
+            raise ValueError(f"{source} access token expired and refresh configuration is missing")
 
-        form = {
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "client_id": client_id,
-        }
-        if client_secret:
-            form["client_secret"] = client_secret
         scope = str(payload.get("scope") or "").strip()
-        if scope:
-            form["scope"] = scope
         secrets_to_redact = [
-            str(payload.get("access_token") or "").strip(),
+            current_access_token,
             refresh_token,
             client_id,
             client_secret,
         ]
         try:
-            token_payload = _request_oauth_token_refresh(token_endpoint, form)
+            if source == "notion":
+                token_payload = _request_notion_oauth_token_refresh(
+                    token_endpoint,
+                    refresh_token=refresh_token,
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    notion_version=str(payload.get("notion_version") or "").strip(),
+                )
+            else:
+                form = {
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "client_id": client_id,
+                }
+                if client_secret:
+                    form["client_secret"] = client_secret
+                if scope:
+                    form["scope"] = scope
+                token_payload = _request_oauth_token_refresh(token_endpoint, form)
         except Exception as exc:
             raise ValueError(redact_error_message(exc, secrets_to_redact)) from exc
         if not isinstance(token_payload, dict):
@@ -4094,6 +4138,10 @@ class CortexStore:
 
         refreshed = dict(payload)
         refreshed["access_token"] = access_token
+        # Keep the "token" alias in sync so the Notion sync dispatch (which reads "token")
+        # picks up the refreshed credential instead of the expired one.
+        if "token" in payload:
+            refreshed["token"] = access_token
         if str(token_payload.get("refresh_token") or "").strip():
             refreshed["refresh_token"] = str(token_payload.get("refresh_token") or "").strip()
         refreshed_at = datetime.now(timezone.utc).replace(microsecond=0)
@@ -6936,6 +6984,10 @@ class CortexStore:
                     "include_content": bool(include_content),
                     "api_base_url": api_base_url or "https://api.notion.com/v1",
                     "notion_version": sync.notion_version,
+                    # Preserve OAuth refresh material (refresh_token, token_endpoint, client
+                    # id/secret, expiry) across syncs so managed-OAuth Notion can refresh again;
+                    # otherwise a sync would wipe it and lock the account out at next expiry.
+                    **_oauth_refresh_credential_fields(self._read_source_account_credential_payload(user_id, resolved_account_id)),
                 },
             )
         state = {

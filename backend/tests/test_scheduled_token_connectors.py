@@ -35,6 +35,11 @@ RAINDROP_TOKEN = "raindrop_scheduled_secret_123"
 ZOTERO_TOKEN = "zotero_scheduled_secret_123"
 LINEAR_TOKEN = "linear_scheduled_secret_123"
 NOTION_TOKEN = "notion_scheduled_secret_123"
+NOTION_EXPIRED_TOKEN = "notion_expired_secret_123"
+NOTION_FRESH_TOKEN = "notion_fresh_secret_123"
+NOTION_REFRESH_TOKEN = "notion_refresh_secret_123"
+NOTION_ROTATED_REFRESH_TOKEN = "notion_rotated_refresh_secret_123"
+NOTION_CLIENT_SECRET = "notion_client_secret_123"
 
 SECRET_VALUES = (
     READWISE_TOKEN,
@@ -60,6 +65,11 @@ SECRET_VALUES = (
     ZOTERO_TOKEN,
     LINEAR_TOKEN,
     NOTION_TOKEN,
+    NOTION_EXPIRED_TOKEN,
+    NOTION_FRESH_TOKEN,
+    NOTION_REFRESH_TOKEN,
+    NOTION_ROTATED_REFRESH_TOKEN,
+    NOTION_CLIENT_SECRET,
 )
 
 
@@ -330,6 +340,68 @@ class ScheduledTokenConnectorTests(unittest.TestCase):
         self.assertEqual(refreshed["access_token"], OUTLOOK_FRESH_TOKEN)
         self.assertEqual(refreshed["refresh_token"], OUTLOOK_ROTATED_REFRESH_TOKEN)
         self.assertEqual(refreshed["scope"], "Mail.Read User.Read")
+        self.assertIn("oauth_refreshed_at", refreshed)
+        self.assertNotEqual(refreshed["access_token_expires_at"], "2000-01-01T00:00:00Z")
+        self._assert_values_absent(ran["jobs"][0]["payload"], SECRET_VALUES)
+        self._assert_values_absent(ran["jobs"][0]["result"], SECRET_VALUES)
+
+    def test_expired_notion_access_token_refreshes_before_scheduled_dispatch(self) -> None:
+        account = self._mark_account_due(self._connect_notion_account())
+        self.store.store_source_account_credential(
+            self.user_id,
+            account["id"],
+            source="notion",
+            payload={
+                # Notion stores its access token under "token"; the OAuth-refresh path keys off
+                # access_token / access_token_expires_at, so both are present after complete.
+                "token": NOTION_EXPIRED_TOKEN,
+                "access_token": NOTION_EXPIRED_TOKEN,
+                "refresh_token": NOTION_REFRESH_TOKEN,
+                "token_endpoint": "https://notion.invalid/v1/oauth/token",
+                "client_id": "notion-client-id",
+                "client_secret": NOTION_CLIENT_SECRET,
+                "access_token_expires_at": "2000-01-01T00:00:00Z",
+                "api_base_url": "https://notion.invalid/v1",
+                "notion_version": "2026-03-11",
+                "include_content": False,
+            },
+        )
+
+        def fake_refresh(token_endpoint: str, *, refresh_token: str, client_id: str, client_secret: str, notion_version: str = "") -> dict[str, Any]:
+            # Notion refreshes with Basic auth (client creds in the Authorization header), not a
+            # form body, so the refresh helper is Notion-specific.
+            self.assertEqual(token_endpoint, "https://notion.invalid/v1/oauth/token")
+            self.assertEqual(refresh_token, NOTION_REFRESH_TOKEN)
+            self.assertEqual(client_id, "notion-client-id")
+            self.assertEqual(client_secret, NOTION_CLIENT_SECRET)
+            self.assertEqual(notion_version, "2026-03-11")
+            return {
+                "access_token": NOTION_FRESH_TOKEN,
+                "refresh_token": NOTION_ROTATED_REFRESH_TOKEN,
+                "expires_in": 3600,
+            }
+
+        def fake_request_json(url: str, headers: dict[str, str], body: dict[str, Any] | None, method: str) -> dict[str, Any]:
+            # The dispatched sync must use the freshly refreshed token, not the expired one.
+            self.assertEqual(headers["Authorization"], f"Bearer {NOTION_FRESH_TOKEN}")
+            return {"results": [], "has_more": False, "next_cursor": None}
+
+        with patch("backend.app.storage._request_notion_oauth_token_refresh", side_effect=fake_refresh), patch(
+            "backend.app.connectors.notion._request_json",
+            side_effect=fake_request_json,
+        ):
+            ran = self.store.run_due_jobs(self.user_id, limit=1)
+
+        self.assertEqual(ran["processed"], 1)
+        self.assertEqual(ran["jobs"][0]["status"], "succeeded")
+        self.assertEqual(ran["jobs"][0]["result"]["source"], "notion")
+        refreshed = self.store.vault.read_source_credential(user_id=self.user_id, source_account_id=account["id"])["payload"]
+        # The Notion sync dispatch reads "token"; it must now hold the freshly refreshed value.
+        self.assertEqual(refreshed["token"], NOTION_FRESH_TOKEN)
+        self.assertEqual(refreshed["refresh_token"], NOTION_ROTATED_REFRESH_TOKEN)
+        # Refresh configuration is retained so the NEXT expiry can refresh again.
+        self.assertEqual(refreshed["token_endpoint"], "https://notion.invalid/v1/oauth/token")
+        self.assertEqual(refreshed["client_id"], "notion-client-id")
         self.assertIn("oauth_refreshed_at", refreshed)
         self.assertNotEqual(refreshed["access_token_expires_at"], "2000-01-01T00:00:00Z")
         self._assert_values_absent(ran["jobs"][0]["payload"], SECRET_VALUES)
