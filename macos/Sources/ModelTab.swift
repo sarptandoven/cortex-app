@@ -201,17 +201,14 @@ struct HomeHeroSection: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Label(statusSummary.label, systemImage: statusSummary.systemImage)
-                .font(.callout)
-                .fontWeight(.semibold)
-                .foregroundColor(statusSummary.color)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(statusSummary.color.opacity(0.12))
-                .clipShape(Capsule())
+        VStack(alignment: .leading, spacing: CortexDesign.Space.lg) {
+            CortexStatusPill(
+                label: statusSummary.label,
+                systemImage: statusSummary.systemImage,
+                color: statusSummary.color
+            )
 
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
                 Text(title)
                     .font(.system(size: 34, weight: .semibold))
                 Text(detail)
@@ -221,7 +218,7 @@ struct HomeHeroSection: View {
                     .frame(maxWidth: 680, alignment: .leading)
             }
 
-            HStack(alignment: .center, spacing: 12) {
+            HStack(alignment: .center, spacing: CortexDesign.Space.md) {
                 Button {
                     runNextAction()
                 } label: {
@@ -240,13 +237,14 @@ struct HomeHeroSection: View {
                 Spacer(minLength: 0)
             }
 
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: CortexDesign.Space.xs) {
                 HomeStatusRow(
                     title: "Source",
                     detail: sourceStatus.detail,
                     systemImage: sourceStatus.systemImage,
                     color: sourceStatus.color
                 )
+                Divider().overlay(CortexDesign.hairline)
                 HomeStatusRow(
                     title: "Memory",
                     detail: memoryStatus.detail,
@@ -254,10 +252,11 @@ struct HomeHeroSection: View {
                     color: memoryStatus.color
                 )
             }
+            .cortexCard()
             .frame(maxWidth: 620, alignment: .leading)
         }
-        .padding(.vertical, 30)
-        .padding(.horizontal, 4)
+        .padding(.vertical, CortexDesign.Space.xl)
+        .padding(.horizontal, CortexDesign.Space.xs)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 

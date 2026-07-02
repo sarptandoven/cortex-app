@@ -5532,8 +5532,8 @@ struct CortexView: View {
 
     private var header: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                HStack(spacing: 8) {
+            HStack(spacing: CortexDesign.Space.md) {
+                HStack(spacing: CortexDesign.Space.sm) {
                     Image(systemName: "brain.head.profile")
                         .foregroundColor(.accentColor)
                     Text("Cortex")
@@ -5546,14 +5546,15 @@ struct CortexView: View {
                 } label: {
                     Label("Connections", systemImage: "lock.shield")
                         .labelStyle(.titleAndIcon)
-                        .frame(minHeight: 36)
+                        .frame(minHeight: CortexDesign.controlHeight)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
                 CortexLayerStatusPill(state: state)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            .padding(.horizontal, CortexDesign.Space.md)
+            .padding(.vertical, CortexDesign.Space.sm)
+            Divider().overlay(CortexDesign.hairline)
         }
         .background(CortexDesign.appBackground)
     }
