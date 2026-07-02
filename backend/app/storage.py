@@ -8723,8 +8723,14 @@ class CortexStore:
                 mode_counts["lexical_fallback"] = len(lexical_rows)
                 rows.extend(row for row in lexical_rows if row["id"] not in existing_ids)
                 rows = self._diversify_memory_rows(rows, limit, scoped_to_source=scoped_to_memory)
-            if sector is None and layer is None and not scoped_to_memory and (task_intent or not rows):
-                task_rows = self._task_search_rows(conn, user_id, query, candidate_limit, kind, user_settings)
+            if layer is None and not scoped_to_memory and (task_intent or not rows):
+                # Tasks are sector-fenced inside _task_search_rows via their
+                # capture's memory sector, so a project-scoped Ask surfaces that
+                # project's open tasks (previously dropped entirely) without
+                # leaking other projects' tasks.
+                task_rows = self._task_search_rows(
+                    conn, user_id, query, candidate_limit, kind, user_settings, sector=sector
+                )
                 mode_counts["task"] = len(task_rows)
 
         memory_results = [self._memory_from_row(row) for row in rows]
@@ -16586,6 +16592,8 @@ class CortexStore:
         limit: int,
         kind: str | None,
         user_settings: dict[str, Any],
+        *,
+        sector: str | None = None,
     ) -> list[Any]:
         task_intent = self._query_has_task_intent(query)
         terms = self._lexical_fallback_terms(query, limit=14)
@@ -16595,7 +16603,7 @@ class CortexStore:
         if not task_intent and not meaningful_terms:
             return []
 
-        filters, params = self._task_filters(user_id, user_settings, alias="t", capture_alias="c", kind=kind)
+        filters, params = self._task_filters(user_id, user_settings, alias="t", capture_alias="c", kind=kind, sector=sector)
         term_params: list[Any] = []
         if meaningful_terms:
             term_filters = []
@@ -17296,12 +17304,28 @@ class CortexStore:
         alias: str = "t",
         capture_alias: str = "c",
         kind: str | None = None,
+        sector: str | None = None,
     ) -> tuple[list[str], list[Any]]:
         filters = [f"{alias}.user_id = ?", f"{alias}.status = 'open'"]
         params: list[Any] = [user_id]
         if kind:
             filters.append(f"{alias}.kind = ?")
             params.append(kind)
+        normalized_sector = _normalize_sector_filter(sector)
+        if normalized_sector:
+            # Tasks have no sector column, so attribute them to a project via the
+            # sector of any memory extracted from the same capture. This lets a
+            # project-scoped Ask surface that project's open tasks without leaking
+            # tasks that belong to other projects.
+            filters.append(
+                f"""EXISTS (
+                  SELECT 1 FROM memories m_sector
+                  WHERE m_sector.capture_id = {alias}.capture_id
+                    AND m_sector.user_id = {alias}.user_id
+                    AND lower(COALESCE(m_sector.sector, '')) = ?
+                )"""
+            )
+            params.append(normalized_sector.lower())
         capture_missing = f"({alias}.capture_id IS NULL OR {capture_alias}.id IS NULL)"
         filters.append(
             f"""(

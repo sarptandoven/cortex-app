@@ -364,6 +364,107 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         self.assertFalse([rule["memory_id"] for rule in adaptation["rules"] if not rule.get("source_url")])
         self.assertFalse(adaptation["coverage_warnings"])
 
+    def test_natural_action_ask_scopes_open_tasks_without_cross_project_leak(self) -> None:
+        # A natural, task-intent Ask ("what should I do next for Project X")
+        # scoped to a project must surface and cite that project's open tasks and
+        # must not leak tasks/decisions from a different project.
+        self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+        self.store._vector_ready = lambda conn: False
+
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Project Meridian beta outreach working note.",
+            source="obsidian",
+            source_url="local-file://Project%20Meridian/Tasks.md#line=3&excerpt=meridian-task",
+            title="Project Meridian tasks",
+            extracted={
+                "_timestamp": "2026-06-01T00:00:00+00:00",
+                "summary": "Meridian tasks.",
+                "records": [
+                    {
+                        "id": "mer_anchor",
+                        "kind": "decision",
+                        "layer": "decision",
+                        "content": "Project Meridian beta outreach: invite design partners first.",
+                        "summary": "Meridian design-partner-first.",
+                        "confidence": "confirmed",
+                        "importance": 5,
+                        "sector": "Project Meridian",
+                        "topics": ["project-meridian", "beta"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [
+                    {
+                        "id": "mer_task_invite",
+                        "kind": "action",
+                        "content": "Send the Project Meridian beta outreach invite to Alex with data-retention language.",
+                        "status": "open",
+                        "importance": 5,
+                        "topics": ["project-meridian", "beta", "outreach"],
+                        "entity_ids": [],
+                    }
+                ],
+                "entities": [],
+            },
+        )
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Project Atlas outreach working note.",
+            source="slack",
+            source_url="https://slack.example.com/archives/C999/p1780000000",
+            title="Project Atlas tasks",
+            extracted={
+                "_timestamp": "2026-06-01T00:00:00+00:00",
+                "summary": "Atlas tasks.",
+                "records": [
+                    {
+                        "id": "atlas_anchor",
+                        "kind": "decision",
+                        "layer": "decision",
+                        "content": "Project Atlas beta outreach: invite enterprise leads first.",
+                        "summary": "Atlas enterprise-first.",
+                        "confidence": "confirmed",
+                        "importance": 5,
+                        "sector": "Project Atlas",
+                        "topics": ["project-atlas", "beta"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [
+                    {
+                        "id": "atlas_task_invite",
+                        "kind": "action",
+                        "content": "Send the Project Atlas beta outreach invite next.",
+                        "status": "open",
+                        "importance": 5,
+                        "topics": ["project-atlas", "beta", "outreach"],
+                        "entity_ids": [],
+                    }
+                ],
+                "entities": [],
+            },
+        )
+
+        answer = self.store.answer_query(
+            self.user_id,
+            "what should I do next for Project Meridian beta outreach",
+            limit=8,
+            sector="Project Meridian",
+        )
+        result_ids = {item["id"] for item in answer["results"]}
+        citation_ids = {citation["id"] for citation in answer["citations"]}
+
+        # The project's own open task is surfaced and cited (source-backed)...
+        self.assertIn("mer_task_invite", result_ids)
+        self.assertIn("mer_task_invite", citation_ids)
+        # ...the project's decision context is still present...
+        self.assertIn("mer_anchor", result_ids)
+        # ...and nothing from the other project leaks in.
+        self.assertNotIn("atlas_task_invite", result_ids)
+        self.assertNotIn("atlas_anchor", result_ids)
+        self.assertTrue(all(citation["source_url"] for citation in answer["citations"]))
+
     def test_seed_representative_memories_covers_every_layer(self) -> None:
         memories = seed_representative_memories(self.store, self.user_id)
 
