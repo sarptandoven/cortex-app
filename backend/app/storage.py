@@ -106,6 +106,10 @@ CONFIDENCE_RETRIEVAL_BOOSTS: dict[str, float] = {
     "weak": -0.012,
     "low": -0.016,
 }
+# A claimed job leases its lock for this long. If a worker dies mid-job (OOM/SIGKILL/deploy
+# restart/hang), the lease expires and the job is reclaimed instead of being stuck in 'running'
+# forever. Matches job_health's stale_after default so "stale_running" and reclaim agree.
+MEMORY_JOB_LEASE_SECONDS = 15 * 60
 SOURCE_QUALITY_RETRIEVAL_BOOST_MAX = 0.012
 SAME_CAPTURE_RELATION_FULL_PAIR_LIMIT = 80
 SAME_CAPTURE_RELATION_PER_MEMORY_LIMIT = 6
@@ -9108,6 +9112,7 @@ class CortexStore:
             include_related=True,
             as_of=as_of,
         )
+        person_injected_ids: set[str] = set()
         person_entity = self._query_person_entity(user_id, query)
         if person_entity:
             person_memories = self._person_linked_memories(
@@ -9121,8 +9126,8 @@ class CortexStore:
                 as_of=as_of,
             )
             if person_memories:
-                person_ids = {str(item.get("id") or "") for item in person_memories}
-                candidates = [*person_memories, *(item for item in candidates if str(item.get("id") or "") not in person_ids)][:search_limit]
+                person_injected_ids = {str(item.get("id") or "") for item in person_memories}
+                candidates = [*person_memories, *(item for item in candidates if str(item.get("id") or "") not in person_injected_ids)][:search_limit]
         support_query = self._answer_support_query(query)
         if support_query:
             support_candidates = self.search(
@@ -9144,7 +9149,18 @@ class CortexStore:
                 ][:search_limit]
         primary_candidates = [item for item in candidates if not self._is_related_result(item)]
         primary_by_id = {str(item.get("id") or ""): item for item in primary_candidates}
-        primary_source_backed = [item for item in primary_candidates if self._has_source_citation(item)]
+        query_terms = self._lexical_fallback_terms(query, limit=12)
+        query_has_layer_intent = bool(query_layer_boosts(query))
+        primary_source_backed = [
+            item
+            for item in primary_candidates
+            if self._has_source_citation(item)
+            and self._primary_citation_is_relevant(
+                item,
+                query_terms,
+                exempt=query_has_layer_intent or str(item.get("id") or "") in person_injected_ids,
+            )
+        ]
         related_source_backed = [
             item
             for item in candidates
@@ -9554,6 +9570,21 @@ class CortexStore:
         matched = self._item_matched_query_terms(item, terms)
         minimum = 2 if len(terms) <= 4 else max(3, len(terms) // 2)
         return len(matched) >= minimum
+
+    def _primary_citation_is_relevant(self, item: dict[str, Any], query_terms: list[str], *, exempt: bool = False) -> bool:
+        # Ask must cite or abstain. Primary candidates are the highest-ranked search
+        # hits, but on a small corpus the lexical/LIKE fallback returns a best-available
+        # memory even when nothing truly matches (e.g. "capital of Mongolia" surfacing a
+        # pricing note). Require at least one meaningful query term to actually appear in
+        # the memory before it can be cited, so unrelated fallback hits produce an honest
+        # abstention instead of a misleading citation. Exemptions preserve legitimate
+        # non-keyword retrieval: layer-intent queries ("how do I usually write?", "what
+        # changed recently?") and person-briefing hits are relevant by construction, not
+        # by surface term overlap. When the query has no extractable terms, keep prior
+        # behavior and let ranking decide rather than risk a wrong abstention.
+        if exempt or not query_terms:
+            return True
+        return bool(self._item_matched_query_terms(item, query_terms))
 
     def _item_matched_query_terms(self, item: dict[str, Any], terms: list[str]) -> set[str]:
         topics = item.get("topics") if isinstance(item.get("topics"), list) else []
@@ -14181,8 +14212,48 @@ class CortexStore:
         row = conn.execute("SELECT * FROM memory_jobs WHERE unique_key = ?", (unique_key,)).fetchone()
         return self._job_from_row(row)
 
+    def _reap_expired_jobs(self, conn: sqlite3.Connection, user_id: str, timestamp: str) -> None:
+        """Recover jobs orphaned in 'running' by a dead worker (expired lease). Jobs with
+        attempts left are requeued for reclaim; jobs out of attempts fail terminally so they
+        can't loop forever. A live worker holds a future lease, so healthy jobs are untouched."""
+        conn.execute(
+            """
+            UPDATE memory_jobs
+            SET status = 'failed',
+                locked_by = NULL,
+                locked_until = NULL,
+                updated_at = ?,
+                completed_at = ?,
+                last_error = COALESCE(NULLIF(last_error, ''), 'worker lease expired')
+            WHERE user_id = ?
+              AND status = 'running'
+              AND locked_until IS NOT NULL
+              AND locked_until < ?
+              AND attempts >= max_attempts
+            """,
+            (timestamp, timestamp, user_id, timestamp),
+        )
+        conn.execute(
+            """
+            UPDATE memory_jobs
+            SET status = 'queued',
+                locked_by = NULL,
+                locked_until = NULL,
+                updated_at = ?,
+                run_at = ?
+            WHERE user_id = ?
+              AND status = 'running'
+              AND locked_until IS NOT NULL
+              AND locked_until < ?
+              AND attempts < max_attempts
+            """,
+            (timestamp, timestamp, user_id, timestamp),
+        )
+
     def _claim_next_job(self, user_id: str, worker_id: str, *, job_type: str | None = None) -> dict[str, Any] | None:
         timestamp = now_iso()
+        parsed_now = _parse_iso_timestamp(timestamp) or datetime.now(timezone.utc)
+        lease_until = (parsed_now + timedelta(seconds=MEMORY_JOB_LEASE_SECONDS)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         normalized_job_type = str(job_type or "").strip()
         job_type_filter = "AND job_type = ?" if normalized_job_type else ""
         params: list[Any] = [user_id, timestamp]
@@ -14190,6 +14261,7 @@ class CortexStore:
             params.append(normalized_job_type)
         with connect(self.db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
+            self._reap_expired_jobs(conn, user_id, timestamp)
             row = conn.execute(
                 f"""
                 SELECT *
@@ -14215,7 +14287,7 @@ class CortexStore:
                     updated_at = ?
                 WHERE id = ?
                 """,
-                (worker_id, timestamp, timestamp, row["id"]),
+                (worker_id, lease_until, timestamp, row["id"]),
             )
             claimed = conn.execute("SELECT * FROM memory_jobs WHERE id = ?", (row["id"],)).fetchone()
         return self._job_from_row(claimed)
@@ -14927,7 +14999,13 @@ class CortexStore:
 
     def _fail_job(self, job: dict[str, Any], error: str) -> dict[str, Any]:
         timestamp = now_iso()
-        final_status = "failed" if int(job.get("attempts", 0)) >= int(job.get("max_attempts", 3)) else "queued"
+        attempts = int(job.get("attempts", 0))
+        final_status = "failed" if attempts >= int(job.get("max_attempts", 3)) else "queued"
+        # Exponential backoff on requeue so a transient failure (e.g. an embeddings 429) isn't
+        # re-claimed in the same tick and hammered — _claim_next_job gates on run_at <= now.
+        backoff_seconds = min(300, 30 * (2 ** max(0, attempts - 1)))
+        parsed_now = _parse_iso_timestamp(timestamp) or datetime.now(timezone.utc)
+        run_at = (parsed_now + timedelta(seconds=backoff_seconds)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         with connect(self.db_path) as conn:
             conn.execute(
                 """
@@ -14936,10 +15014,11 @@ class CortexStore:
                     last_error = ?,
                     locked_by = NULL,
                     locked_until = NULL,
-                    updated_at = ?
+                    updated_at = ?,
+                    run_at = ?
                 WHERE id = ?
                 """,
-                (final_status, error[:500], timestamp, job["id"]),
+                (final_status, error[:500], timestamp, run_at, job["id"]),
             )
             if job.get("object_type") == "capture":
                 conn.execute(

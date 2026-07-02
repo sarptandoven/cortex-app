@@ -1795,6 +1795,48 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
             },
         )
 
+    def test_ask_abstains_on_unrelated_query_instead_of_citing_noise(self) -> None:
+        # Core trust contract: Ask cites or abstains. On a small corpus the search
+        # fallback returns a best-available memory even when nothing matches; Ask
+        # must not present that as a citation for an unrelated question.
+        self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
+        cap = self.store.save_capture(
+            user_id=self.user_id,
+            content="We decided Cortex Pro will be priced at $19/month because early users found $29 too steep.",
+            source="obsidian",
+            source_url="local-file://Pricing.md#line=1&excerpt=abc123",
+            title="Pricing Decision",
+            extracted={
+                "_timestamp": "2026-05-01T00:00:00+00:00",
+                "summary": "Pricing decision.",
+                "records": [
+                    {
+                        "id": "abstain_pricing_decision",
+                        "kind": "decision",
+                        "layer": "decision",
+                        "content": "We decided Cortex Pro will be priced at $19/month because early users found $29 too steep.",
+                        "summary": "Cortex Pro priced at $19/month.",
+                        "confidence": "confirmed",
+                        "importance": 4,
+                        "topics": ["pricing", "cortex"],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+        self.store.approve_capture(self.user_id, cap["capture_id"])
+
+        related = self.store.answer_query(self.user_id, "What did we decide about pricing")
+        self.assertEqual(related["status"], "cited")
+        self.assertGreaterEqual(len(related["citations"]), 1)
+
+        for unrelated in ("What is the capital of Mongolia", "How do I fix a flat bicycle tire"):
+            answer = self.store.answer_query(self.user_id, unrelated)
+            self.assertEqual(answer["status"], "no_cited_evidence", unrelated)
+            self.assertEqual(answer["citations"], [], unrelated)
+
     def test_recency_boost_prefers_fresh_memory_in_near_tie(self) -> None:
         self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
         now = datetime.now(timezone.utc)
