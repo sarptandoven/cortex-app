@@ -2685,6 +2685,7 @@ final class AppState: ObservableObject {
     @Published var onboardingBackupDecision: String = UserDefaults.standard.string(forKey: "onboardingBackupDecision.v1") ?? ""
     @Published var integrationStates: [String: AIIntegrationState] = [:]
     @Published var isBusy: Bool = false
+    @Published var backendRetryInProgress: Bool = false
     @Published var connectorSyncingIDs: Set<String> = []
     @Published var connectorOAuthStartingIDs: Set<String> = []
     @Published var connectorLastMessages: [String: String] = [:]
@@ -2770,6 +2771,20 @@ final class AppState: ObservableObject {
     var onboardingHasConnectedMemoryLayer: Bool {
         hasConnectedSourceAccount
             || hasConnectedObsidianVault
+    }
+
+    /// True when the local memory engine has clearly failed or stalled starting, so the
+    /// first-run flow can offer a recovery path instead of spinning on "Starting…" forever.
+    var backendNeedsRecovery: Bool {
+        guard !isLocalServiceReady else { return false }
+        let lowered = backendStatus.lowercased()
+        return lowered.contains("failed")
+            || lowered.contains("did not become ready")
+            || lowered.contains("still starting")
+            || lowered.contains("offline")
+            || lowered.contains("unavailable")
+            || lowered.contains("incompatible")
+            || lowered.contains("error")
     }
 
     var onboardingHasSyncedMemory: Bool {
@@ -3042,6 +3057,30 @@ final class AppState: ObservableObject {
         backendStatus = message
         status = message
         _ = await registerMCPToken()
+    }
+
+    /// User-triggered retry when the memory engine failed or stalled during first run.
+    /// Re-runs the supervisor and reloads the health diagnostics that gate the vault step.
+    func retryBackendStart() {
+        guard !backendRetryInProgress else { return }
+        backendRetryInProgress = true
+        Task { [weak self] in
+            guard let self else { return }
+            await self.ensureBackend()
+            await self.loadDiagnostics()
+            await self.loadReliability()
+            self.backendRetryInProgress = false
+        }
+    }
+
+    /// Reveal the backend log in Finder so a stuck first-run user can share it for support.
+    func revealBackendLog() {
+        let url = URL(fileURLWithPath: backendLogPath)
+        if FileManager.default.fileExists(atPath: url.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            NSWorkspace.shared.open(url.deletingLastPathComponent())
+        }
     }
 
     private func registerMCPToken() async -> Bool {

@@ -194,10 +194,51 @@ struct OnboardingVaultStep: View {
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            if state.diagnostics?.vault != nil {
+            if state.isLocalServiceReady {
                 OnboardingCheckRow(title: "Private memory ready", detail: "Next, connect a source so Cortex can start finding useful memory.", systemImage: "checkmark.seal.fill", color: .green)
+            } else if state.backendNeedsRecovery {
+                OnboardingBackendRecoveryCard(state: state)
             } else {
                 OnboardingCheckRow(title: "Starting private memory", detail: state.displayBackendStatus, systemImage: "clock", color: .orange)
+            }
+        }
+    }
+}
+
+struct OnboardingBackendRecoveryCard: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            OnboardingCheckRow(
+                title: "Memory engine needs a hand",
+                detail: state.displayBackendStatus,
+                systemImage: "exclamationmark.triangle.fill",
+                color: .orange
+            )
+            Text("Cortex couldn't finish starting its private memory engine. This is usually temporary — try again, and if it keeps happening the log helps us fix it.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                Button {
+                    state.retryBackendStart()
+                } label: {
+                    if state.backendRetryInProgress {
+                        Label("Starting…", systemImage: "arrow.triangle.2.circlepath")
+                    } else {
+                        Label("Try Again", systemImage: "arrow.clockwise")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(state.backendRetryInProgress)
+
+                Button {
+                    state.revealBackendLog()
+                } label: {
+                    Label("Show Log", systemImage: "doc.text.magnifyingglass")
+                }
+                .buttonStyle(.bordered)
             }
         }
     }
