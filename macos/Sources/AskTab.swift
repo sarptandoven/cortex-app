@@ -6,7 +6,7 @@ struct AskTab: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
                 AskHeaderSection()
                 if hasReviewedMemory {
                     AskQuerySection(state: state)
@@ -35,7 +35,7 @@ struct AskTab: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
-            .padding(16)
+            .padding(CortexDesign.Space.md)
         }
         .task {
             await state.loadSourceConnectivity()
@@ -90,27 +90,22 @@ struct AskQuerySection: View {
     @ObservedObject var state: AppState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 12) {
-                TextField("Ask about a project, person, decision, or phrase", text: $state.searchQuery)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.title3)
-                    .frame(minHeight: 52)
-                    .onSubmit { state.runSearch() }
-                Button {
-                    state.runSearch()
-                } label: {
-                    Label("Ask", systemImage: "magnifyingglass")
-                        .frame(minWidth: 104, minHeight: 52)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+        HStack(spacing: CortexDesign.Space.md) {
+            TextField("Ask about a project, person, decision, or phrase", text: $state.searchQuery)
+                .textFieldStyle(.roundedBorder)
+                .font(.title3)
+                .frame(minHeight: 52)
+                .onSubmit { state.runSearch() }
+            Button {
+                state.runSearch()
+            } label: {
+                Label("Ask", systemImage: "magnifyingglass")
+                    .frame(minWidth: 104, minHeight: 52)
             }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
         }
-        .padding(16)
-        .background(CortexDesign.panelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.softBorder))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .cortexCard(padding: CortexDesign.Space.md, background: CortexDesign.panelBackground)
     }
 
 }
@@ -267,10 +262,7 @@ struct AskMemoryContextStrip: View {
                 }
             }
         }
-        .padding(12)
-        .background(CortexDesign.panelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.softBorder))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .cortexCard(padding: CortexDesign.Space.md, background: CortexDesign.panelBackground)
     }
 
     private var freshnessLabel: String {

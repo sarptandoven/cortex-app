@@ -6,7 +6,7 @@ struct ReviewTab: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: CortexDesign.Space.lg) {
                 ReviewHeaderSection(state: state)
                 if shouldShowSourceHealth {
                     ReviewSourceHealthStrip(state: state)
@@ -14,7 +14,7 @@ struct ReviewTab: View {
                 ReviewInboxSection(state: state, captures: state.inbox)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(20)
+            .padding(CortexDesign.Space.lg)
         }
         .task {
             await state.loadSourceConnectivity()
@@ -191,10 +191,7 @@ struct ReviewSourceHealthStrip: View {
                 }
             }
         }
-        .padding(12)
-        .background(CortexDesign.panelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.softBorder))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .cortexCard(padding: CortexDesign.Space.md, background: CortexDesign.panelBackground)
     }
 
     private var freshnessLabel: String {
@@ -500,11 +497,7 @@ struct ReviewQueueCaptureCard: View {
                 .controlSize(.large)
             }
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(CortexDesign.panelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.softBorder))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .cortexCard(padding: CortexDesign.Space.lg, background: CortexDesign.panelBackground)
     }
 
     private var title: String {
