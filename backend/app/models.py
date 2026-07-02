@@ -875,6 +875,48 @@ class MCPTokenRegistrationResponse(BaseModel):
     updated_at: str
 
 
+class UserProvisionRequest(BaseModel):
+    user_id: str = Field(..., min_length=1, max_length=160)
+    display_name: str = Field(default="", max_length=160)
+    plan: str = Field(default="free", max_length=60)
+    metadata: dict[str, Any] | None = None
+    api_scopes: list[str] | None = None
+    mcp_scopes: list[str] | None = None
+    allow_existing: bool = False
+
+
+class ProvisionedTokenModel(BaseModel):
+    token: str
+    token_id: str | None = None
+    scopes: list[str] | None = None
+
+
+class UserRecordModel(BaseModel):
+    user_id: str
+    display_name: str = ""
+    plan: str = "free"
+    status: str = "active"
+    metadata: dict[str, Any] = {}
+    created_at: str
+    updated_at: str
+
+
+class UserProvisionResponse(BaseModel):
+    user: UserRecordModel
+    shard: dict[str, Any]
+    api_token: ProvisionedTokenModel
+    mcp_token: ProvisionedTokenModel
+
+
+class UserListResponse(BaseModel):
+    results: list[UserRecordModel]
+    total: int
+
+
+class UserStatusResponse(BaseModel):
+    user: UserRecordModel
+
+
 class APITokenRegistrationRequest(BaseModel):
     token: str = Field(..., min_length=12, max_length=160)
     label: str = Field(default="REST API client", max_length=120)

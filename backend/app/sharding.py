@@ -115,7 +115,20 @@ class TokenControlIndex:
     );
     CREATE INDEX IF NOT EXISTS idx_scoped_token_index_audience ON scoped_token_index(audience, revoked_at);
     CREATE INDEX IF NOT EXISTS idx_scoped_token_index_user ON scoped_token_index(user_id, audience, revoked_at);
+    CREATE TABLE IF NOT EXISTS users (
+      user_id TEXT PRIMARY KEY,
+      display_name TEXT NOT NULL DEFAULT '',
+      plan TEXT NOT NULL DEFAULT 'free',
+      status TEXT NOT NULL DEFAULT 'active',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_users_status ON users(status, created_at);
     """
+
+    ACTIVE_USER_STATUS = "active"
+    USER_STATUSES = ("active", "suspended", "deleted")
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path).expanduser()
@@ -187,6 +200,16 @@ class TokenControlIndex:
                     candidate = self._token_hash(normalized, row["token_salt"])
                     if not secrets.compare_digest(candidate, row["token_hash"]):
                         continue
+                    # Reject tokens whose owner is suspended/deleted in the user
+                    # registry. Tokens minted before the registry existed have no
+                    # users row and stay valid (treated as active) for backward
+                    # compatibility.
+                    status_row = conn.execute(
+                        "SELECT status FROM users WHERE user_id = ?",
+                        (row["user_id"],),
+                    ).fetchone()
+                    if status_row is not None and str(status_row["status"] or "") != self.ACTIVE_USER_STATUS:
+                        return None
                     conn.execute(
                         "UPDATE scoped_token_index SET last_used_at = ? WHERE token_id = ?",
                         (timestamp, row["token_id"]),
@@ -229,8 +252,160 @@ class TokenControlIndex:
             try:
                 with conn:
                     conn.execute("DELETE FROM scoped_token_index WHERE user_id = ?", (user_id,))
+                    conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
             finally:
                 conn.close()
+
+    def register_user(
+        self,
+        user_id: str,
+        *,
+        display_name: str = "",
+        plan: str = "free",
+        status: str = "active",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized_user = str(user_id or "").strip()
+        if not normalized_user:
+            raise ValueError("user_id is required")
+        normalized_status = str(status or self.ACTIVE_USER_STATUS).strip().lower()
+        if normalized_status not in self.USER_STATUSES:
+            raise ValueError(f"status must be one of {self.USER_STATUSES}")
+        timestamp = _control_now_iso()
+        payload = json.dumps(metadata if isinstance(metadata, dict) else {}, sort_keys=True)
+        with self._lock:
+            conn = self._connect()
+            try:
+                with conn:
+                    existing = conn.execute(
+                        "SELECT created_at FROM users WHERE user_id = ?", (normalized_user,)
+                    ).fetchone()
+                    created_at = existing["created_at"] if existing else timestamp
+                    conn.execute(
+                        """
+                        INSERT INTO users (user_id, display_name, plan, status, metadata_json, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(user_id) DO UPDATE SET
+                          display_name = excluded.display_name,
+                          plan = excluded.plan,
+                          status = excluded.status,
+                          metadata_json = excluded.metadata_json,
+                          updated_at = excluded.updated_at
+                        """,
+                        (
+                            normalized_user,
+                            str(display_name or "")[:160],
+                            str(plan or "free")[:60],
+                            normalized_status,
+                            payload,
+                            created_at,
+                            timestamp,
+                        ),
+                    )
+            finally:
+                conn.close()
+        return self.get_user(normalized_user) or {}
+
+    def set_user_status(self, user_id: str, status: str) -> dict[str, Any] | None:
+        normalized_user = str(user_id or "").strip()
+        normalized_status = str(status or "").strip().lower()
+        if not normalized_user:
+            return None
+        if normalized_status not in self.USER_STATUSES:
+            raise ValueError(f"status must be one of {self.USER_STATUSES}")
+        if not self.path.exists():
+            return None
+        timestamp = _control_now_iso()
+        with self._lock:
+            conn = self._connect()
+            try:
+                with conn:
+                    cursor = conn.execute(
+                        "UPDATE users SET status = ?, updated_at = ? WHERE user_id = ?",
+                        (normalized_status, timestamp, normalized_user),
+                    )
+                    updated = cursor.rowcount
+            finally:
+                conn.close()
+        if not updated:
+            return None
+        return self.get_user(normalized_user)
+
+    def get_user(self, user_id: str) -> dict[str, Any] | None:
+        normalized_user = str(user_id or "").strip()
+        if not normalized_user or not self.path.exists():
+            return None
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT user_id, display_name, plan, status, metadata_json, created_at, updated_at FROM users WHERE user_id = ?",
+                (normalized_user,),
+            ).fetchone()
+        finally:
+            conn.close()
+        return self._user_from_row(row) if row else None
+
+    def list_users(self, *, limit: int = 100, status: str | None = None) -> list[dict[str, Any]]:
+        if not self.path.exists():
+            return []
+        capped_limit = max(1, min(int(limit or 100), 1000))
+        filters = []
+        params: list[Any] = []
+        if status:
+            filters.append("status = ?")
+            params.append(str(status).strip().lower())
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        params.append(capped_limit)
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                f"""
+                SELECT user_id, display_name, plan, status, metadata_json, created_at, updated_at
+                FROM users
+                {where}
+                ORDER BY created_at DESC, user_id
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [self._user_from_row(row) for row in rows]
+
+    def count_users(self, *, status: str | None = None) -> int:
+        if not self.path.exists():
+            return 0
+        conn = self._connect()
+        try:
+            if status:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM users WHERE status = ?", (str(status).strip().lower(),)
+                ).fetchone()
+            else:
+                row = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()
+        finally:
+            conn.close()
+        return int(row["n"] or 0)
+
+    def registered_user_ids(self, *, limit: int = 500, status: str | None = "active") -> list[str]:
+        return [str(user["user_id"]) for user in self.list_users(limit=limit, status=status)]
+
+    def _user_from_row(self, row: Any) -> dict[str, Any]:
+        try:
+            metadata = json.loads(row["metadata_json"] or "{}")
+        except json.JSONDecodeError:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        return {
+            "user_id": row["user_id"],
+            "display_name": row["display_name"],
+            "plan": row["plan"],
+            "status": row["status"],
+            "metadata": metadata,
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
 
     def summary(self) -> dict[str, Any]:
         if not self.path.exists():
@@ -263,13 +438,14 @@ class TokenControlIndex:
                 """
                 SELECT COUNT(*) AS active_ready_users
                 FROM (
-                  SELECT user_id
-                  FROM scoped_token_index
-                  WHERE revoked_at IS NULL
-                  GROUP BY user_id
+                  SELECT sti.user_id
+                  FROM scoped_token_index sti
+                  LEFT JOIN users u ON u.user_id = sti.user_id
+                  WHERE sti.revoked_at IS NULL AND COALESCE(u.status, 'active') = 'active'
+                  GROUP BY sti.user_id
                   HAVING
-                    SUM(CASE WHEN audience = 'api' THEN 1 ELSE 0 END) > 0
-                    AND SUM(CASE WHEN audience = 'mcp' THEN 1 ELSE 0 END) > 0
+                    SUM(CASE WHEN sti.audience = 'api' THEN 1 ELSE 0 END) > 0
+                    AND SUM(CASE WHEN sti.audience = 'mcp' THEN 1 ELSE 0 END) > 0
                 )
                 """
             ).fetchone()
@@ -295,14 +471,15 @@ class TokenControlIndex:
         try:
             rows = conn.execute(
                 """
-                SELECT user_id
-                FROM scoped_token_index
-                WHERE revoked_at IS NULL
-                GROUP BY user_id
+                SELECT sti.user_id
+                FROM scoped_token_index sti
+                LEFT JOIN users u ON u.user_id = sti.user_id
+                WHERE sti.revoked_at IS NULL AND COALESCE(u.status, 'active') = 'active'
+                GROUP BY sti.user_id
                 HAVING
-                  SUM(CASE WHEN audience = 'api' THEN 1 ELSE 0 END) > 0
-                  AND SUM(CASE WHEN audience = 'mcp' THEN 1 ELSE 0 END) > 0
-                ORDER BY user_id
+                  SUM(CASE WHEN sti.audience = 'api' THEN 1 ELSE 0 END) > 0
+                  AND SUM(CASE WHEN sti.audience = 'mcp' THEN 1 ELSE 0 END) > 0
+                ORDER BY sti.user_id
                 LIMIT ?
                 """,
                 (capped_limit,),
@@ -459,22 +636,35 @@ class StoreRegistry:
         return self._authenticate_scoped_token(token, audience="api", user_id=user_id)
 
     def _authenticate_scoped_token(self, token: str, *, audience: str, user_id: str | None = None) -> dict[str, Any] | None:
-        indexed = self.token_index.authenticate(token, audience=audience, user_id=user_id)
-        if indexed:
-            return indexed
-        if user_id:
-            method = getattr(self.store_for_user(user_id), f"authenticate_{audience}_token")
-            return method(token)
-        method = getattr(self.default_store, f"authenticate_{audience}_token")
-        scoped = method(token)
-        if scoped:
-            return scoped
-        for store in list(self._stores.values()):
-            method = getattr(store, f"authenticate_{audience}_token")
-            scoped = method(token)
-            if scoped:
-                return scoped
-        return None
+        scoped = self.token_index.authenticate(token, audience=audience, user_id=user_id)
+        if scoped is None:
+            # Fall back to per-shard token stores (tokens minted before the
+            # control index existed, or a cold control index).
+            if user_id:
+                method = getattr(self.store_for_user(user_id), f"authenticate_{audience}_token")
+                scoped = method(token)
+            else:
+                method = getattr(self.default_store, f"authenticate_{audience}_token")
+                scoped = method(token)
+                if scoped is None:
+                    for store in list(self._stores.values()):
+                        method = getattr(store, f"authenticate_{audience}_token")
+                        scoped = method(token)
+                        if scoped:
+                            break
+        if not scoped:
+            return None
+        # Enforce control-plane user status on every path. The control index
+        # already rejects suspended/deleted users, but the per-shard fallbacks
+        # authenticate against a shard's own token table and would otherwise
+        # bypass a suspension; re-check the registry here so a suspended user's
+        # tokens are rejected no matter which store matched.
+        owner = str(scoped.get("user_id") or "")
+        if owner:
+            registry_user = self.token_index.get_user(owner)
+            if registry_user is not None and str(registry_user.get("status") or "") != self.token_index.ACTIVE_USER_STATUS:
+                return None
+        return scoped
 
     def create_api_token(
         self,
@@ -548,6 +738,71 @@ class StoreRegistry:
         deleted = self.store_for_user(user_id).delete_user_data(user_id, include_backups=include_backups)
         self.token_index.delete_user(user_id)
         return deleted
+
+    def provision_user(
+        self,
+        user_id: str,
+        *,
+        display_name: str = "",
+        plan: str = "free",
+        metadata: dict[str, Any] | None = None,
+        api_scopes: list[str] | tuple[str, ...] | str | None = None,
+        mcp_scopes: list[str] | tuple[str, ...] | str | None = ("read",),
+        allow_existing: bool = False,
+    ) -> dict[str, Any]:
+        """Create a new hosted user end to end: register it in the control-plane
+        registry, materialize its isolated shard, and mint an initial API + MCP
+        token pair (returned once, in plaintext). Idempotency is opt-in via
+        `allow_existing`; by default re-provisioning a known user is rejected so a
+        second call cannot silently accumulate token pairs."""
+        normalized_user = str(user_id or "").strip()
+        if not normalized_user:
+            raise ValueError("user_id is required")
+        if not allow_existing and self.token_index.get_user(normalized_user) is not None:
+            raise ValueError(f"user '{normalized_user}' is already provisioned")
+        user = self.token_index.register_user(
+            normalized_user,
+            display_name=display_name,
+            plan=plan,
+            status=self.token_index.ACTIVE_USER_STATUS,
+            metadata=metadata,
+        )
+        assignment = self.assignment_for(normalized_user)
+        self.store_for_user(normalized_user)  # materialize the shard (db + vault)
+        api_token = self.create_api_token(normalized_user, label="Provisioned REST token", scopes=api_scopes)
+        mcp_token = self.create_mcp_token(normalized_user, label="Provisioned MCP token", scopes=mcp_scopes)
+        return {
+            "user": user,
+            "shard": assignment.as_dict(),
+            "api_token": {
+                "token": api_token["token"],
+                "token_id": api_token.get("token_id"),
+                "scopes": api_token.get("scopes"),
+            },
+            "mcp_token": {
+                "token": mcp_token["token"],
+                "token_id": mcp_token.get("token_id"),
+                "scopes": mcp_token.get("scopes"),
+            },
+        }
+
+    def list_users(self, *, limit: int = 100, status: str | None = None) -> list[dict[str, Any]]:
+        return self.token_index.list_users(limit=limit, status=status)
+
+    def get_user(self, user_id: str) -> dict[str, Any] | None:
+        return self.token_index.get_user(user_id)
+
+    def suspend_user(self, user_id: str) -> dict[str, Any] | None:
+        return self.token_index.set_user_status(user_id, "suspended")
+
+    def reactivate_user(self, user_id: str) -> dict[str, Any] | None:
+        return self.token_index.set_user_status(user_id, self.token_index.ACTIVE_USER_STATUS)
+
+    def deprovision_user(self, user_id: str, *, include_backups: bool | None = None) -> dict[str, Any]:
+        # Full removal: delete the shard data and purge tokens + registry row.
+        # In bucket mode backups are shared, so default to not touching them.
+        drop_backups = (self.router.mode != "bucket") if include_backups is None else bool(include_backups)
+        return self.delete_user_data(user_id, include_backups=drop_backups)
 
     def remember_oauth_pending(
         self,

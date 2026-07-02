@@ -207,6 +207,96 @@ class FastAPIContractTests(unittest.TestCase):
         finally:
             main_module.settings = original_settings
 
+    def test_admin_user_provisioning_and_isolation_over_http(self) -> None:
+        original_settings = main_module.settings
+        original_store = main_module.store
+        temp = tempfile.TemporaryDirectory()
+        try:
+            root = Path(temp.name)
+            hosted_settings = replace(
+                original_settings,
+                db_path=root / "hosted.sqlite",
+                vault_path=root / "hosted.vault",
+                shard_root=root / "shards",
+                default_user_id="hosted-default",
+                shard_mode="user",
+                require_scoped_api_tokens=True,
+            )
+            main_module.settings = hosted_settings
+            main_module.store = main_module.StoreRegistry.from_settings(hosted_settings)
+            admin = {"Authorization": "Bearer test-token"}
+
+            # A non-admin bearer cannot reach the control-plane admin endpoints.
+            forbidden = self.client.post(
+                "/v1/admin/users",
+                json={"user_id": "x"},
+                headers={"Authorization": "Bearer not-the-admin-token"},
+            )
+            self.assertEqual(forbidden.status_code, 403)
+
+            # Admin provisions a new user and receives an initial token pair once.
+            provisioned = self.client.post(
+                "/v1/admin/users",
+                json={
+                    "user_id": "alice",
+                    "display_name": "Alice",
+                    "plan": "pro",
+                    "api_scopes": ["read", "write"],
+                    "mcp_scopes": ["read"],
+                },
+                headers=admin,
+            )
+            self.assertEqual(provisioned.status_code, 201)
+            body = provisioned.json()
+            self.assertEqual(body["user"]["user_id"], "alice")
+            self.assertEqual(body["user"]["status"], "active")
+            alice_api = body["api_token"]["token"]
+            self.assertTrue(alice_api.startswith("cxa_"))
+            alice_headers = {"Authorization": f"Bearer {alice_api}"}
+            # Provisioning allocated an isolated shard for the user.
+            self.assertIn("alice", body["shard"]["shard_id"])
+
+            # Re-provisioning the same user is rejected (409).
+            duplicate = self.client.post("/v1/admin/users", json={"user_id": "alice"}, headers=admin)
+            self.assertEqual(duplicate.status_code, 409)
+
+            # Alice's scoped token cannot perform admin operations.
+            self.assertEqual(self.client.get("/v1/admin/users", headers=alice_headers).status_code, 403)
+
+            # Alice's token authenticates and can read her own (empty) memory.
+            ask = self.client.get("/v1/ask", params={"query": "hello", "limit": 5}, headers=alice_headers)
+            self.assertEqual(ask.status_code, 200)
+
+            # Alice cannot impersonate another user via the X-Cortex-User header:
+            # the token is rejected outright (401) when scoped to a different user,
+            # and never resolves to bob's shard.
+            spoof = self.client.get(
+                "/v1/ask",
+                params={"query": "hello", "limit": 5},
+                headers={**alice_headers, "X-Cortex-User": "bob"},
+            )
+            self.assertIn(spoof.status_code, (401, 403))
+
+            # Admin can list users.
+            listing = self.client.get("/v1/admin/users", headers=admin)
+            self.assertEqual(listing.status_code, 200)
+            self.assertEqual([user["user_id"] for user in listing.json()["results"]], ["alice"])
+
+            # Suspending a user immediately rejects their tokens; reactivating restores access.
+            suspend = self.client.post("/v1/admin/users/alice/suspend", headers=admin)
+            self.assertEqual(suspend.status_code, 200)
+            self.assertEqual(suspend.json()["user"]["status"], "suspended")
+            suspended = self.client.get("/v1/ask", params={"query": "hello", "limit": 5}, headers=alice_headers)
+            self.assertEqual(suspended.status_code, 401)
+            react = self.client.post("/v1/admin/users/alice/reactivate", headers=admin)
+            self.assertEqual(react.status_code, 200)
+            restored = self.client.get("/v1/ask", params={"query": "hello", "limit": 5}, headers=alice_headers)
+            self.assertEqual(restored.status_code, 200)
+        finally:
+            main_module.settings = original_settings
+            main_module.store = original_store
+            temp.cleanup()
+
     def test_hosted_ready_requires_runtime_scoped_token_control_plane(self) -> None:
         original_settings = main_module.settings
         original_store = main_module.store

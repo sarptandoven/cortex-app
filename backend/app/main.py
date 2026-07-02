@@ -16,6 +16,7 @@ from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
 from .mcp_tools import TOOLS, call_tool, tool_call_result, tools_for_scopes
 from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CalendarSyncRequest, CalendarSyncResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GitHubRepositoryDiscoveryRequest, GitHubRepositoryDiscoveryResponse, GitHubSyncRequest, GitHubSyncResponse, GmailSyncRequest, GmailSyncResponse, GoogleDriveSyncRequest, GoogleDriveSyncResponse, GoogleOAuthCompleteRequest, GoogleOAuthCompleteResponse, GoogleOAuthStartRequest, GoogleOAuthStartResponse, GraphResponse, JiraSyncRequest, JiraSyncResponse, JobRunResponse, LinearSyncRequest, LinearSyncResponse, ListResponse, MaintenanceResponse, ManagedOAuthCompleteRequest, ManagedOAuthCompleteResponse, ManagedOAuthStartRequest, ManagedOAuthStartResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, NotionSyncRequest, NotionSyncResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, OutlookSyncRequest, OutlookSyncResponse, ProductLoopResponse, QueuedCaptureResponse, RaindropSyncRequest, RaindropSyncResponse, ReadwiseSyncRequest, ReadwiseSyncResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SlackChannelDiscoveryRequest, SlackChannelDiscoveryResponse, SlackSyncRequest, SlackSyncResponse, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse, ZoteroSyncRequest, ZoteroSyncResponse
+from .models import UserListResponse, UserProvisionRequest, UserProvisionResponse, UserStatusResponse
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
 
@@ -290,8 +291,22 @@ def mcp_auth(authorization: str | None = Header(default=None), x_cortex_user: st
         }
     scoped = store.authenticate_mcp_token(token, user_id=x_cortex_user)
     if scoped:
+        if x_cortex_user and scoped["user_id"] != x_cortex_user:
+            raise HTTPException(status_code=403, detail="Cortex MCP token does not match requested user")
         return scoped
     raise HTTPException(status_code=401, detail="Missing or invalid Cortex MCP token")
+
+
+def admin_auth(authorization: str | None = Header(default=None)) -> bool:
+    """Gate control-plane/admin operations (user provisioning, listing) behind the
+    operator's global CORTEX_API_KEY. Scoped per-user tokens can never perform
+    these actions."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Cortex admin token")
+    token = authorization.split(" ", 1)[1].strip()
+    if settings.api_key and hmac.compare_digest(token, settings.api_key):
+        return True
+    raise HTTPException(status_code=403, detail="Cortex admin operations require the control-plane admin token")
 
 
 def _capture_page(message: str = "", status: str = "ready", token: str = "", title: str = "", url: str = "", content: str = "") -> str:
@@ -1633,6 +1648,59 @@ def revoke_integration_token(token_id: str, user_id: str = Depends(auth)) -> dic
     if not revoked:
         raise HTTPException(status_code=404, detail="Token not found")
     return revoked
+
+
+@app.post("/v1/admin/users", response_model=UserProvisionResponse, status_code=201)
+def admin_provision_user(request: UserProvisionRequest, _admin: bool = Depends(admin_auth)) -> dict[str, Any]:
+    try:
+        return store.provision_user(
+            request.user_id,
+            display_name=request.display_name,
+            plan=request.plan,
+            metadata=request.metadata,
+            api_scopes=request.api_scopes,
+            mcp_scopes=request.mcp_scopes if request.mcp_scopes is not None else ["read"],
+            allow_existing=request.allow_existing,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/v1/admin/users", response_model=UserListResponse)
+def admin_list_users(
+    status_filter: str | None = Query(default=None, alias="status", pattern="^(active|suspended|deleted)$"),
+    limit: int = Query(default=100, ge=1, le=1000),
+    _admin: bool = Depends(admin_auth),
+) -> dict[str, Any]:
+    users = store.list_users(limit=limit, status=status_filter)
+    return {"results": users, "total": len(users)}
+
+
+@app.post("/v1/admin/users/{user_id}/suspend", response_model=UserStatusResponse)
+def admin_suspend_user(user_id: str, _admin: bool = Depends(admin_auth)) -> dict[str, Any]:
+    user = store.suspend_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"user": user}
+
+
+@app.post("/v1/admin/users/{user_id}/reactivate", response_model=UserStatusResponse)
+def admin_reactivate_user(user_id: str, _admin: bool = Depends(admin_auth)) -> dict[str, Any]:
+    user = store.reactivate_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"user": user}
+
+
+@app.delete("/v1/admin/users/{user_id}")
+def admin_deprovision_user(user_id: str, _admin: bool = Depends(admin_auth)) -> dict[str, Any]:
+    if store.get_user(user_id) is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    try:
+        deleted = store.deprovision_user(user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"user_id": user_id, "deprovisioned": True, "deleted": deleted}
 
 
 @app.get("/v1/audit-log", response_model=ListResponse)

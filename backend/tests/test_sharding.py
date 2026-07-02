@@ -184,6 +184,77 @@ class ShardingTests(unittest.TestCase):
         self.assertTrue(scoped_mcp["control_index"])
         self.assertEqual(registry._stores, {})
 
+    def test_provision_user_creates_shard_tokens_and_registry_entry(self) -> None:
+        settings = self.settings(mode="user")
+        issuer = StoreRegistry.from_settings(settings)
+        result = issuer.provision_user("alice", display_name="Alice Example", plan="pro")
+
+        self.assertEqual(result["user"]["user_id"], "alice")
+        self.assertEqual(result["user"]["display_name"], "Alice Example")
+        self.assertEqual(result["user"]["plan"], "pro")
+        self.assertEqual(result["user"]["status"], "active")
+        self.assertEqual(result["shard"]["mode"], "user")
+        api_token = result["api_token"]["token"]
+        mcp_token = result["mcp_token"]["token"]
+        self.assertTrue(api_token.startswith("cxa_"))
+        self.assertTrue(mcp_token.startswith("cxm_"))
+
+        # A cold registry (nothing cached) authenticates the minted tokens to the
+        # right user purely from the control index, without opening the shard.
+        registry = StoreRegistry.from_settings(settings)
+        self.assertEqual(registry._stores, {})
+        self.assertEqual(registry.authenticate_api_token(api_token)["user_id"], "alice")
+        self.assertEqual(registry.authenticate_mcp_token(mcp_token)["user_id"], "alice")
+        self.assertEqual([user["user_id"] for user in registry.list_users()], ["alice"])
+        self.assertEqual(registry.control_plane_status()["active_ready_users"], 1)
+
+    def test_provision_user_rejects_duplicate_without_allow_existing(self) -> None:
+        registry = StoreRegistry.from_settings(self.settings(mode="user"))
+        registry.provision_user("alice")
+        with self.assertRaisesRegex(ValueError, "already provisioned"):
+            registry.provision_user("alice")
+        again = registry.provision_user("alice", allow_existing=True)
+        self.assertTrue(again["api_token"]["token"].startswith("cxa_"))
+
+    def test_provisioned_users_are_isolated(self) -> None:
+        registry = StoreRegistry.from_settings(self.settings(mode="user"))
+        alice = registry.provision_user("alice")
+        registry.provision_user("bob")
+
+        alice_token = alice["api_token"]["token"]
+        self.assertEqual(registry.authenticate_api_token(alice_token)["user_id"], "alice")
+        self.assertIsNone(registry.authenticate_api_token(alice_token, user_id="bob"))
+        self.assertEqual({user["user_id"] for user in registry.list_users()}, {"alice", "bob"})
+
+    def test_suspended_user_tokens_are_rejected_until_reactivated(self) -> None:
+        settings = self.settings(mode="user")
+        issuer = StoreRegistry.from_settings(settings)
+        api_token = issuer.provision_user("alice")["api_token"]["token"]
+
+        registry = StoreRegistry.from_settings(settings)
+        self.assertEqual(registry.authenticate_api_token(api_token)["user_id"], "alice")
+        self.assertEqual(registry.control_plane_status()["active_ready_users"], 1)
+
+        self.assertEqual(registry.suspend_user("alice")["status"], "suspended")
+        self.assertIsNone(registry.authenticate_api_token(api_token))
+        # A suspended user drops out of the "ready" enumeration so workers pause.
+        self.assertEqual(registry.control_plane_status()["active_ready_users"], 0)
+        self.assertEqual(registry.token_index.ready_user_ids(), [])
+
+        self.assertEqual(registry.reactivate_user("alice")["status"], "active")
+        self.assertEqual(registry.authenticate_api_token(api_token)["user_id"], "alice")
+        self.assertEqual(registry.control_plane_status()["active_ready_users"], 1)
+
+    def test_deprovision_user_removes_tokens_and_registry_entry(self) -> None:
+        registry = StoreRegistry.from_settings(self.settings(mode="user"))
+        api_token = registry.provision_user("alice")["api_token"]["token"]
+        self.assertEqual(registry.authenticate_api_token(api_token)["user_id"], "alice")
+
+        registry.deprovision_user("alice")
+        self.assertIsNone(registry.authenticate_api_token(api_token))
+        self.assertIsNone(registry.get_user("alice"))
+        self.assertEqual(registry.list_users(), [])
+
     def test_control_plane_requires_one_user_with_api_and_mcp_tokens(self) -> None:
         settings = self.settings(mode="bucket", shard_count=8)
         registry = StoreRegistry.from_settings(settings)
