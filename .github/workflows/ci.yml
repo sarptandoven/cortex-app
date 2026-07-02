@@ -49,7 +49,7 @@ jobs:
       - name: Run backend unit tests
         run: python -m unittest discover backend/tests
 
-      - name: Run retrieval quality evaluation
+      - name: Run retrieval quality regression gate
         run: python scripts/retrieval_eval.py
 
       - name: Run adaptation quality evaluation

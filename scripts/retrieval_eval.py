@@ -21,6 +21,30 @@ from backend.app.storage import BASELINE_10K_CONNECTOR_IDS, CortexStore, MEMORY_
 USER_ID = "retrieval-quality"
 SEED_TIMESTAMP = "2026-01-01T00:00:00Z"
 METRIC_K_VALUES = (1, 3)
+
+# Retrieval-quality regression gate. Floors are set just below current measured
+# values (overall top1/recall@1/recall@3 = 1.0; every category top1/recall@3 = 1.0)
+# so the gate catches real drops without being flaky. retrieval_eval.py exits
+# non-zero when any floor is breached, so CI blocks merges on a quality regression.
+RETRIEVAL_METRIC_THRESHOLDS: dict[str, Any] = {
+    "min_case_count": 45,
+    "overall": {"top1_accuracy": 0.95, "recall@1": 0.95, "recall@3": 0.97},
+    "per_category": {"top1_accuracy": 0.9, "recall@3": 0.9},
+    "required_categories": (
+        "style_recall",
+        "negative_recall",
+        "procedural_recall",
+        "temporal_recall",
+        "temporal_validity",
+        "sector_scoping",
+        "related_memory",
+        "source_backed_ranking",
+        "mixed_source_authority",
+        "direct_connector",
+        "paraphrase",
+        "focused",
+    ),
+}
 NOISY_IMPORT_SOURCES = {"chatgpt", "claude", "slack", "email", "docs", "notion", "cloud-docs", "calendar", "github"}
 DIRECT_CONNECTOR_SOURCES = {
     "calendar",
@@ -2726,11 +2750,51 @@ def run_retrieval_eval(db_path: Path, vault_path: Path | None = None, user_id: s
     return evaluate_retrieval(store, user_id)
 
 
+def check_retrieval_metric_thresholds(result: dict[str, Any]) -> list[str]:
+    """Return a list of regression-gate failures (empty list == pass).
+
+    Enforces the minimum corpus size, overall metric floors, presence of every
+    required layer/behavior category, and per-category metric floors from
+    RETRIEVAL_METRIC_THRESHOLDS.
+    """
+    failures: list[str] = []
+    metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+    overall = metrics.get("overall") if isinstance(metrics.get("overall"), dict) else {}
+    by_category = metrics.get("by_category") if isinstance(metrics.get("by_category"), dict) else {}
+
+    case_count = int(overall.get("case_count") or 0)
+    if case_count < RETRIEVAL_METRIC_THRESHOLDS["min_case_count"]:
+        failures.append(f"corpus shrank: case_count={case_count} < {RETRIEVAL_METRIC_THRESHOLDS['min_case_count']}")
+
+    for key, floor in RETRIEVAL_METRIC_THRESHOLDS["overall"].items():
+        value = float(overall.get(key) or 0.0)
+        if value < floor:
+            failures.append(f"overall {key}={value} < {floor}")
+
+    for category in RETRIEVAL_METRIC_THRESHOLDS["required_categories"]:
+        if category not in by_category:
+            failures.append(f"missing required category '{category}'")
+
+    for category, cat_metrics in sorted(by_category.items()):
+        if not isinstance(cat_metrics, dict):
+            continue
+        for key, floor in RETRIEVAL_METRIC_THRESHOLDS["per_category"].items():
+            value = float(cat_metrics.get(key) or 0.0)
+            if value < floor:
+                failures.append(f"category '{category}' {key}={value} < {floor}")
+    return failures
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run a lightweight Cortex retrieval quality harness.")
+    parser = argparse.ArgumentParser(description="Run the Cortex retrieval quality harness and regression gate.")
     parser.add_argument("--db-path", type=Path, help="Optional SQLite path. Defaults to a temporary database.")
     parser.add_argument("--vault-path", type=Path, help="Optional vault path. Defaults beside the SQLite database.")
     parser.add_argument("--user-id", default=USER_ID)
+    parser.add_argument(
+        "--report-only",
+        action="store_true",
+        help="Print metrics without failing on threshold regressions (local inspection).",
+    )
     args = parser.parse_args()
 
     if args.db_path:
@@ -2741,6 +2805,13 @@ def main() -> None:
             result = run_retrieval_eval(root / "retrieval-eval.sqlite", root / "Cortex.vault", args.user_id)
 
     print(json.dumps(result, indent=2, sort_keys=True))
+
+    failures = check_retrieval_metric_thresholds(result)
+    if failures and not args.report_only:
+        print("\nRETRIEVAL QUALITY GATE FAILED:", file=sys.stderr)
+        for failure in failures:
+            print(f"  - {failure}", file=sys.stderr)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
