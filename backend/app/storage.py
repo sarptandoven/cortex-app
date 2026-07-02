@@ -20,7 +20,7 @@ from .database import connect, sqlite_vec_status
 from .embeddings import VECTOR_DIMENSIONS, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status
 from .extractor import extract_context, now_iso, stable_id
 from .sqlite_runtime import SQLITE_RUNTIME, sqlite3
-from .source_ingest import SourceRecord, analyze_sources, import_source_records, import_source_records_page, supported_sources
+from .source_ingest import SourceRecord, analyze_sources, import_source_records_page, supported_sources
 from .vault import CortexVault
 
 
@@ -89,6 +89,22 @@ RECENCY_RETRIEVAL_BOOST_STEPS: tuple[tuple[float, float], ...] = (
 )
 IMPORTANCE_RETRIEVAL_BOOST_STEP = 0.0008
 IMPORTANCE_RETRIEVAL_BOOST_MAX = 0.0024
+# Confidence tie-breaker for retrieval ranking. Most memories are "confirmed" (the extractor
+# default), so this is uniform and inert for them; it only moves the ranking when extraction
+# assigns weaker confidence (e.g. inferred/low), so a shaky memory loses a near-tie to a
+# trusted one instead of confidence being ignored entirely. Kept small so it breaks ties
+# without overriding lexical/vector relevance.
+CONFIDENCE_RETRIEVAL_BOOSTS: dict[str, float] = {
+    "confirmed": 0.006,
+    "verified": 0.006,
+    "high": 0.006,
+    "probable": 0.0,
+    "medium": 0.0,
+    "inferred": -0.004,
+    "unverified": -0.008,
+    "weak": -0.012,
+    "low": -0.016,
+}
 SOURCE_QUALITY_RETRIEVAL_BOOST_MAX = 0.012
 SAME_CAPTURE_RELATION_FULL_PAIR_LIMIT = 80
 SAME_CAPTURE_RELATION_PER_MEMORY_LIMIT = 6
@@ -16287,7 +16303,8 @@ class CortexStore:
                     + self._temporal_boost(row, temporal_prefixes)
                     + self._source_quality_boost(row, source_policies)
                     + self._recency_boost(row, now=now)
-                    + self._importance_boost(row),
+                    + self._importance_boost(row)
+                    + self._confidence_boost(row),
                 }
             )
         return [item["row"] for item in sorted(ranked, key=lambda item: item["score"], reverse=True)]
@@ -16326,6 +16343,7 @@ class CortexStore:
             entry["score"] += self._source_quality_boost(entry["row"], source_policies)
             entry["score"] += self._recency_boost(entry["row"], now=now)
             entry["score"] += self._importance_boost(entry["row"])
+            entry["score"] += self._confidence_boost(entry["row"])
         return [item["row"] for item in sorted(ranked.values(), key=lambda item: item["score"], reverse=True)[:limit]]
 
     def _rank_rows_with_layer_boosts(
@@ -16565,6 +16583,10 @@ class CortexStore:
         except (TypeError, ValueError):
             return 0.0
         return min(IMPORTANCE_RETRIEVAL_BOOST_MAX, max(0, importance - 2) * IMPORTANCE_RETRIEVAL_BOOST_STEP)
+
+    def _confidence_boost(self, row: Any) -> float:
+        confidence = str(self._row_value(row, "confidence") or "").strip().lower()
+        return CONFIDENCE_RETRIEVAL_BOOSTS.get(confidence, 0.0)
 
     def _citation_quality_boost(self, row: Any) -> float:
         source_url = str(self._row_value(row, "source_url") or "").strip()

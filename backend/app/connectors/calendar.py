@@ -184,7 +184,6 @@ def _record_from_event(lines: list[str]) -> tuple[CalendarSyncRecord | None, lis
     for line in lines:
         name, value = _property_name_and_value(line)
         upper_name = name.upper()
-        upper_value = value.upper()
         if upper_name == "BEGIN":
             nested_depth += 1
             continue

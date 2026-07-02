@@ -7,7 +7,7 @@ from typing import Any, Callable
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
-from ._redaction import connector_error_payload, redact_error_message
+from ._redaction import connector_error_payload
 
 
 GITHUB_SOURCE = "github"
