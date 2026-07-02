@@ -288,13 +288,27 @@ def fetch_slack_records(
                 break
 
     channel_payloads = [{"id": item.channel_id, "name": item.name} for item in channel_specs]
+    if errors:
+        # `high_water_mark` is shared across independent channels, but the
+        # scheduler feeds it back as the `oldest` bound for every channel. If a
+        # channel failed (or was never reached) while another advanced the
+        # watermark, the failed channel's older messages would be permanently
+        # skipped on the next sync. Hold the watermark at the input `since` on
+        # any partial failure; per-channel next_cursors still let progressing
+        # channels resume, and channels that failed refetch from `since`
+        # (deduplicated downstream by stable external ids). Mirrors raindrop.
+        resolved_high_water_mark = since or None
+        resolved_cursor_value = since or None
+    else:
+        resolved_high_water_mark = high_water_mark
+        resolved_cursor_value = high_water_mark or since
     return SlackSync(
         channels=channel_payloads,
         records=records,
         records_found=records_found,
         records_returned=len(records),
-        high_water_mark=high_water_mark,
-        cursor_value=high_water_mark or since,
+        high_water_mark=resolved_high_water_mark,
+        cursor_value=resolved_cursor_value,
         next_cursors=next_cursors,
         errors=errors,
         api_base_url=base_url,

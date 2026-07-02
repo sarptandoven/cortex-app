@@ -190,6 +190,55 @@ class SlackConnectorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "channel"):
             fetch_slack_records(token="xoxb-test", channels=[])
 
+    def test_fetch_slack_records_partial_channel_failure_holds_shared_watermark(self) -> None:
+        # The high_water_mark is shared across independent channels but the
+        # scheduler feeds it back as the `oldest` bound for every channel. If one
+        # channel fails while another advances the watermark, the failed channel's
+        # older messages would be permanently skipped next sync. On any partial
+        # failure the watermark must stay pinned to the input `since`.
+        since = "2026-06-01T00:00:00Z"
+
+        def fake_request(url: str, headers: dict[str, str]):
+            parsed = urlparse(url)
+            if parsed.path.endswith("/auth.test"):
+                return {"ok": True, "user_id": "U1", "team": "Doppl"}
+            self.assertTrue(parsed.path.endswith("/conversations.history"))
+            channel = parse_qs(parsed.query)["channel"][0]
+            if channel == "CFAIL":
+                raise TimeoutError("slack history fetch failed")
+            return {
+                "ok": True,
+                "messages": [
+                    {
+                        "type": "message",
+                        "user": "U9",
+                        "text": "Newer message in the healthy channel.",
+                        "ts": "1893456000.000100",
+                    }
+                ],
+            }
+
+        sync = fetch_slack_records(
+            token="xoxb-test",
+            channels=["CFAIL|failing", "COK|healthy"],
+            since=since,
+            max_records=10,
+            request_json=fake_request,
+        )
+
+        # The healthy channel still produced its record (partial data is kept)...
+        self.assertEqual(sync.records_returned, 1)
+        self.assertTrue(sync.errors)
+        self.assertEqual(sync.errors[0]["channel"], "CFAIL")
+        healthy_captured_at = sync.records[0].captured_at
+        self.assertIsNotNone(healthy_captured_at)
+        # ...but the shared watermark must NOT jump to the healthy channel's newer
+        # timestamp; it stays at the input `since` so the failed channel's tail is
+        # re-fetched (deduplicated downstream) instead of skipped.
+        self.assertNotEqual(sync.high_water_mark, healthy_captured_at)
+        self.assertEqual(sync.high_water_mark, since)
+        self.assertEqual(sync.cursor_value, since)
+
 
 if __name__ == "__main__":
     unittest.main()

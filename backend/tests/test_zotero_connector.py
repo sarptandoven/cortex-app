@@ -142,6 +142,58 @@ class ZoteroConnectorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "since"):
             fetch_zotero_records(since="2026-06-30T00:00:00Z")
 
+    def test_fetch_zotero_records_page_failure_keeps_resume_offset_cursor(self) -> None:
+        # A mid-scan page failure must leave a resume cursor at the un-fetched
+        # offset. Otherwise next_cursor stays None, cursor_value falls back to the
+        # advanced version watermark, and the next scheduled sync's since=<version>
+        # permanently skips the older-version tail that was never fetched.
+        starts: list[str] = []
+
+        def fake_request(url: str, headers: dict[str, str]):
+            parsed = urlparse(url)
+            query = parse_qs(parsed.query)
+            start = query["start"][0]
+            starts.append(start)
+            if start == "0":
+                return [
+                    {
+                        "key": "A1",
+                        "version": 501,
+                        "data": {
+                            "key": "A1",
+                            "itemType": "journalArticle",
+                            "title": "Newest",
+                            "dateModified": "2026-06-30T10:00:00Z",
+                        },
+                    },
+                    {
+                        "key": "A2",
+                        "version": 500,
+                        "data": {
+                            "key": "A2",
+                            "itemType": "journalArticle",
+                            "title": "Second",
+                            "dateModified": "2026-06-30T09:00:00Z",
+                        },
+                    },
+                    "not-a-dict-so-records-stay-below-cap",
+                ]
+            raise TimeoutError("zotero page fetch failed")
+
+        sync = fetch_zotero_records(max_records=3, request_json=fake_request)
+
+        # Page 1 (start=0) parsed 2 records out of 3 payload entries, so the scan
+        # continued and attempted start=3, which failed.
+        self.assertEqual(starts, ["0", "3"])
+        self.assertEqual(sync.records_returned, 2)
+        self.assertTrue(sync.errors)
+        # The version watermark was advanced by the fetched records...
+        self.assertEqual(sync.high_water_mark, "501")
+        # ...but the resume cursor must point at the un-fetched offset so the
+        # scheduler resumes there (since=None) rather than skipping the tail.
+        self.assertEqual(sync.next_cursor, "3")
+        self.assertEqual(sync.cursor_value, "3")
+
 
 if __name__ == "__main__":
     unittest.main()

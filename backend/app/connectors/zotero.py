@@ -154,6 +154,15 @@ def fetch_zotero_records(
             next_cursor = str(start)
             break
 
+    if errors and next_cursor is None:
+        # A page-level failure breaks out of the loop with `start` still pointing
+        # at the un-fetched offset. Emit it as the resume cursor so the scheduler
+        # continues there (with since=None) instead of advancing `since` to the
+        # partial version watermark and permanently skipping the older-version
+        # tail. Mirrors the raindrop interruption guard; overlapping items are
+        # deduplicated downstream by their stable external ids.
+        next_cursor = str(start)
+
     return ZoteroSync(
         records=records,
         records_found=records_found,
