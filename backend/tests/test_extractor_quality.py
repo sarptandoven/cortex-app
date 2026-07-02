@@ -368,5 +368,76 @@ Highlight: I prefer Project HighlightOnly answers that keep source highlights ci
             self.assertNotIn(leaked, joined)
 
 
+import re
+
+
+def _milestone_note(count: int) -> str:
+    subsystems = ["auth", "billing", "search", "sync", "graph"]
+    return "\n".join(
+        f"The migration milestone number {i} shipped the {subsystems[i % len(subsystems)]} "
+        f"subsystem on day {i}."
+        for i in range(1, count + 1)
+    )
+
+
+def _milestones_covered(records: list[dict]) -> set[int]:
+    covered: set[int] = set()
+    for record in records:
+        match = re.search(r"milestone number (\d+)", record.get("content", ""))
+        if match:
+            covered.add(int(match.group(1)))
+    return covered
+
+
+class LargeCaptureExtractionTests(unittest.TestCase):
+    """A large flat free-form capture (a long pasted note or an un-chunked free-form
+    import doc) has no chunk markers, so it is extracted as a single unit. It must not be
+    silently truncated to the base per-capture candidate budget the way it was before the
+    proportional-budget fix (it dropped ~80% of a 200-fact note)."""
+
+    def test_large_flat_capture_is_not_truncated(self) -> None:
+        data = extract_local(_milestone_note(200), "note")
+        covered = _milestones_covered(data["records"])
+        # Before the fix this was exactly BASE_EXTRACTION_CANDIDATE_LIMIT (40) of 200.
+        self.assertGreaterEqual(
+            len(covered),
+            190,
+            f"large flat capture lost content: only {len(covered)}/200 facts survived",
+        )
+        self.assertGreater(len(covered), extractor.BASE_EXTRACTION_CANDIDATE_LIMIT * 2)
+
+    def test_sub_cap_flat_capture_keeps_every_candidate(self) -> None:
+        # A note below the base budget must still yield all of its facts (unchanged path).
+        count = extractor.BASE_EXTRACTION_CANDIDATE_LIMIT - 10
+        data = extract_local(_milestone_note(count), "note")
+        covered = _milestones_covered(data["records"])
+        self.assertEqual(len(covered), count)
+
+    def test_conversation_capture_keeps_focused_base_cap(self) -> None:
+        # Conversational captures keep the focused base budget: gating is turn-sensitive and
+        # large multi-turn exports are meant to be chunked upstream, not exploded here.
+        turns = []
+        for i in range(1, 61):
+            turns.append(
+                f"user: I want feature number {i} built with careful attention to detail please."
+            )
+            turns.append(f"assistant: Understood, I will build feature {i} for you soon.")
+        data = extract_local("--- Messages ---\n" + "\n".join(turns), "chatgpt")
+        self.assertLessEqual(len(data["records"]), extractor.BASE_EXTRACTION_CANDIDATE_LIMIT)
+        # With 60 distinct user turns the cap is genuinely engaged (not incidentally under it).
+        self.assertEqual(len(data["records"]), extractor.BASE_EXTRACTION_CANDIDATE_LIMIT)
+
+    def test_extraction_candidate_limit_policy(self) -> None:
+        base = extractor.BASE_EXTRACTION_CANDIDATE_LIMIT
+        ceiling = extractor.MAX_EXTRACTION_CANDIDATE_LIMIT
+        # Conversational: always the base budget regardless of size.
+        self.assertEqual(extractor._extraction_candidate_limit(5, True), base)
+        self.assertEqual(extractor._extraction_candidate_limit(5000, True), base)
+        # Flat: never below base, scales with content, clamped to the safety ceiling.
+        self.assertEqual(extractor._extraction_candidate_limit(5, False), base)
+        self.assertEqual(extractor._extraction_candidate_limit(base + 160, False), base + 160)
+        self.assertEqual(extractor._extraction_candidate_limit(ceiling + 500, False), ceiling)
+
+
 if __name__ == "__main__":
     unittest.main()

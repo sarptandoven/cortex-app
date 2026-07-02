@@ -24,6 +24,17 @@ ASSISTANT_ROLES = {"assistant", "model", "bot", "tool", "system", "chatgpt", "cl
 NAMED_SPEAKER_ROLE = "speaker"
 KNOWN_TURN_ROLES = USER_AUTHORED_ROLES | ASSISTANT_ROLES | {NAMED_SPEAKER_ROLE}
 PERSONAL_MEMORY_KINDS = {"preference", "style", "negative"}
+# Deterministic extraction keeps only the highest-priority candidates per capture so a
+# small note or a single conversation turn-set yields a focused memory set. Connector and
+# file imports pre-chunk structured exports (via chunk markers), so each chunk gets its own
+# budget. A large *flat* free-form capture (a long pasted note, or an un-chunked import doc
+# with no chunk markers) is a single unit, so a fixed cap would silently drop everything past
+# the top BASE_EXTRACTION_CANDIDATE_LIMIT candidates. For such non-conversational text we
+# scale the budget with the content (up to a safety ceiling) so nothing is lost; conversational
+# text keeps the focused base cap because its personal-memory gating is turn-sensitive and
+# large multi-turn exports are meant to be chunked upstream.
+BASE_EXTRACTION_CANDIDATE_LIMIT = 40
+MAX_EXTRACTION_CANDIDATE_LIMIT = 2000
 CONVERSATION_SOURCES = {
     "chatgpt",
     "claude",
@@ -228,6 +239,23 @@ Use stable IDs and keep each memory atomic. Return JSON only.""" + alias_instruc
     return _filter_disallowed_personal_records(normalized, raw_text, source, author_aliases)
 
 
+def _extraction_candidate_limit(memory_candidate_count: int, has_known_turns: bool) -> int:
+    """How many prioritized candidates one capture keeps as memories.
+
+    Conversational captures keep the focused base budget (each turn-set is meant to yield a
+    bounded memory set, its personal-memory gating is turn-sensitive, and large multi-turn
+    exports are chunked upstream). Flat free-form captures have no chunk boundaries, so we
+    scale the budget with the content — up to MAX_EXTRACTION_CANDIDATE_LIMIT — instead of
+    silently dropping everything past the base cap.
+    """
+    if has_known_turns:
+        return BASE_EXTRACTION_CANDIDATE_LIMIT
+    return max(
+        BASE_EXTRACTION_CANDIDATE_LIMIT,
+        min(memory_candidate_count, MAX_EXTRACTION_CANDIDATE_LIMIT),
+    )
+
+
 def _extract_locally(raw_text: str, source: str, author_aliases: Iterable[str] | None = None) -> dict[str, Any]:
     candidates = _sentence_candidates(raw_text, source, author_aliases=author_aliases)
     has_known_turns = any(candidate.get("role") in KNOWN_TURN_ROLES for candidate in candidates)
@@ -245,7 +273,8 @@ def _extract_locally(raw_text: str, source: str, author_aliases: Iterable[str] |
     records: list[dict[str, Any]] = []
     tasks: list[dict[str, Any]] = []
 
-    for candidate in _prioritized_extraction_candidates(memory_candidates, limit=40):
+    candidate_limit = _extraction_candidate_limit(len(memory_candidates), has_known_turns)
+    for candidate in _prioritized_extraction_candidates(memory_candidates, limit=candidate_limit):
         sentence = candidate["text"]
         lower = sentence.lower()
         personal_allowed = _allows_user_authored_memory(candidate, has_known_turns, allow_unattributed_personal_memory)

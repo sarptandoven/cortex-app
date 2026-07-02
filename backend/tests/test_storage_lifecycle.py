@@ -4347,6 +4347,40 @@ Never use [[Templates/Marketing]] boilerplate in memory.
         else:
             self.assertEqual(status["processing"]["embedding_status"], "not_available")
 
+    def test_large_manual_capture_recovers_all_memories_not_just_the_base_cap(self) -> None:
+        # A large pasted note goes through the manual-capture path (no import_id / no
+        # source_account_id), which is a single un-chunked unit. It must not be silently
+        # truncated to the base extraction budget: before the proportional-budget fix a
+        # 200-fact note produced exactly 40 memories and dropped the other 160.
+        subsystems = ["auth", "billing", "search", "sync", "graph"]
+        note = "\n".join(
+            f"The migration milestone number {i} shipped the {subsystems[i % len(subsystems)]} "
+            f"subsystem on day {i}."
+            for i in range(1, 201)
+        )
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
+            queued = self.store.enqueue_capture(
+                user_id=self.user_id,
+                content=note,
+                source="unit-test-large-note",
+                source_url=None,
+                title="Large pasted note",
+            )
+            capture_id = queued["capture_id"]
+            ran = self.store.run_due_jobs(self.user_id, limit=1)
+
+        self.assertEqual(ran["processed"], 1)
+        self.assertEqual(ran["jobs"][0]["status"], "succeeded")
+        status = self.store.capture_status(self.user_id, capture_id)
+        self.assertEqual(status["processing"]["extraction_status"], "succeeded")
+        self.assertGreaterEqual(
+            status["processing"]["memory_count"],
+            150,
+            "large manual capture lost content past the base extraction cap",
+        )
+        # A late fact (well past the old 40 cap) is retrievable, proving no silent drop.
+        self.assertTrue(self.store.search(self.user_id, "milestone number 190"))
+
     def test_source_readiness_reports_syncing_until_async_source_records_materialize(self) -> None:
         account = self.store.upsert_source_account(
             self.user_id,
