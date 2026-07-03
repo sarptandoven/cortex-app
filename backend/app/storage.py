@@ -1026,6 +1026,24 @@ def _normalize_as_of_filter(value: Any) -> str | None:
     return text
 
 
+def _normalize_validity_bound(value: Any, *, end_of_day: bool) -> Any:
+    """Canonicalize a stored valid_from/valid_to so string comparisons against now_iso()
+    ('...+00:00') are correct. LLM-extracted validity bounds are stored verbatim and are often
+    date-only ('2026-07-02') or 'Z'-suffixed. A bare date is a string prefix of a full timestamp,
+    so 'valid_to > now' wrongly reads False on the final valid day (dropping the memory from every
+    retrieval path); and 'Z' (0x5A) sorts above '+' (0x2B), breaking the same comparison. Expand a
+    bare date to start/end of day and rewrite a trailing 'Z' to '+00:00'. Empty/None and already-
+    normalized values pass through unchanged."""
+    text = str(value or "").strip()[:80]
+    if not text:
+        return value
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return f"{text}T23:59:59+00:00" if end_of_day else f"{text}T00:00:00+00:00"
+    if "T" in text and text.endswith("Z"):
+        return f"{text[:-1]}+00:00"
+    return text
+
+
 def _retrieval_filter_payload(
     *,
     source: str | None = None,
@@ -4396,6 +4414,7 @@ class CortexStore:
         archive_missing: bool = False,
         complete_snapshot: bool = False,
         archive_external_ids: set[str] | None = None,
+        persist_cursor: bool = True,
     ) -> dict[str, Any]:
         account_id = (account_id or "").strip()
         if not account_id:
@@ -4619,33 +4638,50 @@ class CortexStore:
         # re-save idempotent, so saved records dedupe and failed ones retry). After a bounded
         # number of consecutive failing pages, advance anyway so a permanently-unsaveable record
         # can't stall the account forever.
-        if failed > 0:
-            previous_cursor = self._latest_sync_cursor(user_id, account_id, cursor_name) or {}
-            previous_state = previous_cursor.get("state") if isinstance(previous_cursor.get("state"), dict) else {}
-            # The retry counter lives in the persisted cursor, not the connector-supplied state.
-            failing_pages = int(previous_state.get("consecutive_failing_pages") or 0) + 1
-            if failing_pages < MAX_CONSECUTIVE_FAILING_SYNC_PAGES:
-                cursor_value = previous_cursor.get("cursor_value")
-                high_water_mark = previous_cursor.get("high_water_mark")
-                for key in _FORWARD_PAGINATION_STATE_KEYS:
-                    cursor_state.pop(key, None)
-                cursor_state["consecutive_failing_pages"] = failing_pages
+        #
+        # persist_cursor=False lets a caller that fans one logical scan out over several batched
+        # calls defer the cursor decision to a single aggregate write after all batches — so a
+        # later clean batch can't overwrite an earlier batch's failure-hold and advance past
+        # records that were never saved.
+        cursor = None
+        if persist_cursor:
+            if failed > 0:
+                previous_cursor = self._latest_sync_cursor(user_id, account_id, cursor_name) or {}
+                previous_state = previous_cursor.get("state") if isinstance(previous_cursor.get("state"), dict) else {}
+                # The retry counter lives in the persisted cursor, not the connector-supplied state.
+                failing_pages = int(previous_state.get("consecutive_failing_pages") or 0) + 1
+                if failing_pages < MAX_CONSECUTIVE_FAILING_SYNC_PAGES:
+                    cursor_value = previous_cursor.get("cursor_value")
+                    high_water_mark = previous_cursor.get("high_water_mark")
+                    # Restore the forward-pagination token that fetched THIS page (from the
+                    # previously persisted cursor) so the next sync re-fetches the exact same
+                    # failing window for an idempotent retry. Dropping the token would leave
+                    # since=high_water_mark on the next run, which for a newest-first connector
+                    # permanently skips the entire older backlog (and never advances the failing-
+                    # page counter, so the account also never dead-letters). Keys absent from the
+                    # previous state are cleared as before.
+                    for key in _FORWARD_PAGINATION_STATE_KEYS:
+                        if key in previous_state:
+                            cursor_state[key] = previous_state[key]
+                        else:
+                            cursor_state.pop(key, None)
+                    cursor_state["consecutive_failing_pages"] = failing_pages
+                else:
+                    cursor_state["consecutive_failing_pages"] = 0
+                    cursor_state["skipped_failing_page_after_retries"] = failing_pages
             else:
-                cursor_state["consecutive_failing_pages"] = 0
-                cursor_state["skipped_failing_page_after_retries"] = failing_pages
-        else:
-            cursor_state.pop("consecutive_failing_pages", None)
-        cursor = self.upsert_sync_cursor(
-            user_id,
-            source=source,
-            source_account_id=account_id,
-            cursor_name=cursor_name,
-            cursor_value=cursor_value,
-            high_water_mark=high_water_mark,
-            state=cursor_state,
-            last_error=errors[0]["error"] if errors else sync_error_message,
-            completed=failed == 0 and not sync_had_errors,
-        )
+                cursor_state.pop("consecutive_failing_pages", None)
+            cursor = self.upsert_sync_cursor(
+                user_id,
+                source=source,
+                source_account_id=account_id,
+                cursor_name=cursor_name,
+                cursor_value=cursor_value,
+                high_water_mark=high_water_mark,
+                state=cursor_state,
+                last_error=errors[0]["error"] if errors else sync_error_message,
+                completed=failed == 0 and not sync_had_errors,
+            )
         timestamp = now_iso()
         account_metadata = _with_connector_failure_metadata(account.get("metadata") or {}, [*sync_errors, *errors])
         with connect(self.db_path) as conn:
@@ -4905,6 +4941,10 @@ class CortexStore:
                     processing=processing,
                     archive_missing=complete_record_set and is_last_batch,
                     archive_external_ids=active_external_ids if complete_record_set and is_last_batch else None,
+                    # Defer the cursor to a single aggregate write after the loop: a later clean
+                    # batch must not advance the scan offset past records an earlier batch failed
+                    # to save (which would drop them permanently on the next resume).
+                    persist_cursor=False,
                 )
                 result["received"] += int(batch_result.get("received") or 0)
                 result["queued"] += int(batch_result.get("queued") or 0)
@@ -4915,9 +4955,50 @@ class CortexStore:
                 result["capture_ids"].extend(batch_result.get("capture_ids") or [])
                 result["records"].extend(batch_result.get("records") or [])
                 result["errors"].extend(batch_result.get("errors") or [])
-                result["cursor"] = batch_result.get("cursor")
+            # One cursor write for the whole scan. Only advance the offset when every batch saved
+            # cleanly; if any batch failed, hold the previous offset so the whole scan re-runs next
+            # sync (stable ids dedupe already-saved notes and the failed ones retry). After a
+            # bounded number of consecutive failing scans, advance anyway so a permanently-broken
+            # note can't stall the account forever.
+            aggregate_state = dict(state)
+            aggregate_state.update({
+                "batch_count": len(batches),
+                "records_returned": len(source_records),
+                "last_batch_received": result["received"],
+                "last_batch_saved": result["saved"],
+                "last_batch_queued": result["queued"],
+                "last_batch_skipped": result["skipped"],
+                "last_batch_failed": result["failed"],
+            })
             if result["failed"] > 0:
                 result["status"] = "partial"
+                previous_cursor = self._latest_sync_cursor(user_id, account["id"], cursor_name) or {}
+                previous_state = previous_cursor.get("state") if isinstance(previous_cursor.get("state"), dict) else {}
+                failing_pages = int(previous_state.get("consecutive_failing_pages") or 0) + 1
+                if failing_pages < MAX_CONSECUTIVE_FAILING_SYNC_PAGES:
+                    aggregate_cursor_value = previous_cursor.get("cursor_value")
+                    aggregate_high_water = previous_cursor.get("high_water_mark")
+                    aggregate_state["consecutive_failing_pages"] = failing_pages
+                else:
+                    aggregate_cursor_value = scan.cursor_value
+                    aggregate_high_water = scan.high_water_mark
+                    aggregate_state["consecutive_failing_pages"] = 0
+                    aggregate_state["skipped_failing_page_after_retries"] = failing_pages
+            else:
+                aggregate_cursor_value = scan.cursor_value
+                aggregate_high_water = scan.high_water_mark
+                aggregate_state.pop("consecutive_failing_pages", None)
+            result["cursor"] = self.upsert_sync_cursor(
+                user_id,
+                source=OBSIDIAN_SOURCE,
+                source_account_id=account["id"],
+                cursor_name=cursor_name,
+                cursor_value=aggregate_cursor_value,
+                high_water_mark=aggregate_high_water,
+                state=aggregate_state,
+                last_error=(result["errors"][0].get("error") if result["errors"] else None),
+                completed=result["failed"] == 0,
+            )
         if scan.errors:
             result["errors"] = [*(result.get("errors") or []), *scan.errors]
             result["failed"] = int(result.get("failed") or 0) + len(scan.errors)
@@ -13296,19 +13377,55 @@ class CortexStore:
         changed = [memory_id for memory_id in markdown_sig if memory_id in db_sig and markdown_sig[memory_id] != db_sig[memory_id]]
         # Deletion is only honored on a vault that has been migrated to Markdown-native (every
         # memory has a note), so "no note file" reliably means the user deleted it — never on a
-        # legacy/unmigrated vault (which would mass-delete JSON-only memories). A corrupt-but-
-        # present .md still counts as present (has_memory_markdown), so a parse failure can't
-        # destroy a memory.
-        if self.vault.markdown_backfill_done(user_id):
-            removed = [
+        # legacy/unmigrated vault (which would mass-delete JSON-only memories). It also requires
+        # the memories/ directory to actually exist: if the vault lives on an external/cloud drive
+        # that is transiently unmounted, iter_memory_markdown_records() returns [] with the dir
+        # missing, and treating that as "the user deleted everything" would be catastrophic. A
+        # corrupt-but-present .md still counts as present (has_memory_markdown), so a parse failure
+        # can't destroy a memory.
+        memories_dir_present = (self.vault.root / "memories").is_dir()
+        if self.vault.markdown_backfill_done(user_id) and memories_dir_present:
+            candidate_removed = [
                 memory_id
                 for memory_id in db_sig
                 if memory_id not in markdown_sig and not self.vault.has_memory_markdown(memory_id)
             ]
         else:
-            removed = []
+            candidate_removed = []
+        # Safety floor against catastrophic mass deletion: a stray watcher fire, or a sync client
+        # that momentarily clears the notes folder, must never tombstone a large fraction of a
+        # user's memories in one pass (tombstones set block_restore, so it is irreversible). Small
+        # deletions — including deleting your only note — are always honored; only an implausibly
+        # large sweep (both an absolute floor AND a majority of all memories) is refused and
+        # surfaced for review instead of destroying data.
+        mass_delete_min = 10
+        mass_delete_fraction = 0.5
+        mass_delete_blocked = False
+        if (
+            len(candidate_removed) >= mass_delete_min
+            and len(candidate_removed) >= max(1, len(db_sig)) * mass_delete_fraction
+        ):
+            mass_delete_blocked = True
+            blocked_count = len(candidate_removed)
+            candidate_removed = []
+            try:
+                with connect(self.db_path) as conn:
+                    self._event(
+                        conn,
+                        user_id,
+                        "vault",
+                        "reconcile",
+                        "mass_delete_blocked",
+                        {"candidate_removed": blocked_count, "db_memories": len(db_sig)},
+                    )
+            except Exception:
+                pass
+        removed = candidate_removed
         if not (added or removed or changed):
-            return {"reconciled": False, "added": 0, "changed": 0, "removed": 0}
+            result = {"reconciled": False, "added": 0, "changed": 0, "removed": 0}
+            if mass_delete_blocked:
+                result["mass_delete_blocked"] = True
+            return result
         for memory_id in removed:
             try:
                 self.delete_memory(user_id, memory_id)
@@ -13316,7 +13433,10 @@ class CortexStore:
                 pass
         if added or changed:
             self.rebuild_index_from_vault(user_id)
-        return {"reconciled": True, "added": len(added), "changed": len(changed), "removed": len(removed)}
+        result = {"reconciled": True, "added": len(added), "changed": len(changed), "removed": len(removed)}
+        if mass_delete_blocked:
+            result["mass_delete_blocked"] = True
+        return result
 
     def _backfill_memory_markdown(self, user_id: str) -> int:
         """One-time migration per user: write a Markdown note for any active memory that lacks
@@ -13334,6 +13454,7 @@ class CortexStore:
                 "updated_at, raw_excerpt FROM memories WHERE user_id = ?",
                 (user_id,),
             ).fetchall()
+        all_written = True
         for row in rows:
             if self.vault.has_memory_markdown(row["id"]):
                 continue
@@ -13345,8 +13466,17 @@ class CortexStore:
             except (TypeError, ValueError):
                 record["provenance"] = {}
             self.vault._write_memory_markdown(record)
-            written += 1
-        self.vault.mark_markdown_backfill_done(user_id)
+            # _write_memory_markdown swallows write errors (it's an additive mirror), so confirm
+            # the note actually landed. If ANY note failed to write, leave the per-user backfill
+            # flag UNSET so the migration retries on the next startup — otherwise reconcile would
+            # later see a note-less memory, treat it as a user deletion, and irreversibly tombstone
+            # a memory that was never deleted.
+            if self.vault.has_memory_markdown(row["id"]):
+                written += 1
+            else:
+                all_written = False
+        if all_written:
+            self.vault.mark_markdown_backfill_done(user_id)
         return written
 
     def rebuild_index_from_vault(self, user_id: str) -> dict[str, Any]:
@@ -13670,8 +13800,8 @@ class CortexStore:
                         json.dumps(topics),
                         json.dumps(entity_ids),
                         memory.get("occurred_at"),
-                        memory.get("valid_from"),
-                        memory.get("valid_to"),
+                        _normalize_validity_bound(memory.get("valid_from"), end_of_day=False),
+                        _normalize_validity_bound(memory.get("valid_to"), end_of_day=True),
                         memory.get("superseded_by"),
                         captured_at,
                         memory.get("updated_at") or captured_at,
@@ -15457,8 +15587,8 @@ class CortexStore:
             external_id=external_id,
         )
         occurred_at = record.get("occurred_at")
-        valid_from = record.get("valid_from")
-        valid_to = record.get("valid_to")
+        valid_from = _normalize_validity_bound(record.get("valid_from"), end_of_day=False)
+        valid_to = _normalize_validity_bound(record.get("valid_to"), end_of_day=True)
         superseded_by = str(record.get("superseded_by") or "").strip()[:80] or None
         duplicate = self._find_duplicate_memory(
             conn,
@@ -17238,7 +17368,12 @@ class CortexStore:
             payload=payload,
             priority=priority,
         )
-        if job["status"] != "queued":
+        # Only revive a TERMINAL job (succeeded/failed) for a fresh run. A 'queued' job is already
+        # pending and needs no reset; a 'running' job is held by a live worker (future lease), so
+        # resetting it to queued/attempts=0 would let a second worker claim and run the same job
+        # concurrently AND reset the attempt counter every re-enqueue, defeating the poison-job
+        # cap. A stuck 'running' job is recovered by _reap_expired_jobs once its lease expires.
+        if job["status"] in ("succeeded", "failed"):
             timestamp = now_iso()
             conn.execute(
                 """

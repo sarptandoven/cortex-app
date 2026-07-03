@@ -5,12 +5,33 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 from .vault_markdown import atomic_write_text, parse_memory_markdown, render_memory_markdown
+
+
+# A process-wide lock per vault root. In hosted/bucket mode many request threads (plus the
+# background worker) share ONE vault and do read-modify-write on the same root-level JSON files
+# (settings.json, credentials.json, manifest.json, events.jsonl). Without serialization those
+# RMW cycles lose updates — last writer wins on a stale read — silently dropping a user's
+# settings or a source credential. Keyed by the absolute root path so it serializes even across
+# separate CortexVault instances that happen to point at the same directory.
+_VAULT_LOCKS: dict[str, threading.RLock] = {}
+_VAULT_LOCKS_GUARD = threading.Lock()
+
+
+def _vault_lock_for(root: Path) -> threading.RLock:
+    key = os.path.abspath(os.path.expanduser(str(root)))
+    with _VAULT_LOCKS_GUARD:
+        lock = _VAULT_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _VAULT_LOCKS[key] = lock
+        return lock
 
 
 VAULT_FORMAT = "cortex-local-vault"
@@ -65,6 +86,8 @@ class CortexVault:
         # so the vault opens in Obsidian and is owned/portable. Additive — the JSON records
         # remain the source of truth for now; a Markdown write never breaks the JSON write.
         self.markdown_mirror = True
+        # Serializes read-modify-write of the shared root-level JSON files (see _vault_lock_for).
+        self._lock = _vault_lock_for(self.root)
 
     @property
     def manifest_path(self) -> Path:
@@ -193,15 +216,16 @@ class CortexVault:
 
     def write_settings(self, user_id: str, settings: dict[str, Any]) -> Path:
         self.ensure()
-        payload = self._read_json(self.settings_path, {"users": {}})
-        payload.setdefault("users", {})
-        payload["users"][user_id] = {
-            "user_id": user_id,
-            "settings": settings,
-            "updated_at": vault_now(),
-        }
-        payload["updated_at"] = vault_now()
-        return self._write_json(self.settings_path, payload)
+        with self._lock:
+            payload = self._read_json(self.settings_path, {"users": {}})
+            payload.setdefault("users", {})
+            payload["users"][user_id] = {
+                "user_id": user_id,
+                "settings": settings,
+                "updated_at": vault_now(),
+            }
+            payload["updated_at"] = vault_now()
+            return self._write_json(self.settings_path, payload)
 
     def read_settings(self, user_id: str) -> dict[str, Any] | None:
         payload = self._read_json(self.settings_path, {})
@@ -218,8 +242,11 @@ class CortexVault:
             "vault_record_version": VAULT_VERSION,
             **event,
         }
-        with self.events_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+        # Hold the vault lock so an append can't interleave with the delete_user_records
+        # read-filter-replace rewrite of events.jsonl (which would drop this line).
+        with self._lock:
+            with self.events_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
     def write_capture_bundle(
         self,
@@ -283,29 +310,30 @@ class CortexVault:
         if not user_key or not account_key:
             raise ValueError("user_id and source_account_id are required")
         now = vault_now()
-        credentials = self._read_json(
-            self.credentials_path,
-            {
-                "vault_record_type": "credentials",
-                "vault_record_version": VAULT_VERSION,
-                "users": {},
-            },
-        )
-        credentials.setdefault("users", {})
-        user_credentials = credentials["users"].setdefault(user_key, {})
-        existing = user_credentials.get(account_key) if isinstance(user_credentials.get(account_key), dict) else {}
-        record = {
-            "user_id": user_key,
-            "source_account_id": account_key,
-            "source": safe_segment(source, "source"),
-            "payload": payload,
-            "created_at": existing.get("created_at") or now,
-            "updated_at": now,
-        }
-        user_credentials[account_key] = record
-        credentials["vault_updated_at"] = now
-        self._write_json(self.credentials_path, credentials)
-        self._chmod_credentials_file()
+        with self._lock:
+            credentials = self._read_json(
+                self.credentials_path,
+                {
+                    "vault_record_type": "credentials",
+                    "vault_record_version": VAULT_VERSION,
+                    "users": {},
+                },
+            )
+            credentials.setdefault("users", {})
+            user_credentials = credentials["users"].setdefault(user_key, {})
+            existing = user_credentials.get(account_key) if isinstance(user_credentials.get(account_key), dict) else {}
+            record = {
+                "user_id": user_key,
+                "source_account_id": account_key,
+                "source": safe_segment(source, "source"),
+                "payload": payload,
+                "created_at": existing.get("created_at") or now,
+                "updated_at": now,
+            }
+            user_credentials[account_key] = record
+            credentials["vault_updated_at"] = now
+            self._write_json(self.credentials_path, credentials)
+            self._chmod_credentials_file()
         return {
             "credential_ref": f"source_credential:{account_key}",
             "source_account_id": account_key,
@@ -333,15 +361,16 @@ class CortexVault:
         }
 
     def delete_source_credential(self, *, user_id: str, source_account_id: str) -> bool:
-        credentials = self._read_json(self.credentials_path, {})
-        user_credentials = (credentials.get("users") or {}).get(user_id)
-        if not isinstance(user_credentials, dict) or source_account_id not in user_credentials:
-            return False
-        user_credentials.pop(source_account_id, None)
-        credentials["vault_updated_at"] = vault_now()
-        self._write_json(self.credentials_path, credentials)
-        self._chmod_credentials_file()
-        return True
+        with self._lock:
+            credentials = self._read_json(self.credentials_path, {})
+            user_credentials = (credentials.get("users") or {}).get(user_id)
+            if not isinstance(user_credentials, dict) or source_account_id not in user_credentials:
+                return False
+            user_credentials.pop(source_account_id, None)
+            credentials["vault_updated_at"] = vault_now()
+            self._write_json(self.credentials_path, credentials)
+            self._chmod_credentials_file()
+            return True
 
     def write_memory(self, record: dict[str, Any]) -> Path:
         kind = safe_segment(record.get("kind"), "memory")
@@ -527,15 +556,16 @@ class CortexVault:
         return isinstance(done, list) and user_id in done
 
     def mark_markdown_backfill_done(self, user_id: str) -> None:
-        manifest = self._read_json(self.manifest_path, {"format": VAULT_FORMAT, "version": VAULT_VERSION})
-        done = manifest.get("markdown_backfilled_users")
-        if not isinstance(done, list):
-            done = []
-        if user_id not in done:
-            done.append(user_id)
-        manifest["markdown_backfilled_users"] = done
-        manifest["updated_at"] = vault_now()
-        self._write_json(self.manifest_path, manifest)
+        with self._lock:
+            manifest = self._read_json(self.manifest_path, {"format": VAULT_FORMAT, "version": VAULT_VERSION})
+            done = manifest.get("markdown_backfilled_users")
+            if not isinstance(done, list):
+                done = []
+            if user_id not in done:
+                done.append(user_id)
+            manifest["markdown_backfilled_users"] = done
+            manifest["updated_at"] = vault_now()
+            self._write_json(self.manifest_path, manifest)
 
     def iter_records(self, record_dir: str, user_id: str | None = None) -> Iterable[dict[str, Any]]:
         base = self.root / record_dir
@@ -833,41 +863,54 @@ class CortexVault:
             except OSError:
                 pass
 
-        settings = self._read_json(self.settings_path, {"users": {}})
-        users = settings.get("users")
-        if isinstance(users, dict) and user_id in users:
-            users.pop(user_id, None)
-            settings["updated_at"] = vault_now()
-            self._write_json(self.settings_path, settings)
-            counts["settings"] = 1
+        # Serialize the shared-file mutations against concurrent write_settings /
+        # write_source_credential / append_event so a GDPR delete can't lose another surviving
+        # tenant's just-written settings, credential, or event line.
+        with self._lock:
+            settings = self._read_json(self.settings_path, {"users": {}})
+            users = settings.get("users")
+            if isinstance(users, dict) and user_id in users:
+                users.pop(user_id, None)
+                settings["updated_at"] = vault_now()
+                self._write_json(self.settings_path, settings)
+                counts["settings"] = 1
 
-        credentials = self._read_json(self.credentials_path, {})
-        credential_users = credentials.get("users")
-        if isinstance(credential_users, dict) and user_id in credential_users:
-            removed = credential_users.pop(user_id, {})
-            if isinstance(removed, dict):
-                counts["credentials"] = len(removed)
-            credentials["vault_updated_at"] = vault_now()
-            self._write_json(self.credentials_path, credentials)
-            self._chmod_credentials_file()
+            credentials = self._read_json(self.credentials_path, {})
+            credential_users = credentials.get("users")
+            if isinstance(credential_users, dict) and user_id in credential_users:
+                removed = credential_users.pop(user_id, {})
+                if isinstance(removed, dict):
+                    counts["credentials"] = len(removed)
+                credentials["vault_updated_at"] = vault_now()
+                self._write_json(self.credentials_path, credentials)
+                self._chmod_credentials_file()
 
-        if self.events_path.exists():
-            retained: list[str] = []
-            with self.events_path.open("r", encoding="utf-8") as handle:
-                for line in handle:
+            if self.events_path.exists():
+                retained: list[str] = []
+                with self.events_path.open("r", encoding="utf-8") as handle:
+                    for line in handle:
+                        try:
+                            payload = json.loads(line)
+                        except json.JSONDecodeError:
+                            retained.append(line)
+                            continue
+                        if payload.get("user_id") == user_id:
+                            counts["events"] += 1
+                        else:
+                            retained.append(line)
+                tmp_path = self.events_path.with_name(
+                    f".{self.events_path.name}.{os.getpid()}.{threading.get_ident()}.{os.urandom(4).hex()}.tmp"
+                )
+                try:
+                    with tmp_path.open("w", encoding="utf-8") as handle:
+                        handle.writelines(retained)
+                    os.replace(tmp_path, self.events_path)
+                except OSError:
                     try:
-                        payload = json.loads(line)
-                    except json.JSONDecodeError:
-                        retained.append(line)
-                        continue
-                    if payload.get("user_id") == user_id:
-                        counts["events"] += 1
-                    else:
-                        retained.append(line)
-            tmp_path = self.events_path.with_name(f".{self.events_path.name}.{os.getpid()}.tmp")
-            with tmp_path.open("w", encoding="utf-8") as handle:
-                handle.writelines(retained)
-            os.replace(tmp_path, self.events_path)
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
+                    raise
 
         if include_backups:
             tombstones_deleted, _ = self._delete_matching_records(
@@ -1102,11 +1145,23 @@ class CortexVault:
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        with tmp_path.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.write("\n")
-        os.replace(tmp_path, path)
+        # Temp name must be unique per writer: the shipping server is multi-threaded (one PID),
+        # so a pid-only temp path lets two concurrent writes to the same target collide — one
+        # thread's os.replace moves the shared temp out from under the other, raising
+        # FileNotFoundError or installing a half-written file. Thread id + randomness makes each
+        # write private; the temp is unlinked on failure so a crash mid-write leaves no litter.
+        tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.{os.urandom(4).hex()}.tmp")
+        try:
+            with tmp_path.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+                handle.write("\n")
+            os.replace(tmp_path, path)
+        except OSError:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+            raise
         return path
 
     def _read_json(self, path: Path, default: Any) -> Any:

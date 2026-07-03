@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -134,14 +135,28 @@ def parse_memory_markdown(text: str) -> dict[str, Any]:
 
 
 def atomic_write_text(path: Path, text: str) -> None:
-    """Crash-safe write: temp file -> fsync -> atomic replace -> fsync parent directory."""
+    """Crash-safe write: temp file -> fsync -> atomic replace -> fsync parent directory.
+
+    The temp name is unique per writer (pid + thread id + randomness): the shipping server is
+    multi-threaded under one PID, so a pid-only temp path lets two concurrent writes to the same
+    note collide — one thread's os.replace moves the shared temp out from under the other,
+    raising FileNotFoundError or installing a half-written note (and this note is the rebuild
+    source of truth). The temp is unlinked on failure so a crash mid-write leaves no litter.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    with tmp_path.open("w", encoding="utf-8") as handle:
-        handle.write(text)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(tmp_path, path)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.{os.urandom(4).hex()}.tmp")
+    try:
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except OSError:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
     try:
         dir_fd = os.open(str(path.parent), os.O_DIRECTORY)
         try:

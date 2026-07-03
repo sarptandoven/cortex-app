@@ -94,6 +94,67 @@ class ConnectorCursorDataLossTests(unittest.TestCase):
         self.assertEqual(state.get("consecutive_failing_pages"), 0)
         self.assertEqual(state.get("skipped_failing_page_after_retries"), MAX_CONSECUTIVE_FAILING_SYNC_PAGES)
 
+    def test_forward_pagination_token_restored_from_prior_cursor_on_failure(self) -> None:
+        # A newest-first connector persists a forward-pagination token pointing at the NEXT page.
+        # On a later failing page, the hold must re-fetch the SAME page — so it must restore the
+        # token that fetched it (from the previously persisted cursor), not the connector's next
+        # token, and not drop it (which would fall back to high_water_mark and skip the backlog).
+        self.store.sync_source_account_records(
+            self.user_id,
+            self.account_id,
+            records=[{"content": "page one, saved fine.", "title": "P1", "external_id": "ext-p1"}],
+            cursor_name="pages",
+            cursor_value="page1",
+            high_water_mark="2026-07-01T00:00:00Z",
+            state={"next_page_token": "TOKEN_FOR_PAGE2"},
+            processing="sync",
+        )
+        prior = self.store._latest_sync_cursor(self.user_id, self.account_id, "pages")
+        self.assertEqual((prior.get("state") or {}).get("next_page_token"), "TOKEN_FOR_PAGE2")
+
+        original_save = self.store.save_capture
+
+        def flaky_save(*args, **kwargs):
+            if "FAILME" in str(kwargs.get("content") or ""):
+                raise ValueError("content is too large")
+            return original_save(*args, **kwargs)
+
+        with mock.patch.object(self.store, "save_capture", side_effect=flaky_save):
+            self.store.sync_source_account_records(
+                self.user_id,
+                self.account_id,
+                records=[{"content": "FAILME page two beta.", "title": "P2", "external_id": "ext-p2"}],
+                cursor_name="pages",
+                cursor_value="page2",
+                high_water_mark="2026-07-02T00:00:00Z",
+                state={"next_page_token": "TOKEN_FOR_PAGE3"},
+                processing="sync",
+            )
+        held = self.store._latest_sync_cursor(self.user_id, self.account_id, "pages")
+        held_state = held.get("state") or {}
+        # The token that fetched the failing page is restored (not the next one, not dropped),
+        # and the offset is held at the prior position so the exact same window is retried.
+        self.assertEqual(held_state.get("next_page_token"), "TOKEN_FOR_PAGE2")
+        self.assertEqual(held.get("cursor_value"), "page1")
+        self.assertEqual(held_state.get("consecutive_failing_pages"), 1)
+
+    def test_persist_cursor_false_defers_the_cursor_write(self) -> None:
+        # The primitive the batched-sync fix relies on: a batched caller can suppress the per-batch
+        # cursor write so a later clean batch cannot advance past an earlier failed batch. With
+        # persist_cursor=False, no cursor is persisted at all.
+        result = self.store.sync_source_account_records(
+            self.user_id,
+            self.account_id,
+            records=[{"content": "batch record", "title": "B", "external_id": "ext-b"}],
+            cursor_name="batched",
+            cursor_value="advanced",
+            state={"next_page_token": "NP"},
+            processing="sync",
+            persist_cursor=False,
+        )
+        self.assertIsNone(result.get("cursor"))
+        self.assertIsNone(self.store._latest_sync_cursor(self.user_id, self.account_id, "batched"))
+
 
 if __name__ == "__main__":
     unittest.main()
