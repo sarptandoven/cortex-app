@@ -5,6 +5,7 @@ import json
 import math
 import os
 import re
+import threading
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -14,6 +15,18 @@ from typing import Any
 VECTOR_DIMENSIONS = 384
 VECTOR_MODEL = "cortex-hash-v1"
 DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
+
+# Local, CPU-only, no-API-key neural embeddings (MinishLab model2vec, MIT).
+# potion-base-8M emits 256-dim vectors natively (NOT 384) — so it is not
+# drop-in compatible with the existing 384-dim sqlite-vec index. We surface
+# that honestly via embedding_status().index_compatible rather than padding or
+# truncating into the index. See NOTE at bottom of file re: making this default.
+DEFAULT_MODEL2VEC_MODEL = "minishlab/potion-base-8M"
+MODEL2VEC_DIMENSIONS = 256
+
+_MODEL2VEC_MODEL: Any = None
+_MODEL2VEC_MODEL_KEY: str | None = None
+_MODEL2VEC_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -26,18 +39,25 @@ class EmbeddingResult:
 
 def configured_embedding_provider() -> str:
     provider = os.environ.get("CORTEX_EMBEDDING_PROVIDER", "hash").strip().lower()
-    return provider if provider in {"hash", "openai"} else "hash"
+    return provider if provider in {"hash", "openai", "model2vec"} else "hash"
 
 
 def configured_embedding_model() -> str:
-    if configured_embedding_provider() == "openai":
+    provider = configured_embedding_provider()
+    if provider == "openai":
         return os.environ.get("CORTEX_EMBEDDING_MODEL", DEFAULT_OPENAI_EMBEDDING_MODEL).strip() or DEFAULT_OPENAI_EMBEDDING_MODEL
+    if provider == "model2vec":
+        return os.environ.get("CORTEX_EMBEDDING_MODEL", DEFAULT_MODEL2VEC_MODEL).strip() or DEFAULT_MODEL2VEC_MODEL
     return VECTOR_MODEL
 
 
 def configured_embedding_dimensions(default: int = VECTOR_DIMENSIONS) -> int:
     raw = os.environ.get("CORTEX_EMBEDDING_DIMENSIONS", "").strip()
     if not raw:
+        # model2vec emits a fixed native dimension (256 for potion-base-8M);
+        # honour that as the default so status/index_compatible are truthful.
+        if configured_embedding_provider() == "model2vec":
+            return MODEL2VEC_DIMENSIONS
         return default
     try:
         return max(1, int(raw))
@@ -55,7 +75,7 @@ def embedding_status() -> dict[str, Any]:
         "schema_dimensions": VECTOR_DIMENSIONS,
         "index_compatible": dimensions == VECTOR_DIMENSIONS,
         "network_required": provider == "openai",
-        "strict": _strict_openai_embeddings(),
+        "strict": _strict_embeddings(),
     }
 
 
@@ -65,11 +85,22 @@ def embed_text(text: str, dimensions: int = VECTOR_DIMENSIONS) -> list[float]:
 
 def embed_text_result(text: str, dimensions: int = VECTOR_DIMENSIONS) -> EmbeddingResult:
     resolved_dimensions = configured_embedding_dimensions(dimensions)
-    if configured_embedding_provider() == "openai":
+    provider = configured_embedding_provider()
+    if provider == "openai":
         try:
             return _openai_embedding(text, resolved_dimensions)
         except Exception:
-            if _strict_openai_embeddings():
+            # In strict mode a provider failure is fatal; otherwise degrade to the deterministic
+            # hash fallback so retrieval never hard-fails offline.
+            if _strict_embeddings():
+                raise
+    elif provider == "model2vec":
+        try:
+            return _model2vec_embedding(text, resolved_dimensions)
+        except Exception:
+            # Real local model unavailable (deps/model absent) or failed to encode: fall back to
+            # hash so a machine without the bundled model still works. Strict mode surfaces it.
+            if _strict_embeddings():
                 raise
     return EmbeddingResult(
         vector=hash_embed_text(text, dimensions=resolved_dimensions),
@@ -147,8 +178,50 @@ def _openai_timeout_seconds() -> float:
         return 10.0
 
 
-def _strict_openai_embeddings() -> bool:
+def _strict_embeddings() -> bool:
     return os.environ.get("CORTEX_EMBEDDING_STRICT", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _load_model2vec_model() -> Any:
+    """Lazily load the on-device Model2Vec static model once and cache it.
+
+    Guarded so the shipping backend runs with or without the bundled model: an ImportError (the
+    model2vec dep isn't on the bundled PYTHONPATH) or a load failure propagates to the caller,
+    which then degrades to the deterministic hash embedding. Loading a static model is CPU-only,
+    needs no API key, and (with a local path or a cached model) touches no network.
+    """
+    global _MODEL2VEC_MODEL, _MODEL2VEC_MODEL_KEY
+    # Prefer an explicit bundled/local model directory; otherwise use the configured model id.
+    local_path = os.environ.get("CORTEX_MODEL2VEC_PATH", "").strip()
+    key = local_path or configured_embedding_model()
+    cached = _MODEL2VEC_MODEL
+    if cached is not None and _MODEL2VEC_MODEL_KEY == key:
+        return cached
+    with _MODEL2VEC_LOCK:
+        if _MODEL2VEC_MODEL is not None and _MODEL2VEC_MODEL_KEY == key:
+            return _MODEL2VEC_MODEL
+        from model2vec import StaticModel  # noqa: PLC0415 — guarded, optional bundled dependency
+
+        model = StaticModel.from_pretrained(key)
+        _MODEL2VEC_MODEL = model
+        _MODEL2VEC_MODEL_KEY = key
+        return model
+
+
+def _model2vec_embedding(text: str, dimensions: int) -> EmbeddingResult:
+    model = _load_model2vec_model()
+    raw = model.encode([text])[0]
+    vector = [float(value) for value in (raw.tolist() if hasattr(raw, "tolist") else raw)]
+    if not vector:
+        raise ValueError("model2vec produced an empty embedding")
+    # Report the model's NATIVE dimension truthfully (potion-base-8M = 256), not the requested
+    # default — the storage layer sizes/rebuilds the vector index from embedding_status().
+    return EmbeddingResult(
+        vector=vector,
+        model=configured_embedding_model(),
+        provider="model2vec",
+        dimensions=len(vector),
+    )
 
 
 def embedding_json(vector: list[float]) -> str:
