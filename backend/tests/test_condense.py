@@ -184,7 +184,8 @@ class TemplateCondenseTests(unittest.TestCase):
         self.assertIsNone(condense_section({}))
         self.assertIsNone(condense_section(None))
         self.assertIsNone(condense_section({"id": "x", "elements": []}))
-        # Elements present but none usable (no citable ids / no text).
+        # Elements present but none usable: blank text, or text with NO citation at all
+        # (neither memory_ids nor a source).
         self.assertIsNone(
             condense_section(
                 {
@@ -192,11 +193,28 @@ class TemplateCondenseTests(unittest.TestCase):
                     "confidence": "low",
                     "elements": [
                         {"text": "", "source": "a", "count": 1, "memory_ids": ["m1"]},
-                        {"text": "Something", "source": "a", "count": 1, "memory_ids": []},
+                        {"text": "Something", "source": "", "count": 1, "memory_ids": []},
                     ],
                 }
             )
         )
+
+    def test_source_cited_element_without_memory_ids_is_usable(self) -> None:
+        # People & projects / focus areas are cited by their source + support count, not memory_ids,
+        # so a source-only element must still condense (not abstain).
+        result = condense_section(
+            {
+                "id": "people_projects",
+                "confidence": "medium",
+                "elements": [
+                    {"text": "Alice (person)", "source": "entities", "count": 4, "memory_ids": [], "source_url": None}
+                ],
+            }
+        )
+        self.assertIsNotNone(result)
+        self.assertTrue(result["statement"])
+        self.assertEqual(result["method"], "template")
+        self.assertEqual(result["memory_ids"], [])
 
 
 # --- LLM path (fake client only) --------------------------------------------

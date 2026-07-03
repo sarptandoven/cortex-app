@@ -152,6 +152,7 @@ def build_profile_sections(
     *,
     embed_fn: Optional[Callable[[str], list[float]]] = None,
     provider: str = "hash",
+    graph: Optional[dict] = None,
 ) -> list[dict]:
     """Regroup a personal profile into a small fixed set of cited Sections.
 
@@ -190,7 +191,7 @@ def build_profile_sections(
     if focus is not None:
         sections.append(focus)
 
-    people = _build_people_section(profile)
+    people = _build_people_section(profile, graph)
     if people is not None:
         sections.append(people)
 
@@ -354,17 +355,25 @@ def _build_focus_section(profile: dict) -> Optional[dict]:
 # --- People & projects section (from profile entities) ----------------------
 
 
-def _build_people_section(profile: dict) -> Optional[dict]:
+def _build_people_section(profile: dict, graph: Optional[dict] = None) -> Optional[dict]:
     """Surface the people and projects the user works with most.
 
     An entity only surfaces when it is linked from at least ``_MIN_ENTITY_LINKS``
     memories (a single mention is not a relationship). Confidence is capped at
     ``medium`` because an entity link is weaker evidence than a repeated,
     same-source behavioral pattern.
+
+    When a personal knowledge-graph analysis is supplied (``graph`` from
+    ``storage.entity_graph_analysis``), entities are ranked by graph CENTRALITY —
+    the "god nodes" a person orbits most, which co-mention structure captures
+    better than a raw link count — falling back to link count when there is no
+    graph signal (a fully deterministic tie-break either way).
     """
     entities = profile.get("entities")
     if not isinstance(entities, list):
         return None
+
+    centrality: dict = graph.get("centrality") if isinstance(graph, dict) and isinstance(graph.get("centrality"), dict) else {}
 
     ranked: list[dict] = []
     for entity in entities:
@@ -374,21 +383,24 @@ def _build_people_section(profile: dict) -> Optional[dict]:
         links = _as_int(entity.get("memory_count"), default=0)
         if not name or links < _MIN_ENTITY_LINKS:
             continue
+        entity_id = _text(entity.get("id"))
         ranked.append(
             {
                 "name": name,
                 "kind": _text(entity.get("kind")),
                 "links": links,
                 "last_seen": _text(entity.get("last_seen")),
-                "id": _text(entity.get("id")),
+                "id": entity_id,
+                "centrality": float(centrality.get(entity_id, 0.0)) if isinstance(centrality.get(entity_id), (int, float)) else 0.0,
             }
         )
 
     if not ranked:
         return None
 
-    # Deterministic: most-linked first, then most-recent, then name, then id.
-    ranked.sort(key=lambda e: (-e["links"], _neg_ts(e["last_seen"]), e["name"], e["id"]))
+    # Deterministic: most-central first (key people/projects), then most-linked,
+    # then most-recent, then name, then id.
+    ranked.sort(key=lambda e: (-round(e["centrality"], 6), -e["links"], _neg_ts(e["last_seen"]), e["name"], e["id"]))
     kept = ranked[:_MAX_ELEMENTS]
 
     elements = [

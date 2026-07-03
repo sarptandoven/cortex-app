@@ -22,6 +22,7 @@ from .embeddings import VECTOR_DIMENSIONS, configured_embedding_model, embed_tex
 from .mirror import compute_mirror_insight
 from .profile import build_profile_sections
 from .condense import condense_section
+from .graph_analysis import analyze_entity_graph
 from .extractor import extract_context, now_iso, stable_id
 from .sqlite_runtime import SQLITE_RUNTIME, sqlite3
 from .source_ingest import SourceRecord, analyze_sources, import_source_records_page, supported_sources
@@ -9300,7 +9301,14 @@ class CortexStore:
         self._enrich_profile_items(user_id, profile)
         provider = str(embedding_status().get("provider") or "hash")
         embed_fn = embed_text if provider != "hash" else None
-        sections = build_profile_sections(profile, embed_fn=embed_fn, provider=provider)
+        # Personal knowledge-graph signal: rank "People & projects" by entity centrality (the key
+        # people/projects the user orbits) rather than a raw link count. Best-effort — a graph
+        # failure must never break the profile.
+        try:
+            graph = self.entity_graph_analysis(user_id, include_pending=include_pending, sector=sector)
+        except Exception:
+            graph = None
+        sections = build_profile_sections(profile, embed_fn=embed_fn, provider=provider, graph=graph)
         allow_llm = self._condense_llm_enabled()
         rendered: list[dict[str, Any]] = []
         for section in sections:
@@ -10089,6 +10097,92 @@ class CortexStore:
                 [*params, user_id, limit],
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def build_entity_graph(
+        self,
+        user_id: str,
+        *,
+        include_pending: bool = False,
+        sector: str | None = None,
+        max_nodes: int = 300,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """The user's personal knowledge graph on the EXISTING tables: nodes are entities
+        (people/projects/orgs/topics) with their supporting-memory count as weight; edges are
+        (a) co-mention — two entities linked to the same current-truth memory, weighted by shared
+        memories, confidence INFERRED — and (b) explicit graph_edges between two entities,
+        confidence EXTRACTED. Current-truth/pending gating is inherited from _memory_filters, so
+        stale/superseded/pending memories never shape the graph. Returns (nodes, edges) for
+        graph_analysis.analyze_entity_graph. No graph DB; plain SQL over SQLite."""
+        with connect(self.db_path) as conn:
+            user_settings = self._settings(conn, user_id)
+            if not include_pending:
+                user_settings = {**user_settings, "allow_pending_in_context": False}
+            filters, params = self._memory_filters(user_id, user_settings, alias="m", sector=sector)
+            memory_filter = " AND ".join(filters)
+            node_rows = conn.execute(
+                f"""
+                SELECT e.id, e.name, e.kind, COUNT(m.id) AS memory_count
+                FROM entities e
+                LEFT JOIN memory_entities me ON me.entity_id = e.id AND me.user_id = e.user_id
+                LEFT JOIN memories m ON m.id = me.memory_id AND m.user_id = me.user_id AND {memory_filter}
+                WHERE e.user_id = ?
+                GROUP BY e.id
+                HAVING memory_count > 0
+                ORDER BY memory_count DESC, e.last_seen DESC
+                LIMIT ?
+                """,
+                [*params, user_id, max_nodes],
+            ).fetchall()
+            nodes = [
+                {"id": row["id"], "label": row["name"], "kind": row["kind"] or "entity", "weight": float(row["memory_count"])}
+                for row in node_rows
+            ]
+            node_ids = [node["id"] for node in nodes]
+            if len(node_ids) < 2:
+                return nodes, []
+            placeholders = ",".join("?" for _ in node_ids)
+            co_rows = conn.execute(
+                f"""
+                SELECT me1.entity_id AS a, me2.entity_id AS b, COUNT(DISTINCT me1.memory_id) AS shared
+                FROM memory_entities me1
+                JOIN memory_entities me2
+                  ON me2.memory_id = me1.memory_id AND me2.user_id = me1.user_id AND me1.entity_id < me2.entity_id
+                JOIN memories m ON m.id = me1.memory_id AND m.user_id = me1.user_id AND {memory_filter}
+                WHERE me1.user_id = ? AND me1.entity_id IN ({placeholders}) AND me2.entity_id IN ({placeholders})
+                GROUP BY me1.entity_id, me2.entity_id
+                """,
+                [*params, user_id, *node_ids, *node_ids],
+            ).fetchall()
+            edges: list[dict[str, Any]] = [
+                {"source": row["a"], "target": row["b"], "weight": float(row["shared"]), "relation": "co_mention", "confidence": "INFERRED"}
+                for row in co_rows
+            ]
+            for row in conn.execute(
+                f"""
+                SELECT source_id, target_id, kind, weight FROM graph_edges
+                WHERE user_id = ? AND source_id IN ({placeholders}) AND target_id IN ({placeholders})
+                """,
+                [user_id, *node_ids, *node_ids],
+            ).fetchall():
+                if row["source_id"] and row["target_id"] and row["source_id"] != row["target_id"]:
+                    edges.append({
+                        "source": row["source_id"],
+                        "target": row["target_id"],
+                        "weight": float(row["weight"] or 1.0),
+                        "relation": row["kind"] or "related",
+                        "confidence": "EXTRACTED",
+                    })
+        return nodes, edges
+
+    def entity_graph_analysis(self, user_id: str, *, include_pending: bool = False, sector: str | None = None) -> dict[str, Any]:
+        """Deterministic, offline analysis of the personal entity graph (centrality = key
+        people/projects, communities = life/work areas, bridges = connecting entities). Pure read;
+        safe to call on any tick. Returns the analyze_entity_graph result plus the node metadata so
+        callers can label results without a second query."""
+        nodes, edges = self.build_entity_graph(user_id, include_pending=include_pending, sector=sector)
+        analysis = analyze_entity_graph(nodes, edges)
+        analysis["nodes"] = {node["id"]: node for node in nodes}
+        return analysis
 
     def about_person(self, user_id: str, name: str, limit: int = 12) -> list[dict[str, Any]]:
         slug = "person_" + "".join(ch.lower() if ch.isalnum() else "-" for ch in name).strip("-")

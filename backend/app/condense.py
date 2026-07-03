@@ -283,7 +283,10 @@ def _usable_elements(section: dict) -> list[dict]:
             continue
         if not str(element.get("text") or "").strip():
             continue
-        if not _element_memory_ids(element):
+        # Cited-or-abstain: an element must carry SOME citation. Behavioral elements cite
+        # memory_ids; entity/topic-derived elements (people & projects, focus areas) are cited by
+        # their source + support count and legitimately have no memory_ids — accept those too.
+        if not _element_memory_ids(element) and not str(element.get("source") or "").strip():
             continue
         out.append(element)
     return out
