@@ -9275,7 +9275,55 @@ class CortexStore:
         """The "Mirror Moment": ONE deterministic, cited thing Cortex has learned about the user
         (see mirror.compute_mirror_insight), or None when the corpus is too thin to speak honestly."""
         with connect(self.db_path) as conn:
-            return compute_mirror_insight(conn, user_id)
+            insight = compute_mirror_insight(conn, user_id)
+        if insight is not None:
+            return insight
+        # Additive fallback (never displaces a stronger repeated-pattern insight): the graph's
+        # single most "surprising connection" — two entities from DIFFERENT clusters that keep
+        # showing up together in the user's own memories. The distinctive knowledge-graph beat.
+        return self._graph_bridge_insight(user_id)
+
+    def _graph_bridge_insight(self, user_id: str) -> dict[str, Any] | None:
+        try:
+            analysis = self.entity_graph_analysis(user_id)
+        except Exception:
+            return None
+        nodes = analysis.get("nodes") or {}
+        for bridge in analysis.get("bridges") or []:
+            src, tgt = bridge.get("source"), bridge.get("target")
+            src_label = str((nodes.get(src) or {}).get("label") or "").strip()
+            tgt_label = str((nodes.get(tgt) or {}).get("label") or "").strip()
+            if not src_label or not tgt_label or src == tgt:
+                continue
+            shared = self._shared_entity_memory_ids(user_id, str(src), str(tgt))
+            if len(shared) < 2:
+                continue  # a genuine connection needs more than a single co-mention
+            return {
+                "headline": f"You connect {src_label} and {tgt_label} — they keep showing up together in your notes.",
+                "evidence": {"source": "your notes", "count": len(shared), "memory_ids": shared, "example": ""},
+                "layer": "relationship",
+                "confidence": "medium" if len(shared) >= 3 else "low",
+            }
+        return None
+
+    def _shared_entity_memory_ids(self, user_id: str, entity_a: str, entity_b: str) -> list[str]:
+        """Current-truth memories that mention BOTH entities — the citation behind a graph bridge."""
+        with connect(self.db_path) as conn:
+            user_settings = {**self._settings(conn, user_id), "allow_pending_in_context": False}
+            filters, params = self._memory_filters(user_id, user_settings, alias="m")
+            memory_filter = " AND ".join(filters)
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT me1.memory_id AS memory_id
+                FROM memory_entities me1
+                JOIN memory_entities me2
+                  ON me2.memory_id = me1.memory_id AND me2.user_id = me1.user_id
+                JOIN memories m ON m.id = me1.memory_id AND m.user_id = me1.user_id AND {memory_filter}
+                WHERE me1.user_id = ? AND me1.entity_id = ? AND me2.entity_id = ?
+                """,
+                [*params, user_id, entity_a, entity_b],
+            ).fetchall()
+        return sorted(str(row["memory_id"]) for row in rows)
 
     def _condense_llm_enabled(self) -> bool:
         """The profile's per-section prose may be rewritten by an LLM ONLY when one is genuinely

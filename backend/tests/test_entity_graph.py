@@ -32,7 +32,7 @@ class EntityGraphStoreTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def _seed(self, mem_id: str, content: str, entity_ids: list[str]) -> None:
+    def _seed(self, mem_id: str, content: str, entity_ids: list[str], layer: str = "semantic") -> None:
         self.store.save_capture(
             user_id=self.user_id,
             content=content,
@@ -43,7 +43,7 @@ class EntityGraphStoreTests(unittest.TestCase):
                 "_timestamp": now_iso(),
                 "summary": content,
                 "records": [
-                    {"id": mem_id, "kind": "claim", "layer": "semantic", "content": content,
+                    {"id": mem_id, "kind": "claim", "layer": layer, "content": content,
                      "confidence": "confirmed", "importance": 3, "topics": [], "entity_ids": entity_ids}
                 ],
                 "tasks": [],
@@ -99,6 +99,28 @@ class EntityGraphStoreTests(unittest.TestCase):
         self.assertEqual(edges, [])
         analysis = self.store.entity_graph_analysis(self.user_id)
         self.assertEqual(analysis["ranked"], [])
+
+    def test_bridge_surfaces_as_mirror_insight_when_no_repetition(self) -> None:
+        # Two tight clusters {Alice,Zephyr} and {Bob,Design} joined by ONE bridge memory that
+        # mentions Zephyr AND Bob. No repeated behavioral pattern exists, so the repetition-based
+        # Mirror Moment abstains and the graph "surprising connection" fills the slot.
+        # Two internally-dense clusters {Alice,Zephyr} and {Bob,Design} (co-mentioned 3x each) with
+        # a WEAKER cross-cluster bridge Zephyr<->Bob (2x). Distinct layers so no single behavioral
+        # pattern repeats -> the repetition Mirror abstains and the graph bridge is what's left.
+        self.ENTITIES["ent_design"] = {"id": "ent_design", "kind": "project", "name": "Design System", "aliases": [], "context": ""}
+        for i, layer in enumerate(("episodic", "decision", "style")):
+            self._seed(f"az{i}", "Alice and Project Zephyr.", ["ent_alice", "ent_zephyr"], layer=layer)
+        for i, layer in enumerate(("semantic", "procedural", "negative")):
+            self._seed(f"bd{i}", "Bob and the Design System.", ["ent_bob", "ent_design"], layer=layer)
+        # The bridge (weaker than the clusters): Zephyr and Bob co-mentioned twice.
+        self._seed("zb0", "Project Zephyr borrowed a pattern from Bob's team.", ["ent_zephyr", "ent_bob"], layer="preference")
+        self._seed("zb1", "Bob advised on the Project Zephyr rollout.", ["ent_zephyr", "ent_bob"], layer="episodic")
+
+        insight = self.store.mirror_insight(self.user_id)
+        self.assertIsNotNone(insight, "expected a bridge insight when repetition abstains")
+        self.assertEqual(insight["layer"], "relationship")
+        self.assertIn("connect", insight["headline"].lower())
+        self.assertGreaterEqual(len(insight["evidence"]["memory_ids"]), 2)
 
 
 if __name__ == "__main__":
