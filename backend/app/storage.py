@@ -110,6 +110,9 @@ CONFIDENCE_RETRIEVAL_BOOSTS: dict[str, float] = {
 # restart/hang), the lease expires and the job is reclaimed instead of being stuck in 'running'
 # forever. Matches job_health's stale_after default so "stale_running" and reclaim agree.
 MEMORY_JOB_LEASE_SECONDS = 15 * 60
+# Terminal (succeeded/failed) jobs are historical; keep them this long then prune so the
+# memory_jobs table can't grow unbounded on a busy account.
+MEMORY_JOB_RETENTION_SECONDS = 7 * 24 * 60 * 60
 # When a connector sync page has records that fail to save, hold the cursor and re-fetch the
 # same window on the next sync (idempotent re-save retries the failures) rather than advancing
 # past unsaved records and losing them. After this many consecutive failing pages, advance past
@@ -8370,6 +8373,7 @@ class CortexStore:
             if not job:
                 break
             processed.append(self._run_job(job, worker_id))
+        self._prune_terminal_jobs(user_id)
         return {
             "ran_at": now_iso(),
             "processed": len(processed),
@@ -8378,6 +8382,23 @@ class CortexStore:
             "pending": len(self.list_jobs(user_id, status="queued", limit=100)),
             "failed": len(self.list_jobs(user_id, status="failed", limit=100)),
         }
+
+    def _prune_terminal_jobs(self, user_id: str) -> int:
+        """Drop succeeded/failed jobs past the retention window so memory_jobs stays bounded.
+        Terminal jobs are historical; queued/running are never touched."""
+        cutoff = (
+            (datetime.now(timezone.utc) - timedelta(seconds=MEMORY_JOB_RETENTION_SECONDS))
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        with connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "DELETE FROM memory_jobs WHERE user_id = ? AND status IN ('succeeded', 'failed') "
+                "AND COALESCE(completed_at, updated_at) < ?",
+                (user_id, cutoff),
+            )
+            return cursor.rowcount if cursor.rowcount is not None else 0
 
     def run_due_source_sync_jobs(
         self,

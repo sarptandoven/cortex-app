@@ -166,5 +166,66 @@ class FailJobBackoffTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
 
 
+class JobRetentionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._tmp.name) / "cortex.db"
+        init_db(self.db_path)
+        self.store = CortexStore(self.db_path)
+        self.user_id = "retention-user"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _insert(self, job_id: str, status: str, completed_at: str | None) -> None:
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO memory_jobs
+                (id, user_id, job_type, object_type, object_id, status, priority, run_at,
+                 attempts, max_attempts, unique_key, payload_json, result_json, created_at,
+                 updated_at, completed_at)
+                VALUES (?, ?, 'extract_capture', 'capture', ?, ?, 100, '2000-01-01T00:00:00Z',
+                        1, 3, ?, '{}', '{}', ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    self.user_id,
+                    f"obj_{job_id}",
+                    status,
+                    f"key_{job_id}",
+                    completed_at or "2000-01-01T00:00:00Z",
+                    completed_at or "2000-01-01T00:00:00Z",
+                    completed_at,
+                ),
+            )
+            conn.commit()
+
+    def _ids(self) -> set[str]:
+        with connect(self.db_path) as conn:
+            return {row[0] for row in conn.execute("SELECT id FROM memory_jobs WHERE user_id = ?", (self.user_id,))}
+
+    def test_prune_removes_old_terminal_jobs_only(self) -> None:
+        from datetime import datetime, timezone
+
+        recent = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        self._insert("old_ok", "succeeded", "2000-01-01T00:00:00Z")
+        self._insert("old_fail", "failed", "2000-01-01T00:00:00Z")
+        self._insert("recent_ok", "succeeded", recent)
+        # queued job (never terminal) with an ancient created_at must be kept.
+        self._insert("queued_old", "queued", None)
+        with connect(self.db_path) as conn:
+            conn.execute("UPDATE memory_jobs SET status='queued', completed_at=NULL WHERE id='queued_old'")
+            conn.commit()
+
+        removed = self.store._prune_terminal_jobs(self.user_id)
+        self.assertEqual(removed, 2)
+        remaining = self._ids()
+        self.assertNotIn("old_ok", remaining)
+        self.assertNotIn("old_fail", remaining)
+        self.assertIn("recent_ok", remaining)
+        self.assertIn("queued_old", remaining)
+
+
 if __name__ == "__main__":
     unittest.main()
