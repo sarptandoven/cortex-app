@@ -40,6 +40,25 @@ class AdaptationQualityHarnessTests(unittest.TestCase):
         self.assertIn("noisy_external_speaker_preferences_excluded", check_names)
         self.assertIn("rules_cover_all_memory_layers", check_names)
 
+    def test_adaptation_pack_carries_cited_persona(self) -> None:
+        # The "operate as this user" pack an external AI loads must include the new cited Profile
+        # persona (plain "who this person is" statements), on top of the per-layer rules — this is
+        # what makes the user's own AI operate AS them. Additive: existing keys stay intact.
+        seed_adaptation_memories(self.store, self.user_id)
+        pack = self.store.agent_adaptation(self.user_id)
+
+        self.assertIn("persona", pack)
+        self.assertIsInstance(pack["persona"], list)
+        self.assertTrue(pack["persona"], "expected persona sections for a well-seeded corpus")
+        self.assertTrue(pack["rules"])  # per-layer rules still present (no regression)
+        for section in pack["persona"]:
+            self.assertIn(section["id"], {"how_you_work", "preferences", "dislikes", "decisions", "focus", "people_projects"})
+            self.assertTrue(str(section.get("statement") or "").strip())
+            # Cited-or-abstain: every persona element carries a citation (memory_ids or a source).
+            for element in section.get("elements", []):
+                self.assertTrue(element.get("memory_ids") or str(element.get("source") or "").strip(), element)
+        self.assertIn("Who you're adapting to", pack["markdown"])
+
 
 if __name__ == "__main__":
     unittest.main()

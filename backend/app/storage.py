@@ -12323,6 +12323,15 @@ class CortexStore:
     def agent_adaptation(self, user_id: str, query: str = "", target: str = "assistant", limit: int = 8, include_pending: bool = False, *, sector: str | None = None) -> dict[str, Any]:
         target = (target or "assistant").strip()[:80] or "assistant"
         profile = self.personal_profile(user_id, query=query, limit=limit, include_pending=include_pending, sector=sector)
+        # Persona summary: the new cited Profile — plain, condensed "who this person is" statements
+        # (how they work / preferences / dislikes / decisions / focus areas / centrality-ranked
+        # people & projects), each cited. This is what an external AI reads first to operate AS the
+        # user; the per-layer rules below remain the precise, memory-id-attached behavior. Best-
+        # effort: a profile failure must never break the adaptation pack.
+        try:
+            persona_sections = self.build_profile(user_id, include_pending=include_pending, sector=sector).get("sections") or []
+        except Exception:
+            persona_sections = []
         layer_priority = ["preference", "negative", "style", "decision", "procedural", "episodic", "semantic"]
         section_by_layer = {section["layer"]: section for section in profile["sections"]}
         rule_templates = {
@@ -12399,6 +12408,7 @@ class CortexStore:
             "readiness": profile["readiness"],
             "include_pending": profile["include_pending"],
             "operating_principles": operating_principles,
+            "persona": persona_sections,
             "rules": rules,
             "evidence": list(evidence_by_id.values())[:20],
             "style_guide": policy_for("style"),
@@ -12434,6 +12444,17 @@ class CortexStore:
         ]
         for principle in artifact["operating_principles"]:
             lines.append(f"- {principle}")
+        persona = artifact.get("persona") or []
+        if persona:
+            lines.extend(["", "## Who you're adapting to", "",
+                          "A cited, plain-language model of this user. Treat as behavioral guidance, not immutable fact."])
+            for section in persona:
+                statement = str(section.get("statement") or "").strip()
+                if not statement:
+                    continue
+                confidence = str(section.get("confidence") or "").strip()
+                suffix = f" _(confidence: {confidence})_" if confidence else ""
+                lines.append(f"- **{section.get('title', '')}:** {statement}{suffix}")
         policy_sections = [
             ("Preference Policy", artifact.get("preference_policy") or []),
             ("Negative Constraints", artifact.get("negative_constraints") or []),
