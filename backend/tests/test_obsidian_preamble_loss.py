@@ -72,6 +72,18 @@ class ObsidianPreambleLossTests(unittest.TestCase):
         joined = "\n".join(record.content for record in records)
         self.assertIn("Just a flat note with no headings at all.", joined)
 
+    def test_preamble_slug_does_not_collide_with_real_preamble_heading(self) -> None:
+        # A note with pre-heading body AND a real heading that slugifies to "preamble" must not
+        # produce two records with the SAME stable external id — the synthetic preamble section
+        # (ordinal 0) and a "# Preamble" heading (ordinal 1) both map to "#heading=preamble"
+        # unless the slug count is reserved, and the duplicate id would make one record silently
+        # overwrite the other on upsert (or be archived under complete_snapshot).
+        raw = "Intro body text before any heading.\n\n# Preamble\nThe real preamble section body.\n"
+        records = self._records(raw)
+        preamble_ids = [r.external_id for r in records if "#heading=preamble" in r.external_id]
+        self.assertEqual(len(preamble_ids), 2, [r.external_id for r in records])
+        self.assertEqual(len(set(preamble_ids)), 2, f"external id collision: {preamble_ids}")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13420,6 +13420,13 @@ class CortexStore:
                     )
             except Exception:
                 pass
+            # Skip the ENTIRE pass when a mass deletion is blocked. The vault looks transiently
+            # incomplete (folder cleared / drive unmounted mid-sync), so we cannot trust it for the
+            # full rebuild below either: rebuild_index_from_vault deletes every DB memory and
+            # re-inserts only what is in the vault right now, which would silently drop the very
+            # memories we just refused to tombstone (and without even a tombstone). Bail out; the
+            # next reconcile on a complete vault applies real adds/changes/deletes.
+            return {"reconciled": False, "added": 0, "changed": 0, "removed": 0, "mass_delete_blocked": True}
         removed = candidate_removed
         if not (added or removed or changed):
             result = {"reconciled": False, "added": 0, "changed": 0, "removed": 0}

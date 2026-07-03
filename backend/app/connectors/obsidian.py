@@ -612,6 +612,10 @@ def _markdown_sections(raw: str) -> list[_MarkdownSection]:
                 raw=preamble_raw,
             )
         )
+        # Reserve the slug so a real heading that also slugifies to "preamble" gets a distinct
+        # ordinal (and thus a distinct stable external id) instead of colliding with this
+        # synthetic section, which would make one record silently overwrite the other on upsert.
+        slug_counts["preamble"] = 1
     for position, (start_index, title, slug) in enumerate(headings):
         end_index = headings[position + 1][0] if position + 1 < len(headings) else len(lines)
         raw_section = "\n".join(lines[start_index:end_index]).strip()

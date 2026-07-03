@@ -128,6 +128,44 @@ class ReviewR2StorageFixTests(unittest.TestCase):
         self.assertEqual(result["removed"], 0, result)
         self.assertEqual(self._memory_ids_in_db(), {"mem_0", "mem_1", "mem_2"})
 
+    def test_mass_delete_block_prevents_destructive_rebuild_on_concurrent_add(self) -> None:
+        # The floor guard must ALSO suppress the full vault rebuild it would otherwise trigger:
+        # a partial sync that clears the folder AND writes one new note leaves an "added", and an
+        # unconditional rebuild_index_from_vault would delete-and-reinsert from the emptied vault,
+        # dropping the memories the guard just spared (without even a tombstone).
+        from backend.app.vault_markdown import render_memory_markdown
+
+        self._seed_memories(12)
+        self.store.ensure_vault_backfilled(self.user_id)
+
+        memories_dir = self._memories_dir()
+        # Sync client cleared the folder (both notes AND JSON records gone)...
+        for path in list(memories_dir.rglob("*.md")) + list(memories_dir.rglob("*.json")):
+            path.unlink()
+        # ...but wrote back exactly one fresh note, so reconcile detects an add and would rebuild.
+        new_note = memories_dir / "semantic" / "mem_fresh.md"
+        new_note.parent.mkdir(parents=True, exist_ok=True)
+        new_note.write_text(
+            render_memory_markdown(
+                {
+                    "id": "mem_fresh",
+                    "user_id": self.user_id,
+                    "kind": "claim",
+                    "layer": "semantic",
+                    "status": "active",
+                    "content": "A freshly written note during a partial sync.",
+                    "topics": ["fresh"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.store.reconcile_vault_edits(self.user_id)
+        self.assertIs(result.get("mass_delete_blocked"), True, result)
+        self.assertFalse(result["reconciled"], result)
+        # The 12 original memories are NOT destroyed by a rebuild — the whole pass was skipped.
+        self.assertEqual(len(self._memory_ids_in_db()), 12)
+
     def test_small_deletion_is_still_honored(self) -> None:
         self._seed_memories(12)
         self.store.ensure_vault_backfilled(self.user_id)
