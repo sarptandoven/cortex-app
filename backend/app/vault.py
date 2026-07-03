@@ -142,6 +142,54 @@ class CortexVault:
                 }
             )
             self._write_json(self.manifest_path, manifest)
+        self._ensure_sync_scaffolding()
+
+    def _ensure_sync_scaffolding(self) -> None:
+        """Make the vault safe + pleasant to sync (git/iCloud/Syncthing) and to open in Obsidian.
+
+        Writes a .gitignore that syncs the durable, user-owned records (Markdown notes + JSON)
+        while excluding the rebuildable SQLite index, local backups, temp files, and — critically
+        — secrets (credentials.json, logs). Also drops a README so the folder explains itself.
+        Both are written only if absent, so a user's edits are never clobbered.
+        """
+        gitignore_path = self.root / ".gitignore"
+        if not gitignore_path.exists():
+            gitignore = (
+                "# Cortex vault — sync the durable records (Markdown notes + JSON), not the\n"
+                "# rebuildable index, local backups, temp files, or secrets.\n"
+                "*.sqlite\n"
+                "*.sqlite-*\n"
+                "*.db\n"
+                "*.db-*\n"
+                "credentials.json\n"
+                "*.log\n"
+                "backups/\n"
+                ".*.tmp\n"
+                "*.tmp\n"
+                ".DS_Store\n"
+            )
+            try:
+                atomic_write_text(gitignore_path, gitignore)
+            except OSError:
+                pass
+        readme_path = self.root / "README.md"
+        if not readme_path.exists():
+            readme = (
+                "# Your Cortex Vault\n\n"
+                "This folder is your Cortex memory, stored as plain files you own.\n\n"
+                "- `memories/` — your memories as Markdown notes (YAML frontmatter + text). Open\n"
+                "  this folder in Obsidian or any editor. Edit a note and Cortex picks up the\n"
+                "  change; add a note and it becomes a memory; delete one to remove it.\n"
+                "- `captures/`, `entities/`, `tasks/`, ... — supporting records.\n"
+                "- The SQLite index and `credentials.json` are Cortex's private working files —\n"
+                "  the index is rebuildable from these notes and `credentials.json` holds secrets,\n"
+                "  so both are excluded from sync by `.gitignore`.\n\n"
+                "Even if Cortex goes away, these Markdown files stay readable and yours.\n"
+            )
+            try:
+                atomic_write_text(readme_path, readme)
+            except OSError:
+                pass
 
     def write_settings(self, user_id: str, settings: dict[str, Any]) -> Path:
         self.ensure()

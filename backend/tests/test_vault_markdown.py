@@ -159,6 +159,20 @@ class VaultMemoryMirrorTests(unittest.TestCase):
         self.assertTrue(self.vault.patch_memory("mem_native", {"status": "archived"}))
         self.assertEqual(parse_memory_markdown(path.read_text(encoding="utf-8"))["status"], "archived")
 
+    def test_vault_sync_scaffolding(self) -> None:
+        # ensure() ran in setUp; the vault should be safe + self-explanatory to sync/open.
+        gitignore = (self.vault.root / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn("credentials.json", gitignore)  # secrets never synced
+        self.assertIn("*.sqlite", gitignore)          # rebuildable index excluded
+        self.assertIn("backups/", gitignore)
+        self.assertTrue((self.vault.root / "README.md").exists())
+
+    def test_sync_scaffolding_is_idempotent(self) -> None:
+        readme = self.vault.root / "README.md"
+        readme.write_text("my own notes about this vault", encoding="utf-8")
+        self.vault.ensure()  # must not clobber the user's edits
+        self.assertEqual(readme.read_text(encoding="utf-8"), "my own notes about this vault")
+
 
 if __name__ == "__main__":
     unittest.main()

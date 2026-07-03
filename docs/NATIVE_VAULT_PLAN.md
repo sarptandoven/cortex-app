@@ -142,7 +142,19 @@ We use sharded SQLite for the Cortex 10k launch instead of Postgres.
   (write → wipe DB → rebuild → identical retrieval).
 - **Phase 3 — two-way editing.** File-watcher + incremental reindex + re-embed; edit/rename/
   delete reconciliation via frontmatter `id` + tombstones.
-- **Phase 4 — encrypted sync/backup + (optional) CRDT** for multi-device.
+- **Phase 4 — sync-safety, encryption, and (later) CRDT.**
+  - *Shipped (sync-safety):* `CortexVault.ensure()` writes a `.gitignore` (sync the durable
+    Markdown+JSON records; exclude the rebuildable SQLite index, local backups, temp files, and
+    — critically — `credentials.json`/logs so secrets are never synced) and a self-explanatory
+    `README.md`. So a user can sync their vault with iCloud/Syncthing/git today, safely.
+  - *Encryption (deliberately not in the `-S` backend):* the shipping backend runs under
+    `python3 -S` with **no crypto library** (`cryptography`/`age` unavailable), and hand-rolling
+    a cipher is unacceptable. So user-facing encryption belongs **app-side (Swift CryptoKit,
+    AES-GCM with a Keychain/passphrase key)** for encrypted local backups/exports, and **hosted
+    KMS/envelope encryption** for the server tier (blocked on a KMS key/provider). Local vault
+    stays plaintext by design ("file over app"); encryption wraps it at the backup/sync boundary.
+  - *CRDT multi-device:* deferred. File-based sync (above) works now; adopt Automerge/Yjs only if
+    evals show file-sync conflicts actually hurt.
 
 ## 7. Risks & mitigations
 
