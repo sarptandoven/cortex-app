@@ -3,6 +3,8 @@ import SwiftUI
 struct AskTab: View {
     @ObservedObject var state: AppState
     @State private var citedMemoriesExpanded = false
+    @State private var initialLoadDone = false
+    @State private var isReloading = false
 
     var body: some View {
         ScrollView {
@@ -12,7 +14,11 @@ struct AskTab: View {
                     AskQuerySection(state: state)
                     AskMemoryContextStrip(state: state)
 
-                    if state.hasSearched {
+                    if state.isBusy {
+                        AskLoadingCard()
+                    } else if let askError = state.askError {
+                        AskErrorCard(state: state, message: askError)
+                    } else if state.hasSearched {
                         AskResponseSection(
                             state: state,
                             citedMemoriesExpanded: $citedMemoriesExpanded
@@ -38,12 +44,24 @@ struct AskTab: View {
             .padding(CortexDesign.Space.md)
         }
         .task {
-            await state.loadSourceConnectivity()
-            await state.loadReview()
-            await state.loadStats()
+            await reload()
+            initialLoadDone = true
+        }
+        .onChange(of: state.selectedTab) { tab in
+            guard tab == .ask, initialLoadDone else { return }
+            Task { await reload() }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(CortexDesign.appBackground)
+    }
+
+    private func reload() async {
+        guard !isReloading else { return }
+        isReloading = true
+        defer { isReloading = false }
+        await state.loadSourceConnectivity()
+        await state.loadReview()
+        await state.loadStats()
     }
 
     private var hasReviewedMemory: Bool {
@@ -89,13 +107,20 @@ struct AskHeaderSection: View {
 struct AskQuerySection: View {
     @ObservedObject var state: AppState
 
+    private var trimmedQuery: String {
+        state.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     var body: some View {
         HStack(spacing: CortexDesign.Space.md) {
             TextField("Ask about a project, person, decision, or phrase", text: $state.searchQuery)
                 .textFieldStyle(.roundedBorder)
                 .font(.title3)
                 .frame(minHeight: 52)
-                .onSubmit { state.runSearch() }
+                .onSubmit {
+                    guard !state.isBusy, !trimmedQuery.isEmpty else { return }
+                    state.runSearch()
+                }
             Button {
                 state.runSearch()
             } label: {
@@ -104,6 +129,7 @@ struct AskQuerySection: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
+            .disabled(state.isBusy || trimmedQuery.isEmpty)
         }
         .cortexCard(padding: CortexDesign.Space.md, background: CortexDesign.panelBackground)
     }
@@ -364,6 +390,67 @@ private func shortDate(_ value: String) -> String {
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return "recently" }
     return String(trimmed.prefix(10))
+}
+
+struct AskLoadingCard: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Searching…")
+                .font(.body)
+                .foregroundColor(.secondary)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .background(CortexDesign.panelBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct AskErrorCard: View {
+    @ObservedObject var state: AppState
+    let message: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.headline)
+                    .foregroundColor(.orange)
+                    .frame(width: 28, height: 28)
+                    .background(Color.orange.opacity(0.11))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Ask could not reach your memory")
+                        .font(.headline)
+                    Text(message)
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 10) {
+                Spacer(minLength: 0)
+                Button {
+                    state.runSearch()
+                } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                        .frame(minWidth: 120, minHeight: 44)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(state.isBusy)
+            }
+        }
+        .padding(12)
+        .background(CortexDesign.panelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.35)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
 }
 
 struct AskResponseSection: View {

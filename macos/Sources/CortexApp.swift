@@ -2685,6 +2685,10 @@ final class AppState: ObservableObject {
     @Published var onboardingBackupDecision: String = UserDefaults.standard.string(forKey: "onboardingBackupDecision.v1") ?? ""
     @Published var integrationStates: [String: AIIntegrationState] = [:]
     @Published var isBusy: Bool = false
+    @Published var askError: String?
+    @Published var inFlightCaptureIds: Set<String> = []
+    @Published var inFlightMemoryIds: Set<String> = []
+    @Published var captureActionErrors: [String: String] = [:]
     @Published var backendRetryInProgress: Bool = false
     @Published var connectorSyncingIDs: Set<String> = []
     @Published var connectorOAuthStartingIDs: Set<String> = []
@@ -3276,16 +3280,19 @@ final class AppState: ObservableObject {
     }
 
     func search() async {
+        guard !isBusy else { return }
         let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         if q.isEmpty {
             searchResults = []
             askAnswer = ""
             askCitations = []
+            askError = nil
             hasSearched = false
             status = "Enter a search term"
             return
         }
         isBusy = true
+        askError = nil
         status = "Searching..."
         defer { isBusy = false }
         do {
@@ -3295,6 +3302,7 @@ final class AppState: ObservableObject {
             searchResults = answer.results
             askAnswer = answer.answer
             askCitations = answer.citations
+            askError = nil
             hasSearched = true
             if answer.status == "conflicted" {
                 status = "Found cited memory with a conflict"
@@ -3312,6 +3320,8 @@ final class AppState: ObservableObject {
             hasSearched = true
             askAnswer = ""
             askCitations = []
+            searchResults = []
+            askError = CortexRecoveryText.failureStatus("Search", error: error)
             status = CortexRecoveryText.failureStatus("Search", error: error)
         }
     }
@@ -5147,7 +5157,11 @@ final class AppState: ObservableObject {
     }
 
     func approveCapture(_ capture: CaptureItem) {
+        guard !inFlightCaptureIds.contains(capture.id) else { return }
+        inFlightCaptureIds.insert(capture.id)
+        captureActionErrors[capture.id] = nil
         Task {
+            defer { inFlightCaptureIds.remove(capture.id) }
             do {
                 _ = try await request(path: "/v1/captures/\(capture.id)/approve", method: "POST")
                 status = "Approved review item"
@@ -5163,13 +5177,18 @@ final class AppState: ObservableObject {
                 await loadReliability()
                 await loadTrust()
             } catch {
+                captureActionErrors[capture.id] = CortexRecoveryText.failureStatus("Approve", error: error)
                 status = CortexRecoveryText.failureStatus("Approve", error: error)
             }
         }
     }
 
     func archiveCapture(_ capture: CaptureItem) {
+        guard !inFlightCaptureIds.contains(capture.id) else { return }
+        inFlightCaptureIds.insert(capture.id)
+        captureActionErrors[capture.id] = nil
         Task {
+            defer { inFlightCaptureIds.remove(capture.id) }
             do {
                 _ = try await request(path: "/v1/captures/\(capture.id)/archive", method: "POST")
                 status = "Archived review item"
@@ -5183,6 +5202,7 @@ final class AppState: ObservableObject {
                 await loadReliability()
                 await loadTrust()
             } catch {
+                captureActionErrors[capture.id] = CortexRecoveryText.failureStatus("Archive", error: error)
                 status = CortexRecoveryText.failureStatus("Archive", error: error)
             }
         }
@@ -5239,7 +5259,10 @@ final class AppState: ObservableObject {
     }
 
     func deleteMemory(_ memory: MemoryItem) {
+        guard !inFlightMemoryIds.contains(memory.id) else { return }
+        inFlightMemoryIds.insert(memory.id)
         Task {
+            defer { inFlightMemoryIds.remove(memory.id) }
             do {
                 _ = try await request(path: "/v1/memories/\(memory.id)", method: "DELETE")
                 status = "Forgot memory"
@@ -8082,6 +8105,7 @@ struct CaptureCard: View {
 struct MemoryCard: View {
     let item: MemoryItem
     var onArchive: (() -> Void)? = nil
+    var isInFlight: Bool = false
     @State private var confirmForget = false
 
     var body: some View {
@@ -8106,12 +8130,18 @@ struct MemoryCard: View {
                         .foregroundColor(.secondary)
                 }
                 if let onArchive, canForget {
+                    if isInFlight {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
                     Button("Forget") { confirmForget = true }
                         .font(.caption)
+                        .disabled(isInFlight)
                         .confirmationDialog("Forget this memory?", isPresented: $confirmForget) {
                             Button("Forget", role: .destructive) {
                                 onArchive()
                             }
+                            .disabled(isInFlight)
                             Button("Cancel", role: .cancel) {}
                         } message: {
                             Text("Cortex will remove this saved memory from local search and exports.")

@@ -3,26 +3,44 @@ import SwiftUI
 
 struct ReviewTab: View {
     @ObservedObject var state: AppState
+    @State private var initialLoadDone = false
+    @State private var isReloading = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: CortexDesign.Space.lg) {
                 ReviewHeaderSection(state: state)
-                if shouldShowSourceHealth {
-                    ReviewSourceHealthStrip(state: state)
+                if !initialLoadDone && state.inbox.isEmpty {
+                    ReviewLoadingCard()
+                } else {
+                    if shouldShowSourceHealth {
+                        ReviewSourceHealthStrip(state: state)
+                    }
+                    ReviewInboxSection(state: state, captures: state.inbox)
                 }
-                ReviewInboxSection(state: state, captures: state.inbox)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(CortexDesign.Space.lg)
         }
         .task {
-            await state.loadSourceConnectivity()
-            await state.loadInbox()
-            await state.loadReview()
-            await state.loadProductLoop()
+            await reload()
+            initialLoadDone = true
+        }
+        .onChange(of: state.selectedTab) { tab in
+            guard tab == .review, initialLoadDone else { return }
+            Task { await reload() }
         }
         .background(CortexDesign.appBackground)
+    }
+
+    private func reload() async {
+        guard !isReloading else { return }
+        isReloading = true
+        defer { isReloading = false }
+        await state.loadSourceConnectivity()
+        await state.loadInbox()
+        await state.loadReview()
+        await state.loadProductLoop()
     }
 
     private var shouldShowSourceHealth: Bool {
@@ -318,12 +336,18 @@ struct ReviewInboxSection: View {
             }
 
             if captures.isEmpty {
-                ReviewEmptyState(state: state, detail: emptyDetail)
+                if !state.isLocalServiceReady {
+                    ReviewServiceStartingState(state: state)
+                } else {
+                    ReviewEmptyState(state: state, detail: emptyDetail)
+                }
             } else {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     ForEach(visibleCaptures) { capture in
                         ReviewQueueCaptureCard(
                             capture: capture,
+                            isInFlight: state.inFlightCaptureIds.contains(capture.id),
+                            actionError: state.captureActionErrors[capture.id],
                             approve: { state.approveCapture(capture) },
                             archive: { state.archiveCapture(capture) }
                         )
@@ -443,8 +467,91 @@ struct ReviewEmptyState: View {
     }
 }
 
+struct ReviewLoadingCard: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Loading review queue…")
+                .font(.body)
+                .foregroundColor(.secondary)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .background(CortexDesign.panelBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct ReviewServiceStartingState: View {
+    @ObservedObject var state: AppState
+
+    private var needsAttention: Bool {
+        CortexRecoveryText.needsAttention(state.displayStatus)
+    }
+
+    private var title: String {
+        needsAttention ? "Cortex needs attention" : "Cortex is starting"
+    }
+
+    private var detail: String {
+        if needsAttention {
+            return state.displayStatus
+        }
+        return "Reconnecting to your local memory engine. This usually takes a moment."
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 10) {
+                if needsAttention {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.headline)
+                        .foregroundColor(.orange)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.headline)
+                    Text(detail)
+                        .font(.body)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+
+            Button {
+                Task {
+                    await state.ensureBackend()
+                    await state.loadDiagnostics()
+                    await state.loadInbox()
+                    await state.loadReview()
+                    await state.loadStats()
+                }
+            } label: {
+                Label(needsAttention ? "Try again" : "Reconnect", systemImage: "arrow.clockwise")
+                    .frame(minWidth: 140, minHeight: 44)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .disabled(state.backendRetryInProgress)
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .background(CortexDesign.panelBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
 struct ReviewQueueCaptureCard: View {
     let capture: CaptureItem
+    var isInFlight: Bool = false
+    var actionError: String? = nil
     let approve: () -> Void
     let archive: () -> Void
 
@@ -477,7 +584,18 @@ struct ReviewQueueCaptureCard: View {
 
             ReviewQueueSourceBox(capture: capture)
 
+            if let actionError, !actionError.isEmpty {
+                Label(actionError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             HStack(alignment: .center, spacing: 12) {
+                if isInFlight {
+                    ProgressView()
+                        .controlSize(.small)
+                }
                 Spacer()
                 Button {
                     archive()
@@ -487,6 +605,7 @@ struct ReviewQueueCaptureCard: View {
                 }
                 .controlSize(.large)
                 .buttonStyle(.bordered)
+                .disabled(isInFlight)
                 Button {
                     approve()
                 } label: {
@@ -495,6 +614,7 @@ struct ReviewQueueCaptureCard: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
+                .disabled(isInFlight)
             }
         }
         .cortexCard(padding: CortexDesign.Space.lg, background: CortexDesign.panelBackground)
