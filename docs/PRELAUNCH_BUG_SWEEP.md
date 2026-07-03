@@ -25,7 +25,10 @@ per-finding verification. Each confirmed finding was re-verified by hand against
 
 ## Deferred — real, but need a design decision (not a rushed data-path change)
 
-- **#4 Connector cursor advances past failed records (HIGH).** In
+- **#4 Connector cursor advances past failed records (HIGH) — FIXED (2026-07-02).** See below.
+
+### #4 (resolved)
+ In
   `sync_source_account_records`, if some records in a page fail to save (e.g. an oversized
   email raising in `save_capture`), the forward pagination token / high-water-mark still
   advances, so those records are never retried — permanent loss (the failure IS surfaced in

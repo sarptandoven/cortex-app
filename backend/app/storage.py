@@ -110,6 +110,20 @@ CONFIDENCE_RETRIEVAL_BOOSTS: dict[str, float] = {
 # restart/hang), the lease expires and the job is reclaimed instead of being stuck in 'running'
 # forever. Matches job_health's stale_after default so "stale_running" and reclaim agree.
 MEMORY_JOB_LEASE_SECONDS = 15 * 60
+# When a connector sync page has records that fail to save, hold the cursor and re-fetch the
+# same window on the next sync (idempotent re-save retries the failures) rather than advancing
+# past unsaved records and losing them. After this many consecutive failing pages, advance past
+# the poison window so one unsaveable record can't stall the account forever (the failure is
+# surfaced as needs_attention + errors).
+MAX_CONSECUTIVE_FAILING_SYNC_PAGES = 3
+_FORWARD_PAGINATION_STATE_KEYS = (
+    "next_page_token",
+    "next_page_cursor",
+    "next_cursor",
+    "next_page",
+    "next_cursors",
+    "pending_high_water_mark",
+)
 SOURCE_QUALITY_RETRIEVAL_BOOST_MAX = 0.012
 SAME_CAPTURE_RELATION_FULL_PAIR_LIMIT = 80
 SAME_CAPTURE_RELATION_PER_MEMORY_LIMIT = 6
@@ -4580,6 +4594,27 @@ class CortexStore:
         if archive_missing:
             archived_missing = self._archive_missing_source_account_records(user_id, account_id, active_external_ids)
             cursor_state["last_batch_archived_missing"] = archived_missing
+        # Data-loss guard: never advance the cursor past records that failed to save. Hold the
+        # previous position and re-fetch the same window next sync (stable capture ids make the
+        # re-save idempotent, so saved records dedupe and failed ones retry). After a bounded
+        # number of consecutive failing pages, advance anyway so a permanently-unsaveable record
+        # can't stall the account forever.
+        if failed > 0:
+            previous_cursor = self._latest_sync_cursor(user_id, account_id, cursor_name) or {}
+            previous_state = previous_cursor.get("state") if isinstance(previous_cursor.get("state"), dict) else {}
+            # The retry counter lives in the persisted cursor, not the connector-supplied state.
+            failing_pages = int(previous_state.get("consecutive_failing_pages") or 0) + 1
+            if failing_pages < MAX_CONSECUTIVE_FAILING_SYNC_PAGES:
+                cursor_value = previous_cursor.get("cursor_value")
+                high_water_mark = previous_cursor.get("high_water_mark")
+                for key in _FORWARD_PAGINATION_STATE_KEYS:
+                    cursor_state.pop(key, None)
+                cursor_state["consecutive_failing_pages"] = failing_pages
+            else:
+                cursor_state["consecutive_failing_pages"] = 0
+                cursor_state["skipped_failing_page_after_retries"] = failing_pages
+        else:
+            cursor_state.pop("consecutive_failing_pages", None)
         cursor = self.upsert_sync_cursor(
             user_id,
             source=source,
