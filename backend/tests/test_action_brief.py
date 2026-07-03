@@ -108,6 +108,12 @@ class ActionBriefTests(unittest.TestCase):
 
         self.assertEqual(brief["sector"], "Project Atlas")
         self.assertEqual(brief["status"], "strong")
+        # Distilled front: a short, cited essence of the brief (not the full dump).
+        self.assertTrue(brief["key_points"])
+        self.assertLessEqual(len(brief["key_points"]), 5)
+        for point in brief["key_points"]:
+            self.assertTrue(point["point"] and point["memory_id"])  # every distilled point is cited
+        self.assertIn("## Key points", brief["markdown"])
         self.assertTrue(brief["primary_context"])
         self.assertTrue(brief["procedures"])
         self.assertTrue(brief["current_decisions"])

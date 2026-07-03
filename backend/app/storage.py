@@ -10737,11 +10737,45 @@ class CortexStore:
             negative_constraints=cited_negative,
             action_plan=action_plan,
         )
+        # Distilled front: the few cited points that matter most for THIS task, so an agent (or the
+        # app) reads the essence first instead of wading through the full multi-section brief.
+        # Most task-relevant first, then the highest-signal behavioral layers, deduped by id.
+        key_points: list[dict[str, Any]] = []
+        key_seen: set[str] = set()
+        for section_name, items in (
+            ("primary_context", cited_primary),
+            ("current_decisions", cited_decisions),
+            ("negative_constraints", cited_negative),
+            ("procedures", cited_procedures),
+            ("preferences", cited_preferences),
+            ("open_actions", cited_open_actions),
+        ):
+            for item in items:
+                memory_id = str(item.get("id") or "")
+                point_text = str(item.get("summary") or item.get("content") or "").strip()
+                if not memory_id or memory_id in key_seen or not point_text:
+                    continue
+                key_seen.add(memory_id)
+                key_points.append(
+                    {
+                        "point": point_text[:200],
+                        "section": section_name,
+                        "memory_id": memory_id,
+                        "source": item.get("source"),
+                        "source_url": item.get("source_url"),
+                    }
+                )
+                if len(key_points) >= 5:
+                    break
+            if len(key_points) >= 5:
+                break
+
         payload: dict[str, Any] = {
             "generated_at": now_iso(),
             "task": task,
             "sector": sector,
             "status": status,
+            "key_points": key_points,
             "instructions": instructions,
             "next_actions": next_actions,
             "coverage": {
@@ -10973,6 +11007,11 @@ class CortexStore:
         ]
         if brief.get("sector"):
             lines.append(f"Sector: {brief['sector']}")
+        if brief.get("key_points"):
+            lines.extend(["", "## Key points", ""])
+            for kp in brief["key_points"]:
+                source = kp.get("source_url") or kp.get("source") or "unknown source"
+                lines.append(f"- {kp['point']} [{kp['memory_id']}] ({source})")
         lines.extend(["", "## Instructions", ""])
         for instruction in brief.get("instructions") or []:
             lines.append(f"- {instruction}")
