@@ -69,3 +69,31 @@ disconnect actions. Core file is `macos/Sources/CortexApp.swift` (~8.3k lines: `
 macOS behavior is only partially verifiable headlessly: `macos/build.sh` compiles + code-signs
 the app (the gate we can run), but runtime UX cannot be exercised in this environment. Fixes are
 compile-verified; behavioral QA needs a human on-device pass before launch.
+
+## Resolution status (2026-07-02)
+
+**Fixed (all compile/build-verified):**
+- Wave 1 — #1 request timeout, #2 retry-replays-mutations correctness, #3-part `ensureBackend`
+  in-flight guard, #10 delete-all typed confirmation, #11 Pause keeps credential, #12 token
+  reset/revoke confirmations + reset failure status, #14 re-present onboarding after wipe.
+- Wave 2 — #3 per-item in-flight disable+spinner on approve/archive/forget/delete, #4 Ask
+  button disable + concurrent-search guard, #5 Ask loading + distinct error card, #6 ReviewTab
+  backend-down state, #7 tab reload on activation.
+- Wave 3 — #13 disconnect-a-source (wired deleteImport) + per-connection remove, #8 review-queue
+  pagination, #18 Connections-sheet Retry, #19 archive confirmation (no un-archive API exists),
+  #22 "Setup required" status badge, #17 VoiceOver labels + combined composites.
+- Wave 4 — #15 dark mode: `CortexDesign` palette is now appearance-adaptive and the forced
+  `.preferredColorScheme(.light)` is removed (follows system); light mode is visually unchanged.
+- Window — the app now opens at a roomy screen-relative default (was 820x760).
+
+**Deferred (lower-priority polish, tracked):**
+- #16 fully resizable sheets / Dynamic Type on hardcoded `.system(size:)` fonts.
+- #20 replace the single global `isBusy` with per-item state everywhere (partially done via the
+  new in-flight sets).
+- #21 replace remaining hardcoded spacing with `CortexDesign.Space` tokens.
+- #23 replace string-based ISO date sorting with real date parsing.
+- #24 remove the unused older `ReviewCaptureCard`/`ReviewPreviewList` duplicates; fix the nested
+  Ask ScrollView.
+- Dark-mode second pass: audit `.white.opacity`/`.black.opacity` overlays and semantic status
+  colors for contrast on dark backgrounds (the palette adapts; overlays are acceptable but not
+  yet individually tuned).

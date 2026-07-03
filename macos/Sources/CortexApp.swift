@@ -5651,18 +5651,18 @@ struct CortexView: View {
             footer
         }
         .background(CortexDesign.appBackground)
-        .preferredColorScheme(.light)
+        .preferredColorScheme(nil)
         .accentColor(CortexDesign.accent)
         .frame(minWidth: 560, minHeight: 640)
         .sheet(isPresented: $state.showOnboarding) {
             OnboardingView(state: state)
-                .preferredColorScheme(.light)
+                .preferredColorScheme(nil)
                 .accentColor(CortexDesign.accent)
                 .frame(width: 760, height: 660)
         }
         .sheet(isPresented: $state.showConnectionsPrivacy) {
             ConnectionsPrivacySheet(state: state)
-                .preferredColorScheme(.light)
+                .preferredColorScheme(nil)
                 .accentColor(CortexDesign.accent)
                 .frame(width: 840, height: 720)
         }
@@ -7968,7 +7968,7 @@ struct SettingsDataRecoverySection: View {
         }
         .sheet(isPresented: $confirmDeleteAllData, onDismiss: { deleteAllConfirmationText = "" }) {
             deleteAllDataConfirmationSheet
-                .preferredColorScheme(.light)
+                .preferredColorScheme(nil)
                 .accentColor(CortexDesign.accent)
                 .frame(width: 460)
         }

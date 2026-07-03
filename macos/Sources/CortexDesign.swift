@@ -1,15 +1,49 @@
 import SwiftUI
+import AppKit
+
+/// Resolves to a light or dark value based on the current system appearance, so the whole app
+/// adapts to Dark Mode from a single palette definition (no call-site changes needed). The light
+/// values are unchanged from the original palette, so light mode looks identical.
+private func cortexAdaptiveColor(light: NSColor, dark: NSColor) -> Color {
+    Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+    }))
+}
 
 enum CortexDesign {
-    // Palette — a calm, light, warm surface with a single confident accent.
-    static let accent = Color(red: 0.13, green: 0.32, blue: 0.72)
-    static let accentSoft = Color(red: 0.13, green: 0.32, blue: 0.72).opacity(0.10)
-    static let appBackground = Color(red: 0.985, green: 0.980, blue: 0.955)
-    static let panelBackground = Color.white.opacity(0.92)
-    static let cardBackground = Color.white.opacity(0.86)
-    static let quietBackground = Color(red: 0.950, green: 0.955, blue: 0.940)
-    static let softBorder = Color.black.opacity(0.08)
-    static let hairline = Color.black.opacity(0.055)
+    // Palette — a calm surface with a single confident accent, adaptive to light/dark.
+    static let accent = cortexAdaptiveColor(
+        light: NSColor(srgbRed: 0.13, green: 0.32, blue: 0.72, alpha: 1),
+        dark: NSColor(srgbRed: 0.46, green: 0.63, blue: 0.99, alpha: 1)
+    )
+    static let accentSoft = cortexAdaptiveColor(
+        light: NSColor(srgbRed: 0.13, green: 0.32, blue: 0.72, alpha: 0.10),
+        dark: NSColor(srgbRed: 0.46, green: 0.63, blue: 0.99, alpha: 0.22)
+    )
+    static let appBackground = cortexAdaptiveColor(
+        light: NSColor(srgbRed: 0.985, green: 0.980, blue: 0.955, alpha: 1),
+        dark: NSColor(srgbRed: 0.11, green: 0.11, blue: 0.12, alpha: 1)
+    )
+    static let panelBackground = cortexAdaptiveColor(
+        light: NSColor(white: 1.0, alpha: 0.92),
+        dark: NSColor(srgbRed: 0.20, green: 0.20, blue: 0.22, alpha: 0.92)
+    )
+    static let cardBackground = cortexAdaptiveColor(
+        light: NSColor(white: 1.0, alpha: 0.86),
+        dark: NSColor(srgbRed: 0.23, green: 0.23, blue: 0.25, alpha: 0.90)
+    )
+    static let quietBackground = cortexAdaptiveColor(
+        light: NSColor(srgbRed: 0.950, green: 0.955, blue: 0.940, alpha: 1),
+        dark: NSColor(srgbRed: 0.15, green: 0.15, blue: 0.16, alpha: 1)
+    )
+    static let softBorder = cortexAdaptiveColor(
+        light: NSColor(white: 0.0, alpha: 0.08),
+        dark: NSColor(white: 1.0, alpha: 0.14)
+    )
+    static let hairline = cortexAdaptiveColor(
+        light: NSColor(white: 0.0, alpha: 0.055),
+        dark: NSColor(white: 1.0, alpha: 0.09)
+    )
 
     // Spacing scale — generous whitespace, used everywhere for consistent rhythm.
     enum Space {
