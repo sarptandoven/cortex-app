@@ -720,6 +720,14 @@ struct SourceAccountItem: Codable, Identifiable, Hashable {
     var needsContent: Bool {
         normalizedStatus == "empty" || normalizedAuthState == "needs_content"
     }
+
+    /// True only once the account is genuinely authenticated — a credential was stored / a real
+    /// connect happened. A freshly-created placeholder is status "available" + auth_state
+    /// "not_configured"; it must NOT read as connected, or the app claims "connected" for a
+    /// source the user never signed into.
+    var isConnected: Bool {
+        disconnected_at == nil && !["", "not_configured", "available"].contains(normalizedAuthState)
+    }
 }
 
 enum JSONValue: Codable, Hashable {
@@ -2991,13 +2999,17 @@ final class AppState: ObservableObject {
     }
 
     var hasConnectedSourceAccount: Bool {
-        sourceAccounts.contains { account in
-            account.disconnected_at == nil
-        }
+        sourceAccounts.contains { $0.isConnected }
     }
 
+    // "Active" = registered and not disconnected (includes unconfigured placeholders); used to
+    // locate the account row for a connector card. "Connected" = actually authenticated.
     var activeSourceAccounts: [SourceAccountItem] {
         sourceAccounts.filter { $0.disconnected_at == nil }
+    }
+
+    var connectedSourceAccounts: [SourceAccountItem] {
+        sourceAccounts.filter { $0.isConnected }
     }
 
     var knownSourceAccounts: [SourceAccountItem] {
@@ -6705,7 +6717,7 @@ struct SourceConnectivityPanel: View {
         VStack(alignment: .leading, spacing: 8) {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 8) {
                 SourceConnectivityMetric(title: "Notes ready", value: "\(importReadyCount)", systemImage: "folder.badge.plus", color: .accentColor)
-                SourceConnectivityMetric(title: "Connected", value: "\(state.sourceAccounts.count)", systemImage: "link.circle.fill", color: state.sourceAccounts.isEmpty ? .secondary : .green)
+                SourceConnectivityMetric(title: "Connected", value: "\(state.connectedSourceAccounts.count)", systemImage: "link.circle.fill", color: state.connectedSourceAccounts.isEmpty ? .secondary : .green)
                 SourceConnectivityMetric(title: "Needs attention", value: "\(accountsNeedingAttention.count + cursorErrors)", systemImage: "exclamationmark.triangle.fill", color: accountsNeedingAttention.isEmpty && cursorErrors == 0 ? .secondary : .orange)
             }
 

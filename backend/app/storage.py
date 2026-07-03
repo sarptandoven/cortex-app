@@ -3268,6 +3268,15 @@ class CortexStore:
             source = item["id"]
             source_accounts = accounts_by_source.get(source, [])
             active_accounts = [account for account in source_accounts if not account.get("disconnected_at")]
+            # An account is only genuinely CONNECTED once it has been authenticated (a credential
+            # stored / a real connect). A freshly-created placeholder is status "available" +
+            # auth_state "not_configured" — it must NOT count as connected, or the app shows
+            # "connected" for a source the user never signed into.
+            authenticated_accounts = [
+                account
+                for account in active_accounts
+                if str(account.get("auth_state") or "").strip().lower() not in {"", "not_configured", "available"}
+            ]
             source_cursors = cursors_by_source.get(source, [])
             stats = captures_by_source.get(source, {})
             pending = int(stats.get("pending") or 0)
@@ -3362,7 +3371,7 @@ class CortexStore:
             elif has_completed_sync:
                 status = "synced"
                 next_action = "Source sync has completed; review new memories as they arrive."
-            elif active_accounts and not planned_connector:
+            elif authenticated_accounts and not planned_connector:
                 status = "connected"
                 next_action = "Connection is registered; waiting for the first completed sync."
             elif captures or active_memories:
@@ -3426,6 +3435,7 @@ class CortexStore:
                     "scopes": item.get("scopes") or [],
                     "formats": item.get("formats") or [],
                     "accounts": len(active_accounts),
+                    "connected_accounts": len(authenticated_accounts),
                     "cursors": len(source_cursors),
                     "captures": captures,
                     "current_captures": current_captures,
@@ -3467,7 +3477,7 @@ class CortexStore:
             "advanced_fallback_only": sum(1 for row in rows if row["beta_status"] == "advanced-fallback"),
             "connector_needed": sum(1 for row in rows if row["beta_status"] == "needs-connector"),
             "connected": sum(
-                int(row["accounts"])
+                int(row["connected_accounts"])
                 for row in rows
                 if row["status"] in {"connected", "syncing", "needs_review", "synced", "imported"}
             ),

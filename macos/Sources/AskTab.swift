@@ -147,7 +147,11 @@ struct AskMemoryContextStrip: View {
         guard let report else { return [] }
         return report.sources
             .filter { source in
-                source.active_memories > 0 || source.pending > 0 || source.accounts > 0
+                // A source is relevant only if it has data OR is genuinely connected — never for a
+                // placeholder account that was created but never signed into (status "available"/
+                // "import_ready"). Raw account count includes those placeholders, so gate on status.
+                source.active_memories > 0 || source.pending > 0
+                    || ["connected", "synced", "syncing", "imported", "needs_review"].contains(source.status)
             }
             .sorted { lhs, rhs in
                 if lhs.active_memories != rhs.active_memories {

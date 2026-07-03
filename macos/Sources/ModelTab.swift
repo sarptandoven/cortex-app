@@ -269,7 +269,7 @@ struct HomeHeroSection: View {
         if let connected = state.sourceReadinessReport?.summary.connected {
             return connected
         }
-        return state.activeSourceAccounts.filter { account in
+        return state.connectedSourceAccounts.filter { account in
             !account.needsContent
         }.count
     }
