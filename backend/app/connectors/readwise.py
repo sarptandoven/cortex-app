@@ -119,6 +119,10 @@ def fetch_readwise_records(
                 errors.append({"error": message, "category": category})
                 break
             results = []
+        # The record cap never truncates mid-page: every highlight on the fetched
+        # page is fully consumed (overshooting max_records by at most one page)
+        # before the page cursor advances, so a next_page_cursor continuation
+        # never skips un-consumed highlights from the current page on resume.
         for book in results:
             if not isinstance(book, dict):
                 continue
@@ -132,10 +136,6 @@ def fetch_readwise_records(
                     continue
                 high_water_mark = _max_iso(high_water_mark, record.captured_at)
                 records.append(record)
-                if len(records) >= capped_max:
-                    break
-            if len(records) >= capped_max:
-                break
         next_page_cursor = str(payload.get("nextPageCursor") or "").strip() or None
         if not next_page_cursor or len(records) >= capped_max:
             break

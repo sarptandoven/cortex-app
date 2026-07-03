@@ -228,10 +228,10 @@ def fetch_github_records(
         capped_comments_per_item = 10
     comment_enrichment_remaining = min(capped_max, 50) if include_comments and capped_comments_per_item > 0 else 0
 
+    per_page = min(100, capped_max)
     for repository in normalized_repositories:
         page = 1
         while len(records) < capped_max:
-            per_page = min(100, capped_max - len(records))
             query = {
                 "state": "all",
                 "sort": "updated",

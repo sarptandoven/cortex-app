@@ -599,6 +599,19 @@ def _markdown_sections(raw: str) -> list[_MarkdownSection]:
 
     slug_counts: dict[str, int] = {}
     sections: list[_MarkdownSection] = []
+    first_heading_index = headings[0][0]
+    preamble_raw = "\n".join(lines[:first_heading_index]).strip()
+    if preamble_raw and _has_meaningful_body(preamble_raw):
+        sections.append(
+            _MarkdownSection(
+                title="Preamble",
+                slug="preamble",
+                ordinal=0,
+                line_start=frontmatter_lines + 1,
+                line_end=frontmatter_lines + first_heading_index,
+                raw=preamble_raw,
+            )
+        )
     for position, (start_index, title, slug) in enumerate(headings):
         end_index = headings[position + 1][0] if position + 1 < len(headings) else len(lines)
         raw_section = "\n".join(lines[start_index:end_index]).strip()

@@ -227,10 +227,19 @@ def fetch_slack_records(
 
     for channel in channel_specs:
         cursor: str | None = initial_cursors.get(channel.channel_id)
+        # When resuming from a saved page cursor, that cursor points at an OLDER
+        # page (Slack pagination walks backward from newest). Applying the
+        # `oldest` HWM bound to those cursored requests would make Slack filter
+        # out every message older than the previous run's watermark, so the
+        # older pages behind the cursor would never be captured. Only apply
+        # `oldest` to a channel that started this run WITHOUT a resume cursor,
+        # mirroring how other connectors drop `since` while a page token is
+        # pending.
+        resuming_from_cursor = bool(cursor)
         while len(records) < capped_max:
             per_page = min(DEFAULT_PAGE_LIMIT, capped_max - len(records))
             query = {"channel": channel.channel_id, "limit": str(per_page)}
-            if oldest:
+            if oldest and not resuming_from_cursor:
                 query["oldest"] = oldest
             if cursor:
                 query["cursor"] = cursor

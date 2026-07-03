@@ -709,13 +709,15 @@ def _chatgpt_messages(conversation: dict[str, Any]) -> list[str]:
         message = node.get("message") or {}
         if not isinstance(message, dict):
             continue
-        role = ((message.get("author") or {}).get("role") or "unknown").strip()
+        author = message.get("author")
+        role = ((author.get("role") if isinstance(author, dict) else None) or "unknown").strip()
         if role == "system":
             continue
         content = _chatgpt_content(message.get("content") or {})
         if not content:
             continue
-        created = float(message.get("create_time") or 0)
+        create_time = message.get("create_time")
+        created = float(create_time) if isinstance(create_time, (int, float)) else 0.0
         created_label = _chatgpt_time(created)
         prefix = f"{created_label} {role}" if created_label else role
         messages.append((created, f"{prefix}: {content}"))
@@ -1162,8 +1164,7 @@ def _parse_discord(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
     for asset in assets:
         if Path(asset.name).name.lower() != "messages.csv":
             continue
-        text = asset.read_text()
-        rows = list(csv.DictReader(text.splitlines()))
+        rows = _csv_rows(asset)
         if not rows or not any("Contents" in row or "content" in row for row in rows):
             continue
         channel = _path_parts(asset.name)[-2] if len(_path_parts(asset.name)) > 1 else "Discord"
@@ -1954,16 +1955,20 @@ def _jsonl_export_rows(text: str, source: str) -> list[Any]:
     return rows
 
 
-def _json_rows_from_payload(payload: Any, source: str) -> list[Any]:
+def _json_rows_from_payload(payload: Any, source: str, depth: int = 0) -> list[Any]:
     if isinstance(payload, list):
         return [_json_row_value(item) for item in payload]
     if not isinstance(payload, dict):
+        return []
+    if depth >= MAX_PARSE_NESTING_DEPTH:
+        # Runaway nesting: stop descending into a crafted deeply-nested export
+        # rather than overflowing the stack. Degrade to no rows for this branch.
         return []
 
     for key in STRUCTURED_JSON_COLLECTION_KEYS:
         if key not in payload:
             continue
-        rows = _json_rows_from_collection(payload.get(key), source)
+        rows = _json_rows_from_collection(payload.get(key), source, depth + 1)
         if rows:
             return rows
 
@@ -1971,18 +1976,18 @@ def _json_rows_from_payload(payload: Any, source: str) -> list[Any]:
         return [_json_row_value(payload)]
 
     for value in payload.values():
-        rows = _json_rows_from_collection(value, source)
+        rows = _json_rows_from_collection(value, source, depth + 1)
         if rows:
             return rows
 
     return []
 
 
-def _json_rows_from_collection(value: Any, source: str) -> list[Any]:
+def _json_rows_from_collection(value: Any, source: str, depth: int = 0) -> list[Any]:
     if isinstance(value, list):
         return [_json_row_value(item) for item in value]
     if isinstance(value, dict):
-        return _json_rows_from_payload(value, source)
+        return _json_rows_from_payload(value, source, depth)
     return []
 
 
