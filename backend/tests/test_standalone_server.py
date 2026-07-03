@@ -877,6 +877,7 @@ class FakeStore:
         max_comments_per_item: int = 10,
         cursor_name: str = "issues",
         api_base_url: str | None = None,
+        complete_snapshot: bool = False
     ) -> dict:
         if not token:
             raise ValueError("GitHub token is required")
@@ -884,6 +885,7 @@ class FakeStore:
             raise ValueError("At least one GitHub repository is required")
         call = {
             "user_id": user_id,
+            "complete_snapshot": complete_snapshot,
             "token": token,
             "repositories": repositories,
             "source_account_id": source_account_id,
@@ -979,11 +981,13 @@ class FakeStore:
         cursor_name: str = "messages",
         include_body: bool = True,
         api_base_url: str | None = None,
+        complete_snapshot: bool = False
     ) -> dict:
         if not access_token:
             raise ValueError("Gmail access token is required")
         call = {
             "user_id": user_id,
+            "complete_snapshot": complete_snapshot,
             "access_token": access_token,
             "source_account_id": source_account_id,
             "account_label": account_label,
@@ -1078,11 +1082,13 @@ class FakeStore:
         cursor_name: str = "files",
         include_content: bool = True,
         api_base_url: str | None = None,
+        complete_snapshot: bool = False
     ) -> dict:
         if not access_token:
             raise ValueError("Google Drive access token is required")
         call = {
             "user_id": user_id,
+            "complete_snapshot": complete_snapshot,
             "access_token": access_token,
             "source_account_id": source_account_id,
             "account_label": account_label,
@@ -1176,11 +1182,13 @@ class FakeStore:
         cursor_name: str = "messages",
         include_body: bool = True,
         api_base_url: str | None = None,
+        complete_snapshot: bool = False
     ) -> dict:
         if not access_token:
             raise ValueError("Outlook access token is required")
         call = {
             "user_id": user_id,
+            "complete_snapshot": complete_snapshot,
             "access_token": access_token,
             "source_account_id": source_account_id,
             "account_label": account_label,
@@ -1272,6 +1280,7 @@ class FakeStore:
         cursor_name: str = "messages",
         workspace_url: str | None = None,
         api_base_url: str | None = None,
+        complete_snapshot: bool = False
     ) -> dict:
         if not token:
             raise ValueError("Slack token is required")
@@ -1279,6 +1288,7 @@ class FakeStore:
             raise ValueError("At least one Slack channel ID is required")
         call = {
             "user_id": user_id,
+            "complete_snapshot": complete_snapshot,
             "token": token,
             "channels": channels,
             "source_account_id": source_account_id,
@@ -1371,11 +1381,13 @@ class FakeStore:
         max_records: int = 100,
         cursor_name: str = "highlights",
         api_base_url: str | None = None,
+        complete_snapshot: bool = False
     ) -> dict:
         if not token:
             raise ValueError("Readwise token is required")
         call = {
             "user_id": user_id,
+            "complete_snapshot": complete_snapshot,
             "token": token,
             "source_account_id": source_account_id,
             "account_label": account_label,
@@ -1463,11 +1475,13 @@ class FakeStore:
         processing: str = "sync",
         max_records: int = 100,
         cursor_name: str = "events",
+        complete_snapshot: bool = False
     ) -> dict:
         if bool(ics_path) == bool(feed_url):
             raise ValueError("Provide exactly one of ics_path or feed_url")
         call = {
             "user_id": user_id,
+            "complete_snapshot": complete_snapshot,
             "ics_path": ics_path,
             "feed_url": feed_url,
             "source_account_id": source_account_id,
@@ -1558,11 +1572,13 @@ class FakeStore:
         cursor_name: str = "raindrops",
         include_highlights: bool = True,
         api_base_url: str | None = None,
+        complete_snapshot: bool = False
     ) -> dict:
         if not token:
             raise ValueError("Raindrop token is required")
         call = {
             "user_id": user_id,
+            "complete_snapshot": complete_snapshot,
             "token": token,
             "collection_id": collection_id,
             "source_account_id": source_account_id,
@@ -1656,9 +1672,11 @@ class FakeStore:
         cursor_name: str = "items",
         include_attachments: bool = False,
         api_base_url: str | None = None,
+        complete_snapshot: bool = False
     ) -> dict:
         call = {
             "user_id": user_id,
+            "complete_snapshot": complete_snapshot,
             "token": token,
             "library_type": library_type,
             "library_id": library_id,
@@ -1750,11 +1768,13 @@ class FakeStore:
         max_records: int = 100,
         cursor_name: str = "issues",
         api_url: str | None = None,
+        complete_snapshot: bool = False
     ) -> dict:
         if not token:
             raise ValueError("Linear token is required")
         call = {
             "user_id": user_id,
+            "complete_snapshot": complete_snapshot,
             "token": token,
             "source_account_id": source_account_id,
             "account_label": account_label,
@@ -1845,6 +1865,7 @@ class FakeStore:
         processing: str = "sync",
         max_records: int = 100,
         cursor_name: str = "issues",
+        complete_snapshot: bool = False
     ) -> dict:
         if not email:
             raise ValueError("Jira email is required")
@@ -1854,6 +1875,7 @@ class FakeStore:
             raise ValueError("Jira site_url is required")
         call = {
             "user_id": user_id,
+            "complete_snapshot": complete_snapshot,
             "email": email,
             "api_token": api_token,
             "site_url": site_url,
@@ -1946,11 +1968,13 @@ class FakeStore:
         include_content: bool = True,
         api_base_url: str | None = None,
         notion_version: str | None = None,
+        complete_snapshot: bool = False
     ) -> dict:
         if not token:
             raise ValueError("Notion token is required")
         call = {
             "user_id": user_id,
+            "complete_snapshot": complete_snapshot,
             "token": token,
             "source_account_id": source_account_id,
             "account_label": account_label,
@@ -2993,6 +3017,7 @@ class StandaloneServerTests(unittest.TestCase):
             self.fake_store.github_sync_calls,
             [
                 {
+                    "complete_snapshot": False,
                     "user_id": "local",
                     "token": "ghp_test",
                     "repositories": ["doppl-tech/cortex-app"],
@@ -3034,6 +3059,33 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(context.exception.code, 422)
         self.assertEqual(len(self.fake_store.github_sync_calls), 1)
 
+    def test_every_connector_sync_route_forwards_complete_snapshot(self) -> None:
+        # Parity regression: main.py passed complete_snapshot for every connector sync but the
+        # SHIPPING standalone server silently dropped it, so a full-snapshot sync behaved as
+        # incremental and stale items were never archived. Each route must forward the flag.
+        cases = [
+            ("github", "/v1/connectors/github/sync", {"token": "ghp_x", "repositories": ["o/r"]}),
+            ("gmail", "/v1/connectors/gmail/sync", {"access_token": "t"}),
+            ("google_drive", "/v1/connectors/google-drive/sync", {"access_token": "t"}),
+            ("outlook", "/v1/connectors/outlook/sync", {"access_token": "t"}),
+            ("slack", "/v1/connectors/slack/sync", {"token": "xoxb", "channels": ["general"]}),
+            ("readwise", "/v1/connectors/readwise/sync", {"token": "t"}),
+            ("calendar", "/v1/connectors/calendar/sync", {"feed_url": "https://cal.example/basic.ics"}),
+            ("raindrop", "/v1/connectors/raindrop/sync", {"token": "t"}),
+            ("zotero", "/v1/connectors/zotero/sync", {"token": "t", "library_id": "1"}),
+            ("linear", "/v1/connectors/linear/sync", {"token": "t"}),
+            ("jira", "/v1/connectors/jira/sync", {"email": "a@b.c", "api_token": "t", "site_url": "https://x.atlassian.net"}),
+            ("notion", "/v1/connectors/notion/sync", {"token": "t"}),
+        ]
+        for name, route, payload in cases:
+            with self.subTest(connector=name):
+                calls = getattr(self.fake_store, f"{name}_sync_calls")
+                calls.clear()
+                with self.post_json(route, {**payload, "complete_snapshot": True}) as response:
+                    self.assertEqual(response.status, 200)
+                self.assertEqual(len(calls), 1, f"{name} route did not reach the store")
+                self.assertIs(calls[0].get("complete_snapshot"), True, f"{name} dropped complete_snapshot")
+
     def test_gmail_connector_route_forwards_to_store(self) -> None:
         with self.post_json(
             "/v1/connectors/gmail/sync",
@@ -3066,6 +3118,7 @@ class StandaloneServerTests(unittest.TestCase):
             self.fake_store.gmail_sync_calls,
             [
                 {
+                    "complete_snapshot": False,
                     "user_id": "local",
                     "access_token": "gmail_access_test",
                     "source_account_id": "sacct_gmail_existing",
@@ -3127,6 +3180,7 @@ class StandaloneServerTests(unittest.TestCase):
             self.fake_store.google_drive_sync_calls,
             [
                 {
+                    "complete_snapshot": False,
                     "user_id": "local",
                     "access_token": "drive_access_test",
                     "source_account_id": "sacct_drive_existing",
@@ -3382,6 +3436,7 @@ class StandaloneServerTests(unittest.TestCase):
             self.fake_store.outlook_sync_calls,
             [
                 {
+                    "complete_snapshot": False,
                     "user_id": "local",
                     "access_token": "outlook_access_test",
                     "source_account_id": "sacct_outlook_existing",
@@ -3439,6 +3494,7 @@ class StandaloneServerTests(unittest.TestCase):
             self.fake_store.slack_sync_calls,
             [
                 {
+                    "complete_snapshot": False,
                     "user_id": "local",
                     "token": "xoxb_test",
                     "channels": ["C123ABC|general"],
@@ -3495,6 +3551,7 @@ class StandaloneServerTests(unittest.TestCase):
             self.fake_store.readwise_sync_calls,
             [
                 {
+                    "complete_snapshot": False,
                     "user_id": "local",
                     "token": "readwise_test",
                     "source_account_id": "sacct_readwise_existing",
@@ -3549,6 +3606,7 @@ class StandaloneServerTests(unittest.TestCase):
             self.fake_store.calendar_sync_calls,
             [
                 {
+                    "complete_snapshot": False,
                     "user_id": "local",
                     "ics_path": private_path,
                     "feed_url": None,
@@ -3606,6 +3664,7 @@ class StandaloneServerTests(unittest.TestCase):
             self.fake_store.raindrop_sync_calls,
             [
                 {
+                    "complete_snapshot": False,
                     "user_id": "local",
                     "token": "rd_route_secret",
                     "collection_id": "0",
@@ -3665,6 +3724,7 @@ class StandaloneServerTests(unittest.TestCase):
             self.fake_store.zotero_sync_calls,
             [
                 {
+                    "complete_snapshot": False,
                     "user_id": "local",
                     "token": "zotero_test",
                     "library_type": "user",
@@ -3721,6 +3781,7 @@ class StandaloneServerTests(unittest.TestCase):
             self.fake_store.linear_sync_calls,
             [
                 {
+                    "complete_snapshot": False,
                     "user_id": "local",
                     "token": "lin_api_test",
                     "source_account_id": "sacct_linear_existing",
@@ -3778,6 +3839,7 @@ class StandaloneServerTests(unittest.TestCase):
             self.fake_store.jira_sync_calls,
             [
                 {
+                    "complete_snapshot": False,
                     "user_id": "local",
                     "email": "sarp@example.com",
                     "api_token": "jira_api_test",
@@ -3838,6 +3900,7 @@ class StandaloneServerTests(unittest.TestCase):
             self.fake_store.notion_sync_calls,
             [
                 {
+                    "complete_snapshot": False,
                     "user_id": "local",
                     "token": "notion_test",
                     "source_account_id": "sacct_notion_existing",

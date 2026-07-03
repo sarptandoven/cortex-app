@@ -19,6 +19,10 @@ enum CitationDisplay {
 
     static func cleanSourceURL(_ value: String?) -> String? {
         guard let value = cleanPlain(value) else { return nil }
+        // A memory the user captured directly in Cortex; its provenance is the capture itself.
+        if value.hasPrefix("cortex-capture://") {
+            return "Your note in Cortex"
+        }
         if value.hasPrefix("local-file://") {
             return cleanLocalFile(value)
         }

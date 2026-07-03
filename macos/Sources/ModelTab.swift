@@ -291,6 +291,13 @@ struct HomeHeroSection: View {
         state.sourceReadinessReport?.sources.filter { $0.sync_plan?.due_now == true }.count ?? 0
     }
 
+    // Actively syncing/processing right now — distinct from "connected and waiting", so the UI
+    // never claims a sync is running when nothing is.
+    private var syncingSources: Int {
+        guard let summary = state.sourceReadinessReport?.summary else { return 0 }
+        return (summary.syncing ?? 0) + ((summary.processing ?? 0) > 0 ? 1 : 0)
+    }
+
     private var memoryCount: Int {
         review?.stats.memories ?? state.stats?.memories ?? 0
     }
@@ -330,8 +337,11 @@ struct HomeHeroSection: View {
         if hasMemory {
             return ("Ready to ask", "checkmark.seal.fill", .green)
         }
-        if activeSources > 0 {
+        if syncingSources > 0 {
             return ("Syncing source", "arrow.triangle.2.circlepath", .accentColor)
+        }
+        if activeSources > 0 {
+            return ("Source connected", "link.circle.fill", .accentColor)
         }
         if hasEmptySource {
             return ("No source content", "folder.badge.questionmark", .orange)
@@ -358,8 +368,11 @@ struct HomeHeroSection: View {
         if hasMemory {
             return "Ask about your memory"
         }
-        if activeSources > 0 {
+        if syncingSources > 0 {
             return "Your source is syncing"
+        }
+        if activeSources > 0 {
+            return "Your source is connected"
         }
         if hasEmptySource {
             return "Choose a source with content"
@@ -389,8 +402,11 @@ struct HomeHeroSection: View {
         if hasMemory {
             return "Cortex answers from saved memory and shows which source each answer came from."
         }
-        if activeSources > 0 {
+        if syncingSources > 0 {
             return "New items will appear in Review when sync finishes."
+        }
+        if activeSources > 0 {
+            return "Cortex will bring new items to Review after the first sync completes."
         }
         if hasEmptySource {
             return "Cortex could not find usable content there. Pick a source with real notes or records."
@@ -514,8 +530,11 @@ struct HomeHeroSection: View {
         if dueSyncSources > 0 {
             return ("\(dueSyncSources) connected source\(dueSyncSources == 1 ? "" : "s") ready to sync", "arrow.triangle.2.circlepath.circle.fill", .accentColor)
         }
+        if syncingSources > 0 {
+            return ("\(activeSources) connected, sync in progress", "arrow.triangle.2.circlepath.circle.fill", .accentColor)
+        }
         if activeSources > 0 {
-            return ("\(activeSources) connected and syncing", "folder.fill.badge.checkmark", .green)
+            return ("\(activeSources) connected", "folder.fill.badge.checkmark", .green)
         }
         if hasEmptySource {
             return ("No usable content found", "folder.badge.questionmark", .orange)

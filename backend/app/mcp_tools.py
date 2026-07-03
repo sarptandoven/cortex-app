@@ -1286,6 +1286,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             source_url=args.get("source_url"),
             title=args.get("title"),
             extracted=extracted,
+            cite_capture_provenance=True,
         ))
     if name == "search_memory":
         query = _text_arg(args, "query")

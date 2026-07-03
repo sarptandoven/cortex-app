@@ -565,8 +565,13 @@ class FastAPIContractTests(unittest.TestCase):
         payload = response.json()
         self.assertTrue(payload["citations"])
         self.assertTrue(all(citation["source_url"] for citation in payload["citations"]))
+        # The connected-source record must still rank FIRST. The API-captured memo is now also
+        # citable (a deliberate capture carries cortex-capture:// provenance), but only with that
+        # explicit capture provenance - never with a fabricated external source.
         self.assertIn("canonical connected source", payload["citations"][0]["excerpt"])
-        self.assertNotIn("generic uncited memo", json.dumps(payload["citations"]))
+        for citation in payload["citations"]:
+            if "generic uncited memo" in citation.get("excerpt", ""):
+                self.assertTrue(str(citation["source_url"]).startswith("cortex-capture://"), citation)
         self.assertTrue(payload["results"][0]["source_url"])
 
     def test_search_and_ask_accept_as_of_validity_filter(self) -> None:

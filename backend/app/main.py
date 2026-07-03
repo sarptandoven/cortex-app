@@ -585,6 +585,7 @@ def create_capture(
             source=request.source,
             source_url=request.source_url,
             title=request.title,
+            cite_capture_provenance=True,
         )
     extracted = extract_context(
         request.content,
@@ -598,6 +599,7 @@ def create_capture(
         source_url=request.source_url,
         title=request.title,
         extracted=extracted,
+        cite_capture_provenance=True,
     )
 
 
@@ -611,6 +613,7 @@ def queue_capture(request: CaptureRequest, user_id: str = Depends(auth)) -> dict
         source=request.source,
         source_url=request.source_url,
         title=request.title,
+        cite_capture_provenance=True,
     )
 
 

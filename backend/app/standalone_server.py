@@ -707,10 +707,11 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     self._send_json(
                         store.enqueue_capture(
                             user_id=user_id,
-                            content=str(body.get("content", "")),
+                            content=str(body.get("content") or body.get("text") or ""),
                             source=str(body.get("source") or "macos")[:80],
                             source_url=str(body.get("source_url") or "")[:500] or None,
                             title=str(body.get("title") or "")[:200] or None,
+                            cite_capture_provenance=True,
                         ),
                         status=HTTPStatus.ACCEPTED,
                     )
@@ -720,7 +721,9 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 return
             if method == "POST" and path == "/v1/captures":
                 body = self._json_body()
-                content = str(body.get("content", ""))
+                # Accept "text" as an alias for "content" — agents and scripts commonly send it,
+                # and rejecting a payload that clearly contains the note text is hostile.
+                content = str(body.get("content") or body.get("text") or "")
                 source = str(body.get("source") or "macos")[:80]
                 title = str(body.get("title") or "")[:200] or None
                 source_url = str(body.get("source_url") or "")[:500] or None
@@ -733,6 +736,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                             source=source,
                             source_url=source_url,
                             title=title,
+                            cite_capture_provenance=True,
                         ))
                     else:
                         self._send_json(self._save_capture(user_id, content, source, title, source_url))
@@ -989,6 +993,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     repositories = body.get("repositories") if isinstance(body.get("repositories"), list) else []
                     result = store.sync_github_account(
                         user_id,
+                        complete_snapshot=_bool_value(body.get("complete_snapshot"), default=False),
                         token=str(body.get("token") or ""),
                         repositories=[str(item) for item in repositories],
                         source_account_id=str(body.get("source_account_id") or "") or None,
@@ -1018,6 +1023,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     label_ids = body.get("label_ids") if isinstance(body.get("label_ids"), list) else []
                     result = store.sync_gmail_account(
                         user_id,
+                        complete_snapshot=_bool_value(body.get("complete_snapshot"), default=False),
                         access_token=str(body.get("access_token") or ""),
                         source_account_id=str(body.get("source_account_id") or "") or None,
                         account_label=str(body.get("account_label") or "") or None,
@@ -1048,6 +1054,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     mime_types = body.get("mime_types") if isinstance(body.get("mime_types"), list) else []
                     result = store.sync_google_drive_account(
                         user_id,
+                        complete_snapshot=_bool_value(body.get("complete_snapshot"), default=False),
                         access_token=str(body.get("access_token") or ""),
                         source_account_id=str(body.get("source_account_id") or "") or None,
                         account_label=str(body.get("account_label") or "") or None,
@@ -1077,6 +1084,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         raise ValueError("max_records must be between 1 and 200")
                     result = store.sync_outlook_account(
                         user_id,
+                        complete_snapshot=_bool_value(body.get("complete_snapshot"), default=False),
                         access_token=str(body.get("access_token") or ""),
                         source_account_id=str(body.get("source_account_id") or "") or None,
                         account_label=str(body.get("account_label") or "") or None,
@@ -1106,6 +1114,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     channels = body.get("channels") if isinstance(body.get("channels"), list) else []
                     result = store.sync_slack_account(
                         user_id,
+                        complete_snapshot=_bool_value(body.get("complete_snapshot"), default=False),
                         token=str(body.get("token") or ""),
                         channels=[str(item) for item in channels],
                         source_account_id=str(body.get("source_account_id") or "") or None,
@@ -1133,6 +1142,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         raise ValueError("max_records must be between 1 and 500")
                     result = store.sync_readwise_account(
                         user_id,
+                        complete_snapshot=_bool_value(body.get("complete_snapshot"), default=False),
                         token=str(body.get("token") or ""),
                         source_account_id=str(body.get("source_account_id") or "") or None,
                         account_label=str(body.get("account_label") or "") or None,
@@ -1159,6 +1169,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         raise ValueError("max_records must be between 1 and 500")
                     result = store.sync_calendar_account(
                         user_id,
+                        complete_snapshot=_bool_value(body.get("complete_snapshot"), default=False),
                         ics_path=str(body.get("ics_path") or "") or None,
                         feed_url=str(body.get("feed_url") or "") or None,
                         source_account_id=str(body.get("source_account_id") or "") or None,
@@ -1184,6 +1195,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         raise ValueError("max_records must be between 1 and 500")
                     result = store.sync_raindrop_account(
                         user_id,
+                        complete_snapshot=_bool_value(body.get("complete_snapshot"), default=False),
                         token=str(body.get("token") or ""),
                         collection_id=str(body.get("collection_id") or "0"),
                         source_account_id=str(body.get("source_account_id") or "") or None,
@@ -1212,6 +1224,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         raise ValueError("max_records must be between 1 and 500")
                     result = store.sync_zotero_account(
                         user_id,
+                        complete_snapshot=_bool_value(body.get("complete_snapshot"), default=False),
                         token=str(body.get("token") or "") or None,
                         library_type=str(body.get("library_type") or "user"),
                         library_id=str(body.get("library_id") or "0"),
@@ -1241,6 +1254,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         raise ValueError("max_records must be between 1 and 500")
                     result = store.sync_linear_account(
                         user_id,
+                        complete_snapshot=_bool_value(body.get("complete_snapshot"), default=False),
                         token=str(body.get("token") or ""),
                         source_account_id=str(body.get("source_account_id") or "") or None,
                         account_label=str(body.get("account_label") or "") or None,
@@ -1267,6 +1281,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         raise ValueError("max_records must be between 1 and 500")
                     result = store.sync_jira_account(
                         user_id,
+                        complete_snapshot=_bool_value(body.get("complete_snapshot"), default=False),
                         email=str(body.get("email") or ""),
                         api_token=str(body.get("api_token") or ""),
                         site_url=str(body.get("site_url") or ""),
@@ -1295,6 +1310,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         raise ValueError("max_records must be between 1 and 200")
                     result = store.sync_notion_account(
                         user_id,
+                        complete_snapshot=_bool_value(body.get("complete_snapshot"), default=False),
                         token=str(body.get("token") or ""),
                         source_account_id=str(body.get("source_account_id") or "") or None,
                         account_label=str(body.get("account_label") or "") or None,
@@ -1991,6 +2007,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             source_url=str(source_url or "")[:500] or None,
             title=str(title or "")[:200] or None,
             extracted=extracted,
+            cite_capture_provenance=True,
         )
 
     def _read_body(self) -> bytes:

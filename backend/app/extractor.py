@@ -1091,12 +1091,44 @@ def _entities(text: str) -> list[dict[str, Any]]:
         "Redis",
         "SQLite",
         "Supabase",
+        "Anthropic",
+        "Apple",
+        "Microsoft",
+        "Slack",
+        "Jira",
+        "Linear",
+        "Zotero",
+        "Obsidian",
+        "Figma",
+        "Sketch",
+        "Zoom",
+        "Stripe",
+        "Salesforce",
+        "Gmail",
+        "Outlook",
+        "Excel",
+        "Docker",
+        "Kubernetes",
+        "Postgres",
+        "MySQL",
+        "Python",
+        "Swift",
+        "React",
     }
     project_like = {"Cortex"}
     topic_like = {"MCP", "MVP"}
+    # Calendar words read as entities are pure graph noise ("Tuesdays" as a person hub).
+    calendar_words = {
+        "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+        "January", "February", "March", "April", "May", "June", "July", "August",
+        "September", "October", "November", "December",
+    }
     entities = []
     for name in sorted(candidates):
         if name in stop or len(name) < 3:
+            continue
+        first_word = name.split()[0]
+        if first_word in calendar_words or first_word.rstrip("s") in calendar_words:
             continue
         if name in org_like:
             kind = "org"
@@ -1104,6 +1136,9 @@ def _entities(text: str) -> list[dict[str, Any]]:
             kind = "project"
         elif name in topic_like or (name.isupper() and len(name) <= 5):
             kind = "topic"
+        elif re.search(r"[a-z][A-Z]", name) and not re.match(r"^(Mc|Mac)[A-Z]", name):
+            # Internal capitals (PostgreSQL, MongoDB, JavaScript) are products/tools, never people.
+            kind = "org"
         else:
             kind = "person"
         slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")

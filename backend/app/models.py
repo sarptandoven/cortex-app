@@ -994,6 +994,7 @@ class SupportBundleResponse(BaseModel):
     reliability: dict[str, Any]
     trust: dict[str, Any]
     product_loop: dict[str, Any]
+    source_readiness: dict[str, Any] | None = None
     recent_events: list[dict[str, Any]]
 
 

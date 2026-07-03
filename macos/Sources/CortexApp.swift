@@ -347,6 +347,8 @@ struct SourceReadinessSummary: Codable, Hashable {
     let planned_live: Int
     let connected: Int
     let synced: Int
+    let syncing: Int?
+    let processing: Int?
     let sources_with_data: Int
     let needs_review: Int
     let needs_attention: Int
@@ -2257,7 +2259,7 @@ final class BackendSupervisor {
         return base.appendingPathComponent("Cortex", isDirectory: true)
     }
 
-    func ensureRunning(endpoint: String, apiKey: String, mcpAPIKey: String, vaultPath: String) async -> String {
+    func ensureRunning(endpoint: String, apiKey: String, mcpAPIKey: String, vaultPath: String, onProgress: ((String) -> Void)? = nil) async -> String {
         let normalizedEndpoint = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard normalizedEndpoint.contains("127.0.0.1") || normalizedEndpoint.contains("localhost") else {
             return "Using remote memory engine"
@@ -2267,9 +2269,12 @@ final class BackendSupervisor {
             return "Local memory engine connected"
         }
         if let process, process.isRunning {
-            for _ in 0..<90 {
+            for tick in 0..<90 {
                 if await healthCheck(endpoint: normalizedEndpoint, apiKey: apiKey, expectedVaultPath: vaultPath) == .healthy {
                     return "Local memory engine started"
+                }
+                if tick > 0, tick % 10 == 0 {
+                    onProgress?("Starting the local memory engine (\(tick / 2)s)...")
                 }
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
@@ -2281,9 +2286,12 @@ final class BackendSupervisor {
             }
             terminate()
             try startBundledBackend(apiKey: apiKey, mcpAPIKey: mcpAPIKey, vaultPath: vaultPath)
-            for _ in 0..<90 {
+            for tick in 0..<90 {
                 if await healthCheck(endpoint: normalizedEndpoint, apiKey: apiKey, expectedVaultPath: vaultPath) == .healthy {
                     return "Local memory engine started"
+                }
+                if tick > 0, tick % 10 == 0 {
+                    onProgress?("Starting the local memory engine (\(tick / 2)s)...")
                 }
                 try await Task.sleep(nanoseconds: 500_000_000)
             }
@@ -2985,17 +2993,16 @@ final class AppState: ObservableObject {
         if source.status == "needs_attention" || source.status == "empty" {
             return false
         }
-        if source.sync_plan?.due_now == true {
-            return false
-        }
         let syncStatus = source.sync_plan?.managed_sync_status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        if ["needs_attention", "backing_off", "waiting_for_first_sync"].contains(syncStatus) {
+        if ["needs_attention", "backing_off"].contains(syncStatus) {
             return false
         }
         if !source.warnings.isEmpty {
             return false
         }
-        return ["needs_review", "synced", "imported", "connected"].contains(source.status)
+        // A due or still-running sync must not hold onboarding hostage once usable data exists:
+        // a large first sync can run for minutes while earlier batches are already citable.
+        return ["needs_review", "synced", "imported", "connected", "syncing"].contains(source.status)
     }
 
     var hasConnectedSourceAccount: Bool {
@@ -3220,7 +3227,18 @@ final class AppState: ObservableObject {
         ensureUsableAPIKey()
         ensureUsableMCPAPIKey()
         backendStatus = "Checking memory engine"
-        let message = await backend.ensureRunning(endpoint: endpoint, apiKey: apiKey, mcpAPIKey: mcpAPIKey, vaultPath: vaultPath)
+        let message = await backend.ensureRunning(
+            endpoint: endpoint,
+            apiKey: apiKey,
+            mcpAPIKey: mcpAPIKey,
+            vaultPath: vaultPath,
+            onProgress: { [weak self] progress in
+                Task { @MainActor in
+                    self?.backendStatus = progress
+                    self?.status = progress
+                }
+            }
+        )
         backendStatus = message
         status = message
         _ = await registerMCPToken()
@@ -3633,6 +3651,23 @@ final class AppState: ObservableObject {
         }
     }
 
+    private var settingsAutosaveTask: Task<Void, Never>?
+    private var lastPersistedSettings: AppSettingsResponse?
+
+    /// Persist privacy/AI-access toggles as soon as the user flips them. Before this, a toggle
+    /// only changed local UI state until the separate Save button was clicked — closing the sheet
+    /// left the server enforcing the OLD policy while the UI showed the new one.
+    func scheduleSettingsAutosave() {
+        settingsAutosaveTask?.cancel()
+        settingsAutosaveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard let self, !Task.isCancelled else { return }
+            if let last = self.lastPersistedSettings, last == self.appSettings { return }
+            _ = await self.saveMemorySettingsNow(statusMessage: "Privacy settings saved", reload: false)
+            self.lastPersistedSettings = self.appSettings
+        }
+    }
+
     private func saveMemorySettingsNow(statusMessage: String?, reload: Bool) async -> Bool {
         do {
             var body: [String: Any] = [
@@ -3731,42 +3766,35 @@ final class AppState: ObservableObject {
     }
 
     func loadSourceConnectivity() async {
-        do {
-            let catalogData = try await request(path: "/v1/source-accounts/catalog", method: "GET")
-            sourceConnectorCatalog = try JSONDecoder().decode(SourceConnectorCatalogResponse.self, from: catalogData).results
-            let accountData = try await request(path: "/v1/source-accounts", method: "GET")
-            sourceAccounts = try JSONDecoder().decode(SourceAccountListResponse.self, from: accountData).results
-            do {
-                let allAccountData = try await request(path: "/v1/source-accounts?include_disconnected=true", method: "GET")
-                allSourceAccounts = try JSONDecoder().decode(SourceAccountListResponse.self, from: allAccountData).results
-            } catch {
-                allSourceAccounts = sourceAccounts
+        // Each fetch is independent, and a failed fetch keeps the last-known value. One
+        // transient timeout must not wipe the whole connectivity picture — that flipped the UI
+        // to "nothing connected" while sources were still connected and healthy.
+        if let catalogData = try? await request(path: "/v1/source-accounts/catalog", method: "GET"),
+           let catalog = try? JSONDecoder().decode(SourceConnectorCatalogResponse.self, from: catalogData) {
+            sourceConnectorCatalog = catalog.results
+        }
+        if let accountData = try? await request(path: "/v1/source-accounts", method: "GET"),
+           let accounts = try? JSONDecoder().decode(SourceAccountListResponse.self, from: accountData) {
+            sourceAccounts = accounts.results
+            if let allAccountData = try? await request(path: "/v1/source-accounts?include_disconnected=true", method: "GET"),
+               let all = try? JSONDecoder().decode(SourceAccountListResponse.self, from: allAccountData) {
+                allSourceAccounts = all.results
+            } else {
+                allSourceAccounts = accounts.results
             }
-            let cursorData = try await request(path: "/v1/sync-cursors", method: "GET")
-            syncCursors = try JSONDecoder().decode(SyncCursorListResponse.self, from: cursorData).results
-            do {
-                let deviceData = try await request(path: "/v1/sync/devices?include_revoked=true", method: "GET")
-                let devices = try JSONDecoder().decode(SyncDeviceListResponse.self, from: deviceData).results
-                syncDevices = devices
-                syncReceiptsByDevice = await loadSyncReceipts(for: devices)
-            } catch {
-                syncDevices = []
-                syncReceiptsByDevice = [:]
-            }
-            do {
-                let readinessData = try await request(path: "/v1/sources/readiness", method: "GET")
-                sourceReadinessReport = try JSONDecoder().decode(SourceReadinessResponse.self, from: readinessData)
-            } catch {
-                sourceReadinessReport = nil
-            }
-        } catch {
-            sourceConnectorCatalog = []
-            sourceReadinessReport = nil
-            sourceAccounts = []
-            allSourceAccounts = []
-            syncCursors = []
-            syncDevices = []
-            syncReceiptsByDevice = [:]
+        }
+        if let cursorData = try? await request(path: "/v1/sync-cursors", method: "GET"),
+           let cursors = try? JSONDecoder().decode(SyncCursorListResponse.self, from: cursorData) {
+            syncCursors = cursors.results
+        }
+        if let deviceData = try? await request(path: "/v1/sync/devices?include_revoked=true", method: "GET"),
+           let devices = try? JSONDecoder().decode(SyncDeviceListResponse.self, from: deviceData) {
+            syncDevices = devices.results
+            syncReceiptsByDevice = await loadSyncReceipts(for: devices.results)
+        }
+        if let readinessData = try? await request(path: "/v1/sources/readiness", method: "GET"),
+           let readiness = try? JSONDecoder().decode(SourceReadinessResponse.self, from: readinessData) {
+            sourceReadinessReport = readiness
         }
     }
 
@@ -4152,7 +4180,9 @@ final class AppState: ObservableObject {
     }
 
     private func waitForManagedOAuthCompletion(_ connector: SourceConnectorCatalogItem) async {
-        for _ in 0..<18 {
+        // Sign-in with 2FA/account-picker routinely takes minutes; poll for 3 minutes with
+        // visible progress so the user is never staring at a silent, seemingly-hung app.
+        for tick in 0..<36 {
             do {
                 try await Task.sleep(nanoseconds: 5 * 1_000_000_000)
             } catch {
@@ -4171,9 +4201,12 @@ final class AppState: ObservableObject {
                 status = "\(connector.name) connected"
                 return
             }
+            if tick > 0, tick % 6 == 0 {
+                status = "Waiting for \(connector.name) sign-in in your browser (\(tick * 5)s)..."
+            }
         }
-        connectorLastMessages[connector.id] = "Sign-in is still waiting. Finish in the browser, then click Sync again."
-        status = "\(connector.name) sign-in is still waiting"
+        connectorLastMessages[connector.id] = "Sign-in hasn't completed yet. Finish in the browser - Cortex connects automatically once it does. You can also click Connect again to re-check."
+        status = "\(connector.name) sign-in not finished yet"
     }
 
     func syncStoredDirectConnector(_ connector: SourceConnectorCatalogItem) {
@@ -4736,8 +4769,11 @@ final class AppState: ObservableObject {
             guard synced.scan.records_found > 0, synced.scan.records_returned > 0 else {
                 await loadSourceConnectivity()
                 await loadTrust()
+                // Persist the guidance on the connector card (not just the transient status bar)
+                // so an empty vault always leaves the user a visible next step.
+                connectorLastMessages[connector.id] = "No Markdown notes found in \(synced.scan.vault_name). Choose the folder that contains your notes, then sync again."
                 if !automatic {
-                    status = "No usable content found in \(synced.scan.vault_name). Choose a source with real content."
+                    status = "No usable content found in \(synced.scan.vault_name). Choose a folder with real notes."
                 }
                 return
             }
@@ -5798,13 +5834,27 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Long-running operations (source syncs, imports, backups, maintenance) legitimately take
+    /// longer than an interactive read; a 15s cap made large first syncs "fail" while the backend
+    /// was still working, leaving the UI in a false-error state.
+    private func requestTimeout(path: String, method: String) -> TimeInterval {
+        let longRunning = ["/sync", "/v1/imports", "/v1/backups", "/v1/maintenance/",
+                           "/v1/jobs/run", "/v1/sources/sync-due", "/v1/user-data", "/v1/export"]
+        if method != "GET" || path.hasPrefix("/v1/export") {
+            if longRunning.contains(where: { path.contains($0) }) {
+                return 180
+            }
+        }
+        return 15
+    }
+
     private func performRequest(path: String, method: String, body: [String: Any]? = nil) async throws -> Data {
         guard let url = URL(string: endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + path) else {
             throw URLError(.badURL)
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.timeoutInterval = 15
+        request.timeoutInterval = requestTimeout(path: path, method: method)
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let body {
@@ -7270,6 +7320,10 @@ struct TrustPolicySection: View {
                 }
             }
         }
+        .onChange(of: state.appSettings) { _ in
+            // Auto-persist toggles so a flipped switch is never UI-only state.
+            state.scheduleSettingsAutosave()
+        }
     }
 }
 
@@ -7820,6 +7874,7 @@ struct SettingsBackendSection: View {
 
 struct SettingsReliabilitySection: View {
     @ObservedObject var state: AppState
+    @State private var confirmRepairStorage = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -7888,7 +7943,7 @@ struct SettingsReliabilitySection: View {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
                 Button {
-                    state.repairStorage()
+                    confirmRepairStorage = true
                 } label: {
                     Label("Repair Storage", systemImage: "cross.case")
                 }
@@ -7898,6 +7953,14 @@ struct SettingsReliabilitySection: View {
                     Label("Support Bundle", systemImage: "lifepreserver")
                 }
             }
+        }
+        .alert("Repair local storage?", isPresented: $confirmRepairStorage) {
+            Button("Repair") {
+                state.repairStorage()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Cortex checks the local database and repairs it if needed. Memory stays on this Mac; this can take a minute on large vaults.")
         }
     }
 
@@ -7974,6 +8037,7 @@ struct ReliabilityCheckRow: View {
 
 struct SettingsHealthSection: View {
     @ObservedObject var state: AppState
+    @State private var confirmRebuildSearch = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -8029,12 +8093,20 @@ struct SettingsHealthSection: View {
                     Label("Backup", systemImage: "archivebox")
                 }
                 Button {
-                    state.rebuildSearchIndex()
+                    confirmRebuildSearch = true
                 } label: {
                     Label("Rebuild Search", systemImage: "magnifyingglass.circle")
                 }
                 Spacer()
             }
+        }
+        .alert("Rebuild the search index?", isPresented: $confirmRebuildSearch) {
+            Button("Rebuild") {
+                state.rebuildSearchIndex()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Cortex rebuilds the local search index from your memories. Nothing is deleted; search may be briefly unavailable while it runs.")
         }
     }
 

@@ -668,6 +668,7 @@ private struct ConnectionsDirectSourceRow: View {
     let connected: Bool
     let openTokenSetup: () -> Void
     @State private var confirmRemove = false
+    @State private var confirmPause = false
 
     private var isSyncing: Bool {
         state.connectorSyncingIDs.contains(connector.id)
@@ -807,7 +808,7 @@ private struct ConnectionsDirectSourceRow: View {
 
             if !isPaused && (activeAccount != nil || hasStoredConfig) {
                 Button {
-                    state.pauseDirectConnectorSync(connector)
+                    confirmPause = true
                 } label: {
                     Label("Pause", systemImage: "pause.circle")
                         .frame(minWidth: 98, minHeight: 42)
@@ -816,6 +817,18 @@ private struct ConnectionsDirectSourceRow: View {
                 .foregroundColor(.secondary)
                 .help("Pause automatic sync. Already synced local memory and the saved connection are kept, so you can resume without reconnecting.")
                 .disabled(state.isBusy || isSyncing || isOAuthStarting)
+                .confirmationDialog(
+                    "Pause \(connector.name) sync?",
+                    isPresented: $confirmPause,
+                    titleVisibility: .visible
+                ) {
+                    Button("Pause sync") {
+                        state.pauseDirectConnectorSync(connector)
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("New items stop arriving from \(connector.name) until you resume. Synced memory and the saved connection are kept.")
+                }
             }
 
             if let removableImport {

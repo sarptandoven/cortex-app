@@ -200,9 +200,12 @@ class MacOSConnectorUIContractTests(unittest.TestCase):
         self.assertIn("onboardingSourceHealthMessage", app_source)
         self.assertIn("onboardingSourceIsHealthyAndUsable", app_source)
         self.assertIn("sourceReadinessReport != nil", app_source)
-        self.assertIn("source.sync_plan?.due_now == true", app_source)
         self.assertIn('source.status == "needs_attention" || source.status == "empty"', app_source)
-        self.assertIn('"needs_attention", "backing_off", "waiting_for_first_sync"', app_source)
+        # Error states still block, but a due or still-running sync must NOT hold onboarding
+        # hostage once usable data exists (a large first sync can run for minutes while earlier
+        # batches are already citable).
+        self.assertIn('"needs_attention", "backing_off"', app_source)
+        self.assertIn('"needs_review", "synced", "imported", "connected", "syncing"', app_source)
         self.assertIn("return !onboardingHealthyMemorySources.isEmpty", app_source)
 
         self.assertIn("sourceCardDetail", onboarding_source)

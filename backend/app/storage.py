@@ -2976,6 +2976,7 @@ class CortexStore:
         record_metadata: dict[str, Any] | None = None,
         refresh_key: str | None = None,
         capture_id_override: str | None = None,
+        cite_capture_provenance: bool = False,
     ) -> dict[str, Any]:
         content = content.strip()
         if not content:
@@ -2993,6 +2994,10 @@ class CortexStore:
             capture_id = stable_id("cap_", f"{user_id}:{normalized_source_account_id}:{normalized_external_id}")
         else:
             capture_id = stable_id("cap_", user_id + normalized_source + captured_at + content[:120])
+        # Same rule as save_capture: a deliberate capture is its own provenance. Stored on the
+        # capture row here so the async extraction job inherits it without re-deciding.
+        if cite_capture_provenance and not str(source_url or "").strip():
+            source_url = f"cortex-capture://{capture_id}"
         raw_hash = stable_id("", content)
         summary = "Queued for memory extraction."
         with connect(self.db_path) as conn:
@@ -8596,6 +8601,7 @@ class CortexStore:
         source_account_id: str | None = None,
         external_id: str | None = None,
         capture_id_override: str | None = None,
+        cite_capture_provenance: bool = False,
     ) -> dict[str, Any]:
         captured_at = extracted.get("_timestamp") or now_iso()
         normalized_source_account_id = (source_account_id or "").strip() or None
@@ -8607,6 +8613,12 @@ class CortexStore:
             capture_id = stable_id("cap_", f"{user_id}:{normalized_source_account_id}:{normalized_external_id}")
         else:
             capture_id = stable_id("cap_", user_id + source + captured_at + content[:120])
+        # A deliberate user/agent capture (the app's capture box, MCP remember_this) IS its own
+        # provenance: the capture record is retrievable and the user vouches for it at review.
+        # Connector/import records must keep providing real per-record source URLs — a missing one
+        # there stays uncited, preserving the never-fabricate-a-source guarantee.
+        if cite_capture_provenance and not str(source_url or "").strip():
+            source_url = f"cortex-capture://{capture_id}"
         raw_hash = stable_id("", content)
         summary = extracted.get("summary", "")
         user_settings_snapshot: dict[str, Any] = {}
