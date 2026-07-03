@@ -1728,6 +1728,9 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if method == "POST" and path == "/v1/maintenance/rebuild-index-from-vault":
                 self._send_json(store.rebuild_index_from_vault(user_id))
                 return
+            if method == "POST" and path == "/v1/vault/reconcile":
+                self._send_json(store.reconcile_vault_edits(user_id))
+                return
             if method == "GET" and path == "/v1/export.json":
                 self._send_json(store.export_json(user_id))
                 return

@@ -2059,6 +2059,28 @@ def _percentile_summary(values: list[float]) -> dict[str, float | int]:
     }
 
 
+def _memory_edit_signature(*, content: Any, summary: Any, layer: Any, importance: Any, topics: Any, status: Any) -> str:
+    """Hash of the user-editable fields of a memory, used to detect that a hand-edited Markdown
+    note has diverged from the indexed copy (Phase 3 two-way editing)."""
+    try:
+        importance_value = int(importance)
+    except (TypeError, ValueError):
+        importance_value = 0
+    payload = json.dumps(
+        {
+            "content": str(content or "").strip(),
+            "summary": str(summary or "").strip(),
+            "layer": str(layer or "").strip(),
+            "importance": importance_value,
+            "topics": sorted(str(topic) for topic in (topics or [])),
+            "status": str(status or "").strip(),
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def memory_layer(kind: str | None, value: str | None = None) -> str:
     explicit = (value or "").strip().lower()
     if explicit in MEMORY_LAYERS:
@@ -13151,6 +13173,62 @@ class CortexStore:
             "vector_model": embedding_status()["model"],
             "embedding": embedding_status(),
         }
+
+    def reconcile_vault_edits(self, user_id: str) -> dict[str, Any]:
+        """Phase 3 two-way editing: make the index reflect the user's hand-edited Markdown notes.
+
+        A user can open their Cortex vault in Obsidian (or any editor), edit a memory's text,
+        add a new memory note, or delete one. A file-watcher (or a manual "Sync from vault"
+        action) calls this; because the Markdown notes are the source of truth, we detect any
+        divergence and reconcile the SQLite index to match the current Markdown state, re-running
+        the vault rebuild only when something actually changed (so idle watcher fires are cheap).
+        """
+        markdown_records = self.vault.iter_memory_markdown_records(user_id)
+        markdown_sig: dict[str, str] = {}
+        for record in markdown_records:
+            memory_id = str(record.get("id") or "")
+            if not memory_id:
+                continue
+            markdown_sig[memory_id] = _memory_edit_signature(
+                content=record.get("content"),
+                summary=record.get("summary"),
+                layer=record.get("layer") or record.get("kind"),
+                importance=record.get("importance"),
+                topics=record.get("topics"),
+                status=record.get("status") or "active",
+            )
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT id, content, summary, layer, importance, topics_json, status FROM memories WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+        db_sig: dict[str, str] = {}
+        for row in rows:
+            db_sig[row["id"]] = _memory_edit_signature(
+                content=row["content"],
+                summary=row["summary"],
+                layer=row["layer"],
+                importance=row["importance"],
+                topics=json.loads(row["topics_json"] or "[]"),
+                status=row["status"],
+            )
+        added = [memory_id for memory_id in markdown_sig if memory_id not in db_sig]
+        removed = [memory_id for memory_id in db_sig if memory_id not in markdown_sig]
+        changed = [memory_id for memory_id in markdown_sig if memory_id in db_sig and markdown_sig[memory_id] != db_sig[memory_id]]
+        if not (added or removed or changed):
+            return {"reconciled": False, "added": 0, "changed": 0, "removed": 0}
+        # A note the user deleted in their vault must be removed explicitly (DB + JSON record +
+        # tombstone) rather than left to the rebuild — the rebuild falls back to the legacy JSON
+        # when a user's Markdown set is empty, which would otherwise resurrect a just-deleted
+        # last note.
+        for memory_id in removed:
+            try:
+                self.delete_memory(user_id, memory_id)
+            except Exception:
+                pass
+        if added or changed:
+            self.rebuild_index_from_vault(user_id)
+        return {"reconciled": True, "added": len(added), "changed": len(changed), "removed": len(removed)}
 
     def rebuild_index_from_vault(self, user_id: str) -> dict[str, Any]:
         tombstone_counts = self.vault.apply_tombstones(user_id)

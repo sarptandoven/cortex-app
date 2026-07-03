@@ -313,10 +313,23 @@ class CortexVault:
         if not self.markdown_mirror:
             return
         try:
-            atomic_write_text(self.memory_markdown_path(record), render_memory_markdown(record))
+            target = self.memory_markdown_path(record)
+            # If the memory's layer changed, its note path changes; remove any stale note for
+            # this id at a different path so a rebuild can't pick up an orphaned duplicate.
+            memory_id = safe_segment(record.get("id"), "memory")
+            base = self.root / "memories"
+            if base.exists():
+                for path in base.rglob(f"{memory_id}.md"):
+                    if path != target:
+                        try:
+                            path.unlink()
+                            self._prune_empty_parents(path.parent, base)
+                        except OSError:
+                            pass
+            atomic_write_text(target, render_memory_markdown(record))
         except Exception:
-            # Additive mirror in Phase 1: never let a Markdown write failure break the
-            # authoritative JSON record write above.
+            # Additive mirror: never let a Markdown write failure break the authoritative
+            # JSON record write above.
             pass
 
     def write_task(self, record: dict[str, Any]) -> Path:
@@ -383,7 +396,32 @@ class CortexVault:
         return self._patch_first("sync_cursors", cursor_id, updates)
 
     def patch_memory(self, memory_id: str, updates: dict[str, Any]) -> bool:
-        return self._patch_first("memories", memory_id, updates)
+        patched_json = self._patch_first("memories", memory_id, updates)
+        # Keep the Markdown note in sync — it's the rebuild source of truth, so a patch that
+        # only touched JSON (e.g. status -> archived, superseded_by) would otherwise be reverted
+        # on the next Markdown-sourced rebuild. Also patches Markdown-native memories with no JSON.
+        patched_markdown = self._patch_memory_markdown(memory_id, updates)
+        return patched_json or patched_markdown
+
+    def _patch_memory_markdown(self, memory_id: str, updates: dict[str, Any]) -> bool:
+        if not self.markdown_mirror:
+            return False
+        base = self.root / "memories"
+        if not base.exists():
+            return False
+        for path in base.rglob(f"{safe_segment(memory_id)}.md"):
+            try:
+                record = parse_memory_markdown(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if record.get("id") != memory_id:
+                continue
+            record.update(updates)
+            # _write_memory_markdown re-renders and removes any stale-path note (e.g. if the
+            # patch changed the layer), so this both updates and de-orphans in one step.
+            self._write_memory_markdown(record)
+            return True
+        return False
 
     def patch_task(self, task_id: str, updates: dict[str, Any]) -> bool:
         return self._patch_first("tasks", task_id, updates)

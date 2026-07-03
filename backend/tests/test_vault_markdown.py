@@ -132,6 +132,33 @@ class VaultMemoryMirrorTests(unittest.TestCase):
         self.vault.write_memory(SAMPLE_MEMORY)
         self.assertFalse(self.vault.memory_markdown_path(SAMPLE_MEMORY).exists())
 
+    def test_layer_change_does_not_orphan_markdown(self) -> None:
+        self.vault.write_memory(SAMPLE_MEMORY)  # layer=decision
+        moved = dict(SAMPLE_MEMORY)
+        moved["layer"] = "semantic"
+        self.vault.write_memory(moved)
+        notes = list((self.vault.root / "memories").rglob(f"{SAMPLE_MEMORY['id']}.md"))
+        self.assertEqual(len(notes), 1, f"orphaned note(s): {[str(p) for p in notes]}")
+        self.assertEqual(notes[0], self.vault.root / "memories" / "semantic" / f"{SAMPLE_MEMORY['id']}.md")
+
+    def test_patch_memory_updates_the_markdown_note(self) -> None:
+        self.vault.write_memory(SAMPLE_MEMORY)
+        self.vault.patch_memory(SAMPLE_MEMORY["id"], {"status": "archived", "superseded_by": "mem_new"})
+        record = parse_memory_markdown(self.vault.memory_markdown_path(SAMPLE_MEMORY).read_text(encoding="utf-8"))
+        self.assertEqual(record["status"], "archived")
+        self.assertEqual(record["superseded_by"], "mem_new")
+
+    def test_patch_markdown_native_memory_without_json(self) -> None:
+        path = self.vault.root / "memories" / "semantic" / "mem_native.md"
+        atomic_write_text(
+            path,
+            render_memory_markdown(
+                {"id": "mem_native", "user_id": "u", "kind": "claim", "layer": "semantic", "status": "active", "content": "native memory"}
+            ),
+        )
+        self.assertTrue(self.vault.patch_memory("mem_native", {"status": "archived"}))
+        self.assertEqual(parse_memory_markdown(path.read_text(encoding="utf-8"))["status"], "archived")
+
 
 if __name__ == "__main__":
     unittest.main()

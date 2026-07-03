@@ -1866,6 +1866,13 @@ def rebuild_index_from_vault(user_id: str = Depends(auth)) -> dict[str, Any]:
     return store.rebuild_index_from_vault(user_id)
 
 
+@app.post("/v1/vault/reconcile")
+def reconcile_vault_edits(user_id: str = Depends(auth)) -> dict[str, Any]:
+    """Two-way editing: reconcile the index with the user's hand-edited Markdown notes. The app's
+    vault file-watcher (or a manual "Sync from vault" action) calls this after edits settle."""
+    return store.reconcile_vault_edits(user_id)
+
+
 @app.get("/v1/export.json")
 def export_json(user_id: str = Depends(auth)) -> dict[str, Any]:
     return store.export_json(user_id)
