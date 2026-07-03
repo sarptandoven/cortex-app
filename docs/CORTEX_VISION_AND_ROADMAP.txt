@@ -1,0 +1,1338 @@
+================================================================================
+CORTEX — VISION & ROADMAP
+The neutral, self-updating memory layer that makes every AI tool know you.
+================================================================================
+Author: product/eng strategy pass
+Date: 2026-07-02
+Status: authoritative direction doc (supersedes the scattered planning notes;
+        pairs with docs/CORTEX_10K_FINAL_PRODUCT_ROADMAP.md for execution detail)
+
+This document does five things:
+  1. Analyzes where the project actually is and the decisions that got us here.
+  2. Maps the competition in depth (verified July 2026), including the threats.
+  3. States what users really want and the single sharpest wedge.
+  4. Names the open-source/research we should integrate to create value nobody
+     else is offering — biased to LOCAL-FIRST, NO-API-KEY so it stays private.
+  5. Lays out a phased, concrete roadmap that stays DEAD SIMPLE for users.
+
+--------------------------------------------------------------------------------
+0. THE ONE LINE
+--------------------------------------------------------------------------------
+Cortex is your private memory that lives with YOU, not inside any one AI app —
+it quietly learns you from the tools you already use, and hands every AI
+(Claude, ChatGPT, Cursor, whatever's next) the exact, cited context it needs to
+act like it actually knows you.
+
+Positioning: "Connect once. Every AI knows you. You own the memory, and you can
+see and delete everything it knows."
+
+The wedge (why this, why now): the big platforms are racing to add memory, but
+each one is a WALLED GARDEN. ChatGPT's memory only works in ChatGPT. Claude's
+only works in Claude (and only inside a Project). None of them share, none of
+them export cleanly, and you re-teach every new tool from zero — forever. Cortex
+is the ONE neutral, portable, user-owned memory that spans all of them. That is
+the thing no platform will ever build, because their memory exists to lock you
+in, and ours exists to set you free.
+
+--------------------------------------------------------------------------------
+1. WHERE WE ARE — HONEST PROJECT ANALYSIS
+--------------------------------------------------------------------------------
+What we've built (and it's real, not vapor):
+  - A native macOS app + local FastAPI backend on 127.0.0.1:8766. Simple surface:
+    Home / Review / Ask, with Connections & Privacy behind one sheet.
+  - A genuinely differentiated MEMORY MODEL: layered (semantic, episodic, style,
+    decision, preference, negative, procedural) + sectors/projects, provenance,
+    temporal validity (valid_from/valid_to), supersession, entity + relation
+    tables, relationship-memory v1, a decision-ledger direction.
+  - Hybrid retrieval: FTS5 + vector + reciprocal-rank fusion + bounded
+    deterministic reranking (recency/importance/source-trust/layer-intent/
+    confidence), citations-or-abstain, per-layer eval metrics, a CI regression
+    gate, and an adversarial safety eval corpus.
+  - 13 real connectors with incremental sync, backoff, dedupe, stable citations,
+    and no-delete-on-disconnect: Obsidian, GitHub, Slack, Gmail, Google Drive,
+    Notion, Outlook, Linear, Jira, Readwise, Raindrop, Zotero, Calendar.
+  - An MCP output layer with scoped tools + Trust controls + per-query audit and
+    scoped cxm_/cxa_ tokens.
+  - A hosted multi-tenant plane on sharded SQLite: provisioning, tenant
+    isolation, suspension, LRU store cache, O(1) token auth, worker
+    auto-discovery, per-user rate limits + quotas.
+  - ~578 backend tests, codesign verification, DMG packaging, a real eval gate.
+
+This is a strong, unusually clean foundation. The team's instinct to stay
+local-first, connector-first (no manual upload as primary), and citation-backed
+is exactly right and is the source of the moat.
+
+THE THREE HARD TRUTHS we have to face:
+
+  (A) Our "semantic" memory is not actually semantic yet.
+      backend/app/embeddings.py ships a SHA-256 hash-bucket vector as the default
+      ("cortex-hash-v1"). It is deterministic and offline, but it captures token
+      overlap, NOT meaning. Real semantic search only turns on if the user
+      supplies an OpenAI API key — which breaks the local-first promise that is
+      our whole reason to exist. So today's retrieval is essentially good keyword
+      search + clever tiny boosts. This is the single biggest gap between what we
+      SAY (a personal memory model) and what we DO. It is also our biggest
+      opportunity (see Section 5, item 1).
+
+  (B) We keep re-litigating the product instead of shipping the wedge.
+      The transcripts show weeks of backend hardening (connector error taxonomies,
+      data-loss audits, hosted plane, rate limits) — all good — but the UNIQUE,
+      demoable, "holy-shit" user moment (an external AI tool visibly getting
+      smarter about you, live) has never been the north star of a release. We've
+      optimized reliability of a loop most users have never felt.
+
+  (C) storage.py is an 18,128-line, 323-method god object.
+      Not dead code, but a maintainability tax that will slow every future
+      feature. It's a deliberate refactor, not a cleanup — but it must happen
+      before the codebase doubles again.
+
+Net: we have a great engine and a fuzzy product. The next era is about making
+the engine SEMANTIC (real embeddings), making the value VISIBLE (the AI-gets-
+smarter moment), and making the surface RUTHLESSLY SIMPLE.
+
+--------------------------------------------------------------------------------
+2. THE COMPETITION — FULLY MAPPED (verified July 2026)
+--------------------------------------------------------------------------------
+There are five camps. We are not really in any of them — that's the point — but
+we must know each cold.
+
+CAMP 1: NATIVE PLATFORM MEMORY (the existential threat, and our biggest opening)
+  - ChatGPT Memory: global memory + custom instructions, works ONLY in ChatGPT.
+    No clean "export just my memories" file. Locked in.
+  - Claude Memory: scoped to individual Projects (Project Knowledge + system
+    prompt), NO global cross-chat memory, no dedicated export. Supports MCP.
+  - Gemini/Gems, Copilot, Cursor/Windsurf "rules" & memory: each remembers you
+    inside its own product only.
+  THE KEY FACT (verified): "every tool keeps memory in its own walled garden, and
+  migrating every six months turns upkeep into permanent busywork... each
+  vendor's memory is a retention feature for its own product, not a portable
+  record." This is the crack we drive through. Platforms will NEVER make their
+  memory neutral and portable — it's against their business model.
+  OUR ANSWER to "why pay when ChatGPT remembers me free?": because it only
+  remembers you THERE, it forgets when you switch tools, it can't see your Gmail/
+  Slack/Notion/GitHub, and you can't inspect or move it. Cortex is the memory you
+  KEEP when you change tools.
+
+CAMP 2: DEVELOPER MEMORY INFRASTRUCTURE (adjacent; not a consumer product)
+  - mem0: vector-first memory layer you bolt onto an agent stack. OSS core; graph
+    memory gated behind Pro ($249/mo). Dev infra.
+  - Zep + Graphiti: temporal knowledge graph for facts-that-change. Graphiti is
+    Apache-2.0 OSS (the engine); Zep Cloud is the commercial managed service
+    ($25–$475/mo). Dev infra — but Graphiti's temporal patterns are a gift to us.
+  - Letta (ex-MemGPT): full agent runtime with self-editing memory; fully OSS,
+    self-hostable. Infra, not a product.
+  Takeaway: these are picks-and-shovels for developers. We are the consumer/
+  prosumer PRODUCT that a normal person installs. We can borrow their best ideas
+  (temporal graph, self-editing memory) without competing on their turf.
+
+CAMP 3: OPEN-SOURCE PERSONAL AI / SECOND BRAIN (closest philosophical cousins)
+  - Khoj (~30k+ stars): OSS self-hostable "AI second brain," RAG over your docs/
+    notes/GitHub, automations, works with local LLMs. But it's a SELF-HOSTED
+    ASSISTANT you chat with — it replaces your AI, it doesn't make your existing
+    AIs smarter. Setup is technical.
+  - Reflect, Mem.ai, Saga, Notion AI, Obsidian+Smart Connections: notes-first;
+    you still do the organizing.
+  Takeaway: they make a NEW place to think. We make the tools you ALREADY use
+  (Claude/ChatGPT/Cursor) think better about you. Different job.
+
+CAMP 4: THE DIRECT-OVERLAP STARTUPS (watch closely)
+  - Pieces for Developers (150k+ developers): OS-level automatic capture, a
+    "memory layer that augments other AI tools rather than replacing them." This
+    is the closest thing to our thesis that actually shipped at scale — and it
+    validates it. BUT: developer-only, and built on OS/screen capture (heavier
+    privacy footprint). We win on: connector-first life+work data (not just
+    screen), the layered "model of the person" (style/decisions/preferences/
+    negatives/relationships), and non-developer users.
+  - Supermemory (26.8k stars, MIT core; $2.6–3M seed, Jeff Dean/Cloudflare CTO
+    angels; 19-yo founder): "Universal Memory MCP — your memories are in ChatGPT
+    but nowhere else; make them available to every LLM." Hosted business
+    ($19/$100/$399), sub-300ms retrieval. This is the SAME cross-tool-MCP insight
+    we have — the most important competitor to internalize. We win on: (1)
+    automatic ingestion of your REAL life data via connectors vs. a generic
+    store()/add() API, (2) LOCAL-FIRST / private-by-default vs. cloud-hosted, (3)
+    the adaptation layer (style/voice, decisions, relationships) not just a blob
+    store, (4) trust/citation/context-firewall as product surfaces.
+  Takeaway: the market is validated and moving fast. Our defensible edges are
+  local-first privacy + life-data connectors + the adaptation model + trust UX.
+
+CAMP 5: CAPTURE/RECALL & UX EXEMPLARS (learn restraint & trust; note the graveyard)
+  - Wispr Flow: voice in, polished text out, everywhere, near-zero UI. The gold
+    standard for RESTRAINT — copy the discipline: tiny surface, instant value.
+  - Granola: meetings → usable notes. Had a note-link/privacy controversy — proof
+    that trust must be a PRODUCT feature, not a settings page.
+  - Rewind → Limitless: the cautionary tale. Rewind's local-first "record
+    everything" pitch pivoted to a cloud wearable, then was ACQUIRED BY META in
+    Dec 2025 and the desktop product was KILLED (capture disabled Dec 19, 2025;
+    users in the EU/UK/etc. cut off). Every privacy promise inverted. Users are
+    actively fleeing to local-first alternatives (e.g., Screenpipe).
+  Takeaway: the most privacy-conscious memory users on earth were just betrayed
+  and are looking for a new home RIGHT NOW. Local-first + user-owned + inspectable
+  is not a nice-to-have; it's a live, urgent market opening we are positioned for.
+
+THE WHITESPACE NOBODY OWNS (this is us):
+  A neutral, LOCAL-FIRST, user-owned personal memory that (a) fills itself
+  automatically from the apps you already use, (b) models WHO YOU ARE (style,
+  decisions, preferences, relationships, procedures), not just what you said, and
+  (c) safely lends that, with citations and permissions, to EVERY AI tool over
+  MCP — so switching tools never means starting over.
+
+--------------------------------------------------------------------------------
+3. WHAT USERS ACTUALLY WANT
+--------------------------------------------------------------------------------
+ICPs (lead with the first two):
+  1. AI power users / "prompt-tired" knowledge workers who bounce between
+     Claude, ChatGPT, and Cursor and are sick of re-explaining themselves.
+     JTBD: "stop making me repeat my context, style, and decisions to every AI."
+     Willingness to pay: high ($10–20/mo) — they already pay for 2–3 AI tools.
+  2. Founders / engineers / builders (our own tribe).
+     JTBD: "remember our product decisions, project state, and how I write, and
+     feed it to my coding + writing agents automatically."
+  3. Consultants / heavy-email knowledge workers; students later.
+
+Universal pains (verified themes):
+  - "It forgot." Every AI is a goldfish across sessions and across tools.
+  - Re-teaching tax: retyping the same context/persona into each new tool.
+  - Setup friction: second-brain apps demand manual organizing nobody sustains.
+  - Privacy fear: "I'm not uploading my email/Slack to some startup's cloud."
+  - Lock-in fear: after the Rewind/Meta episode, "what happens to my data when
+    you get acquired or shut down?"
+
+Magic moments (what actually creates retention — design releases AROUND these):
+  - THE moment: you ask Claude/ChatGPT something in YOUR tool, and it answers
+    with your real context ("based on your pricing decision from last month...")
+    WITHOUT you pasting anything. The AI visibly knows you.
+  - "Draft this in my voice" and it actually sounds like you.
+  - "Brief me before I talk to Alex" → cited, current, person-scoped context.
+  - Opening the app and seeing "here's what I learned this week" — and being able
+    to delete any of it in one tap.
+
+Anti-features (what users do NOT want — do not build these):
+  - A new inbox of extracted fragments to triage.
+  - A manual upload/dropzone as the main flow.
+  - Always-on screen/audio surveillance (the Rewind trap).
+  - An admin dashboard of toggles.
+  - A chatbot that replaces their AI tools (they like their tools).
+
+Strongest single wedge use case to LEAD with:
+  "Your AI coding + writing tools, finally aware of your decisions, projects, and
+   style — automatically, and only what you allow." (Devs/founders first; it's
+   the audience that feels the pain daily and can install an MCP server.)
+
+--------------------------------------------------------------------------------
+4. THE VISION — UNIQUE VALUE PROPOSITION
+--------------------------------------------------------------------------------
+Cortex is the PERSONAL CONTEXT LAYER for the AI era: a private, self-updating
+model of you that any AI tool can safely borrow.
+
+Five pillars (each maps to concrete OSS leverage in Section 5):
+
+  PILLAR 1 — NEUTRAL & PORTABLE.
+    The one memory that isn't trapped in an app. Works across Claude, ChatGPT,
+    Cursor, and whatever's next, via MCP. You own it; you can export/delete it.
+    (This is the anti-walled-garden moat.)
+
+  PILLAR 2 — PRIVATE BY DEFAULT (real local semantics).
+    Genuine semantic memory that runs ON YOUR MACHINE with NO API key. This is
+    both a quality unlock and the trust story that Rewind refugees are looking
+    for. (Model2Vec local embeddings + local reranker.)
+
+  PILLAR 3 — SELF-UPDATING & HONEST.
+    Memory that expires, supersedes, and detects contradictions — and tells you
+    what is CURRENTLY true and can prove it with citations. Append-only memory
+    (what everyone else ships) is weak; "knows what's true now" is strong.
+    (Graphiti temporal patterns + our existing validity/supersession.)
+
+  PILLAR 4 — A MODEL OF YOU, NOT A LOG.
+    Style/voice, decisions+reasons, preferences, negatives, relationships,
+    procedures — so agents DRAFT, DECIDE, and ACT like you, not just recall text.
+    (Style engine + decision ledger + relationship memory + context-assembly.)
+
+  PILLAR 5 — A CONTEXT FIREWALL.
+    Every AI request answers: what was used, from where, why allowed, what was
+    withheld, revocable, deletable. Trust is the product. (Permissioned MCP +
+    audit + local PII redaction.)
+
+Why we win against free native memory: platforms optimize for lock-in; we
+optimize for portability and privacy. They can't see your other tools' data or
+your Gmail/Slack/GitHub; we can (with permission), and we carry it everywhere.
+
+--------------------------------------------------------------------------------
+5. OPEN-SOURCE / RESEARCH TO INTEGRATE (the unique-value engine)
+--------------------------------------------------------------------------------
+Ranked by (impact x feasibility). Bias: local-first, no API key, ships in-app.
+
+#  PROJECT (license)            UNLOCKS                                  EFFORT  REC
+-- ---------------------------  ---------------------------------------  ------  ----------
+1  Model2Vec / potion-base-8M   REAL local semantic embeddings, 8 MB,    Low-    ADOPT NOW
+   (MinishLab, MIT)             ~90% of MiniLM quality, ~500x faster,    Med
+                                CPU-only, NO API key. Replaces the hash
+                                fallback -> our "semantic memory" claim
+                                becomes true AND stays 100% private.
+                                This is THE highest-leverage change.
+
+2  Local reranker via fastembed ColBERT/cross-encoder rerank of the      Med     ADOPT
+   / ONNX: answerai-colbert-     top-N. Big precision lift on personal
+   small-v1 (Apache-2.0) or      queries; runs offline. Slots after our
+   bge-reranker-v2-m3 (MIT)      existing RRF+deterministic-boost stage.
+
+3  Graphiti temporal-graph       Bi-temporal facts, entity/edge          Med-    VENDOR-IN
+   patterns (getzep, Apache-2.0) extraction, and CONTRADICTION handling  High    PATTERNS
+                                 -> the "self-updating, honest memory"           (run w/
+                                 pillar. We already have relation tables         local LLM)
+                                 + validity; adopt Graphiti's episode->
+                                 invalidation model, not necessarily the
+                                 whole engine.
+
+4  whisper.cpp / faster-whisper  A Wispr-Flow-like LOCAL voice-capture    Med     ADOPT
+   (MIT)                         surface (global hotkey -> speak -> it            (growth
+                                 lands in memory + can draft in your             surface)
+                                 voice). Frictionless input that also
+                                 feeds the model. Runs offline.
+
+5  Microsoft Presidio (MIT)      Local PII detection/redaction before     Low-    ADOPT
+                                 any AI handoff -> hardens the Context    Med
+                                 Firewall; "we never leak your SSN/keys."
+
+6  Contextual retrieval          Prefix each chunk with a short          Low-    ADOPT
+   (Anthropic technique) +       LLM/heuristic context line before        Med     (heuristic
+   Chonkie chunking (MIT)        embedding -> materially better recall           first)
+                                 on long docs/imports. Do heuristic
+                                 version locally; no cloud needed.
+
+7  sqlite-vec (MIT, already in)  Keep. Pair with #1/#2. Confirm ANN       Low     KEEP
+                                 scaling for 10k-memory vaults.
+
+8  DSPy (Databricks, MIT)        Optimize the context-assembly & style   Med     REFERENCE
+                                 prompts against our eval corpus instead
+                                 of hand-tuning. Quality flywheel.
+
+9  Connector accel: Nango /      Reference designs for OAuth token        Low     REFERENCE
+   LlamaHub readers (various)    lifecycle + more source readers. DO NOT          ONLY
+                                 over-invest; connectors are commoditizing.
+
+DELIBERATELY NOT ADOPTING WHOLESALE: mem0/Zep-Cloud/Letta as our backend (they're
+dev infra / cloud; we're local-first product), Postgres/pgvector (sharded SQLite
+suffices for 10k — revisit only past 10k or for multi-device sync), heavy graph
+DBs (relation tables + Graphiti patterns are enough), screen-recording capture
+(the Rewind trap — violates our trust position).
+
+--------------------------------------------------------------------------------
+6. THE DEAD-SIMPLE PRODUCT (Wispr-Flow discipline)
+--------------------------------------------------------------------------------
+The whole app is three verbs plus a trust sheet. Nothing else is primary.
+
+  HOME  — one status line ("Cortex knows X things about you across N sources")
+          and at most one suggested next action. Never a dashboard.
+  REVIEW— a short, high-signal stream of "here's what I learned" (only useful/
+          risky/contradictory items surface; approve/forget in one tap). Not an
+          inbox to grind.
+  ASK   — ask your memory anything; get a cited answer or an honest "I don't
+          know that yet." Expandable sources. This is also the demo.
+  CONNECTIONS & PRIVACY (one sheet) — connect accounts (OAuth), see source
+          health, and control which AI tools can read what. The Context Firewall.
+
+THE FIRST 5 MINUTES (the entire onboarding, zero manual data entry):
+  1. Open app. One sentence: "Cortex gives your AI tools a private memory of you."
+  2. Connect ONE source you already have (Obsidian folder, or Gmail/Notion via
+     OAuth) — one click.
+  3. It syncs and shows "I learned 40 things about you" with 3 example memories.
+  4. One button: "Turn on memory for Claude / Cursor / ChatGPT" (writes the MCP
+     config for them; no JSON, no terminal).
+  5. The payoff screen: ask a question in Claude and watch it answer with your
+     context. That's the aha. Everything else is optional depth.
+
+SIMPLICITY GUARDRAILS (permanent rules):
+  - No vocabulary leaks: never show "MCP", "vault", "shard", "backend", "context
+    pack", "embedding" in primary UI. (Show them only in an Advanced drawer.)
+  - Complexity is hidden, not removed. The engine is deep; the surface is calm.
+  - Every new capability must fit inside Home/Review/Ask/Connections or it
+    doesn't ship to the primary UI.
+  - Trust actions (see it / delete it / stop using it with AI) are always one tap.
+
+--------------------------------------------------------------------------------
+7. THE ROADMAP
+--------------------------------------------------------------------------------
+Each initiative: WHY (user impact) / BUILD / OSS LEVERAGE / DONE / SIMPLICITY.
+Sequenced so the unique value ships early, not after infra.
+
+=== PHASE 0 — MAKE THE MEMORY REAL (2–3 weeks) — the credibility unlock ===
+
+  0.1 Real local embeddings (HIGHEST PRIORITY)
+    WHY: today's "semantic" search is hash buckets; this makes it genuinely
+         semantic AND keeps it private/offline — our core claim becomes true.
+    BUILD: add a "local-neural" embedding provider (Model2Vec potion-base-8M,
+           ~8MB) bundled in the app; make it the DEFAULT over hash; keep OpenAI
+           as an optional power-user override; add a one-time background re-embed/
+           backfill job for existing vaults; keep 384-dim compatibility or manage
+           a clean dimension migration.
+    OSS: Model2Vec (MIT).  DONE: eval corpus top1/recall@k jumps measurably vs
+         hash on a held-out semantic (paraphrase) set; zero network calls; re-embed
+         completes on a 10k-memory vault without blocking the UI.
+    SIMPLICITY: invisible. No user choice; it just gets smarter.
+
+  0.2 Local reranking
+    WHY: precision on "the right memory," especially for personal/ambiguous queries.
+    BUILD: add an optional cross-encoder/ColBERT rerank of the fused top-N behind
+           the existing rerank stage; gate it on the eval showing lift.
+    OSS: answerai-colbert-small-v1 / bge-reranker via fastembed (Apache-2.0/MIT).
+    DONE: precision@3 up on the eval corpus with no latency regression >150ms p95.
+    SIMPLICITY: invisible.
+
+  0.3 The "AI just got smarter about me" demo path
+    WHY: this is the magic moment; it must be a first-class, reliable flow.
+    BUILD: one-click "Enable memory for Claude/Cursor/ChatGPT" that writes their
+           MCP config for them; a scripted first-answer payoff; instrument
+           time-to-first-MCP-context-used.
+    OSS: MCP ecosystem.  DONE: a non-technical user reaches a cited cross-tool
+         answer in <10 min with no terminal/JSON.
+    SIMPLICITY: one button, no MCP vocabulary.
+
+=== PHASE 1 — THE MODEL OF YOU (3–5 weeks) — the differentiator users feel ===
+
+  1.1 Style & Voice engine v2
+    WHY: "draft this in my voice" is a daily, sticky use case; platforms can't do
+         it well because they don't have your real corpus by context.
+    BUILD: per-context style profiles (email vs. code review vs. spec vs. DM),
+           phrases-used / phrases-avoided, user-authored-only sourcing; expose via
+           get_style_profile + an Ask/MCP "rewrite in my style" path.
+    OSS: DSPy to optimize the style-assembly prompt against evals (reference).
+    DONE: blind test — users pick Cortex-styled drafts over generic >70% of time.
+    SIMPLICITY: shows up only as "sounds like me" in outputs; no config.
+
+  1.2 Decision ledger + self-updating/contradiction memory
+    WHY: "what did we decide and why, and is it still true?" — unanswerable by any
+         competitor; deeply valuable to founders/teams.
+    BUILD: capture reason/constraints/alternatives; explicit supersede; walk
+           supersession chains in retrieval; SURFACE contradictions for one-tap
+           resolution in Review; answers state confidence (well-known/weak/stale).
+    OSS: Graphiti temporal/invalidation patterns (Apache-2.0), local LLM for
+         extraction.  DONE: "what replaced decision X?" returns the current one +
+         history with citations; contradictions appear in Review.
+    SIMPLICITY: contradictions are the ONLY thing that must interrupt; everything
+         else stays quiet.
+
+  1.3 Relationship memory v2
+    WHY: "brief me before I talk to Alex" — cited, current, person-scoped.
+    BUILD: identity resolution incl. aliases, open commitments from tasks, last
+           interaction, relevant decisions; get_relationship_context MCP tool.
+    DONE: person briefing is cited, current, and cross-source.
+    SIMPLICITY: it's just an Ask; no CRM UI.
+
+=== PHASE 2 — EFFORTLESS INPUT & THE FIREWALL (3–4 weeks) ===
+
+  2.1 Frictionless local capture (voice)
+    WHY: a Wispr-Flow-grade input surface that ALSO feeds memory — a growth wedge
+         and a reason to open the app daily.
+    BUILD: global hotkey -> local Whisper transcription -> lands as memory and/or
+           drafts in your voice; fully offline.
+    OSS: whisper.cpp / faster-whisper (MIT).  DONE: <1.5s to transcribed capture,
+         no network.  SIMPLICITY: one hotkey; optional.
+
+  2.2 Context Firewall (trust as product)
+    WHY: the trust story that wins Rewind refugees and privacy-first users.
+    BUILD: per-answer receipt (used / source / why-allowed / withheld); local PII
+           redaction before any AI handoff; per-tool + per-source read permissions;
+           one-tap "never use this with AI" and "forget this."
+    OSS: Microsoft Presidio (MIT).  DONE: every MCP response carries a receipt;
+         redaction verified on a PII corpus; deletion is provably permanent
+         (tombstones already exist — extend to hosted fan-out).
+    SIMPLICITY: receipts are collapsible; defaults are safe; controls are 1 tap.
+
+  2.3 Import/sync at scale + better chunking
+    WHY: "connect your whole life" must not choke or dupe.
+    BUILD: streaming, resumable imports; dedupe by source-id + content hash;
+           contextual-prefix chunking for long docs.
+    OSS: Chonkie (MIT) + contextual-retrieval heuristic.  DONE: a 10k-record
+         export imports with 0 dupes and visible progress.
+
+=== PHASE 3 — CONTEXT ASSEMBLY & PERMISSIONED MCP v2 (3–4 weeks) ===
+
+  3.1 Context Assembly Engine
+    WHY: the real intelligence — given a task+tool, build the right token-budgeted,
+         permissioned, cited context pack (intent -> project -> recency -> trust
+         -> constraints), instead of dumping search hits.
+    OSS: DSPy to optimize assembly (reference).  DONE: assembled packs beat raw
+         search on the eval; every pack is cited and within budget.
+    SIMPLICITY: invisible; it just makes every tool's answer better.
+
+  3.2 MCP v2: resources + audit surface
+    BUILD: expose resources (style profile, active project, recent decisions, open
+           loops, trusted facts, source health); a human-readable "which AI tools
+           accessed what" view.  DONE: an app can subscribe to your live context;
+           audit view is truthful and simple.
+
+=== PHASE 4 — GROUND FOR 10k & COMMERCIAL (parallelizable, ongoing) ===
+  - Distribution: Developer-ID signing + NOTARIZATION (currently missing) + auto-
+    update (Sparkle) + opt-in crash reporting. (Blocks real installs.)
+  - Accounts + self-serve onboarding on the existing hosted plane; deletion/export
+    guarantees with hosted tombstone fan-out.
+  - Encryption at rest + secret store for any hosted vaults/tokens.
+  - Observability/alerting/backups + incident runbook; keep sharded SQLite (no
+    Postgres until >10k or multi-device sync).
+  - Billing mapped to the quota scaffolding already built ($10–20/mo prosumer).
+  - REFACTOR storage.py from an 18k-line god object into modules (retrieval /
+    connectors / memory / audit / hosting) behind the current test suite.
+
+=== PHASE 5 — GUARDED AGENT ACTION (only after trust + quality proven) ===
+  - "Prepare + draft + ask approval + execute low-risk + log + rollback" for
+    concrete jobs (draft reply, create follow-up, update Linear/Jira, PR context).
+  OSS: browser-use / computer-use frameworks, behind hard approval + audit gates.
+  DO NOT claim "the agent IS you." Claim: permissioned, cited context that lets
+  it work in your style and constraints.
+
+--------------------------------------------------------------------------------
+8. MOAT & METRICS
+--------------------------------------------------------------------------------
+Moat (compounding, hard to copy):
+  - Neutrality: the only memory not owned by a model vendor (structural — they
+    won't copy it, it's anti-their-business-model).
+  - Local-first trust + real local semantics: quality without giving up privacy.
+  - Depth of the person-model (style/decisions/relationships/negatives) x breadth
+    of connectors: the data flywheel gets more personal the longer you use it.
+  - Switching cost that HELPS the user: your memory follows you across tools, so
+    leaving Cortex means going back to re-teaching every AI from zero.
+
+North-star metrics:
+  ACTIVATION: time-to-first-connected-source; time-to-first-cited-Ask; TIME-TO-
+    FIRST-MCP-CONTEXT-USED-BY-AN-EXTERNAL-AI (the real activation event).
+  QUALITY: retrieval eval score (semantic held-out set); cited-answer rate;
+    abstention correctness; contradiction-resolution rate; "AI knew what I meant"
+    self-reports.
+  TRUST: memory deletions/corrections used; permission changes; audit views;
+    zero credible privacy incidents.
+  RETENTION: weekly Ask + weekly cross-tool MCP usage; active source count;
+    voice-capture DAU (once shipped).
+
+--------------------------------------------------------------------------------
+9. WHAT NOT TO BUILD (guardrails against our own worst instincts)
+--------------------------------------------------------------------------------
+  - Don't build Postgres/pgvector, multi-region infra, or a graph DB for 10k.
+    Sharded SQLite + sqlite-vec + Model2Vec is enough. Revisit past 10k only.
+  - Don't ship always-on screen/audio capture. It's the Rewind trap and it burns
+    our entire trust position.
+  - Don't turn Review into an inbox. Surface only useful/risky/contradictory items.
+  - Don't overbuild connectors as the identity of the product — they're becoming
+    commodity. The moat is the MODEL OF THE PERSON + neutrality + trust, not "we
+    have 30 connectors."
+  - Don't claim "an AI that IS you / your twin." Overreaches, breaks trust, and
+    invites scrutiny. Claim: "AI that finally has your context — cited, permissioned,
+    yours."
+  - Don't add another admin toggle. If it needs a settings row in primary UI,
+    question whether it should exist.
+  - Don't let the next release be pure backend hardening again. Every release
+    should move a MAGIC MOMENT forward.
+
+--------------------------------------------------------------------------------
+10. THE FIRST THREE THINGS TO DO MONDAY
+--------------------------------------------------------------------------------
+  1. Integrate Model2Vec potion-base-8M as the default local embedding provider,
+     with a background re-embed job. (Makes "semantic memory" true and private.)
+  2. Ship the one-click "Enable memory for Claude/Cursor" + scripted first-answer
+     payoff. (Makes the magic moment reliable and demoable.)
+  3. Add local reranking + start the contradiction-surfacing in Review. (Turns
+     "search" into "a memory that's right and honest.")
+
+Everything else compounds on these three. The engine is already strong; make it
+SEMANTIC, make the value VISIBLE, and keep the surface CALM.
+================================================================================
+
+
+================================================================================
+APPENDIX — SHARPENED FINDINGS FROM DEEP RESEARCH (15-agent pass, verified 2026)
+Read this before writing marketing copy or picking the launch demo. It makes the
+plan above sharper and more honest.
+================================================================================
+
+A) THE WEDGE, SHARPENED — lead with the AI-native builder, not "power users."
+   The most acute, self-diagnosed, daily pain in the market right now:
+     - Cursor / Claude Code lose architecture decisions and the *why* on every
+       context compaction; the summary is lossy, nuanced patterns get flattened.
+       Builders report losing 4-hour sessions and rebuilding context from two
+       separate chat histories (e.g. Cursor for frontend + Claude Code for API)
+       with no shared timeline.
+     - The current "fix" is manual: hand-maintaining .claude/session.md +
+       CLAUDE.md + commit-message breadcrumbs. That IS the friction, not a
+       solution. Pros estimate 200+ hrs/yr rebuilding fragmented, per-tool context.
+   LEAD MESSAGE: "Your AI coding tools stop forgetting your project." Connect
+   GitHub + notes + Linear/Slack once; then Cursor, Claude Code, Claude Desktop,
+   and ChatGPT all recall your decisions, conventions, and current state — cited,
+   from a local store, no key. This audience already lives in MCP clients (zero
+   behavior change), already pays for 2-3 AI tools, and self-selects for privacy.
+   THE KILLER DEMO (must land in 60 seconds): one memory answering the same
+   question, correctly and with citations, inside THREE different tools. If that
+   demo doesn't land, there is no business — so build the product around it.
+
+B) COMPETITIVE REALITY WE MUST INTERNALIZE (don't kid ourselves)
+   - Native memory is commoditizing single-tool memory AND eating our temporal
+     angle: ChatGPT "Dreaming" (Jun 2026) + Claude editable memory now auto-build
+     memory that SELF-HEALS stale facts — the exact validity/supersession feature
+     we sell as differentiation — free, zero-setup, fused into the best models,
+     for 800M+ users. => We must REFUSE to compete on single-tool memory. The
+     moment everyone has memory in each silo is exactly when cross-tool
+     fragmentation becomes the universal pain. Ride their free memory as the
+     on-ramp; be the layer between them.
+   - Portability itself is being commoditized by MCP, and two funded OSS projects
+     already ship our exact sentence with a ~2-year head start:
+       * mem0 / OpenMemory (Apache-2.0, ~37-58k stars, ~$24M raised) — local MCP
+         memory.
+       * Supermemory (MIT, ~27k stars, funded, Jeff Dean angel) — local
+         single-binary, MCP-first, connectors, "memories in ChatGPT but nowhere
+         else -> every LLM."
+     "A nicer wrapper" is NOT a moat against that. Our REAL, defensible edges,
+     which both of them largely lack, are: (1) memory built AUTOMATICALLY from
+     your real cross-vendor work via 13 incremental connectors with stable
+     citations (they mostly ingest AI-chat scratchpads or need manual add()),
+     (2) LOCAL-FIRST + verifiable privacy (open the folder, pull the plug, it
+     still works), (3) the typed MODEL OF THE PERSON (style/decisions/preferences/
+     negatives/relationships), (4) citations-or-abstain as a trust contract
+     against a 17-33% RAG hallucination baseline, and (5) Review-before-exposure
+     consent. Compete on THOSE, loudly. Be the best MCP memory server for
+     Claude/Cursor users — ride the rails, don't fight the rail owner.
+   - Platform hard-limit ammo (use in copy + eval): ChatGPT memory ~1,500-word /
+     ~200-item cap with SILENT eviction on all tiers; ChatGPT connectors legally
+     blocked in EEA/CH/UK; Gemini personalization excludes work/school accounts
+     and needs Activity-on; Copilot memory never leaves the Exchange tenant;
+     OpenAI trains on Free/Plus with contractor review + 30-day residual
+     retention. Positioning line: "the memory you keep when you leave — or use —
+     any model."
+
+C) WHY NOW IS STRONGER THAN STATED — the category is validating by DYING wrong:
+   - Rewind/Limitless: acquired by Meta, desktop capture disabled Dec 19, 2025;
+     every local-first privacy promise inverted.
+   - Khoj: shut down its hosted Cloud (Apr 15, 2026), concluding cloud-first sync
+     "wasn't sustainable."
+   Result: thousands of high-intent, privacy-conscious, technical refugees are
+   looking for a durable local-first home RIGHT NOW. That is our beachhead.
+
+D) EXTRA OSS TO ADOPT AS THEY BECOME RELEVANT (all local-first / permissive):
+   - Docling (MIT) — parse connector-sourced attachments (PDF/docx/pptx) cleanly
+     into memory.
+   - browserexport (MIT) — opt-in "what I researched" browser-history trails as a
+     source, without screen recording.
+   - SQLCipher — transparent encryption-at-rest for the local vault/DB (the
+     verifiable-privacy pillar).
+   - GLiNER (alongside Presidio) — stronger local, model-based PII detection at
+     the MCP egress firewall.
+   - Publish Cortex to the official MCP registry as the differentiated LOCAL,
+     USER-OWNED memory server (distribution where our buyers already look).
+   Note on Model2Vec: potion-base-8M is a literal DROP-IN to the existing 384-dim
+   sqlite-vec schema (VECTOR_DIMENSIONS=384), numpy-only, ~8MB, MIT — no schema
+   change; a background re-embed backfills existing vaults. ~1 day of work.
+
+E) THE PRODUCT SHOULD "COME TO YOU" (Wispr/Raycast posture)
+   The resting state of the product is a MENU-BAR icon, not a window. 95% of the
+   time Cortex is invisible; a tiny badge ("3 new things learned") is the only
+   thing that pulls you back. Click -> a glanceable popover (Learned / Ask /
+   Connections); the full window (Home/Review/Ask) opens only on demand. THE LAW:
+   the surface must NOT grow as depth grows — every future capability lands inside
+   Home/Review/Ask or over MCP, never as a new screen. Home is a heartbeat
+   ("watching Obsidian, Gmail, GitHub · learned 12 things today · memory is on
+   this Mac"), never a control panel. Words the user must NEVER see in primary UI:
+   embedding, 384-dim, provider, shard, vault, context pack, MCP.
+
+F) ADVERSARIAL CRITIQUE — the three ways this dies, and the mitigations (own these)
+   1. FATAL: "local + no key" is currently a semantic fraud. The offline default
+      is a SHA-256 bag-of-tokens hash (embeddings.py:82) with ~0 semantics —
+      paraphrases score ~0 cosine, so retrieval silently collapses onto FTS5
+      keyword matching. Real semantics today require OpenAI (network + key) — the
+      exact cloud dependency the pitch disavows. So the product is either
+      private-but-dumb or smart-but-phones-home. MITIGATION: ship Model2Vec as the
+      DEFAULT before saying the word "local" to a single user. Non-negotiable,
+      Phase 0.1.
+   2. FATAL: free native memory answers "why pay?" for the median single-tool
+      user, and "7 layers vs 1" is invisible to them. MITIGATION: never sell
+      single-tool memory; lead ONLY with the cross-tool demo platforms can't build.
+   3. FATAL: Supermemory + mem0 already ship the portability sentence with 60k+
+      combined stars while we are pre-launch with zero users. MITIGATION: don't
+      claim portability as the moat (MCP commoditizes it) — win on real-data
+      connectors + verifiable local privacy + the person-model + citations-or-
+      abstain, and get to real users fast on the builder wedge.
+   Claims to AVOID entirely: "an AI that is you / your digital twin" (overreach,
+   breaks trust); "fully local semantic memory" until Model2Vec ships; any
+   always-on screen/audio capture (the Rewind trap). Ship honesty; it's the moat.
+================================================================================
+
+
+================================================================================
+================================================================================
+#                                                                              #
+#   PART III — THE REIMAGINED VISION: CORTEX AS THE DIGITAL SELF               #
+#                                                                              #
+#   Supersedes the "memory layer" framing of Parts I & II by ABSORBING them.  #
+#   Memory is no longer the product. Memory is the substrate that makes a      #
+#   sovereign, agentic Digital Self trustworthy. Everything below is grounded  #
+#   in the real repo; every initiative cites its extension point, its          #
+#   simplicity, and its safety guardrail.                                      #
+#                                                                              #
+#   Author: principal product architect pass · verified against HEAD          #
+================================================================================
+================================================================================
+
+
+# 1. The Reimagined Vision
+
+**Parts I & II built a memory layer. Part III reveals what the memory layer was
+always for: it is the fuel for a Digital Self — a private, self-owned model of
+how you think, decide, write, and work, that any AI can *become* and that can
+*act* on your behalf, one earned rung at a time, with a receipt for everything it
+did.**
+
+> **The one line:** *Your AI is you, working — and you can prove and control
+> everything it did.*
+
+**Why the altitude jump from memory → self is the right and defensible move.**
+"A memory layer" is a component; the market has already commoditized the sentence
+(mem0 + Supermemory ship "portable memory" with 60k+ combined stars, and MCP
+turns portability into a protocol feature anyone gets for free). Selling a
+substrate is the Solid death — the purest "own your data" play spent ~8 years
+being *right* and *dead*, then gave up on consumers, because **a substrate in
+search of a use never bootstraps demand.** The altitude jump is not vanity; it is
+survival: it re-frames the exact same machinery — seven layers, provenance,
+temporal validity, citations-or-abstain, per-query audit, the local vault — from
+a *feature* nobody will pay for into the *trust infrastructure* for the one thing
+people demonstrably will pay for (Sierra: $150M+ ARR on outcome-priced agentic
+work). And it is *defensible* precisely because the field's shared ceiling —
+"confident errors arrive in your voice," "teaching a clone discernment is science
+fiction" (Tavus) — means the winner is **not** the highest-fidelity self (a race
+everyone loses to the same physics) but the **most provable and controllable**
+one. Cortex is nearly pre-built for that: citations-or-abstain is anti-drift;
+provenance + temporal validity is verifiable current-truth; `record_agent_event`
++ `memory_events` is the receipt; the local vault is sovereignty. The substrate
+we already have is not a memory feature — it is the reason a delegated action can
+be *trusted*, which is the whole game.
+
+
+# 2. Why Now, The Sovereign Wedge, and The First ICP
+
+## 2.1 Why now — three forces converging in 2026 (verify dramatic claims before external use)
+
+1. **The betrayal is fresh and repeating.** Rewind → Meta acquired-and-killed
+   (Dec 2025; desktop capture disabled ~19 days later); Khoj shut its hosted
+   cloud ("wasn't sustainable," Apr 2026); and vendors routinely deprecate,
+   region-restrict, or reset the models/memory people depend on (EU/UK limits on
+   some assistant personalization/memory features; model retirements that wipe
+   your history). The through-line: *the AI you rely on is not yours and can
+   vanish.* The refugee inflow is live **right now** and repeats at every
+   shutdown. (Use only verifiable events in external copy — an earlier draft
+   cited a specific 2026 Anthropic worldwide-shutdown that was an unverified
+   research artifact and has been removed.)
+2. **The pain is at its peak and unsolved.** Native single-tool memory (ChatGPT
+   "Dreaming," Claude editable memory) just commoditized memory for 800M users —
+   which is *exactly* when **cross-tool fragmentation** becomes the universal
+   pain. Everyone now has a goldfish in each silo that can't see the others.
+   Cursor forgets what Claude Code decided. No incumbent solves cross-vendor +
+   local + cited.
+3. **The moat formed for free.** General computer-use autonomy collapsed in 2026
+   (Operator + Mariner both shut down; ~20% long-horizon accuracy; 31–50%
+   prompt-injection hijack "may never be solved"). Execution got commoditized
+   *and* proven unreliable — so durable value migrated to the two things frontier
+   labs structurally cannot offer an individual: **(a)** a cited, user-owned model
+   of who you are that makes any executor act like you, and **(b)** a per-action
+   provenance receipt that makes delegated action auditable and controllable
+   (a trust/control surface — NOT a legal-defensibility claim; see §8.3).
+
+## 2.2 The sovereign wedge — the movement is CONTINUITY sovereignty, not privacy
+
+The privacy paradox is ironclad: concern **never** converts to installs (that's
+what killed Solid). So we do **not** lead with "protect your data." We lead with a
+functional, self-interested truth 2026 proved with headlines:
+
+> **Own your digital self before someone else does.** The AI that knows you can
+> be *acquired and killed* (Rewind → Meta), *region-restricted* (assistant
+> memory/personalization limits in the EU/UK), or *deprecated and reset* (models
+> get retired and your history with them). Your digital self should be the one
+> thing they can't take —
+> because it lives on your machine, it's yours, and you can prove everything it
+> did.
+
+This dodges the paradox entirely: it is an **availability** argument (a thing
+you'll lose), not a **moral** one (a thing you should care about). We ride the
+legitimized word "sovereign" (Bangkok Declaration; $9–14B enterprise wave) but
+redirect it from ministries/CIOs to the individual — personal sovereignty is the
+underserved sliver of a giant, funded word. **Honesty is load-bearing:** Cortex
+protects your *self/memory layer*, not the frontier reasoning model underneath.
+The claim is not "the AI they can't switch off" — it is **"the model OF YOU they
+can't take, portable across any model, so your self survives any model going
+dark."** Overclaiming at the model layer is the one thing the refugee tribe will
+catch in an hour on HN.
+
+## 2.3 First ICP — the AI-native builder
+
+Not "power users" broadly. The **founder / engineer who lives in Cursor + Claude
+Code + Claude Desktop all day**, whose sharpest self-diagnosed pain is context
+compaction erasing architecture decisions and the *why* — who already
+hand-maintains `CLAUDE.md` + `session.md` breadcrumbs as the "fix." They are the
+beachhead because: (1) they already live in MCP clients — **60-second install,
+zero behavior change**; (2) they *are* the refugee cohort (HN / r/LocalLLaMA /
+Product Hunt), maximally privacy-primed, near-zero CAC, already believing the
+continuity thesis because they just got burned by it; (3) their work has
+**built-in receipts** (a draft is diffable, a PR comment reviewable, tests
+pass/fail) — so agency can safely *start* here where verification is cheap; (4)
+they already pay for 2–3 AI tools ($10–20/mo proven); (5) they're **our tribe** —
+reachable, brutally honest, and their word-of-mouth carries. Honest sizing:
+**thousands to seed, not millions.** A beachhead to earn the story, then expand to
+heavy-email knowledge workers, then students. Not the TAM.
+
+
+# 3. The DEAD-SIMPLE Product
+
+## 3.1 The one experience
+
+> **"It writes the reply, in your words. You press send."**
+
+The user opens the tools they already live in and finds a draft already waiting —
+a reply, a PR comment, a status update — written the way *they* would write it,
+because Cortex read their own past decisions and voice. Under the draft sits one
+quiet line: **"From 3 of your memories · here's what I refused to assume · Edit /
+Send."** The entire product is that single moment: a self that did the work, and a
+human who stays the one who acts.
+
+Everything else — the seven layers, the 14 connectors, the trust ladder, the
+scoped tokens, the receipts, the local vault — is **invisible machinery** in
+service of that one moment. The user never learns the words *embedding, layer,
+MCP, adaptation, token, vector, scope.* They experience: *my AI drafted this like
+me, I can see why, I press send.* That is the whole product.
+
+**Why this and nothing else.** The field shares one ceiling ("confident errors
+arrive in your voice"; 96% of teams mandate human approval), so we do **not**
+compete on how autonomous or human-like the self is (Delphi/Replika/Tavus's
+losing game, with its regulatory blast radius). We compete on the one thing
+frontier labs structurally cannot offer: a draft in *your cited voice* that *you*
+send, with a receipt of exactly which of your own decisions produced it.
+Draft-and-hold is the 2026-consensus safe action (Fyxer: 81% of users save 1+
+hr/day), it **showcases** Cortex's differentiated style engine (the moat) instead
+of exposing the missing action surface, and it is reversible-by-construction.
+
+**The non-negotiable frame:** never "it IS you." Always **"it works FROM you, and
+you press send."** The honest-boundary line already ships in code
+(`storage.py:12074` — "Do not claim to be the user"); we make that constraint the
+*felt headline*, not overhead.
+
+## 3.2 The agency trust ladder — safe to bold
+
+Agency is **earned per-task, never granted globally.** There is no "make it
+autonomous" switch. Each rung unlocks only after measured fidelity + your explicit
+vouch on that specific action-class — and you are always prompted, never opted in.
+**Reversibility is the master axis:** a broader blast radius unlocks only after
+the narrower one is proven reversible-and-receipted.
+
+| Rung | What it does | What the user sees | Simplicity | Safety guardrail |
+|------|--------------|--------------------|------------|------------------|
+| **0 — BRIEF** (read-only, zero side effects) | Assembles cited context before a task. "Brief me before I talk to Alex." | One plain card inside the tool you're in: "3 things to know before this," source under each line. Nothing to approve. | Reuses `agent_adaptation` + `action_brief` verbatim — no new surface. | **Citations-or-abstain** (shipped): every line traces to a memory or isn't shown; thin coverage → "I don't have enough to say." Requires **real local embeddings first** — no "acts as me" on hash buckets. |
+| **1 — DRAFT, YOU SEND** (reversible, one recipient, one tap) **← THE WEDGE** | Composes a concrete reply/comment/update in your voice, staged un-sent. | A finished draft in Gmail/Cursor/Slack + one collapsible line: "From 3 of your memories · what I did NOT assume · Edit · Send." | Edit = one keystroke, send = one tap. Your edits quietly teach the self. | **Nothing sends without your tap.** A per-action **receipt exists BEFORE approval**. Voice fidelity must pass a blind "sounds like me" bar to unlock. **Always-approve categories** (external send, money, deletes) hard-gated *forever*. |
+| **2 — STANDING PERMISSION** for one narrow reversible chore (human-on-the-loop) | Acts without per-action approval, inside a scope you granted. Unlocked only after ~20 near-zero-edit approvals of that class. | One sentence you turned on yourself: "Cortex can label and file my incoming items." Each act → a receipt in a running list with one-tap **Undo**. | You are *prompted* to unlock, never opted in. | Scoped like an agentic token: **one action-type + one scope + an expiry**, all reversible with visible Undo, every act logged. Never external comms, spend, publish, or anything irreversible. |
+| **3 — MULTI-STEP CHORE** with compensating rollback | Chains a few reversible steps; each step has a defined undo. | "Onboard this repo: make the issues, label them, draft the setup PR" → one receipt envelope + one button to reverse all of it. Plan shown before execution. | Ask once for a known routine. | Every step has a **pre-defined undo established BEFORE execution**, a hard **drift-abort**, tamper-evident **hash-chained** logging (the Replit "agent lied about rollback" lesson), **plan separated from execute**. |
+| **4 — ACTS FOR YOU WITH OTHERS** (the long game, deliberately last) | Your self meets another person's / business's agent: schedule, vouch, transact. | "Cortex offered Tuesday 2pm to Priya's assistant — waiting on you to confirm." Always presents as *acting on behalf of*, never as you. | You see the signed record of exactly what was shared (constraints, not history). | Counterparty identity **verifiable**; both sides carry a signed, scoped, time-bound consent envelope (**local Ed25519 Personal Mandate — never on-chain, never a shared model**). ALWAYS "on behalf of, disclosed" (NY S.4279 line). Reveals **constraints, not data**. Revocable, receipted. |
+
+**The shippable product is capped at Rungs 0–1.** Rungs 2–4 are labeled
+**research, not roadmap**, and never sold as near-term — because the moment Cortex
+holds a write-token and acts without a per-action tap, the solo-user *deployer*
+inherits non-waivable liability (CA Jan-2026 law: "autonomous operation is not a
+defense") and so does the vendor (Air Canada precedent survives ToS waivers).
+
+## 3.3 How sovereignty is FELT (never a settings page, never a pitch)
+
+Three concrete, wordless moments woven into normal use:
+
+1. **The receipt under every draft.** The user never opens an "audit log." They
+   see, under each draft, one collapsible line: *"From these 3 of your memories ·
+   here's what I refused to assume."* That line **is** sovereignty made physical —
+   proof of what the self used, sight of what it withheld, every time, without
+   navigating anywhere. Control is not a screen you visit; it is the grain of
+   every action. (Backed by shipped `memory_events` + `action_brief` citations;
+   hash-chained so it can't be silently rewritten.)
+2. **The undo that always exists.** Every consequential act has a visible one-tap
+   Undo established *before* it runs. The user learns, without being told, that
+   nothing the self does is a one-way door. People delegate freely exactly when
+   they know they can take it back.
+3. **The continuity guarantee, shown not said.** Felt the moment the app works
+   offline with a local model, and in the always-present, front-and-center
+   **"Export everything, including from us"** button (the literal antidote to the
+   Rewind betrayal). It lives on their machine; no vendor, acquirer, or ministry
+   can switch it off — and we say plainly that this protects your *self*, not the
+   frontier model underneath.
+
+The frame across all three: **price on sovereignty** (WTP is category-topping —
+3.2x for private AI assistants), **convert on utility** (a draft that sounds like
+you), and let "it's yours, local, can't be taken" be the reassuring subtext that
+closes and retains — never the hook.
+
+## 3.4 The first wedge task
+
+> **"Draft this reply in my voice — I press send."** (Rung 0 → Rung 1.)
+
+Inside the tool the builder already lives in (Claude Code / Cursor / Claude
+Desktop / Gmail via MCP), the agent composes a reply / PR comment / status update
+using Cortex's cited person-model — *your* style, the relevant past decisions, the
+specific recipient relationship — and leaves it staged for a one-click human send.
+It sits at the intersection of four verified facts: (1) drafting-with-human-send
+is the **highest-adoption, lowest-resistance delegated action of 2026** (Fyxer:
+78M+ drafts); (2) off-brand tone is the **#1 trust-killer for agents**, and voice
+fidelity is exactly Cortex's differentiated style engine — the wedge *showcases*
+the moat; (3) it's **reversible-by-construction**; (4) it delivers the holy-shit
+moment — "it sounds like me AND it already knows what I decided," cited, from a
+local store, no key. **The first-five-minutes:** connect ONE source → "Learning
+how you write and decide…" → **the mirror moment** ("You tend to say no to
+meetings before 10am — from your calendar, 6 times," right-or-correct-in-one-tap)
+→ **the first draft they send.** No account, no API key, no privacy tour, no
+Review-queue busywork.
+
+
+# 4. The Repo-to-Agency Engineering Path
+
+**Principle: agency is not "now the agent can DO things." It is "every action is a
+memory of a decision, with the same provenance, the same receipt, the same one-tap
+forget."** An action ledger is just the decision ledger with an *execute* step and
+a *rollback*. This is why ~90% of the safe action layer is already in the repo —
+we re-point the memory-trust machinery at outbound actions rather than build a new
+trust layer from scratch.
+
+## 4.1 What exists (verified against HEAD)
+
+- **The cited "why" is done.** `action_brief` (`storage.py:10314`) assembles a
+  fully-cited pack: primary context, procedures, **decisions-as-policy-boundary**,
+  preferences, **negative constraints**, style, open actions. `agent_adaptation`
+  (`storage.py:12038`) emits cited "operate-like-this-user" instructions **with
+  the shipped honest-boundary block** ("Do not claim to be the user,"
+  `storage.py:12074`).
+- **A working human-approval primitive exists.** `approve_capture`
+  (`storage.py:11002`) transitions pending→approved and fires an event; the MCP
+  gate `approve_memory_capture` (`mcp_tools.py:1742`) is scoped to
+  write+maintenance. This is the *only* user-gated approval pattern today — and
+  it's the exact shape the action gate needs.
+- **The receipt spine exists.** `_event` (`storage.py:18047`) double-writes every
+  state change to SQLite **and** the vault (`vault.append_event`,
+  `vault.py:238`); `memory_events` (`database.py:194`) is a generic append-only
+  table with a free-form `metadata_json` TEXT column. `record_agent_event`
+  (`storage.py:14481`) already logs `token_id`, `token_scopes`, success/error —
+  the single most undervalued asset in the repo: it is the "trace an action to the
+  responsible human" capability the enterprise stack lacks for individuals.
+- **Scoped capability tokens exist.** `cxa_/cxm_` tokens + `tools_for_scopes` /
+  `_require_tool_access` (`mcp_tools.py:764,775`) gate tools by
+  read/write/export/maintenance/destructive.
+- **The queue exists and is generic.** `memory_jobs` (`database.py`) has a
+  free-form `job_type` string; adding an action job is one line in the dispatcher.
+
+## 4.2 What is MISSING (the KEY GAP, verified)
+
+The 14 connectors (`backend/app/connectors/`) are **fetch-only** — zero write
+methods across all of them. There is **no `action_requests` table, no executor, no
+`propose_action` tool, no Ed25519** (the only crypto is symmetric HMAC,
+`storage.py:14346`). `action_brief` is read-only; nothing consumes an *approved*
+brief to produce a side-effect. That gap — the bridge from "memory" to "a self
+that acts" — is the hard part and the whole point of Part III.
+
+## 4.3 The smallest first safe action (build ON TOP; no new substrate)
+
+Ship a thin **propose → hold → approve/edit → execute-ONE-reversible-thing →
+receipt** ledger:
+
+1. **`propose_action`** (NEW MCP tool, `mcp_tools.py:call_tool` at line 1261).
+   Returns: the draft (built from `action_brief`'s *why* + `agent_adaptation`'s
+   *voice*) + the exact citations that produced it + **"assumptions I did NOT
+   make"** + an approval token. Read-only from the agent's side. Gated on
+   write+maintenance scopes, mirroring the `approve_memory_capture` gate.
+2. **One Action card** in the existing Review UI — edit-before-approve, a TTL, a
+   batch list. Reuses the `approve_capture` pattern as the gate; **no new screen**
+   (obeys the Part-II "surface must not grow" law).
+3. **On approve, execute exactly ONE reversible, low-blast-radius action** — the
+   Gmail *draft* write is the cheapest first executor — then write the receipt.
+
+## 4.4 The approval-gated ACTION LEDGER + receipts (hooked to `memory_events`)
+
+**No new tables in Cortex core.** The ledger is a query over the existing event
+stream, using the free-form `metadata_json` on `memory_events`. New event types
+flow through the unchanged `_event` signature (`storage.py:18047`):
+
+- `action_drafted` → `object_type='action'`, metadata `{agent_id, task, reason,
+  draft_ref, citations, assumptions_withheld}`
+- `approval_requested` → `{requester_id, reason}`
+- `approval_granted` → `{approver_id, ts, constraints}`
+- `execution_started` → `{executor_id, job_id, connector}`
+- `execution_result` → `{success, receipt_id, external_ids, prev_hash, hash}`
+- `execution_reverted` → `{reverter_id, reason, original_receipt_id}`
+
+The **receipt** is `{what was asked, what was authorized, which cited memories
+informed it, what was withheld, what it did, who vouched}`, **hash-chained** over
+`memory_events` (`prev_hash → hash`, SHA-256). Single-player needs only
+tamper-*evidence*, so the shipped symmetric HMAC seal (`storage.py:14346`)
+suffices here — **Ed25519 is deferred to the exact moment a third party must
+verify (Rung 4).** Query interface: `action_history(user_id, action_id)` (receipt
+chain), `actions_pending_approval(user_id)`, `action_receipts(external_ids[])`
+(idempotency: "has an agent already commented on this issue?"). The vault gets a
+parallel `append_action_event` writing `vault/actions/{action_id}/events.jsonl`,
+so the ledger is durable independent of the `memory_jobs` retention window and
+replayable across devices via `sync_change_feed`.
+
+## 4.5 The read-to-write connector path
+
+**Executor-agnostic by design** (so Apple App Intents / MCP clients can dispatch
+an approved brief without Cortex becoming a brittle clicker):
+
+- **Credentials:** add a `write` scope alongside the existing read token on the
+  `source_accounts` record (`database.py:226`), stored encrypted in the existing
+  `metadata` dict — **no schema change.**
+- **Execution:** `job_type='execute_action'` dispatched by the `memory_jobs`
+  worker to a new `_process_action_job` → connector `execute_*` method. Guarded by
+  the gate: an action must be in `approved` state (an event fact, not a new
+  column) before the worker claims it.
+- **Idempotency:** `stable_id('act_', user + connector + target + type + params)`
+  as the job `unique_key` prevents double-execution; the `action_receipts` lookup
+  is checked before re-run.
+- **Prompt-injection is a first-class UI state:** any draft whose assembled
+  context included **agent-ingested external content** (an email body, a fetched
+  README) is flagged in the receipt — *"influenced by content you didn't
+  write"* — and treated as untrusted. This directly answers the 31–50% hijack
+  rate; the receipt becomes a **security** surface, not just a provenance one.
+
+
+# 5. The Reimagined Phased Roadmap (P0..P6)
+
+Substrate that makes agency *trustworthy* (real local embeddings +
+current-truth/contradiction) folds in **EARLY**; then staged agency; then the
+interop long-game **LAST**. Every phase names its user impact, build, repo hook,
+Definition of Done, and its simplicity + safety guardrail.
+
+---
+
+## ► P0 — THE ONE FIRST BET: REAL LOCAL NEURAL EMBEDDINGS
+
+> **THIS IS THE ONE FIRST BET. Do it before writing a single line of action
+> code.** It is the smallest thing that proves the Digital Self, it is safe by
+> construction (read-only, nothing leaves the machine), and it is the
+> **non-negotiable gate under every other claim.**
+
+- **User impact:** the mirror moment — *"meet one thing your self learned, in your
+  own words, with its source."* This is the holy-shit beat, and it makes the
+  sovereignty claim **technically true offline** for the first time.
+- **What to build:** replace the `hash` default with a **real on-device
+  embedder** (Model2Vec potion-base-8M or bge-small via ONNX), no API key.
+  **Reality check:** the *committed* code is `hash`/`openai` ONLY
+  (`configured_embedding_provider()` in `embeddings.py`). A `"model2vec"` branch
+  currently in the working tree is an **uncommitted, untested, abandoned partial
+  edit** from a stopped agent — so treat P0 as real (small, ~1–2 day) work, not
+  "wiring an existing option." It must handle the **dimension mismatch**
+  (potion-base-8M is 256-dim vs the schema's `VECTOR_DIMENSIONS=384`) via the
+  existing `CORTEX_EMBEDDING_DIMENSIONS`/`index_compatible` plumbing + a
+  background re-embed, and ship tests. Report `embedding_status()` honestly
+  (`network_required=false`). Then make it the default and retire `hash` from the
+  real-user path.
+- **Repo hooks:** the provider switch in `embeddings.py`
+  (`configured_embedding_provider` / `embed_text_result`), `agent_adaptation`
+  (`storage.py` ~12038) for the mirror card, its shipped honest-boundary block +
+  `source_url` citations.
+- **DoD:** a published **recall@k benchmark vs the hash baseline on a held-out
+  paraphrase set** (50 query/target pairs that mean the same thing but share few
+  words); the mirror card renders one learned fact with its source, right-or-
+  correct-in-one-tap; the app performs real semantic retrieval with **no API
+  key**. If hash recall collapses on paraphrases (it will — it's bag-of-words) and
+  the local model beats it, P0 is validated.
+- **Simplicity + safety guardrail:** ONE card, in the user's own words, with its
+  source. **Zero side effects** — nothing touches the outside world. Until this
+  ships, "a model of you" is keyword-search-in-disguise and "private/local self"
+  is false the moment a user wants real memory. **No "acts as me" or "semantic
+  memory" claim ships before this** (AI-washing / FTC exposure otherwise).
+
+---
+
+## ► P1 — FALSIFIABLE VOICE + CURRENT-TRUTH (the substrate that makes agency safe)
+
+- **User impact:** the self's drafts are *demonstrably* in your voice, and its
+  briefs never cite a decision you already reversed.
+- **What to build:** (a) the **blind "sounds like me" A/B harness** — real users
+  pick "which is mine" between their sent reply and Cortex's draft; **gate the
+  style engine on it** (unlock Rung 1 only above the bar). (b) A
+  **contradiction/supersession scanner** surfacing "you decided X, then later Y —
+  which stands?" so briefs carry *current truth*, not stale snapshots. (c)
+  **Voice-fidelity gated behind retrieval-fidelity:** if a draft would rest on
+  fewer than N cited, temporally-current memories, it **under-renders** (blander,
+  hedged, "skeleton for you to fill") rather than confidently ventriloquize.
+- **Repo hooks:** existing temporal-validity + supersession machinery;
+  `record_context_reuse` (`storage.py:11702`) extended to record approvals as the
+  fidelity signal.
+- **DoD:** blind test >70% "sounds like me"; a "wrong-in-my-voice" incident rate
+  instrumented as an **internal North Star metric**; briefs demonstrably suppress
+  superseded decisions.
+- **Simplicity + safety guardrail:** the user sees only "is this right? · fix it."
+  **Style transfer must never outrun grounding** — a fluent wrong answer in your
+  own voice to a real relationship is the category's fatal failure, so
+  under-render is a *shipping gate*, not a slogan.
+
+---
+
+## ► P2 — RUNG 0 SHIPPED: THE BRIEF (read-only agency)
+
+- **User impact:** "brief me before I talk to Alex" — cited, current, person-
+  scoped context, already there.
+- **What to build:** surface `prepare_action_brief` + `get_agent_adaptation`
+  inside the builder's MCP clients as the mirror-and-brief experience; replace the
+  Review-queue-first onboarding with the mirror moment.
+- **Repo hooks:** `action_brief` (`storage.py:10314`), `agent_adaptation`
+  (`storage.py:12038`) — both already read-only, cited, with the honest-boundary
+  block.
+- **DoD:** shippable the day P0 lands; needs no approval gate because it never
+  touches the outside world.
+- **Simplicity + safety guardrail:** one card at a time. **Citations-or-abstain**;
+  zero side effects.
+
+---
+
+## ► P3 — RUNG 1 SHIPPED: DRAFT-AND-HOLD (the wedge; first thing that acts)
+
+- **User impact:** the wedge — "Draft this reply in my voice — I press send," with
+  the receipt.
+- **What to build:** `propose_action` (§4.3) + the action ledger over
+  `memory_events` (§4.4) + ONE reversible connector-write (Gmail draft) + the
+  prompt-injection flag + the per-action receipt as the **visible product
+  surface** ("From 3 of your memories · what I refused to assume · Edit · Send").
+- **Repo hooks:** `mcp_tools.py:call_tool` (:1261) for the new tool;
+  `approve_capture` (`storage.py:11002`) pattern as the gate; `_event` /
+  `memory_events` (`storage.py:18047`) as the hash-chained receipt spine.
+- **DoD:** 20 builders **actually send** Cortex-drafted replies unedited or
+  lightly-edited, repeatedly, unprompted (the go/no-go for the whole company). A
+  real $20/mo Stripe wall in front of the wedge tests *revealed* WTP, not surveys.
+- **Simplicity + safety guardrail:** **nothing sends without an explicit tap** —
+  reversible by construction; receipt exists *before* approval; **always-approve
+  categories** (external send, money, deletes) hard-gated forever. Carry **E&O
+  insurance before the first write-capable token is issued.**
+
+---
+
+## ► P4 — RUNG 2: ONE STANDING-PERMISSION CHORE (measured-fidelity-gated)
+
+- **User impact:** one narrow, reversible chore (label/file/route, or
+  propose-meeting-times-not-commit) runs without per-action approval.
+- **What to build:** unlock **only after ~20 near-zero-edit approvals** on that
+  class; scope it like an agentic token (one action-type + scope + expiry); every
+  act reversible with visible Undo.
+- **Repo hooks:** the fidelity signal from P1 (`record_context_reuse` extended);
+  the `cxa_/cxm_` scope model.
+- **DoD:** a single scoped chore live for cohort users with near-zero corrections
+  and a visible Undo on every act.
+- **Simplicity + safety guardrail:** you are *prompted* to unlock, never opted in.
+  **Never external comms, spend, publish, or anything irreversible.** Undo, or it
+  does not qualify.
+
+---
+
+## ► P5 — RUNG 3: MULTI-STEP CHORE WITH ROLLBACK (research tier)
+
+- **User impact:** a known routine ("onboard this repo") runs end-to-end with one
+  button to reverse all of it.
+- **What to build:** per-step compensating undo established *before* execution; a
+  hard drift-abort; plan-separated-from-execute; SHA-256 hash-chained tamper-
+  evident logging (the EU AI Act Art. 12 floor made real).
+- **Repo hooks:** the action ledger from P3, extended to multi-step envelopes in
+  the vault (`vault/actions/`).
+- **DoD:** a defined procedure runs and fully rolls back on abort, for users who
+  have proven Rung 2.
+- **Simplicity + safety guardrail:** only reversible/internal steps eligible; the
+  plan is shown before anything executes.
+
+---
+
+## ► P6 — RUNG 4 / INTEROP: THE PERSONAL MANDATE (the long game, deliberately last)
+
+- **User impact:** your self hands ONE business's agent a signed, minimal, cited
+  Intent Mandate (the anti-surveillance-pricing scenario) — reveals constraints,
+  not data.
+- **What to build:** the **Ed25519 keypair in the local vault** (the *last*
+  honest-floor crypto step, added exactly when a third party must verify);
+  reshape `cxa_/cxm_` tokens into signed, scoped, time-bound capability objects
+  shaped as valid AP2 Intent Mandates, publishable in an A2A Agent Card / MCP
+  Server Card. Emit into existing rails — **never build a rival transport.**
+- **Repo hooks:** the symmetric HMAC seal (`storage.py:14346`) becomes the *local*
+  tamper-evidence; the new Ed25519 makes mandates externally verifiable;
+  `record_agent_event` (`storage.py:14481`) becomes the per-mandate receipt chain.
+- **DoD:** one merchant/agent accepts a Cortex-issued AP2-shaped mandate;
+  asymmetric-merchant first; **peer-to-peer dead last.**
+- **Simplicity + safety guardrail:** lives entirely inside the existing
+  Trust/Privacy sheet as at most two states ("let this agent act for me" / "see +
+  revoke what it did"). ALWAYS "acting on behalf of, disclosed" — never
+  impersonation. **Never claim "verifiable by any third party" until Ed25519
+  ships.**
+
+**► THE ONE FIRST BET, restated:** ship **P0 — real local neural embeddings +
+the mirror moment.** It is small (~1–2 days; a local, no-key embedder), safe by
+construction (read-only), and it is the credibility floor under everything else.
+Nothing agentic ships until it is real and measured.
+
+
+# 6. The Interop Long-Game (why sequenced last)
+
+**PCP grows from a memory-portability format (commoditized — the Solid trap) into
+the IDENTITY / CONTEXT / TRUST layer between personal selves** — the "who is this
+agent, whose intent does it carry, is that intent current and truly theirs, and
+can you prove what it did" layer that the entire 2026 interop stack (A2A signed
+Agent Cards, AP2 mandates, ERC-8004 passports, enterprise IAM) left **"absent
+entirely" for individuals** (arXiv 2604.23280). PCP is **not a competing
+transport** — it is a signed **payload + attestation** that travels *inside*
+A2A/MCP/AP2 rails, in three parts, each an emit/attest layer over shipped code:
+**(1) the Personal Mandate** (local Ed25519-signed, scoped, time-bound, trust
+derived from the person's own cited memory + a human vouch — a position the
+central-issuer IAM camp and the on-chain-passport camp structurally cannot
+occupy); **(2) the Context Digest** (minimal, cited, current-truth constraints,
+not raw history — the anti-surveillance-pricing artifact); **(3) the Receipt
+Chain** (`record_agent_event` extended to answer "trace this action to the
+responsible human" — which only 28% of orgs can).
+
+**The network effect is real but must be earned ASYMMETRICALLY first.** Stage 1 is
+zero-network: my self → ONE business's agent, which needs no other Cortex users
+and whose counterparty already *exists and is desperate for it* (agentic commerce
+is blocked by mutual distrust; merchants need "verify the agent, not just the
+user"). Stage 2 is the **emitter moat**: the durable advantage is not the protocol
+(copyable) but being the only *trustworthy emitter*, because trust flows from the
+local, cited, user-owned memory nobody else has — and a model vendor will **never**
+author an anti-lock-in personal-mandate standard (that neutrality is structural).
+Stage 3 — **peer-to-peer, dead last** — is where the two-sided network effect
+finally kicks in, only after asymmetric acceptance has seeded the format and the
+single-user loop is deeply trusted.
+
+**Why sequenced last** (this is the single most important correct call in the
+strategy): (a) PCP's entire moat is that trust flows from local, cited, user-owned
+memory — so **real local embeddings (P0)** and **falsifiable voice + current-truth
+(P1)** must land first or every interop claim is a lie; (b) a "mandate to act" has
+**nothing to execute** until the action surface exists (P3+) — issuing mandates
+before a gated action ledger is the identity cart before the action horse; (c)
+**true peer-to-peer has zero counterparties in 2026** — building it now is a
+standard nobody imports, the Solid death. Leading with "protocol" is the graveyard;
+we don't say the word externally until self-adoption inside Cortex is the proof.
+
+
+# 7. Moat + Metrics (trust, fidelity, agency-success — not vanity)
+
+## 7.1 The moat
+
+- **The emitter moat:** trust flows from a **local, cited, user-owned memory** no
+  one else has. Anyone can copy a JSON schema; no one can copy the fidelity that
+  makes a Cortex mandate worth accepting.
+- **The provenance moat:** a per-action, hash-chained receipt (what was asked,
+  authorized, cited, withheld, done, who vouched) — the one artifact that makes
+  delegated action trustworthy, and the one thing frontier labs structurally
+  cannot offer an *individual*.
+- **The neutrality moat (structural):** Apple won't unify your Cursor + Claude
+  Code + ChatGPT + Gmail context because each rival won't feed a competitor's OS;
+  a neutral third party is the only one who *can* — and this is structural, not a
+  feature an incumbent can copy without cannibalizing its own lock-in.
+- **The honesty moat:** citations-or-abstain + the honest-boundary block +
+  "acts FOR you, disclosed" is the anti-companion, anti-drift discipline the whole
+  category will be regulated *against*. Under-promise is the moat.
+
+## 7.2 Metrics (measure trust and earned agency; never save-hours theater)
+
+- **Fidelity:** blind "sounds like me" rate (gate: >70%). **Retrieval recall@k on
+  paraphrases** vs the hash baseline (gates P0).
+- **The North Star safety metric:** the **"wrong-in-my-voice" incident rate** —
+  instrumented and driven toward zero; a single confident-error-in-your-voice to a
+  real relationship is fatal, so this, not hours-saved, is the headline.
+- **Agency success:** on Rung 1, the **send-unedited / lightly-edited rate**
+  (do they actually send it?); **edit-vs-verbatim rate per action-class** (the
+  gate that promotes up the ladder).
+- **Trust:** near-zero correction rate on a standing-permission class before Rung 2
+  unlocks; **undo-invocation rate** (low = trusted; a spike = a rung was granted
+  too early).
+- **Revealed WTP:** paid conversion behind the $20/mo wall — never the 3.2x survey
+  number.
+- **Sovereignty-in-fact:** % of core flows that work **offline with no API key**
+  (must reach 100% for the memory/brief path before the continuity claim ships).
+
+
+# 8. What NOT to Build / Claims to Avoid / Safety + Liability Guardrails
+
+## 8.1 What NOT to build
+
+- **The hash-vector "semantic memory" default — KILL immediately.** It makes "a
+  model of you" false and "private semantic memory" false-without-a-cloud-key
+  simultaneously. A fraud to remove before any "acts as me" claim (`embeddings.py`
+  default `"hash"`).
+- **Any autonomous send / publish / spend / delete — KILL permanently (invariant,
+  not a phase).** The instant Cortex auto-sends, the deployer inherits liability;
+  one confident-error-in-your-voice destroys the moat. **Irreversibility +
+  autonomy must NEVER combine.**
+- **Browser / computer-use as the action surface — KILL.** The frontier proved it
+  unshippable (Operator + Mariner dead; ~20% long-horizon; 31–50% injection).
+  Connector-write draft-and-hold instead; be the brief that feeds any executor.
+- **The face / voice / avatar — KILL** as anything but a thin optional skin. A
+  realistic avatar that lacks judgment or lies ("I checked your calendar") is more
+  unsettling and more dangerous than text; it's also the regulatory blast radius.
+- **"Sovereign" / "own your data" as the acquisition hook — DEFER to subtext.**
+  The privacy paradox is ironclad; convert on a working draft, retain on
+  sovereignty.
+- **PCP / "protocol" / peer-to-peer negotiation as anything near-term — DEFER hard
+  to Rung 4+.** Zero network in 2026; leading here is the Solid death.
+- **Multi-persona / "clone you rent to your audience" — KILL.** That's Delphi's
+  outbound-broadcast job — opposite direction, different market. Cortex is the
+  private, inbound, does-YOUR-work self.
+- **The trust-score dial + the wall of scope toggles + Review-queue-first
+  onboarding — DEFER to an Advanced drawer / replace with the mirror moment.**
+  Collapse the felt controls to the receipt and the Undo.
+
+## 8.2 Claims to avoid (marketing discipline is a live risk, not a solved one)
+
+- "Your AI **is** you / your digital twin" → only "works FROM you, acting on your
+  behalf, disclosed, and you press send."
+- "**Semantic** memory / a model of how you think" → **false today** (SHA-256
+  bag-of-words). AI-washing until real local embeddings beat the baseline on a
+  published benchmark.
+- "The AI they can't switch off" → Cortex depends on external Claude/GPT to reason;
+  only **"the model OF YOU they can't take, portable across any model"** is honest.
+- "You can prove and control everything it did" **as legal defensibility** →
+  receipts are tamper-*evident* (symmetric HMAC), **not** a courtroom shield;
+  claiming legal protection practices law and invents liability.
+- "**Cryptographically verifiable by any third party**" → false until Ed25519
+  ships.
+- "Autonomous / set-and-forget / agent that acts for you" → the whole field proves
+  discernment is science fiction. Say "drafts; you send."
+- "**The trust layer for humanity** / TAM-scale" → invites the regulatory scrutiny
+  that killed the companion apps and sets up a platform-co-option fall. Claim the
+  **builder-tribe beachhead** honestly (thousands-to-seed).
+
+## 8.3 Safety + liability guardrails (from the critic — own these)
+
+1. **Permanent autonomy cap at Rung 1** for the shippable product: draft + explicit
+   human-tap send, one recipient, reversible-by-construction. **Rungs 2–4 are
+   research, not roadmap.**
+2. **Always-approve hard gates, forever, no promotion possible:** external comms to
+   new/unknown recipients, any money movement, deletes, publishing, privilege
+   changes, medical/legal/financial advice-as-final. **Enforced in code, not a
+   setting.**
+3. **Prompt-injection as a first-class UI state:** any draft whose context included
+   agent-ingested external content carries a visible "influenced by content you
+   didn't write" flag; that content is treated as untrusted. The receipt is a
+   security surface.
+4. **Never market receipts as legal defensibility.** Ship the receipt; make no
+   legal promise about it.
+5. **Voice-fidelity gated behind retrieval-fidelity:** under-render below N cited,
+   temporally-current memories rather than confidently ventriloquize.
+6. **The honest-boundary block (`storage.py:12074`) is a load-bearing product
+   invariant** — present in every draft and mandate as "acting on behalf of,
+   disclosed." Enforced and tested, not fine print.
+7. **Delete the `hash` embedding default before any "acts as me" / "semantic
+   memory" claim ships.** The sovereignty claim must be technically true offline
+   first.
+8. **E&O / product-liability insurance in place BEFORE the first write-capable
+   token is issued.** A solo team shipping an agent that touches real inboxes
+   without coverage is one wrong-recipient auto-send from an extinction event.
+
+## 8.4 The platform-threat answer, without cope
+
+If "a private AI that does your work in your tools" becomes a **mass** market, a
+platform owns it — and Apple already shipped the primitives (WWDC26 App Intents
+2.0 + on-device Foundation Models). "The platforms will just do this" is the base
+case, not FUD. What Cortex has is **narrow and real**: cross-vendor neutrality
+(structural), a tribe incumbents won't court (the privacy-refugee builder), and
+timing (the refugee inflow is live now). The correct posture: **be the neutral,
+cross-vendor, sovereign self-layer for the builder tribe; RIDE the platform
+executors (App Intents, MCP) rather than fight them; and accept honestly that the
+realistic outcomes are (a) a durable, beloved, premium prosumer tool of
+thousands-to-tens-of-thousands, or (b) an acqui-hire by the very platform we
+"threaten." Both are fine. Neither requires beating Apple.** Any deck that models
+this as a winner-take-all category Cortex leads is lying to itself and to
+investors.
+
+
+================================================================================
+END OF PART III — CORTEX AS THE DIGITAL SELF
+The self does real work. You stay the one who acts. And you can prove everything
+it did. Ship P0 first; everything else is premature until the mirror is real.
+================================================================================

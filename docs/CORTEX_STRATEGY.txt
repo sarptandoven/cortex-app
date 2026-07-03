@@ -1,0 +1,221 @@
+================================================================================
+CORTEX — STRATEGY (current, consolidated)
+Cortex is your Digital Self: a private, self-owned model of how you think, decide,
+and write — that any AI can become, and that works for you with receipts you control.
+================================================================================
+Updated: 2026-07-02
+This is the single current strategy. The detailed backing docs are:
+  - docs/CORTEX_VISION_AND_ROADMAP.txt  (Part I overview + Part III full deep detail)
+  - docs/CORTEX_ROADMAP_V2_DEEP_DIVE.txt (Part II engineering/landscape deep dive)
+All "facts" here are kept to verifiable ones; a couple of dramatic claims from
+earlier drafts were removed as unverified.
+
+--------------------------------------------------------------------------------
+0. THE ONE LINE
+--------------------------------------------------------------------------------
+"Your AI is you, working — and you can prove and control everything it did."
+
+Cortex learns you from the tools you already use, keeps that model of you on your
+own machine, and lends it — cited and permissioned — to every AI tool, so they
+draft and act the way you would. You always press send.
+
+--------------------------------------------------------------------------------
+1. WHERE WE ARE (honest)
+--------------------------------------------------------------------------------
+Built and real: a local-first macOS app + local backend; a layered memory of you
+(facts, events, style, decisions, preferences, dislikes, procedures) with sources,
+time-validity, and citations; 13 read-only connectors (Obsidian, Gmail, GitHub,
+Slack, Notion, Drive, Calendar, etc.); an MCP output layer so Claude/Cursor/ChatGPT
+can query it; a permission + audit spine (scoped tokens, capability flags that
+default OFF, an event ledger); and a multi-tenant hosted plane. ~578 backend tests.
+
+The gap between what we SAY and what we DO:
+  - Our "semantic memory" is currently a keyword-hash trick, not real meaning —
+    real semantics only turn on with a cloud API key, which breaks the privacy
+    story. (This is the #1 thing to fix; see the First Bet.)
+  - Connectors only READ. There is no "act" surface yet — no way for the self to
+    draft or do anything in the outside world.
+
+So: a strong engine and a fuzzy product. The plan below makes the memory real,
+makes the value visible, and turns it into a self that does work — safely.
+
+--------------------------------------------------------------------------------
+2. THE BIG IDEA — from "memory" to "a Digital Self"
+--------------------------------------------------------------------------------
+We were thinking too small ("the best memory layer for AI"). Memory is the FUEL,
+not the product. The product is a working model of you that can ACT on your behalf.
+
+Three levels, in order:
+  - PRODUCT (now): AGENTIC — the self does real work (starting with drafts), earned
+    step by step through measured fidelity + your approval + a receipt.
+  - WEDGE / MOAT: SOVEREIGN — you OWN your model; it lives on your machine; the AI
+    everyone else builds is a model OF you that THEY own and can switch off.
+  - LONG GAME: INTEROPERABLE — eventually your self can safely represent you to
+    other people's agents and services. (Deliberately LAST — see risks.)
+
+--------------------------------------------------------------------------------
+3. WHY NOW
+--------------------------------------------------------------------------------
+1. The betrayal is fresh and repeating. Rewind was acquired by Meta and its
+   local-first app was killed (Dec 2025); Khoj shut its cloud (Apr 2026); vendors
+   routinely deprecate or region-restrict the AI/memory people depend on. The
+   through-line: the AI you rely on is not yours and can vanish. A wave of burned,
+   privacy-minded, technical users is looking for a durable home right now.
+2. The pain is at its peak. Native memory (ChatGPT, Claude) just gave 800M people
+   a memory inside each tool — which is exactly when CROSS-TOOL fragmentation
+   becomes the universal pain. Cursor forgets what Claude decided. Nobody solves
+   cross-vendor + local + cited.
+3. The moat formed for free. General "computer-use" autonomy proved unreliable in
+   2026 (low task accuracy, unsolved prompt-injection). So durable value moved to
+   the two things the big labs can't give an individual: a cited, owned model of
+   who you are, and a per-action receipt that makes delegated work trustworthy.
+
+THE WEDGE IS CONTINUITY, NOT PRIVACY. "Protect your data" never sells (concern
+doesn't convert — it's what killed Solid over 8 years). "Own your digital self
+before someone else does" DOES: it's about a thing you'll LOSE, not a thing you
+should morally care about. Honest boundary: we protect the model of YOU, not the
+frontier model underneath — so the claim is "the model of you they can't take,
+portable across any AI," never "the AI they can't switch off."
+
+--------------------------------------------------------------------------------
+4. WHO IT'S FOR FIRST
+--------------------------------------------------------------------------------
+The AI-native builder — the founder/engineer living in Cursor + Claude Code +
+ChatGPT all day, whose sharpest pain is losing architecture decisions and the
+"why" to context compaction, and who already hand-maintains CLAUDE.md / session.md
+as the workaround. Why them: they already live in MCP clients (60-second install,
+zero behavior change); they ARE the burned, privacy-primed refugee cohort; their
+work has built-in receipts (a draft is diffable, a PR reviewable) so agency can
+safely START where verification is cheap; they already pay for AI tools; they're
+our tribe. Honest sizing: thousands to seed, not millions. A beachhead, not the TAM.
+
+--------------------------------------------------------------------------------
+5. THE PRODUCT (dead simple)
+--------------------------------------------------------------------------------
+THE ONE EXPERIENCE: "It writes the reply, in your words. You press send."
+A draft is already waiting in the tool you're in, written the way you would write
+it, with one quiet line under it: "From 3 of your memories · here's what I refused
+to assume · Edit · Send." That single moment IS the product. The memory, the
+layers, the connectors, the tokens, the receipts — all invisible machinery.
+The user never learns the words "embedding," "layer," "MCP," or "vault."
+
+THE AGENCY TRUST LADDER (the self earns the right to do more, safely):
+  Rung 0 — BRIEF (read-only, zero side effects): before you talk to someone or open
+    a task, a cited "here's what to know" is already there. Nothing to approve;
+    never touches the outside world.
+  Rung 1 — DRAFT, YOU SEND (reversible, one tap): THE WEDGE. The self writes a real
+    reply/comment/update in your voice and leaves it un-sent. You edit (one key) or
+    send (one tap). If you edit, it quietly learns the correction. ***This is the
+    permanent ceiling for the shippable product.***
+  Rungs 2–4 — standing permission / multi-step / acting with others: labeled
+    RESEARCH, not roadmap. We do NOT ship autonomous sending. The instant an AI
+    acts without a per-action tap, the user (and we) inherit real legal liability.
+    Irreversibility + autonomy must NEVER combine.
+
+HOW SOVEREIGNTY IS FELT (not a settings page): a prominent "Export everything,
+including from us" button; one-tap Undo on anything; a receipt under every action;
+"it still works with the plug pulled." Ownership is shown, not preached.
+
+--------------------------------------------------------------------------------
+6. THE ONE FIRST BET
+--------------------------------------------------------------------------------
+Ship REAL LOCAL EMBEDDINGS (no API key) + THE MIRROR MOMENT.
+
+Replace the keyword-hash "semantics" with a real, small, on-device model (e.g.
+Model2Vec potion-base-8M or bge-small via ONNX). Then surface ONE thing the self
+learned, in the user's own words, with its source: "You tend to decline meetings
+before 10am — from your calendar, 6 times." Right, or correct-in-one-tap.
+
+Why this first: it's safe (read-only, nothing leaves the machine), it makes the
+sovereignty claim technically TRUE offline for the first time, it's the holy-shit
+"it actually knows me" beat, and it's the credibility floor under every later
+claim. Until it ships, "a model of you" is keyword-search-in-disguise, and no
+"acts as me" / "semantic memory" claim should be made (that's AI-washing).
+
+Reality check: this is real (small, ~1–2 day) engineering — including handling that
+the local model outputs 256 dims vs our 384-dim index, and a background re-embed —
+NOT a config flip. (An abandoned half-edit is sitting in the tree from an earlier
+attempt; it should be redone properly with tests.)
+
+--------------------------------------------------------------------------------
+7. THE ROADMAP (condensed)
+--------------------------------------------------------------------------------
+P0  Real local embeddings + the mirror moment.            (THE FIRST BET; read-only)
+P1  Falsifiable voice + self-correcting memory: a "sounds-like-me" test the build
+    must pass, and automatic detection of contradictory/stale memories flagged for
+    a one-tap human vouch (nobody else does this; append-only memory rots).
+P2  Rung 0 shipped — the cited Brief inside your tools (read-only agency).
+P3  Rung 1 shipped — DRAFT-AND-HOLD (THE WEDGE): a "draft in my voice, I press
+    send" tool + the per-action RECEIPT, built on the existing permission + audit
+    spine. Smallest possible write surface, reversible by construction.
+P4  Rung 2 (RESEARCH) — one narrow, reversible, standing-permission chore, unlocked
+    only after a proven track record; every act reversible with visible Undo.
+P5  Rung 3 (RESEARCH) — a multi-step routine with a pre-defined rollback per step.
+P6  Rung 4 / interop (LONG GAME, last) — your self hands a signed, scoped, cited
+    "mandate" to another agent; needs real asymmetric signing first; never
+    impersonation, always "acting on behalf of, disclosed."
+Cross-cutting: notarized/auto-updating app; encryption at rest; refactor the
+18k-line storage god-object; accounts + billing when value is proven.
+
+--------------------------------------------------------------------------------
+8. THE MOAT + THE ONE METRIC
+--------------------------------------------------------------------------------
+Moat (compounding, hard to copy): cross-vendor neutrality (the big labs won't
+unify your Cursor + Claude + ChatGPT — it's against their lock-in); an owned,
+local, inspectable model of you; and provable, controllable, BOUNDED action
+(receipts + human approval) instead of chasing risky autonomy.
+
+North-star metric: the "wrong-in-my-voice" incident rate — how often the self
+produces something a user would NOT have sent. Drive it to near zero. Not
+"hours saved" theater. Also track: does an external AI visibly use your context
+(the real activation), draft-send-without-edit rate, and deletions/corrections
+(trust in action).
+
+--------------------------------------------------------------------------------
+9. WHAT WE WILL NOT DO (safety + honesty guardrails)
+--------------------------------------------------------------------------------
+- No autonomous send / publish / spend / delete. Ever. (Draft-and-hold is the cap.)
+- Always-approve hard gates forever: external messages to new people, money,
+  deletes, publishing, anything irreversible.
+- No screen/audio "record everything" capture (the Rewind trap; a trust and legal
+  catastrophe). Win on connectors, not surveillance.
+- Never claim "it IS you" / a "digital twin." Always "works from you; you press send."
+- Never say "semantic memory" until real local embeddings ship and beat the baseline.
+- Receipts are a trust/control surface, NOT a legal shield — never market them as
+  legal defensibility.
+- Treat any draft influenced by external content (an email body, a web page) as
+  possibly poisoned, and FLAG it in the receipt (prompt-injection is unsolved).
+- Get E&O / product-liability insurance before issuing the first write-capable token.
+- Keep it dead simple: no new tabs, no wall of toggles, no editor/notes UI. The
+  surface must not grow as the capability grows.
+
+--------------------------------------------------------------------------------
+10. MONEY
+--------------------------------------------------------------------------------
+Free: the memory / model of you (never charge someone to own their own data).
+~$20/mo: the SOVEREIGN self-layer — drafts + receipts + cross-tool sync (this is
+where the willingness-to-pay premium lives). Later: a value-metered AGENCY tier as
+users climb the trust ladder. Pricing must never betray the ownership promise.
+
+--------------------------------------------------------------------------------
+11. THE HONEST RISKS (so we don't fool ourselves)
+--------------------------------------------------------------------------------
+- "A model of you" does nothing for you on day one — Personal.ai pitched almost
+  exactly this for years with no breakout. We MUST prove single-player utility (a
+  draft you actually send) fast, or inherit the same fate.
+- "Own your data" as a standalone cause is a graveyard (Solid: 8 years right and
+  dead). That's why interop is sequenced LAST, and why we lead with a working draft.
+- "AI acting as a person" draws heavy regulatory scrutiny (the companion-app
+  lawsuits). Anti-companion, "works and proves it, never bonds," is a survival
+  constraint, not a nicety.
+- The platforms can do this. Apple's on-device agent + 2B devices is the base-case
+  threat. Our narrow, real edge is cross-vendor neutrality and local ownership —
+  we must stay narrow and honest, not claim to be "the trust layer for humanity."
+- The whole field's fatal failure is "a confident wrong answer in your voice."
+  Nobody can teach a clone taste. So we do NOT compete on how autonomous/human-like
+  it is — we compete on a deliberately BOUNDED action you approve, with a receipt.
+
+THE FIRST THREE MOVES: (1) real local embeddings + the mirror moment; (2) the
+"sounds-like-me" test + contradiction flags; (3) draft-and-hold with a receipt.
+Make the memory real, make the value visible, let the self do bounded work — safely.
+================================================================================
