@@ -288,6 +288,55 @@ class FocusTest(unittest.TestCase):
         self.assertEqual(section["confidence"], "medium")  # top count >= 3, capped at medium
 
 
+class GraphSignalTest(unittest.TestCase):
+    """Slice-1 wiring: the entity-graph analysis (centrality + communities) shapes the
+    People & projects ordering and adds community 'areas' to Focus."""
+
+    def _graph(self):
+        # Alice is the hub of a 3-entity community; a separate 3-entity community exists too.
+        return {
+            "centrality": {"a": 1.0, "z": 0.7, "b": 0.2, "x": 0.6, "y": 0.5, "w": 0.4},
+            "communities": {0: ["a", "z", "b"], 1: ["x", "y", "w"]},
+            "nodes": {
+                "a": {"id": "a", "label": "Alice", "kind": "person", "weight": 6.0},
+                "z": {"id": "z", "label": "Project Zephyr", "kind": "project", "weight": 4.0},
+                "b": {"id": "b", "label": "Bob", "kind": "person", "weight": 2.0},
+                "x": {"id": "x", "label": "Design System", "kind": "project", "weight": 3.0},
+                "y": {"id": "y", "label": "Carol", "kind": "person", "weight": 2.0},
+                "w": {"id": "w", "label": "Docs", "kind": "project", "weight": 1.0},
+            },
+        }
+
+    def test_people_ranked_by_centrality_not_link_count(self):
+        # Bob has MORE links than Alice, but Alice is far more central -> Alice ranks first.
+        entities = [
+            make_entity("Bob", 9, entity_id="b"),
+            make_entity("Alice", 4, entity_id="a"),
+            make_entity("Project Zephyr", 4, kind="project", entity_id="z"),
+        ]
+        profile = make_profile(entities=entities)
+        out = build_profile_sections(profile, provider="hash", graph=self._graph())
+        people = next(s for s in out if s["id"] == "people_projects")
+        self.assertIn("Alice", people["elements"][0]["text"])
+
+    def test_communities_surface_as_focus_areas(self):
+        profile = make_profile(topics=[make_topic("infra", 4)])
+        out = build_profile_sections(profile, provider="hash", graph=self._graph())
+        focus = next(s for s in out if s["id"] == "focus")
+        texts = " ".join(e["text"] for e in focus["elements"])
+        # The hub-labeled community area appears (hub 'Alice', size-3 community).
+        self.assertIn("Alice", texts)
+        # ...alongside the topic.
+        self.assertIn("infra", texts)
+
+    def test_no_graph_falls_back_to_link_count(self):
+        entities = [make_entity("Bob", 9, entity_id="b"), make_entity("Alice", 4, entity_id="a")]
+        profile = make_profile(entities=entities)
+        out = build_profile_sections(profile, provider="hash", graph=None)
+        people = next(s for s in out if s["id"] == "people_projects")
+        self.assertIn("Bob", people["elements"][0]["text"])  # most-linked first without a graph
+
+
 class EmbeddingMergeTest(unittest.TestCase):
     def test_embed_fn_used_only_when_provider_not_hash(self):
         # An embedder that maps everything to the same vector => all merge.

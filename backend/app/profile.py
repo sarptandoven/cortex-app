@@ -104,6 +104,12 @@ _MIN_ENTITY_LINKS = 2
 # A focus topic only surfaces if it repeats at least this many times.
 _MIN_TOPIC_COUNT = 2
 
+# A graph community only reads as a focus AREA with at least this many member
+# entities (two members is just an edge, not an area) — and we surface at most
+# this many communities so topics still get room in the section.
+_MIN_COMMUNITY_SIZE = 3
+_MAX_COMMUNITY_ELEMENTS = 2
+
 # Confidence bands (support = cluster size, distinct = #distinct sources).
 _HIGH_SUPPORT = 5
 _HIGH_DISTINCT_SOURCES = 2
@@ -187,7 +193,7 @@ def build_profile_sections(
         if section is not None:
             sections.append(section)
 
-    focus = _build_focus_section(profile)
+    focus = _build_focus_section(profile, graph)
     if focus is not None:
         sections.append(focus)
 
@@ -294,18 +300,64 @@ def _cluster_to_element(cluster: list[dict]) -> Optional[dict]:
 # --- Focus section (from profile topics) ------------------------------------
 
 
-def _build_focus_section(profile: dict) -> Optional[dict]:
-    """Surface the user's recurring focus areas from profile topics.
+def _community_focus_elements(graph: Optional[dict]) -> list[dict]:
+    """Focus elements from the knowledge graph's entity communities.
+
+    A community of at least ``_MIN_COMMUNITY_SIZE`` entities is a genuine AREA of
+    the user's world (a project circle, a team, a life domain). It is labeled by
+    its hub — the most central member — following graphify's
+    label-communities-by-hub idea, and cited by the total supporting-memory count
+    of its members. Deterministic: member lists arrive sorted by centrality, and
+    communities are ranked by (-total support, smallest member id).
+    """
+    if not isinstance(graph, dict):
+        return []
+    communities = graph.get("communities")
+    nodes = graph.get("nodes")
+    if not isinstance(communities, dict) or not isinstance(nodes, dict):
+        return []
+
+    out: list[dict] = []
+    for members in communities.values():
+        if not isinstance(members, list) or len(members) < _MIN_COMMUNITY_SIZE:
+            continue
+        labels = [_text((nodes.get(m) or {}).get("label")) for m in members]
+        labels = [label for label in labels if label]
+        if len(labels) < _MIN_COMMUNITY_SIZE:
+            continue
+        total_support = int(sum(float((nodes.get(m) or {}).get("weight") or 0.0) for m in members))
+        hub, others = labels[0], labels[1:3]
+        out.append(
+            {
+                "text": f"{hub} — with {', '.join(others)}",
+                "source": "entities",
+                "count": total_support,
+                "memory_ids": [],
+                "source_url": None,
+                "_last_seen": "",
+                "_tiebreak": min(str(m) for m in members),
+            }
+        )
+
+    out.sort(key=lambda e: (-e["count"], e["_tiebreak"]))
+    return out[:_MAX_COMMUNITY_ELEMENTS]
+
+
+def _build_focus_section(profile: dict, graph: Optional[dict] = None) -> Optional[dict]:
+    """Surface the user's recurring focus areas from profile topics — and, when a
+    knowledge-graph analysis is supplied, from entity COMMUNITIES (the clusters of
+    people/projects that hang together in the user's world).
 
     Topics carry no per-item citation of their own, so a topic can only surface
-    when it clears the repetition floor (``count``). Focus is descriptive rather
+    when it clears the repetition floor (``count``); community elements are cited
+    by their members' total supporting memories. Focus is descriptive rather
     than behavioral, so its confidence is capped at ``medium``.
     """
     topics = profile.get("topics")
     if not isinstance(topics, list):
-        return None
+        topics = []
 
-    ranked: list[dict] = []
+    ranked: list[dict] = list(_community_focus_elements(graph))
     for topic in topics:
         if not isinstance(topic, dict):
             continue
