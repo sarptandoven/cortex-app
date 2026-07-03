@@ -6,11 +6,92 @@ struct ModelTab: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                if state.mirrorInsight != nil {
+                    MirrorMomentCard(state: state)
+                }
                 HomeHeroSection(state: state, review: state.review)
             }
             .padding(16)
         }
         .background(CortexDesign.appBackground)
+    }
+}
+
+/// The "Mirror Moment" — the "holy-shit, it knows me" beat. Surfaces the single thing
+/// Cortex learned about the user, in their words, with its source, and lets them confirm
+/// or dismiss in one tap. Only rendered when `state.mirrorInsight != nil`; if the backend
+/// abstains, this view is never shown (no empty card).
+struct MirrorMomentCard: View {
+    @ObservedObject var state: AppState
+
+    private var insight: MirrorInsight? { state.mirrorInsight }
+
+    /// A calm, human caption naming the source and how many times Cortex saw it,
+    /// e.g. "From your calendar · seen 6 times". Degrades gracefully when the
+    /// backend omits parts of the evidence.
+    private var evidenceCaption: String? {
+        guard let evidence = insight?.evidence else { return nil }
+        var parts: [String] = []
+        if let source = evidence.source, !source.isEmpty {
+            parts.append("From your \(source)")
+        }
+        if let count = evidence.count, count > 0 {
+            parts.append("seen \(count) time\(count == 1 ? "" : "s")")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    var body: some View {
+        if let insight {
+            VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
+                Label("Cortex noticed", systemImage: "sparkles")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(CortexDesign.accent)
+                    .accessibilityHidden(true)
+
+                Text(insight.headline)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 620, alignment: .leading)
+
+                if let evidenceCaption {
+                    Label(evidenceCaption, systemImage: "doc.text.magnifyingglass")
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack(spacing: CortexDesign.Space.sm) {
+                    Button {
+                        state.confirmMirrorInsight()
+                    } label: {
+                        Label("That's right", systemImage: "checkmark")
+                            .frame(minHeight: CortexDesign.controlHeight - 8)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .accessibilityLabel("That's right, this is accurate")
+
+                    Button {
+                        state.dismissMirrorInsight()
+                    } label: {
+                        Label("Not quite", systemImage: "xmark")
+                            .frame(minHeight: CortexDesign.controlHeight - 8)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .accessibilityLabel("Not quite, dismiss this")
+
+                    Spacer(minLength: 0)
+                }
+            }
+            .cortexCard(background: CortexDesign.accentSoft)
+            .frame(maxWidth: 620, alignment: .leading)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Cortex noticed: \(insight.headline)")
+        }
     }
 }
 

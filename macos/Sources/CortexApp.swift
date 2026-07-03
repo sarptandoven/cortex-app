@@ -1021,6 +1021,32 @@ struct StatsResponse: Codable {
     let top_entities: [EntityBucket]
 }
 
+/// The single "holy-shit, it knows me" insight surfaced on Home. The backend either
+/// abstains (`insight: null`) or returns one thing Cortex learned, in the user's words,
+/// with its source. See GET /v1/mirror.
+struct MirrorResponse: Codable {
+    let insight: MirrorInsight?
+}
+
+struct MirrorInsight: Codable, Equatable {
+    let headline: String
+    let evidence: MirrorEvidence?
+    let layer: String?
+    let confidence: String?
+
+    /// Stable identity for a given insight so a confirm/dismiss on one headline
+    /// doesn't suppress a different one. Headline is the user-facing claim, so it's
+    /// the natural key for the per-insight dismissed set.
+    var dismissKey: String { headline }
+}
+
+struct MirrorEvidence: Codable, Equatable {
+    let source: String?
+    let count: Int?
+    let memory_ids: [String]?
+    let example: String?
+}
+
 struct MemoryQualityResponse: Codable {
     let generated_at: String
     let score: Int
@@ -2652,6 +2678,10 @@ final class AppState: ObservableObject {
     @Published var graphNodes: [GraphNode] = []
     @Published var graphEdges: [GraphEdge] = []
     @Published var stats: StatsResponse?
+    @Published var mirrorInsight: MirrorInsight?
+    @Published private var mirrorDismissedHeadlines: Set<String> = Set(
+        UserDefaults.standard.stringArray(forKey: AppState.mirrorDismissedDefaultsKey) ?? []
+    )
     @Published var memoryQuality: MemoryQualityResponse?
     @Published var review: DailyReviewResponse?
     @Published var productLoop: ProductLoopResponse?
@@ -3048,6 +3078,7 @@ final class AppState: ObservableObject {
         await loadImportHistory()
         await loadDiagnostics()
         await loadReliability()
+        await loadMirrorInsight()
         refreshStoredConnectorConfigState()
         refreshIntegrationStates()
         startConnectedSourceAutoSync()
@@ -3246,6 +3277,7 @@ final class AppState: ObservableObject {
         await loadDiagnostics()
         await loadReliability()
         await loadTrust()
+        await loadMirrorInsight()
     }
 
     func loadInbox() async {
@@ -3354,6 +3386,52 @@ final class AppState: ObservableObject {
         } catch {
             status = CortexRecoveryText.failureStatus("Quality", error: error)
         }
+    }
+
+    static let mirrorDismissedDefaultsKey = "mirrorDismissedHeadlines.v1"
+
+    /// Fetches the one thing Cortex learned about the user (GET /v1/mirror). The endpoint
+    /// abstains with `insight: null` when it has nothing confident to say, so a nil result
+    /// is normal — not an error. This degrades silently: any failure (offline backend,
+    /// decode error, HTTP status) simply leaves `mirrorInsight` nil and never surfaces a
+    /// message. Insights the user has already confirmed or dismissed are suppressed.
+    func loadMirrorInsight() async {
+        do {
+            let data = try await request(path: "/v1/mirror", method: "GET")
+            let insight = try JSONDecoder().decode(MirrorResponse.self, from: data).insight
+            if let insight, mirrorDismissedHeadlines.contains(insight.dismissKey) {
+                mirrorInsight = nil
+            } else {
+                mirrorInsight = insight
+            }
+        } catch {
+            // Silent by design — the Mirror Moment is a bonus surface, never a failure point.
+            mirrorInsight = nil
+        }
+    }
+
+    /// "That's right" — the user confirmed the insight. Optimistically hide the card and
+    /// remember the confirmation so this exact insight doesn't nag again. No network round
+    /// trip is required for the UI to feel instant.
+    func confirmMirrorInsight() {
+        guard let insight = mirrorInsight else { return }
+        rememberMirrorDismissal(insight.dismissKey)
+        mirrorInsight = nil
+        status = "Thanks — noted."
+    }
+
+    /// "Not quite" — the user rejected the insight. Optimistically hide the card and
+    /// remember the dismissal so the same insight isn't reshown. This intentionally does
+    /// NOT mutate or delete any memories (out of scope for v1); it only dismisses.
+    func dismissMirrorInsight() {
+        guard let insight = mirrorInsight else { return }
+        rememberMirrorDismissal(insight.dismissKey)
+        mirrorInsight = nil
+    }
+
+    private func rememberMirrorDismissal(_ headline: String) {
+        mirrorDismissedHeadlines.insert(headline)
+        UserDefaults.standard.set(Array(mirrorDismissedHeadlines), forKey: Self.mirrorDismissedDefaultsKey)
     }
 
     func loadReview() async {
@@ -5200,6 +5278,7 @@ final class AppState: ObservableObject {
                 await loadDiagnostics()
                 await loadReliability()
                 await loadTrust()
+                await loadMirrorInsight()
             } catch {
                 captureActionErrors[capture.id] = CortexRecoveryText.failureStatus("Approve", error: error)
                 status = CortexRecoveryText.failureStatus("Approve", error: error)
@@ -5252,6 +5331,7 @@ final class AppState: ObservableObject {
                 await loadDiagnostics()
                 await loadReliability()
                 await loadTrust()
+                await loadMirrorInsight()
             } catch {
                 status = CortexRecoveryText.failureStatus("Batch approve", error: error)
             }
