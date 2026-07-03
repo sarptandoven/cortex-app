@@ -9374,6 +9374,58 @@ class CortexStore:
             "limitations": profile.get("limitations") or [],
         }
 
+    def person_map(self, user_id: str, *, include_pending: bool = False, sector: str | None = None, hub_limit: int = 12) -> dict[str, Any]:
+        """The whole "full image" of a person in ONE call, so a model can load everything at once:
+        the cited Profile (who they are) PLUS the knowledge-graph map — the hubs they orbit
+        (centrality), the communities/areas of their world, and the bridges connecting them. Every
+        piece is cited and current-truth. Composes build_profile + entity_graph_analysis; adds no
+        new retrieval and no new storage."""
+        profile = self.build_profile(user_id, include_pending=include_pending, sector=sector)
+        try:
+            analysis = self.entity_graph_analysis(user_id, include_pending=include_pending, sector=sector)
+        except Exception:
+            analysis = {}
+        nodes = analysis.get("nodes") or {}
+        centrality = analysis.get("centrality") or {}
+        community = analysis.get("community") or {}
+        hub_limit = max(1, int(hub_limit))
+        hubs = [
+            {
+                "entity_id": node_id,
+                "label": (nodes.get(node_id) or {}).get("label"),
+                "kind": (nodes.get(node_id) or {}).get("kind"),
+                "centrality": round(float(centrality.get(node_id, 0.0)), 6),
+                "community": community.get(node_id),
+                "supporting_memories": int((nodes.get(node_id) or {}).get("weight") or 0),
+            }
+            for node_id in (analysis.get("ranked") or [])[:hub_limit]
+        ]
+        communities = []
+        for community_id, members in (analysis.get("communities") or {}).items():
+            member_labels = [str((nodes.get(m) or {}).get("label") or "") for m in members]
+            member_labels = [label for label in member_labels if label]
+            if len(member_labels) < 2:
+                continue  # a lone entity is not an "area"
+            communities.append({"id": community_id, "label": member_labels[0], "members": member_labels[:12]})
+        bridges = [
+            {
+                "source": bridge.get("source"),
+                "source_label": (nodes.get(bridge.get("source")) or {}).get("label"),
+                "target": bridge.get("target"),
+                "target_label": (nodes.get(bridge.get("target")) or {}).get("label"),
+                "weight": bridge.get("weight"),
+            }
+            for bridge in (analysis.get("bridges") or [])[:8]
+        ]
+        return {
+            "generated_at": now_iso(),
+            "readiness": profile.get("readiness", 0),
+            "condensed": profile.get("condensed", False),
+            "profile": profile.get("sections") or [],
+            "graph": {"hubs": hubs, "communities": communities, "bridges": bridges},
+            "limitations": profile.get("limitations") or [],
+        }
+
     def _enrich_profile_items(self, user_id: str, profile: dict[str, Any]) -> None:
         item_ids = [
             str(item.get("id"))

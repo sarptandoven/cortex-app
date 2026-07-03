@@ -1682,6 +1682,15 @@ def profile(
     return store.build_profile(user_id, limit=limit, include_pending=include_pending, sector=sector)
 
 
+@app.get("/v1/person-map", response_model=None)
+def person_map(
+    include_pending: bool = Query(False),
+    sector: str | None = Query(None, max_length=120),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return store.person_map(user_id, include_pending=include_pending, sector=sector)
+
+
 @app.get("/v1/memory/quality", response_model=MemoryQualityResponse)
 def memory_quality(user_id: str = Depends(auth)) -> dict[str, Any]:
     return store.memory_quality_report(user_id)

@@ -93,6 +93,17 @@ TOOLS = [
         },
     },
     {
+        "name": "get_person_map",
+        "description": "Return the full cited picture of the user in one call: the model-of-you profile (how they work, preferences, dislikes, decisions, focus areas, key people/projects) PLUS the knowledge-graph map — the hubs they orbit, the communities/areas of their world, and the bridges connecting them. Load this to understand the whole person before acting.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "include_pending": {"type": "boolean", "default": False},
+                "sector": {"type": "string"},
+            },
+        },
+    },
+    {
         "name": "get_agent_adaptation",
         "description": "Return cited operating instructions that adapt an AI assistant to the user's preferences, style, decisions, limits, and current memory coverage.",
         "inputSchema": {
@@ -714,7 +725,7 @@ WRITE_TOOLS = {
     "forget_memory",
     "delete_memory_capture",
 }
-EXPORT_TOOLS = {"build_context_pack", "get_personal_profile", "get_agent_adaptation", "export_memory"}
+EXPORT_TOOLS = {"build_context_pack", "get_personal_profile", "get_person_map", "get_agent_adaptation", "export_memory"}
 MAINTENANCE_TOOLS = {
     "create_memory_backup",
     "sync_connected_sources",
@@ -1343,6 +1354,10 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         if args.get("format", "json") == "markdown":
             return profile["markdown"]
         return store.agent_payload(user_id, profile)
+    if name == "get_person_map":
+        result = store.person_map(user_id, include_pending=_bool_arg(args, "include_pending"), sector=args.get("sector"))
+        store.record_context_reuse(user_id, surface="mcp", query="", target="person-map")
+        return store.agent_payload(user_id, result)
     if name == "get_agent_adaptation":
         query = _text_arg(args, "query")
         target = _text_arg(args, "target", "assistant", max_chars=MCP_NAME_MAX_CHARS)

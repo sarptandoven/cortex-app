@@ -115,6 +115,20 @@ class EntityGraphStoreTests(unittest.TestCase):
         self.assertIn("connections", ctx)
         self.assertTrue(any(c["label"] == "Project Zephyr" for c in ctx["connections"]))
 
+    def test_person_map_composes_profile_and_graph(self) -> None:
+        self._seed_graph()
+        pmap = self.store.person_map(self.user_id)
+        self.assertIn("profile", pmap)
+        self.assertIn("graph", pmap)
+        graph = pmap["graph"]
+        self.assertIn("hubs", graph)
+        self.assertIn("communities", graph)
+        self.assertIn("bridges", graph)
+        # Alice is the central hub of this little graph.
+        self.assertTrue(graph["hubs"])
+        self.assertEqual(graph["hubs"][0]["label"], "Alice")
+        self.assertIsInstance(pmap["readiness"], int)
+
     def test_empty_graph_is_safe(self) -> None:
         nodes, edges = self.store.build_entity_graph(self.user_id)
         self.assertEqual(nodes, [])
