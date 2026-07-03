@@ -3137,6 +3137,17 @@ END:VCALENDAR
             self.assertIn("complete_snapshot", properties, tool_name)
             self.assertFalse(properties["complete_snapshot"]["default"], tool_name)
 
+        # complete_snapshot archives existing memory, so it now requires the maintenance
+        # capability (mirrors sync_source_records' archive_missing gate). Enable it for this user
+        # so the work-size-bounding path below can run; the deny path (write-only token cannot
+        # archive via complete_snapshot) is covered by test_mcp_snapshot_archive_gate.
+        self.assertEqual(
+            self.client.put(
+                "/v1/settings", json={"allow_agent_maintenance": True}, headers=headers
+            ).status_code,
+            200,
+        )
+
         with patch.object(main_module.store, "sync_github_account", return_value={"source_account_id": "src_github", "records": []}) as sync:
             response = self.client.post(
                 "/mcp",

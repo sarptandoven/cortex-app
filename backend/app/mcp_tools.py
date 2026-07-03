@@ -726,6 +726,20 @@ MAINTENANCE_TOOLS = {
 }
 SCOPED_MCP_MAINTENANCE_REVIEW_TOOLS = {"approve_memory_capture", "archive_memory_capture"}
 DESTRUCTIVE_TOOLS = {"forget_memory", "delete_memory_capture", "delete_memory_backups", "restore_latest_memory_backup", "delete_all_user_data"}
+DIRECT_CONNECTOR_SYNC_TOOLS = {
+    "sync_github",
+    "sync_gmail",
+    "sync_google_drive",
+    "sync_outlook",
+    "sync_slack",
+    "sync_readwise",
+    "sync_calendar",
+    "sync_raindrop",
+    "sync_zotero",
+    "sync_linear",
+    "sync_jira",
+    "sync_notion",
+}
 
 
 def tool_required_capabilities(name: str, *, scoped: bool = False) -> list[str]:
@@ -1246,6 +1260,10 @@ def _procedure_markdown(payload: dict[str, Any]) -> str:
 
 def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any], token_scopes: list[str] | None = None) -> Any:
     _require_tool_access(store, user_id, name, token_scopes)
+    if name in DIRECT_CONNECTOR_SYNC_TOOLS and _bool_arg(args, "complete_snapshot"):
+        if token_scopes is not None and "maintenance" not in token_scopes:
+            raise PermissionError("MCP token is not scoped for maintenance actions.")
+        store.require_agent_access(user_id, "maintenance")
     if name == "remember_this":
         content = args.get("content", "")
         source = args.get("source", "ai-chat")

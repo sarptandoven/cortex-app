@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import ipaddress
 import re
+import socket
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote, urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from ._redaction import connector_error_payload
 
@@ -135,9 +137,56 @@ def _fetch_feed(url_text: str, request_text: RequestText | None) -> str:
     normalized = _normalize_feed_url(url_text)
     if request_text:
         return request_text(normalized)
+    _guard_feed_url(normalized)
     request = Request(normalized, headers={"Accept": "text/calendar,*/*", "User-Agent": "Cortex-local-connector"}, method="GET")
-    with urlopen(request, timeout=30) as response:  # noqa: S310 - user-provided calendar feed URL.
+    opener = build_opener(_GuardedRedirectHandler())
+    with opener.open(request, timeout=30) as response:  # noqa: S310 - user-provided calendar feed URL, SSRF-guarded above.
         return response.read().decode("utf-8", errors="replace")
+
+
+class _GuardedRedirectHandler(HTTPRedirectHandler):
+    """Re-validate every redirect target so a public URL cannot bounce to an internal host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        _guard_feed_url(_normalize_feed_url(newurl))
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _guard_feed_url(normalized_url: str) -> None:
+    """Reject feed URLs that resolve to a non-public address (SSRF guard)."""
+    split = urlsplit(normalized_url)
+    if split.scheme not in {"http", "https"}:
+        raise ValueError("feed_url must be http, https, or webcal")
+    host = split.hostname
+    if not host:
+        raise ValueError("feed_url host is not allowed")
+    try:
+        infos = socket.getaddrinfo(host, split.port, proto=socket.IPPROTO_TCP)
+    except OSError as exc:
+        raise ValueError("feed_url host could not be resolved") from exc
+    addresses = {info[4][0] for info in infos}
+    if not addresses:
+        raise ValueError("feed_url host could not be resolved")
+    for addr in addresses:
+        if _is_disallowed_address(addr):
+            raise ValueError("feed_url host is not allowed")
+
+
+def _is_disallowed_address(addr: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return True
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return bool(
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_unspecified
+        or ip.is_multicast
+    )
 
 
 def _normalize_feed_url(url_text: str) -> str:

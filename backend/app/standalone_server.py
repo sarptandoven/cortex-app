@@ -403,7 +403,35 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
         self._handle("DELETE")
 
     def log_message(self, format: str, *args) -> None:
-        print(f"{self.address_string()} - {format % args}", flush=True)
+        # Never log the raw query string: capture tokens (GET /capture?token=...)
+        # and OAuth callback codes (GET /v1/connectors/.../oauth/callback?code=...&state=...)
+        # would otherwise be written to stdout/log files. Log only method + path + status.
+        message = format % args
+        try:
+            requestline = getattr(self, "requestline", "") or ""
+            if requestline and requestline in message:
+                parts = requestline.split(" ")
+                if len(parts) >= 2:
+                    parts[1] = urlparse(parts[1]).path
+                message = message.replace(requestline, " ".join(parts))
+        except Exception:
+            pass
+        print(f"{self.address_string()} - {message}", flush=True)
+
+    @staticmethod
+    def _safe_error_message(exc: Exception) -> str:
+        # PermissionError/ValueError messages are intentionally user-facing and safe.
+        # For any other exception (e.g. sqlite3.OperationalError, OSError/FileNotFoundError)
+        # the message may carry an absolute vault/db path or secret; run it through the
+        # store's agent-facing redaction before exposing it to callers/agents.
+        if isinstance(exc, (PermissionError, ValueError)):
+            return str(exc)
+        message = str(exc)
+        try:
+            redactor = getattr(store, "default_store", store)
+            return redactor._redact_text(message)
+        except Exception:
+            return "Internal error"
 
     def _handle(self, method: str) -> None:
         parsed = urlparse(self.path)
@@ -1739,7 +1767,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 return
             self._send_json({"detail": "Not found"}, status=HTTPStatus.NOT_FOUND)
         except Exception as exc:
-            self._send_json({"detail": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._send_json({"detail": self._safe_error_message(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _handle_mcp(self, context: dict) -> None:
         user_id = context["user_id"]
@@ -1770,7 +1798,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 raise ValueError(f"Unsupported MCP method: {method}")
             self._send_json({"jsonrpc": "2.0", "id": request.get("id"), "result": result})
         except Exception as exc:
-            self._send_json({"jsonrpc": "2.0", "id": request.get("id"), "error": {"code": -32000, "message": str(exc)}})
+            self._send_json({"jsonrpc": "2.0", "id": request.get("id"), "error": {"code": -32000, "message": self._safe_error_message(exc)}})
 
     def _auth_user(self, method: str, path: str) -> str | None:
         authorization = self.headers.get("Authorization", "")
