@@ -312,6 +312,21 @@ def _bool_value(value, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+# Cap request bodies so a single oversized/hostile upload can't buffer unbounded memory (the
+# shipping server hand-rolls body reads on a thread-per-connection server, with no framework in
+# front of it). 16 MiB comfortably exceeds any legitimate capture/import page.
+MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024
+
+
+class _RequestTooLarge(Exception):
+    """Raised when a request body exceeds MAX_REQUEST_BODY_BYTES (-> 413)."""
+
+
+class _BadRequestBody(Exception):
+    """Raised when a request body is present but not valid JSON (-> 422), matching the framework
+    server which rejects malformed bodies with 422 rather than surfacing a 500."""
+
+
 def _source_import_request(body: dict, *, analyze: bool = False) -> dict:
     raw_paths = body.get("paths")
     if not isinstance(raw_paths, list):
@@ -922,6 +937,37 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     self._send_json(store.public_payload(user_id, result) if hasattr(store, "public_payload") else result)
                 except FileNotFoundError as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.NOT_FOUND)
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path == "/v1/connectors/github/discover":
+                body = self._json_body()
+                try:
+                    from .connectors.github import discover_github_repositories
+
+                    result = discover_github_repositories(
+                        token=str(body.get("token") or ""),
+                        limit=int(body.get("limit") or 100),
+                        page=int(body.get("page") or 1),
+                        api_base_url=str(body.get("api_base_url") or "") or "https://api.github.com",
+                    ).to_summary()
+                    self._send_json(result)
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path == "/v1/connectors/slack/discover":
+                body = self._json_body()
+                try:
+                    from .connectors.slack import discover_slack_channels
+
+                    result = discover_slack_channels(
+                        token=str(body.get("token") or ""),
+                        limit=int(body.get("limit") or 100),
+                        include_private=_bool_value(body.get("include_private"), default=True),
+                        cursor=str(body.get("cursor") or "") or None,
+                        api_base_url=str(body.get("api_base_url") or "") or "https://slack.com/api",
+                    ).to_summary()
+                    self._send_json(result)
                 except (TypeError, ValueError) as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
@@ -1766,6 +1812,15 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 self._send_text(store.export_markdown(user_id), media_type="text/markdown")
                 return
             self._send_json({"detail": "Not found"}, status=HTTPStatus.NOT_FOUND)
+        except _RequestTooLarge as exc:
+            # The body was not read (rejected on Content-Length), so close the connection to avoid
+            # a keep-alive protocol desync from leftover unread bytes.
+            self.close_connection = True
+            self._send_json({"detail": str(exc)}, status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+        except _BadRequestBody as exc:
+            # Malformed body escaped a per-endpoint handler (many read the body before their own
+            # try): return 422 like the framework server, not a 500.
+            self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
         except Exception as exc:
             self._send_json({"detail": self._safe_error_message(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -1906,17 +1961,34 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             extracted=extracted,
         )
 
-    def _json_body(self) -> dict:
-        length = int(self.headers.get("Content-Length", "0") or "0")
+    def _read_body(self) -> bytes:
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+        except (TypeError, ValueError):
+            length = 0
         if length <= 0:
+            return b""
+        if length > MAX_REQUEST_BODY_BYTES:
+            raise _RequestTooLarge("Request body is too large")
+        return self.rfile.read(length)
+
+    def _json_body(self) -> dict:
+        raw = self._read_body()
+        if not raw:
             return {}
-        return json.loads(self.rfile.read(length).decode("utf-8"))
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise _BadRequestBody("Request body must be valid JSON") from exc
 
     def _form_body(self) -> dict[str, list[str]]:
-        length = int(self.headers.get("Content-Length", "0") or "0")
-        if length <= 0:
+        raw = self._read_body()
+        if not raw:
             return {}
-        return parse_qs(self.rfile.read(length).decode("utf-8"), keep_blank_values=True)
+        try:
+            return parse_qs(raw.decode("utf-8"), keep_blank_values=True)
+        except UnicodeDecodeError as exc:
+            raise _BadRequestBody("Request body must be valid form data") from exc
 
     def _send_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")

@@ -2334,6 +2334,59 @@ class StandaloneServerTests(unittest.TestCase):
         data = json.dumps(payload).encode("utf-8")
         return request.urlopen(request.Request(self.base_url + path, data=data, headers=headers, method="POST"), timeout=5)
 
+    def test_github_discover_endpoint_present_on_shipping_server(self) -> None:
+        # The macOS "Find Repositories" button POSTs here; the shipping server must implement it
+        # (it previously 404'd because only the FastAPI dev server had the route).
+        class _Discovery:
+            def to_summary(self):
+                return {"repositories": [{"full_name": "doppl-tech/cortex-app"}], "total": 1}
+
+        with mock.patch("backend.app.connectors.github.discover_github_repositories", return_value=_Discovery()) as disc:
+            with self.post_json("/v1/connectors/github/discover", {"token": "ghp_x", "limit": 50}) as response:
+                self.assertEqual(response.status, 200)
+                payload = json.loads(response.read())
+        self.assertEqual(payload["repositories"][0]["full_name"], "doppl-tech/cortex-app")
+        self.assertEqual(disc.call_args.kwargs["token"], "ghp_x")
+        self.assertEqual(disc.call_args.kwargs["limit"], 50)
+
+    def test_slack_discover_endpoint_present_on_shipping_server(self) -> None:
+        class _Discovery:
+            def to_summary(self):
+                return {"channels": [{"id": "C1", "name": "general"}]}
+
+        with mock.patch("backend.app.connectors.slack.discover_slack_channels", return_value=_Discovery()) as disc:
+            with self.post_json("/v1/connectors/slack/discover", {"token": "xoxb-x"}) as response:
+                self.assertEqual(response.status, 200)
+                payload = json.loads(response.read())
+        self.assertEqual(payload["channels"][0]["name"], "general")
+        self.assertEqual(disc.call_args.kwargs["token"], "xoxb-x")
+
+    def test_malformed_json_body_returns_422_not_500(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "Content-Type": "application/json"}
+        req = request.Request(
+            self.base_url + "/v1/connectors/github/discover",
+            data=b"{not valid json",
+            headers=headers,
+            method="POST",
+        )
+        with self.assertRaises(error.HTTPError) as ctx:
+            request.urlopen(req, timeout=5)
+        self.assertEqual(ctx.exception.code, 422)
+
+    def test_oversized_request_body_returns_413(self) -> None:
+        headers = {"Authorization": "Bearer test-token", "Content-Type": "application/json"}
+        with mock.patch.object(standalone_server, "MAX_REQUEST_BODY_BYTES", 100):
+            data = b'{"blob":"' + b"a" * 500 + b'"}'
+            req = request.Request(
+                self.base_url + "/v1/connectors/github/discover",
+                data=data,
+                headers=headers,
+                method="POST",
+            )
+            with self.assertRaises(error.HTTPError) as ctx:
+                request.urlopen(req, timeout=5)
+        self.assertEqual(ctx.exception.code, 413)
+
     def test_standalone_worker_enabled_only_for_local_inline_mode(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             standalone_server.settings = Settings(
