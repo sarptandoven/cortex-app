@@ -8303,24 +8303,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         statusItem.button?.target = self
     }
 
+    // A comfortable, desktop-app-sized default derived from the current screen: large on big
+    // displays, still fitting on small laptops. Cortex is a multi-tab knowledge app, so it should
+    // open roomy rather than as a compact utility window.
+    private static func preferredDefaultWindowSize() -> NSSize {
+        let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let width = min(1320, max(1040, visible.width * 0.72))
+        let height = min(920, max(720, visible.height * 0.84))
+        return NSSize(width: width, height: height)
+    }
+
     private func setupMainWindow() {
         logApp("setupMainWindow")
+        let defaultSize = Self.preferredDefaultWindowSize()
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 820, height: 760),
+            contentRect: NSRect(x: 0, y: 0, width: defaultSize.width, height: defaultSize.height),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Cortex"
-        window.minSize = NSSize(width: 640, height: 620)
-        window.center()
+        window.minSize = NSSize(width: 820, height: 640)
         window.isReleasedWhenClosed = false
         window.hidesOnDeactivate = false
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         window.level = .normal
         window.delegate = self
         window.contentViewController = NSHostingController(rootView: CortexView(state: state))
-        window.setFrameAutosaveName("CortexMainWindow")
+        // Bumped autosave name so the new larger default replaces any previously-saved small
+        // frame once; subsequent user resizes persist under this name.
+        window.setFrameAutosaveName("CortexMainWindowV2")
+        // If no frame was restored from the (new) autosave name, open at the roomy default.
+        if window.frame.width < defaultSize.width || window.frame.height < defaultSize.height {
+            window.setContentSize(defaultSize)
+        }
+        window.center()
         mainWindow = window
         mainWindowController = NSWindowController(window: window)
         ensureMainWindowIsVisible()
@@ -8379,8 +8396,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func center(_ window: NSWindow, in screenFrame: NSRect) {
-        let width = min(max(window.minSize.width, 820), screenFrame.width - 80)
-        let height = min(max(window.minSize.height, 760), screenFrame.height - 80)
+        let preferred = Self.preferredDefaultWindowSize()
+        let width = min(max(window.minSize.width, preferred.width), screenFrame.width - 80)
+        let height = min(max(window.minSize.height, preferred.height), screenFrame.height - 80)
         let x = screenFrame.midX - width / 2
         let y = screenFrame.midY - height / 2
         window.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
