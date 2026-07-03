@@ -1672,6 +1672,16 @@ def mirror(user_id: str = Depends(auth)) -> dict[str, Any]:
     return {"insight": store.mirror_insight(user_id)}
 
 
+@app.get("/v1/profile", response_model=None)
+def profile(
+    limit: int = Query(6, ge=1, le=20),
+    include_pending: bool = Query(False),
+    sector: str | None = Query(None, max_length=120),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return store.build_profile(user_id, limit=limit, include_pending=include_pending, sector=sector)
+
+
 @app.get("/v1/memory/quality", response_model=MemoryQualityResponse)
 def memory_quality(user_id: str = Depends(auth)) -> dict[str, Any]:
     return store.memory_quality_report(user_id)

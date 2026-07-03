@@ -20,6 +20,8 @@ from .connectors._redaction import redact_error_message
 from .database import connect, sqlite_vec_status
 from .embeddings import VECTOR_DIMENSIONS, configured_embedding_model, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status
 from .mirror import compute_mirror_insight
+from .profile import build_profile_sections
+from .condense import condense_section
 from .extractor import extract_context, now_iso, stable_id
 from .sqlite_runtime import SQLITE_RUNTIME, sqlite3
 from .source_ingest import SourceRecord, analyze_sources, import_source_records_page, supported_sources
@@ -9273,6 +9275,75 @@ class CortexStore:
         (see mirror.compute_mirror_insight), or None when the corpus is too thin to speak honestly."""
         with connect(self.db_path) as conn:
             return compute_mirror_insight(conn, user_id)
+
+    def _condense_llm_enabled(self) -> bool:
+        """The profile's per-section prose may be rewritten by an LLM ONLY when one is genuinely
+        available — never under python3 -S / no key, so the shipping + all-tested paths stay
+        deterministic. Counts, memory_ids, sources, and confidence are always deterministic."""
+        mode = os.environ.get("CORTEX_EXTRACTION_MODE", "").strip().lower()
+        if mode in {"local", "deterministic", "connector"}:
+            return False
+        return bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+
+    def build_profile(self, user_id: str, *, limit: int = 6, include_pending: bool = False, sector: str | None = None) -> dict[str, Any]:
+        """A cited, structured "model of you": regroups the existing personal_profile output into a
+        small fixed set of Sections (how you work / preferences / dislikes / decisions / focus /
+        people & projects), each with a condensed statement, honest confidence, and cited elements.
+        Deterministic organize + optional LLM prose (see _condense_llm_enabled). Abstains per-section
+        (and overall) on a thin corpus — sections with no cited support are omitted."""
+        # Over-fetch candidates (personal_profile caps limit at 20) so the grouping/support signal
+        # is meaningful; the shared personal_profile path is reused unchanged.
+        profile = self.personal_profile(user_id, limit=20, include_pending=include_pending, sector=sector)
+        # Enrich the profile items with importance/confidence (dropped by _profile_memory_item) via
+        # one batched read, so section ranking/abstention can use them — without touching the shared
+        # projection that other endpoints/tests depend on.
+        self._enrich_profile_items(user_id, profile)
+        provider = str(embedding_status().get("provider") or "hash")
+        embed_fn = embed_text if provider != "hash" else None
+        sections = build_profile_sections(profile, embed_fn=embed_fn, provider=provider)
+        allow_llm = self._condense_llm_enabled()
+        rendered: list[dict[str, Any]] = []
+        for section in sections:
+            condensed = condense_section(section, allow_llm=allow_llm)
+            if not condensed:
+                continue
+            section["statement"] = condensed.get("statement") or ""
+            section["method"] = condensed.get("method") or "template"
+            rendered.append(section)
+        return {
+            "generated_at": profile.get("generated_at") or now_iso(),
+            "readiness": int(profile.get("readiness") or 0),
+            "condensed": any(section.get("method") == "llm" for section in rendered),
+            "sections": rendered,
+            "limitations": profile.get("limitations") or [],
+        }
+
+    def _enrich_profile_items(self, user_id: str, profile: dict[str, Any]) -> None:
+        item_ids = [
+            str(item.get("id"))
+            for section in profile.get("sections", [])
+            if isinstance(section, dict)
+            for item in section.get("items", [])
+            if isinstance(item, dict) and item.get("id")
+        ]
+        if not item_ids:
+            return
+        signal: dict[str, dict[str, Any]] = {}
+        with connect(self.db_path) as conn:
+            placeholders = ",".join("?" for _ in item_ids)
+            rows = conn.execute(
+                f"SELECT id, importance, confidence FROM memories WHERE user_id = ? AND id IN ({placeholders})",
+                (user_id, *item_ids),
+            ).fetchall()
+            for row in rows:
+                signal[str(row["id"])] = {"importance": row["importance"], "confidence": row["confidence"]}
+        for section in profile.get("sections", []):
+            if not isinstance(section, dict):
+                continue
+            for item in section.get("items", []):
+                if isinstance(item, dict) and str(item.get("id")) in signal:
+                    item.setdefault("importance", signal[str(item["id"])]["importance"])
+                    item.setdefault("confidence", signal[str(item["id"])]["confidence"])
 
     def answer_query(
         self,

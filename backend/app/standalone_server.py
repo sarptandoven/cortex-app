@@ -99,7 +99,7 @@ def _start_standalone_worker() -> threading.Thread | None:
 def _required_api_scope(method: str, path: str) -> str:
     normalized_method = method.upper()
     normalized_path = path.rstrip("/") or "/"
-    if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/context-pack", "/v1/personal-profile", "/v1/agent-adaptation", "/v1/support/bundle"}:
+    if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/context-pack", "/v1/personal-profile", "/v1/profile", "/v1/agent-adaptation", "/v1/support/bundle"}:
         return "export"
     if normalized_path == "/v1/settings" and normalized_method in {"PUT", "PATCH"}:
         return "maintenance"
@@ -1700,6 +1700,17 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and path == "/v1/mirror":
                 self._send_json({"insight": store.mirror_insight(user_id)})
+                return
+            if method == "GET" and path == "/v1/profile":
+                include_pending = (params.get("include_pending") or ["false"])[0].strip().lower() in {"1", "true", "yes"}
+                self._send_json(
+                    store.build_profile(
+                        user_id,
+                        limit=_int_param(params, "limit", 6, 1, 20),
+                        include_pending=include_pending,
+                        sector=(params.get("sector") or [None])[0],
+                    )
+                )
                 return
             if method == "GET" and path == "/v1/memory/quality":
                 self._send_json(store.memory_quality_report(user_id))
