@@ -2694,6 +2694,7 @@ final class AppState: ObservableObject {
     private let backend = BackendSupervisor.shared
     private var obsidianAutoSyncTask: Task<Void, Never>?
     private var directConnectorAutoSyncTask: Task<Void, Never>?
+    private var ensureBackendTask: Task<Void, Never>?
     private var obsidianSyncInFlight = false
     private var jobDrainInFlight = false
     private var onboardingDismissedForSession = false
@@ -3050,6 +3051,22 @@ final class AppState: ObservableObject {
     }
 
     func ensureBackend() async {
+        // Coalesce overlapping callers so concurrent requests don't each restart
+        // (terminate + relaunch) the backend and race one another.
+        if let inFlight = ensureBackendTask {
+            await inFlight.value
+            return
+        }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performEnsureBackend()
+        }
+        ensureBackendTask = task
+        await task.value
+        ensureBackendTask = nil
+    }
+
+    private func performEnsureBackend() async {
         ensureUsableAPIKey()
         ensureUsableMCPAPIKey()
         backendStatus = "Checking memory engine"
@@ -3970,7 +3987,11 @@ final class AppState: ObservableObject {
         let account = paused ? sourceAccount(connector) : disconnectedSourceAccount(connector)
         guard let account else {
             if paused {
-                forgetDirectConnectorConfig(connector)
+                // No active backend account to disconnect, but pausing must stay
+                // non-destructive: keep the saved connection so Resume still works.
+                startConnectedSourceAutoSync(initialSync: false)
+                connectorLastMessages[connector.id] = "\(connector.name) sync paused. Synced local memory and the saved connection are retained, so you can resume without reconnecting."
+                status = "\(connector.name) sync paused. Local memory already synced from this source is kept."
             } else {
                 status = "Reconnect \(connector.name) to resume sync"
             }
@@ -3983,8 +4004,9 @@ final class AppState: ObservableObject {
             let action = paused ? "disconnect" : "resume"
             _ = try await request(path: "/v1/source-accounts/\(accountID)/\(action)", method: "POST")
             if paused {
-                CortexCredentialStore.removeSecret(forKey: Self.directConnectorConfigSecretKey(for: connector.id))
-                connectorLastMessages[connector.id] = "\(connector.name) sync paused. Synced local memory and backend credentials are retained."
+                // Pause is non-destructive: keep the stored credential so Resume works
+                // without asking the user to reconnect and re-enter their token/secret.
+                connectorLastMessages[connector.id] = "\(connector.name) sync paused. Synced local memory and the saved connection are retained, so you can resume without reconnecting."
                 status = "\(connector.name) sync paused. Local memory already synced from this source is kept."
             } else {
                 connectorLastMessages[connector.id] = "\(connector.name) sync resumed."
@@ -4568,6 +4590,8 @@ final class AppState: ObservableObject {
         refreshIntegrationStates()
         if registered {
             status = "Tool access reset. Reconnect detected AI tools or use fallback connection details if an app asks."
+        } else {
+            status = "Tool access token reset locally, but re-registering it with the memory engine failed. Reconnect your AI tools once the engine is reachable."
         }
     }
 
@@ -5333,6 +5357,8 @@ final class AppState: ObservableObject {
                 await loadDiagnostics()
                 await loadReliability()
                 await loadTrust()
+                // Onboarding progress was reset above; bring the user back to first-run.
+                presentOnboardingIfNeeded()
             } catch {
                 status = CortexRecoveryText.failureStatus("Delete all data", error: error)
             }
@@ -5483,8 +5509,33 @@ final class AppState: ObservableObject {
         do {
             return try await performRequest(path: path, method: method, body: body)
         } catch {
+            // Only retry (and only then restart the backend) for connection-level
+            // failures on idempotent methods. Never replay non-idempotent mutations,
+            // and never restart the backend on an HTTP status error (4xx/5xx).
+            guard isRetriableConnectionError(error), isIdempotentMethod(method) else {
+                throw error
+            }
             await ensureBackend()
             return try await performRequest(path: path, method: method, body: body)
+        }
+    }
+
+    private func isIdempotentMethod(_ method: String) -> Bool {
+        switch method.uppercased() {
+        case "GET", "HEAD":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func isRetriableConnectionError(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else { return false }
+        switch urlError.code {
+        case .cannotConnectToHost, .timedOut, .networkConnectionLost, .cannotFindHost:
+            return true
+        default:
+            return false
         }
     }
 
@@ -5494,6 +5545,7 @@ final class AppState: ObservableObject {
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
+        request.timeoutInterval = 15
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let body {
@@ -7125,6 +7177,7 @@ struct TrustAuditSection: View {
 
 struct IntegrationTokensSection: View {
     @ObservedObject var state: AppState
+    @State private var confirmResetToolToken = false
 
     var revokedTokens: [IntegrationTokenItem] {
         state.integrationTokens.filter { $0.revoked_at != nil }
@@ -7156,9 +7209,17 @@ struct IntegrationTokensSection: View {
                 .toggleStyle(.checkbox)
                 Spacer()
                 Button {
-                    Task { await state.resetMCPIntegrationToken() }
+                    confirmResetToolToken = true
                 } label: {
                     Label("Reset Tool Token", systemImage: "key")
+                }
+                .confirmationDialog("Reset the tool access token?", isPresented: $confirmResetToolToken, titleVisibility: .visible) {
+                    Button("Reset Token", role: .destructive) {
+                        Task { await state.resetMCPIntegrationToken() }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This immediately disconnects every AI tool using this token. You'll need to reconnect each tool with the new connection details.")
                 }
             }
 
@@ -7187,6 +7248,7 @@ struct IntegrationTokensSection: View {
 struct IntegrationTokenRow: View {
     @ObservedObject var state: AppState
     let token: IntegrationTokenItem
+    @State private var confirmRevoke = false
 
     var isRevoked: Bool {
         token.revoked_at != nil
@@ -7225,9 +7287,17 @@ struct IntegrationTokenRow: View {
             Spacer()
             if !isRevoked {
                 Button(role: .destructive) {
-                    Task { await state.revokeIntegrationToken(token) }
+                    confirmRevoke = true
                 } label: {
                     Label("Revoke", systemImage: "xmark.shield")
+                }
+                .confirmationDialog("Revoke \(token.label)?", isPresented: $confirmRevoke, titleVisibility: .visible) {
+                    Button("Revoke Token", role: .destructive) {
+                        Task { await state.revokeIntegrationToken(token) }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This immediately disconnects every AI tool using this token. This cannot be undone.")
                 }
             }
         }
@@ -7785,6 +7855,7 @@ struct SettingsDataRecoverySection: View {
     @State private var confirmRestoreBackup = false
     @State private var confirmDeleteBackups = false
     @State private var confirmDeleteAllData = false
+    @State private var deleteAllConfirmationText = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -7848,14 +7919,53 @@ struct SettingsDataRecoverySection: View {
         } message: {
             Text("This removes local backup archives from the Cortex memory folder. Current memories are not deleted.")
         }
-        .alert("Delete all local Cortex data?", isPresented: $confirmDeleteAllData) {
-            Button("Delete All Data", role: .destructive) {
-                state.deleteAllUserData()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This removes current review items, memories, tasks, graph data, settings, events, attachments, and backup archives from this vault.")
+        .sheet(isPresented: $confirmDeleteAllData, onDismiss: { deleteAllConfirmationText = "" }) {
+            deleteAllDataConfirmationSheet
+                .preferredColorScheme(.light)
+                .accentColor(CortexDesign.accent)
+                .frame(width: 460)
         }
+    }
+
+    private var deleteAllDataConfirmationSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Delete all local Cortex data", systemImage: "exclamationmark.triangle.fill")
+                .font(.headline)
+                .foregroundColor(.red)
+            Text("This permanently erases every review item, memory, task, graph link, setting, event, and attachment from this vault. Your local backup archives are also removed.")
+                .font(.body)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("This cannot be undone. There is no way to recover this data afterward.")
+                .font(.body.weight(.semibold))
+                .foregroundColor(.red)
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Type DELETE to confirm.")
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+                TextField("DELETE", text: $deleteAllConfirmationText)
+                    .textFieldStyle(.roundedBorder)
+                    .disableAutocorrection(true)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) {
+                    confirmDeleteAllData = false
+                }
+                .keyboardShortcut(.cancelAction)
+                Button(role: .destructive) {
+                    confirmDeleteAllData = false
+                    state.deleteAllUserData()
+                } label: {
+                    Text("Delete All Data")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .disabled(deleteAllConfirmationText.trimmingCharacters(in: .whitespacesAndNewlines) != "DELETE")
+            }
+        }
+        .padding(20)
     }
 }
 

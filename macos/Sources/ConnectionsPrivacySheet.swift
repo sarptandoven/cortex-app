@@ -763,7 +763,7 @@ private struct ConnectionsDirectSourceRow: View {
                 }
                 .buttonStyle(.bordered)
                 .foregroundColor(.secondary)
-                .help("Pause automatic sync. Already synced local memory is kept.")
+                .help("Pause automatic sync. Already synced local memory and the saved connection are kept, so you can resume without reconnecting.")
                 .disabled(state.isBusy || isSyncing || isOAuthStarting)
             }
         }
@@ -1030,7 +1030,7 @@ private struct ConnectorTokenSetupSheet: View {
                         .font(.callout)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("Setup is stored locally on this Mac. Pausing sync keeps already-synced memory in Cortex.")
+                    Text("Setup is stored locally on this Mac. Pausing sync keeps already-synced memory and the saved connection, so you can resume without reconnecting.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
