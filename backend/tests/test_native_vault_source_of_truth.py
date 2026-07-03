@@ -143,8 +143,10 @@ class MarkdownSourceOfTruthTests(unittest.TestCase):
         self.assertFalse(any(h["id"] == "mem_sqlite_decision" for h in hits))
 
     def test_reconcile_removes_a_deleted_note(self) -> None:
-        # Delete the note file in the vault -> the memory leaves the index.
+        # Delete the note file in the vault -> the memory leaves the index. Deletion is only
+        # honored once the vault is migrated to Markdown-native (as the app does at startup).
         self._seed_memory()
+        self.store.ensure_vault_backfilled(self.user_id)  # establish the Markdown baseline
         self.assertTrue(self.store.search(self.user_id, "sharded SQLite", limit=5))
         self._seeded_md_path("mem_sqlite_decision").unlink()
 

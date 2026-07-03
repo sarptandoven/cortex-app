@@ -2076,21 +2076,35 @@ def _percentile_summary(values: list[float]) -> dict[str, float | int]:
     }
 
 
-def _memory_edit_signature(*, content: Any, summary: Any, layer: Any, importance: Any, topics: Any, status: Any) -> str:
-    """Hash of the user-editable fields of a memory, used to detect that a hand-edited Markdown
-    note has diverged from the indexed copy (Phase 3 two-way editing)."""
+def _memory_edit_signature(record: dict[str, Any]) -> str:
+    """Hash of every rebuild-persisted, user-editable field of a memory, used to detect that a
+    hand-edited Markdown note has diverged from the indexed copy (Phase 3 two-way editing). Must
+    cover the same fields the rebuild writes back, and normalize layer exactly as the DB insert
+    does, so an edit to any of them is detected and no spurious diff is reported."""
     try:
-        importance_value = int(importance)
+        importance_value = int(record.get("importance"))
     except (TypeError, ValueError):
         importance_value = 0
+    kind = record.get("kind")
     payload = json.dumps(
         {
-            "content": str(content or "").strip(),
-            "summary": str(summary or "").strip(),
-            "layer": str(layer or "").strip(),
+            "content": str(record.get("content") or "").strip(),
+            "summary": str(record.get("summary") or "").strip(),
+            "kind": str(kind or "").strip(),
+            "layer": memory_layer(kind, record.get("layer")),
+            "confidence": str(record.get("confidence") or "").strip(),
             "importance": importance_value,
-            "topics": sorted(str(topic) for topic in (topics or [])),
-            "status": str(status or "").strip(),
+            "sector": str(record.get("sector") or "").strip(),
+            "source": str(record.get("source") or "").strip(),
+            "source_url": str(record.get("source_url") or "").strip(),
+            "topics": sorted(str(topic) for topic in (record.get("topics") or [])),
+            "entity_ids": sorted(str(entity) for entity in (record.get("entity_ids") or [])),
+            "occurred_at": str(record.get("occurred_at") or "").strip(),
+            "valid_from": str(record.get("valid_from") or "").strip(),
+            "valid_to": str(record.get("valid_to") or "").strip(),
+            "superseded_by": str(record.get("superseded_by") or "").strip(),
+            "status": str(record.get("status") or "active").strip(),
+            "raw_excerpt": str(record.get("raw_excerpt") or "").strip(),
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -2580,6 +2594,9 @@ class CortexStore:
             return self._settings(conn, user_id)
 
     def ensure_vault_backfilled(self, user_id: str) -> dict[str, Any]:
+        # Migrate legacy memories to Markdown notes once (runs even when the JSON vault already
+        # has records), so two-way editing can safely treat a missing note as a user deletion.
+        self._backfill_memory_markdown(user_id)
         vault_diagnostics = self.vault.diagnostics()
         existing_records = sum(
             vault_diagnostics["record_counts"].get(key, 0)
@@ -13243,40 +13260,55 @@ class CortexStore:
         markdown_sig: dict[str, str] = {}
         for record in markdown_records:
             memory_id = str(record.get("id") or "")
-            if not memory_id:
-                continue
-            markdown_sig[memory_id] = _memory_edit_signature(
-                content=record.get("content"),
-                summary=record.get("summary"),
-                layer=record.get("layer") or record.get("kind"),
-                importance=record.get("importance"),
-                topics=record.get("topics"),
-                status=record.get("status") or "active",
-            )
+            if memory_id:
+                markdown_sig[memory_id] = _memory_edit_signature(record)
         with connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT id, content, summary, layer, importance, topics_json, status FROM memories WHERE user_id = ?",
+                "SELECT id, content, summary, kind, layer, confidence, importance, sector, source, "
+                "source_url, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, "
+                "superseded_by, status, raw_excerpt FROM memories WHERE user_id = ?",
                 (user_id,),
             ).fetchall()
         db_sig: dict[str, str] = {}
         for row in rows:
             db_sig[row["id"]] = _memory_edit_signature(
-                content=row["content"],
-                summary=row["summary"],
-                layer=row["layer"],
-                importance=row["importance"],
-                topics=json.loads(row["topics_json"] or "[]"),
-                status=row["status"],
+                {
+                    "content": row["content"],
+                    "summary": row["summary"],
+                    "kind": row["kind"],
+                    "layer": row["layer"],
+                    "confidence": row["confidence"],
+                    "importance": row["importance"],
+                    "sector": row["sector"],
+                    "source": row["source"],
+                    "source_url": row["source_url"],
+                    "topics": json.loads(row["topics_json"] or "[]"),
+                    "entity_ids": json.loads(row["entity_ids_json"] or "[]"),
+                    "occurred_at": row["occurred_at"],
+                    "valid_from": row["valid_from"],
+                    "valid_to": row["valid_to"],
+                    "superseded_by": row["superseded_by"],
+                    "status": row["status"],
+                    "raw_excerpt": row["raw_excerpt"],
+                }
             )
         added = [memory_id for memory_id in markdown_sig if memory_id not in db_sig]
-        removed = [memory_id for memory_id in db_sig if memory_id not in markdown_sig]
         changed = [memory_id for memory_id in markdown_sig if memory_id in db_sig and markdown_sig[memory_id] != db_sig[memory_id]]
+        # Deletion is only honored on a vault that has been migrated to Markdown-native (every
+        # memory has a note), so "no note file" reliably means the user deleted it — never on a
+        # legacy/unmigrated vault (which would mass-delete JSON-only memories). A corrupt-but-
+        # present .md still counts as present (has_memory_markdown), so a parse failure can't
+        # destroy a memory.
+        if self.vault.markdown_backfill_done(user_id):
+            removed = [
+                memory_id
+                for memory_id in db_sig
+                if memory_id not in markdown_sig and not self.vault.has_memory_markdown(memory_id)
+            ]
+        else:
+            removed = []
         if not (added or removed or changed):
             return {"reconciled": False, "added": 0, "changed": 0, "removed": 0}
-        # A note the user deleted in their vault must be removed explicitly (DB + JSON record +
-        # tombstone) rather than left to the rebuild — the rebuild falls back to the legacy JSON
-        # when a user's Markdown set is empty, which would otherwise resurrect a just-deleted
-        # last note.
         for memory_id in removed:
             try:
                 self.delete_memory(user_id, memory_id)
@@ -13286,6 +13318,37 @@ class CortexStore:
             self.rebuild_index_from_vault(user_id)
         return {"reconciled": True, "added": len(added), "changed": len(changed), "removed": len(removed)}
 
+    def _backfill_memory_markdown(self, user_id: str) -> int:
+        """One-time migration per user: write a Markdown note for any active memory that lacks
+        one (legacy vaults created before the Markdown mirror). After this, every memory has a
+        note, so reconcile can safely treat a missing note as a user deletion. Guarded by a
+        per-user manifest flag so it only scans once."""
+        if self.vault.markdown_backfill_done(user_id):
+            return 0
+        written = 0
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT id, capture_id, user_id, kind, layer, content, summary, source, source_url, "
+                "confidence, importance, status, sector, source_type, provenance_json, topics_json, "
+                "entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, captured_at, "
+                "updated_at, raw_excerpt FROM memories WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+        for row in rows:
+            if self.vault.has_memory_markdown(row["id"]):
+                continue
+            record = {key: row[key] for key in row.keys()}
+            record["topics"] = json.loads(row["topics_json"] or "[]")
+            record["entity_ids"] = json.loads(row["entity_ids_json"] or "[]")
+            try:
+                record["provenance"] = json.loads(row["provenance_json"] or "{}")
+            except (TypeError, ValueError):
+                record["provenance"] = {}
+            self.vault._write_memory_markdown(record)
+            written += 1
+        self.vault.mark_markdown_backfill_done(user_id)
+        return written
+
     def rebuild_index_from_vault(self, user_id: str) -> dict[str, Any]:
         tombstone_counts = self.vault.apply_tombstones(user_id)
         imports = list(self.vault.iter_records("imports", user_id))
@@ -13294,10 +13357,18 @@ class CortexStore:
         sync_devices = list(self.vault.iter_records("sync_devices", user_id))
         sync_receipts = list(self.vault.iter_records("sync_receipts", user_id))
         captures = list(self.vault.iter_records("captures", user_id))
-        # Phase 2: the human-readable Markdown notes are the memory source of truth. Rebuild
-        # from them when present so the SQLite index is fully reconstructable from the files the
-        # user owns/edits; fall back to the legacy JSON records for pre-Markdown vaults.
-        memories = self.vault.iter_memory_markdown_records(user_id) or list(self.vault.iter_records("memories", user_id))
+        # Phase 2: the human-readable Markdown notes are the memory source of truth. Rebuild from
+        # them, but MERGE in any memory that exists only as a legacy JSON record or whose Markdown
+        # note failed to parse (corrupt) — those must not be silently dropped on rebuild. Markdown
+        # wins for ids present in both.
+        markdown_memories = self.vault.iter_memory_markdown_records(user_id)
+        markdown_memory_ids = {str(memory.get("id")) for memory in markdown_memories if memory.get("id")}
+        json_only_memories = [
+            memory
+            for memory in self.vault.iter_records("memories", user_id)
+            if str(memory.get("id")) not in markdown_memory_ids
+        ]
+        memories = list(markdown_memories) + json_only_memories
         tasks = list(self.vault.iter_records("tasks", user_id))
         entities = list(self.vault.iter_records("entities", user_id))
         edges = list(self.vault.iter_records("graph_edges", user_id))

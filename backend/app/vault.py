@@ -511,6 +511,32 @@ class CortexVault:
             records.append(record)
         return records
 
+    def has_memory_markdown(self, memory_id: str) -> bool:
+        """True if a Markdown note file exists for this memory id (even if it fails to parse) —
+        so reconcile treats a corrupt-but-present note as still-present, not as a deletion."""
+        if not memory_id:
+            return False
+        base = self.root / "memories"
+        if not base.exists():
+            return False
+        return any(base.rglob(f"{safe_segment(memory_id)}.md"))
+
+    def markdown_backfill_done(self, user_id: str) -> bool:
+        manifest = self._read_json(self.manifest_path, {})
+        done = manifest.get("markdown_backfilled_users")
+        return isinstance(done, list) and user_id in done
+
+    def mark_markdown_backfill_done(self, user_id: str) -> None:
+        manifest = self._read_json(self.manifest_path, {"format": VAULT_FORMAT, "version": VAULT_VERSION})
+        done = manifest.get("markdown_backfilled_users")
+        if not isinstance(done, list):
+            done = []
+        if user_id not in done:
+            done.append(user_id)
+        manifest["markdown_backfilled_users"] = done
+        manifest["updated_at"] = vault_now()
+        self._write_json(self.manifest_path, manifest)
+
     def iter_records(self, record_dir: str, user_id: str | None = None) -> Iterable[dict[str, Any]]:
         base = self.root / record_dir
         if not base.exists():
