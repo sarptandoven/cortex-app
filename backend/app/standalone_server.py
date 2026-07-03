@@ -1715,6 +1715,20 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/v1/memory/quality":
                 self._send_json(store.memory_quality_report(user_id))
                 return
+            if method == "GET" and path == "/v1/memory/conflicts":
+                self._send_json({"conflicts": store.detect_conflicts(user_id)})
+                return
+            if method == "POST" and path == "/v1/memory/conflicts/resolve":
+                body = self._json_body()
+                stale_id = str(body.get("stale_id") or "").strip()
+                current_id = str(body.get("current_id") or "").strip()
+                if not stale_id or not current_id:
+                    self._send_json({"detail": "stale_id and current_id are required"}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                elif store.resolve_conflict(user_id, stale_id=stale_id, current_id=current_id):
+                    self._send_json({"resolved": True, "stale_id": stale_id, "current_id": current_id})
+                else:
+                    self._send_json({"detail": "Both memories must exist and differ"}, status=HTTPStatus.NOT_FOUND)
+                return
             if method == "GET" and path == "/v1/settings":
                 self._send_json(store.settings(user_id))
                 return

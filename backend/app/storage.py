@@ -9833,6 +9833,114 @@ class CortexStore:
             score -= 2
         return score
 
+    def detect_conflicts(self, user_id: str, *, limit: int = 400) -> list[dict[str, Any]]:
+        """Deterministically find memories that CONTRADICT each other so retrieval never hands an
+        agent a stale-vs-current pair. Two active (non-superseded) memories conflict when they make
+        the same field claim (same subject) with different values — reusing the read-time claim
+        extraction + authority logic. For each conflict we mark which one is CURRENT (authority ->
+        newer -> current-language) and which is stale, plus why. Pure detection: NO LLM, NO
+        auto-rewrite; resolve_conflict applies the user's/agent's decision. Grouped by claim field
+        so it stays near-linear, not O(n^2) across the corpus."""
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM memories
+                WHERE user_id = ? AND status = 'active'
+                  AND (superseded_by IS NULL OR superseded_by = '')
+                ORDER BY id
+                LIMIT ?
+                """,
+                (user_id, max(1, int(limit))),
+            ).fetchall()
+        # Bucket every (field -> value) claim to its memory; a field with >=2 distinct values is a
+        # contradiction candidate. field_values: field -> list[(value, item)] in deterministic order.
+        items = [self._memory_from_row(row) for row in rows]
+        field_values: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+        for item in items:
+            for field, value in self._answer_field_claims(item).items():
+                field_values.setdefault(field, []).append((value, item))
+        conflicts: list[dict[str, Any]] = []
+        seen_pairs: set[tuple[str, str]] = set()
+        for field in sorted(field_values):
+            entries = field_values[field]
+            if len({value for value, _ in entries}) < 2:
+                continue
+            for i in range(len(entries)):
+                for j in range(i + 1, len(entries)):
+                    value_a, item_a = entries[i]
+                    value_b, item_b = entries[j]
+                    if value_a == value_b:
+                        continue
+                    id_a, id_b = str(item_a.get("id") or ""), str(item_b.get("id") or "")
+                    if not id_a or not id_b or id_a == id_b:
+                        continue
+                    pair = tuple(sorted((id_a, id_b)))
+                    if pair in seen_pairs:
+                        continue
+                    seen_pairs.add(pair)
+                    current, stale, reason = self._answer_current_item(item_a, item_b)
+                    current_claims = self._answer_field_claims(current)
+                    stale_claims = self._answer_field_claims(stale)
+                    conflicts.append(
+                        {
+                            "field": field,
+                            "reason": reason,
+                            "current": {
+                                "memory_id": str(current.get("id") or ""),
+                                "claim": current_claims.get(field),
+                                "content": str(current.get("summary") or current.get("content") or "")[:200],
+                                "source": current.get("source"),
+                                "source_url": current.get("source_url"),
+                            },
+                            "stale": {
+                                "memory_id": str(stale.get("id") or ""),
+                                "claim": stale_claims.get(field),
+                                "content": str(stale.get("summary") or stale.get("content") or "")[:200],
+                                "source": stale.get("source"),
+                                "source_url": stale.get("source_url"),
+                            },
+                        }
+                    )
+        # Deterministic ordering: most-recently-touched subject first is not stable, so sort by
+        # field then the id pair.
+        conflicts.sort(key=lambda c: (c["field"], c["current"]["memory_id"], c["stale"]["memory_id"]))
+        return conflicts
+
+    def resolve_conflict(self, user_id: str, *, stale_id: str, current_id: str) -> bool:
+        """Human/agent-vouched resolution of a detected contradiction: mark the stale memory as
+        superseded_by the current one. After this, _memory_filters excludes the stale memory from
+        ALL retrieval, so agents only ever see the current fact. Never auto-called; never rewrites
+        content — it only records which memory won."""
+        stale_id = str(stale_id or "").strip()
+        current_id = str(current_id or "").strip()
+        if not stale_id or not current_id or stale_id == current_id:
+            return False
+        timestamp = now_iso()
+        with connect(self.db_path) as conn:
+            valid = {
+                row["id"]
+                for row in conn.execute(
+                    "SELECT id FROM memories WHERE user_id = ? AND id IN (?, ?)",
+                    (user_id, stale_id, current_id),
+                ).fetchall()
+            }
+            if stale_id not in valid or current_id not in valid:
+                return False
+            conn.execute(
+                "UPDATE memories SET superseded_by = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (current_id, timestamp, user_id, stale_id),
+            )
+            self._event(
+                conn,
+                user_id,
+                "memory",
+                "memory",
+                "conflict_resolved",
+                {"stale_id": stale_id, "current_id": current_id},
+            )
+        self.vault.patch_memory(stale_id, {"superseded_by": current_id, "updated_at": timestamp})
+        return True
+
     def _answer_current_language_score(self, item: dict[str, Any]) -> int:
         text = str(item.get("content") or item.get("summary") or "").casefold()
         score = 0
@@ -11877,6 +11985,9 @@ class CortexStore:
             "source_health": source_health,
             "warnings": warnings,
             "recommendations": recommendations,
+            # Contradictions the memory is holding right now (stale-vs-current), surfaced for a
+            # one-tap resolve so retrieval never hands an agent a fact the user already changed.
+            "conflicts": self.detect_conflicts(user_id),
         }
 
     def product_loop(self, user_id: str) -> dict[str, Any]:

@@ -1687,6 +1687,23 @@ def memory_quality(user_id: str = Depends(auth)) -> dict[str, Any]:
     return store.memory_quality_report(user_id)
 
 
+@app.get("/v1/memory/conflicts", response_model=None)
+def memory_conflicts(user_id: str = Depends(auth)) -> dict[str, Any]:
+    return {"conflicts": store.detect_conflicts(user_id)}
+
+
+@app.post("/v1/memory/conflicts/resolve", response_model=None)
+def resolve_memory_conflict(payload: dict[str, Any], user_id: str = Depends(auth)) -> dict[str, Any]:
+    stale_id = str(payload.get("stale_id") or "").strip()
+    current_id = str(payload.get("current_id") or "").strip()
+    if not stale_id or not current_id:
+        raise HTTPException(status_code=422, detail="stale_id and current_id are required")
+    resolved = store.resolve_conflict(user_id, stale_id=stale_id, current_id=current_id)
+    if not resolved:
+        raise HTTPException(status_code=404, detail="Both memories must exist and differ")
+    return {"resolved": True, "stale_id": stale_id, "current_id": current_id}
+
+
 @app.get("/v1/settings", response_model=SettingsResponse)
 def get_settings(user_id: str = Depends(auth)) -> dict[str, Any]:
     return store.settings(user_id)
