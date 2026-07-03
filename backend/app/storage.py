@@ -9341,6 +9341,13 @@ class CortexStore:
         primary_by_id = {str(item.get("id") or ""): item for item in primary_candidates}
         query_terms = self._lexical_fallback_terms(query, limit=12)
         query_has_layer_intent = bool(query_layer_boosts(query))
+        # Semantic-relevance exemption: with a real embedding model, a paraphrase legitimately has
+        # no keyword overlap with the memory it matches, so the keyword-only relevance check would
+        # wrongly abstain. Exempt candidates that are genuinely close to the query in embedding
+        # space — but RELATIVELY (near the best match) and above a floor, so a thin/irrelevant
+        # corpus (best match still far) keeps abstaining rather than citing a nearest-but-unrelated
+        # neighbour. No-op for the hash provider (keyword plumbing, not semantics).
+        semantic_relevant_ids = self._semantically_relevant_ids(query, primary_candidates)
         primary_source_backed = [
             item
             for item in primary_candidates
@@ -9348,7 +9355,11 @@ class CortexStore:
             and self._primary_citation_is_relevant(
                 item,
                 query_terms,
-                exempt=query_has_layer_intent or str(item.get("id") or "") in person_injected_ids,
+                exempt=(
+                    query_has_layer_intent
+                    or str(item.get("id") or "") in person_injected_ids
+                    or str(item.get("id") or "") in semantic_relevant_ids
+                ),
             )
         ]
         related_source_backed = [
@@ -9760,6 +9771,53 @@ class CortexStore:
         matched = self._item_matched_query_terms(item, terms)
         minimum = 2 if len(terms) <= 4 else max(3, len(terms) // 2)
         return len(matched) >= minimum
+
+    def _semantically_relevant_ids(self, query: str, candidates: list[dict[str, Any]]) -> set[str]:
+        """Ids of candidates genuinely close to the query in embedding space — used to exempt
+        legitimate paraphrase matches (no keyword overlap) from the keyword-only citation check.
+
+        Relative, not absolute: a candidate qualifies only if its cosine similarity is within a
+        factor of the BEST match AND clears a floor, so a thin/irrelevant corpus (best match still
+        far) keeps abstaining rather than citing a nearest-but-unrelated neighbour. No-op for the
+        hash provider (keyword plumbing, not real semantics)."""
+        if embedding_status().get("provider") == "hash":
+            return set()
+        query = (query or "").strip()
+        if not query or not candidates:
+            return set()
+        try:
+            query_vector = embed_text(query)
+        except Exception:
+            return set()
+        query_norm = math.sqrt(sum(value * value for value in query_vector))
+        if not query_norm:
+            return set()
+        floor = 0.30
+        rel_factor = 0.85
+        sims: dict[str, float] = {}
+        for item in candidates:
+            item_id = str(item.get("id") or "")
+            if not item_id:
+                continue
+            text = embedding_source_text(item.get("content"), item.get("summary"))
+            if not text:
+                continue
+            try:
+                item_vector = embed_text(text)
+            except Exception:
+                continue
+            item_norm = math.sqrt(sum(value * value for value in item_vector))
+            if not item_norm:
+                continue
+            dot = sum(a * b for a, b in zip(query_vector, item_vector))
+            sims[item_id] = dot / (query_norm * item_norm)
+        if not sims:
+            return set()
+        best = max(sims.values())
+        if best < floor:
+            return set()
+        threshold = max(floor, best * rel_factor)
+        return {item_id for item_id, sim in sims.items() if sim >= threshold}
 
     def _primary_citation_is_relevant(self, item: dict[str, Any], query_terms: list[str], *, exempt: bool = False) -> bool:
         # Ask must cite or abstain. Primary candidates are the highest-ranked search
