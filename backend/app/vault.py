@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
-from .vault_markdown import atomic_write_text, render_memory_markdown
+from .vault_markdown import atomic_write_text, parse_memory_markdown, render_memory_markdown
 
 
 VAULT_FORMAT = "cortex-local-vault"
@@ -395,13 +395,35 @@ class CortexVault:
         return self._delete_first("imports", import_id)
 
     def delete_memory(self, memory_id: str) -> bool:
-        return self._delete_first("memories", memory_id)
+        removed_json = self._delete_first("memories", memory_id)
+        removed_markdown = self._delete_memory_markdown(memory_id)
+        return removed_json or removed_markdown
 
     def delete_task(self, task_id: str) -> bool:
         return self._delete_first("tasks", task_id)
 
     def delete_edge(self, edge_id: str) -> bool:
         return self._delete_first("graph_edges", edge_id)
+
+    def iter_memory_markdown_records(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        """Read memories back from the human-readable Markdown notes (the Phase-2 source of
+        truth). Lets the SQLite index be fully rebuilt from the files a user owns/edits, so
+        "delete the app database and it comes back from your Markdown" actually holds."""
+        base = self.root / "memories"
+        if not base.exists():
+            return []
+        records: list[dict[str, Any]] = []
+        for path in sorted(base.rglob("*.md")):
+            try:
+                record = parse_memory_markdown(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not record.get("id"):
+                continue
+            if user_id is not None and record.get("user_id") != user_id:
+                continue
+            records.append(record)
+        return records
 
     def iter_records(self, record_dir: str, user_id: str | None = None) -> Iterable[dict[str, Any]]:
         base = self.root / record_dir
@@ -654,6 +676,24 @@ class CortexVault:
                 path.unlink()
                 self._prune_empty_parents(path.parent, base)
                 counts[record_dir] += 1
+                if record_dir == "memories":
+                    self._delete_memory_markdown(str(payload.get("id") or ""))
+
+        # Sweep any of this user's Markdown memory notes that have no JSON pair (e.g. a
+        # Markdown-native/edited memory), so "delete my data" leaves no readable memory behind.
+        memories_base = self.root / "memories"
+        if memories_base.exists():
+            for path in sorted(memories_base.rglob("*.md")):
+                try:
+                    record = parse_memory_markdown(path.read_text(encoding="utf-8"))
+                except Exception:
+                    record = {}
+                if record.get("user_id") == user_id:
+                    try:
+                        path.unlink()
+                        self._prune_empty_parents(path.parent, memories_base)
+                    except OSError:
+                        pass
 
         # Only delete THIS user's attachments. Every other record type above filters by
         # user_id; attachments must be scoped the same way (attachments/<user_id>/...) so a
@@ -895,7 +935,28 @@ class CortexVault:
             path.unlink()
             self._prune_empty_parents(path.parent, base)
             deleted += 1
+        # Keep the human-readable Markdown notes in lockstep with deletions so a tombstoned or
+        # purged memory can never resurrect on the next Markdown-sourced rebuild.
+        if record_dir == "memories":
+            for record_id in deleted_ids:
+                self._delete_memory_markdown(record_id)
         return deleted, deleted_ids
+
+    def _delete_memory_markdown(self, memory_id: str) -> bool:
+        if not memory_id:
+            return False
+        base = self.root / "memories"
+        if not base.exists():
+            return False
+        removed = False
+        for path in base.rglob(f"{safe_segment(memory_id)}.md"):
+            try:
+                path.unlink()
+                self._prune_empty_parents(path.parent, base)
+                removed = True
+            except OSError:
+                pass
+        return removed
 
     def _delete_graph_edges_for_ids(self, user_id: str, object_ids: list[str]) -> int:
         ids = {value for value in object_ids if value}

@@ -13160,7 +13160,10 @@ class CortexStore:
         sync_devices = list(self.vault.iter_records("sync_devices", user_id))
         sync_receipts = list(self.vault.iter_records("sync_receipts", user_id))
         captures = list(self.vault.iter_records("captures", user_id))
-        memories = list(self.vault.iter_records("memories", user_id))
+        # Phase 2: the human-readable Markdown notes are the memory source of truth. Rebuild
+        # from them when present so the SQLite index is fully reconstructable from the files the
+        # user owns/edits; fall back to the legacy JSON records for pre-Markdown vaults.
+        memories = self.vault.iter_memory_markdown_records(user_id) or list(self.vault.iter_records("memories", user_id))
         tasks = list(self.vault.iter_records("tasks", user_id))
         entities = list(self.vault.iter_records("entities", user_id))
         edges = list(self.vault.iter_records("graph_edges", user_id))
