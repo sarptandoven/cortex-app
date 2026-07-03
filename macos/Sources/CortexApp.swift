@@ -2357,6 +2357,14 @@ final class BackendSupervisor {
         environment["CORTEX_MCP_API_KEY"] = normalizedMCPAPIKey
         environment["CORTEX_MCP_API_KEY_SCOPES"] = "read,write,export,maintenance"
         environment["CORTEX_PUBLIC_BASE_URL"] = "http://127.0.0.1:8766"
+        // Turn on real on-device semantic embeddings when the local model is bundled (offline, no
+        // API key). If it's absent for any reason, leave the provider unset so the backend uses its
+        // deterministic hash fallback rather than attempting a network download.
+        let model2vecURL = resources.appendingPathComponent("model2vec", isDirectory: true)
+        if FileManager.default.fileExists(atPath: model2vecURL.appendingPathComponent("config.json").path) {
+            environment["CORTEX_EMBEDDING_PROVIDER"] = "model2vec"
+            environment["CORTEX_MODEL2VEC_PATH"] = model2vecURL.path
+        }
         if let googleClientID = Bundle.main.object(forInfoDictionaryKey: "CortexGoogleOAuthClientID") as? String {
             let trimmedGoogleClientID = googleClientID.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmedGoogleClientID.isEmpty {

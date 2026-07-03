@@ -110,6 +110,18 @@ if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON"
       -r "$ROOT/../backend/runtime-requirements.txt"
     find "$PY_RUNTIME_DEPS" -type d -name "__pycache__" -prune -exec rm -rf {} +
     find "$PY_RUNTIME_DEPS" -type f -name "*.pyc" -delete
+    # Bundle the local embedding model (~8MB) so semantics work fully offline with no API key and
+    # no first-run network download. Non-fatal: if bundling fails, the app leaves the provider
+    # unset and the backend uses its deterministic hash fallback.
+    CORTEX_MODEL2VEC_MODEL="${CORTEX_MODEL2VEC_MODEL:-minishlab/potion-base-8M}"
+    if PYTHONPATH="$PY_RUNTIME_DEPS" "$PYTHON_FRAMEWORK_SOURCE/bin/python3.12" -c \
+        "import sys; from model2vec import StaticModel; StaticModel.from_pretrained('$CORTEX_MODEL2VEC_MODEL').save_pretrained('$RES/model2vec')" ; then
+      find "$RES/model2vec" -type d -name "__pycache__" -prune -exec rm -rf {} + 2>/dev/null || true
+      echo "Bundled local embedding model into $RES/model2vec"
+    else
+      echo "warning: local embedding model not bundled ($CORTEX_MODEL2VEC_MODEL); backend will use the hash fallback"
+      rm -rf "$RES/model2vec"
+    fi
   fi
 fi
 
