@@ -160,6 +160,7 @@ struct ReviewSourceHealthStrip: View {
                     .frame(width: 28, height: 28)
                     .background(statusColor.opacity(0.11))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
@@ -172,6 +173,7 @@ struct ReviewSourceHealthStrip: View {
 
                 Spacer(minLength: 0)
             }
+            .accessibilityElement(children: .combine)
 
             HStack(spacing: 8) {
                 ReviewHealthMetric(
@@ -244,6 +246,7 @@ struct ReviewHealthMetric: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .frame(width: 18)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
                     .font(.caption2)
@@ -261,6 +264,8 @@ struct ReviewHealthMetric: View {
         .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title): \(value)")
     }
 }
 
@@ -278,6 +283,8 @@ struct ReviewSourceHealthChip: View {
             .background(Color(nsColor: .controlBackgroundColor))
             .clipShape(Capsule())
             .help(helpText)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(helpText)
     }
 
     private var label: String {
@@ -314,12 +321,17 @@ struct ReviewPendingBadge: View {
         .padding(.vertical, 9)
         .background(CortexDesign.panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(count) pending review item\(count == 1 ? "" : "s")")
     }
 }
 
 struct ReviewInboxSection: View {
     @ObservedObject var state: AppState
     let captures: [CaptureItem]
+
+    private static let pageSize = 10
+    @State private var visibleLimit = ReviewInboxSection.pageSize
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -352,13 +364,24 @@ struct ReviewInboxSection: View {
                             archive: { state.archiveCapture(capture) }
                         )
                     }
+
+                    if captures.count > visibleCount {
+                        Button {
+                            visibleLimit += Self.pageSize
+                        } label: {
+                            Label("Show more (\(captures.count - visibleCount) remaining)", systemImage: "chevron.down")
+                                .frame(maxWidth: .infinity, minHeight: 46)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                    }
                 }
             }
         }
     }
 
     private var visibleCaptures: [CaptureItem] {
-        Array(captures.prefix(10))
+        Array(captures.prefix(visibleLimit))
     }
 
     private var visibleCount: Int {
@@ -554,6 +577,7 @@ struct ReviewQueueCaptureCard: View {
     var actionError: String? = nil
     let approve: () -> Void
     let archive: () -> Void
+    @State private var confirmArchive = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -598,7 +622,7 @@ struct ReviewQueueCaptureCard: View {
                 }
                 Spacer()
                 Button {
-                    archive()
+                    confirmArchive = true
                 } label: {
                     Label("Archive", systemImage: "archivebox")
                         .frame(minWidth: 132, minHeight: 48)
@@ -606,6 +630,18 @@ struct ReviewQueueCaptureCard: View {
                 .controlSize(.large)
                 .buttonStyle(.bordered)
                 .disabled(isInFlight)
+                .confirmationDialog(
+                    "Archive this review item?",
+                    isPresented: $confirmArchive,
+                    titleVisibility: .visible
+                ) {
+                    Button("Archive", role: .destructive) {
+                        archive()
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Cortex will not remember this item, and archiving cannot be undone from here. To keep it, choose Approve instead.")
+                }
                 Button {
                     approve()
                 } label: {

@@ -3701,6 +3701,30 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Disconnects the primary notes folder. This is non-destructive: already
+    /// synced local memory is kept and stays available to Ask. It only stops
+    /// future automatic syncing by forgetting the stored folder and disconnecting
+    /// the backend source account, so you can reconnect later.
+    func disconnectObsidianNotes() {
+        obsidianVaultPath = ""
+        UserDefaults.standard.removeObject(forKey: Self.obsidianVaultPathDefaultsKey)
+        UserDefaults.standard.removeObject(forKey: Self.obsidianVaultBookmarkDefaultsKey)
+        Task {
+            if let account = knownSourceAccounts.first(where: { $0.source == "obsidian" && $0.disconnected_at == nil }) {
+                do {
+                    let accountID = account.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? account.id
+                    _ = try await request(path: "/v1/source-accounts/\(accountID)/disconnect", method: "POST")
+                } catch {
+                    // Folder is already forgotten locally; surface the backend issue
+                    // but keep the disconnect in effect.
+                    status = CortexRecoveryText.failureStatus("Disconnect notes", error: error)
+                }
+            }
+            await loadSourceConnectivity()
+            status = "Notes disconnected. Already synced memory is kept."
+        }
+    }
+
     func connectCalendarFile(_ connector: SourceConnectorCatalogItem) {
         guard connector.id == "calendar" else { return }
         let panel = NSOpenPanel()

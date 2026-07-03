@@ -52,6 +52,7 @@ struct ConnectionsPrivacySheet: View {
             }
             .buttonStyle(.borderless)
             .help("Close")
+            .accessibilityLabel("Close Connections & Privacy")
         }
         .padding(20)
         .background(connectionsSheetBackground)
@@ -125,10 +126,16 @@ private struct ConnectionsPrivacyOverview: View {
                         connectedNow
                         advancedControls(summary: summary)
                     } else {
-                        QuietState(
+                        ConnectionsRetryState(
+                            state: state,
                             title: "Preparing privacy controls",
-                            detail: CortexRecoveryText.needsAttention(state.displayStatus) ? state.displayStatus : "Cortex is reading local privacy settings and connection history."
-                        )
+                            detail: "Cortex is reading local privacy settings and connection history."
+                        ) {
+                            Task {
+                                await state.loadTrust()
+                                await state.loadSourceConnectivity()
+                            }
+                        }
                     }
                 }
             }
@@ -518,7 +525,13 @@ private struct ConnectionsObsidianSection: View {
             )
 
             if state.sourceConnectorCatalog.isEmpty {
-                QuietState(title: "Checking notes connection", detail: "Cortex is checking available local notes.")
+                ConnectionsRetryState(
+                    state: state,
+                    title: "Checking notes connection",
+                    detail: "Cortex is checking available local notes."
+                ) {
+                    Task { await state.loadSourceConnectivity() }
+                }
             } else if let connector = obsidianConnector {
                 SourceConnectorStatusCard(
                     state: state,
@@ -605,7 +618,13 @@ private struct ConnectionsDirectSourcesSection: View {
             )
 
             if state.sourceConnectorCatalog.isEmpty {
-                QuietState(title: "Checking connections", detail: "Cortex is loading available read-only connections.")
+                ConnectionsRetryState(
+                    state: state,
+                    title: "Checking connections",
+                    detail: "Cortex is loading available read-only connections."
+                ) {
+                    Task { await state.loadSourceConnectivity() }
+                }
             } else if wiredConnectors.isEmpty {
                 QuietState(title: "No extra connectors ready", detail: "Use notes sync as the default source path.")
             } else {
@@ -648,6 +667,7 @@ private struct ConnectionsDirectSourceRow: View {
     let connector: SourceConnectorCatalogItem
     let connected: Bool
     let openTokenSetup: () -> Void
+    @State private var confirmRemove = false
 
     private var isSyncing: Bool {
         state.connectorSyncingIDs.contains(connector.id)
@@ -696,6 +716,23 @@ private struct ConnectionsDirectSourceRow: View {
         state.hasStoredDirectConnectorConfig(connector)
     }
 
+    private var connectorSourceIDs: Set<String> {
+        var ids: Set<String> = [connector.id]
+        (connector.source_ids ?? []).forEach { ids.insert($0) }
+        return ids
+    }
+
+    // A deletable import belonging to this connector, if any. Removing it clears
+    // the captures and memories that import produced.
+    private var removableImport: SourceImportHistoryItem? {
+        state.importHistory.first { item in
+            item.can_delete
+                && item.deleted_at == nil
+                && (connectorSourceIDs.contains(item.source_hint)
+                    || item.sources.contains { connectorSourceIDs.contains($0.source) })
+        }
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
             ZStack {
@@ -738,21 +775,35 @@ private struct ConnectionsDirectSourceRow: View {
 
             Spacer(minLength: 12)
 
-            Button {
-                runAction()
-            } label: {
-                if isSyncing || isOAuthStarting {
-                    ProgressView()
-                        .scaleEffect(0.78)
-                        .frame(minWidth: 126, minHeight: 46)
-                } else {
-                    Label(actionTitle, systemImage: actionIcon)
-                        .frame(minWidth: 126, minHeight: 46)
+            if hasManagedOAuth && !managedOAuthConfigured {
+                // Unconfigured connector: show a status badge, not a dead button.
+                Label("Setup required", systemImage: "key.slash")
+                    .font(.callout)
+                    .fontWeight(.medium)
+                    .foregroundColor(.secondary)
+                    .frame(minWidth: 126, minHeight: 46)
+                    .padding(.horizontal, 12)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .help(state.managedOAuthConfigurationMessage(connector) ?? "\(connector.name) sign-in is not configured for this build yet.")
+                    .accessibilityLabel("\(connector.name): setup required, not available in this build")
+            } else {
+                Button {
+                    runAction()
+                } label: {
+                    if isSyncing || isOAuthStarting {
+                        ProgressView()
+                            .scaleEffect(0.78)
+                            .frame(minWidth: 126, minHeight: 46)
+                    } else {
+                        Label(actionTitle, systemImage: actionIcon)
+                            .frame(minWidth: 126, minHeight: 46)
+                    }
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(state.isBusy || isSyncing || isOAuthStarting)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-            .disabled(state.isBusy || isSyncing || isOAuthStarting || !managedOAuthConfigured)
 
             if !isPaused && (activeAccount != nil || hasStoredConfig) {
                 Button {
@@ -765,6 +816,30 @@ private struct ConnectionsDirectSourceRow: View {
                 .foregroundColor(.secondary)
                 .help("Pause automatic sync. Already synced local memory and the saved connection are kept, so you can resume without reconnecting.")
                 .disabled(state.isBusy || isSyncing || isOAuthStarting)
+            }
+
+            if let removableImport {
+                Button(role: .destructive) {
+                    confirmRemove = true
+                } label: {
+                    Label("Remove", systemImage: "trash")
+                        .frame(minWidth: 104, minHeight: 42)
+                }
+                .buttonStyle(.bordered)
+                .help("Disconnect this source and remove the memory it synced.")
+                .disabled(state.isBusy || isSyncing || isOAuthStarting)
+                .confirmationDialog(
+                    "Remove \(connector.name) connection?",
+                    isPresented: $confirmRemove,
+                    titleVisibility: .visible
+                ) {
+                    Button("Remove connection", role: .destructive) {
+                        state.deleteImport(removableImport)
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This removes the review items and memory Cortex synced from \(connector.name). Approved memory from this connection is deleted and can only be recovered from a backup. To stop syncing while keeping memory, use Pause instead.")
+                }
             }
         }
         .padding(14)
@@ -1046,6 +1121,8 @@ private struct ConnectorTokenSetupSheet: View {
                         .frame(width: 38, height: 38)
                 }
                 .buttonStyle(.borderless)
+                .help("Close")
+                .accessibilityLabel("Close \(connector.name) setup")
             }
             .padding(20)
 
@@ -2021,6 +2098,59 @@ private struct ConnectionsDisclosureLabel: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
+        }
+    }
+}
+
+/// A loading/retry placeholder for the Connections sheet. It shows the normal
+/// "Checking…" copy, but surfaces the backend error and a Retry button when the
+/// local service has clearly failed, so a crashed backend can be distinguished
+/// from ordinary loading instead of spinning indefinitely.
+private struct ConnectionsRetryState: View {
+    @ObservedObject var state: AppState
+    let title: String
+    let detail: String
+    let retry: () -> Void
+
+    @State private var isRetrying = false
+
+    private var backendFailed: Bool {
+        state.backendNeedsRecovery || CortexRecoveryText.needsAttention(state.displayStatus)
+    }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            QuietState(
+                title: backendFailed ? "Connections unavailable" : title,
+                detail: backendFailed ? state.displayStatus : detail
+            )
+            retryButton
+        }
+    }
+
+    @ViewBuilder
+    private var retryButton: some View {
+        let label = Label(isRetrying ? "Checking…" : "Retry", systemImage: "arrow.clockwise")
+            .frame(minWidth: 132, minHeight: 44)
+        if backendFailed {
+            Button(action: runRetry) { label }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(isRetrying)
+        } else {
+            Button(action: runRetry) { label }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(isRetrying)
+        }
+    }
+
+    private func runRetry() {
+        isRetrying = true
+        retry()
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            isRetrying = false
         }
     }
 }

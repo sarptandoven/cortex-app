@@ -47,6 +47,7 @@ struct OnboardingView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Finish later")
+                .accessibilityLabel("Finish setup later")
             }
 
             HStack(spacing: 6) {

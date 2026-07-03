@@ -7,6 +7,7 @@ struct SourceConnectorStatusCard: View {
     var needsContent: Bool = false
     var needsAttention: Bool = false
     var attentionDetail: String? = nil
+    @State private var confirmDisconnect = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -57,6 +58,28 @@ struct SourceConnectorStatusCard: View {
                         }
                         .controlSize(.large)
                         .disabled(state.isBusy)
+
+                        Button(role: .destructive) {
+                            confirmDisconnect = true
+                        } label: {
+                            Label("Disconnect", systemImage: "xmark.circle")
+                                .frame(minHeight: 46)
+                        }
+                        .controlSize(.large)
+                        .disabled(state.isBusy)
+                        .help("Stop syncing this notes folder. Already synced memory is kept.")
+                        .confirmationDialog(
+                            "Disconnect notes folder?",
+                            isPresented: $confirmDisconnect,
+                            titleVisibility: .visible
+                        ) {
+                            Button("Disconnect notes", role: .destructive) {
+                                state.disconnectObsidianNotes()
+                            }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("Cortex stops syncing this folder. Memory already synced and reviewed is kept and stays available to Ask. You can reconnect a folder later.")
+                        }
                     }
                 }
             } else {
