@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
+from .vault_markdown import atomic_write_text, render_memory_markdown
+
 
 VAULT_FORMAT = "cortex-local-vault"
 VAULT_VERSION = 1
@@ -59,6 +61,10 @@ class CortexVault:
     def __init__(self, root: Path, index_path: Path):
         self.root = Path(root).expanduser()
         self.index_path = Path(index_path).expanduser()
+        # Phase 1: also mirror each memory as a human-readable Markdown note (frontmatter+body)
+        # so the vault opens in Obsidian and is owned/portable. Additive — the JSON records
+        # remain the source of truth for now; a Markdown write never breaks the JSON write.
+        self.markdown_mirror = True
 
     @property
     def manifest_path(self) -> Path:
@@ -292,7 +298,26 @@ class CortexVault:
     def write_memory(self, record: dict[str, Any]) -> Path:
         kind = safe_segment(record.get("kind"), "memory")
         path = self.root / "memories" / kind / f"{safe_segment(record.get('id'), 'memory')}.json"
-        return self._write_record(path, "memory", record)
+        written = self._write_record(path, "memory", record)
+        self._write_memory_markdown(record)
+        return written
+
+    def memory_markdown_path(self, record: dict[str, Any]) -> Path:
+        """Human-readable note path: memories/<layer>/<id>.md (layer reads better than kind
+        for a person browsing their vault in Obsidian; id keeps it stable across edits)."""
+        layer = safe_segment(record.get("layer") or record.get("kind"), "memory")
+        memory_id = safe_segment(record.get("id"), "memory")
+        return self.root / "memories" / layer / f"{memory_id}.md"
+
+    def _write_memory_markdown(self, record: dict[str, Any]) -> None:
+        if not self.markdown_mirror:
+            return
+        try:
+            atomic_write_text(self.memory_markdown_path(record), render_memory_markdown(record))
+        except Exception:
+            # Additive mirror in Phase 1: never let a Markdown write failure break the
+            # authoritative JSON record write above.
+            pass
 
     def write_task(self, record: dict[str, Any]) -> Path:
         kind = safe_segment(record.get("kind"), "task")
