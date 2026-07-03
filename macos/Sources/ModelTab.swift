@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct ModelTab: View {
     @ObservedObject var state: AppState
@@ -8,6 +9,11 @@ struct ModelTab: View {
             VStack(alignment: .leading, spacing: 16) {
                 if state.mirrorInsight != nil {
                     MirrorMomentCard(state: state)
+                }
+                if let profile = state.profile, !profile.sections.isEmpty {
+                    ForEach(profile.sections) { section in
+                        ProfileCard(section: section)
+                    }
                 }
                 HomeHeroSection(state: state, review: state.review)
             }
@@ -92,6 +98,166 @@ struct MirrorMomentCard: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Cortex noticed: \(insight.headline)")
         }
+    }
+}
+
+/// One card in the "What Cortex knows about you" Personal Profile stack. Each card is a
+/// single section (how you work, preferences, ...): a confident one-line statement plus a
+/// few quiet grounding rows. Confidence is signalled with a small pill — green "Confident"
+/// for a settled fact, a secondary "Emerging" for a pattern still taking shape. Rows whose
+/// element carries a source_url can be opened. This view assumes the caller only renders it
+/// for non-empty profiles; a section with no statement and no elements shows just its title.
+struct ProfileCard: View {
+    let section: ProfileSection
+
+    /// At most three grounding elements, and only those with something to show.
+    private var visibleElements: [ProfileElement] {
+        Array(section.elements.filter { ($0.text?.isEmpty == false) }.prefix(3))
+    }
+
+    private var confidencePill: some View {
+        CortexStatusPill(
+            label: section.isConfident ? "Confident" : "Emerging",
+            systemImage: section.isConfident ? "checkmark.seal" : "sparkles",
+            color: section.isConfident ? .green : .secondary
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
+            HStack(alignment: .firstTextBaseline, spacing: CortexDesign.Space.sm) {
+                Text(section.title)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(CortexDesign.accent)
+                Spacer(minLength: 0)
+                confidencePill
+                    .accessibilityHidden(true)
+            }
+
+            if let statement = section.statement, !statement.isEmpty {
+                Text(statement)
+                    .font(.system(size: 21, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 620, alignment: .leading)
+            }
+
+            if !visibleElements.isEmpty {
+                VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
+                    ForEach(visibleElements) { element in
+                        ProfileElementRow(element: element)
+                    }
+                }
+            }
+        }
+        .cortexCard()
+        .frame(maxWidth: 620, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var accessibilityLabel: String {
+        let confidence = section.isConfident ? "Confident" : "Emerging"
+        if let statement = section.statement, !statement.isEmpty {
+            return "\(section.title), \(confidence): \(statement)"
+        }
+        return "\(section.title), \(confidence)"
+    }
+}
+
+/// A quiet grounding row under a profile statement: the observed snippet in quotes and a
+/// caption naming the source and how often Cortex saw it. When the element carries a
+/// source_url, the whole row becomes a button that opens it.
+private struct ProfileElementRow: View {
+    let element: ProfileElement
+
+    /// "From your calendar · seen 6 times" — degrades gracefully when parts are missing.
+    private var sourceCaption: String? {
+        var parts: [String] = []
+        if let source = element.source, !source.isEmpty {
+            parts.append("From your \(source)")
+        }
+        if let count = element.count, count > 0 {
+            parts.append("seen \(count) time\(count == 1 ? "" : "s")")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private var openableURL: URL? {
+        ProfileElementRow.resolveURL(element.sourceURL)
+    }
+
+    var body: some View {
+        if let url = openableURL {
+            Button {
+                NSWorkspace.shared.open(url)
+            } label: {
+                rowContent
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityHint("Opens the source")
+        } else {
+            rowContent
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(accessibilityLabel)
+        }
+    }
+
+    private var rowContent: some View {
+        VStack(alignment: .leading, spacing: CortexDesign.Space.xs) {
+            if let text = element.text, !text.isEmpty {
+                Text("\u{201C}\(text)\u{201D}")
+                    .font(.callout)
+                    .foregroundColor(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if let sourceCaption {
+                Text(sourceCaption)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.vertical, CortexDesign.Space.xs)
+        .padding(.horizontal, CortexDesign.Space.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(CortexDesign.quietBackground)
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous))
+        .contentShape(Rectangle())
+    }
+
+    private var accessibilityLabel: String {
+        var parts: [String] = []
+        if let text = element.text, !text.isEmpty { parts.append(text) }
+        if let sourceCaption { parts.append(sourceCaption) }
+        return parts.isEmpty ? "Profile detail" : parts.joined(separator: ". ")
+    }
+
+    /// Turns a backend `source_url` into an openable URL. Handles Cortex's custom
+    /// `local-file://` scheme (a local path), plus ordinary `file://` and web URLs.
+    /// Returns nil for empty or unusable values so the row stays non-interactive.
+    static func resolveURL(_ raw: String?) -> URL? {
+        guard let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        let localPrefix = "local-file://"
+        if value.hasPrefix(localPrefix) {
+            var path = String(value.dropFirst(localPrefix.count))
+            if let hashIndex = path.firstIndex(of: "#") {
+                path = String(path[..<hashIndex])
+            }
+            if let queryIndex = path.firstIndex(of: "?") {
+                path = String(path[..<queryIndex])
+            }
+            let decoded = path.removingPercentEncoding ?? path
+            let trimmed = decoded.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : URL(fileURLWithPath: trimmed)
+        }
+        return URL(string: value)
     }
 }
 

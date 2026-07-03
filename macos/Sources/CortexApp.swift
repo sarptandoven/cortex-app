@@ -1047,6 +1047,99 @@ struct MirrorEvidence: Codable, Equatable {
     let example: String?
 }
 
+/// "What Cortex knows about you" — the Personal Profile. A condensed, human portrait
+/// grouped into a handful of sections (how you work, preferences, dislikes, ...), each
+/// with a one-line statement and a few grounding elements. See GET /v1/profile. Every
+/// field beyond the section identity is optional-tolerant so a partial backend response
+/// never blanks the card; a missing/empty `sections` means "abstain" (render nothing).
+struct ProfileResponse: Codable {
+    let generatedAt: String?
+    let readiness: Int?
+    let condensed: Bool?
+    let sections: [ProfileSection]
+    let limitations: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case generatedAt = "generated_at"
+        case readiness
+        case condensed
+        case sections
+        case limitations
+    }
+
+    /// Decodes defensively: if the backend omits `sections` entirely (or sends null),
+    /// treat it as an empty profile rather than failing the whole decode.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        generatedAt = try container.decodeIfPresent(String.self, forKey: .generatedAt)
+        readiness = try container.decodeIfPresent(Int.self, forKey: .readiness)
+        condensed = try container.decodeIfPresent(Bool.self, forKey: .condensed)
+        sections = (try container.decodeIfPresent([ProfileSection].self, forKey: .sections)) ?? []
+        limitations = try container.decodeIfPresent([String].self, forKey: .limitations)
+    }
+}
+
+struct ProfileSection: Codable, Identifiable, Equatable {
+    let id: String
+    let title: String
+    let statement: String?
+    let method: String?
+    let confidence: String?
+    let elements: [ProfileElement]
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case statement
+        case method
+        case confidence
+        case elements
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        statement = try container.decodeIfPresent(String.self, forKey: .statement)
+        method = try container.decodeIfPresent(String.self, forKey: .method)
+        confidence = try container.decodeIfPresent(String.self, forKey: .confidence)
+        elements = (try container.decodeIfPresent([ProfileElement].self, forKey: .elements)) ?? []
+    }
+
+    /// True when the backend is confident enough to present this as settled fact,
+    /// versus an emerging pattern still taking shape.
+    var isConfident: Bool { (confidence ?? "").lowercased() == "high" }
+}
+
+struct ProfileElement: Codable, Equatable, Identifiable {
+    let text: String?
+    let source: String?
+    let count: Int?
+    let memoryIds: [String]?
+    let sourceURL: String?
+
+    // Stable-enough identity for ForEach; elements within a section are shown in order
+    // and never mutated, so index-free identity from the content is sufficient.
+    var id: String { "\(text ?? "")|\(source ?? "")|\(sourceURL ?? "")" }
+
+    enum CodingKeys: String, CodingKey {
+        case text
+        case source
+        case count
+        case memoryIds = "memory_ids"
+        case sourceURL = "source_url"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        text = try container.decodeIfPresent(String.self, forKey: .text)
+        source = try container.decodeIfPresent(String.self, forKey: .source)
+        count = try container.decodeIfPresent(Int.self, forKey: .count)
+        memoryIds = try container.decodeIfPresent([String].self, forKey: .memoryIds)
+        sourceURL = try container.decodeIfPresent(String.self, forKey: .sourceURL)
+    }
+}
+
 struct MemoryQualityResponse: Codable {
     let generated_at: String
     let score: Int
@@ -2682,6 +2775,7 @@ final class AppState: ObservableObject {
     @Published private var mirrorDismissedHeadlines: Set<String> = Set(
         UserDefaults.standard.stringArray(forKey: AppState.mirrorDismissedDefaultsKey) ?? []
     )
+    @Published var profile: ProfileResponse?
     @Published var memoryQuality: MemoryQualityResponse?
     @Published var review: DailyReviewResponse?
     @Published var productLoop: ProductLoopResponse?
@@ -3079,6 +3173,7 @@ final class AppState: ObservableObject {
         await loadDiagnostics()
         await loadReliability()
         await loadMirrorInsight()
+        await loadProfile()
         refreshStoredConnectorConfigState()
         refreshIntegrationStates()
         startConnectedSourceAutoSync()
@@ -3278,6 +3373,7 @@ final class AppState: ObservableObject {
         await loadReliability()
         await loadTrust()
         await loadMirrorInsight()
+        await loadProfile()
     }
 
     func loadInbox() async {
@@ -3407,6 +3503,20 @@ final class AppState: ObservableObject {
         } catch {
             // Silent by design — the Mirror Moment is a bonus surface, never a failure point.
             mirrorInsight = nil
+        }
+    }
+
+    /// Fetches the Personal Profile — "What Cortex knows about you" (GET /v1/profile). Like
+    /// the Mirror Moment, this is a bonus surface: it degrades silently on any failure
+    /// (offline backend, decode error, HTTP status) by leaving `profile` nil, and never
+    /// surfaces an error status. The profile view abstains when there are no sections, so
+    /// a nil or empty result simply renders nothing.
+    func loadProfile() async {
+        do {
+            let data = try await request(path: "/v1/profile", method: "GET")
+            profile = try JSONDecoder().decode(ProfileResponse.self, from: data)
+        } catch {
+            profile = nil
         }
     }
 
@@ -5279,6 +5389,7 @@ final class AppState: ObservableObject {
                 await loadReliability()
                 await loadTrust()
                 await loadMirrorInsight()
+                await loadProfile()
             } catch {
                 captureActionErrors[capture.id] = CortexRecoveryText.failureStatus("Approve", error: error)
                 status = CortexRecoveryText.failureStatus("Approve", error: error)
@@ -5332,6 +5443,7 @@ final class AppState: ObservableObject {
                 await loadReliability()
                 await loadTrust()
                 await loadMirrorInsight()
+                await loadProfile()
             } catch {
                 status = CortexRecoveryText.failureStatus("Batch approve", error: error)
             }
