@@ -10338,7 +10338,115 @@ class CortexStore:
         nodes, edges = self.build_entity_graph(user_id, include_pending=include_pending, sector=sector)
         analysis = analyze_entity_graph(nodes, edges)
         analysis["nodes"] = {node["id"]: node for node in nodes}
+        analysis["edges"] = edges
         return analysis
+
+    def entity_neighborhood(self, user_id: str, name_or_id: str, *, limit: int = 8) -> dict[str, Any] | None:
+        """The connected subgraph around one entity — "the web around this person/project/topic" —
+        so a model retrieves the whole neighborhood in ONE call instead of stitching flat searches.
+        Returns the focal entity (label, kind, centrality, community) and its ranked connections,
+        each an actual graph edge made concrete: the connected entity + how strongly they co-occur +
+        the CITED memories that link them. Deterministic, current-truth (superseded/pending never
+        shape the graph). None when the entity isn't in the graph (abstain)."""
+        target = str(name_or_id or "").strip()
+        if not target:
+            return None
+        analysis = self.entity_graph_analysis(user_id)
+        nodes = analysis.get("nodes") or {}
+        if not nodes:
+            return None
+        target_lower = target.lower()
+        focal_id = target if target in nodes else None
+        if focal_id is None:
+            for node_id, node in nodes.items():
+                if str(node.get("label") or "").strip().lower() == target_lower:
+                    focal_id = node_id
+                    break
+        if focal_id is None:
+            return None
+        centrality = analysis.get("centrality") or {}
+        community = analysis.get("community") or {}
+        # Collect incident edges (undirected), summing duplicate weights, keeping the strongest
+        # relation label seen for the pair.
+        neighbor_weight: dict[str, float] = {}
+        neighbor_relation: dict[str, str] = {}
+        for edge in analysis.get("edges") or []:
+            src, tgt = str(edge.get("source") or ""), str(edge.get("target") or "")
+            other = tgt if src == focal_id else (src if tgt == focal_id else "")
+            if not other or other not in nodes:
+                continue
+            neighbor_weight[other] = neighbor_weight.get(other, 0.0) + float(edge.get("weight") or 0.0)
+            neighbor_relation.setdefault(other, str(edge.get("relation") or "related"))
+        # Rank neighbors by connection strength, then their own centrality, then id (deterministic).
+        ranked = sorted(
+            neighbor_weight,
+            key=lambda nid: (-round(neighbor_weight[nid], 6), -round(float(centrality.get(nid, 0.0)), 6), nid),
+        )[: max(1, int(limit))]
+        connections: list[dict[str, Any]] = []
+        for nid in ranked:
+            node = nodes.get(nid) or {}
+            evidence = self._entity_edge_evidence(user_id, focal_id, nid, limit=3)
+            connections.append(
+                {
+                    "entity_id": nid,
+                    "label": node.get("label"),
+                    "kind": node.get("kind"),
+                    "weight": neighbor_weight[nid],
+                    "relation": neighbor_relation.get(nid, "related"),
+                    "centrality": round(float(centrality.get(nid, 0.0)), 6),
+                    "shared_memory_ids": [item["memory_id"] for item in evidence],
+                    "example": evidence[0]["text"] if evidence else "",
+                }
+            )
+        focal = nodes.get(focal_id) or {}
+        community_id = community.get(focal_id)
+        peers = [
+            str((nodes.get(peer) or {}).get("label") or "")
+            for peer in (analysis.get("communities") or {}).get(community_id, [])
+            if peer != focal_id and (nodes.get(peer) or {}).get("label")
+        ]
+        return {
+            "focal": {
+                "entity_id": focal_id,
+                "label": focal.get("label"),
+                "kind": focal.get("kind"),
+                "centrality": round(float(centrality.get(focal_id, 0.0)), 6),
+                "community": community_id,
+                "supporting_memories": int(focal.get("weight") or 0),
+            },
+            "connections": connections,
+            "community_peers": peers[:8],
+        }
+
+    def _entity_edge_evidence(self, user_id: str, entity_a: str, entity_b: str, *, limit: int = 3) -> list[dict[str, Any]]:
+        """Current-truth memories that mention BOTH entities — the citation behind a graph edge."""
+        with connect(self.db_path) as conn:
+            user_settings = {**self._settings(conn, user_id), "allow_pending_in_context": False}
+            filters, params = self._memory_filters(user_id, user_settings, alias="m")
+            memory_filter = " AND ".join(filters)
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT m.id AS id, m.summary AS summary, m.content AS content,
+                       m.source AS source, m.source_url AS source_url
+                FROM memory_entities me1
+                JOIN memory_entities me2
+                  ON me2.memory_id = me1.memory_id AND me2.user_id = me1.user_id
+                JOIN memories m ON m.id = me1.memory_id AND m.user_id = me1.user_id AND {memory_filter}
+                WHERE me1.user_id = ? AND me1.entity_id = ? AND me2.entity_id = ?
+                ORDER BY m.id
+                LIMIT ?
+                """,
+                [*params, user_id, entity_a, entity_b, max(1, int(limit))],
+            ).fetchall()
+        return [
+            {
+                "memory_id": str(row["id"]),
+                "text": str(row["summary"] or row["content"] or "")[:200],
+                "source": row["source"],
+                "source_url": row["source_url"],
+            }
+            for row in rows
+        ]
 
     def about_person(self, user_id: str, name: str, limit: int = 12) -> list[dict[str, Any]]:
         slug = "person_" + "".join(ch.lower() if ch.isalnum() else "-" for ch in name).strip("-")
@@ -10445,6 +10553,13 @@ class CortexStore:
                     "decision_count": len(decisions),
                 },
             )
+        # The web around this person: connected people/projects from the knowledge graph, each a
+        # cited edge — so a model gets the whole neighborhood, not just this person's memories.
+        connections: list[dict[str, Any]] = []
+        if entity:
+            neighborhood = self.entity_neighborhood(user_id, entity["id"], limit=limit)
+            if neighborhood:
+                connections = neighborhood.get("connections") or []
         payload = {
             "person": {
                 "id": entity["id"] if entity else None,
@@ -10458,6 +10573,7 @@ class CortexStore:
             "decisions": cited_decisions,
             "recent_context": cited_context,
             "top_topics": top_topics,
+            "connections": connections,
         }
         return self._shared_payload(payload, redact_sensitive=redact_sensitive)
 

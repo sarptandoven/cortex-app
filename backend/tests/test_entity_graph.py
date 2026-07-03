@@ -93,6 +93,28 @@ class EntityGraphStoreTests(unittest.TestCase):
         texts = " ".join(el["text"] for el in people["elements"])
         self.assertNotIn("Bob", texts)
 
+    def test_entity_neighborhood_returns_cited_connected_subgraph(self) -> None:
+        self._seed_graph()  # Alice-Zephyr x2, Alice-Bob x1
+        hood = self.store.entity_neighborhood(self.user_id, "Alice")
+        self.assertIsNotNone(hood)
+        self.assertEqual(hood["focal"]["label"], "Alice")
+        labels = [c["label"] for c in hood["connections"]]
+        self.assertIn("Project Zephyr", labels)
+        self.assertIn("Bob", labels)
+        # Strongest connection first (Zephyr, 2 shared memories > Bob, 1), each cited.
+        self.assertEqual(hood["connections"][0]["label"], "Project Zephyr")
+        for connection in hood["connections"]:
+            self.assertTrue(connection["shared_memory_ids"], connection)
+        # Resolves by id too, and abstains on an unknown entity.
+        self.assertIsNotNone(self.store.entity_neighborhood(self.user_id, "ent_alice"))
+        self.assertIsNone(self.store.entity_neighborhood(self.user_id, "Nonexistent Person"))
+
+    def test_relationship_context_includes_connections(self) -> None:
+        self._seed_graph()
+        ctx = self.store.person_context(self.user_id, "Alice")
+        self.assertIn("connections", ctx)
+        self.assertTrue(any(c["label"] == "Project Zephyr" for c in ctx["connections"]))
+
     def test_empty_graph_is_safe(self) -> None:
         nodes, edges = self.store.build_entity_graph(self.user_id)
         self.assertEqual(nodes, [])
