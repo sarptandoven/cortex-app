@@ -19,6 +19,7 @@ from urllib.request import Request, urlopen
 from .connectors._redaction import redact_error_message
 from .database import connect, sqlite_vec_status
 from .embeddings import VECTOR_DIMENSIONS, configured_embedding_model, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status
+from .mirror import compute_mirror_insight
 from .extractor import extract_context, now_iso, stable_id
 from .sqlite_runtime import SQLITE_RUNTIME, sqlite3
 from .source_ingest import SourceRecord, analyze_sources, import_source_records_page, supported_sources
@@ -9266,6 +9267,12 @@ class CortexStore:
             "embedding_model": embedding.get("model"),
             "embedding_dimensions": embedding.get("dimensions"),
         }
+
+    def mirror_insight(self, user_id: str) -> dict[str, Any] | None:
+        """The "Mirror Moment": ONE deterministic, cited thing Cortex has learned about the user
+        (see mirror.compute_mirror_insight), or None when the corpus is too thin to speak honestly."""
+        with connect(self.db_path) as conn:
+            return compute_mirror_insight(conn, user_id)
 
     def answer_query(
         self,

@@ -1667,6 +1667,11 @@ def stats(user_id: str = Depends(auth)) -> dict[str, Any]:
     return store.stats(user_id)
 
 
+@app.get("/v1/mirror")
+def mirror(user_id: str = Depends(auth)) -> dict[str, Any]:
+    return {"insight": store.mirror_insight(user_id)}
+
+
 @app.get("/v1/memory/quality", response_model=MemoryQualityResponse)
 def memory_quality(user_id: str = Depends(auth)) -> dict[str, Any]:
     return store.memory_quality_report(user_id)

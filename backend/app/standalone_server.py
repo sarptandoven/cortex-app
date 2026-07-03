@@ -1698,6 +1698,9 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/v1/stats":
                 self._send_json(store.stats(user_id))
                 return
+            if method == "GET" and path == "/v1/mirror":
+                self._send_json({"insight": store.mirror_insight(user_id)})
+                return
             if method == "GET" and path == "/v1/memory/quality":
                 self._send_json(store.memory_quality_report(user_id))
                 return
