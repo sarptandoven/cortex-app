@@ -1,2 +1,3 @@
 pysqlite3>=0.6.0
 sqlite-vec>=0.1.9
+model2vec>=0.8,<1

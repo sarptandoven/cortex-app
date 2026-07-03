@@ -361,6 +361,13 @@ CREATE TABLE IF NOT EXISTS memory_vec_map (
 
 CREATE INDEX IF NOT EXISTS idx_memory_vec_map_user ON memory_vec_map(user_id, memory_id);
 
+CREATE TABLE IF NOT EXISTS vec_index_meta (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  dimensions INTEGER NOT NULL,
+  model TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_vec USING vec0(
   embedding float[{VECTOR_DIMENSIONS}]
 );
@@ -455,6 +462,16 @@ def load_sqlite_vec(conn: sqlite3.Connection) -> tuple[bool, str | None]:
         import sqlite_vec  # type: ignore
     except Exception as exc:
         return False, f"sqlite-vec unavailable: {exc}"
+
+    # Idempotent: connect() loads sqlite-vec at open, and callers (sqlite_vec_status, _vector_ready)
+    # re-check per operation. Re-registering the vec0 module on the same connection errors with
+    # "error during initialization", which previously disabled vectors mid-transaction. If the
+    # extension already answers vec_version(), it's loaded — don't load it again.
+    try:
+        conn.execute("SELECT vec_version()")
+        return True, None
+    except sqlite3.Error:
+        pass
 
     if not hasattr(conn, "enable_load_extension"):
         return False, "sqlite-vec unavailable: this Python SQLite build cannot load extensions"

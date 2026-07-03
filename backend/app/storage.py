@@ -18,7 +18,7 @@ from urllib.request import Request, urlopen
 
 from .connectors._redaction import redact_error_message
 from .database import connect, sqlite_vec_status
-from .embeddings import VECTOR_DIMENSIONS, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status
+from .embeddings import VECTOR_DIMENSIONS, configured_embedding_model, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status
 from .extractor import extract_context, now_iso, stable_id
 from .sqlite_runtime import SQLITE_RUNTIME, sqlite3
 from .source_ingest import SourceRecord, analyze_sources, import_source_records_page, supported_sources
@@ -2606,6 +2606,13 @@ class CortexStore:
         resolved_vault_path = Path(vault_path).expanduser() if vault_path else self.db_path.parent
         self.vault = CortexVault(resolved_vault_path, self.db_path)
         self.vault.ensure()
+        # Cache of the vector-index dimension we've reconciled to (see _ensure_vector_index). None
+        # until reconciled; lets us detect an embedding-model/dimension change and rebuild the
+        # (rebuildable) vec table + re-embed rather than silently mismatching.
+        self._vector_index_ensured: int | None = None
+        # Reconcile the vector index to the active model's dimension once, up front, on a dedicated
+        # connection (safe: not nested in any caller transaction).
+        self._ensure_vector_index()
 
     def settings(self, user_id: str) -> dict[str, Any]:
         with connect(self.db_path) as conn:
@@ -16549,16 +16556,121 @@ class CortexStore:
         ).fetchall()
 
     def _vector_ready(self, conn) -> bool:
-        if embedding_status()["dimensions"] != VECTOR_DIMENSIONS:
+        # The hash embedding is deterministic keyword plumbing, not real semantics — using it for
+        # vector ranking pollutes results (and the tuned retrieval eval) with keyword-hash noise.
+        # Semantic vector search is therefore enabled only for a REAL embedding model; hash-provider
+        # users (the no-model default) get FTS ranking, which is what the eval is tuned against.
+        if embedding_status().get("provider") == "hash":
             return False
         status = sqlite_vec_status(conn)
         if not status["available"]:
             return False
         try:
             conn.execute("SELECT 1 FROM memory_vec LIMIT 1")
-            return True
         except sqlite3.Error:
             return False
+        # The vector table dimension follows the ACTIVE embedding model, reconciled once at store
+        # construction (_ensure_vector_index) on its own connection — never here, because this runs
+        # inside callers' transactions and the migration's DDL auto-commits in SQLite. If the model
+        # changed since this store was built, the dims won't match and the vector path stays off
+        # (a fresh store re-reconciles) rather than inserting a mismatched-dimension vector.
+        return self._active_vector_dimensions(conn) == int(embedding_status()["dimensions"])
+
+    def _active_vector_dimensions(self, conn) -> int | None:
+        try:
+            row = conn.execute("SELECT dimensions FROM vec_index_meta WHERE id = 1").fetchone()
+        except sqlite3.Error:
+            return None
+        if row and row[0]:
+            return int(row[0])
+        # No meta recorded yet: init_db creates memory_vec at VECTOR_DIMENSIONS, so that is its size.
+        return VECTOR_DIMENSIONS
+
+    def _record_vec_index_meta(self, conn, dimensions: int) -> None:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS vec_index_meta (id INTEGER PRIMARY KEY CHECK (id = 1), "
+            "dimensions INTEGER NOT NULL, model TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO vec_index_meta(id, dimensions, model, updated_at) VALUES (1, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET dimensions = excluded.dimensions, "
+            "model = excluded.model, updated_at = excluded.updated_at",
+            (int(dimensions), configured_embedding_model(), now_iso()),
+        )
+
+    def _ensure_vector_index(self) -> None:
+        """Reconcile memory_vec to the ACTIVE embedding model's native dimension. Runs once at
+        store construction on a DEDICATED connection — never nested inside a caller's transaction,
+        because CREATE/DROP VIRTUAL TABLE auto-commits in SQLite and would otherwise sever that
+        transaction (that broke embed-job enqueue during save). The vector index is a rebuildable
+        cache (the vault is the source of truth), so a dimension change drops + recreates it and
+        re-embeds every memory in the background. No-op when sqlite-vec is unavailable."""
+        desired = int(embedding_status()["dimensions"])
+        if self._vector_index_ensured == desired:
+            return
+        try:
+            with connect(self.db_path) as conn:
+                if not sqlite_vec_status(conn)["available"]:
+                    return
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS vec_index_meta (id INTEGER PRIMARY KEY CHECK (id = 1), "
+                    "dimensions INTEGER NOT NULL, model TEXT NOT NULL, updated_at TEXT NOT NULL)"
+                )
+                meta_row = conn.execute("SELECT dimensions FROM vec_index_meta WHERE id = 1").fetchone()
+                table_exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name = 'memory_vec'"
+                ).fetchone() is not None
+                if meta_row and meta_row[0]:
+                    current: int | None = int(meta_row[0])
+                else:
+                    # init_db creates memory_vec at VECTOR_DIMENSIONS; absent meta = still that size.
+                    current = VECTOR_DIMENSIONS if table_exists else None
+                if table_exists and current == desired:
+                    if not (meta_row and meta_row[0]):
+                        self._record_vec_index_meta(conn, desired)
+                        conn.commit()
+                    self._vector_index_ensured = desired
+                    return
+                # Rebuild the vector table at the new dimension; drop the now-incompatible vectors.
+                conn.execute("DROP TABLE IF EXISTS memory_vec")
+                conn.execute(f"CREATE VIRTUAL TABLE memory_vec USING vec0(embedding float[{int(desired)}])")
+                conn.execute("DELETE FROM memory_vec_map")
+                self._record_vec_index_meta(conn, desired)
+                conn.commit()
+                # Mark ensured BEFORE enqueuing: the enqueue path calls _vector_ready (pure read),
+                # which now matches the new dims, so nothing recurses back here.
+                self._vector_index_ensured = desired
+                self._enqueue_reembed_all(conn)
+                conn.commit()
+        except sqlite3.Error:
+            return  # leave uncached; a later store construction retries
+
+    def _enqueue_reembed_all(self, conn) -> int:
+        rows = conn.execute(
+            "SELECT id, capture_id, user_id, content, summary, source, layer, topics_json, captured_at "
+            "FROM memories WHERE status = 'active'"
+        ).fetchall()
+        queued = 0
+        for row in rows:
+            try:
+                topics = json.loads(row["topics_json"] or "[]")
+            except (TypeError, ValueError):
+                topics = []
+            job = self._enqueue_embed_memory_job(
+                conn,
+                memory_id=row["id"],
+                capture_id=row["capture_id"],
+                user_id=row["user_id"],
+                content=row["content"] or "",
+                summary=row["summary"],
+                source=row["source"] or "",
+                layer=row["layer"] or "semantic",
+                topics=topics,
+                captured_at=row["captured_at"] or now_iso(),
+            )
+            if job:
+                queued += 1
+        return queued
 
     def _vector_search(
         self,
@@ -16595,18 +16707,31 @@ class CortexStore:
             vector = embedding_json(embed_text(query))
         except Exception:
             return []
+        # sqlite-vec KNN requires the MATCH to be isolated with a `k = ?` (or LIMIT) constraint on
+        # the vec0 scan itself — a LIMIT on the outer JOIN raises "A LIMIT or 'k = ?' constraint is
+        # required on vec0 knn queries". So take the k nearest in a CTE first, then JOIN + apply the
+        # user-scoping / temporal / metadata filters, then LIMIT. Over-fetch k so post-filtering has
+        # room to still return `limit` results. (Previously this query errored and was silently
+        # swallowed, so vector retrieval never actually ran.)
+        k = max(int(limit) * 5, 50)
         try:
             return conn.execute(
                 f"""
-                SELECT m.*, memory_vec.distance AS vector_distance
-                FROM memory_vec
-                JOIN memory_vec_map map ON map.vec_rowid = memory_vec.rowid
+                WITH knn AS (
+                    SELECT rowid, distance
+                    FROM memory_vec
+                    WHERE embedding MATCH ? AND k = ?
+                    ORDER BY distance
+                )
+                SELECT m.*, knn.distance AS vector_distance
+                FROM knn
+                JOIN memory_vec_map map ON map.vec_rowid = knn.rowid
                 JOIN memories m ON m.id = map.memory_id
-                WHERE memory_vec.embedding MATCH ? AND {where}
-                ORDER BY memory_vec.distance ASC, m.importance DESC, m.captured_at DESC
+                WHERE {where}
+                ORDER BY knn.distance ASC, m.importance DESC, m.captured_at DESC
                 LIMIT ?
                 """,
-                [vector, *params, limit],
+                [vector, k, *params, limit],
             ).fetchall()
         except sqlite3.Error:
             return []
