@@ -20,6 +20,31 @@ The macOS app uses a local per-install admin token for Cortex REST API calls. Lo
 
 Scoped MCP tokens are checked before Connections & Privacy controls. A tool call succeeds only when the token has the needed scope and the matching local privacy control is enabled. Newly generated local MCP tokens include `read`, `write`, `export`, and `maintenance`; they do not include `destructive`.
 
+## The core tool surface (what an agent sees)
+
+Scoped tokens are advertised a curated CORE surface — one tool per job — instead of the full
+catalog, so agents pick the right tool on the first try:
+
+- `get_context` — the context assembly engine: a token-budgeted, cited pack of constraints,
+  decisions, facts, entity context, procedures, identity, open loops, and recency, shaped by
+  task intent (`answer`/`act`/`draft`/`plan`/`recall`). Call this first before doing work.
+  Also available over REST as `GET`/`POST /v1/context` (read scope; the identity layer alone
+  requires export scope and degrades to a visible omission record without it).
+- `ask_memory` — cite-or-abstain answer to a specific question (never an uncited guess).
+- `search_memory` — keyword/semantic search with retrieval diagnostics.
+- `get_entity_context` — everything known about one person/project/org/topic + its graph
+  neighborhood.
+- `get_person_map` — the whole cited image of the person (export scope).
+- `remember_this` — save one learning (write scope).
+- `list_capabilities` — discovery: counts, your scopes, the full catalog with required scopes.
+
+Tokens minted with `maintenance` or `destructive` scopes additionally see those tool groups.
+**Hiding is never authorization**: every legacy tool remains callable via `tools/call` when the
+token's scopes allow — the collapse changes only what `tools/list` advertises. To restore the
+full legacy list, mint the token with the `advertise_full` marker scope (advertisement-only,
+grants nothing) or set `CORTEX_MCP_TOOL_SURFACE=full` on the backend. The admin app token
+always sees the full catalog.
+
 MCP source tools can register connected source accounts, sync cited source records, and run due sync for already connected sources:
 
 - `list_source_connectors`

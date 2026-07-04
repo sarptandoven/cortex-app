@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from .config import load_settings
 from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
-from .mcp_tools import TOOLS, call_tool, tool_call_result, tools_for_scopes
+from .mcp_tools import CORE_TOOL_NAMES, TOOLS, call_tool, tool_call_result, tools_for_scopes
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
 
@@ -101,6 +101,10 @@ def _required_api_scope(method: str, path: str) -> str:
     normalized_path = path.rstrip("/") or "/"
     if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/context-pack", "/v1/personal-profile", "/v1/profile", "/v1/person-map", "/v1/agent-adaptation", "/v1/support/bundle"}:
         return "export"
+    if normalized_path == "/v1/context":
+        # The context engine is a READ (POST only carries parameters); the identity layer is
+        # export-gated inside the engine itself.
+        return "read"
     if normalized_path == "/v1/settings" and normalized_method in {"PUT", "PATCH"}:
         return "maintenance"
     if normalized_path in {"/v1/diagnostics", "/v1/reliability/report", "/v1/jobs/health"}:
@@ -486,7 +490,12 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     "description": "Shared memory for AI assistants.",
                     "api": {"base_url": settings.public_base_url, "version": BACKEND_VERSION},
                     "health": store.health_payload(mode="standalone", auth=bool(settings.api_key)),
-                    "mcp": {"endpoint": "/mcp", "tools": [tool["name"] for tool in TOOLS]},
+                    "mcp": {
+                        "endpoint": "/mcp",
+                        "tools": [tool["name"] for tool in TOOLS],
+                        "core_tools": sorted(CORE_TOOL_NAMES),
+                    },
+                    "context_engine": {"endpoint": "/v1/context"},
                 })
                 return
             if method == "GET" and path == "/capture":
@@ -1646,6 +1655,50 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 sector = (params.get("sector") or [None])[0]
                 self._send_text(store.context_pack(user_id, query=query, limit=_int_param(params, "limit", 12, 1, 50), sector=sector), media_type="text/markdown")
                 return
+            if path == "/v1/context" and method in {"GET", "POST"}:
+                if method == "POST":
+                    body = self._json_body()
+                    task = str(body.get("task") or "")
+                    surface = str(body.get("surface") or "agent")
+                    intent = str(body.get("intent") or "") or None
+                    sector = str(body.get("sector") or "") or None
+                    project = str(body.get("project") or "") or None
+                    as_of = str(body.get("as_of") or "") or None
+                    output_format = str(body.get("format") or "json").strip().lower()
+                    try:
+                        token_budget = int(body.get("token_budget") or 2000)
+                    except (TypeError, ValueError):
+                        self._send_json({"detail": "token_budget must be an integer"}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                        return
+                else:
+                    task = (params.get("task") or [""])[0]
+                    surface = (params.get("surface") or ["agent"])[0]
+                    intent = (params.get("intent") or [None])[0]
+                    sector = (params.get("sector") or [None])[0]
+                    project = (params.get("project") or [None])[0]
+                    as_of = (params.get("as_of") or [None])[0]
+                    output_format = ((params.get("format") or ["json"])[0] or "json").strip().lower()
+                    token_budget = _int_param(params, "token_budget", 2000, 1, 100000)
+                if output_format not in {"json", "markdown"}:
+                    self._send_json({"detail": "format must be json or markdown"}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                    return
+                pack = store.assemble_context(
+                    user_id,
+                    task,
+                    surface=surface,
+                    token_budget=token_budget,
+                    sector=sector,
+                    project=project,
+                    as_of=as_of,
+                    intent=intent,
+                    include_identity=self._bearer_has_export_scope(),
+                    format=output_format,
+                )
+                if output_format == "markdown":
+                    self._send_text(pack, media_type="text/markdown")
+                else:
+                    self._send_json(pack)
+                return
             if method == "GET" and path == "/v1/personal-profile":
                 query = (params.get("query") or [""])[0]
                 sector = (params.get("sector") or [None])[0]
@@ -1885,7 +1938,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     "capabilities": {"tools": {}},
                 }
             elif method == "tools/list":
-                result = {"tools": tools_for_scopes(token_scopes)}
+                result = {"tools": tools_for_scopes(token_scopes, surface=settings.mcp_tool_surface)}
             elif method == "tools/call":
                 params = request.get("params") or {}
                 tool_name = params.get("name", "")
@@ -1902,6 +1955,22 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"jsonrpc": "2.0", "id": request.get("id"), "result": result})
         except Exception as exc:
             self._send_json({"jsonrpc": "2.0", "id": request.get("id"), "error": {"code": -32000, "message": self._safe_error_message(exc)}})
+
+    def _bearer_has_export_scope(self) -> bool:
+        """Whether the (already-authenticated) bearer may see the identity/persona layer of a
+        context pack. The admin app token always may; scoped API tokens need the export scope.
+        Read-only callers still get a pack — identity degrades to a visible omission record."""
+        authorization = self.headers.get("Authorization", "")
+        if not authorization.lower().startswith("bearer "):
+            return False
+        token = authorization.split(" ", 1)[1].strip()
+        if settings.api_key and hmac.compare_digest(token, settings.api_key):
+            return True
+        try:
+            scoped = store.authenticate_api_token(token)
+        except TypeError:
+            scoped = None
+        return bool(scoped and "export" in set(scoped.get("scopes") or []))
 
     def _auth_user(self, method: str, path: str) -> str | None:
         authorization = self.headers.get("Authorization", "")

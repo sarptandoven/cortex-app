@@ -672,10 +672,92 @@ TOOLS = [
         "description": "Return recent Cortex audit events for captures, approvals, archives, settings, backups, and agent tool calls.",
         "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "default": 30}}},
     },
+    {
+        "name": "get_context",
+        "description": (
+            "Build the working context pack for a task: a token-budgeted, cited selection of the "
+            "user's constraints, decisions, facts, entities, procedures, identity, open loops, and "
+            "recent memory. Call this FIRST before doing work for the user. Every item carries a "
+            "memory_id + source; dropped items are counted, never silent."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string", "description": "What you are about to do for the user."},
+                "surface": {"type": "string", "default": "agent", "description": "Which tool you are (cursor, claude, chatgpt, ...)."},
+                "token_budget": {"type": "integer", "default": 2000, "minimum": 300, "maximum": 6000},
+                "intent": {"type": "string", "enum": ["answer", "act", "draft", "plan", "recall"]},
+                "sector": {"type": "string"},
+                "project": {"type": "string", "description": "Entity/project name to center the pack on."},
+                "as_of": {"type": "string"},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
+            },
+        },
+    },
+    {
+        "name": "ask_memory",
+        "description": (
+            "Ask a question against the user's memory and get a cited answer or an explicit "
+            "abstention (never an uncited guess). Use for a specific fact; use get_context for "
+            "broad working context."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "top_k": {"type": "integer", "default": 8},
+                "sector": {"type": "string"},
+                "as_of": {"type": "string"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "get_entity_context",
+        "description": (
+            "Everything known about one person, project, org, or topic: cited memories plus the "
+            "entity's graph neighborhood (who/what it is connected to and the shared evidence)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Entity name or id (person, project, org, topic)."},
+                "limit": {"type": "integer", "default": 8},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "list_capabilities",
+        "description": (
+            "Discover this Cortex: memory counts, the scopes your token holds, which tool surface "
+            "is active, and the full tool catalog with required scopes."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
+
+# The curated CORE surface an agent sees by default: one tool per job (working context,
+# cited answer, keyword search, entity lookup, whole-person map, save a learning, discovery).
+# Everything else stays callable — collapsing is advertisement-only, never authorization.
+CORE_TOOL_NAMES = frozenset(
+    {
+        "get_context",
+        "ask_memory",
+        "search_memory",
+        "get_entity_context",
+        "get_person_map",
+        "remember_this",
+        "list_capabilities",
+    }
+)
 
 
 READ_TOOLS = {
+    "get_context",
+    "ask_memory",
+    "get_entity_context",
+    "list_capabilities",
     "search_memory",
     "get_recent_context",
     "get_memory_graph",
@@ -772,15 +854,31 @@ def tool_required_capabilities(name: str, *, scoped: bool = False) -> list[str]:
     return list(dict.fromkeys(capabilities))
 
 
-def tools_for_scopes(token_scopes: list[str] | None = None) -> list[dict[str, Any]]:
+def tools_for_scopes(token_scopes: list[str] | None = None, *, surface: str = "core") -> list[dict[str, Any]]:
+    """Which tools a caller is SHOWN. Admin auth (token_scopes is None — the app's own path)
+    always sees everything. Scoped tokens default to the curated core surface so agents face a
+    handful of well-chosen tools instead of ~60; tokens minted with maintenance/destructive
+    scopes still see those tools (they were deliberately granted), and the "advertise_full"
+    marker scope or surface="full" restores the legacy full list. Hiding is never authorization:
+    call_tool enforces scopes for every tool regardless of advertisement."""
     if token_scopes is None:
         return TOOLS
     scope_set = set(token_scopes)
-    return [
+    if "advertise_full" in scope_set:
+        surface = "full"
+    scope_visible = [
         tool
         for tool in TOOLS
         if all(capability in scope_set for capability in tool_required_capabilities(str(tool.get("name") or ""), scoped=True))
     ]
+    if surface == "full":
+        return scope_visible
+    visible_names = set(CORE_TOOL_NAMES)
+    if "maintenance" in scope_set:
+        visible_names |= MAINTENANCE_TOOLS
+    if "destructive" in scope_set:
+        visible_names |= DESTRUCTIVE_TOOLS
+    return [tool for tool in scope_visible if str(tool.get("name") or "") in visible_names]
 
 
 def _require_tool_access(store: CortexStore, user_id: str, name: str, token_scopes: list[str] | None = None) -> None:
@@ -1288,6 +1386,60 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             extracted=extracted,
             cite_capture_provenance=True,
         ))
+    if name == "get_context":
+        # Identity/persona layer requires export scope; instead of erroring the whole call for
+        # read-only tokens, the engine emits a visible omission record for that layer.
+        include_identity = token_scopes is None or "export" in set(token_scopes)
+        return store.agent_payload(
+            user_id,
+            store.assemble_context(
+                user_id,
+                _text_arg(args, "task"),
+                surface=_text_arg(args, "surface", "agent", max_chars=40) or "agent",
+                token_budget=_bounded_int_arg(args, "token_budget", 2000, minimum=300, maximum=6000),
+                sector=_text_arg(args, "sector") or None,
+                project=_text_arg(args, "project", max_chars=MCP_NAME_MAX_CHARS) or None,
+                as_of=_text_arg(args, "as_of", max_chars=40) or None,
+                intent=_text_arg(args, "intent", max_chars=16) or None,
+                include_identity=include_identity,
+                format=_text_arg(args, "format", "json", max_chars=12) or "json",
+            ),
+        )
+    if name == "ask_memory":
+        return store.agent_payload(
+            user_id,
+            store.answer_query(
+                user_id,
+                _text_arg(args, "query"),
+                _bounded_int_arg(args, "top_k", 8),
+                sector=_text_arg(args, "sector") or None,
+                as_of=_text_arg(args, "as_of", max_chars=40) or None,
+            ),
+        )
+    if name == "get_entity_context":
+        entity_name = _text_arg(args, "name", max_chars=MCP_NAME_MAX_CHARS)
+        limit = _bounded_int_arg(args, "limit", 8)
+        neighborhood = store.entity_neighborhood(user_id, entity_name, limit=limit)
+        context = store.person_context(user_id, entity_name, limit=limit)
+        return store.agent_payload(user_id, {"entity": entity_name, "context": context, "neighborhood": neighborhood})
+    if name == "list_capabilities":
+        scope_list = sorted(set(token_scopes)) if token_scopes is not None else ["admin"]
+        catalog = [
+            {
+                "name": str(tool.get("name") or ""),
+                "purpose": str(tool.get("description") or "")[:160],
+                "required_scopes": tool_required_capabilities(str(tool.get("name") or ""), scoped=True),
+                "advertised": str(tool.get("name") or "") in CORE_TOOL_NAMES,
+            }
+            for tool in TOOLS
+        ]
+        return {
+            "stats": store.stats(user_id),
+            "token_scopes": scope_list,
+            "surface": "full" if token_scopes is None or "advertise_full" in set(token_scopes or []) else "core",
+            "tools": catalog,
+            "expand_surface": "Mint a token with the advertise_full scope (or set CORTEX_MCP_TOOL_SURFACE=full) to advertise every tool; unadvertised tools remain callable when your scopes allow.",
+        }
     if name == "search_memory":
         query = _text_arg(args, "query")
         limit = _bounded_int_arg(args, "top_k", 8)

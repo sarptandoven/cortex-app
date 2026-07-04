@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import load_settings
 from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
-from .mcp_tools import TOOLS, call_tool, tool_call_result, tools_for_scopes
+from .mcp_tools import CORE_TOOL_NAMES, TOOLS, call_tool, tool_call_result, tools_for_scopes
 from .observability import metrics, route_label
 from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CalendarSyncRequest, CalendarSyncResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GitHubRepositoryDiscoveryRequest, GitHubRepositoryDiscoveryResponse, GitHubSyncRequest, GitHubSyncResponse, GmailSyncRequest, GmailSyncResponse, GoogleDriveSyncRequest, GoogleDriveSyncResponse, GoogleOAuthCompleteRequest, GoogleOAuthCompleteResponse, GoogleOAuthStartRequest, GoogleOAuthStartResponse, GraphResponse, JiraSyncRequest, JiraSyncResponse, JobRunResponse, LinearSyncRequest, LinearSyncResponse, ListResponse, MaintenanceResponse, ManagedOAuthCompleteRequest, ManagedOAuthCompleteResponse, ManagedOAuthStartRequest, ManagedOAuthStartResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, NotionSyncRequest, NotionSyncResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, OutlookSyncRequest, OutlookSyncResponse, ProductLoopResponse, QueuedCaptureResponse, RaindropSyncRequest, RaindropSyncResponse, ReadwiseSyncRequest, ReadwiseSyncResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SlackChannelDiscoveryRequest, SlackChannelDiscoveryResponse, SlackSyncRequest, SlackSyncResponse, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse, ZoteroSyncRequest, ZoteroSyncResponse
 from .models import UserListResponse, UserProvisionRequest, UserProvisionResponse, UserStatusResponse
@@ -211,6 +211,10 @@ def _required_api_scope(method: str, path: str) -> str:
     normalized_path = path.rstrip("/") or "/"
     if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/context-pack", "/v1/personal-profile", "/v1/agent-adaptation", "/v1/support/bundle"}:
         return "export"
+    if normalized_path == "/v1/context":
+        # The context engine is a READ (POST only carries parameters); the identity layer is
+        # export-gated inside the engine itself.
+        return "read"
     if normalized_path == "/v1/settings" and normalized_method in {"PUT", "PATCH"}:
         return "maintenance"
     if normalized_path in {"/v1/diagnostics", "/v1/reliability/report", "/v1/jobs/health"}:
@@ -1597,6 +1601,78 @@ def context_pack(query: str = "", limit: int = Query(default=12, ge=1, le=50), s
     return Response(content=store.context_pack(user_id, query=query, limit=limit, sector=sector), media_type="text/markdown")
 
 
+def _bearer_has_export_scope(request: Request) -> bool:
+    """Whether the (already-authenticated) bearer may see the identity/persona layer.
+    The admin app token always may; scoped API tokens need the export scope. Read-only
+    callers still get a pack — the identity layer degrades to a visible omission record."""
+    authorization = request.headers.get("authorization") or ""
+    token = authorization.split(" ", 1)[1].strip() if " " in authorization else ""
+    if not token:
+        return False
+    if settings.api_key and hmac.compare_digest(token, settings.api_key):
+        return True
+    scoped = store.authenticate_api_token(token)
+    return bool(scoped and "export" in set(scoped.get("scopes") or []))
+
+
+def _context_response(pack: dict[str, Any] | str, format: str) -> Any:
+    if format == "markdown":
+        return Response(content=pack, media_type="text/markdown")
+    return pack
+
+
+@app.get("/v1/context", response_model=None)
+def get_context(
+    request: Request,
+    task: str = Query(default="", max_length=500),
+    surface: str = Query(default="agent", max_length=40),
+    token_budget: int = Query(default=2000, ge=1, le=100000),
+    intent: str | None = Query(default=None, max_length=16),
+    sector: str | None = Query(default=None, max_length=120),
+    project: str | None = Query(default=None, max_length=160),
+    as_of: str | None = Query(default=None, max_length=40),
+    format: str = Query(default="json", pattern="^(json|markdown)$"),
+    user_id: str = Depends(auth),
+) -> Any:
+    pack = store.assemble_context(
+        user_id,
+        task,
+        surface=surface,
+        token_budget=token_budget,
+        sector=sector,
+        project=project,
+        as_of=as_of,
+        intent=intent,
+        include_identity=_bearer_has_export_scope(request),
+        format=format,
+    )
+    return _context_response(pack, format)
+
+
+@app.post("/v1/context", response_model=None)
+def post_context(body: dict[str, Any], request: Request, user_id: str = Depends(auth)) -> Any:
+    format = str(body.get("format") or "json").strip().lower()
+    if format not in {"json", "markdown"}:
+        raise HTTPException(status_code=422, detail="format must be json or markdown")
+    try:
+        token_budget = int(body.get("token_budget") or 2000)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="token_budget must be an integer")
+    pack = store.assemble_context(
+        user_id,
+        str(body.get("task") or ""),
+        surface=str(body.get("surface") or "agent"),
+        token_budget=token_budget,
+        sector=str(body.get("sector") or "") or None,
+        project=str(body.get("project") or "") or None,
+        as_of=str(body.get("as_of") or "") or None,
+        intent=str(body.get("intent") or "") or None,
+        include_identity=_bearer_has_export_scope(request),
+        format=format,
+    )
+    return _context_response(pack, format)
+
+
 @app.get("/v1/personal-profile", response_model=None)
 def personal_profile(
     query: str = "",
@@ -1934,7 +2010,12 @@ def manifest() -> dict[str, Any]:
         "description": "Shared memory for AI assistants.",
         "api": {"base_url": settings.public_base_url, "version": BACKEND_VERSION},
         "health": store.health_payload(mode="fastapi", auth=bool(settings.api_key)),
-        "mcp": {"endpoint": "/mcp", "tools": [tool["name"] for tool in TOOLS]},
+        "mcp": {
+            "endpoint": "/mcp",
+            "tools": [tool["name"] for tool in TOOLS],
+            "core_tools": sorted(CORE_TOOL_NAMES),
+        },
+        "context_engine": {"endpoint": "/v1/context"},
     }
 
 
@@ -1950,7 +2031,7 @@ def mcp(request: MCPRequest, context: dict[str, Any] = Depends(mcp_auth)) -> dic
                 "capabilities": {"tools": {}},
             }
         elif request.method == "tools/list":
-            result = {"tools": tools_for_scopes(token_scopes)}
+            result = {"tools": tools_for_scopes(token_scopes, surface=settings.mcp_tool_surface)}
         elif request.method == "tools/call":
             params = request.params or {}
             tool_name = params.get("name", "")

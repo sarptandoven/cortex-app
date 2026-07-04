@@ -769,6 +769,114 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertIn("Project Atlas runs backend tests", pack.text)
         self.assertNotIn("Project Boreal runs web smoke tests", pack.text)
 
+    def test_context_engine_endpoint_and_mcp_tool(self) -> None:
+        user = "context-engine-contract"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+        saved = self.client.post(
+            "/v1/captures",
+            json={"content": "We decided to use PostgreSQL for Atlas because of jsonb support.", "source": "macos"},
+            headers=headers,
+        )
+        self.assertEqual(saved.status_code, 200)
+        approved = self.client.post(f"/v1/captures/{saved.json()['capture_id']}/approve", headers=headers)
+        self.assertEqual(approved.status_code, 200)
+
+        # GET and POST are the same engine; both are READ operations.
+        got = self.client.get(
+            "/v1/context",
+            params={"task": "which database did we decide on for Atlas?", "token_budget": 1500},
+            headers=headers,
+        )
+        self.assertEqual(got.status_code, 200)
+        get_pack = got.json()
+        posted = self.client.post(
+            "/v1/context",
+            json={"task": "which database did we decide on for Atlas?", "token_budget": 1500},
+            headers=headers,
+        )
+        self.assertEqual(posted.status_code, 200)
+        post_pack = posted.json()
+        get_pack.pop("generated_at", None)
+        post_pack.pop("generated_at", None)
+        self.assertEqual(get_pack, post_pack)
+        self.assertEqual(get_pack["intent"], "answer")
+        served = {item["memory_id"] for layer in get_pack["layers"] for item in layer.get("items") or []}
+        self.assertTrue(served, get_pack)
+        # Admin token sees the identity layer (no omission).
+        identity = next(layer for layer in get_pack["layers"] if layer["layer"] == "identity")
+        self.assertIsNone(identity.get("omitted"))
+
+        markdown = self.client.get(
+            "/v1/context",
+            params={"task": "Atlas database decision", "format": "markdown"},
+            headers=headers,
+        )
+        self.assertEqual(markdown.status_code, 200)
+        self.assertTrue(markdown.headers["content-type"].startswith("text/markdown"))
+        self.assertIn("# Cortex Context Pack", markdown.text)
+
+        bad_format = self.client.post("/v1/context", json={"task": "x", "format": "yaml"}, headers=headers)
+        self.assertEqual(bad_format.status_code, 422)
+
+        # A READ-scoped API token can use the engine (not export-gated) but the identity
+        # layer degrades to a visible omission record.
+        read_token = "cxa-context-read-token"
+        registered = self.client.post(
+            "/v1/integrations/api-token",
+            json={"token": read_token, "label": "Context read", "scopes": ["read"]},
+            headers=headers,
+        )
+        self.assertEqual(registered.status_code, 200)
+        scoped = self.client.get(
+            "/v1/context",
+            params={"task": "Atlas database decision"},
+            headers={"Authorization": f"Bearer {read_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(scoped.status_code, 200)
+        scoped_identity = next(layer for layer in scoped.json()["layers"] if layer["layer"] == "identity")
+        self.assertEqual(scoped_identity.get("omitted"), {"reason": "requires export scope", "required_scopes": ["export"]})
+
+        # The MCP core tool round-trips through /mcp with the same engine.
+        mcp_token = "cxm-context-tool-token"
+        mcp_registered = self.client.post(
+            "/v1/integrations/mcp-token",
+            json={"token": mcp_token, "label": "Context MCP", "scopes": ["read"]},
+            headers=headers,
+        )
+        self.assertEqual(mcp_registered.status_code, 200)
+        called = self.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": "get-context",
+                "method": "tools/call",
+                "params": {"name": "get_context", "arguments": {"task": "Atlas database decision"}},
+            },
+            headers={"Authorization": f"Bearer {mcp_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(called.status_code, 200)
+        payload = called.json()
+        self.assertNotIn("error", payload)
+        structured = payload["result"]["structuredContent"]
+        self.assertEqual(structured["receipt"]["tool"], "get_context")
+        mcp_identity = next(layer for layer in structured["layers"] if layer["layer"] == "identity")
+        self.assertEqual(mcp_identity.get("omitted"), {"reason": "requires export scope", "required_scopes": ["export"]})
+
+        asked = self.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": "ask-memory",
+                "method": "tools/call",
+                "params": {"name": "ask_memory", "arguments": {"query": "which database did we decide on for Atlas?"}},
+            },
+            headers={"Authorization": f"Bearer {mcp_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(asked.status_code, 200)
+        ask_payload = asked.json()
+        self.assertNotIn("error", ask_payload)
+        self.assertEqual(ask_payload["result"]["structuredContent"]["status"], "cited")
+
     def test_retrieval_endpoints_support_source_account_and_facet_scope(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "source-scope-contract"}
 
@@ -2841,10 +2949,13 @@ END:VCALENDAR
             headers={"Authorization": f"Bearer {scoped_token}"},
         )
         self.assertEqual(mcp.status_code, 200)
+        # Read tokens are advertised the curated CORE surface (tool collapse); the long tail
+        # (quality report, connector catalogs, ...) stays callable but unadvertised.
         tool_names = {tool["name"] for tool in mcp.json()["result"]["tools"]}
-        self.assertIn("search_memory", tool_names)
-        self.assertIn("get_memory_quality_report", tool_names)
-        self.assertIn("list_source_connectors", tool_names)
+        self.assertEqual(
+            tool_names,
+            {"get_context", "ask_memory", "search_memory", "get_entity_context", "list_capabilities"},
+        )
         self.assertNotIn("connect_source_account", tool_names)
         self.assertNotIn("sync_source_records", tool_names)
         self.assertNotIn("approve_memory_capture", tool_names)
@@ -3354,9 +3465,13 @@ END:VCALENDAR
             headers={"Authorization": f"Bearer {read_token}", "X-Cortex-User": user},
         )
         self.assertEqual(tools.status_code, 200)
+        # A read token is advertised the curated CORE surface (the tool collapse); the long
+        # tail stays callable but hidden. advertise_full restores the legacy list below.
         tool_names = {tool["name"] for tool in tools.json()["result"]["tools"]}
-        self.assertIn("get_memory_quality_report", tool_names)
-        self.assertIn("list_source_connectors", tool_names)
+        self.assertEqual(
+            tool_names,
+            {"get_context", "ask_memory", "search_memory", "get_entity_context", "list_capabilities"},
+        )
         self.assertNotIn("connect_source_account", tool_names)
         self.assertNotIn("sync_source_records", tool_names)
         self.assertNotIn("sync_connected_sources", tool_names)
@@ -3391,13 +3506,38 @@ END:VCALENDAR
             headers={"Authorization": f"Bearer {write_token}", "X-Cortex-User": user},
         )
         self.assertEqual(write_tools.status_code, 200)
+        # Core surface for read+write adds only remember_this; the connector plumbing tools
+        # stay hidden (but callable). A token minted with advertise_full sees the legacy list.
         write_tool_names = {tool["name"] for tool in write_tools.json()["result"]["tools"]}
-        self.assertIn("list_source_connectors", write_tool_names)
-        self.assertIn("connect_source_account", write_tool_names)
-        self.assertIn("sync_source_records", write_tool_names)
+        self.assertEqual(
+            write_tool_names,
+            {"get_context", "ask_memory", "search_memory", "get_entity_context", "list_capabilities", "remember_this"},
+        )
         self.assertNotIn("sync_connected_sources", write_tool_names)
         self.assertNotIn("approve_memory_capture", write_tool_names)
         self.assertNotIn("delete_all_user_data", write_tool_names)
+
+        full_token = "cxm-advertise-full-token"
+        full_registered = self.client.post(
+            "/v1/integrations/mcp-token",
+            json={"token": full_token, "label": "Full-surface MCP", "scopes": ["read", "write", "advertise_full"]},
+            headers=headers,
+        )
+        self.assertEqual(full_registered.status_code, 200)
+        full_tools = self.client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": "full-tools", "method": "tools/list", "params": {}},
+            headers={"Authorization": f"Bearer {full_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(full_tools.status_code, 200)
+        full_tool_names = {tool["name"] for tool in full_tools.json()["result"]["tools"]}
+        # The legacy pre-collapse expectations, restored by the marker scope.
+        self.assertIn("list_source_connectors", full_tool_names)
+        self.assertIn("connect_source_account", full_tool_names)
+        self.assertIn("sync_source_records", full_tool_names)
+        self.assertNotIn("sync_connected_sources", full_tool_names)
+        self.assertNotIn("approve_memory_capture", full_tool_names)
+        self.assertNotIn("delete_all_user_data", full_tool_names)
         blocked_approval = self.client.post(
             "/mcp",
             json={

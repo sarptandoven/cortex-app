@@ -32,6 +32,9 @@ class Settings:
     worker_mode: str = "inline"
     observability_enabled: bool = False
     embedding_provider: str = "hash"
+    # Which MCP tool list scoped tokens are ADVERTISED by default: "core" (curated few) or
+    # "full" (legacy complete list). Advertisement only — never affects authorization.
+    mcp_tool_surface: str = "core"
 
 
 def _truthy_env(name: str) -> bool:
@@ -77,4 +80,5 @@ def load_settings() -> Settings:
         worker_mode=os.environ.get("CORTEX_WORKER_MODE", "inline").strip().lower() or "inline",
         observability_enabled=_truthy_env("CORTEX_OBSERVABILITY_ENABLED"),
         embedding_provider=os.environ.get("CORTEX_EMBEDDING_PROVIDER", "hash").strip().lower() or "hash",
+        mcp_tool_surface=(os.environ.get("CORTEX_MCP_TOOL_SURFACE", "core").strip().lower() or "core"),
     )

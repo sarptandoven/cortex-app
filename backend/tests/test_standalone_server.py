@@ -70,6 +70,7 @@ class FakeStore:
         self.denied_agent_access: set[str] = set()
         self.require_agent_access_calls: list[tuple[str, str]] = []
         self.context_pack_calls: list[tuple[str, str, int, str | None]] = []
+        self.assemble_context_calls: list[dict] = []
         self.oauth_pending: dict[tuple[str, str], dict] = {}
 
     def remember_oauth_pending(self, *, state, user_id, flow, payload, ttl_seconds: int = 600) -> None:
@@ -183,6 +184,21 @@ class FakeStore:
     def context_pack(self, user_id: str, *, query: str = "", limit: int = 12, sector: str | None = None) -> str:
         self.context_pack_calls.append((user_id, query, limit, sector))
         return "# Cortex Context\n\nLayer-aware result"
+
+    def assemble_context(self, user_id: str, task: str = "", **kwargs) -> dict | str:
+        call = {"user_id": user_id, "task": task, **kwargs}
+        self.assemble_context_calls.append(call)
+        if kwargs.get("format") == "markdown":
+            return "# Cortex Context Pack\n\nassembled"
+        return {
+            "version": 1,
+            "task": task,
+            "intent": "answer",
+            "surface": kwargs.get("surface"),
+            "coverage": {"status": "usable"},
+            "layers": [],
+            "citations": [],
+        }
 
     def delete_capture(self, user_id: str, capture_id: str) -> bool:
         self.delete_capture_calls.append((user_id, capture_id))
@@ -4192,6 +4208,44 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(context.exception.code, 403)
         self.assertIn("sharded mode", context.exception.read().decode("utf-8"))
 
+    def test_context_engine_routes_on_shipping_server(self) -> None:
+        # GET /v1/context reaches assemble_context with the parsed params.
+        self.fake_store.assemble_context_calls.clear()
+        with request.urlopen(
+            request.Request(
+                self.base_url + "/v1/context?task=atlas+decision&token_budget=1500&surface=cursor",
+                headers={"Authorization": "Bearer test-token"},
+            ),
+            timeout=5,
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(payload["coverage"]["status"], "usable")
+        self.assertEqual(len(self.fake_store.assemble_context_calls), 1)
+        call = self.fake_store.assemble_context_calls[0]
+        self.assertEqual(call["task"], "atlas decision")
+        self.assertEqual(call["token_budget"], 1500)
+        self.assertEqual(call["surface"], "cursor")
+        # Admin bearer sees the identity layer.
+        self.assertIs(call["include_identity"], True)
+
+        # POST parity + markdown content type.
+        with request.urlopen(
+            request.Request(
+                self.base_url + "/v1/context",
+                data=json.dumps({"task": "atlas decision", "format": "markdown"}).encode("utf-8"),
+                headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+                method="POST",
+            ),
+            timeout=5,
+        ) as response:
+            self.assertIn("text/markdown", response.headers.get("Content-Type", ""))
+            self.assertIn("# Cortex Context Pack", response.read().decode("utf-8"))
+
+        # Bad format is a 422, not a 500.
+        with self.assertRaises(error.HTTPError) as context:
+            self.post_json("/v1/context", {"task": "x", "format": "yaml"})
+        self.assertEqual(context.exception.code, 422)
+
     def test_mcp_tools_list_filters_read_only_scoped_token(self) -> None:
         scoped_request = request.Request(
             self.base_url + "/mcp",
@@ -4202,14 +4256,32 @@ class StandaloneServerTests(unittest.TestCase):
         with request.urlopen(scoped_request, timeout=5) as response:
             payload = json.loads(response.read().decode("utf-8"))
 
+        # A read-only scoped token is advertised the curated CORE surface (the tool collapse):
+        # a handful of well-chosen read tools. The legacy long tail stays callable but hidden.
         tool_names = {tool["name"] for tool in payload["result"]["tools"]}
-        self.assertIn("search_memory", tool_names)
-        self.assertIn("list_source_connectors", tool_names)
+        self.assertEqual(
+            tool_names,
+            {"get_context", "ask_memory", "search_memory", "get_entity_context", "list_capabilities"},
+        )
         self.assertNotIn("connect_source_account", tool_names)
         self.assertNotIn("sync_source_records", tool_names)
         self.assertNotIn("sync_connected_sources", tool_names)
         self.assertNotIn("approve_memory_capture", tool_names)
         self.assertNotIn("delete_all_user_data", tool_names)
+
+        # Hidden-but-scoped tools still dispatch: hiding is never authorization.
+        hidden_call = request.Request(
+            self.base_url + "/mcp",
+            data=json.dumps({
+                "jsonrpc": "2.0", "id": "hidden-call", "method": "tools/call",
+                "params": {"name": "get_memory_quality_report", "arguments": {}},
+            }).encode("utf-8"),
+            headers={"Authorization": "Bearer cxm-standalone-token", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with request.urlopen(hidden_call, timeout=5) as response:
+            hidden_payload = json.loads(response.read().decode("utf-8"))
+        self.assertNotIn("error", hidden_payload)
 
         admin_request = request.Request(
             self.base_url + "/mcp",
