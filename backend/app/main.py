@@ -36,6 +36,7 @@ from .oidc_registry import OidcError, OidcProviderRegistry
 from .ratelimit import TokenBucketRateLimiter
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
+from .webauth import register_web_account_routes
 
 
 settings = load_settings()
@@ -2844,6 +2845,20 @@ def _plaintext_credential_records(vault: Any, user_id: str) -> list[str]:
         and isinstance(record.get("payload"), dict)
         and not record.get("payload_cxe1")
     ]
+
+
+# ------------------------------------------------ web account front-door pages
+# Server-rendered /account* browser pages (login/signup/verify/reset/home/oauth
+# complete) served ONLY when auth is enabled — every handler routes through
+# _auth_runtime_or_404 so it 404s exactly like the /v1/auth JSON API when
+# disabled. Markup + one inline <style>; JS is external at /account/app.js so
+# the global strict CSP can stay put while these pages carry a route-scoped
+# relaxed CSP (script-src 'self', connect-src 'self'). See backend/app/webauth.py.
+register_web_account_routes(
+    app,
+    runtime_or_404=_auth_runtime_or_404,
+    list_providers=lambda: _auth_runtime_or_404().oidc.enabled_providers(),
+)
 
 
 @app.post("/mcp")
