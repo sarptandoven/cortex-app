@@ -1,17 +1,30 @@
 from __future__ import annotations
 
+from collections import deque
 from datetime import timedelta
 import html
 import hmac
+import json
+import logging
 import os
+import secrets
 import time
 from typing import Any
 from urllib.parse import parse_qs
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
+from .accounts import iso_utc, utc_now
+from .authn import (
+    ACCESS_TOKEN_PREFIX as SESSION_TOKEN_PREFIX,
+    GENERIC_AUTH_FAILURE,
+    AccountsService,
+    AuthError,
+    RateLimited,
+    token_verify_hash,
+)
 from .config import load_settings
 from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
@@ -19,6 +32,7 @@ from .mcp_tools import CORE_TOOL_NAMES, TOOLS, call_tool, tool_call_result, tool
 from .observability import metrics, route_label
 from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CalendarSyncRequest, CalendarSyncResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GitHubRepositoryDiscoveryRequest, GitHubRepositoryDiscoveryResponse, GitHubSyncRequest, GitHubSyncResponse, GmailSyncRequest, GmailSyncResponse, GoogleDriveSyncRequest, GoogleDriveSyncResponse, GoogleOAuthCompleteRequest, GoogleOAuthCompleteResponse, GoogleOAuthStartRequest, GoogleOAuthStartResponse, GraphResponse, JiraSyncRequest, JiraSyncResponse, JobRunResponse, LinearSyncRequest, LinearSyncResponse, ListResponse, MaintenanceResponse, ManagedOAuthCompleteRequest, ManagedOAuthCompleteResponse, ManagedOAuthStartRequest, ManagedOAuthStartResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, NotionSyncRequest, NotionSyncResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, OutlookSyncRequest, OutlookSyncResponse, ProductLoopResponse, QueuedCaptureResponse, RaindropSyncRequest, RaindropSyncResponse, ReadwiseSyncRequest, ReadwiseSyncResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SlackChannelDiscoveryRequest, SlackChannelDiscoveryResponse, SlackSyncRequest, SlackSyncResponse, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse, ZoteroSyncRequest, ZoteroSyncResponse
 from .models import UserListResponse, UserProvisionRequest, UserProvisionResponse, UserStatusResponse
+from .oidc_registry import OidcError, OidcProviderRegistry
 from .ratelimit import TokenBucketRateLimiter
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
@@ -327,6 +341,12 @@ def auth(request: Request, authorization: str | None = Header(default=None), x_c
     if settings.api_key:
         if hmac.compare_digest(token, settings.api_key):
             return _global_token_user_id(x_cortex_user)
+    if token.startswith(SESSION_TOKEN_PREFIX) and auth_runtime is not None:
+        # Interactive session access token (accounts plane): resolves to the
+        # account's user_id with full user scopes but NEVER admin — admin_auth
+        # and mcp_auth do not accept cxs_ tokens. When auth is disabled the
+        # prefix falls through to the scoped path and fails 401 exactly as today.
+        return _session_data_plane_user(token, x_cortex_user)
     scoped = store.authenticate_api_token(token, user_id=x_cortex_user)
     if scoped:
         if x_cortex_user and scoped["user_id"] != x_cortex_user:
@@ -2017,6 +2037,795 @@ def manifest() -> dict[str, Any]:
         },
         "context_engine": {"endpoint": "/v1/context"},
     }
+
+
+# ===========================================================================
+# Accounts + first-party auth (docs/ACCOUNTS_ENCRYPTION_DESIGN.md sections 1-4,
+# build-plan steps 5-7). Hosted plane only: everything below is inert unless
+# settings.auth_enabled — when disabled, auth_runtime stays None and every
+# /v1/auth endpoint answers exactly like an unregistered route (404 Not Found),
+# so the server behaves byte-identically to a build without this section.
+# ===========================================================================
+
+_auth_logger = logging.getLogger("cortex.auth")
+
+APP_LOGIN_FLOW_TTL_SECONDS = 600
+ACCOUNT_CLAIM_TTL_SECONDS = 72 * 60 * 60
+DEFAULT_SELF_SERVE_API_SCOPES = ("read", "write")
+DEFAULT_SELF_SERVE_MCP_SCOPES = ("read",)
+
+
+class AuthRuntime:
+    """All accounts-plane singletons, built once at startup (and rebuilt by
+    tests via init_auth_runtime after swapping module globals):
+
+    - SQLiteControlStore at settings.accounts_db_path (default:
+      <shard_root>/control/accounts.sqlite, else <vault parent>/accounts.sqlite)
+    - AccountsService with TTL overrides from settings, a limiter bridged onto
+      the existing token-bucket machinery (keyed per action + identifier/IP,
+      budget settings.auth_rate_limit_per_minute), and a log-mode flow delivery
+      that prints emailed single-use tokens clearly (self-hosting default).
+    - UserKeyring when a KEK is configured (CORTEX_KEK / CORTEX_KEK_FILE); it
+      is also handed to the StoreRegistry so shard vaults encrypt credentials.
+    - The OIDC/OAuth2 provider registry (Google, GitHub, disabled 'openai').
+    """
+
+    def __init__(self, active_settings: Any, registry: StoreRegistry) -> None:
+        from .accounts import SQLiteControlStore
+
+        self.settings = active_settings
+        accounts_db = active_settings.accounts_db_path
+        if accounts_db is None:
+            if active_settings.shard_root is not None:
+                accounts_db = active_settings.shard_root / "control" / "accounts.sqlite"
+            else:
+                accounts_db = active_settings.vault_path.parent / "accounts.sqlite"
+        self.accounts_db_path = accounts_db
+        self.control_store = SQLiteControlStore(accounts_db)
+        self.limiter = TokenBucketRateLimiter(active_settings.auth_rate_limit_per_minute)
+        # Log-mode deliveries also land here so operators/tests can retrieve a
+        # just-issued token without scraping stdout; bounded, newest last.
+        self.outbox: deque[dict[str, str]] = deque(maxlen=50)
+        self.keyring = self._build_keyring(accounts_db)
+        if self.keyring is not None:
+            registry.keyring = self.keyring
+        ttl_overrides: dict[str, int] = {}
+        if active_settings.auth_access_ttl_seconds > 0:
+            ttl_overrides["access_ttl_seconds"] = active_settings.auth_access_ttl_seconds
+        if active_settings.auth_refresh_idle_ttl_seconds > 0:
+            ttl_overrides["refresh_idle_ttl_seconds"] = active_settings.auth_refresh_idle_ttl_seconds
+        if active_settings.auth_refresh_absolute_ttl_seconds > 0:
+            ttl_overrides["refresh_absolute_ttl_seconds"] = active_settings.auth_refresh_absolute_ttl_seconds
+        self.service = AccountsService(
+            self.control_store,
+            limiter=self._limit,
+            flow_delivery=self._deliver_flow,
+            **ttl_overrides,
+        )
+        self.oidc = OidcProviderRegistry.from_settings(active_settings, self.control_store)
+
+    @staticmethod
+    def _build_keyring(accounts_db: Any):
+        # Lazy import keeps `cryptography` off the path until auth is enabled.
+        from .keyring import LocalKekProvider, UserKeyring
+
+        provider = LocalKekProvider()  # KekConfigError on malformed KEK: fail loudly at boot
+        if not provider.available:
+            return None
+        return UserKeyring(accounts_db.parent / "keyring.sqlite", provider)
+
+    # -- injectable hooks ---------------------------------------------------
+    def _limit(self, action: str, key: str) -> bool:
+        allowed, _retry = self.limiter.check(f"{action}:{key}")
+        return allowed
+
+    def _deliver_flow(self, kind: str, email: str, token: str) -> None:
+        self.outbox.append({"kind": kind, "email": email, "token": token})
+        if self.settings.auth_email_mode != "log":
+            _auth_logger.warning(
+                "CORTEX_AUTH_EMAIL_MODE=%s is not implemented yet; falling back to the log sink",
+                self.settings.auth_email_mode,
+            )
+        message = f"[cortex-auth] {kind} for {email}: token={token}"
+        print(message, flush=True)
+        _auth_logger.info(message)
+
+
+auth_runtime: AuthRuntime | None = None
+
+
+def init_auth_runtime() -> AuthRuntime | None:
+    """(Re)build the auth runtime from the CURRENT module globals. Called once
+    at import; tests that swap main_module.settings/store call it again (and
+    reset auth_runtime = None on teardown)."""
+    global auth_runtime
+    auth_runtime = AuthRuntime(settings, store) if settings.auth_enabled else None
+    return auth_runtime
+
+
+init_auth_runtime()
+
+
+def _auth_runtime_or_404() -> AuthRuntime:
+    if auth_runtime is None:
+        # Auth disabled: indistinguishable from a route that was never
+        # registered (FastAPI's default 404 body is {"detail": "Not Found"}).
+        raise HTTPException(status_code=404, detail="Not Found")
+    return auth_runtime
+
+
+def _session_data_plane_user(token: str, x_cortex_user: str | None) -> str:
+    """auth() branch for Bearer cxs_: one indexed session lookup -> user_id,
+    honoring account status (inside verify_session) AND control-plane user
+    status. Never grants admin; never accepted by admin_auth/mcp_auth."""
+    runtime = auth_runtime
+    if runtime is None:
+        raise HTTPException(status_code=401, detail="Missing or invalid Cortex API token")
+    session = runtime.service.verify_session(token)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Missing or invalid Cortex API token")
+    user_id = str(session["user_id"])
+    if x_cortex_user and x_cortex_user != user_id:
+        raise HTTPException(status_code=403, detail="Cortex session does not match requested user")
+    registry_user = store.get_user(user_id)
+    if registry_user is not None and str(registry_user.get("status") or "") != "active":
+        raise HTTPException(status_code=401, detail="Missing or invalid Cortex API token")
+    _enforce_rate_limit(user_id)
+    return user_id
+
+
+def session_auth(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    """Dependency for the session-authed account surface (/v1/auth/*). Returns
+    verify_session's payload: {'account', 'session_id', 'user_id', 'client'}."""
+    runtime = _auth_runtime_or_404()
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
+    token = authorization.split(" ", 1)[1].strip()
+    if not token.startswith(SESSION_TOKEN_PREFIX):
+        raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
+    session = runtime.service.verify_session(token)
+    if session is None:
+        raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
+    return session
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _auth_rate_limit(runtime: AuthRuntime, action: str, request: Request) -> None:
+    """Per-(action, client IP) throttle applied BEFORE any hashing work; the
+    AccountsService limiter additionally throttles per (action, identifier)."""
+    allowed, retry_after = runtime.limiter.check(f"{action}:ip:{_client_ip(request)}")
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many authentication attempts; slow down and retry.",
+            headers={"Retry-After": str(max(1, int(retry_after) + 1))},
+        )
+
+
+def _public_account(account: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "account_id": account.get("account_id"),
+        "user_id": account.get("user_id"),
+        "email": account.get("primary_email"),
+        "display_name": account.get("display_name") or "",
+        "status": account.get("status"),
+        "email_verified": bool(account.get("email_verified_at")),
+        "created_at": account.get("created_at"),
+    }
+
+
+def _session_pair_payload(session: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "token_type": "bearer",
+        "access_token": session["access"],
+        "refresh_token": session["refresh"],
+        "session_id": session["session_id"],
+        "account": _public_account(session["account"]),
+    }
+
+
+def _ensure_account_provisioned(account: dict[str, Any]) -> None:
+    """Activation -> provisioning: run the provision_user internals WITHOUT
+    auto-minting tokens (sessions are the token factory now). Users that were
+    already provisioned (invite/claim path) only get their shard materialized —
+    re-registering would clobber operator-set display_name/plan."""
+    user_id = str(account.get("user_id") or "").strip()
+    if not user_id:
+        return
+    if store.get_user(user_id) is None:
+        store.provision_user(
+            user_id,
+            display_name=str(account.get("display_name") or ""),
+            mint_tokens=False,
+        )
+    else:
+        store.store_for_user(user_id)  # materialize the shard (db + vault)
+
+
+def _consume_secret_flow(runtime: AuthRuntime, token: str, expected_kind: str) -> dict[str, Any]:
+    """Validate + atomically consume a '<flow_id>.<secret>' bearer token
+    (same salted-hash discipline as AccountsService flows). Uniform failure."""
+    flow_id, sep, secret = (token or "").partition(".")
+    if not sep or not flow_id or not secret:
+        raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
+    flow = runtime.control_store.get_flow(flow_id)
+    if flow is None or str(flow.get("kind") or "") != expected_kind:
+        raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
+    stored = str(flow.get("secret_hash") or "")
+    salt, sep2, digest = stored.partition("$")
+    if not sep2 or not hmac.compare_digest(token_verify_hash(secret, salt), digest):
+        raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
+    now_iso = iso_utc(utc_now())
+    if str(flow.get("expires_at") or "") <= now_iso:
+        raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
+    consumed = runtime.control_store.consume_flow(flow_id, now_iso)
+    if consumed is None:
+        raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
+    return consumed
+
+
+def _default_oauth_redirect(provider: str) -> str:
+    return f"{settings.public_app_url.rstrip('/')}/v1/auth/oauth/{provider}/callback"
+
+
+# --------------------------------------------------------- email + password
+
+@app.post("/v1/auth/signup")
+def auth_signup(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    runtime = _auth_runtime_or_404()
+    _auth_rate_limit(runtime, "signup", request)
+    try:
+        return runtime.service.signup(
+            str(payload.get("email") or ""),
+            str(payload.get("password") or ""),
+            display_name=str(payload.get("display_name") or "")[:160],
+        )
+    except RateLimited:
+        raise HTTPException(status_code=429, detail="rate limited")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/v1/auth/verify-email")
+def auth_verify_email(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    runtime = _auth_runtime_or_404()
+    _auth_rate_limit(runtime, "verify_email", request)
+    try:
+        account = runtime.service.verify_email(str(payload.get("token") or ""))
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    _ensure_account_provisioned(account)
+    return {"ok": True, "account": _public_account(account)}
+
+
+@app.post("/v1/auth/login")
+def auth_login(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    runtime = _auth_runtime_or_404()
+    _auth_rate_limit(runtime, "login", request)
+    try:
+        session = runtime.service.login(
+            str(payload.get("email") or ""),
+            str(payload.get("password") or ""),
+            client=str(payload.get("client") or "web")[:20],
+            ip=_client_ip(request),
+            user_agent=(request.headers.get("user-agent") or "")[:200] or None,
+        )
+    except RateLimited:
+        raise HTTPException(status_code=429, detail="rate limited")
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    return _session_pair_payload(session)
+
+
+@app.post("/v1/auth/refresh")
+def auth_refresh(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    runtime = _auth_runtime_or_404()
+    _auth_rate_limit(runtime, "refresh", request)
+    try:
+        session = runtime.service.refresh(str(payload.get("refresh_token") or ""))
+    except RateLimited:
+        raise HTTPException(status_code=429, detail="rate limited")
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    return _session_pair_payload(session)
+
+
+@app.post("/v1/auth/logout")
+def auth_logout(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    runtime = _auth_runtime_or_404()
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
+    try:
+        runtime.service.logout(authorization.split(" ", 1)[1].strip())
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    return {"ok": True}
+
+
+@app.get("/v1/auth/session")
+def auth_session(session: dict[str, Any] = Depends(session_auth)) -> dict[str, Any]:
+    return {
+        "account": _public_account(session["account"]),
+        "session_id": session["session_id"],
+        "user_id": session["user_id"],
+        "client": session["client"],
+    }
+
+
+@app.post("/v1/auth/password/reset/request")
+def auth_password_reset_request(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    runtime = _auth_runtime_or_404()
+    _auth_rate_limit(runtime, "password_reset", request)
+    try:
+        return runtime.service.request_password_reset(str(payload.get("email") or ""))
+    except RateLimited:
+        raise HTTPException(status_code=429, detail="rate limited")
+
+
+@app.post("/v1/auth/password/reset/confirm")
+def auth_password_reset_confirm(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    runtime = _auth_runtime_or_404()
+    _auth_rate_limit(runtime, "password_reset_confirm", request)
+    try:
+        runtime.service.confirm_password_reset(
+            str(payload.get("token") or ""), str(payload.get("new_password") or "")
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------- OAuth
+
+@app.get("/v1/auth/providers")
+def auth_providers() -> dict[str, Any]:
+    runtime = _auth_runtime_or_404()
+    return {"results": runtime.oidc.enabled_providers()}
+
+
+@app.get("/v1/auth/oauth/{provider}/start")
+def auth_oauth_start(
+    provider: str,
+    request: Request,
+    redirect_uri: str = Query(default="", max_length=500),
+    app_flow: str = Query(default="", max_length=120),
+) -> dict[str, Any]:
+    runtime = _auth_runtime_or_404()
+    _auth_rate_limit(runtime, "oauth_start", request)
+    try:
+        return runtime.oidc.start(
+            provider,
+            redirect_uri or _default_oauth_redirect(provider),
+            app_flow_id=app_flow or None,
+        )
+    except OidcError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/v1/auth/oauth/{provider}/callback")
+def auth_oauth_callback(
+    provider: str,
+    request: Request,
+    code: str = Query(default="", max_length=4000),
+    state: str = Query(default="", max_length=500),
+    error: str = Query(default="", max_length=500),
+) -> Any:
+    runtime = _auth_runtime_or_404()
+    _auth_rate_limit(runtime, "oauth_callback", request)
+    if error:
+        raise HTTPException(status_code=400, detail="The provider did not authorize Cortex.")
+    try:
+        identity = runtime.oidc.complete(provider, state=state, code=code)
+    except OidcError as exc:
+        _auth_logger.info("oauth callback rejected for %s: %s", provider, exc)
+        raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE) from exc
+    try:
+        result = runtime.service.find_or_challenge_identity(
+            provider,
+            str(identity["subject"]),
+            email=identity.get("email"),
+            email_verified=bool(identity.get("email_verified")),
+            display_name=str(identity.get("display_name") or "")[:160],
+            profile={"provider": provider},
+        )
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    if result["action"] == "link_required":
+        # Never-silent-auto-link: the user must authenticate with the existing
+        # method, then complete the link via POST /v1/auth/oauth/{provider}/link.
+        return JSONResponse(
+            status_code=409,
+            content={
+                "action": "link_required",
+                "flow_id": result["flow_id"],
+                "challenge": result["challenge"],
+                "detail": "Sign in with your existing method, then link this provider.",
+            },
+        )
+    account = result["account"]
+    if str(account.get("status") or "") == "active":
+        # OAuth auto-signup with a provider-verified email activates directly;
+        # provision the user now (no tokens minted).
+        _ensure_account_provisioned(account)
+    app_flow_id = identity.get("app_flow_id")
+    if app_flow_id:
+        # App login: NO token ever rides a redirect URL. The callback completes
+        # the flow server-side; the app polls the pair out with its poll_secret.
+        _complete_app_login_flow(runtime, str(app_flow_id), account)
+        return {"action": result["action"], "status": "complete_in_app"}
+    session = runtime.service.mint_session(
+        account,
+        client="web",
+        ip=_client_ip(request),
+        user_agent=(request.headers.get("user-agent") or "")[:200] or None,
+    )
+    return {"action": result["action"], **_session_pair_payload(session)}
+
+
+@app.post("/v1/auth/oauth/{provider}/link")
+def auth_oauth_link(
+    provider: str, payload: dict[str, Any], session: dict[str, Any] = Depends(session_auth)
+) -> dict[str, Any]:
+    runtime = _auth_runtime_or_404()
+    challenge = str(payload.get("challenge") or "")
+    flow_id = challenge.partition(".")[0]
+    pending = runtime.control_store.get_flow(flow_id) if flow_id else None
+    if pending is not None and (pending.get("provider") or provider) != provider:
+        raise HTTPException(status_code=409, detail="challenge belongs to another provider")
+    try:
+        identity = runtime.service.complete_link_challenge(
+            challenge, str(session["account"]["account_id"])
+        )
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "identity": {"identity_id": identity["identity_id"], "provider": identity["provider"]},
+    }
+
+
+@app.delete("/v1/auth/oauth/{provider}/unlink")
+def auth_oauth_unlink(provider: str, session: dict[str, Any] = Depends(session_auth)) -> dict[str, Any]:
+    runtime = _auth_runtime_or_404()
+    account_id = str(session["account"]["account_id"])
+    identities = runtime.control_store.list_identities(account_id)
+    target = next((row for row in identities if row["provider"] == provider), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="provider is not linked to this account")
+    try:
+        runtime.service.unlink_identity(account_id, str(target["identity_id"]))
+    except AuthError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ok": True}
+
+
+# ------------------------------------------------------------- app login flow
+
+@app.post("/v1/auth/app/start")
+def auth_app_start(request: Request) -> dict[str, Any]:
+    """macOS app login handoff: the app opens browser_url, the OAuth callback
+    completes the flow server-side, and the app polls the session pair out with
+    its poll_secret (salted-hashed at rest, single-use). No token in any URL."""
+    runtime = _auth_runtime_or_404()
+    _auth_rate_limit(runtime, "app_start", request)
+    flow_id = f"flw_{secrets.token_hex(13)}"
+    poll_secret = secrets.token_urlsafe(32)
+    salt = secrets.token_hex(16)
+    now = utc_now()
+    expires_at = iso_utc(now + timedelta(seconds=APP_LOGIN_FLOW_TTL_SECONDS))
+    runtime.control_store.create_flow(
+        flow_id=flow_id,
+        kind="app_login",
+        payload={"status": "pending"},
+        secret_hash=f"{salt}${token_verify_hash(poll_secret, salt)}",
+        expires_at=expires_at,
+        now=iso_utc(now),
+    )
+    base = settings.public_app_url.rstrip("/")
+    return {
+        "flow_id": flow_id,
+        "poll_secret": poll_secret,
+        "browser_url": f"{base}/login?app_flow={flow_id}",
+        "expires_at": expires_at,
+    }
+
+
+def _complete_app_login_flow(runtime: AuthRuntime, flow_id: str, account: dict[str, Any]) -> None:
+    """Attach the authenticated account to a pending app-login flow by writing
+    a companion result row (same secret hash, same expiry). The session pair is
+    minted only at poll time, so no session token is ever at rest."""
+    flow = runtime.control_store.get_flow(flow_id)
+    now_iso = iso_utc(utc_now())
+    if (
+        flow is None
+        or str(flow.get("kind") or "") != "app_login"
+        or flow.get("consumed_at")
+        or str(flow.get("expires_at") or "") <= now_iso
+    ):
+        raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
+    try:
+        runtime.control_store.create_flow(
+            flow_id=f"{flow_id}.result",
+            kind="app_login",
+            payload={"account_id": account["account_id"], "client": "macos"},
+            secret_hash=flow.get("secret_hash"),
+            expires_at=str(flow["expires_at"]),
+            now=now_iso,
+        )
+    except Exception as exc:  # duplicate completion of the same flow
+        raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE) from exc
+
+
+@app.post("/v1/auth/app/poll")
+def auth_app_poll(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    runtime = _auth_runtime_or_404()
+    _auth_rate_limit(runtime, "app_poll", request)
+    flow_id = str(payload.get("flow_id") or "")
+    poll_secret = str(payload.get("poll_secret") or "")
+    flow = runtime.control_store.get_flow(flow_id)
+    if flow is None or str(flow.get("kind") or "") != "app_login":
+        raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
+    stored = str(flow.get("secret_hash") or "")
+    salt, sep, digest = stored.partition("$")
+    if not sep or not hmac.compare_digest(token_verify_hash(poll_secret, salt), digest):
+        raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
+    now_iso = iso_utc(utc_now())
+    if str(flow.get("expires_at") or "") <= now_iso or flow.get("consumed_at"):
+        raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
+    result = runtime.control_store.get_flow(f"{flow_id}.result")
+    if result is None:
+        return {"status": "pending"}
+    consumed = runtime.control_store.consume_flow(str(result["flow_id"]), now_iso)
+    if consumed is None:  # single-use: only the first successful poll wins
+        raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
+    runtime.control_store.consume_flow(flow_id, now_iso)
+    try:
+        result_payload = json.loads(consumed.get("payload_json") or "{}")
+    except ValueError:
+        result_payload = {}
+    try:
+        session = runtime.service.mint_session(
+            str(result_payload.get("account_id") or ""),
+            client=str(result_payload.get("client") or "macos"),
+            ip=_client_ip(request),
+            user_agent=(request.headers.get("user-agent") or "")[:200] or None,
+        )
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    return {"status": "complete", **_session_pair_payload(session)}
+
+
+# --------------------------------------------------- self-serve token minting
+
+@app.get("/v1/auth/tokens")
+def auth_list_tokens(
+    audience: str | None = Query(default=None, pattern="^(api|mcp)$"),
+    include_revoked: bool = Query(default=False),
+    session: dict[str, Any] = Depends(session_auth),
+) -> dict[str, Any]:
+    return {
+        "results": store.list_tokens(
+            str(session["user_id"]), audience=audience, include_revoked=include_revoked
+        )
+    }
+
+
+@app.post("/v1/auth/tokens", status_code=201)
+def auth_mint_token(
+    payload: dict[str, Any], session: dict[str, Any] = Depends(session_auth)
+) -> dict[str, Any]:
+    """Session-authed self-serve mint of the EXISTING cxa_/cxm_ token kinds via
+    the registry (control-index row carries account_id linkage). The plaintext
+    token is returned exactly once."""
+    account = session["account"]
+    if str(account.get("status") or "") != "active":
+        raise HTTPException(status_code=403, detail="verify your email before minting tokens")
+    user_id = str(session["user_id"])
+    audience = str(payload.get("audience") or "api").strip().lower()
+    label = str(payload.get("label") or "").strip()[:120]
+    scopes = payload.get("scopes")
+    account_id = str(account["account_id"])
+    _ensure_account_provisioned(account)
+    if audience == "api":
+        minted = store.create_api_token(
+            user_id,
+            label=label or "Self-serve REST token",
+            scopes=scopes if scopes is not None else list(DEFAULT_SELF_SERVE_API_SCOPES),
+            account_id=account_id,
+        )
+    elif audience == "mcp":
+        minted = store.create_mcp_token(
+            user_id,
+            label=label or "Self-serve MCP token",
+            scopes=scopes if scopes is not None else list(DEFAULT_SELF_SERVE_MCP_SCOPES),
+            account_id=account_id,
+        )
+    else:
+        raise HTTPException(status_code=422, detail="audience must be 'api' or 'mcp'")
+    return {
+        "token": minted["token"],
+        "token_id": minted.get("token_id"),
+        "audience": audience,
+        "label": minted.get("label"),
+        "scopes": minted.get("scopes"),
+        "account_id": account_id,
+    }
+
+
+@app.delete("/v1/auth/tokens/{token_id}")
+def auth_revoke_token(token_id: str, session: dict[str, Any] = Depends(session_auth)) -> dict[str, Any]:
+    revoked = store.revoke_token(str(session["user_id"]), token_id)
+    if not revoked:
+        raise HTTPException(status_code=404, detail="Token not found")
+    return revoked
+
+
+# ------------------------------------------------------------ account deletion
+
+@app.delete("/v1/auth/account")
+def auth_delete_account(
+    request: Request,
+    payload: dict[str, Any] | None = None,
+    session: dict[str, Any] = Depends(session_auth),
+) -> dict[str, Any]:
+    """Step-up account deletion: requires the password in the body when one
+    exists. Order (design doc section 4): crypto-shred the user's key material
+    FIRST (every CXE1 blob — including inside backups — becomes permanently
+    unreadable), then the conventional deprovision sweep, then mark_deleted
+    (which revokes every session)."""
+    runtime = _auth_runtime_or_404()
+    account = session["account"]
+    account_id = str(account["account_id"])
+    user_id = str(session["user_id"])
+    credential = runtime.control_store.get_password_credential(account_id)
+    if credential is not None:
+        supplied = str((payload or {}).get("password") or "")
+        if not supplied or not runtime.service.engine.verify(
+            str(credential["password_hash"]), supplied
+        ):
+            raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE)
+    shred: dict[str, Any] | None = None
+    if runtime.keyring is not None and runtime.keyring.available:
+        shred = runtime.keyring.crypto_shred(user_id)
+    try:
+        if store.get_user(user_id) is not None:
+            data_report = store.deprovision_user(user_id)
+        else:
+            data_report = store.delete_user_data(
+                user_id, include_backups=(store.router.mode != "bucket")
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    marked = runtime.service.mark_deleted(account_id)
+    return {
+        "deleted": True,
+        "account_id": account_id,
+        "user_id": user_id,
+        "account_status": marked.get("status"),
+        "crypto_shred": shred,
+        "data": data_report,
+    }
+
+
+# ---------------------------------------------------- invite / claim / backfill
+
+@app.post("/v1/admin/users/{user_id}/invite", status_code=201)
+def admin_invite_user(user_id: str, _admin: bool = Depends(admin_auth)) -> dict[str, Any]:
+    """Mint a single-use claim code binding a login to an EXISTING provisioned
+    user_id (legacy operator-provisioned users keep their shard and tokens)."""
+    runtime = _auth_runtime_or_404()
+    if store.get_user(user_id) is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if runtime.control_store.get_account_by_user_id(user_id) is not None:
+        raise HTTPException(status_code=409, detail="user already has an account")
+    flow_id = f"flw_{secrets.token_hex(13)}"
+    secret = secrets.token_urlsafe(32)
+    salt = secrets.token_hex(16)
+    now = utc_now()
+    expires_at = iso_utc(now + timedelta(seconds=ACCOUNT_CLAIM_TTL_SECONDS))
+    runtime.control_store.create_flow(
+        flow_id=flow_id,
+        kind="account_claim",
+        payload={"user_id": user_id},
+        secret_hash=f"{salt}${token_verify_hash(secret, salt)}",
+        expires_at=expires_at,
+        now=iso_utc(now),
+    )
+    return {"user_id": user_id, "claim_code": f"{flow_id}.{secret}", "expires_at": expires_at}
+
+
+@app.post("/v1/auth/claim")
+def auth_claim(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    runtime = _auth_runtime_or_404()
+    _auth_rate_limit(runtime, "claim", request)
+    flow = _consume_secret_flow(runtime, str(payload.get("code") or ""), "account_claim")
+    try:
+        flow_payload = json.loads(flow.get("payload_json") or "{}")
+    except ValueError:
+        flow_payload = {}
+    try:
+        account = runtime.service.claim_account_for_user(
+            str(flow_payload.get("user_id") or ""),
+            str(payload.get("email") or ""),
+            str(payload.get("password") or "") or None,
+            display_name=str(payload.get("display_name") or "")[:160],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except AuthError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ok": True, "next": "verify_email", "account": _public_account(account)}
+
+
+@app.post("/v1/admin/encryption/backfill")
+def admin_encryption_backfill(
+    limit: int = Query(default=1000, ge=1, le=10000), _admin: bool = Depends(admin_auth)
+) -> dict[str, Any]:
+    """Ensure DEKs exist for every provisioned user and lazily re-encrypt any
+    legacy plaintext credentials through the vault read/write-back path.
+    Reports the remaining plaintext gauge (release gate: reach 0, then flip
+    CORTEX_REQUIRE_ENCRYPTED_CREDENTIALS)."""
+    runtime = _auth_runtime_or_404()
+    keyring = runtime.keyring
+    if keyring is None or not keyring.available:
+        raise HTTPException(status_code=409, detail="no KEK configured; encryption backfill unavailable")
+    from .keyring import ShreddedKeyError
+
+    users_processed = 0
+    deks_ensured = 0
+    skipped_shredded = 0
+    migrated = 0
+    remaining_plaintext = 0
+    for user in store.list_users(limit=limit):
+        user_id = str(user["user_id"])
+        users_processed += 1
+        try:
+            # encrypt_blob lazily mints the user's DEK when missing.
+            keyring.encrypt_blob(user_id, "credentials", b"cortex-dek-backfill-probe")
+            deks_ensured += 1
+        except ShreddedKeyError:
+            skipped_shredded += 1
+            continue
+        vault = getattr(store.store_for_user(user_id), "vault", None)
+        if vault is None:
+            continue
+        before = _plaintext_credential_records(vault, user_id)
+        for source_account_id in before:
+            # The encrypting read path performs the write-back migration.
+            vault.read_source_credential(user_id=user_id, source_account_id=source_account_id)
+        after = _plaintext_credential_records(vault, user_id)
+        migrated += max(0, len(before) - len(after))
+        remaining_plaintext += len(after)
+    return {
+        "status": "ok" if remaining_plaintext == 0 else "attention",
+        "users_processed": users_processed,
+        "deks_ensured": deks_ensured,
+        "skipped_shredded": skipped_shredded,
+        "migrated": migrated,
+        "remaining_plaintext": remaining_plaintext,
+    }
+
+
+def _plaintext_credential_records(vault: Any, user_id: str) -> list[str]:
+    try:
+        data = json.loads(vault.credentials_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    records = (data.get("users") or {}).get(user_id)
+    if not isinstance(records, dict):
+        return []
+    return [
+        key
+        for key, record in records.items()
+        if isinstance(record, dict)
+        and isinstance(record.get("payload"), dict)
+        and not record.get("payload_cxe1")
+    ]
 
 
 @app.post("/mcp")

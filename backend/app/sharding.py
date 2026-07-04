@@ -883,12 +883,15 @@ class StoreRegistry:
         api_scopes: list[str] | tuple[str, ...] | str | None = None,
         mcp_scopes: list[str] | tuple[str, ...] | str | None = ("read",),
         allow_existing: bool = False,
+        mint_tokens: bool = True,
     ) -> dict[str, Any]:
         """Create a new hosted user end to end: register it in the control-plane
         registry, materialize its isolated shard, and mint an initial API + MCP
         token pair (returned once, in plaintext). Idempotency is opt-in via
         `allow_existing`; by default re-provisioning a known user is rejected so a
-        second call cannot silently accumulate token pairs."""
+        second call cannot silently accumulate token pairs. `mint_tokens=False`
+        skips the token pair entirely (accounts-driven activation: the user mints
+        their own tokens later through the session-authed self-serve surface)."""
         normalized_user = str(user_id or "").strip()
         if not normalized_user:
             raise ValueError("user_id is required")
@@ -903,22 +906,22 @@ class StoreRegistry:
         )
         assignment = self.assignment_for(normalized_user)
         self.store_for_user(normalized_user)  # materialize the shard (db + vault)
+        result: dict[str, Any] = {"user": user, "shard": assignment.as_dict()}
+        if not mint_tokens:
+            return result
         api_token = self.create_api_token(normalized_user, label="Provisioned REST token", scopes=api_scopes)
         mcp_token = self.create_mcp_token(normalized_user, label="Provisioned MCP token", scopes=mcp_scopes)
-        return {
-            "user": user,
-            "shard": assignment.as_dict(),
-            "api_token": {
-                "token": api_token["token"],
-                "token_id": api_token.get("token_id"),
-                "scopes": api_token.get("scopes"),
-            },
-            "mcp_token": {
-                "token": mcp_token["token"],
-                "token_id": mcp_token.get("token_id"),
-                "scopes": mcp_token.get("scopes"),
-            },
+        result["api_token"] = {
+            "token": api_token["token"],
+            "token_id": api_token.get("token_id"),
+            "scopes": api_token.get("scopes"),
         }
+        result["mcp_token"] = {
+            "token": mcp_token["token"],
+            "token_id": mcp_token.get("token_id"),
+            "scopes": mcp_token.get("scopes"),
+        }
+        return result
 
     def list_users(self, *, limit: int = 100, status: str | None = None) -> list[dict[str, Any]]:
         return self.token_index.list_users(limit=limit, status=status)
