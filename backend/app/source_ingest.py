@@ -343,6 +343,9 @@ class SourceAsset:
     display_path: str
     data: bytes | None = None
     filesystem_path: Path | None = None
+    # Set when the underlying file was larger than MAX_TEXT_BYTES and only the
+    # first window could be read. Surfaced on records as `source_file_truncated`.
+    read_truncated: bool = False
 
     @property
     def suffix(self) -> str:
@@ -354,7 +357,14 @@ class SourceAsset:
         if self.filesystem_path is None:
             return b""
         if self.filesystem_path.stat().st_size > MAX_TEXT_BYTES:
-            return b""
+            # A file past the byte cap used to be treated as empty — silent
+            # whole-file loss. Read the first MAX_TEXT_BYTES instead and mark
+            # the asset truncated so downstream records can surface it.
+            # (`read_text` decodes with errors-replace, so a cut multibyte
+            # character at the boundary is safe.)
+            self.read_truncated = True
+            with self.filesystem_path.open("rb") as handle:
+                return handle.read(MAX_TEXT_BYTES)
         return self.filesystem_path.read_bytes()
 
     def read_text(self) -> str:
@@ -444,6 +454,19 @@ def _parsed_source_records(paths: Iterable[str], source_hint: str = "") -> list[
         parsed = _parse_single_asset(asset, hint)
         if parsed:
             records.extend(parsed)
+
+    # Surface truncated reads (files past MAX_TEXT_BYTES) on every record that
+    # came from such an asset, so the loss is observable instead of silent.
+    # `read_truncated` is set lazily by `read_bytes`, so check after parsing.
+    truncated_paths = {asset.display_path for asset in assets if asset.read_truncated}
+    if truncated_paths:
+        # Records key their asset by display_path (see `_record_asset_key`);
+        # per-item parsers like mbox suffix it with `#<index>`.
+        truncated_prefixes = tuple(f"{path}#" for path in truncated_paths)
+        for record in records:
+            key = _record_asset_key(record)
+            if key and (key in truncated_paths or key.startswith(truncated_prefixes)):
+                record.metadata = {**record.metadata, "source_file_truncated": True}
 
     expanded: list[SourceRecord] = []
     for record in records:
@@ -617,6 +640,36 @@ def _source_url_with_chunk(source_url: str | None, index: int) -> str | None:
     return f"{source_url}#chunk-{index}"
 
 
+def _batched(items: list, batch_size: int) -> list[list]:
+    if batch_size <= 0:
+        return [items] if items else []
+    return [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
+
+
+def _label_record_parts(records: list[SourceRecord]) -> list[SourceRecord]:
+    """Label sibling records built from batches of one oversized export.
+
+    Parsers used to hard-cap item counts (e.g. tweets past 1000 were silently
+    dropped); the cap is now a batch size and each batch becomes its own record.
+    When there is more than one batch, each part is labeled `(part i/n)` with a
+    per-part source locator and chunk metadata. A single record is returned
+    untouched so small imports stay byte-identical to the pre-batching output.
+    """
+    if len(records) <= 1:
+        return records
+    count = len(records)
+    return [
+        SourceRecord(
+            source=record.source,
+            title=f"{record.title} (part {index}/{count})",
+            content=record.content,
+            source_url=_source_url_with_chunk(record.source_url, index),
+            metadata={**record.metadata, "chunk_index": index, "chunk_count": count},
+        )
+        for index, record in enumerate(records, start=1)
+    ]
+
+
 def _collect_assets(paths: Iterable[str]) -> list[SourceAsset]:
     assets: list[SourceAsset] = []
     for raw_path in paths:
@@ -645,18 +698,26 @@ def _assets_from_zip(path: Path) -> list[SourceAsset]:
     try:
         with zipfile.ZipFile(path) as archive:
             for info in archive.infolist():
-                if info.is_dir() or info.file_size > MAX_TEXT_BYTES:
+                if info.is_dir():
                     continue
                 name = info.filename
                 if Path(name).name.startswith("."):
                     continue
                 if Path(name).suffix.lower() == ".zip":
                     continue
+                truncated = info.file_size > MAX_TEXT_BYTES
                 try:
-                    data = archive.read(info)
+                    if truncated:
+                        # Oversized members used to be skipped entirely — silent
+                        # whole-file loss. Stream the first MAX_TEXT_BYTES and
+                        # mark the asset truncated instead.
+                        with archive.open(info) as member:
+                            data = member.read(MAX_TEXT_BYTES)
+                    else:
+                        data = archive.read(info)
                 except (KeyError, RuntimeError, zipfile.BadZipFile):
                     continue
-                assets.append(SourceAsset(name=name, display_path=f"{path}::{name}", data=data))
+                assets.append(SourceAsset(name=name, display_path=f"{path}::{name}", data=data, read_truncated=truncated))
     except zipfile.BadZipFile:
         return [SourceAsset(name=path.name, display_path=str(path), filesystem_path=path)]
     return assets
@@ -1270,22 +1331,25 @@ def _parse_google_chat(assets: list[SourceAsset], hint: str) -> list[SourceRecor
         if not messages:
             continue
         title = _path_parts(asset.name)[-2] if len(_path_parts(asset.name)) > 1 else "Google Chat"
-        lines = ["Source: Google Chat", f"Conversation: {title}", f"File: {asset.name}", "", "--- Messages ---"]
-        first_created = ""
-        for message in messages[:1500]:
-            if not isinstance(message, dict):
-                continue
-            text = _message_text_value(message, ("text", "text_body", "message", "body", "content"))
-            if not text:
-                continue
-            sender = _person_name(message.get("creator") or message.get("sender") or message.get("from")) or str(message.get("sender_name") or "unknown")
-            created = str(message.get("created_date") or message.get("createdDate") or message.get("create_time") or message.get("timestamp") or "").strip()
-            if not first_created and created:
-                first_created = created
-            lines.append(f"{created} {sender}: {text}".strip())
-        if len(lines) > 5:
-            source_url = _source_locator(asset.display_path, service="google-chat", conversation=title, file=Path(asset.name).name, first_created=first_created)
-            records.append(SourceRecord("google-chat", f"Google Chat {title}", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Google Chat"}))
+        batch_records: list[SourceRecord] = []
+        for batch in _batched(messages, 1500):
+            lines = ["Source: Google Chat", f"Conversation: {title}", f"File: {asset.name}", "", "--- Messages ---"]
+            first_created = ""
+            for message in batch:
+                if not isinstance(message, dict):
+                    continue
+                text = _message_text_value(message, ("text", "text_body", "message", "body", "content"))
+                if not text:
+                    continue
+                sender = _person_name(message.get("creator") or message.get("sender") or message.get("from")) or str(message.get("sender_name") or "unknown")
+                created = str(message.get("created_date") or message.get("createdDate") or message.get("create_time") or message.get("timestamp") or "").strip()
+                if not first_created and created:
+                    first_created = created
+                lines.append(f"{created} {sender}: {text}".strip())
+            if len(lines) > 5:
+                source_url = _source_locator(asset.display_path, service="google-chat", conversation=title, file=Path(asset.name).name, first_created=first_created)
+                batch_records.append(SourceRecord("google-chat", f"Google Chat {title}", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Google Chat"}))
+        records.extend(_label_record_parts(batch_records))
     return records
 
 
@@ -1297,72 +1361,75 @@ def _parse_teams(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
             continue
         if "teams" not in path_hint and hint not in {"teams", "microsoft-teams"}:
             continue
-        record: SourceRecord | None = None
         if asset.suffix == ".json":
-            record = _teams_json_record(asset)
+            records.extend(_teams_json_records(asset))
         elif asset.suffix == ".csv":
-            record = _teams_csv_record(asset)
-        if record:
-            records.append(record)
+            records.extend(_teams_csv_records(asset))
     return records
 
 
-def _teams_json_record(asset: SourceAsset) -> SourceRecord | None:
+def _teams_json_records(asset: SourceAsset) -> list[SourceRecord]:
     try:
         payload = json.loads(asset.read_text())
     except (json.JSONDecodeError, RecursionError):
-        return None
+        return []
     messages = _message_list_from_payload(payload)
     if not messages:
-        return None
+        return []
     title = _path_parts(asset.name)[-2] if len(_path_parts(asset.name)) > 1 else Path(asset.name).stem or "Teams"
-    lines = ["Source: Microsoft Teams", f"Conversation: {title}", f"File: {asset.name}", "", "--- Messages ---"]
-    first_created = ""
-    for message in messages[:1500]:
-        if not isinstance(message, dict):
+    batch_records: list[SourceRecord] = []
+    for batch in _batched(messages, 1500):
+        lines = ["Source: Microsoft Teams", f"Conversation: {title}", f"File: {asset.name}", "", "--- Messages ---"]
+        first_created = ""
+        for message in batch:
+            if not isinstance(message, dict):
+                continue
+            body = message.get("body")
+            text = ""
+            if isinstance(body, dict):
+                text = _message_text_value(body, ("content", "text", "body"))
+            text = text or _message_text_value(message, ("content", "message", "text", "body"))
+            if not text:
+                continue
+            sender = _person_name(message.get("from") or message.get("sender") or message.get("user")) or str(message.get("userDisplayName") or message.get("from") or "unknown")
+            created = str(message.get("createdDateTime") or message.get("created_at") or message.get("date") or message.get("timestamp") or "").strip()
+            if not first_created and created:
+                first_created = created
+            lines.append(f"{created} {sender}: {_html_to_text(text)}".strip())
+        if len(lines) <= 5:
             continue
-        body = message.get("body")
-        text = ""
-        if isinstance(body, dict):
-            text = _message_text_value(body, ("content", "text", "body"))
-        text = text or _message_text_value(message, ("content", "message", "text", "body"))
-        if not text:
-            continue
-        sender = _person_name(message.get("from") or message.get("sender") or message.get("user")) or str(message.get("userDisplayName") or message.get("from") or "unknown")
-        created = str(message.get("createdDateTime") or message.get("created_at") or message.get("date") or message.get("timestamp") or "").strip()
-        if not first_created and created:
-            first_created = created
-        lines.append(f"{created} {sender}: {_html_to_text(text)}".strip())
-    if len(lines) <= 5:
-        return None
-    source_url = _source_locator(asset.display_path, service="teams", conversation=title, file=Path(asset.name).name, first_created=first_created)
-    return SourceRecord("teams", f"Teams {title}", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Microsoft Teams"})
+        source_url = _source_locator(asset.display_path, service="teams", conversation=title, file=Path(asset.name).name, first_created=first_created)
+        batch_records.append(SourceRecord("teams", f"Teams {title}", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Microsoft Teams"}))
+    return _label_record_parts(batch_records)
 
 
-def _teams_csv_record(asset: SourceAsset) -> SourceRecord | None:
+def _teams_csv_records(asset: SourceAsset) -> list[SourceRecord]:
     rows = _csv_rows(asset)
     if not rows:
-        return None
+        return []
     normalized_headers = {_normalize_header(key) for key in rows[0].keys()}
     if not normalized_headers & {"content", "message", "text", "body"}:
-        return None
+        return []
     title = _path_parts(asset.name)[-2] if len(_path_parts(asset.name)) > 1 else Path(asset.name).stem or "Teams"
-    lines = ["Source: Microsoft Teams", f"Conversation: {title}", f"File: {asset.name}", "", "--- Messages ---"]
-    first_created = ""
-    for row in rows[:1500]:
-        normalized = {_normalize_header(key): str(value or "").strip() for key, value in row.items()}
-        text = normalized.get("content") or normalized.get("message") or normalized.get("text") or normalized.get("body") or ""
-        if not text:
+    batch_records: list[SourceRecord] = []
+    for batch in _batched(rows, 1500):
+        lines = ["Source: Microsoft Teams", f"Conversation: {title}", f"File: {asset.name}", "", "--- Messages ---"]
+        first_created = ""
+        for row in batch:
+            normalized = {_normalize_header(key): str(value or "").strip() for key, value in row.items()}
+            text = normalized.get("content") or normalized.get("message") or normalized.get("text") or normalized.get("body") or ""
+            if not text:
+                continue
+            sender = normalized.get("from") or normalized.get("sender") or normalized.get("user") or normalized.get("user_display_name") or "unknown"
+            created = normalized.get("created_date_time") or normalized.get("created_at") or normalized.get("date") or normalized.get("timestamp") or ""
+            if not first_created and created:
+                first_created = created
+            lines.append(f"{created} {sender}: {_html_to_text(text)}".strip())
+        if len(lines) <= 5:
             continue
-        sender = normalized.get("from") or normalized.get("sender") or normalized.get("user") or normalized.get("user_display_name") or "unknown"
-        created = normalized.get("created_date_time") or normalized.get("created_at") or normalized.get("date") or normalized.get("timestamp") or ""
-        if not first_created and created:
-            first_created = created
-        lines.append(f"{created} {sender}: {_html_to_text(text)}".strip())
-    if len(lines) <= 5:
-        return None
-    source_url = _source_locator(asset.display_path, service="teams", conversation=title, file=Path(asset.name).name, first_created=first_created)
-    return SourceRecord("teams", f"Teams {title}", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Microsoft Teams"})
+        source_url = _source_locator(asset.display_path, service="teams", conversation=title, file=Path(asset.name).name, first_created=first_created)
+        batch_records.append(SourceRecord("teams", f"Teams {title}", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Microsoft Teams"}))
+    return _label_record_parts(batch_records)
 
 
 def _parse_zoom_transcripts(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
@@ -1499,18 +1566,25 @@ def _parse_twitter_archive(assets: list[SourceAsset], hint: str) -> list[SourceR
         if not isinstance(payload, list):
             continue
         if "direct" in lowered or "dm" in lowered:
-            record = _twitter_dm_record(asset, payload)
+            batch_records = [
+                record
+                for batch in _batched(payload, 300)
+                if (record := _twitter_dm_record(asset, batch)) is not None
+            ]
         else:
-            record = _twitter_tweet_record(asset, payload)
-        if record:
-            records.append(record)
+            batch_records = [
+                record
+                for batch in _batched(payload, 1000)
+                if (record := _twitter_tweet_record(asset, batch)) is not None
+            ]
+        records.extend(_label_record_parts(batch_records))
     return records
 
 
 def _twitter_tweet_record(asset: SourceAsset, payload: list[Any]) -> SourceRecord | None:
     lines = [f"Source: Twitter/X", f"Archive file: {asset.name}", "", "--- Tweets ---"]
     first_created = ""
-    for item in payload[:1000]:
+    for item in payload:
         tweet = item.get("tweet") if isinstance(item, dict) else None
         if not isinstance(tweet, dict):
             continue
@@ -1534,7 +1608,7 @@ def _twitter_dm_record(asset: SourceAsset, payload: list[Any]) -> SourceRecord |
     lines = [f"Source: Twitter/X", f"Archive file: {asset.name}", "", "--- Direct Messages ---"]
     first_conversation = ""
     first_created = ""
-    for item in payload[:300]:
+    for item in payload:
         conversation = item.get("dmConversation") if isinstance(item, dict) else None
         if not isinstance(conversation, dict):
             continue
@@ -1569,18 +1643,21 @@ def _parse_linkedin(assets: list[SourceAsset], hint: str) -> list[SourceRecord]:
         if hint not in {"", "linkedin"} and "linkedin" not in asset.display_path.lower():
             continue
         if "message" in lowered:
-            record = _linkedin_messages_record(asset)
+            builder, batch_size = _linkedin_messages_record, 1000
         elif "connection" in lowered:
-            record = _linkedin_connections_record(asset)
+            builder, batch_size = _linkedin_connections_record, 1500
         else:
-            record = None
-        if record:
-            records.append(record)
+            continue
+        batch_records = [
+            record
+            for batch in _batched(_csv_rows(asset), batch_size)
+            if (record := builder(asset, batch)) is not None
+        ]
+        records.extend(_label_record_parts(batch_records))
     return records
 
 
-def _linkedin_messages_record(asset: SourceAsset) -> SourceRecord | None:
-    rows = _csv_rows(asset)
+def _linkedin_messages_record(asset: SourceAsset, rows: list[dict[str, str]]) -> SourceRecord | None:
     if not rows:
         return None
     headers = {key.lower().replace(" ", "_") for key in rows[0].keys()}
@@ -1588,7 +1665,7 @@ def _linkedin_messages_record(asset: SourceAsset) -> SourceRecord | None:
         return None
     lines = [f"Source: LinkedIn", f"File: {asset.name}", "", "--- Messages ---"]
     first_date = ""
-    for row in rows[:1000]:
+    for row in rows:
         normalized = {_normalize_header(key): value for key, value in row.items()}
         content = str(normalized.get("content") or normalized.get("message") or "").strip()
         if not content:
@@ -1605,13 +1682,12 @@ def _linkedin_messages_record(asset: SourceAsset) -> SourceRecord | None:
     return SourceRecord("linkedin", "LinkedIn messages", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "LinkedIn"})
 
 
-def _linkedin_connections_record(asset: SourceAsset) -> SourceRecord | None:
-    rows = _csv_rows(asset)
+def _linkedin_connections_record(asset: SourceAsset, rows: list[dict[str, str]]) -> SourceRecord | None:
     if not rows:
         return None
     lines = [f"Source: LinkedIn", f"File: {asset.name}", "", "--- Connections ---"]
     first_connection = ""
-    for row in rows[:1500]:
+    for row in rows:
         normalized = {_normalize_header(key): value for key, value in row.items()}
         name = " ".join(
             str(normalized.get(key) or "").strip()
@@ -1639,10 +1715,10 @@ def _parse_single_asset(asset: SourceAsset, hint: str) -> list[SourceRecord]:
         return []
     browser_json = _parse_browser_bookmarks_json_asset(asset, hint)
     if browser_json:
-        return [browser_json]
+        return browser_json
     browser_history = _parse_browser_history_asset(asset, hint)
     if browser_history:
-        return [browser_history]
+        return browser_history
     if suffix == ".mbox":
         return _parse_mbox(asset, hint)
     if Path(asset.name).name == "chat.db" and asset.filesystem_path:
@@ -1651,14 +1727,11 @@ def _parse_single_asset(asset: SourceAsset, hint: str) -> list[SourceRecord]:
         record = _parse_email_asset(asset, hint)
         return [record] if record else []
     if suffix == ".ics":
-        record = _parse_calendar_asset(asset, hint)
-        return [record] if record else []
+        return _parse_calendar_asset(asset, hint)
     if suffix == ".vcf":
-        record = _parse_contacts_asset(asset, hint)
-        return [record] if record else []
+        return _parse_contacts_asset(asset, hint)
     if suffix in {".html", ".htm"} and _looks_like_bookmarks(asset.read_text()):
-        record = _parse_bookmarks_asset(asset, hint)
-        return [record] if record else []
+        return _parse_bookmarks_asset(asset, hint)
     if suffix == ".docx":
         text = _extract_docx(asset)
         return [_generic_record(asset, _infer_generic_source(asset, hint), text)] if text.strip() else []
@@ -1672,103 +1745,120 @@ def _parse_single_asset(asset: SourceAsset, hint: str) -> list[SourceRecord]:
         return [_generic_record(asset, "whatsapp", _format_whatsapp(asset, text))]
     source = _infer_generic_source(asset, hint)
     if suffix == ".csv" and source == "contacts":
-        return [_generic_record(asset, "contacts", _format_contacts_csv(asset, text))]
+        return _label_record_parts(
+            [_generic_record(asset, "contacts", part) for part in _format_contacts_csv(asset, text)]
+        )
     if suffix == ".csv" and source in STRUCTURED_CSV_EXPORT_SOURCES:
-        text = _format_csv_export(asset, text, source)
+        return _label_record_parts(
+            [_generic_record(asset, source, part) for part in _format_csv_export(asset, text, source)]
+        )
     if suffix in {".json", ".jsonl"} and source in STRUCTURED_JSON_EXPORT_SOURCES:
-        text = _format_json_export(asset, text, source)
+        return _label_record_parts(
+            [_generic_record(asset, source, part) for part in _format_json_export(asset, text, source)]
+        )
     return [_generic_record(asset, source, text)]
 
 
-def _parse_calendar_asset(asset: SourceAsset, hint: str) -> SourceRecord | None:
+def _parse_calendar_asset(asset: SourceAsset, hint: str) -> list[SourceRecord]:
     text = asset.read_text()
     if "BEGIN:VEVENT" not in text:
-        return None
-    lines = [f"Source: Calendar", f"File: {asset.name}", "", "--- Events ---"]
-    first_summary = ""
-    for event in re.findall(r"BEGIN:VEVENT(.*?)END:VEVENT", _unfold_ical(text), flags=re.DOTALL)[:1000]:
-        fields = _ical_fields(event)
-        summary = fields.get("SUMMARY", "Untitled event").strip()
-        if not first_summary:
-            first_summary = summary
-        start = fields.get("DTSTART", "").strip()
-        end = fields.get("DTEND", "").strip()
-        location = fields.get("LOCATION", "").strip()
-        description = fields.get("DESCRIPTION", "").strip()
-        organizer = fields.get("ORGANIZER", "").strip()
-        attendees = [value for key, value in fields.items() if key == "ATTENDEE"]
-        detail = [f"{start} - {end}".strip(" - "), summary]
-        if location:
-            detail.append(f"Location: {location}")
-        if organizer:
-            detail.append(f"Organizer: {organizer}")
-        if attendees:
-            detail.append(f"Attendees: {', '.join(attendees[:8])}")
-        if description:
-            detail.append(description)
-        lines.append("\n".join(part for part in detail if part))
-    if len(lines) <= 4:
-        return None
+        return []
+    events = re.findall(r"BEGIN:VEVENT(.*?)END:VEVENT", _unfold_ical(text), flags=re.DOTALL)
     source = hint or "calendar"
-    source_url = _source_locator(asset.display_path, service=source, file=Path(asset.name).name, first_event=first_summary)
-    return SourceRecord(source, Path(asset.name).stem or "Calendar export", "\n\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Calendar"})
+    batch_records: list[SourceRecord] = []
+    for batch in _batched(events, 1000):
+        lines = [f"Source: Calendar", f"File: {asset.name}", "", "--- Events ---"]
+        first_summary = ""
+        for event in batch:
+            fields = _ical_fields(event)
+            summary = fields.get("SUMMARY", "Untitled event").strip()
+            if not first_summary:
+                first_summary = summary
+            start = fields.get("DTSTART", "").strip()
+            end = fields.get("DTEND", "").strip()
+            location = fields.get("LOCATION", "").strip()
+            description = fields.get("DESCRIPTION", "").strip()
+            organizer = fields.get("ORGANIZER", "").strip()
+            attendees = [value for key, value in fields.items() if key == "ATTENDEE"]
+            detail = [f"{start} - {end}".strip(" - "), summary]
+            if location:
+                detail.append(f"Location: {location}")
+            if organizer:
+                detail.append(f"Organizer: {organizer}")
+            if attendees:
+                detail.append(f"Attendees: {', '.join(attendees[:8])}")
+            if description:
+                detail.append(description)
+            lines.append("\n".join(part for part in detail if part))
+        if len(lines) <= 4:
+            continue
+        source_url = _source_locator(asset.display_path, service=source, file=Path(asset.name).name, first_event=first_summary)
+        batch_records.append(SourceRecord(source, Path(asset.name).stem or "Calendar export", "\n\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Calendar"}))
+    return _label_record_parts(batch_records)
 
 
-def _parse_contacts_asset(asset: SourceAsset, hint: str) -> SourceRecord | None:
+def _parse_contacts_asset(asset: SourceAsset, hint: str) -> list[SourceRecord]:
     text = asset.read_text()
     if "BEGIN:VCARD" not in text.upper():
-        return None
-    lines = [f"Source: Contacts", f"File: {asset.name}", "", "--- Contacts ---"]
-    first_contact = ""
-    for card in re.findall(r"BEGIN:VCARD(.*?)END:VCARD", _unfold_ical(text), flags=re.DOTALL | re.IGNORECASE)[:2000]:
-        fields = _ical_fields(card)
-        name = fields.get("FN") or fields.get("N") or "Contact"
-        if not first_contact:
-            first_contact = str(name).strip()
-        org = fields.get("ORG", "")
-        title = fields.get("TITLE", "")
-        notes = fields.get("NOTE", "")
-        emails = [value for key, value in fields.items() if key == "EMAIL"]
-        phones = [value for key, value in fields.items() if key == "TEL"]
-        urls = [value for key, value in fields.items() if key == "URL"]
-        detail = [str(name).strip()]
-        for label, values in (("Title", [title]), ("Org", [org]), ("Email", emails[:4]), ("Phone", phones[:4]), ("URL", urls[:4]), ("Note", [notes])):
-            value = ", ".join(str(item).strip() for item in values if str(item).strip())
-            if value:
-                detail.append(f"{label}: {value}")
-        lines.append("\n".join(detail))
-    if len(lines) <= 4:
-        return None
+        return []
+    cards = re.findall(r"BEGIN:VCARD(.*?)END:VCARD", _unfold_ical(text), flags=re.DOTALL | re.IGNORECASE)
     source = hint or "contacts"
-    source_url = _source_locator(asset.display_path, service=source, file=Path(asset.name).name, first_contact=first_contact)
-    return SourceRecord(source, Path(asset.name).stem or "Contacts export", "\n\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Contacts"})
+    batch_records: list[SourceRecord] = []
+    for batch in _batched(cards, 2000):
+        lines = [f"Source: Contacts", f"File: {asset.name}", "", "--- Contacts ---"]
+        first_contact = ""
+        for card in batch:
+            fields = _ical_fields(card)
+            name = fields.get("FN") or fields.get("N") or "Contact"
+            if not first_contact:
+                first_contact = str(name).strip()
+            org = fields.get("ORG", "")
+            title = fields.get("TITLE", "")
+            notes = fields.get("NOTE", "")
+            emails = [value for key, value in fields.items() if key == "EMAIL"]
+            phones = [value for key, value in fields.items() if key == "TEL"]
+            urls = [value for key, value in fields.items() if key == "URL"]
+            detail = [str(name).strip()]
+            for label, values in (("Title", [title]), ("Org", [org]), ("Email", emails[:4]), ("Phone", phones[:4]), ("URL", urls[:4]), ("Note", [notes])):
+                value = ", ".join(str(item).strip() for item in values if str(item).strip())
+                if value:
+                    detail.append(f"{label}: {value}")
+            lines.append("\n".join(detail))
+        if len(lines) <= 4:
+            continue
+        source_url = _source_locator(asset.display_path, service=source, file=Path(asset.name).name, first_contact=first_contact)
+        batch_records.append(SourceRecord(source, Path(asset.name).stem or "Contacts export", "\n\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Contacts"}))
+    return _label_record_parts(batch_records)
 
 
-def _parse_bookmarks_asset(asset: SourceAsset, hint: str) -> SourceRecord | None:
+def _parse_bookmarks_asset(asset: SourceAsset, hint: str) -> list[SourceRecord]:
     text = asset.read_text()
     entries = re.findall(r"<A\s+[^>]*HREF=[\"']?([^\"'\s>]+)[^>]*>(.*?)</A>", text, flags=re.IGNORECASE | re.DOTALL)
     if not entries:
-        return None
-    lines = [f"Source: Browser Bookmarks", f"File: {asset.name}", "", "--- Bookmarks ---"]
-    for url, raw_title in entries[:3000]:
-        title = _html_to_text(raw_title).strip() or url
-        lines.append(f"{title} - {html.unescape(url)}")
+        return []
     source = hint or "browser-bookmarks"
-    source_url = _source_locator(asset.display_path, service=source, file=Path(asset.name).name)
-    return SourceRecord(source, Path(asset.name).stem or "Browser bookmarks", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Browser Bookmarks"})
+    batch_records: list[SourceRecord] = []
+    for batch in _batched(entries, 3000):
+        lines = [f"Source: Browser Bookmarks", f"File: {asset.name}", "", "--- Bookmarks ---"]
+        for url, raw_title in batch:
+            title = _html_to_text(raw_title).strip() or url
+            lines.append(f"{title} - {html.unescape(url)}")
+        source_url = _source_locator(asset.display_path, service=source, file=Path(asset.name).name)
+        batch_records.append(SourceRecord(source, Path(asset.name).stem or "Browser bookmarks", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Browser Bookmarks"}))
+    return _label_record_parts(batch_records)
 
 
-def _parse_browser_bookmarks_json_asset(asset: SourceAsset, hint: str) -> SourceRecord | None:
+def _parse_browser_bookmarks_json_asset(asset: SourceAsset, hint: str) -> list[SourceRecord]:
     basename = Path(asset.name).name.lower()
     if basename != "bookmarks" and not (asset.suffix == ".json" and "bookmarks" in asset.display_path.lower()):
-        return None
+        return []
     try:
         payload = json.loads(asset.read_text())
     except (json.JSONDecodeError, RecursionError):
-        return None
+        return []
     roots = payload.get("roots") if isinstance(payload, dict) else None
     if not isinstance(roots, dict):
-        return None
+        return []
     entries: list[tuple[str, str, str]] = []
     for root_name, root in roots.items():
         try:
@@ -1778,14 +1868,17 @@ def _parse_browser_bookmarks_json_asset(asset: SourceAsset, hint: str) -> Source
             # root rather than losing the whole bookmarks file if it slips through.
             continue
     if not entries:
-        return None
-    lines = [f"Source: Browser Bookmarks", f"File: {asset.name}", "", "--- Bookmarks ---"]
-    for folder, title, url in entries[:3000]:
-        prefix = f"{folder}: " if folder else ""
-        lines.append(f"{prefix}{title} - {url}")
+        return []
     source = hint or "browser-bookmarks"
-    source_url = _source_locator(asset.display_path, service=source, file=Path(asset.name).name)
-    return SourceRecord(source, Path(asset.name).stem or "Browser bookmarks", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Browser Bookmarks"})
+    batch_records: list[SourceRecord] = []
+    for batch in _batched(entries, 3000):
+        lines = [f"Source: Browser Bookmarks", f"File: {asset.name}", "", "--- Bookmarks ---"]
+        for folder, title, url in batch:
+            prefix = f"{folder}: " if folder else ""
+            lines.append(f"{prefix}{title} - {url}")
+        source_url = _source_locator(asset.display_path, service=source, file=Path(asset.name).name)
+        batch_records.append(SourceRecord(source, Path(asset.name).stem or "Browser bookmarks", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Browser Bookmarks"}))
+    return _label_record_parts(batch_records)
 
 
 def _collect_browser_bookmark_entries(folder: str, node: Any, entries: list[tuple[str, str, str]], depth: int = 0) -> None:
@@ -1807,21 +1900,24 @@ def _collect_browser_bookmark_entries(folder: str, node: Any, entries: list[tupl
         _collect_browser_bookmark_entries(child_folder, child, entries, depth + 1)
 
 
-def _parse_browser_history_asset(asset: SourceAsset, hint: str) -> SourceRecord | None:
+def _parse_browser_history_asset(asset: SourceAsset, hint: str) -> list[SourceRecord]:
     basename = Path(asset.name).name.lower()
     path_hint = asset.display_path.lower()
     if basename not in {"history", "places.sqlite"} and not (asset.suffix in {".sqlite", ".sqlite3", ".db"} and ("history" in path_hint or "places" in path_hint or "browser" in path_hint)):
-        return None
+        return []
     rows = _browser_history_rows(asset)
     if not rows:
-        return None
-    lines = [f"Source: Browser History", f"File: {asset.name}", "", "--- Recent Visits ---"]
-    for title, url, visits in rows[:1000]:
-        visit_text = f" ({visits} visits)" if visits else ""
-        lines.append(f"{title or url} - {url}{visit_text}")
+        return []
     source = hint or "browser-history"
-    source_url = _source_locator(asset.display_path, service=source, file=Path(asset.name).name)
-    return SourceRecord(source, Path(asset.name).stem or "Browser history", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Browser History"})
+    batch_records: list[SourceRecord] = []
+    for batch in _batched(rows, 1000):
+        lines = [f"Source: Browser History", f"File: {asset.name}", "", "--- Recent Visits ---"]
+        for title, url, visits in batch:
+            visit_text = f" ({visits} visits)" if visits else ""
+            lines.append(f"{title or url} - {url}{visit_text}")
+        source_url = _source_locator(asset.display_path, service=source, file=Path(asset.name).name)
+        batch_records.append(SourceRecord(source, Path(asset.name).stem or "Browser history", "\n".join(lines), source_url=source_url, metadata={"asset": asset.display_path, "service": "Browser History"}))
+    return _label_record_parts(batch_records)
 
 
 def _browser_history_rows(asset: SourceAsset) -> list[tuple[str, str, int]]:
@@ -1852,7 +1948,7 @@ def _browser_history_rows(asset: SourceAsset) -> list[tuple[str, str, int]]:
                 FROM urls
                 WHERE url IS NOT NULL AND url != ''
                 ORDER BY last_visit_time DESC
-                LIMIT 1000
+                LIMIT 5000
                 """
             ).fetchall()
             if chrome_rows:
@@ -1866,7 +1962,7 @@ def _browser_history_rows(asset: SourceAsset) -> list[tuple[str, str, int]]:
                 FROM moz_places
                 WHERE url IS NOT NULL AND url != ''
                 ORDER BY last_visit_date DESC
-                LIMIT 1000
+                LIMIT 5000
                 """
             ).fetchall()
             return [(str(row[0] or ""), str(row[1] or ""), int(row[2] or 0)) for row in firefox_rows]
@@ -1896,37 +1992,53 @@ def _looks_like_bookmarks(text: str) -> bool:
     )
 
 
-def _format_csv_export(asset: SourceAsset, text: str, source: str) -> str:
+def _format_csv_export(asset: SourceAsset, text: str, source: str) -> list[str]:
+    """Format a structured CSV export as one text per batch of 1000 rows.
+
+    Returns `[text]` untouched when the rows cannot be parsed. Row numbering is
+    global across batches so `Row 1001` stays `Row 1001` in part 2.
+    """
     rows = _csv_rows(asset)
     if not rows:
-        return text
-    lines = [f"Source: {source}", f"Structured CSV export: {asset.name}", "", "--- Rows ---"]
-    for index, row in enumerate(rows[:1000], start=1):
-        parts = []
-        for key, value in row.items():
-            cleaned = str(value or "").strip()
-            if cleaned:
-                parts.append(f"{key}: {cleaned}")
-        if parts:
-            lines.append(f"Row {index}\n" + "\n".join(parts[:20]))
-    return "\n\n".join(lines)
+        return [text]
+    texts: list[str] = []
+    for batch in _batched(list(enumerate(rows, start=1)), 1000):
+        lines = [f"Source: {source}", f"Structured CSV export: {asset.name}", "", "--- Rows ---"]
+        for index, row in batch:
+            parts = []
+            for key, value in row.items():
+                cleaned = str(value or "").strip()
+                if cleaned:
+                    parts.append(f"{key}: {cleaned}")
+            if parts:
+                lines.append(f"Row {index}\n" + "\n".join(parts[:20]))
+        texts.append("\n\n".join(lines))
+    return texts
 
 
-def _format_json_export(asset: SourceAsset, text: str, source: str) -> str:
+def _format_json_export(asset: SourceAsset, text: str, source: str) -> list[str]:
+    """Format a structured JSON export as one text per batch of 1000 rows.
+
+    Returns `[text]` untouched when no structured rows can be extracted.
+    """
     rows = _json_export_rows(asset, text, source)
     if not rows:
-        return text
-    lines = [f"Source: {source}", f"File: {asset.name}", "", "--- Rows ---"]
-    for index, row in enumerate(rows[:1000], start=1):
-        try:
-            parts = _structured_row_parts(row)
-        except RecursionError:
-            # The depth cap should prevent this, but skip a single pathological
-            # row rather than losing the whole export if it slips through.
-            continue
-        if parts:
-            lines.append(f"Row {index}\n" + "\n".join(parts[:24]))
-    return "\n\n".join(lines) if len(lines) > 4 else text
+        return [text]
+    texts: list[str] = []
+    for batch in _batched(list(enumerate(rows, start=1)), 1000):
+        lines = [f"Source: {source}", f"File: {asset.name}", "", "--- Rows ---"]
+        for index, row in batch:
+            try:
+                parts = _structured_row_parts(row)
+            except RecursionError:
+                # The depth cap should prevent this, but skip a single pathological
+                # row rather than losing the whole export if it slips through.
+                continue
+            if parts:
+                lines.append(f"Row {index}\n" + "\n".join(parts[:24]))
+        if len(lines) > 4:
+            texts.append("\n\n".join(lines))
+    return texts or [text]
 
 
 def _json_export_rows(asset: SourceAsset, text: str, source: str) -> list[Any]:
@@ -1950,7 +2062,7 @@ def _jsonl_export_rows(text: str, source: str) -> list[Any]:
         except (json.JSONDecodeError, RecursionError):
             continue
         rows.extend(_json_rows_from_payload(payload, source))
-        if len(rows) >= 1000:
+        if len(rows) >= 5000:
             break
     return rows
 
@@ -2136,33 +2248,41 @@ def _clean_structured_value(value: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _format_contacts_csv(asset: SourceAsset, text: str) -> str:
+def _format_contacts_csv(asset: SourceAsset, text: str) -> list[str]:
+    """Format a contacts CSV as one text per batch of 2000 rows.
+
+    Returns `[text]` untouched when no contact rows can be extracted.
+    """
     rows = _csv_rows(asset)
     if not rows:
-        return text
-    lines = [f"Source: Contacts", f"Structured contacts export: {asset.name}", "", "--- Contacts ---"]
-    for row in rows[:2000]:
-        normalized = {_normalize_header(key): str(value or "").strip() for key, value in row.items()}
-        name = normalized.get("name") or normalized.get("full_name") or " ".join(
-            part for part in (normalized.get("first_name", ""), normalized.get("last_name", "")) if part
-        )
-        email_values = [
-            value
-            for key, value in normalized.items()
-            if value and ("email" in key or "e_mail" in key)
-        ][:4]
-        phone_values = [value for key, value in normalized.items() if value and "phone" in key][:4]
-        org = normalized.get("organization") or normalized.get("company") or normalized.get("org") or ""
-        title = normalized.get("title") or normalized.get("job_title") or ""
-        notes = normalized.get("notes") or normalized.get("note") or ""
-        detail = [name.strip() or "Contact"]
-        for label, values in (("Title", [title]), ("Org", [org]), ("Email", email_values), ("Phone", phone_values), ("Note", [notes])):
-            value = ", ".join(item for item in values if item)
-            if value:
-                detail.append(f"{label}: {value}")
-        if len(detail) > 1:
-            lines.append("\n".join(detail))
-    return "\n\n".join(lines) if len(lines) > 4 else text
+        return [text]
+    texts: list[str] = []
+    for batch in _batched(rows, 2000):
+        lines = [f"Source: Contacts", f"Structured contacts export: {asset.name}", "", "--- Contacts ---"]
+        for row in batch:
+            normalized = {_normalize_header(key): str(value or "").strip() for key, value in row.items()}
+            name = normalized.get("name") or normalized.get("full_name") or " ".join(
+                part for part in (normalized.get("first_name", ""), normalized.get("last_name", "")) if part
+            )
+            email_values = [
+                value
+                for key, value in normalized.items()
+                if value and ("email" in key or "e_mail" in key)
+            ][:4]
+            phone_values = [value for key, value in normalized.items() if value and "phone" in key][:4]
+            org = normalized.get("organization") or normalized.get("company") or normalized.get("org") or ""
+            title = normalized.get("title") or normalized.get("job_title") or ""
+            notes = normalized.get("notes") or normalized.get("note") or ""
+            detail = [name.strip() or "Contact"]
+            for label, values in (("Title", [title]), ("Org", [org]), ("Email", email_values), ("Phone", phone_values), ("Note", [notes])):
+                value = ", ".join(item for item in values if item)
+                if value:
+                    detail.append(f"{label}: {value}")
+            if len(detail) > 1:
+                lines.append("\n".join(detail))
+        if len(lines) > 4:
+            texts.append("\n\n".join(lines))
+    return texts or [text]
 
 
 def _csv_rows(asset: SourceAsset) -> list[dict[str, str]]:
@@ -2225,7 +2345,7 @@ def _parse_mbox(asset: SourceAsset, hint: str) -> list[SourceRecord]:
         except (OSError, mailbox.Error):
             box = []
         for index, message in enumerate(box):
-            if index >= 500:
+            if index >= 5000:
                 break
             record = _email_record(message, f"{asset.display_path}#{index}", hint)
             if record:
@@ -2235,7 +2355,7 @@ def _parse_mbox(asset: SourceAsset, hint: str) -> list[SourceRecord]:
     text = asset.read_text()
     chunks = re.split(r"(?m)^From .*$", text)
     for index, chunk in enumerate(chunks):
-        if index >= 500:
+        if index >= 5000:
             break
         if not chunk.strip() or "\nSubject:" not in chunk[:2000]:
             continue
@@ -2281,7 +2401,7 @@ def _parse_imessage_db(asset: SourceAsset, hint: str) -> list[SourceRecord]:
             LEFT JOIN chat ON chat.ROWID = cmj.chat_id
             WHERE message.text IS NOT NULL AND length(message.text) > 0
             ORDER BY message.date DESC
-            LIMIT 800
+            LIMIT 5000
             """
         ).fetchall()
     except sqlite3.Error:
@@ -2303,7 +2423,7 @@ def _parse_imessage_db(asset: SourceAsset, hint: str) -> list[SourceRecord]:
         first_message_at = ordered[0].split(" ", 1)[0] if ordered else ""
         source_url = _source_locator(asset.display_path, service="messages", chat=chat, file=Path(asset.name).name, first_message_at=first_message_at)
         records.append(SourceRecord("messages", f"Messages {chat}", content, source_url=source_url, metadata={"asset": asset.display_path, "service": "Messages", "chat": chat}))
-    return records[:40]
+    return records[:1000]
 
 
 def _email_record(message: email.message.EmailMessage, display_path: str, hint: str) -> SourceRecord | None:
