@@ -2087,6 +2087,11 @@ class AuthRuntime:
         # Log-mode deliveries also land here so operators/tests can retrieve a
         # just-issued token without scraping stdout; bounded, newest last.
         self.outbox: deque[dict[str, str]] = deque(maxlen=50)
+        # Email sender (email_verify / password_reset / account_claim links).
+        # Built once from auth_email_mode; a misconfigured smtp mode degrades to
+        # the log sink so a bad mail setup never breaks auth. Tests inject via
+        # the module-level _email_sender_factory seam.
+        self.email_sender = self._build_email_sender(active_settings)
         self.keyring = self._build_keyring(accounts_db)
         if self.keyring is not None:
             registry.keyring = self.keyring
@@ -2115,24 +2120,75 @@ class AuthRuntime:
             return None
         return UserKeyring(accounts_db.parent / "keyring.sqlite", provider)
 
+    def _build_email_sender(self, active_settings: Any):
+        """Pick the delivery backend once at startup.
+
+        - A test-installed ``_email_sender_factory`` wins (dependency-injection
+          seam), receiving (settings, outbox) and returning any EmailSender.
+        - ``auth_email_mode == "smtp"`` with a configured host -> SmtpEmailSender.
+        - ``smtp`` mode WITHOUT a host -> warn + LogEmailSender (misconfig degrades
+          to the current behavior rather than breaking auth).
+        - anything else -> LogEmailSender (the beta/self-hosting default).
+        """
+        # Lazy import: keep email_sender off the path unless auth is enabled.
+        from .email_sender import LogEmailSender, SmtpEmailSender
+
+        factory = _email_sender_factory
+        if factory is not None:
+            return factory(active_settings, self.outbox)
+        if active_settings.auth_email_mode == "smtp":
+            if active_settings.smtp_host:
+                return SmtpEmailSender(
+                    active_settings.smtp_host,
+                    active_settings.smtp_port,
+                    username=active_settings.smtp_username,
+                    password=active_settings.smtp_password,
+                    from_addr=active_settings.smtp_from_addr,
+                    use_starttls=active_settings.smtp_use_starttls,
+                    use_ssl=active_settings.smtp_use_ssl,
+                )
+            _auth_logger.warning(
+                "CORTEX_AUTH_EMAIL_MODE=smtp but CORTEX_SMTP_HOST is unset; "
+                "degrading to the log sink so auth still works."
+            )
+        # LogEmailSender keeps its own deque; _deliver_flow already writes the
+        # canonical {kind, email, token} record to self.outbox that tests read.
+        return LogEmailSender()
+
     # -- injectable hooks ---------------------------------------------------
     def _limit(self, action: str, key: str) -> bool:
         allowed, _retry = self.limiter.check(f"{action}:{key}")
         return allowed
 
     def _deliver_flow(self, kind: str, email: str, token: str) -> None:
+        # Always keep the canonical record so nothing is lost — tests and
+        # beta/log mode retrieve just-issued tokens from here without scraping
+        # stdout, and it survives a failed SMTP send below.
         self.outbox.append({"kind": kind, "email": email, "token": token})
-        if self.settings.auth_email_mode != "log":
-            _auth_logger.warning(
-                "CORTEX_AUTH_EMAIL_MODE=%s is not implemented yet; falling back to the log sink",
-                self.settings.auth_email_mode,
-            )
-        message = f"[cortex-auth] {kind} for {email}: token={token}"
-        print(message, flush=True)
-        _auth_logger.info(message)
+        # Render the email once (pure function) and hand it to the sender. The
+        # front-door link is built from public_app_url, falling back to
+        # public_base_url when unset.
+        from .email_sender import EmailSendError, render_auth_email
+
+        app_url = self.settings.public_app_url or self.settings.public_base_url
+        try:
+            subject, body = render_auth_email(kind, email, token, app_url=app_url)
+            self.email_sender.send(email, subject, body)
+        except EmailSendError as exc:
+            # SMTP outage: log and keep the outbox entry. Never raise out of the
+            # delivery hook — signup/login must not 500 on a mail failure.
+            _auth_logger.error("email delivery failed for %s (%s): %s", email, kind, exc)
+        except Exception as exc:  # noqa: BLE001 - defensive: never break auth on delivery
+            _auth_logger.error("unexpected error delivering %s email to %s: %s", kind, email, exc)
 
 
 auth_runtime: AuthRuntime | None = None
+
+# Dependency-injection seam for tests: when set to a callable (settings, outbox)
+# -> EmailSender, AuthRuntime uses it instead of building an SMTP/log sender from
+# settings. None in production. Set/reset around a test; init_auth_runtime picks
+# it up on the next rebuild.
+_email_sender_factory: Any = None
 
 
 def init_auth_runtime() -> AuthRuntime | None:

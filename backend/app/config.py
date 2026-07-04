@@ -49,6 +49,16 @@ class Settings:
     auth_refresh_idle_ttl_seconds: int = 0  # 0 = authn.py default (30d sliding)
     auth_refresh_absolute_ttl_seconds: int = 0  # 0 = authn.py default (90d absolute)
     auth_email_mode: str = "log"  # "log" (console sink) | "smtp"
+    # SMTP delivery (used only when auth_email_mode == "smtp"). Read from
+    # CORTEX_SMTP_*. If mode is "smtp" but no host is configured, AuthRuntime
+    # logs a warning and degrades to the log sink rather than breaking auth.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from_addr: str = ""  # falls back to smtp_username when unset
+    smtp_use_starttls: bool = True  # STARTTLS on :587 (submission)
+    smtp_use_ssl: bool = False  # implicit TLS on :465 (SMTPS); overrides starttls
     # BETA mode: activate accounts at signup without email verification (no email
     # infrastructure required). Never enable on a public production deployment —
     # unverified emails mean no recovery channel and easy squatting.
@@ -127,6 +137,13 @@ def load_settings() -> Settings:
         auth_refresh_idle_ttl_seconds=max(0, int(os.environ.get("CORTEX_AUTH_REFRESH_IDLE_TTL_SECONDS", "0") or "0")),
         auth_refresh_absolute_ttl_seconds=max(0, int(os.environ.get("CORTEX_AUTH_REFRESH_ABSOLUTE_TTL_SECONDS", "0") or "0")),
         auth_email_mode=(os.environ.get("CORTEX_AUTH_EMAIL_MODE", "log").strip().lower() or "log"),
+        smtp_host=os.environ.get("CORTEX_SMTP_HOST", "").strip(),
+        smtp_port=max(1, int(os.environ.get("CORTEX_SMTP_PORT", "587") or "587")),
+        smtp_username=os.environ.get("CORTEX_SMTP_USERNAME", "").strip(),
+        smtp_password=os.environ.get("CORTEX_SMTP_PASSWORD", ""),
+        smtp_from_addr=os.environ.get("CORTEX_SMTP_FROM_ADDR", "").strip(),
+        smtp_use_starttls=os.environ.get("CORTEX_SMTP_USE_STARTTLS", "1").strip().lower() in {"1", "true", "yes", "on"},
+        smtp_use_ssl=_truthy_env("CORTEX_SMTP_USE_SSL"),
         auth_autoverify=_truthy_env("CORTEX_AUTH_AUTOVERIFY"),
         auth_rate_limit_per_minute=max(0, int(os.environ.get("CORTEX_AUTH_RATE_LIMIT_PER_MINUTE", "30") or "30")),
         oidc_google_client_id=oidc_google_client_id,
