@@ -8,6 +8,9 @@ from .config import Settings
 
 HOSTED_VECTOR_BACKENDS = {"pgvector", "postgres-pgvector"}
 HOSTED_WORKER_MODES = {"external", "hosted", "worker"}
+# The hosted runtime decision (roadmap D): sharded SQLite on one box is the sanctioned tier
+# for 10k users; the postgres tier is for post-10k multi-instance scale-out.
+HOSTED_RUNTIME_TIERS = {"sharded_sqlite", "postgres"}
 RESERVED_PUBLIC_HOST_SUFFIXES = (".example", ".invalid", ".localhost", ".local", ".test")
 DOCUMENTATION_HOSTS = ("example.com", "example.net", "example.org")
 
@@ -17,15 +20,18 @@ def hosted_readiness_contract(settings: Settings, runtime: dict | None = None) -
     hosted_mode = shard_mode != "local"
     requires_scoped_tokens = bool(settings.require_scoped_api_tokens)
     global_token_user_switching = "blocked" if hosted_mode or requires_scoped_tokens else "allowed_local_compatibility"
+    runtime_tier = (getattr(settings, "hosted_runtime_tier", "") or "sharded_sqlite").strip().lower().replace("-", "_")
+    if runtime_tier not in HOSTED_RUNTIME_TIERS:
+        runtime_tier = "sharded_sqlite"
 
     checks = [
         _scoped_token_check(hosted_mode, requires_scoped_tokens),
         _public_base_url_check(hosted_mode, settings.public_base_url),
         _sync_signing_key_check(hosted_mode, settings.sync_signing_key),
-        _hosted_database_check(hosted_mode, settings.hosted_database_url),
+        _hosted_database_check(hosted_mode, settings.hosted_database_url, runtime_tier, shard_mode),
         _embedding_provider_check(hosted_mode, settings.embedding_provider),
-        _vector_backend_check(hosted_mode, settings.hosted_vector_backend),
-        _runtime_storage_check(hosted_mode, runtime),
+        _vector_backend_check(hosted_mode, settings.hosted_vector_backend, runtime_tier),
+        _runtime_storage_check(hosted_mode, runtime, runtime_tier),
         _worker_check(hosted_mode, settings.worker_mode),
         _worker_queue_check(hosted_mode, settings.worker_mode, runtime),
         _observability_check(hosted_mode, settings.observability_enabled),
@@ -36,6 +42,7 @@ def hosted_readiness_contract(settings: Settings, runtime: dict | None = None) -
         "status": "ok" if all(check["status"] == "ok" for check in checks) else "blocked",
         "hosted_mode": hosted_mode,
         "shard_mode": shard_mode,
+        "runtime_tier": runtime_tier,
         "require_scoped_api_tokens": requires_scoped_tokens,
         "global_token_user_switching": global_token_user_switching,
         "runtime": runtime or {},
@@ -128,12 +135,26 @@ def _sync_signing_key_check(hosted_mode: bool, sync_signing_key: str) -> dict:
     }
 
 
-def _hosted_database_check(hosted_mode: bool, hosted_database_url: str) -> dict:
+def _hosted_database_check(hosted_mode: bool, hosted_database_url: str, runtime_tier: str, shard_mode: str) -> dict:
     if not hosted_mode:
         return {
             "name": "hosted_database",
             "status": "ok",
             "detail": "Local mode uses SQLite and the local Cortex vault.",
+        }
+    if runtime_tier == "sharded_sqlite":
+        # The sanctioned 10k tier: per-tenant sharded SQLite on one box. The primary store IS
+        # the shard set; no external database URL is required or expected.
+        if shard_mode in {"user", "bucket"}:
+            return {
+                "name": "hosted_database",
+                "status": "ok",
+                "detail": f"Sharded-SQLite tier uses per-tenant SQLite shards (shard_mode={shard_mode}); no external database is required for 10k.",
+            }
+        return {
+            "name": "hosted_database",
+            "status": "blocked",
+            "detail": "Sharded-SQLite tier needs CORTEX_SHARD_MODE=user or bucket so tenants are isolated into shards.",
         }
     parsed = urlparse(hosted_database_url or "")
     scheme = (parsed.scheme or "").lower()
@@ -167,13 +188,25 @@ def _embedding_provider_check(hosted_mode: bool, embedding_provider: str) -> dic
     }
 
 
-def _vector_backend_check(hosted_mode: bool, hosted_vector_backend: str) -> dict:
+def _vector_backend_check(hosted_mode: bool, hosted_vector_backend: str, runtime_tier: str) -> dict:
     backend = (hosted_vector_backend or "").strip().lower()
     if not hosted_mode:
         return {
             "name": "hosted_vector_backend",
             "status": "ok",
             "detail": "Local mode uses SQLite/FTS and optional sqlite-vec.",
+        }
+    if runtime_tier == "sharded_sqlite":
+        if backend in {"", "sqlite-vec", "sqlite_vec"}:
+            return {
+                "name": "hosted_vector_backend",
+                "status": "ok",
+                "detail": "Sharded-SQLite tier uses per-shard sqlite-vec retrieval; live evidence is verified by runtime_hosted_storage.",
+            }
+        return {
+            "name": "hosted_vector_backend",
+            "status": "blocked",
+            "detail": f"Sharded-SQLite tier expects sqlite-vec (or unset), not {backend}; set CORTEX_HOSTED_RUNTIME_TIER=postgres to gate on {backend}.",
         }
     if backend in HOSTED_VECTOR_BACKENDS:
         return {
@@ -188,7 +221,7 @@ def _vector_backend_check(hosted_mode: bool, hosted_vector_backend: str) -> dict
     }
 
 
-def _runtime_storage_check(hosted_mode: bool, runtime: dict | None) -> dict:
+def _runtime_storage_check(hosted_mode: bool, runtime: dict | None, runtime_tier: str) -> dict:
     if not hosted_mode:
         return {
             "name": "runtime_hosted_storage",
@@ -206,6 +239,22 @@ def _runtime_storage_check(hosted_mode: bool, runtime: dict | None) -> dict:
     vector_backend = str(storage.get("vector_backend") or "").strip().lower()
     database_live = bool(storage.get("database_live"))
     vector_live = bool(storage.get("vector_live") or storage.get("vector_available"))
+    if runtime_tier == "sharded_sqlite":
+        if database_backend == "sqlite" and database_live and vector_backend == "sqlite-vec" and vector_live:
+            return {
+                "name": "runtime_hosted_storage",
+                "status": "ok",
+                "detail": "Runtime storage reports live sharded-SQLite primary storage and sqlite-vec retrieval (the sanctioned 10k tier).",
+            }
+        return {
+            "name": "runtime_hosted_storage",
+            "status": "blocked",
+            "detail": (
+                "Sharded-SQLite tier needs live SQLite storage with sqlite-vec retrieval "
+                f"(database_backend={database_backend or 'unknown'}, database_live={database_live}, "
+                f"vector_backend={vector_backend or 'unknown'}, vector_live={vector_live})."
+            ),
+        }
     if database_backend == "postgres" and database_live and vector_backend in HOSTED_VECTOR_BACKENDS and vector_live:
         return {
             "name": "runtime_hosted_storage",

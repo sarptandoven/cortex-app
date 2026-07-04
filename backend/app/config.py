@@ -35,6 +35,10 @@ class Settings:
     # Which MCP tool list scoped tokens are ADVERTISED by default: "core" (curated few) or
     # "full" (legacy complete list). Advertisement only — never affects authorization.
     mcp_tool_surface: str = "core"
+    # The hosted runtime decision (roadmap D): "sharded_sqlite" is the sanctioned 10k-user
+    # tier (sharded SQLite + sqlite-vec on one box); "postgres" gates on Postgres/pgvector
+    # for post-10k multi-instance scale-out.
+    hosted_runtime_tier: str = "sharded_sqlite"
 
 
 def _truthy_env(name: str) -> bool:
@@ -81,4 +85,8 @@ def load_settings() -> Settings:
         observability_enabled=_truthy_env("CORTEX_OBSERVABILITY_ENABLED"),
         embedding_provider=os.environ.get("CORTEX_EMBEDDING_PROVIDER", "hash").strip().lower() or "hash",
         mcp_tool_surface=(os.environ.get("CORTEX_MCP_TOOL_SURFACE", "core").strip().lower() or "core"),
+        hosted_runtime_tier=(
+            os.environ.get("CORTEX_HOSTED_RUNTIME_TIER", "sharded_sqlite").strip().lower().replace("-", "_")
+            or "sharded_sqlite"
+        ),
     )

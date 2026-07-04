@@ -28,6 +28,9 @@ class HostedReadinessTests(unittest.TestCase):
             "worker_mode": "external",
             "observability_enabled": True,
             "embedding_provider": "openai",
+            # These tests exercise the post-10k postgres tier explicitly; the DEFAULT tier is
+            # sharded_sqlite (the sanctioned 10k runtime), covered by ShardedSqliteTierTests.
+            "hosted_runtime_tier": "postgres",
             **overrides,
         }
         return replace(self.settings, **values)
@@ -72,14 +75,17 @@ class HostedReadinessTests(unittest.TestCase):
         self.assertIn("scoped_api_tokens_required", blocked)
         self.assertIn("public_base_url", blocked)
         self.assertIn("sync_signing_key", blocked)
-        self.assertIn("hosted_database", blocked)
         self.assertIn("embedding_provider", blocked)
-        self.assertIn("hosted_vector_backend", blocked)
         self.assertIn("runtime_hosted_storage", blocked)
         self.assertIn("background_workers", blocked)
         self.assertIn("background_worker_queue", blocked)
         self.assertIn("observability", blocked)
         self.assertIn("control_plane_scoped_tokens", blocked)
+        # Under the default sharded_sqlite tier, bucket shard mode satisfies the database
+        # check and sqlite-vec is the expected vector backend; live evidence is still
+        # demanded by runtime_hosted_storage (asserted blocked above).
+        self.assertNotIn("hosted_database", blocked)
+        self.assertNotIn("hosted_vector_backend", blocked)
 
     def test_hosted_mode_still_blocks_without_runtime_control_plane_evidence(self) -> None:
         runtime = self.ready_runtime()
@@ -192,6 +198,94 @@ class HostedReadinessTests(unittest.TestCase):
                 self.assertEqual(database_check["status"], "blocked")
                 self.assertEqual(blocked, {"hosted_database"})
                 self.assertEqual(contract["status"], "blocked")
+
+
+class ShardedSqliteTierTests(unittest.TestCase):
+    """The roadmap-D runtime decision: sharded SQLite on one box is the sanctioned 10k tier,
+    so /ready must be achievable WITHOUT Postgres/pgvector — while still demanding live
+    runtime evidence (shards live, sqlite-vec live, workers, observability, control plane)."""
+
+    def setUp(self) -> None:
+        self.base = Settings(
+            vault_path=Path("/tmp/cortex-test-vault"),
+            db_path=Path("/tmp/cortex-test-vault/index.sqlite"),
+            api_key="test-api-key",
+            public_base_url="https://api.cortex-hq.com",
+            shard_mode="bucket",
+            require_scoped_api_tokens=True,
+            sync_signing_key="sync-signing-key",
+            worker_mode="external",
+            observability_enabled=True,
+            embedding_provider="model2vec",
+            hosted_runtime_tier="sharded_sqlite",
+        )
+
+    def sqlite_runtime(self) -> dict:
+        return {
+            "control_plane": {
+                "active_api_tokens": 1,
+                "active_mcp_tokens": 1,
+                "active_users": 1,
+                "active_ready_users": 1,
+            },
+            "worker_queue": {
+                "status": "ok",
+                "ready_user_count": 1,
+                "counts": {"queued": 0, "running": 0, "succeeded": 3, "failed": 0},
+                "stale_running_count": 0,
+            },
+            "storage": {
+                "database_backend": "sqlite",
+                "database_live": True,
+                "vector_backend": "sqlite-vec",
+                "vector_live": True,
+            },
+        }
+
+    def test_sharded_sqlite_tier_is_ready_without_postgres(self) -> None:
+        contract = hosted_readiness_contract(self.base, runtime=self.sqlite_runtime())
+        blocked = {check["name"]: check["detail"] for check in contract["checks"] if check["status"] == "blocked"}
+        self.assertEqual(contract["status"], "ok", blocked)
+        self.assertEqual(contract["runtime_tier"], "sharded_sqlite")
+
+    def test_sqlite_tier_still_demands_live_vector_evidence(self) -> None:
+        runtime = self.sqlite_runtime()
+        runtime["storage"]["vector_backend"] = "none"
+        runtime["storage"]["vector_live"] = False
+        contract = hosted_readiness_contract(self.base, runtime=runtime)
+        self.assertEqual(contract["status"], "blocked")
+        blocked = {check["name"] for check in contract["checks"] if check["status"] == "blocked"}
+        self.assertEqual(blocked, {"runtime_hosted_storage"})
+
+    def test_sqlite_tier_requires_tenant_shard_mode(self) -> None:
+        contract = hosted_readiness_contract(
+            replace(self.base, shard_mode="weird"), runtime=self.sqlite_runtime()
+        )
+        blocked = {check["name"] for check in contract["checks"] if check["status"] == "blocked"}
+        self.assertIn("hosted_database", blocked)
+
+    def test_sqlite_tier_rejects_conflicting_pgvector_config(self) -> None:
+        contract = hosted_readiness_contract(
+            replace(self.base, hosted_vector_backend="pgvector"), runtime=self.sqlite_runtime()
+        )
+        blocked = {check["name"] for check in contract["checks"] if check["status"] == "blocked"}
+        self.assertIn("hosted_vector_backend", blocked)
+
+    def test_hash_embeddings_still_block_the_sqlite_tier(self) -> None:
+        # The tier decision never weakens the honesty gate: keyword-hash "semantics" is not
+        # a production embedding provider.
+        contract = hosted_readiness_contract(
+            replace(self.base, embedding_provider="hash"), runtime=self.sqlite_runtime()
+        )
+        blocked = {check["name"] for check in contract["checks"] if check["status"] == "blocked"}
+        self.assertIn("embedding_provider", blocked)
+
+    def test_unknown_tier_falls_back_to_sharded_sqlite(self) -> None:
+        contract = hosted_readiness_contract(
+            replace(self.base, hosted_runtime_tier="mystery"), runtime=self.sqlite_runtime()
+        )
+        self.assertEqual(contract["runtime_tier"], "sharded_sqlite")
+        self.assertEqual(contract["status"], "ok")
 
 
 if __name__ == "__main__":

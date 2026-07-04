@@ -12523,19 +12523,28 @@ class CortexStore:
                 "truncated": False,
             }
 
-        candidates: dict[str, list[dict[str, Any]]] = {}
-        candidates["constraints"] = _memory_candidates("negative", 12)
-        history = self.decision_history(user_id, task, limit=12, sector=sector, include_superseded=False, as_of=as_of)
-        candidates["decisions"] = list(history.get("current_decisions") or [])
+        # Zero-weight layers for this intent are never packed, so never fetched — each fetch is
+        # a store pass, and under concurrent load the pass count IS the latency.
+        weights = CONTEXT_INTENT_WEIGHTS[resolved_intent]
+
+        candidates: dict[str, list[dict[str, Any]]] = {layer: [] for layer in CONTEXT_LAYER_ORDER}
+        if weights.get("constraints"):
+            candidates["constraints"] = _memory_candidates("negative", 12)
+        if weights.get("decisions"):
+            history = self.decision_history(user_id, task, limit=12, sector=sector, include_superseded=False, as_of=as_of)
+            candidates["decisions"] = list(history.get("current_decisions") or [])
         # Facts are claims (semantic/episodic) only: preference/style/negative/procedural/decision
         # memories belong to their dedicated layers and must not be consumed here by dedup.
-        candidates["facts"] = [
-            item
-            for item in (self.search(user_id, task, limit=24, sector=sector, as_of=as_of, include_related=True) if task else [])
-            if str(item.get("layer") or "") in {"semantic", "episodic"}
-        ]
-        entity_query = str(project or "").strip() or (self._match_context_entity(user_id, task) if task else "")
+        if weights.get("facts") and task:
+            candidates["facts"] = [
+                item
+                for item in self.search(user_id, task, limit=24, sector=sector, as_of=as_of, include_related=True)
+                if str(item.get("layer") or "") in {"semantic", "episodic"}
+            ]
+        entity_query = ""
         entity_connections: list[dict[str, Any]] = []
+        if weights.get("entity"):
+            entity_query = str(project or "").strip() or (self._match_context_entity(user_id, task) if task else "")
         if entity_query:
             neighborhood = self.entity_neighborhood(user_id, entity_query)
             if neighborhood:
@@ -12556,15 +12565,14 @@ class CortexStore:
                 for item in self.search(user_id, entity_query, limit=8, sector=sector, as_of=as_of)
                 if str(item.get("layer") or "") in {"semantic", "episodic", "decision"}
             ]
-        else:
-            candidates["entity"] = []
-        candidates["procedures"] = _memory_candidates("procedural", 8)
+        if weights.get("procedures"):
+            candidates["procedures"] = _memory_candidates("procedural", 8)
         identity_omitted = not include_identity
-        candidates["identity"] = (
-            [*_memory_candidates("preference", 6), *_memory_candidates("style", 4)] if include_identity else []
-        )
-        open_loop_tasks = self.open_tasks(user_id, limit=10, sector=sector)
-        candidates["recency"] = self.recent(user_id, limit=12, sector=sector, as_of=as_of)
+        if include_identity and weights.get("identity"):
+            candidates["identity"] = [*_memory_candidates("preference", 6), *_memory_candidates("style", 4)]
+        open_loop_tasks = self.open_tasks(user_id, limit=10, sector=sector) if weights.get("open_loops") else []
+        if weights.get("recency"):
+            candidates["recency"] = self.recent(user_id, limit=12, sector=sector, as_of=as_of)
 
         # Cited-only + global dedup (first layer in pack order wins), all counted.
         excluded_uncited = 0
@@ -12616,7 +12624,6 @@ class CortexStore:
         instructions = list(_CONTEXT_INSTRUCTIONS)
         instructions_cost = sum(_estimate_context_tokens(line) for line in instructions)
         packable_budget = max(token_budget - instructions_cost, 120)
-        weights = CONTEXT_INTENT_WEIGHTS[resolved_intent]
         total_weight = sum(weights.values()) or 1
         allocations = {
             layer: (packable_budget * weights.get(layer, 0)) // total_weight for layer in CONTEXT_LAYER_ORDER
@@ -12685,7 +12692,12 @@ class CortexStore:
 
         included_ids = {str(citation.get("memory_id") or "") for citation in citations}
         conflicts_payload: list[dict[str, Any]] = []
-        for conflict in self.detect_conflicts(user_id, limit=100):
+        # The store-wide conflict scan is only worth a pass when facts/decisions actually
+        # made it into the pack.
+        has_conflictable_items = any(
+            entry.get("items") for entry in layers_payload if entry.get("layer") in {"decisions", "facts"}
+        )
+        for conflict in self.detect_conflicts(user_id, limit=100) if has_conflictable_items else []:
             current = conflict.get("current") or {}
             stale = conflict.get("stale") or {}
             if str(current.get("memory_id") or "") in included_ids or str(stale.get("memory_id") or "") in included_ids:

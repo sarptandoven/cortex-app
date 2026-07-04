@@ -419,6 +419,9 @@ class FastAPIContractTests(unittest.TestCase):
                 worker_mode="external",
                 observability_enabled=True,
                 embedding_provider="openai",
+                # This scenario simulates the post-10k postgres tier explicitly (the default
+                # tier is sharded_sqlite, where the local sqlite/sqlite-vec runtime passes).
+                hosted_runtime_tier="postgres",
             )
             main_module.settings = hosted_settings
             main_module.store = main_module.StoreRegistry.from_settings(hosted_settings)
