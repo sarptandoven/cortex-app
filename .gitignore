@@ -9,3 +9,4 @@ npm-debug.log*
 backend/data/
 macos/build/
 outputs/
+cortex-agent-package.zip
