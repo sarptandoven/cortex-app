@@ -10,6 +10,7 @@ from backend.app.database import init_db
 from backend.app.storage import CortexStore, MEMORY_LAYERS
 from scripts.retrieval_eval import (
     DISTRACTOR_MEMORIES,
+    EXPANDED_SEED_MEMORY_COUNT,
     METRIC_K_VALUES,
     RETRIEVAL_CASES,
     RELATED_MEMORY_COMPANION_ID,
@@ -490,7 +491,7 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         memories = seed_representative_memories(self.store, self.user_id)
 
         self.assertEqual({memory["layer"] for memory in memories}, MEMORY_LAYERS)
-        self.assertEqual(len(memories), len(MEMORY_LAYERS))
+        self.assertEqual(len(memories), len(MEMORY_LAYERS) + EXPANDED_SEED_MEMORY_COUNT)
 
     def test_natural_language_filler_words_match_memory_without_vectors(self) -> None:
         self.store.update_settings(self.user_id, {"review_new_captures": False, "allow_pending_in_context": True})
@@ -660,12 +661,15 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
         result = evaluate_retrieval(self.store, self.user_id)
 
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["seeded_memories"], len(MEMORY_LAYERS))
+        self.assertEqual(result["seeded_memories"], len(MEMORY_LAYERS) + EXPANDED_SEED_MEMORY_COUNT)
         self.assertEqual(result["distractor_memories"], len(DISTRACTOR_MEMORIES))
         self.assertEqual(result["focused_retrieval_memories"], 11)
         self.assertEqual(result["noisy_import_memories"], 11)
         self.assertGreaterEqual(result["direct_connector_memories"], 13)
         self.assertEqual(set(result["seeded_layers"]), MEMORY_LAYERS)
+        # The static corpus is add-only: 21 original cases plus the expanded
+        # multi-source corpus. Never shrink this floor.
+        self.assertGreaterEqual(len(RETRIEVAL_CASES), 136)
         expected_noisy_cases = 11
         expected_direct_connector_cases = 13
         expected_source_backed_cases = 1
@@ -699,9 +703,19 @@ class RetrievalQualityHarnessTests(unittest.TestCase):
             result["metrics"]["by_category"]["direct_connector_account_policy"]["case_count"],
             expected_direct_connector_account_policy_cases,
         )
-        self.assertEqual(result["metrics"]["by_category"]["sector_scoping"]["case_count"], 2)
-        self.assertEqual(result["metrics"]["by_category"]["temporal_validity"]["case_count"], 1)
-        self.assertEqual(result["metrics"]["by_category"]["related_memory"]["case_count"], 2)
+        self.assertEqual(result["metrics"]["by_category"]["sector_scoping"]["case_count"], 10)
+        self.assertEqual(result["metrics"]["by_category"]["temporal_validity"]["case_count"], 10)
+        self.assertEqual(result["metrics"]["by_category"]["related_memory"]["case_count"], 10)
+        self.assertEqual(result["metrics"]["by_category"]["cross_project_no_leak"]["case_count"], 10)
+        self.assertEqual(result["metrics"]["by_category"]["entity_recall"]["case_count"], 10)
+        self.assertEqual(result["metrics"]["by_category"]["decision_recall"]["case_count"], 10)
+        self.assertEqual(result["metrics"]["by_category"]["source_scoped"]["case_count"], 10)
+        self.assertEqual(result["metrics"]["by_category"]["focused"]["case_count"], 14)
+        self.assertEqual(result["metrics"]["by_category"]["paraphrase"]["case_count"], 12)
+        self.assertEqual(result["metrics"]["by_category"]["negative_recall"]["case_count"], 10)
+        self.assertEqual(result["metrics"]["by_category"]["style_recall"]["case_count"], 10)
+        self.assertEqual(result["metrics"]["by_category"]["temporal_recall"]["case_count"], 10)
+        self.assertEqual(result["metrics"]["by_category"]["procedural_recall"]["case_count"], 10)
         self.assertEqual(result["metrics"]["by_category"]["source_backed_ranking"]["case_count"], 1)
         self.assertEqual(result["metrics"]["by_category"]["mixed_source_authority"]["case_count"], expected_mixed_source_authority_cases)
         self.assertEqual(result["source_backed_fallback"]["top_result"], "rq_source_backed_lexical_fallback_cited")
