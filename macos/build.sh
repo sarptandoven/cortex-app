@@ -13,6 +13,7 @@ CACHE="$ROOT/build/ModuleCache"
 SIGN_IDENTITY="${CORTEX_CODESIGN_IDENTITY:--}"
 ENTITLEMENTS="${CORTEX_ENTITLEMENTS:-}"
 CHILD_ENTITLEMENTS="${CORTEX_CHILD_ENTITLEMENTS:-}"
+DEVID_ENTITLEMENTS="${CORTEX_DEVID_ENTITLEMENTS:-$ROOT/DeveloperID.entitlements}"
 PROVISIONING_PROFILE="${CORTEX_PROVISIONING_PROFILE:-}"
 DISTRIBUTION_MODE="${CORTEX_DISTRIBUTION_MODE:-direct}"
 TIMESTAMP="${CORTEX_CODESIGN_TIMESTAMP:-1}"
@@ -22,6 +23,19 @@ BUNDLE_BACKEND_DEPS="${CORTEX_BUNDLE_BACKEND_DEPS:-1}"
 NESTED_SIGN_IDENTITY="${CORTEX_NESTED_CODESIGN_IDENTITY:-$SIGN_IDENTITY}"
 if [[ -z "$CHILD_ENTITLEMENTS" && "$DISTRIBUTION_MODE" == "app-store" && -f "$ROOT/AppStoreChild.entitlements" ]]; then
   CHILD_ENTITLEMENTS="$ROOT/AppStoreChild.entitlements"
+fi
+# Developer-ID (non-App-Store) hardened-runtime entitlements gate.
+# A bundled CPython framework under the hardened runtime needs a small set of
+# entitlements (allow-jit, allow-unsigned-executable-memory,
+# disable-library-validation, allow-dyld-environment-variables) to launch and to
+# pass notarization/Gatekeeper. We apply DeveloperID.entitlements only when this
+# is a real Developer ID signing path: NOT app-store mode AND a real signing
+# identity (not ad-hoc "-"). Ad-hoc/dev builds and the app-store path are left
+# exactly as before. When active, both the nested Mach-O (Python framework
+# binaries, .so wheels) and the outer .app receive these entitlements.
+USE_DEVID_ENTITLEMENTS="0"
+if [[ "$DISTRIBUTION_MODE" != "app-store" && "$SIGN_IDENTITY" != "-" && "$NESTED_SIGN_IDENTITY" != "-" && -n "$DEVID_ENTITLEMENTS" && -f "$DEVID_ENTITLEMENTS" ]]; then
+  USE_DEVID_ENTITLEMENTS="1"
 fi
 if [[ -z "$BUNDLE_PYTHON" ]]; then
   if [[ "$DISTRIBUTION_MODE" == "app-store" ]]; then
@@ -159,6 +173,12 @@ sign_file_if_macho() {
     local args=(--force)
     if [[ "$use_child_entitlements" == "1" && -n "$CHILD_ENTITLEMENTS" ]]; then
       args+=(--entitlements "$CHILD_ENTITLEMENTS")
+    elif [[ "$USE_DEVID_ENTITLEMENTS" == "1" ]]; then
+      # Developer-ID hardened-runtime path: every nested Mach-O (Python framework
+      # binaries and native .so/.dylib wheels) gets the hardened-runtime
+      # entitlements the bundled interpreter needs. Notarization checks the whole
+      # bundle, so this must reach the nested binaries, not just the outer .app.
+      args+=(--entitlements "$DEVID_ENTITLEMENTS")
     fi
     if [[ "$NESTED_SIGN_IDENTITY" == "-" ]]; then
       args+=(--sign -)
@@ -182,6 +202,8 @@ if [[ -d "${PY_VERSION:-}" ]]; then
     PY_APP_SIGN_ARGS=(--force)
     if [[ -n "$CHILD_ENTITLEMENTS" ]]; then
       PY_APP_SIGN_ARGS+=(--entitlements "$CHILD_ENTITLEMENTS")
+    elif [[ "$USE_DEVID_ENTITLEMENTS" == "1" ]]; then
+      PY_APP_SIGN_ARGS+=(--entitlements "$DEVID_ENTITLEMENTS")
     fi
     if [[ "$NESTED_SIGN_IDENTITY" == "-" ]]; then
       PY_APP_SIGN_ARGS+=(--sign -)
@@ -202,6 +224,11 @@ fi
 SIGN_ARGS=(--force --deep)
 if [[ -n "$ENTITLEMENTS" ]]; then
   SIGN_ARGS+=(--entitlements "$ENTITLEMENTS")
+elif [[ "$USE_DEVID_ENTITLEMENTS" == "1" ]]; then
+  # Outer .app under the Developer-ID hardened-runtime path gets the same
+  # hardened-runtime entitlements as the nested Python binaries. An explicit
+  # CORTEX_ENTITLEMENTS override still wins.
+  SIGN_ARGS+=(--entitlements "$DEVID_ENTITLEMENTS")
 fi
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
   SIGN_ARGS+=(--sign -)

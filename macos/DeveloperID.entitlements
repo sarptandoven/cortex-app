@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Developer ID (non-App-Store) hardened-runtime entitlements for Cortex.
+
+    This is the notarization-safe configuration for a Developer ID build that
+    bundles a full CPython framework and native wheels. It is deliberately NOT
+    the App Store sandbox model (see AppStore.entitlements / AppStoreChild.entitlements).
+    App Sandbox is intentionally omitted because the Developer ID build writes
+    cross-application MCP config and needs broad user file access, which the
+    sandbox would break. That MAS-vs-DeveloperID trade-off is documented in
+    docs/DISTRIBUTION.md and docs/APPLE_RELEASE.md.
+
+    Every entitlement below exists because a bundled interpreter under the
+    hardened runtime requires it to launch reliably and pass notarization.
+  -->
+
+  <!-- CPython's interpreter loop / regex / some C extensions map executable
+       pages at runtime. Without JIT allowance the hardened runtime kills the
+       interpreter on launch. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+
+  <!-- The bundled interpreter and some native wheels allocate writable-then-
+       executable memory. Required so the hardened runtime does not block that
+       memory behavior. -->
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+
+  <!-- The app loads the bundled Python.framework and native .so wheels that we
+       sign with our own Developer ID identity, not Apple's App Store child-cert
+       model. Library validation would reject loading our own-signed dylibs from
+       a different Team than the main executable's expectation, so it is disabled. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+
+  <!-- The app sets PYTHON* environment variables (PYTHONHOME, PYTHONPATH, etc.)
+       to point the bundled interpreter at the bundled stdlib and wheels. The
+       hardened runtime strips DYLD_/PYTHON* style variables unless this is set. -->
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+</dict>
+</plist>

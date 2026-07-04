@@ -165,6 +165,12 @@ fi
 
 mkdir -p "$OUT_DIR"
 
+# build.sh inherits CORTEX_CODESIGN_IDENTITY from the environment. When a real
+# Developer ID identity is set (as --production requires) and the distribution
+# mode is not app-store, build.sh applies macos/DeveloperID.entitlements to the
+# bundled Python framework, native wheels, and the outer .app so the hardened
+# runtime launches and notarization passes on the first submission. No extra
+# wiring is needed here.
 CORTEX_BUNDLE_PYTHON="$BUNDLE_PYTHON" "$ROOT/build.sh"
 codesign --verify --deep --strict "$APP"
 if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON" != "no" ]]; then

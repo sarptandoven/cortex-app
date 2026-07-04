@@ -109,6 +109,57 @@ Developer ID signing identity, notarization is configured, and a Python runtime
 is bundled. Local beta artifacts are useful for QA and controlled first-100
 distribution, but they are not a Gatekeeper-ready public release.
 
+## Developer ID Hardened-Runtime Entitlements
+
+Developer ID (non-App-Store) builds sign the bundled CPython framework, the
+native `.so`/`.dylib` wheels, and the outer `Cortex.app` under the hardened
+runtime (`--options runtime`). A bundled interpreter under the hardened runtime
+does not launch reliably, and can bounce on the first notarization submission,
+without a small set of entitlements. `macos/build.sh` applies
+`macos/DeveloperID.entitlements` to make the first submission succeed.
+
+This is the notarization-safe configuration. It is deliberately **not** the Mac
+App Store sandbox model: App Sandbox is intentionally omitted because the
+Developer ID build writes cross-application MCP config and needs broad user file
+access, both of which the sandbox would break. That is a documented
+MAS-vs-Developer-ID trade-off. The App Store path keeps using
+`AppStore.entitlements` / `AppStoreChild.entitlements` unchanged.
+
+`macos/DeveloperID.entitlements` contains exactly these hardened-runtime keys,
+each present for a specific reason:
+
+- `com.apple.security.cs.allow-jit` — CPython maps executable pages at runtime;
+  without this the hardened runtime kills the interpreter on launch.
+- `com.apple.security.cs.allow-unsigned-executable-memory` — the interpreter and
+  some native wheels allocate writable-then-executable memory.
+- `com.apple.security.cs.disable-library-validation` — the app loads the bundled
+  Python framework and native wheels signed with our own Developer ID identity
+  (not the App Store child-cert model); library validation would reject them.
+- `com.apple.security.cs.allow-dyld-environment-variables` — the app sets
+  `PYTHON*` environment variables so the bundled interpreter finds the bundled
+  stdlib and wheels; the hardened runtime strips these variables otherwise.
+
+### When the entitlements are applied
+
+`build.sh` applies `DeveloperID.entitlements` only on the real Developer ID
+hardened-runtime path — that is, when **all** of the following hold:
+
+- distribution mode is not `app-store`, and
+- a real signing identity is set (`CORTEX_CODESIGN_IDENTITY` is not the ad-hoc
+  `-`).
+
+Ad-hoc/local dev builds (the default `-` identity) and the App Store path are
+left exactly as they were: the default local build stays ad-hoc-signed with no
+entitlements. Both the nested Mach-O files and the outer `.app` receive the
+entitlements on the Developer ID path, because notarization checks the whole
+bundle. The path is overridable via `CORTEX_DEVID_ENTITLEMENTS` (defaults to
+`macos/DeveloperID.entitlements`); an explicit `CORTEX_ENTITLEMENTS` still wins
+for the outer app.
+
+`macos/package_release.sh --production` needs no extra flags for this: it passes
+`CORTEX_CODESIGN_IDENTITY` through to `build.sh`, which selects the entitlements
+automatically.
+
 ## Generated Artifact Verification
 
 Every first-100 beta package must ship with a release directory containing:
