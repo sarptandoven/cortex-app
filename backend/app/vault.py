@@ -34,6 +34,12 @@ def _vault_lock_for(root: Path) -> threading.RLock:
         return lock
 
 
+class CredentialEncryptionRequiredError(RuntimeError):
+    """Raised when CORTEX_REQUIRE_ENCRYPTED_CREDENTIALS enforcement is on but the
+    vault has no cipher to encrypt a credential with — writing plaintext would
+    violate the enforcement contract, so the write is refused instead."""
+
+
 VAULT_FORMAT = "cortex-local-vault"
 VAULT_VERSION = 1
 VAULT_DIRECTORIES = (
@@ -79,7 +85,7 @@ def safe_segment(value: str | None, fallback: str = "unknown") -> str:
 class CortexVault:
     """User-owned local vault with JSON records and a rebuildable SQLite index."""
 
-    def __init__(self, root: Path, index_path: Path, cipher: Any | None = None):
+    def __init__(self, root: Path, index_path: Path, cipher: Any | None = None, enforce_encryption: bool = False):
         self.root = Path(root).expanduser()
         self.index_path = Path(index_path).expanduser()
         # Optional per-user credential cipher (duck-typed: encrypt(user_id, bytes) -> bytes,
@@ -87,6 +93,14 @@ class CortexVault:
         # before. Kept loosely typed on purpose: the hosted plane injects a keyring-backed
         # adapter (see backend/app/keyring.py) but this stdlib-only module never imports it.
         self.cipher = cipher
+        # Encrypted-credentials enforcement (CORTEX_REQUIRE_ENCRYPTED_CREDENTIALS,
+        # docs/ACCOUNTS_ENCRYPTION_DESIGN.md §4). When True, write_source_credential
+        # MUST refuse to persist a plaintext credential: it always encrypts, and if
+        # no cipher is present it raises rather than silently writing plaintext.
+        # Default False keeps the local/stdlib path byte-identical (no cipher, no
+        # enforcement -> writes plaintext exactly as before). Threaded in alongside
+        # the cipher via StoreRegistry.store_for_user in hosted mode.
+        self.enforce_encryption = bool(enforce_encryption)
         # Phase 1: also mirror each memory as a human-readable Markdown note (frontmatter+body)
         # so the vault opens in Obsidian and is owned/portable. Additive — the JSON records
         # remain the source of truth for now; a Markdown write never breaks the JSON write.
@@ -314,6 +328,15 @@ class CortexVault:
         account_key = str(source_account_id or "").strip()
         if not user_key or not account_key:
             raise ValueError("user_id and source_account_id are required")
+        if self.enforce_encryption and self.cipher is None:
+            # Enforcement on but no cipher reached this vault: refuse loudly rather
+            # than silently persisting a plaintext credential (design doc §4). This
+            # only fires in a misconfigured hosted deployment — enforcement is off
+            # by default and the local/stdlib path never sets it.
+            raise CredentialEncryptionRequiredError(
+                "CORTEX_REQUIRE_ENCRYPTED_CREDENTIALS is set but no credential cipher "
+                "is configured for this vault; refusing to write a plaintext credential"
+            )
         now = vault_now()
         with self._lock:
             credentials = self._read_json(

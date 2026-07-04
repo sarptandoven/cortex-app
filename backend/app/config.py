@@ -71,10 +71,83 @@ class Settings:
     # Public URL browsers hit for OAuth redirects / app-login pages (defaults to
     # public_base_url when unset).
     public_app_url: str = ""
+    # Billing (docs/COMPLETE_LAUNCH_INSTRUCTIONS.txt PART 15). DORMANT until
+    # configured: a no-billing deployment is byte-identical to today. Provider is
+    # "" (off) or "paddle"; billing_enabled derives true only when a provider AND
+    # its webhook secret are both set. The webhook route 404s (like other gated
+    # features) while disabled. Read from CORTEX_BILLING_PROVIDER /
+    # CORTEX_PADDLE_WEBHOOK_SECRET / CORTEX_PADDLE_API_KEY.
+    billing_provider: str = ""  # "" | "paddle"
+    paddle_webhook_secret: str = ""
+    paddle_api_key: str = ""  # optional; reserved for future subscription lookups
+    # Per-user memory quota by plan (0 = unlimited). Overrides default_memory_quota
+    # when a user's plan is present. JSON map from CORTEX_PLAN_QUOTAS, else the
+    # baked-in default below (free vs pro). Don't overbuild — a small dict.
+    plan_quotas: dict[str, int] | None = None
+    # Encrypted-credentials enforcement (docs/ACCOUNTS_ENCRYPTION_DESIGN.md §4,
+    # build step 3). When true AND a cipher is configured, the vault refuses to
+    # persist a plaintext credential (always encrypt); if enforcement is on but no
+    # cipher reached the vault, the write raises rather than silently writing
+    # plaintext. Default off keeps the local/stdlib path byte-identical. Flip to 1
+    # only after the backfill gauge (POST /v1/admin/encryption/backfill) hits 0.
+    require_encrypted_credentials: bool = False
+
+    @property
+    def billing_enabled(self) -> bool:
+        """Billing is live only when a provider is chosen AND its webhook secret
+        is present. Everything (route registration effect, plan quota lookup) is
+        gated on this, so an unconfigured deployment behaves exactly as before."""
+        provider = (self.billing_provider or "").strip().lower()
+        if provider == "paddle":
+            return bool((self.paddle_webhook_secret or "").strip())
+        return False
+
+    def quota_for_plan(self, plan: str | None) -> int:
+        """Per-user memory quota for a plan (0 = unlimited). Falls back to
+        default_memory_quota when the plan is unknown/blank so today's single
+        CORTEX_DEFAULT_MEMORY_QUOTA behavior is preserved when billing is off."""
+        quotas = self.plan_quotas if self.plan_quotas is not None else DEFAULT_PLAN_QUOTAS
+        key = (plan or "").strip().lower()
+        if key in quotas:
+            return max(0, int(quotas[key]))
+        return max(0, int(self.default_memory_quota))
+
+
+# Baked-in plan → per-user memory quota (0 = unlimited). Overridable via
+# CORTEX_PLAN_QUOTAS (JSON map). Kept here so billing.py and main.py share one
+# source of truth without a circular import.
+DEFAULT_PLAN_QUOTAS: dict[str, int] = {
+    "free": 2000,
+    "pro": 0,  # unlimited
+}
 
 
 def _truthy_env(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _load_plan_quotas() -> dict[str, int] | None:
+    """Parse CORTEX_PLAN_QUOTAS (JSON object mapping plan name -> int quota).
+    Malformed input falls back to the baked-in defaults so a bad env can never
+    break boot. Returns None to mean 'use DEFAULT_PLAN_QUOTAS'."""
+    raw = os.environ.get("CORTEX_PLAN_QUOTAS", "").strip()
+    if not raw:
+        return None
+    try:
+        import json
+
+        parsed = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    quotas: dict[str, int] = {}
+    for key, value in parsed.items():
+        try:
+            quotas[str(key).strip().lower()] = max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    return quotas or None
 
 
 def load_settings() -> Settings:
@@ -151,4 +224,9 @@ def load_settings() -> Settings:
         oidc_github_client_id=oidc_github_client_id,
         oidc_github_client_secret=os.environ.get("CORTEX_OIDC_GITHUB_CLIENT_SECRET", "").strip(),
         public_app_url=(os.environ.get("CORTEX_PUBLIC_APP_URL", "").strip() or public_base_url),
+        billing_provider=os.environ.get("CORTEX_BILLING_PROVIDER", "").strip().lower(),
+        paddle_webhook_secret=os.environ.get("CORTEX_PADDLE_WEBHOOK_SECRET", "").strip(),
+        paddle_api_key=os.environ.get("CORTEX_PADDLE_API_KEY", "").strip(),
+        plan_quotas=_load_plan_quotas(),
+        require_encrypted_credentials=_truthy_env("CORTEX_REQUIRE_ENCRYPTED_CREDENTIALS"),
     )

@@ -127,6 +127,15 @@ class TokenControlIndex:
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_users_status ON users(status, created_at);
+    CREATE TABLE IF NOT EXISTS billing_events (
+      event_id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL DEFAULT '',
+      event_type TEXT NOT NULL DEFAULT '',
+      user_id TEXT,
+      plan TEXT,
+      action TEXT NOT NULL DEFAULT '',
+      processed_at TEXT NOT NULL
+    );
     """
 
     ACTIVE_USER_STATUS = "active"
@@ -363,6 +372,90 @@ class TokenControlIndex:
             return None
         return self.get_user(normalized_user)
 
+    def billing_event_processed(self, event_id: str) -> bool:
+        """True if this provider event id was already applied (idempotent replay
+        guard for the billing webhook)."""
+        normalized = str(event_id or "").strip()
+        if not normalized or not self.path.exists():
+            return False
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM billing_events WHERE event_id = ?", (normalized,)
+            ).fetchone()
+        finally:
+            conn.close()
+        return row is not None
+
+    def record_billing_event(
+        self,
+        *,
+        event_id: str,
+        provider: str = "",
+        event_type: str = "",
+        user_id: str | None = None,
+        plan: str | None = None,
+        action: str = "",
+    ) -> bool:
+        """Persist a processed billing event id. Returns False when the id was
+        already recorded (INSERT OR IGNORE), so the webhook can detect and skip a
+        duplicate delivery. Empty event ids are not recorded (treated as
+        one-shot: the caller applies but cannot dedupe)."""
+        normalized = str(event_id or "").strip()
+        if not normalized:
+            return True
+        timestamp = _control_now_iso()
+        with self._lock:
+            conn = self._connect()
+            try:
+                with conn:
+                    cursor = conn.execute(
+                        """
+                        INSERT OR IGNORE INTO billing_events
+                        (event_id, provider, event_type, user_id, plan, action, processed_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            normalized,
+                            str(provider or ""),
+                            str(event_type or ""),
+                            str(user_id) if user_id else None,
+                            str(plan) if plan else None,
+                            str(action or ""),
+                            timestamp,
+                        ),
+                    )
+                    inserted = cursor.rowcount
+            finally:
+                conn.close()
+        return bool(inserted)
+
+    def set_user_plan(self, user_id: str, plan: str) -> dict[str, Any] | None:
+        """Update a user's billing plan (docs/COMPLETE_LAUNCH_INSTRUCTIONS PART 15).
+        Follows the same users-table update pattern as set_user_status; returns
+        the updated user row or None when the user is unknown."""
+        normalized_user = str(user_id or "").strip()
+        normalized_plan = str(plan or "").strip()[:60]
+        if not normalized_user or not normalized_plan:
+            return None
+        if not self.path.exists():
+            return None
+        timestamp = _control_now_iso()
+        with self._lock:
+            conn = self._connect()
+            try:
+                with conn:
+                    cursor = conn.execute(
+                        "UPDATE users SET plan = ?, updated_at = ? WHERE user_id = ?",
+                        (normalized_plan, timestamp, normalized_user),
+                    )
+                    updated = cursor.rowcount
+            finally:
+                conn.close()
+        if not updated:
+            return None
+        return self.get_user(normalized_user)
+
     def get_user(self, user_id: str) -> dict[str, Any] | None:
         normalized_user = str(user_id or "").strip()
         if not normalized_user or not self.path.exists():
@@ -583,6 +676,7 @@ class StoreRegistry:
         default_user_id: str = "local",
         store_cache_size: int = 512,
         keyring: Any | None = None,
+        enforce_encryption: bool = False,
     ) -> None:
         self.router = router
         self.default_user_id = default_user_id
@@ -593,6 +687,10 @@ class StoreRegistry:
         # secrets are encrypted at rest. Local mode never encrypts; the keyring module is
         # imported lazily so the stdlib standalone path never touches `cryptography`.
         self.keyring = keyring
+        # Encrypted-credentials enforcement (CORTEX_REQUIRE_ENCRYPTED_CREDENTIALS).
+        # Threaded to shard vaults alongside the cipher in _inject_credential_cipher.
+        # Default False keeps local/stdlib behavior identical.
+        self.enforce_encryption = bool(enforce_encryption)
         self._credential_cipher: Any | None = None
         # LRU-bounded per-user store cache: `user` mode opens one shard per user,
         # so an unbounded cache would leak memory/handles at 10k+ users. Local and
@@ -607,6 +705,7 @@ class StoreRegistry:
             ShardRouter.from_settings(settings),
             default_user_id=settings.default_user_id,
             store_cache_size=getattr(settings, "store_cache_size", 512),
+            enforce_encryption=bool(getattr(settings, "require_encrypted_credentials", False)),
         )
 
     @property
@@ -637,14 +736,24 @@ class StoreRegistry:
         available KEK was provided. Runs on both the create and cache-hit paths
         so wiring the keyring after stores were opened still takes effect. The
         keyring import stays lazy — it pulls in `cryptography`, which the
-        stdlib-only standalone path must never load."""
+        stdlib-only standalone path must never load.
+
+        Also propagates the enforce-encryption flag to the vault so that, in
+        hosted mode, CORTEX_REQUIRE_ENCRYPTED_CREDENTIALS makes plaintext writes
+        refuse — even if the cipher is (mis)configured absent, the vault then
+        raises rather than silently writing plaintext (design doc §4)."""
         if self.router.mode == "local":
             return
+        vault = getattr(store, "vault", None)
+        if vault is None:
+            return
+        # Enforcement is a per-vault flag, set independently of the cipher so a
+        # missing/unavailable keyring under enforcement causes a loud refusal.
+        vault.enforce_encryption = self.enforce_encryption
         keyring = self.keyring
         if keyring is None or not getattr(keyring, "available", False):
             return
-        vault = getattr(store, "vault", None)
-        if vault is None or getattr(vault, "cipher", None) is not None:
+        if getattr(vault, "cipher", None) is not None:
             return
         cipher = self._credential_cipher
         if cipher is None or getattr(cipher, "keyring", None) is not keyring:
@@ -928,6 +1037,15 @@ class StoreRegistry:
 
     def get_user(self, user_id: str) -> dict[str, Any] | None:
         return self.token_index.get_user(user_id)
+
+    def set_user_plan(self, user_id: str, plan: str) -> dict[str, Any] | None:
+        return self.token_index.set_user_plan(user_id, plan)
+
+    def billing_event_processed(self, event_id: str) -> bool:
+        return self.token_index.billing_event_processed(event_id)
+
+    def record_billing_event(self, **kwargs: Any) -> bool:
+        return self.token_index.record_billing_event(**kwargs)
 
     def suspend_user(self, user_id: str) -> dict[str, Any] | None:
         return self.token_index.set_user_status(user_id, "suspended")

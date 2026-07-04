@@ -324,8 +324,29 @@ def _enforce_rate_limit(user_id: str) -> None:
         )
 
 
+def _user_plan(user_id: str) -> str:
+    """The caller's billing plan from the control registry (falls back to '' so
+    quota_for_plan uses default_memory_quota). Cheap: one indexed lookup, only
+    called on write paths that already touch the store."""
+    getter = getattr(store, "get_user", None)
+    if not callable(getter):
+        return ""
+    try:
+        user = getter(user_id)
+    except Exception:
+        return ""
+    return str((user or {}).get("plan") or "") if user else ""
+
+
+def _quota_for_user(user_id: str) -> int:
+    """Per-user memory quota (0 = unlimited). Plan-aware when a plan is present,
+    else the flat CORTEX_DEFAULT_MEMORY_QUOTA — so a no-billing deployment keeps
+    exactly today's behavior."""
+    return settings.quota_for_plan(_user_plan(user_id))
+
+
 def _enforce_memory_quota(user_id: str) -> None:
-    quota = settings.default_memory_quota
+    quota = _quota_for_user(user_id)
     if quota <= 0:
         return
     if store.active_memory_count(user_id) >= quota:
@@ -2738,6 +2759,99 @@ def auth_revoke_token(token_id: str, session: dict[str, Any] = Depends(session_a
     if not revoked:
         raise HTTPException(status_code=404, detail="Token not found")
     return revoked
+
+
+# --------------------------------------------------------------- account plan
+
+@app.get("/v1/account/plan")
+def account_plan(session: dict[str, Any] = Depends(session_auth)) -> dict[str, Any]:
+    """The caller's current plan + resolved memory quota, so the app/web can
+    show it. Session-authed via the same cxs_ dispatch as the rest of /v1/auth.
+    Available whenever auth is enabled (independent of whether billing is
+    configured) — it just reflects the plan field."""
+    user_id = str(session["user_id"])
+    user = store.get_user(user_id)
+    plan = str((user or {}).get("plan") or "free")
+    quota = settings.quota_for_plan(plan)
+    return {
+        "user_id": user_id,
+        "plan": plan,
+        "memory_quota": quota,  # 0 = unlimited
+        "memory_quota_unlimited": quota == 0,
+        "billing_enabled": settings.billing_enabled,
+    }
+
+
+# ------------------------------------------------------------- billing webhook
+
+def _billing_verifier_or_404() -> "BillingWebhookVerifier":
+    """Return the configured billing verifier, or 404 exactly like other gated
+    features when billing is unconfigured (byte-identical to a no-billing
+    deployment). Import is lazy so billing.py never loads at module scope."""
+    if not settings.billing_enabled:
+        raise HTTPException(status_code=404, detail="Not Found")
+    from .billing import BillingWebhookVerifier
+
+    try:
+        return BillingWebhookVerifier.from_settings(settings)
+    except ValueError as exc:  # provider mismatch despite billing_enabled
+        raise HTTPException(status_code=404, detail="Not Found") from exc
+
+
+@app.post("/v1/billing/webhook")
+async def billing_webhook(request: Request) -> dict[str, Any]:
+    """Provider webhook (Paddle-first). Verifies the HMAC signature over the RAW
+    body (400 on bad/missing signature), maps the event to a plan transition,
+    applies it via store.set_user_plan, and returns 200 quickly. Idempotent: the
+    provider event id is recorded so a replayed delivery is a single effect.
+    Unknown users are accepted (200) with no plan change so the provider does not
+    retry forever. 404 when billing is not configured."""
+    from .billing import BillingError, SignatureVerificationError, apply_billing_event
+
+    verifier = _billing_verifier_or_404()
+    raw_body = await request.body()
+    headers = {key: value for key, value in request.headers.items()}
+    try:
+        event = verifier.verify_and_parse(raw_body=raw_body, headers=headers)
+    except SignatureVerificationError as exc:
+        raise HTTPException(status_code=400, detail="invalid billing webhook signature") from exc
+    except BillingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Idempotent replay guard: a previously-processed event id is a no-op.
+    if event.event_id and store.billing_event_processed(event.event_id):
+        return {"status": "ok", "action": "duplicate", "event_id": event.event_id}
+
+    result = apply_billing_event(store, event, email_resolver=_billing_email_resolver)
+    store.record_billing_event(
+        event_id=event.event_id,
+        provider=event.provider,
+        event_type=event.event_type,
+        user_id=result.get("user_id"),
+        plan=result.get("plan"),
+        action=str(result.get("action") or ""),
+    )
+    return {"status": "ok", **result, "event_id": event.event_id}
+
+
+def _billing_email_resolver(email: str) -> str | None:
+    """Resolve a Paddle customer email to a Cortex user_id via the accounts
+    control store. Only used when the checkout did not carry the user_id in
+    custom_data. Returns None (no mapping) when auth is disabled or no account
+    matches — the webhook then accepts the event without a plan change."""
+    runtime = auth_runtime
+    if runtime is None or not email:
+        return None
+    getter = getattr(runtime.control_store, "get_account_by_email", None)
+    if not callable(getter):
+        return None
+    try:
+        account = getter(email.strip().lower())
+    except Exception:
+        return None
+    if not account:
+        return None
+    return str(account.get("user_id") or "") or None
 
 
 # ------------------------------------------------------------ account deletion
