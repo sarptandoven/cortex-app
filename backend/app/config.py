@@ -39,6 +39,24 @@ class Settings:
     # tier (sharded SQLite + sqlite-vec on one box); "postgres" gates on Postgres/pgvector
     # for post-10k multi-instance scale-out.
     hosted_runtime_tier: str = "sharded_sqlite"
+    # Accounts + first-party auth (docs/ACCOUNTS_ENCRYPTION_DESIGN.md, build step 8).
+    # auth_enabled derives true when CORTEX_AUTH_ENABLED is set or any auth/OIDC env is
+    # present; with no auth config the hosted plane behaves exactly as before. The KEK
+    # itself (CORTEX_KEK / CORTEX_KEK_FILE) is read by keyring.LocalKekProvider directly.
+    auth_enabled: bool = False
+    accounts_db_path: Path | None = None  # default: <shard_root>/control/accounts.sqlite
+    auth_access_ttl_seconds: int = 0  # 0 = authn.py default (1h)
+    auth_refresh_idle_ttl_seconds: int = 0  # 0 = authn.py default (30d sliding)
+    auth_refresh_absolute_ttl_seconds: int = 0  # 0 = authn.py default (90d absolute)
+    auth_email_mode: str = "log"  # "log" (console sink) | "smtp"
+    auth_rate_limit_per_minute: int = 30  # per (action, identifier/IP) auth limiter
+    oidc_google_client_id: str = ""
+    oidc_google_client_secret: str = ""
+    oidc_github_client_id: str = ""
+    oidc_github_client_secret: str = ""
+    # Public URL browsers hit for OAuth redirects / app-login pages (defaults to
+    # public_base_url when unset).
+    public_app_url: str = ""
 
 
 def _truthy_env(name: str) -> bool:
@@ -57,6 +75,16 @@ def load_settings() -> Settings:
         vault_path = root / "data" / "Cortex.vault"
     db_path = Path(db_env).expanduser() if db_env else vault_path / "index.sqlite"
     require_scoped_api_tokens = os.environ.get("CORTEX_REQUIRE_SCOPED_API_TOKENS", "").strip().lower() in {"1", "true", "yes", "on"}
+    oidc_google_client_id = os.environ.get("CORTEX_OIDC_GOOGLE_CLIENT_ID", "").strip()
+    oidc_github_client_id = os.environ.get("CORTEX_OIDC_GITHUB_CLIENT_ID", "").strip()
+    accounts_db_env = os.environ.get("CORTEX_ACCOUNTS_DB_PATH", "").strip()
+    auth_enabled = (
+        _truthy_env("CORTEX_AUTH_ENABLED")
+        or bool(oidc_google_client_id)
+        or bool(oidc_github_client_id)
+        or bool(accounts_db_env)
+    )
+    public_base_url = os.environ.get("CORTEX_PUBLIC_BASE_URL", "http://127.0.0.1:8766")
     api_key = os.environ.get("CORTEX_API_KEY", "").strip()
     if api_key == INSECURE_DEV_API_KEY and not _truthy_env("CORTEX_ALLOW_INSECURE_DEV_TOKEN"):
         raise RuntimeError(
@@ -67,7 +95,7 @@ def load_settings() -> Settings:
         vault_path=vault_path,
         db_path=db_path,
         api_key=api_key,
-        public_base_url=os.environ.get("CORTEX_PUBLIC_BASE_URL", "http://127.0.0.1:8766"),
+        public_base_url=public_base_url,
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
         mcp_api_key=os.environ.get("CORTEX_MCP_API_KEY", ""),
         mcp_api_key_scopes=os.environ.get("CORTEX_MCP_API_KEY_SCOPES", ""),
@@ -89,4 +117,16 @@ def load_settings() -> Settings:
             os.environ.get("CORTEX_HOSTED_RUNTIME_TIER", "sharded_sqlite").strip().lower().replace("-", "_")
             or "sharded_sqlite"
         ),
+        auth_enabled=auth_enabled,
+        accounts_db_path=Path(accounts_db_env).expanduser() if accounts_db_env else None,
+        auth_access_ttl_seconds=max(0, int(os.environ.get("CORTEX_AUTH_ACCESS_TTL_SECONDS", "0") or "0")),
+        auth_refresh_idle_ttl_seconds=max(0, int(os.environ.get("CORTEX_AUTH_REFRESH_IDLE_TTL_SECONDS", "0") or "0")),
+        auth_refresh_absolute_ttl_seconds=max(0, int(os.environ.get("CORTEX_AUTH_REFRESH_ABSOLUTE_TTL_SECONDS", "0") or "0")),
+        auth_email_mode=(os.environ.get("CORTEX_AUTH_EMAIL_MODE", "log").strip().lower() or "log"),
+        auth_rate_limit_per_minute=max(0, int(os.environ.get("CORTEX_AUTH_RATE_LIMIT_PER_MINUTE", "30") or "30")),
+        oidc_google_client_id=oidc_google_client_id,
+        oidc_google_client_secret=os.environ.get("CORTEX_OIDC_GOOGLE_CLIENT_SECRET", "").strip(),
+        oidc_github_client_id=oidc_github_client_id,
+        oidc_github_client_secret=os.environ.get("CORTEX_OIDC_GITHUB_CLIENT_SECRET", "").strip(),
+        public_app_url=(os.environ.get("CORTEX_PUBLIC_APP_URL", "").strip() or public_base_url),
     )

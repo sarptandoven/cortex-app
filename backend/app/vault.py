@@ -79,9 +79,14 @@ def safe_segment(value: str | None, fallback: str = "unknown") -> str:
 class CortexVault:
     """User-owned local vault with JSON records and a rebuildable SQLite index."""
 
-    def __init__(self, root: Path, index_path: Path):
+    def __init__(self, root: Path, index_path: Path, cipher: Any | None = None):
         self.root = Path(root).expanduser()
         self.index_path = Path(index_path).expanduser()
+        # Optional per-user credential cipher (duck-typed: encrypt(user_id, bytes) -> bytes,
+        # decrypt(user_id, bytes) -> bytes). None = plaintext behavior, byte-identical to
+        # before. Kept loosely typed on purpose: the hosted plane injects a keyring-backed
+        # adapter (see backend/app/keyring.py) but this stdlib-only module never imports it.
+        self.cipher = cipher
         # Phase 1: also mirror each memory as a human-readable Markdown note (frontmatter+body)
         # so the vault opens in Obsidian and is owned/portable. Additive — the JSON records
         # remain the source of truth for now; a Markdown write never breaks the JSON write.
@@ -326,10 +331,17 @@ class CortexVault:
                 "user_id": user_key,
                 "source_account_id": account_key,
                 "source": safe_segment(source, "source"),
-                "payload": payload,
                 "created_at": existing.get("created_at") or now,
                 "updated_at": now,
             }
+            if self.cipher is not None:
+                # Hosted mode: the secret payload is stored only as a CXE1 envelope
+                # (hex-encoded) encrypted under this user's 'credentials' subkey — in
+                # bucket mode credentials.json is shared across tenants, so co-tenant
+                # blobs are mutually unreadable and crypto-shred makes them gone forever.
+                record["payload_cxe1"] = self._encrypt_credential_payload(user_key, payload)
+            else:
+                record["payload"] = payload
             user_credentials[account_key] = record
             credentials["vault_updated_at"] = now
             self._write_json(self.credentials_path, credentials)
@@ -349,7 +361,19 @@ class CortexVault:
         record = user_credentials.get(source_account_id)
         if not isinstance(record, dict):
             return None
+        encrypted = record.get("payload_cxe1")
         payload = record.get("payload")
+        if isinstance(encrypted, str) and encrypted:
+            if self.cipher is None:
+                # Encrypted at rest but this process holds no key material
+                # (e.g. local/stdlib runtime opening a hosted vault): unreadable.
+                return None
+            payload = self._decrypt_credential_payload(user_id, encrypted)
+        elif self.cipher is not None and isinstance(payload, dict):
+            # Legacy plaintext entry under an encrypting vault: lazy
+            # read-migrate — re-store it encrypted so the plaintext copy is gone
+            # after the first read (design doc §4, phase 1).
+            self._migrate_plaintext_credential(user_id=user_id, source_account_id=source_account_id)
         if not isinstance(payload, dict):
             return None
         return {
@@ -359,6 +383,43 @@ class CortexVault:
             "payload": payload,
             "updated_at": record.get("updated_at"),
         }
+
+    def _encrypt_credential_payload(self, user_id: str, payload: dict[str, Any]) -> str:
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        blob = self.cipher.encrypt(user_id, raw)
+        return bytes(blob).hex()
+
+    def _decrypt_credential_payload(self, user_id: str, encoded: str) -> dict[str, Any] | None:
+        raw = self.cipher.decrypt(user_id, bytes.fromhex(encoded))
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _migrate_plaintext_credential(self, *, user_id: str, source_account_id: str) -> None:
+        """Best-effort write-back of a legacy plaintext credential as a CXE1 envelope.
+        Never lets a migration failure break the read path — the caller already has
+        the plaintext payload in hand."""
+        try:
+            with self._lock:
+                credentials = self._read_json(self.credentials_path, {})
+                user_credentials = (credentials.get("users") or {}).get(user_id)
+                if not isinstance(user_credentials, dict):
+                    return
+                record = user_credentials.get(source_account_id)
+                if not isinstance(record, dict):
+                    return
+                payload = record.get("payload")
+                if not isinstance(payload, dict):
+                    return
+                record["payload_cxe1"] = self._encrypt_credential_payload(user_id, payload)
+                record.pop("payload", None)
+                credentials["vault_updated_at"] = vault_now()
+                self._write_json(self.credentials_path, credentials)
+                self._chmod_credentials_file()
+        except Exception:
+            pass
 
     def delete_source_credential(self, *, user_id: str, source_account_id: str) -> bool:
         with self._lock:

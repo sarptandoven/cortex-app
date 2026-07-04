@@ -156,8 +156,8 @@ class TokenControlIndex:
                         """
                         INSERT OR REPLACE INTO scoped_token_index
                         (token_id, user_id, audience, label, token_salt, token_hash, lookup_hash, scopes_json,
-                         created_at, updated_at, last_used_at, revoked_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                         account_id, created_at, updated_at, last_used_at, revoked_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                                 (SELECT last_used_at FROM scoped_token_index WHERE token_id = ?), NULL)
                         """,
                         (
@@ -169,6 +169,7 @@ class TokenControlIndex:
                             self._token_hash(normalized, salt),
                             self._lookup_hash(normalized),
                             json.dumps(list(metadata.get("scopes") or [])),
+                            str(metadata.get("account_id") or "") or None,
                             created_at,
                             str(metadata.get("updated_at") or timestamp),
                             token_id,
@@ -534,6 +535,12 @@ class TokenControlIndex:
             conn.execute("ALTER TABLE scoped_token_index ADD COLUMN lookup_hash TEXT")
         except sqlite3.OperationalError:
             pass
+        # Additive migration (design doc section 6): account linkage for self-serve
+        # token minting. NULL for legacy operator-minted rows.
+        try:
+            conn.execute("ALTER TABLE scoped_token_index ADD COLUMN account_id TEXT")
+        except sqlite3.OperationalError:
+            pass
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_scoped_token_index_lookup "
             "ON scoped_token_index(audience, lookup_hash, revoked_at)"
@@ -569,10 +576,24 @@ class StoreRegistry:
 
     USER_ID_KWARG = "user_id"
 
-    def __init__(self, router: ShardRouter, *, default_user_id: str = "local", store_cache_size: int = 512) -> None:
+    def __init__(
+        self,
+        router: ShardRouter,
+        *,
+        default_user_id: str = "local",
+        store_cache_size: int = 512,
+        keyring: Any | None = None,
+    ) -> None:
         self.router = router
         self.default_user_id = default_user_id
         self.token_index = TokenControlIndex(router.shard_root / "control" / "token_index.sqlite")
+        # Optional hosted-plane keyring (backend/app/keyring.py UserKeyring, duck-typed).
+        # When set (constructor arg or assigned later during main.py wiring) and its KEK is
+        # available, shard vaults get a per-user credential cipher injected so connector
+        # secrets are encrypted at rest. Local mode never encrypts; the keyring module is
+        # imported lazily so the stdlib standalone path never touches `cryptography`.
+        self.keyring = keyring
+        self._credential_cipher: Any | None = None
         # LRU-bounded per-user store cache: `user` mode opens one shard per user,
         # so an unbounded cache would leak memory/handles at 10k+ users. Local and
         # bucket mode stay well under the cap naturally (1 / shard_count stores).
@@ -599,14 +620,39 @@ class StoreRegistry:
             store = self._stores.get(cache_key)
             if store is not None:
                 self._stores.move_to_end(cache_key)
+                self._inject_credential_cipher(store)
                 return store
             assignment.db_path.parent.mkdir(parents=True, exist_ok=True)
             assignment.vault_path.mkdir(parents=True, exist_ok=True)
             init_db(assignment.db_path)
             store = CortexStore(assignment.db_path, assignment.vault_path)
             self._stores[cache_key] = store
+            self._inject_credential_cipher(store)
             self._evict_stores_if_needed()
             return store
+
+    def _inject_credential_cipher(self, store: CortexStore) -> None:
+        """Attach the per-user credential cipher to a shard's vault when hosted
+        encryption is configured: shard_mode != 'local' AND a keyring with an
+        available KEK was provided. Runs on both the create and cache-hit paths
+        so wiring the keyring after stores were opened still takes effect. The
+        keyring import stays lazy — it pulls in `cryptography`, which the
+        stdlib-only standalone path must never load."""
+        if self.router.mode == "local":
+            return
+        keyring = self.keyring
+        if keyring is None or not getattr(keyring, "available", False):
+            return
+        vault = getattr(store, "vault", None)
+        if vault is None or getattr(vault, "cipher", None) is not None:
+            return
+        cipher = self._credential_cipher
+        if cipher is None or getattr(cipher, "keyring", None) is not keyring:
+            from .keyring import CredentialCipher
+
+            cipher = CredentialCipher(keyring)
+            self._credential_cipher = cipher
+        vault.cipher = cipher
 
     def _evict_stores_if_needed(self) -> None:
         # Caller holds self._lock. Evict least-recently-used shards past the cap.
@@ -749,9 +795,10 @@ class StoreRegistry:
         *,
         label: str = "REST API client",
         scopes: list[str] | tuple[str, ...] | str | None = None,
+        account_id: str | None = None,
     ) -> dict[str, Any]:
         token = "cxa_" + secrets.token_urlsafe(32).replace("-", "").replace("_", "")[:43]
-        metadata = self.ensure_api_token(user_id, token, label=label, scopes=scopes)
+        metadata = self.ensure_api_token(user_id, token, label=label, scopes=scopes, account_id=account_id)
         return {**metadata, "token": token}
 
     def create_mcp_token(
@@ -760,9 +807,10 @@ class StoreRegistry:
         *,
         label: str = "MCP integration",
         scopes: list[str] | tuple[str, ...] | str | None = None,
+        account_id: str | None = None,
     ) -> dict[str, Any]:
         token = "cxm_" + secrets.token_urlsafe(32).replace("-", "").replace("_", "")[:43]
-        metadata = self.ensure_mcp_token(user_id, token, label=label, scopes=scopes)
+        metadata = self.ensure_mcp_token(user_id, token, label=label, scopes=scopes, account_id=account_id)
         return {**metadata, "token": token}
 
     def ensure_api_token(
@@ -773,6 +821,7 @@ class StoreRegistry:
         label: str = "REST API client",
         scopes: list[str] | tuple[str, ...] | str | None = None,
         token_id: str | None = None,
+        account_id: str | None = None,
     ) -> dict[str, Any]:
         metadata = self.store_for_user(user_id).ensure_api_token(
             user_id,
@@ -781,6 +830,11 @@ class StoreRegistry:
             scopes=scopes,
             token_id=token_id,
         )
+        if account_id:
+            # Account linkage rides only in the control index (additive
+            # scoped_token_index.account_id column); the per-shard token table
+            # stays untouched.
+            metadata = {**metadata, "account_id": str(account_id)}
         self.token_index.upsert(token=token, metadata=metadata)
         return metadata
 
@@ -792,6 +846,7 @@ class StoreRegistry:
         label: str = "MCP integration",
         scopes: list[str] | tuple[str, ...] | str | None = None,
         token_id: str | None = None,
+        account_id: str | None = None,
     ) -> dict[str, Any]:
         metadata = self.store_for_user(user_id).ensure_mcp_token(
             user_id,
@@ -800,6 +855,8 @@ class StoreRegistry:
             scopes=scopes,
             token_id=token_id,
         )
+        if account_id:
+            metadata = {**metadata, "account_id": str(account_id)}
         self.token_index.upsert(token=token, metadata=metadata)
         return metadata
 
@@ -878,8 +935,19 @@ class StoreRegistry:
     def deprovision_user(self, user_id: str, *, include_backups: bool | None = None) -> dict[str, Any]:
         # Full removal: delete the shard data and purge tokens + registry row.
         # In bucket mode backups are shared, so default to not touching them.
+        # Crypto-shred runs FIRST when a keyring is configured (design doc section 4:
+        # deletion = crypto-shredding) so every CXE1 blob for this user — including
+        # copies inside shared bucket files and historical backups — is unreadable
+        # before the conventional delete sweeps the plaintext-derived artifacts.
         drop_backups = (self.router.mode != "bucket") if include_backups is None else bool(include_backups)
-        return self.delete_user_data(user_id, include_backups=drop_backups)
+        shred: dict[str, Any] | None = None
+        keyring = self.keyring
+        if keyring is not None and getattr(keyring, "available", False):
+            shred = keyring.crypto_shred(user_id)
+        deleted = self.delete_user_data(user_id, include_backups=drop_backups)
+        if shred is not None:
+            deleted = {**deleted, "crypto_shred": shred}
+        return deleted
 
     def remember_oauth_pending(
         self,
