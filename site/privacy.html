@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Cortex Privacy</title>
-    <meta name="description" content="Privacy and data handling for the Cortex local macOS beta." />
+    <meta name="description" content="Privacy and data handling for Cortex: the local-first macOS app and the optional Cortex Cloud account tier." />
     <meta name="theme-color" content="#f8f7f1" />
     <link rel="icon" href="favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="styles.css" />
@@ -21,70 +21,80 @@
         <a href="index.html#privacy">Privacy</a>
         <a href="index.html#download">Download</a>
       </nav>
-      <a class="header-download" href="index.html#download">macOS beta</a>
+      <a class="header-download" href="index.html#download">macOS app</a>
     </header>
 
     <main class="privacy-main">
       <p class="eyebrow">Privacy</p>
-      <h1>Cortex local beta privacy</h1>
+      <h1>Cortex privacy</h1>
+      <p class="privacy-draft-note">
+        <strong>Draft — pending legal review before public launch.</strong> This page is
+        written to be accurate to how the software actually behaves; it is not yet a
+        lawyer-reviewed policy.
+      </p>
       <p>
-        Cortex is built as a local-first macOS beta. The first release is designed to store memory on the user's Mac and avoid a hosted account or cloud database.
+        Cortex has two ways to run, and your data is handled differently in each. The
+        <strong>local-first macOS app</strong> keeps your memory on your own Mac and needs no
+        account. <strong>Cortex Cloud</strong> is an optional hosted tier you sign in to; it
+        exists to sync and serve your memory to AI tools, and is described honestly below.
       </p>
 
       <section>
-        <h2>What Cortex stores</h2>
+        <h2>Local app — the default</h2>
         <ul>
-          <li>Memories the user approves from MCP AI tools, Obsidian/local notes, and explicitly enabled local workflows.</li>
-          <li>Extracted memories, tasks, entities, topics, graph edges, settings, audit events, and backups.</li>
-          <li>A readable local memory folder plus a rebuildable search index for search and map views.</li>
+          <li>Memory lives on your Mac at <code>~/Library/Application Support/Cortex/Cortex.vault/</code> (or a folder you choose).</li>
+          <li>The local app requires no account and no cloud service. It works with the network off.</li>
+          <li>Cortex reads clipboard content only when you trigger a capture, and a local notes folder only after you choose it.</li>
+          <li>It does not record your screen, listen through the microphone, or capture ambient activity.</li>
+          <li>Stored: memories you approve, plus extracted tasks, entities, topics, graph edges, settings, audit events, and local backups — all as readable files plus a rebuildable index.</li>
         </ul>
       </section>
 
       <section>
-        <h2>Where data lives</h2>
+        <h2>Cortex Cloud — optional hosted accounts</h2>
         <ul>
-          <li>By default: <code>~/Library/Application Support/Cortex/Cortex.vault/</code>.</li>
-          <li>The user can choose a different memory folder during setup.</li>
-          <li>The app does not require a cloud service for the local beta.</li>
+          <li>You create an account with an email + password, or by signing in with Google or GitHub. That account is how we identify you; we store your email, login identifiers, and authentication records.</li>
+          <li>Your data is stored in an isolated per-tenant store on our server so one account cannot reach another's.</li>
+          <li><strong>Encryption, stated plainly:</strong> your connector credentials (the tokens Cortex uses to read your connected sources) are encrypted at rest with a key unique to your account; broader at-rest encryption of memory content is rolling out. This is <em>encryption at rest with a per-user key</em> — it is <strong>not</strong> end-to-end or "zero-knowledge": Cortex servers can read your memory in order to build embeddings, retrieve, and serve cited context to your AI tools.</li>
+          <li><strong>Deletion:</strong> deleting your account destroys your per-user key, which permanently renders your encrypted credentials — including in any backup — unreadable, and removes your derived data. As broader content encryption ships, this crypto-erasure extends to it.</li>
+          <li>You can export your memory and revoke any connected tool or token at any time.</li>
         </ul>
       </section>
 
       <section>
-        <h2>What Cortex reads</h2>
+        <h2>What Cortex reads from connected sources</h2>
         <ul>
-          <li>Cortex reads clipboard content only when the user clicks a capture action or uses the capture hotkey.</li>
-          <li>Cortex reads an Obsidian/local notes folder only after the user chooses that folder.</li>
-          <li>Cortex does not crawl cloud apps, email accounts, browser history, or Messages in the first local beta.</li>
-          <li>Cortex does not record the screen, listen through the microphone, or capture ambient activity in this beta.</li>
+          <li>Connectors are read-only and only run for sources you explicitly connect (e.g. Obsidian, Gmail, GitHub, Slack, Notion, Calendar).</li>
+          <li>Cortex does not crawl accounts you have not connected, and does not read browser history or Messages unless you connect a source that provides them.</li>
         </ul>
       </section>
 
       <section>
         <h2>AI tool sharing</h2>
         <ul>
-          <li>Context is shared when the user enables a direct local AI integration or MCP tool.</li>
-          <li>New local memory folders start with review enabled, connected AI tool reads enabled for retrieval, redaction enabled, and tool saves routed into Review.</li>
-          <li>Exports, maintenance, and destructive actions are disabled until the user opts in.</li>
-          <li>Redaction can mask common tokens, secrets, emails, and long account-like numbers before context is shared.</li>
-          <li>Support bundles omit raw capture text, memory bodies, copied chat context, and exported user data.</li>
+          <li>Context is shared with an AI tool only when you connect it (a scoped token) and only within the permissions you grant.</li>
+          <li>New sources start with review enabled, reads enabled for retrieval, redaction enabled, and tool saves routed into Review.</li>
+          <li>Exports, maintenance, and destructive actions are off until you opt in.</li>
+          <li>Redaction masks common tokens, secrets, emails, and long account-like numbers before context is shared.</li>
+          <li>Support bundles omit raw capture text, memory bodies, copied chat context, and exported data.</li>
         </ul>
       </section>
 
       <section>
-        <h2>Current beta boundaries</h2>
+        <h2>Your rights</h2>
         <ul>
-          <li>No account system, billing, hosted sync, or team workspace is included in the local beta.</li>
-          <li>Account connectors are staged by service readiness; broad cloud-service sync is not the normal first beta path.</li>
-          <li>No analytics service is required by the static landing page.</li>
-          <li>Public distribution still needs Developer ID signing, notarization, hosted HTTPS downloads, and a formal privacy policy review.</li>
+          <li>Access and export: request or download everything associated with your account.</li>
+          <li>Deletion: delete your account and data (see crypto-erasure above).</li>
+          <li>Questions or requests: contact us below. Do not send raw notes, chats, memory records, prompts, exports, API keys, or tokens by email.</li>
         </ul>
       </section>
 
       <section>
-        <h2>Support and deletion questions</h2>
+        <h2>Contact</h2>
         <p>
-          For first-100 beta support, deletion questions, or support artifact deletion requests, email
-          <a href="mailto:sdoven@uwaterloo.ca">sdoven@uwaterloo.ca</a>. Do not send raw notes, chats, memory records, prompts, exports, API keys, or local tokens.
+          For support, privacy, or deletion requests, email
+          <a href="mailto:support@trydoppl.com">support@trydoppl.com</a>
+          (privacy matters: <a href="mailto:privacy@trydoppl.com">privacy@trydoppl.com</a>).
         </p>
       </section>
     </main>
@@ -92,7 +102,7 @@
     <footer class="site-footer">
       <span>Cortex</span>
       <a href="index.html">Home</a>
-      <a href="mailto:sdoven@uwaterloo.ca">Support</a>
+      <a href="mailto:support@trydoppl.com">Support</a>
       <a href="downloads/latest.json">Update feed</a>
       <a href="downloads/Cortex-0.1.0-1.checksums.txt">Checksums</a>
     </footer>

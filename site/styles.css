@@ -560,3 +560,12 @@ h3 {
     margin-right: 0;
   }
 }
+
+.privacy-draft-note {
+  border-left: 3px solid #c9a23a;
+  background: #fbf6e6;
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  font-size: 0.95rem;
+  margin: 1rem 0 1.5rem;
+}
