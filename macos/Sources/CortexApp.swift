@@ -2558,7 +2558,7 @@ final class BackendSupervisor {
     }
     }
 
-private enum CortexCredentialStore {
+enum CortexCredentialStore {
     private static let keychainService = Bundle.main.bundleIdentifier ?? "com.cortex.doppl"
 
     private static var credentialsURL: URL {
@@ -2712,10 +2712,19 @@ private enum CortexCredentialStore {
 final class AppState: ObservableObject {
     private static let apiKeyDefaultsKey = "localBetaAPIKey.v1"
     private static let mcpAPIKeyDefaultsKey = "localBetaMCPAPIKey.v1"
+    static let cloudRefreshTokenKey = "cortexCloudRefreshToken.v1"
+    static let cloudAccountEmailDefaultsKey = "cortexCloudAccountEmail.v1"
+    static let localEndpointDefault = "http://127.0.0.1:8766"
     private static let obsidianVaultPathDefaultsKey = "connectedObsidianVaultPath.v1"
     private static let obsidianVaultBookmarkDefaultsKey = "connectedObsidianVaultBookmark.v1"
     private static let obsidianPluginAPIKeyDefaultsKey = "obsidianPluginAPIKey.v1"
     private static let obsidianPluginID = "cortex-memory"
+
+    // Internal accessor so the Cortex Cloud extension (separate file) can restore the
+    // local machine key on sign-out. Does not change local-mode behavior.
+    static func restoreLocalAPIKey() -> String {
+        loadOrCreateAPIKey()
+    }
 
     private static func loadOrCreateAPIKey() -> String {
         if let existing = CortexCredentialStore.loadSecret(forKey: apiKeyDefaultsKey),
@@ -2775,6 +2784,10 @@ final class AppState: ObservableObject {
     @Published var endpoint: String = UserDefaults.standard.string(forKey: "endpoint") ?? "http://127.0.0.1:8766"
     @Published var apiKey: String = AppState.loadOrCreateAPIKey()
     @Published var mcpAPIKey: String = AppState.loadOrCreateMCPAPIKey()
+    // Cortex Cloud (hosted account) state. Never populated in local mode.
+    @Published var cloudAccountEmail: String = UserDefaults.standard.string(forKey: AppState.cloudAccountEmailDefaultsKey) ?? ""
+    @Published var cloudAuthBusy: Bool = false
+    @Published var cloudAuthMessage: String = ""
     @Published var importHistory: [SourceImportHistoryItem] = []
     @Published var sourceConnectorCatalog: [SourceConnectorCatalogItem] = []
     @Published var sourceReadinessReport: SourceReadinessResponse?
@@ -3187,6 +3200,14 @@ final class AppState: ObservableObject {
     }
 
     func bootstrap() async {
+        // Cortex Cloud only: the cxs_ access token lives in memory, so on launch (and any
+        // full bootstrap) it must be re-minted from the stored refresh token before any
+        // authenticated call fires. Local mode never enters this branch.
+        if isCloudMode {
+            if await refreshCloudAccessToken() == false {
+                handleCloudSessionExpired()
+            }
+        }
         await ensureBackend()
         await loadInbox()
         await loadRecent()
@@ -3302,6 +3323,10 @@ final class AppState: ObservableObject {
     }
 
     private func ensureUsableAPIKey() {
+        // In Cortex Cloud mode the in-memory apiKey is a short-lived cxs_ access token
+        // that must NOT be written over the local machine key. Skip entirely so the
+        // local Keychain slot stays intact and local mode is unaffected.
+        if isCloudMode { return }
         let normalized = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if normalized.isEmpty || normalized == "dev-local-key" {
             apiKey = AppState.generateAPIKey()
@@ -5804,6 +5829,18 @@ final class AppState: ObservableObject {
         do {
             return try await performRequest(path: path, method: method, body: body)
         } catch {
+            // Cortex Cloud ONLY: a 401 means the short-lived cxs_ access token expired.
+            // Refresh it exactly once and retry exactly once. This whole branch is
+            // unreachable unless isCloudMode is true, so local mode is never touched.
+            if isCloudMode, isUnauthorizedError(error) {
+                if await refreshCloudAccessToken() {
+                    // One retry with the freshly minted access token.
+                    return try await performRequest(path: path, method: method, body: body)
+                }
+                // Refresh failed -> the session is gone. Sign out and surface it.
+                handleCloudSessionExpired()
+                throw error
+            }
             // Only retry (and only then restart the backend) for connection-level
             // failures on idempotent methods. Never replay non-idempotent mutations,
             // and never restart the backend on an HTTP status error (4xx/5xx).
@@ -5813,6 +5850,10 @@ final class AppState: ObservableObject {
             await ensureBackend()
             return try await performRequest(path: path, method: method, body: body)
         }
+    }
+
+    private func isUnauthorizedError(_ error: Error) -> Bool {
+        (error as? CortexHTTPError)?.statusCode == 401
     }
 
     private func isIdempotentMethod(_ method: String) -> Bool {

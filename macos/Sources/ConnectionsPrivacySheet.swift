@@ -298,6 +298,8 @@ private struct ConnectionsPrivacyOverview: View {
                             Divider()
                             SettingsUpdatesSection(state: state)
                             Divider()
+                            CortexCloudSection(state: state)
+                            Divider()
                             SettingsBackendSection(state: state)
                         }
                     }
