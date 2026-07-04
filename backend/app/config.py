@@ -77,9 +77,20 @@ class Settings:
     # its webhook secret are both set. The webhook route 404s (like other gated
     # features) while disabled. Read from CORTEX_BILLING_PROVIDER /
     # CORTEX_PADDLE_WEBHOOK_SECRET / CORTEX_PADDLE_API_KEY.
-    billing_provider: str = ""  # "" | "paddle"
+    billing_provider: str = ""  # "" | "paddle" | "stripe"
     paddle_webhook_secret: str = ""
     paddle_api_key: str = ""  # optional; reserved for future subscription lookups
+    # Stripe billing (second provider alongside Paddle). DORMANT until
+    # CORTEX_BILLING_PROVIDER=stripe AND CORTEX_STRIPE_WEBHOOK_SECRET are set.
+    # Read from CORTEX_STRIPE_WEBHOOK_SECRET / CORTEX_STRIPE_API_KEY.
+    stripe_webhook_secret: str = ""
+    stripe_api_key: str = ""  # optional; reserved for future subscription lookups
+    # Cloudflare Turnstile on the /account/signup page (bot/DoS protection for
+    # public signup; argon2id is CPU-heavy so a flood is a DoS risk). DORMANT
+    # until BOTH CORTEX_TURNSTILE_SITEKEY and CORTEX_TURNSTILE_SECRET are set:
+    # with neither, the signup page + handler behave exactly as today.
+    turnstile_site_key: str = ""
+    turnstile_secret: str = ""
     # Per-user memory quota by plan (0 = unlimited). Overrides default_memory_quota
     # when a user's plan is present. JSON map from CORTEX_PLAN_QUOTAS, else the
     # baked-in default below (free vs pro). Don't overbuild — a small dict.
@@ -100,7 +111,18 @@ class Settings:
         provider = (self.billing_provider or "").strip().lower()
         if provider == "paddle":
             return bool((self.paddle_webhook_secret or "").strip())
+        if provider == "stripe":
+            return bool((self.stripe_webhook_secret or "").strip())
         return False
+
+    @property
+    def turnstile_enabled(self) -> bool:
+        """Turnstile is live only when BOTH the site key and secret are set. The
+        signup page widget and the server-side siteverify gate are both keyed on
+        this, so an unconfigured deployment signs up exactly as before."""
+        return bool((self.turnstile_site_key or "").strip()) and bool(
+            (self.turnstile_secret or "").strip()
+        )
 
     def quota_for_plan(self, plan: str | None) -> int:
         """Per-user memory quota for a plan (0 = unlimited). Falls back to
@@ -227,6 +249,10 @@ def load_settings() -> Settings:
         billing_provider=os.environ.get("CORTEX_BILLING_PROVIDER", "").strip().lower(),
         paddle_webhook_secret=os.environ.get("CORTEX_PADDLE_WEBHOOK_SECRET", "").strip(),
         paddle_api_key=os.environ.get("CORTEX_PADDLE_API_KEY", "").strip(),
+        stripe_webhook_secret=os.environ.get("CORTEX_STRIPE_WEBHOOK_SECRET", "").strip(),
+        stripe_api_key=os.environ.get("CORTEX_STRIPE_API_KEY", "").strip(),
+        turnstile_site_key=os.environ.get("CORTEX_TURNSTILE_SITEKEY", "").strip(),
+        turnstile_secret=os.environ.get("CORTEX_TURNSTILE_SECRET", "").strip(),
         plan_quotas=_load_plan_quotas(),
         require_encrypted_credentials=_truthy_env("CORTEX_REQUIRE_ENCRYPTED_CREDENTIALS"),
     )

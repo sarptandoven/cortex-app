@@ -134,8 +134,9 @@ class PaddleSignatureTests(unittest.TestCase):
 
     def test_verifier_rejects_unknown_provider(self) -> None:
         class _S:
-            billing_provider = "stripe"
+            billing_provider = "braintree"  # not a supported provider
             paddle_webhook_secret = "x"
+            stripe_webhook_secret = "x"
         with self.assertRaises(ValueError):
             BillingWebhookVerifier.from_settings(_S())
 

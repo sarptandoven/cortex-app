@@ -1,4 +1,4 @@
-"""Billing webhook handling — Paddle-first, generic, DORMANT until configured.
+"""Billing webhook handling — Paddle + Stripe, generic, DORMANT until configured.
 
 The account system already carries a per-user ``plan`` field (sharding.py users
 table). This module is the piece that flips it on payment. It is config-gated by
@@ -7,12 +7,18 @@ table). This module is the piece that flips it on payment. It is config-gated by
 today.
 
 Design notes:
-- Provider abstraction (``BillingProvider``) keeps Stripe addable later; only
-  Paddle Billing is implemented now.
+- Provider abstraction (``BillingProvider``) makes providers interchangeable;
+  Paddle Billing and Stripe are both implemented. ``CORTEX_BILLING_PROVIDER``
+  selects one; the webhook route dispatches to whichever is configured.
 - Signature verification is HMAC-SHA256 over the RAW request body using the
-  provider webhook secret. Paddle Billing sends a ``Paddle-Signature`` header of
-  the form ``ts=<unix>;h1=<hex-hmac>`` where the signed payload is
-  ``<ts>:<raw-body>``. We recompute and constant-time compare.
+  provider webhook secret.
+  - Paddle Billing sends a ``Paddle-Signature`` header of the form
+    ``ts=<unix>;h1=<hex-hmac>`` where the signed payload is ``<ts>:<raw-body>``.
+  - Stripe sends a ``Stripe-Signature`` header of the form
+    ``t=<unix>,v1=<hex-hmac>`` (comma-separated, possibly repeated ``v1``) where
+    the signed payload is ``<t>.<raw-body>``; an optional tolerance rejects a
+    stale timestamp (replay window).
+  In both cases we recompute and constant-time compare.
 - Event → plan transition mapping lives in ``apply_billing_event`` (pure-ish:
   takes a ``store`` with ``set_user_plan``/``get_user`` and an already-verified,
   parsed event dict; returns ``{user_id, plan, action}``). It is idempotent at
@@ -28,16 +34,22 @@ module scope in any stdlib-plane file.
 
 ## Integration expectation (documented contract)
 
-When creating a Paddle checkout for a Cortex user, set the transaction/
-subscription ``custom_data`` to include the Cortex user id, e.g.::
+The same user-resolution contract holds for both providers: carry the Cortex
+``user_id`` on the checkout so the webhook maps the subscription back to the
+user with zero email round-trips.
 
-    custom_data: { "cortex_user_id": "u_ab12cd..." }
+- Paddle: set the transaction/subscription ``custom_data``, e.g.::
 
-The webhook then maps the subscription event back to that user with zero
-email round-trips. If ``custom_data`` is absent, the handler falls back to the
-customer email (resolved via a caller-provided ``email_resolver``); if neither
-resolves a known user, the event is accepted (HTTP 200) but no plan changes —
-an unknown-user event must never fail the webhook (Paddle retries otherwise).
+      custom_data: { "cortex_user_id": "u_ab12cd..." }
+
+- Stripe: set the subscription ``metadata``, e.g.::
+
+      metadata: { "cortex_user_id": "u_ab12cd..." }
+
+If that field is absent, the handler falls back to the customer email (resolved
+via a caller-provided ``email_resolver``). If neither resolves a known user, the
+event is accepted (HTTP 200) but no plan changes — an unknown-user event must
+never fail the webhook (the provider retries otherwise).
 """
 
 from __future__ import annotations
@@ -45,6 +57,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
@@ -58,6 +71,16 @@ PLAN_PRO = "pro"
 # grace/dunning window — the operator can tighten this later if desired.
 _PADDLE_ACTIVE_STATUSES = {"active", "trialing", "past_due"}
 _PADDLE_INACTIVE_STATUSES = {"canceled", "cancelled", "paused", "expired"}
+
+# Stripe subscription statuses → the plan a Cortex user should hold. active /
+# trialing / past_due grant "pro" (past_due keeps pro during dunning); the
+# terminal states drop back to "free".
+_STRIPE_ACTIVE_STATUSES = {"active", "trialing", "past_due"}
+_STRIPE_INACTIVE_STATUSES = {"canceled", "unpaid", "incomplete_expired"}
+
+# Default Stripe timestamp tolerance (seconds) for replay protection. Stripe's
+# own libraries default to 5 minutes; we match that.
+_STRIPE_DEFAULT_TOLERANCE = 300
 
 
 class BillingError(Exception):
@@ -188,6 +211,126 @@ class PaddleBillingProvider:
         return user_id, email
 
 
+class StripeBillingProvider:
+    """Stripe Billing webhook provider.
+
+    Signature header ``Stripe-Signature: t=<unix>,v1=<hex>[,v1=<hex>...]`` where
+    the signed payload is ``f"{t}.{raw_body}"`` keyed by the webhook signing
+    secret (HMAC-SHA256). We accept if ANY provided ``v1`` matches (constant-time
+    compare) and, when a tolerance is set, the timestamp is within it (replay
+    window). Events map to the SAME plan transitions as Paddle; the Cortex user
+    is resolved via subscription ``metadata.cortex_user_id`` then customer email.
+    """
+
+    name = "stripe"
+
+    def __init__(self, webhook_secret: str, *, tolerance_seconds: int = _STRIPE_DEFAULT_TOLERANCE) -> None:
+        self._secret = (webhook_secret or "").encode("utf-8")
+        self._tolerance = max(0, int(tolerance_seconds))
+
+    # ------------------------------------------------------------ signature
+    def verify_signature(self, *, raw_body: bytes, headers: dict[str, str]) -> None:
+        if not self._secret:
+            raise SignatureVerificationError("billing webhook secret is not configured")
+        header = _header_value(headers, "Stripe-Signature")
+        if not header:
+            raise SignatureVerificationError("missing Stripe-Signature header")
+        ts, signatures = self._parse_signature_header(header)
+        if not ts or not signatures:
+            raise SignatureVerificationError("malformed Stripe-Signature header")
+        if self._tolerance:
+            try:
+                sent = int(ts)
+            except ValueError as exc:
+                raise SignatureVerificationError("malformed Stripe-Signature timestamp") from exc
+            if abs(int(time.time()) - sent) > self._tolerance:
+                raise SignatureVerificationError("Stripe-Signature timestamp outside tolerance")
+        signed_payload = ts.encode("ascii") + b"." + raw_body
+        expected = hmac.new(self._secret, signed_payload, hashlib.sha256).hexdigest()
+        if not any(hmac.compare_digest(expected, provided) for provided in signatures):
+            raise SignatureVerificationError("Stripe-Signature does not match")
+
+    @staticmethod
+    def _parse_signature_header(header: str) -> tuple[str, list[str]]:
+        """Split ``t=..,v1=..[,v1=..]`` into (timestamp, [v1 signatures])."""
+        ts = ""
+        signatures: list[str] = []
+        for chunk in header.split(","):
+            key, sep, value = chunk.partition("=")
+            if not sep:
+                continue
+            key = key.strip()
+            value = value.strip()
+            if key == "t":
+                ts = value
+            elif key == "v1" and value:
+                signatures.append(value)
+        return ts, signatures
+
+    # ---------------------------------------------------------------- parse
+    def parse_event(self, payload: dict[str, Any]) -> BillingEvent:
+        event_type = str(payload.get("type") or "").strip()
+        event_id = str(payload.get("id") or "").strip()
+        # Stripe wraps the resource in data.object.
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        obj = data.get("object") if isinstance(data.get("object"), dict) else {}
+        status = str(obj.get("status") or "").strip().lower()
+        plan = self._plan_for(event_type, status)
+        user_id, email = self._resolve_identity(obj)
+        return BillingEvent(
+            provider=self.name,
+            event_id=event_id,
+            event_type=event_type,
+            plan=plan,
+            user_id=user_id,
+            email=email,
+            raw=payload,
+        )
+
+    @staticmethod
+    def _plan_for(event_type: str, status: str) -> str | None:
+        """customer.subscription.created/updated -> pro when the status is
+        active/trialing/past_due, free when canceled/unpaid/incomplete_expired.
+        customer.subscription.deleted -> free. Unknown types -> None (no
+        change)."""
+        et = event_type.lower()
+        if et == "customer.subscription.deleted":
+            return PLAN_FREE
+        if et in {"customer.subscription.created", "customer.subscription.updated"}:
+            if status in _STRIPE_INACTIVE_STATUSES:
+                return PLAN_FREE
+            if status in _STRIPE_ACTIVE_STATUSES:
+                return PLAN_PRO
+            # Unknown/blank status on a create/update: treat as active (pro).
+            return PLAN_PRO
+        return None
+
+    @staticmethod
+    def _resolve_identity(obj: dict[str, Any]) -> tuple[str | None, str | None]:
+        user_id = _extract_metadata_user_id(obj)
+        # Stripe expands the customer email onto the subscription in webhooks
+        # only when configured; check a couple of common shapes.
+        email = _clean_str(obj.get("customer_email"))
+        if email is None:
+            customer = obj.get("customer")
+            if isinstance(customer, dict):
+                email = _clean_str(customer.get("email"))
+        return user_id, email
+
+
+def _extract_metadata_user_id(obj: dict[str, Any]) -> str | None:
+    """Pull the Cortex user id from Stripe subscription ``metadata`` (checkout
+    must set it). Accepts the common key spellings, same as Paddle."""
+    metadata = obj.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    for key in ("cortex_user_id", "user_id", "userId", "cortexUserId"):
+        value = _clean_str(metadata.get(key))
+        if value:
+            return value
+    return None
+
+
 def _extract_custom_user_id(data: dict[str, Any]) -> str | None:
     """Pull the Cortex user id from Paddle custom_data (checkout must set it).
     Accepts a few common key spellings so a small integration typo still works."""
@@ -235,6 +378,11 @@ class BillingWebhookVerifier:
             if not secret:
                 raise ValueError("Paddle billing requires CORTEX_PADDLE_WEBHOOK_SECRET")
             return cls(PaddleBillingProvider(secret))
+        if provider_name == "stripe":
+            secret = getattr(settings, "stripe_webhook_secret", "") or ""
+            if not secret:
+                raise ValueError("Stripe billing requires CORTEX_STRIPE_WEBHOOK_SECRET")
+            return cls(StripeBillingProvider(secret))
         raise ValueError(f"unsupported or unconfigured billing provider: {provider_name!r}")
 
     def verify_and_parse(self, *, raw_body: bytes, headers: dict[str, str]) -> BillingEvent:

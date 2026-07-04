@@ -2283,6 +2283,50 @@ def _auth_rate_limit(runtime: AuthRuntime, action: str, request: Request) -> Non
         )
 
 
+_TURNSTILE_SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+
+
+def _verify_turnstile(request: Request, token: str) -> None:
+    """Cloudflare Turnstile server-side gate for public signup. DORMANT unless
+    ``settings.turnstile_enabled`` (both site key + secret set) — when disabled
+    this is a no-op and signup behaves exactly as before.
+
+    When enabled, a missing token is rejected (400) and the token is verified
+    against the Turnstile siteverify endpoint (with the secret + client IP). A
+    verification failure is 403. Called BEFORE any argon2 hashing so a bot flood
+    cannot burn CPU. A siteverify network/parse error fails closed (403) so a
+    flood can't slip through by knocking the verifier offline."""
+    if not settings.turnstile_enabled:
+        return
+    token = (token or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Turnstile verification required.")
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    fields = {"secret": settings.turnstile_secret, "response": token}
+    remote_ip = _client_ip(request)
+    if remote_ip and remote_ip != "unknown":
+        fields["remoteip"] = remote_ip
+    data = urllib.parse.urlencode(fields).encode("ascii")
+    req = urllib.request.Request(
+        _TURNSTILE_SITEVERIFY_URL,
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310 (fixed https URL)
+            body = resp.read().decode("utf-8")
+        outcome = json.loads(body)
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+        _auth_logger.warning("Turnstile siteverify failed: %s", exc)
+        raise HTTPException(status_code=403, detail="Turnstile verification failed.") from exc
+    if not (isinstance(outcome, dict) and outcome.get("success") is True):
+        raise HTTPException(status_code=403, detail="Turnstile verification failed.")
+
+
 def _public_account(account: dict[str, Any]) -> dict[str, Any]:
     return {
         "account_id": account.get("account_id"),
@@ -2355,6 +2399,9 @@ def _default_oauth_redirect(provider: str) -> str:
 def auth_signup(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     runtime = _auth_runtime_or_404()
     _auth_rate_limit(runtime, "signup", request)
+    # Bot/DoS gate: verify the Cloudflare Turnstile token (if enabled) BEFORE any
+    # argon2id hashing so a bot flood can't burn CPU. No-op when unconfigured.
+    _verify_turnstile(request, str(payload.get("turnstile_token") or ""))
     email = str(payload.get("email") or "")
     try:
         result = runtime.service.signup(
@@ -3028,6 +3075,10 @@ register_web_account_routes(
     app,
     runtime_or_404=_auth_runtime_or_404,
     list_providers=lambda: _auth_runtime_or_404().oidc.enabled_providers(),
+    # Cloudflare Turnstile site key, read at request time so a settings swap
+    # (tests/reboot) takes effect. "" when Turnstile is unconfigured -> the
+    # signup page is byte-identical to today.
+    turnstile_site_key=lambda: settings.turnstile_site_key if settings.turnstile_enabled else "",
 )
 
 

@@ -28,6 +28,13 @@ Design constraints (see the task brief and docs/ACCOUNTS_ENCRYPTION_DESIGN.md):
 - Every interpolated value is HTML-escaped. ``autocomplete`` attributes are set
   correctly (email / current-password / new-password) so password managers
   work. No inline secrets.
+- Cloudflare Turnstile (bot/DoS protection on signup) is DORMANT until
+  configured. When ``settings.turnstile_enabled`` the signup page (and ONLY the
+  signup page) embeds the Turnstile widget — the remote ``api.js`` script + a
+  ``<div class="cf-turnstile">`` carrying the site key — and its route-scoped
+  CSP is extended to allow ``script-src``/``frame-src``/``connect-src
+  https://challenges.cloudflare.com``. Every other page and the global site CSP
+  are untouched; with Turnstile off the signup page is byte-identical to today.
 """
 
 from __future__ import annotations
@@ -46,6 +53,26 @@ _ACCOUNT_CSP = (
     "script-src 'self'; "
     "style-src 'self' 'unsafe-inline'; "
     "connect-src 'self'; "
+    "img-src 'self' data:; "
+    "font-src 'self'; "
+    "base-uri 'none'; "
+    "form-action 'self'"
+)
+
+# The Cloudflare origin that serves the Turnstile widget script + challenge
+# frame. Only whitelisted on the signup page, only when Turnstile is enabled.
+_TURNSTILE_ORIGIN = "https://challenges.cloudflare.com"
+_TURNSTILE_API_JS = _TURNSTILE_ORIGIN + "/turnstile/v0/api.js"
+
+# The signup-page CSP with Turnstile allowances folded into the relevant
+# directives. Extends (never relaxes) _ACCOUNT_CSP: script + frame + connect to
+# the Cloudflare challenge origin. Used ONLY for /account/signup when enabled.
+_SIGNUP_CSP_TURNSTILE = (
+    "default-src 'none'; "
+    f"script-src 'self' {_TURNSTILE_ORIGIN}; "
+    "style-src 'self' 'unsafe-inline'; "
+    f"connect-src 'self' {_TURNSTILE_ORIGIN}; "
+    f"frame-src {_TURNSTILE_ORIGIN}; "
     "img-src 'self' data:; "
     "font-src 'self'; "
     "base-uri 'none'; "
@@ -201,10 +228,11 @@ input:focus { border-color: var(--green); outline: none; }
 """.strip()
 
 
-def _page(title: str, body: str, script: str) -> str:
+def _page(title: str, body: str, script: str, *, head_extra: str = "") -> str:
     """Assemble a full HTML document. ``title`` and ``script`` are baked by us
     (never user-controlled); ``body`` is static markup composed below with all
-    interpolated values escaped at the call site."""
+    interpolated values escaped at the call site. ``head_extra`` is optional
+    extra <head> markup (baked by us — e.g. the Turnstile <script> tag)."""
     safe_title = html.escape(title)
     safe_script = html.escape(script)
     return (
@@ -216,6 +244,7 @@ def _page(title: str, body: str, script: str) -> str:
         f"  <title>{safe_title}</title>\n"
         '  <link rel="icon" href="/favicon.svg" type="image/svg+xml">\n'
         f"  <style>{_SHARED_CSS}</style>\n"
+        f"{head_extra}"
         "</head>\n"
         "<body>\n"
         '  <header class="account-header">\n'
@@ -228,9 +257,9 @@ def _page(title: str, body: str, script: str) -> str:
     )
 
 
-def _html_response(document: str) -> HTMLResponse:
+def _html_response(document: str, *, csp: str = _ACCOUNT_CSP) -> HTMLResponse:
     response = HTMLResponse(content=document)
-    response.headers["Content-Security-Policy"] = _ACCOUNT_CSP
+    response.headers["Content-Security-Policy"] = csp
     response.headers["Referrer-Policy"] = "same-origin"
     return response
 
@@ -270,32 +299,44 @@ def _login_body(provider_buttons_html: str) -> str:
     )
 
 
-_SIGNUP_BODY = (
-    ' class="signup">\n'
-    '    <div class="card">\n'
-    "      <h1>Create your account</h1>\n"
-    "      <p>Start building your private personal memory model.</p>\n"
-    '      <form id="signup-form" method="post" action="/v1/auth/signup" autocomplete="on">\n'
-    '        <label for="email">Email</label>\n'
-    '        <input id="email" name="email" type="email" autocomplete="email" required>\n'
-    '        <label for="password">Password</label>\n'
-    '        <input id="password" name="password" type="password" autocomplete="new-password" minlength="10" required>\n'
-    '        <label for="confirm">Confirm password</label>\n'
-    '        <input id="confirm" name="confirm" type="password" autocomplete="new-password" minlength="10" required>\n'
-    '        <div class="checkbox-row">\n'
-    '          <input id="tos" name="tos" type="checkbox" required>\n'
-    '          <label for="tos">I am 16+ and agree to the <a href="/terms">Terms</a> and '
-    '<a href="/privacy">Privacy Policy</a>.</label>\n'
-    "        </div>\n"
-    '        <div class="actions">\n'
-    '          <button class="button primary" type="submit">Create account</button>\n'
-    "        </div>\n"
-    '        <div id="status" class="status-msg" role="status" aria-live="polite"></div>\n'
-    "      </form>\n"
-    '      <p class="meta-links">Already have an account? <a href="/account/login">Sign in</a></p>\n'
-    "    </div>\n"
-    "  </main>"
-)
+def _signup_body(turnstile_site_key: str = "") -> str:
+    """Signup page body. When ``turnstile_site_key`` is set, embeds the
+    Cloudflare Turnstile widget div (the widget writes its token into a
+    ``cf-turnstile-response`` field the JS reads and forwards to the API);
+    otherwise the markup is byte-identical to before Turnstile existed."""
+    turnstile_widget = ""
+    if turnstile_site_key:
+        safe_key = html.escape(turnstile_site_key, quote=True)
+        turnstile_widget = (
+            f'        <div class="cf-turnstile" data-sitekey="{safe_key}"></div>\n'
+        )
+    return (
+        ' class="signup">\n'
+        '    <div class="card">\n'
+        "      <h1>Create your account</h1>\n"
+        "      <p>Start building your private personal memory model.</p>\n"
+        '      <form id="signup-form" method="post" action="/v1/auth/signup" autocomplete="on">\n'
+        '        <label for="email">Email</label>\n'
+        '        <input id="email" name="email" type="email" autocomplete="email" required>\n'
+        '        <label for="password">Password</label>\n'
+        '        <input id="password" name="password" type="password" autocomplete="new-password" minlength="10" required>\n'
+        '        <label for="confirm">Confirm password</label>\n'
+        '        <input id="confirm" name="confirm" type="password" autocomplete="new-password" minlength="10" required>\n'
+        '        <div class="checkbox-row">\n'
+        '          <input id="tos" name="tos" type="checkbox" required>\n'
+        '          <label for="tos">I am 16+ and agree to the <a href="/terms">Terms</a> and '
+        '<a href="/privacy">Privacy Policy</a>.</label>\n'
+        "        </div>\n"
+        f"{turnstile_widget}"
+        '        <div class="actions">\n'
+        '          <button class="button primary" type="submit">Create account</button>\n'
+        "        </div>\n"
+        '        <div id="status" class="status-msg" role="status" aria-live="polite"></div>\n'
+        "      </form>\n"
+        '      <p class="meta-links">Already have an account? <a href="/account/login">Sign in</a></p>\n'
+        "    </div>\n"
+        "  </main>"
+    )
 
 
 _VERIFY_BODY = (
@@ -505,8 +546,21 @@ _APP_JS = r"""
         setStatus(status, 'You must agree to the Terms to continue.', 'error');
         return;
       }
+      // Cloudflare Turnstile (only present when the operator enabled it): the
+      // widget writes its token into a hidden 'cf-turnstile-response' field.
+      // Forward it so the server can verify before doing any argon2 work. When
+      // Turnstile is off there is no such field and this is a no-op.
+      var body = { email: email, password: password };
+      var tsField = form.querySelector('[name="cf-turnstile-response"]');
+      if (tsField) {
+        if (!tsField.value) {
+          setStatus(status, 'Please complete the verification challenge.', 'error');
+          return;
+        }
+        body.turnstile_token = tsField.value;
+      }
       setStatus(status, 'Creating your account…', '');
-      postJSON('/v1/auth/signup', { email: email, password: password }).then(function (r) {
+      postJSON('/v1/auth/signup', body).then(function (r) {
         if (!r.ok) {
           return r.json().then(function (data) {
             setStatus(status, (data && data.detail) || 'Could not create the account.', 'error');
@@ -780,6 +834,7 @@ def register_web_account_routes(
     *,
     runtime_or_404: Callable[[], Any],
     list_providers: Callable[[], list[dict[str, Any]]],
+    turnstile_site_key: Callable[[], str] | None = None,
 ) -> None:
     """Register the /account* browser pages on ``app``.
 
@@ -788,7 +843,22 @@ def register_web_account_routes(
     ``/v1/auth`` JSON API. ``list_providers`` returns the enabled OIDC provider
     rows (from GET /v1/auth/providers) so the login page renders the right
     "Continue with X" buttons.
+
+    ``turnstile_site_key`` (optional) is a callable returning the current
+    Cloudflare Turnstile site key, or "" when Turnstile is disabled. It is read
+    at request time (so tests/reboots that swap settings take effect). When it
+    returns a key, the signup page embeds the widget and sends the widened
+    signup CSP; when "" (the default), the signup page is byte-identical to
+    before Turnstile existed.
     """
+
+    def _turnstile_key() -> str:
+        if turnstile_site_key is None:
+            return ""
+        try:
+            return (turnstile_site_key() or "").strip()
+        except Exception:
+            return ""
 
     @app.get("/account", response_class=HTMLResponse)
     @app.get("/account/login", response_class=HTMLResponse)
@@ -804,7 +874,17 @@ def register_web_account_routes(
     @app.get("/account/signup", response_class=HTMLResponse)
     def account_signup() -> Response:
         runtime_or_404()
-        return _html_response(_page("Create your account · Cortex", _SIGNUP_BODY, "app.js"))
+        site_key = _turnstile_key()
+        if site_key:
+            head_extra = f'  <script src="{_TURNSTILE_API_JS}" async defer></script>\n'
+            document = _page(
+                "Create your account · Cortex",
+                _signup_body(site_key),
+                "app.js",
+                head_extra=head_extra,
+            )
+            return _html_response(document, csp=_SIGNUP_CSP_TURNSTILE)
+        return _html_response(_page("Create your account · Cortex", _signup_body(), "app.js"))
 
     @app.get("/account/verify", response_class=HTMLResponse)
     def account_verify() -> Response:
