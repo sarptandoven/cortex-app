@@ -1,0 +1,26 @@
+[Unit]
+Description=Cortex hosted API (uvicorn, loopback; Caddy terminates TLS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=cortex
+Group=cortex
+EnvironmentFile=/etc/cortex/cortex.env
+WorkingDirectory=/srv/cortex/current
+# 2 workers on a 4-vCPU box: leaves headroom for the worker service + sqlite-vec.
+# NOTE: the in-process rate limiter is per worker — budget CORTEX_RATE_LIMIT_PER_MINUTE
+# accordingly (config value is per process).
+ExecStart=/srv/cortex/venv/bin/uvicorn backend.app.main:app --host 127.0.0.1 --port 8766 --workers 2 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=always
+RestartSec=3
+# Sandboxing
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/cortex
+MemoryMax=5G
+
+[Install]
+WantedBy=multi-user.target

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import html
 import hmac
 import json
@@ -2277,9 +2277,10 @@ def _default_oauth_redirect(provider: str) -> str:
 def auth_signup(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     runtime = _auth_runtime_or_404()
     _auth_rate_limit(runtime, "signup", request)
+    email = str(payload.get("email") or "")
     try:
-        return runtime.service.signup(
-            str(payload.get("email") or ""),
+        result = runtime.service.signup(
+            email,
             str(payload.get("password") or ""),
             display_name=str(payload.get("display_name") or "")[:160],
         )
@@ -2287,6 +2288,23 @@ def auth_signup(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=429, detail="rate limited")
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if settings.auth_autoverify:
+        # BETA mode (CORTEX_AUTH_AUTOVERIFY=1): no email infrastructure — activate and
+        # provision at signup. The response stays the same generic shape either way, so
+        # enumeration resistance is unchanged; only server-side state differs.
+        try:
+            normalized = email.strip().lower()
+            account = runtime.control_store.get_account_by_email(normalized)
+            if account and account.get("status") == "pending_verification":
+                now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                account = runtime.control_store.update_account_fields(
+                    account["account_id"], now=now_iso, status="active", email_verified_at=now_iso
+                )
+                _ensure_account_provisioned(account)
+        except Exception:
+            # Best-effort: a failed autoverify leaves a pending account, never a 500 on signup.
+            pass
+    return result
 
 
 @app.post("/v1/auth/verify-email")

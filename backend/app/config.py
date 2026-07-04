@@ -49,6 +49,10 @@ class Settings:
     auth_refresh_idle_ttl_seconds: int = 0  # 0 = authn.py default (30d sliding)
     auth_refresh_absolute_ttl_seconds: int = 0  # 0 = authn.py default (90d absolute)
     auth_email_mode: str = "log"  # "log" (console sink) | "smtp"
+    # BETA mode: activate accounts at signup without email verification (no email
+    # infrastructure required). Never enable on a public production deployment —
+    # unverified emails mean no recovery channel and easy squatting.
+    auth_autoverify: bool = False
     auth_rate_limit_per_minute: int = 30  # per (action, identifier/IP) auth limiter
     oidc_google_client_id: str = ""
     oidc_google_client_secret: str = ""
@@ -123,6 +127,7 @@ def load_settings() -> Settings:
         auth_refresh_idle_ttl_seconds=max(0, int(os.environ.get("CORTEX_AUTH_REFRESH_IDLE_TTL_SECONDS", "0") or "0")),
         auth_refresh_absolute_ttl_seconds=max(0, int(os.environ.get("CORTEX_AUTH_REFRESH_ABSOLUTE_TTL_SECONDS", "0") or "0")),
         auth_email_mode=(os.environ.get("CORTEX_AUTH_EMAIL_MODE", "log").strip().lower() or "log"),
+        auth_autoverify=_truthy_env("CORTEX_AUTH_AUTOVERIFY"),
         auth_rate_limit_per_minute=max(0, int(os.environ.get("CORTEX_AUTH_RATE_LIMIT_PER_MINUTE", "30") or "30")),
         oidc_google_client_id=oidc_google_client_id,
         oidc_google_client_secret=os.environ.get("CORTEX_OIDC_GOOGLE_CLIENT_SECRET", "").strip(),

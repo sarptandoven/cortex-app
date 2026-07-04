@@ -253,6 +253,44 @@ class EmailPasswordJourneyTests(AuthEnabledTestCase):
             401,
         )
 
+    def test_autoverify_beta_mode_activates_at_signup(self) -> None:
+        # deploy/ beta profile: CORTEX_AUTH_AUTOVERIFY=1 activates + provisions at signup
+        # with no email server, while keeping the generic signup response shape unchanged.
+        self._original_autoverify = main_module.settings.auth_autoverify
+        main_module.settings = replace(main_module.settings, auth_autoverify=True)
+        try:
+            response = self.client.post(
+                "/v1/auth/signup", json={"email": "beta@example.com", "password": PASSWORD}
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            # Identical generic shape to the non-autoverify path — no enumeration signal.
+            self.assertEqual(response.json(), {"ok": True, "next": "verify_email"})
+
+            # Login works immediately with no verify step, and the account is active.
+            pair = self._login(email="beta@example.com")
+            self.assertEqual(pair["account"]["status"], "active")
+            user_id = pair["account"]["user_id"]
+
+            # Activation provisioned the shard (so captures/ask work right away).
+            registry_user = main_module.store.get_user(user_id)
+            self.assertIsNotNone(registry_user)
+            self.assertTrue(main_module.store.assignment_for(user_id).db_path.exists())
+
+            whoami = self.client.get("/v1/auth/session", headers=self._bearer(pair["access_token"]))
+            self.assertEqual(whoami.status_code, 200, whoami.text)
+        finally:
+            main_module.settings = replace(main_module.settings, auth_autoverify=self._original_autoverify)
+
+    def test_autoverify_off_by_default_keeps_pending(self) -> None:
+        # Default (public) profile: signup stays pending_verification; the safety default.
+        self.assertFalse(main_module.settings.auth_autoverify)
+        response = self.client.post(
+            "/v1/auth/signup", json={"email": "pending@example.com", "password": PASSWORD}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        account = self.runtime.control_store.get_account_by_email("pending@example.com")
+        self.assertEqual(account["status"], "pending_verification")
+
     def test_enumeration_resistant_shapes(self) -> None:
         first = self.client.post(
             "/v1/auth/signup", json={"email": "dupe@example.com", "password": PASSWORD}
