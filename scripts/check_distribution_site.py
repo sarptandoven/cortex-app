@@ -123,7 +123,17 @@ def validate_manifest(site_dir: Path) -> list[str]:
         if not filename:
             errors.append("downloads/latest.json: artifact missing filename")
             continue
+        url = artifact.get("url", "")
+        if not url:
+            errors.append(f"downloads/latest.json: artifact URL missing for {filename}")
         path = site_dir / "downloads" / filename
+        # When the artifact is hosted off-site (GitHub Releases / a CDN, i.e. an
+        # absolute https:// URL) and is not present on disk, skip the local
+        # existence/size/sha256 checks: the bytes live in the Release, not git.
+        # If a local copy IS still on disk (the current local-file layout), keep
+        # the strict size/sha256 validation so nothing regresses.
+        if is_external(url) and not path.exists():
+            continue
         if not path.exists():
             errors.append(f"downloads/latest.json: artifact file missing: {filename}")
             continue
@@ -133,9 +143,6 @@ def validate_manifest(site_dir: Path) -> list[str]:
         expected_hash = artifact.get("sha256")
         if expected_hash and expected_hash != sha256(path):
             errors.append(f"downloads/latest.json: sha256 mismatch for {filename}")
-        url = artifact.get("url", "")
-        if not url:
-            errors.append(f"downloads/latest.json: artifact URL missing for {filename}")
 
     checksums = list((site_dir / "downloads").glob("*.checksums.txt"))
     if not checksums:
@@ -143,10 +150,93 @@ def validate_manifest(site_dir: Path) -> list[str]:
     return errors
 
 
+def self_test() -> list[str]:
+    """Exercise both manifest branches in a throwaway site dir.
+
+    Proves that (1) a fully local artifact layout still enforces
+    existence/size/sha256, and (2) an artifact whose url is an absolute https URL
+    with no on-disk file is tolerated (bytes hosted on a Release/CDN).
+    """
+    import tempfile
+
+    failures: list[str] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        site = Path(tmp) / "site"
+        downloads = site / "downloads"
+        downloads.mkdir(parents=True)
+        # A checksums file must always be referenced.
+        (downloads / "Cortex-0.0.0-0.checksums.txt").write_text("stub\n", encoding="utf-8")
+
+        # Case 1: local dmg present, external zip absent -> should be OK.
+        dmg = downloads / "Cortex-0.0.0-0.dmg"
+        dmg.write_bytes(b"local-dmg-bytes")
+        local_manifest = {
+            "app": "Cortex",
+            "version": "0.0.0",
+            "build": "0",
+            "channel": "self-test",
+            "artifacts": [
+                {
+                    "kind": "dmg",
+                    "filename": "Cortex-0.0.0-0.dmg",
+                    "url": "downloads/Cortex-0.0.0-0.dmg",
+                    "size_bytes": dmg.stat().st_size,
+                    "sha256": sha256(dmg),
+                },
+                {
+                    "kind": "zip",
+                    "filename": "Cortex-0.0.0-0.app.zip",
+                    "url": "https://github.com/org/repo/releases/download/v0.0.0/Cortex-0.0.0-0.app.zip",
+                    "size_bytes": 999999,
+                    "sha256": "0" * 64,
+                },
+            ],
+        }
+        (downloads / "latest.json").write_text(json.dumps(local_manifest), encoding="utf-8")
+        errors = validate_manifest(site)
+        if errors:
+            failures.append(f"mixed local+external manifest should pass, got: {errors}")
+
+        # Case 2: a local artifact that lies about its size -> must be caught.
+        bad_manifest = json.loads(json.dumps(local_manifest))
+        bad_manifest["artifacts"][0]["size_bytes"] = 1
+        (downloads / "latest.json").write_text(json.dumps(bad_manifest), encoding="utf-8")
+        errors = validate_manifest(site)
+        if not any("size mismatch" in error for error in errors):
+            failures.append(f"local size mismatch should be caught, got: {errors}")
+
+        # Case 3: all artifacts external + absent -> tolerated (Release-hosted).
+        external_manifest = json.loads(json.dumps(local_manifest))
+        dmg.unlink()
+        for artifact in external_manifest["artifacts"]:
+            artifact["url"] = f"https://github.com/org/repo/releases/download/v0.0.0/{artifact['filename']}"
+        (downloads / "latest.json").write_text(json.dumps(external_manifest), encoding="utf-8")
+        errors = validate_manifest(site)
+        if errors:
+            failures.append(f"all-external manifest should pass, got: {errors}")
+
+        # Case 4: external manifest with no checksums file -> must still fail.
+        (downloads / "Cortex-0.0.0-0.checksums.txt").unlink()
+        errors = validate_manifest(site)
+        if not any("checksum file is missing" in error for error in errors):
+            failures.append(f"missing checksums must be caught even for external, got: {errors}")
+
+    return failures
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate the Cortex static landing page and release downloads.")
     parser.add_argument("--site-dir", type=Path, default=Path("site"), help="Static site directory. Default: site")
+    parser.add_argument("--self-test", action="store_true", help="Run built-in checks for the local vs Release-hosted manifest branches and exit.")
     args = parser.parse_args()
+
+    if args.self_test:
+        failures = self_test()
+        if failures:
+            print(json.dumps({"status": "error", "self_test": "failed", "failures": failures}, indent=2))
+            raise SystemExit(1)
+        print(json.dumps({"status": "ok", "self_test": "passed", "cases": ["local-file-strict", "local-size-mismatch-caught", "release-url-tolerated", "checksums-required"]}, indent=2))
+        return
 
     site_dir = args.site_dir.resolve()
     errors = []

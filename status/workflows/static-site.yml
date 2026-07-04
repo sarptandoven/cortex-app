@@ -1,0 +1,22 @@
+# Copy to .github/workflows/static-site.yml in the dedicated status repo.
+# Rebuilds the static status site and deploys it to the gh-pages branch.
+name: Static Site CI
+on:
+  schedule:
+    - cron: "0 1 * * *" # once a day
+  repository_dispatch:
+    types: [static-site]
+  workflow_dispatch:
+jobs:
+  release:
+    name: Build and deploy status site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Await previous runs
+        uses: ahmadnassri/action-workflow-queue@v1
+      - name: Generate the status website
+        uses: upptime/uptime-monitor@v1.35.0
+        with:
+          command: "site"
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}

@@ -1,0 +1,22 @@
+# Copy to .github/workflows/response-time.yml in the dedicated status repo.
+# Records response-time samples and updates the response-time graphs.
+name: Response Time CI
+on:
+  schedule:
+    - cron: "0 23 * * *" # once a day
+  repository_dispatch:
+    types: [response-time]
+  workflow_dispatch:
+jobs:
+  release:
+    name: Check response time
+    runs-on: ubuntu-latest
+    steps:
+      - name: Await previous runs
+        uses: ahmadnassri/action-workflow-queue@v1
+      - name: Update response time
+        uses: upptime/uptime-monitor@v1.35.0
+        with:
+          command: "response-time"
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}

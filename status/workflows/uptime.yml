@@ -1,0 +1,22 @@
+# Copy to .github/workflows/uptime.yml in the dedicated status repo.
+# Probes every site in .upptimerc.yml and records the result.
+name: Uptime CI
+on:
+  schedule:
+    - cron: "*/5 * * * *" # every 5 minutes
+  repository_dispatch:
+    types: [uptime]
+  workflow_dispatch:
+jobs:
+  release:
+    name: Check uptime
+    runs-on: ubuntu-latest
+    steps:
+      - name: Await previous runs
+        uses: ahmadnassri/action-workflow-queue@v1
+      - name: Check endpoint statuses
+        uses: upptime/uptime-monitor@v1.35.0
+        with:
+          command: "update"
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}

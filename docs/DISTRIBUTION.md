@@ -197,6 +197,120 @@ generated artifact verification.
 - artifact byte sizes
 - artifact SHA-256 hashes
 
+The DMG/ZIP presence, size, and SHA-256 checks apply to artifacts served from
+the site itself (a relative `url` like `downloads/Cortex-<v>-<b>.dmg`, or an
+absolute `url` whose file is still copied into `site/downloads/`). When an
+artifact `url` is an absolute `https://` URL **and** the file is not on disk —
+the GitHub Releases layout below, where the binary lives in a Release rather than
+in git — the checker skips the on-disk existence/size/hash checks for that
+artifact but still validates the manifest structure and requires the
+`*.checksums.txt` file to be present. Run `python3
+scripts/check_distribution_site.py --self-test` to exercise both branches.
+
+## GitHub Releases Distribution (free binary hosting in the org)
+
+Committing the DMG/ZIP into `site/downloads/` bloats git (~37 MB of stale
+binaries today). The public path is to attach the notarized binaries to a GitHub
+Release in the canonical org repo (free hosting) and point `latest.json` at the
+Release asset URLs, so the site links to the Release and git stays small.
+
+The canonical org repo is decided by DECISION 0 in
+`docs/REMAINING_LAUNCH_WORK.txt` (recommended: an org repo such as
+`doppl-tech/cortex`). Pass it as `--repo OWNER/REPO`.
+
+Procedure:
+
+1. **Build notarized artifacts** (founder task F10, needs the Developer ID cert +
+   notary profile from F2):
+
+   ```bash
+   CORTEX_CODESIGN_IDENTITY="Developer ID Application: NAME (TEAMID)" \
+   CORTEX_NOTARY_PROFILE=cortex-notary \
+   CORTEX_BUNDLE_PYTHON=1 \
+   ./macos/package_release.sh --production --channel stable \
+     --base-url https://github.com/doppl-tech/cortex/releases/download/v0.1.0-1
+   ```
+
+   The `--base-url` can point at the Release download prefix so the release
+   directory's own `latest.json` already carries Release URLs; `publish_release.sh`
+   also rewrites the site copy regardless.
+
+2. **Tag the build** (matching the tag you will publish, e.g. `v0.1.0-1`):
+
+   ```bash
+   git tag v0.1.0-1
+   git push origin v0.1.0-1   # push to the canonical remote per DECISION 0
+   ```
+
+3. **Publish the Release and repoint the site feed:**
+
+   ```bash
+   scripts/publish_release.sh \
+     --tag v0.1.0-1 \
+     --release-dir outputs/Cortex-0.1.0-1 \
+     --repo doppl-tech/cortex
+   ```
+
+   `scripts/publish_release.sh`:
+
+   - requires `gh` to be installed and authenticated (fails clearly otherwise),
+     and fails clearly if the release directory or any manifest-listed artifact
+     is missing;
+   - creates the GitHub Release for the tag, or reuses it if it already exists
+     (safe to re-run);
+   - uploads the DMG, `.app.zip`, and `*.checksums.txt` as Release assets
+     (`--clobber`, so re-runs replace prior uploads);
+   - rewrites `site/downloads/latest.json` so each artifact `url` becomes
+     `https://github.com/<owner>/<repo>/releases/download/<tag>/<filename>`,
+     preserving each `filename`, `size_bytes`, and `sha256`.
+
+   Use `--dry-run` first to preview the `gh` commands and the exact URL rewrites
+   without creating a Release, uploading assets, or writing the manifest.
+
+4. **Verify and deploy the site:**
+
+   ```bash
+   python3 scripts/check_distribution_site.py
+   ```
+
+   The site now links to the Release. `latest.json` and `*.checksums.txt` stay in
+   git (small); the binaries live in the Release.
+
+### CI-driven variant and required token
+
+`publish_release.sh` authenticates through the `gh` CLI. For a CI-driven release
+(triggered on a version tag), the founder must add a repo/org secret exposed to
+the job as `GH_TOKEN` (or `GITHUB_TOKEN`) with **`contents: write`** permission
+on the canonical org repo, so the workflow can create the Release and upload
+assets. This is founder task F4d. In a GitHub Actions workflow, grant
+`permissions: contents: write` to the job and export the token as `GH_TOKEN` so
+`gh` picks it up.
+
+### Removing the binaries from git (after the first Release)
+
+The stale binaries in `site/downloads/` are intentionally **left in place for
+now**: the current `latest.json` still references local files, and removing them
+before a real Release exists would break the download feed. The first notarized
+Release has not been published yet (it needs F2/F10 — the Developer ID cert and a
+notarized DMG).
+
+Once the first notarized Release is published and `latest.json` points at the
+Release URLs (step 3 above), remove the binaries from git — the checker now
+tolerates absent, Release-hosted artifacts:
+
+```bash
+git rm --cached site/downloads/*.dmg site/downloads/*.app.zip
+# add site/downloads/*.dmg and site/downloads/*.app.zip to .gitignore
+python3 scripts/check_distribution_site.py   # still green: URLs are Release-hosted
+```
+
+Keep `site/downloads/latest.json`, `distribution.json`, and the
+`*.checksums.txt` in git. Also update `site/index.html`'s download links to point
+at the Release URLs (or at `latest.json`), since the checker validates local HTML
+references and those download buttons currently target the local
+`downloads/Cortex-<v>-<b>.dmg` files. (This repo's site HTML is owned separately;
+flag it as part of the same change.)
+
 ## Manual Site QA
 
 ```bash
