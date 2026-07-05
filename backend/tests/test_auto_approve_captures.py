@@ -138,6 +138,32 @@ class AutoApproveCaptureTests(unittest.TestCase):
         )
         self.assertEqual(self._review_status(cid), "pending")
 
+    def test_connected_obsidian_vault_is_trusted_by_default_and_retrievable(self) -> None:
+        """Regression: a folder the user explicitly connects (review_required=False, the
+        endpoint default) auto-adds its notes to memory so they're immediately retrievable —
+        instead of dumping every note into Review, which made a connected vault look like it
+        'never synced'. review_required=True still routes notes through Review."""
+        import tempfile
+        from pathlib import Path as _P
+
+        vault = _P(tempfile.mkdtemp())
+        (vault / "note.md").write_text(
+            "My favorite programming language is Rust and I prefer dark-roast coffee.", encoding="utf-8"
+        )
+        # trusted (endpoint default): notes become active, searchable memory with no approve step
+        res = self.store.sync_obsidian_vault(self.user_id, vault_path=str(vault), processing="sync", review_required=False)
+        self.assertEqual(res["status"], "complete")
+        self.assertGreaterEqual(res["saved"], 1)
+        run_worker_tick(self.store, [self.user_id], limit_per_user=100)
+        self.assertGreaterEqual(len(self.store.search(self.user_id, "programming language", limit=5)), 1)
+
+        # review_required=True keeps the review gate: a second vault's notes stay pending
+        vault2 = _P(tempfile.mkdtemp())
+        (vault2 / "secret.md").write_text("Reviewable note about Postgres tuning.", encoding="utf-8")
+        res2 = self.store.sync_obsidian_vault(self.user_id, vault_path=str(vault2), processing="sync", review_required=True)
+        cap2 = res2["records"][0]["capture_id"]
+        self.assertEqual(self._review_status(cap2), "pending")
+
     def test_config_flag_parses(self) -> None:
         self.assertFalse(load_settings().auto_approve_captures)  # default off
         prev = os.environ.get("CORTEX_AUTO_APPROVE_CAPTURES")

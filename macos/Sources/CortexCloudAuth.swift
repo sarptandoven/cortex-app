@@ -116,6 +116,13 @@ extension AppState {
         Task { await performCloudSignIn(hostedURL: hostedURL, email: email, password: password) }
     }
 
+    /// Create a Cortex Cloud account in-app (no browser round-trip), then sign in. In beta
+    /// autoverify the account is active immediately; if the deployment requires email
+    /// verification, the follow-up login surfaces a clear "verify your email" message.
+    func signUpToCloud(hostedURL: String, email: String, password: String, displayName: String = "") {
+        Task { await performCloudSignUp(hostedURL: hostedURL, email: email, password: password, displayName: displayName) }
+    }
+
     func signInToCloudWithBrowser(hostedURL: String) {
         Task { await performCloudBrowserSignIn(hostedURL: hostedURL) }
     }
@@ -155,6 +162,32 @@ extension AppState {
         } catch {
             cloudAuthMessage = CortexCloudAuth.describe(error)
         }
+    }
+
+    // MARK: Create account (in-app signup, then auto sign-in)
+
+    private func performCloudSignUp(hostedURL: String, email: String, password: String, displayName: String) async {
+        guard let base = AppState.normalizedHostedBase(hostedURL) else {
+            cloudAuthMessage = CortexCloudAuthError.invalidHostedURL.localizedDescription
+            return
+        }
+        cloudAuthBusy = true
+        cloudAuthMessage = "Creating your Cortex account..."
+        do {
+            _ = try await cloudPost(base: base, path: "/v1/auth/signup", body: [
+                "email": email.trimmingCharacters(in: .whitespacesAndNewlines),
+                "password": password,
+                "display_name": displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            ])
+        } catch {
+            cloudAuthBusy = false
+            cloudAuthMessage = CortexCloudAuth.describe(error)
+            return
+        }
+        // Signup returns an enumeration-resistant generic shape. In beta autoverify the account
+        // is active immediately, so sign in right away to obtain tokens. If the deployment
+        // requires email verification, the login below surfaces a clear "verify" message.
+        await performCloudSignIn(hostedURL: hostedURL, email: email, password: password)
     }
 
     // MARK: Browser (Google/GitHub) sign-in — same poll pattern as waitForManagedOAuthCompletion
@@ -445,14 +478,17 @@ struct CortexCloudSection: View {
                 } label: {
                     Label("Sign in", systemImage: "person.crop.circle.badge.checkmark")
                 }
-                .disabled(state.cloudAuthBusy
-                    || email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || password.isEmpty
-                    || hostedURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(credentialsIncomplete)
+                Button {
+                    state.signUpToCloud(hostedURL: hostedURL, email: email, password: password)
+                } label: {
+                    Label("Create account", systemImage: "person.crop.circle.badge.plus")
+                }
+                .disabled(credentialsIncomplete)
                 Button {
                     state.signInToCloudWithBrowser(hostedURL: hostedURL)
                 } label: {
-                    Label("Sign in with browser (Google/GitHub)", systemImage: "globe")
+                    Label("Browser (Google/GitHub)", systemImage: "globe")
                 }
                 .disabled(state.cloudAuthBusy || hostedURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 if state.cloudAuthBusy {
@@ -460,13 +496,26 @@ struct CortexCloudSection: View {
                 }
                 Spacer()
             }
+            Text("Create an account or sign in to sync your memory to Cortex Cloud and reach it across devices and AI tools. Using Cortex locally needs no account.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Button {
                 state.openCloudSignup(hostedURL: hostedURL)
             } label: {
-                Text("New here? Create an account")
+                Text("Prefer the browser? Open the signup page")
                     .font(.caption)
             }
             .buttonStyle(.link)
         }
+    }
+
+    /// Sign in / Create account both need a hosted URL, an email, and a password. The password
+    /// is intentionally not trimmed (it may contain spaces); the URL/email are.
+    private var credentialsIncomplete: Bool {
+        state.cloudAuthBusy
+            || email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || password.isEmpty
+            || hostedURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }

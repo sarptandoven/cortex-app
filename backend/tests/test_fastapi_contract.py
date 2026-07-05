@@ -3340,7 +3340,7 @@ END:VCALENDAR
 
             first = self.client.post(
                 "/v1/connectors/obsidian/sync",
-                json={"vault_path": str(vault), "processing": "sync", "max_records": 10},
+                json={"vault_path": str(vault), "processing": "sync", "max_records": 10, "review_required": True},
                 headers=headers,
             )
             self.assertEqual(first.status_code, 200)
@@ -3357,7 +3357,7 @@ END:VCALENDAR
             )
             changed = self.client.post(
                 "/v1/connectors/obsidian/sync",
-                json={"vault_path": str(vault), "processing": "sync", "max_records": 10},
+                json={"vault_path": str(vault), "processing": "sync", "max_records": 10, "review_required": True},
                 headers=headers,
             )
             self.assertEqual(changed.status_code, 200)

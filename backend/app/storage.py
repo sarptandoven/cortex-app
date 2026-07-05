@@ -4892,6 +4892,7 @@ class CortexStore:
         processing: str = "sync",
         max_records: int = 200,
         cursor_name: str = "local-folder",
+        review_required: bool = True,
     ) -> dict[str, Any]:
         from .connectors.obsidian import OBSIDIAN_SOURCE, scan_vault, vault_identity
 
@@ -4927,7 +4928,11 @@ class CortexStore:
             connection_type="local_folder",
             status="empty" if empty_complete_scan else "connected",
             auth_state="needs_content" if empty_complete_scan else "healthy",
-            policy={"review_required": True, "allow_ai_context": True},
+            # A vault the user explicitly connected is trusted by default: its notes are added to
+            # memory directly rather than dumped into Review one-by-one (reviewing your own notes
+            # folder is not a sensible default and made a connected vault look like it "never
+            # synced"). Callers can pass review_required=True to keep the review gate.
+            policy={"review_required": bool(review_required), "allow_ai_context": True},
             metadata=metadata,
             last_error=scan.errors[0]["error"] if scan.errors else None,
             account_id=resolved_account_id,
@@ -4951,7 +4956,10 @@ class CortexStore:
         complete_record_set = not scan.truncated and not scan.errors
         if not scan.records:
             archived_missing = 0
-            if complete_record_set and scan.files_seen == 0:
+            # Only reconcile-by-archiving on a scan that found zero files if this account has
+            # synced before (previous_cursor set). Archiving on the FIRST sync of an empty or
+            # mis-pointed folder would wipe unrelated captures for no reason.
+            if complete_record_set and scan.files_seen == 0 and previous_cursor is not None:
                 archived_missing = self._archive_missing_source_account_records(user_id, account["id"], set())
                 state["last_batch_archived_missing"] = archived_missing
             cursor = self.upsert_sync_cursor(
@@ -8718,6 +8726,10 @@ class CortexStore:
                 if source_account_row:
                     source_account_snapshot = self._source_account_from_row(source_account_row)
             source_account_policy = source_account_snapshot.get("policy") if source_account_snapshot else {}
+            # A connected source's captures are held for Review unless the source is trusted
+            # (policy.review_required is False). A trusted source's memories still surface in
+            # retrieval/context while its capture remains an auditable Review record — that is the
+            # mechanism that makes a trusted vault's notes usable without a manual approval step.
             if normalized_source_account_id and not (isinstance(source_account_policy, dict) and source_account_policy.get("review_required") is False):
                 review_status = "pending"
                 approved_at = None

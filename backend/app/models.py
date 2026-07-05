@@ -156,6 +156,9 @@ class ObsidianVaultSyncRequest(BaseModel):
     processing: Literal["sync", "async"] = "sync"
     max_records: int = Field(default=1000, ge=1, le=5000)
     cursor_name: str = Field(default="local-folder", min_length=1, max_length=120)
+    # A vault the user explicitly connects is trusted by default (its notes go straight into
+    # memory instead of Review). Set true to route the vault's notes through Review.
+    review_required: bool = False
 
 
 class ObsidianVaultSyncResponse(SourceAccountSyncResponse):

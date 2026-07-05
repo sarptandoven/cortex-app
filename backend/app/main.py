@@ -770,6 +770,7 @@ def sync_obsidian_vault(request: ObsidianVaultSyncRequest, user_id: str = Depend
             processing=request.processing,
             max_records=request.max_records,
             cursor_name=request.cursor_name,
+            review_required=request.review_required,
         )
         return store.public_payload(user_id, result)
     except FileNotFoundError as exc:

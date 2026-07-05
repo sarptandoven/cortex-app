@@ -800,6 +800,7 @@ class FakeStore:
         processing: str = "sync",
         max_records: int = 1000,
         cursor_name: str = "local-folder",
+        review_required: bool = True,
     ) -> dict:
         if not vault_path:
             raise ValueError("vault_path is required")
