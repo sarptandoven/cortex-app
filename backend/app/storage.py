@@ -1242,6 +1242,74 @@ def _copy_setup_fields(fields: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
     return copied
 
 
+# Human, step-by-step setup instructions shown in the app when a connection needs manual work
+# (paste a token, sign in, or export a file). Kept next to the machine-readable blueprints so the
+# UI can render "here's exactly how to connect this" instead of a bare form.
+CONNECTOR_SETUP_GUIDES: dict[str, dict[str, Any]] = {
+    "obsidian": {"help_url": "https://help.obsidian.md", "steps": [
+        "Click Choose Folder and pick your Obsidian vault (the folder that holds your .md notes).",
+        "Cortex reads those notes and keeps them in sync as you edit — everything stays on your Mac.",
+    ]},
+    "github": {"help_url": "https://github.com/settings/tokens", "steps": [
+        "Open github.com → Settings → Developer settings → Personal access tokens → Fine-grained tokens.",
+        "Generate a read-only token with access to the repos you want (Contents + Issues + Pull requests).",
+        "Copy the token, paste it below, then choose the repositories to sync.",
+    ]},
+    "slack": {"help_url": "https://api.slack.com/apps", "steps": [
+        "Go to api.slack.com/apps and create an app for your workspace (or open an existing one).",
+        "Under OAuth & Permissions add read scopes (channels:history, channels:read), then Install to Workspace.",
+        "Copy the User OAuth token (starts with xoxp-) and paste it below.",
+    ]},
+    "linear": {"help_url": "https://linear.app/settings/api", "steps": [
+        "Open Linear → Settings → API → Personal API keys.",
+        "Create a key, copy it, and paste it below.",
+    ]},
+    "jira": {"help_url": "https://id.atlassian.com/manage-profile/security/api-tokens", "steps": [
+        "Go to id.atlassian.com → Security → Create and manage API tokens.",
+        "Create a token, then paste it below with your Jira site URL and account email.",
+    ]},
+    "readwise": {"help_url": "https://readwise.io/access_token", "steps": [
+        "Open readwise.io/access_token while signed in to Readwise.",
+        "Copy the access token shown and paste it below.",
+    ]},
+    "raindrop": {"help_url": "https://app.raindrop.io/settings/integrations", "steps": [
+        "Open Raindrop → Settings → Integrations → For Developers → Create new app.",
+        "Create a test token and paste it below.",
+    ]},
+    "gmail": {"help_url": "https://support.google.com/mail", "steps": [
+        "Click Sign in with Google and grant read-only Gmail access.",
+        "Cortex syncs your recent mail; you can disconnect anytime.",
+    ]},
+    "outlook": {"help_url": "https://support.microsoft.com/outlook", "steps": [
+        "Click Sign in with Microsoft and grant read access to your mail.",
+        "Cortex syncs your recent mail; you can disconnect anytime.",
+    ]},
+    "notion": {"help_url": "https://www.notion.so/my-integrations", "steps": [
+        "Click Sign in with Notion (or create an internal integration at notion.so/my-integrations and paste its token).",
+        "Share the pages or databases you want Cortex to read with the integration.",
+    ]},
+    "google-drive": {"help_url": "https://support.google.com/drive", "steps": [
+        "Click Sign in with Google and grant read-only Drive access.",
+        "Choose the documents/folders to index; you can disconnect anytime.",
+    ]},
+    "chatgpt": {"help_url": "https://help.openai.com/en/articles/7260999-how-do-i-export-my-chatgpt-history-and-data", "steps": [
+        "In ChatGPT: Settings → Data controls → Export data → Confirm export.",
+        "OpenAI emails you a link — download the .zip (it contains conversations.json).",
+        "Drop it into Cortex or your Downloads folder; Cortex detects and imports it automatically.",
+    ]},
+    "claude": {"help_url": "https://support.anthropic.com", "steps": [
+        "In Claude: Settings → Account → Export data.",
+        "Download the export, then drop it into Cortex or your Downloads folder.",
+        "Cortex detects and imports it automatically — re-export anytime to add new chats.",
+    ]},
+}
+
+
+def _connector_setup_guide(connector_id: str) -> dict[str, Any]:
+    guide = CONNECTOR_SETUP_GUIDES.get(_normalize_source_key(connector_id)) or {}
+    return {"help_url": guide.get("help_url"), "setup_instructions": list(guide.get("steps") or [])}
+
+
 def _connector_connection_setup(item: dict[str, Any], service_baseline: dict[str, Any]) -> dict[str, Any]:
     connector_id = _normalize_source_key(item.get("id"))
     blueprint = CONNECTOR_SETUP_BLUEPRINTS.get(connector_id)
@@ -1269,6 +1337,7 @@ def _connector_connection_setup(item: dict[str, Any], service_baseline: dict[str
             "credential_fields": [],
             "configuration_fields": [],
             "require_one_of": [],
+            **_connector_setup_guide(connector_id),
         }
 
     mode = str(blueprint.get("mode") or _connector_primary_beta_path(item))
@@ -1298,6 +1367,7 @@ def _connector_connection_setup(item: dict[str, Any], service_baseline: dict[str
         "credential_fields": credential_fields,
         "configuration_fields": configuration_fields,
         "require_one_of": list(blueprint.get("require_one_of") or []),
+        **_connector_setup_guide(connector_id),
     }
 
 
