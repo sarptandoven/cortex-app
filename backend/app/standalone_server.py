@@ -721,6 +721,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                             source_url=str(body.get("source_url") or "")[:500] or None,
                             title=str(body.get("title") or "")[:200] or None,
                             cite_capture_provenance=True,
+                            auto_approve=settings.auto_approve_captures,
                         ),
                         status=HTTPStatus.ACCEPTED,
                     )
@@ -746,6 +747,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                             source_url=source_url,
                             title=title,
                             cite_capture_provenance=True,
+                            auto_approve=settings.auto_approve_captures,
                         ))
                     else:
                         self._send_json(self._save_capture(user_id, content, source, title, source_url))
@@ -2077,6 +2079,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             title=str(title or "")[:200] or None,
             extracted=extracted,
             cite_capture_provenance=True,
+            auto_approve=settings.auto_approve_captures,
         )
 
     def _read_body(self) -> bytes:

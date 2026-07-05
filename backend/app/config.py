@@ -63,6 +63,11 @@ class Settings:
     # infrastructure required). Never enable on a public production deployment —
     # unverified emails mean no recovery channel and easy squatting.
     auth_autoverify: bool = False
+    # First-run/beta ergonomics: new captures skip the Review inbox and are immediately
+    # retrievable (approved at save time) instead of waiting for manual approval. Captures
+    # from a connected source still honour that source's per-source review policy, so
+    # connector trust is unchanged. Off by default; enable for a low-friction beta.
+    auto_approve_captures: bool = False
     auth_rate_limit_per_minute: int = 30  # per (action, identifier/IP) auth limiter
     oidc_google_client_id: str = ""
     oidc_google_client_secret: str = ""
@@ -240,6 +245,7 @@ def load_settings() -> Settings:
         smtp_use_starttls=os.environ.get("CORTEX_SMTP_USE_STARTTLS", "1").strip().lower() in {"1", "true", "yes", "on"},
         smtp_use_ssl=_truthy_env("CORTEX_SMTP_USE_SSL"),
         auth_autoverify=_truthy_env("CORTEX_AUTH_AUTOVERIFY"),
+        auto_approve_captures=_truthy_env("CORTEX_AUTO_APPROVE_CAPTURES"),
         auth_rate_limit_per_minute=max(0, int(os.environ.get("CORTEX_AUTH_RATE_LIMIT_PER_MINUTE", "30") or "30")),
         oidc_google_client_id=oidc_google_client_id,
         oidc_google_client_secret=os.environ.get("CORTEX_OIDC_GOOGLE_CLIENT_SECRET", "").strip(),

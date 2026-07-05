@@ -632,6 +632,7 @@ def create_capture(
             source_url=request.source_url,
             title=request.title,
             cite_capture_provenance=True,
+            auto_approve=settings.auto_approve_captures,
         )
     extracted = extract_context(
         request.content,
@@ -646,6 +647,7 @@ def create_capture(
         title=request.title,
         extracted=extracted,
         cite_capture_provenance=True,
+        auto_approve=settings.auto_approve_captures,
     )
 
 
@@ -660,6 +662,7 @@ def queue_capture(request: CaptureRequest, user_id: str = Depends(auth)) -> dict
         source_url=request.source_url,
         title=request.title,
         cite_capture_provenance=True,
+        auto_approve=settings.auto_approve_captures,
     )
 
 

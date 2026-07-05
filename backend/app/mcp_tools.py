@@ -4,6 +4,7 @@ import json
 import re
 from typing import Any
 
+from .config import load_settings
 from .extractor import extract_context
 from .storage import CortexStore
 
@@ -1385,6 +1386,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             title=args.get("title"),
             extracted=extracted,
             cite_capture_provenance=True,
+            auto_approve=load_settings().auto_approve_captures,
         ))
     if name == "get_context":
         # Identity/persona layer requires export scope; instead of erroring the whole call for

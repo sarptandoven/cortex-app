@@ -65,15 +65,24 @@ def configured_embedding_dimensions(default: int = VECTOR_DIMENSIONS) -> int:
         return default
 
 
-def embedding_status() -> dict[str, Any]:
+def embedding_status(schema_dimensions: int | None = None) -> dict[str, Any]:
+    """Report the active embedding provider and how it lines up with the vector index.
+
+    `schema_dimensions` is the ACTUAL dimension of this store's `memory_vec` index (from
+    `vec_index_meta`). Pass it so `schema_dimensions`/`index_compatible` reflect reality —
+    the index is reconciled to the model's native dimension at store construction
+    (see CortexStore._ensure_vector_index), so a model2vec store's real index is 256, not
+    the 384 build-time constant. When omitted (callers without DB access), fall back to
+    VECTOR_DIMENSIONS so behaviour is unchanged."""
     provider = configured_embedding_provider()
     dimensions = configured_embedding_dimensions()
+    schema = int(schema_dimensions) if schema_dimensions else VECTOR_DIMENSIONS
     return {
         "provider": provider,
         "model": configured_embedding_model(),
         "dimensions": dimensions,
-        "schema_dimensions": VECTOR_DIMENSIONS,
-        "index_compatible": dimensions == VECTOR_DIMENSIONS,
+        "schema_dimensions": schema,
+        "index_compatible": dimensions == schema,
         "network_required": provider == "openai",
         "strict": _strict_embeddings(),
     }

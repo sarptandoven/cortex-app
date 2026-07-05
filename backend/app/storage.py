@@ -3033,6 +3033,7 @@ class CortexStore:
         refresh_key: str | None = None,
         capture_id_override: str | None = None,
         cite_capture_provenance: bool = False,
+        auto_approve: bool = False,
     ) -> dict[str, Any]:
         content = content.strip()
         if not content:
@@ -3058,8 +3059,22 @@ class CortexStore:
         summary = "Queued for memory extraction."
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
-            review_status = "pending" if user_settings["review_new_captures"] else "approved"
+            # Mirror save_capture EXACTLY so the async path can never bypass connector review:
+            # base state from auto_approve / the user's review setting, then a connected source
+            # forces review unless its policy explicitly trusts it.
+            review_status = "approved" if (auto_approve or not user_settings["review_new_captures"]) else "pending"
             approved_at = None if review_status == "pending" else captured_at
+            if normalized_source_account_id:
+                source_account_row = conn.execute(
+                    "SELECT * FROM source_accounts WHERE user_id = ? AND id = ?",
+                    (user_id, normalized_source_account_id),
+                ).fetchone()
+                source_account_policy = (
+                    self._source_account_from_row(source_account_row).get("policy") if source_account_row else {}
+                )
+                if not (isinstance(source_account_policy, dict) and source_account_policy.get("review_required") is False):
+                    review_status = "pending"
+                    approved_at = None
             stable_source_record = bool(normalized_source_account_id and normalized_external_id)
             existing_capture = conn.execute(
                 "SELECT id, raw_hash, review_status, approved_at FROM captures WHERE user_id = ? AND id = ?",
@@ -8658,6 +8673,7 @@ class CortexStore:
         external_id: str | None = None,
         capture_id_override: str | None = None,
         cite_capture_provenance: bool = False,
+        auto_approve: bool = False,
     ) -> dict[str, Any]:
         captured_at = extracted.get("_timestamp") or now_iso()
         normalized_source_account_id = (source_account_id or "").strip() or None
@@ -8688,7 +8704,10 @@ class CortexStore:
         with connect(self.db_path) as conn:
             user_settings = self._settings(conn, user_id)
             user_settings_snapshot = dict(user_settings)
-            review_status = "pending" if user_settings["review_new_captures"] else "approved"
+            # Base state from the deployment auto-approve flag or the user's review setting.
+            # The source-account policy below can still force review back on for connected
+            # sources, so auto_approve only fast-tracks manual/first-party captures.
+            review_status = "approved" if (auto_approve or not user_settings["review_new_captures"]) else "pending"
             approved_at = None if review_status == "pending" else captured_at
             source_account_snapshot = None
             if normalized_source_account_id:
@@ -8728,7 +8747,11 @@ class CortexStore:
                         "edge_count": purged["edge_count"],
                     },
                 )
-            elif existing_capture and stable_source_record and existing_capture["review_status"] != "archived":
+            elif existing_capture and existing_capture["review_status"] != "archived":
+                # Content is unchanged (raw_hash matched) — preserve the review decision already
+                # made at enqueue/first-save time instead of recomputing it. This keeps the async
+                # worker re-extraction from reverting an auto-approved (or user-approved) capture
+                # back to pending, and preserves connector idempotency for stable source records.
                 review_status = existing_capture["review_status"]
                 approved_at = existing_capture["approved_at"]
             conn.execute(
@@ -13776,7 +13799,7 @@ class CortexStore:
             "relation_orphans": relation_orphans,
             "last_event_at": last_event_at,
             "vector": vector_status,
-            "embedding": embedding_status(),
+            "embedding": self._embedding_status(),
             "vault": vault_diagnostics,
         }
 
@@ -13791,7 +13814,7 @@ class CortexStore:
             "vector_live": vector_available,
             "vector_available": vector_available,
             "vector_reason": vector_status.get("reason"),
-            "embedding": embedding_status(),
+            "embedding": self._embedding_status(),
         }
 
     def health_payload(self, *, mode: str, auth: bool) -> dict[str, Any]:
@@ -14319,7 +14342,7 @@ class CortexStore:
             "vector_indexed_memories": vector_count,
             "vector_queued_memories": queued_vectors,
             "vector_model": embedding_status()["model"],
-            "embedding": embedding_status(),
+            "embedding": self._embedding_status(),
         }
 
     def rebuild_vectors(self, user_id: str) -> dict[str, Any]:
@@ -14343,7 +14366,7 @@ class CortexStore:
                     "vector_available": False,
                     "vector_indexed_memories": self._vector_count(conn, user_id),
                     "vector_model": embedding_status()["model"],
-                    "embedding": embedding_status(),
+                    "embedding": self._embedding_status(conn),
                 }
             queued = 0
             skipped = 0
@@ -14382,7 +14405,7 @@ class CortexStore:
             "vector_available": vector_available,
             "vector_indexed_memories": vector_count,
             "vector_model": embedding_status()["model"],
-            "embedding": embedding_status(),
+            "embedding": self._embedding_status(),
         }
 
     def reconcile_vault_edits(self, user_id: str) -> dict[str, Any]:
@@ -16298,7 +16321,7 @@ class CortexStore:
                     "skipped": True,
                     "reason": "vector_not_available",
                     "vector_available": False,
-                    "embedding": embedding_status(),
+                    "embedding": self._embedding_status(conn),
                     "completed_at": started_at,
                 }
             topics = self._json_list(row["topics_json"])
@@ -16336,7 +16359,7 @@ class CortexStore:
                     "skipped": True,
                     "reason": "vector_not_available",
                     "vector_available": False,
-                    "embedding": embedding_status(),
+                    "embedding": self._embedding_status(conn),
                     "completed_at": completed_at,
                 }
             still_active = conn.execute(
@@ -17625,6 +17648,19 @@ class CortexStore:
         # changed since this store was built, the dims won't match and the vector path stays off
         # (a fresh store re-reconciles) rather than inserting a mismatched-dimension vector.
         return self._active_vector_dimensions(conn) == int(embedding_status()["dimensions"])
+
+    def _embedding_status(self, conn=None) -> dict[str, Any]:
+        """embedding_status() reported against THIS shard's real vector-index dimension, so
+        schema_dimensions/index_compatible stay truthful once _ensure_vector_index has
+        reconciled memory_vec to the active model — not the static 384-dim build constant.
+        Falls back to the constant if the dimension can't be read."""
+        try:
+            if conn is not None:
+                return embedding_status(schema_dimensions=self._active_vector_dimensions(conn))
+            with connect(self.db_path) as owned:
+                return embedding_status(schema_dimensions=self._active_vector_dimensions(owned))
+        except sqlite3.Error:
+            return embedding_status()
 
     def _active_vector_dimensions(self, conn) -> int | None:
         try:

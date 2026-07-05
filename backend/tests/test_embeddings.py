@@ -124,6 +124,24 @@ class EmbeddingProviderTests(unittest.TestCase):
         self.assertTrue(status["network_required"])
         self.assertTrue(status["strict"])
 
+    def test_embedding_status_uses_real_schema_dimensions_when_given(self) -> None:
+        """embedding_status(schema_dimensions=...) reports the ACTUAL index dimension so
+        index_compatible is truthful. Regression: model2vec (256) against a 256 index is
+        compatible; the no-arg call still falls back to the 384 build constant."""
+        with patch.dict(os.environ, {"CORTEX_EMBEDDING_PROVIDER": "model2vec"}, clear=False):
+            os.environ.pop("CORTEX_EMBEDDING_DIMENSIONS", None)
+            # Model emits 256; a reconciled 256-dim index is compatible.
+            compatible = embedding_status(schema_dimensions=256)
+            self.assertEqual(compatible["dimensions"], 256)
+            self.assertEqual(compatible["schema_dimensions"], 256)
+            self.assertTrue(compatible["index_compatible"])
+            # A stale 384-dim index is (truthfully) reported incompatible.
+            stale = embedding_status(schema_dimensions=384)
+            self.assertEqual(stale["schema_dimensions"], 384)
+            self.assertFalse(stale["index_compatible"])
+            # No argument: unchanged legacy behaviour (falls back to the constant, 384).
+            self.assertEqual(embedding_status()["schema_dimensions"], 384)
+
 
 if __name__ == "__main__":
     unittest.main()

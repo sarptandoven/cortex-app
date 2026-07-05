@@ -66,6 +66,12 @@ CORTEX_AUTH_ENABLED=1
 CORTEX_AUTH_AUTOVERIFY=1
 CORTEX_AUTH_EMAIL_MODE=log
 
+# BETA ergonomics: captures are immediately retrievable (skip the Review inbox) so a new
+# user's first capture -> ask returns a cited answer without a manual approval step.
+# Connected-source captures still honour their per-source review policy. Set 0 to require
+# review of every capture.
+CORTEX_AUTO_APPROVE_CAPTURES=1
+
 # per-user encryption
 CORTEX_KEK_FILE=$KEK_FILE
 
@@ -84,6 +90,16 @@ else
   echo "==> $ENV_FILE exists; keeping current secrets."
   FIRST=0
 fi
+
+# Reconcile flags added AFTER the initial install so `git pull && setup.sh` actually applies
+# them to an already-provisioned cortex.env. Idempotent; never overwrites an existing value.
+ensure_env() {
+  if ! grep -q "^$1=" "$ENV_FILE"; then
+    printf '%s=%s\n' "$1" "$2" >> "$ENV_FILE"
+    echo "   added $1=$2 to $ENV_FILE"
+  fi
+}
+ensure_env CORTEX_AUTO_APPROVE_CAPTURES 1
 
 chmod +x "$REPO_DIR/deploy/macmini/run-api.sh" "$REPO_DIR/deploy/macmini/run-worker.sh"
 
