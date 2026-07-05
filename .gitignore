@@ -1,7 +1,13 @@
 .env
+.context/
 venv/
 __pycache__/
 *.pyc
 .DS_Store
+node_modules/
+npm-debug.log*
 backend/data/
 macos/build/
+outputs/
+.conductor/
+cortex-agent-package.zip

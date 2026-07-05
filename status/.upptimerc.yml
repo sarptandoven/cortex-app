@@ -1,0 +1,43 @@
+# Upptime configuration for the Cortex public status page (status.trydoppl.com).
+#
+# This is a SCAFFOLD. Upptime runs in its OWN repository (see docs/STATUS_PAGE.md).
+# Copy this file to the ROOT of that repo as `.upptimerc.yml`. Upptime probes
+# each `url` on a schedule via GitHub Actions, records history in that repo, and
+# publishes a static status site to GitHub Pages.
+#
+# Reference: https://upptime.js.org/docs/configuration
+
+# The status repo, in owner/name form. Set this to the dedicated status repo you
+# create in the org (DECISION 0 canonical org), e.g. doppl-tech/status.
+owner: doppl-tech
+repo: status
+
+# The endpoints we monitor. Keep this list minimal and correct: only the API
+# readiness probe and the public site.
+sites:
+  - name: Cortex API
+    url: https://api.trydoppl.com/ready
+    # /ready returns 200 when the API and its dependencies are serviceable.
+    expectedStatusCodes:
+      - 200
+  - name: Cortex Website
+    url: https://trydoppl.com
+    expectedStatusCodes:
+      - 200
+
+# Status page branding.
+status-website:
+  cname: status.trydoppl.com
+  name: Cortex Status
+  introTitle: "Cortex Status"
+  introMessage: "This is the live status of the Cortex website and API."
+  navbar:
+    - title: Status
+      href: /
+    - title: Cortex
+      href: https://trydoppl.com
+
+# Assignees to notify via GitHub issues on downtime. Replace with real handles.
+# Upptime opens/closes an issue automatically when a monitor goes down/up.
+assignees:
+  - sarptandoven

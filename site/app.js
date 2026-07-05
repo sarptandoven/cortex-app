@@ -7,16 +7,12 @@
       {
         kind: "dmg",
         filename: "Cortex-0.1.0-1.dmg",
-        url: "downloads/Cortex-0.1.0-1.dmg",
-        size_bytes: 1518633,
-        sha256: "bdd4d38813143ca3af0fada361576ea973bf65e80ecbe7c2e47cffb5cb1d9f80"
+        url: "downloads/Cortex-0.1.0-1.dmg"
       },
       {
         kind: "zip",
         filename: "Cortex-0.1.0-1.app.zip",
-        url: "downloads/Cortex-0.1.0-1.app.zip",
-        size_bytes: 1075926,
-        sha256: "5748d6714f467dbd6dd39ea705474f1b9f6e299de0a9f03b525f3c5a9f405c9d"
+        url: "downloads/Cortex-0.1.0-1.app.zip"
       }
     ]
   };
@@ -27,25 +23,35 @@
     return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.round(value / 1024)} KB`;
   }
 
+  function artifactUrl(artifact) {
+    return artifact.url || `downloads/${artifact.filename}`;
+  }
+
   function applyRelease(release) {
     const dmg = (release.artifacts || []).find((item) => item.kind === "dmg") || fallbackRelease.artifacts[0];
     const zip = (release.artifacts || []).find((item) => item.kind === "zip") || fallbackRelease.artifacts[1];
     document.querySelectorAll(".download-link").forEach((link) => {
-      link.href = dmg.url || `downloads/${dmg.filename}`;
+      link.href = artifactUrl(dmg);
       link.setAttribute("download", dmg.filename);
     });
     document.querySelectorAll(".zip-link").forEach((link) => {
-      link.href = zip.url || `downloads/${zip.filename}`;
+      link.href = artifactUrl(zip);
       link.setAttribute("download", zip.filename);
     });
     const version = document.getElementById("releaseVersion");
     const channel = document.getElementById("releaseChannel");
     const size = document.getElementById("releaseSize");
+    const primaryArtifact = document.getElementById("primaryArtifactLabel");
+    const zipArtifact = document.getElementById("zipArtifactMeta");
     const checksum = document.getElementById("checksumText");
+    const zipChecksum = document.getElementById("zipChecksumText");
     if (version) version.textContent = `Cortex ${release.version || fallbackRelease.version} (${release.build || fallbackRelease.build})`;
     if (channel) channel.textContent = release.channel || fallbackRelease.channel;
     if (size) size.textContent = `DMG ${bytes(Number(dmg.size_bytes))}`;
-    if (checksum && dmg.sha256) checksum.textContent = `DMG SHA-256: ${dmg.sha256.slice(0, 16)}...`;
+    if (primaryArtifact) primaryArtifact.textContent = `${dmg.filename} for macOS ${release.minimum_macos || "13.0"} or later.`;
+    if (zipArtifact) zipArtifact.textContent = `App archive for advanced installs, ${bytes(Number(zip.size_bytes))}.`;
+    if (checksum && dmg.sha256) checksum.textContent = `DMG SHA-256: ${dmg.sha256}`;
+    if (zipChecksum && zip.sha256) zipChecksum.textContent = `ZIP SHA-256: ${zip.sha256}`;
   }
 
   fetch("downloads/latest.json", { cache: "no-store" })
@@ -57,7 +63,7 @@
   if (!canvas) return;
 
   const ctx = canvas.getContext("2d");
-  const labels = ["Preference", "Decision", "Project", "Open loop", "Claude", "ChatGPT", "Cursor", "MCP", "Today"];
+  const labels = ["Preference", "Decision", "Project", "Follow-up", "Claude", "ChatGPT", "Cursor", "AI tool", "Today"];
   const colors = ["#1f7a5c", "#365d8c", "#bd5d45", "#a77722"];
   let points = [];
   let pointer = { x: 0, y: 0, active: false };
@@ -96,10 +102,10 @@
     ctx.font = "700 18px system-ui, sans-serif";
     ctx.fillText("Today", panelX + 20, panelY + 34);
     const rows = [
-      ["Capture", "#1f7a5c"],
+      ["Connect", "#1f7a5c"],
       ["Review", "#365d8c"],
-      ["Reuse", "#bd5d45"],
-      ["Return", "#a77722"]
+      ["Ask", "#bd5d45"],
+      ["Control", "#a77722"]
     ];
     rows.forEach((row, index) => {
       const y = panelY + 72 + index * 38;

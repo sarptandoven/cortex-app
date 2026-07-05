@@ -1,0 +1,838 @@
+CORTEX UNIQUE VALUE AND 10K-USER ROADMAP
+Generated: 2026-07-01
+
+SUMMARY
+
+Cortex should not be positioned as another notes app, search app, or AI chat wrapper.
+The bigger product is a personal intelligence layer between a user's life and every AI tool.
+
+The simplest framing:
+
+Connect your life once. Cortex turns it into a private, self-updating intelligence layer that makes every AI tool work like it actually knows you.
+
+The product should automatically understand:
+- what the user knows
+- how the user writes
+- what the user cares about
+- what projects are active
+- what decisions were made
+- what promises were made
+- what relationships matter
+- what procedures the user follows
+- what the user dislikes or rejects
+- what is currently true versus stale
+
+Then Cortex safely lends that context to AI tools, agents, and workflows through MCP and app integrations.
+
+
+MARKET GAP
+
+Current AI productivity tools are useful but narrow.
+
+Wispr Flow removes friction from writing anywhere: user speaks, Flow turns it into polished text across apps.
+Reference: https://wisprflow.ai/
+
+Granola turns meetings into useful notes, follow-up context, and searchable meeting memory.
+Reference: https://www.granola.ai/explore
+
+Limitless/Rewind-style products show the appeal of personal recall, but always-on capture creates privacy, hardware, subscription, and trust issues.
+Reference: https://www.limitless.ai/
+
+Granola's link-sharing/privacy controversy shows that trust cannot be an afterthought in memory products.
+Reference: https://www.theverge.com/ai-artificial-intelligence/906253/granola-note-links-ai-training-psa
+
+Cortex should avoid becoming:
+- a manual upload app
+- a generic RAG/search app
+- a "second brain" folder UI
+- a chatbot with saved memories
+- an always-recording surveillance product
+- a connector dashboard
+
+Cortex should become:
+- a private personal context API
+- a memory compiler
+- a context firewall
+- a self-updating decision and identity layer
+- a bridge between real user data and external AI tools
+
+
+CORE VALUE PROPOSITION
+
+Cortex gives users three things that are hard to get elsewhere:
+
+1. Personal continuity
+AI tools stop treating every session as a cold start. Claude, ChatGPT, Codex, and future agents can ask Cortex for exactly the context they need.
+
+2. Trustworthy memory
+Cortex does not just remember. It cites sources, tracks where facts came from, shows why memory was used, and lets users revoke or correct it.
+
+3. Action-ready context
+Cortex prepares the right context before the user acts: before meetings, emails, coding, writing, decisions, follow-ups, and agent tasks.
+
+
+UNIQUE PRODUCT PILLARS
+
+1. PERSONAL CONTEXT API
+
+Cortex should become the API for "what should AI know about me right now?"
+
+Examples:
+- What context does Claude need before editing this PR?
+- How does this user usually write investor updates?
+- What did the user decide about pricing last month?
+- What promises did the user make to this person?
+- What open loops exist for this project?
+- What should ChatGPT know before drafting this reply?
+
+MCP is a strong output path because it lets external model hosts call tools exposed by Cortex.
+Reference: https://modelcontextprotocol.io/specification/2025-06-18/server/tools
+
+
+2. USER TWIN, NOT CHATBOT TWIN
+
+The goal is not to make a clone that chats like the user.
+The goal is to build a working model of the user that helps agents do useful work.
+
+The user model should include:
+- writing style
+- decision patterns
+- project context
+- relationship context
+- goals
+- constraints
+- preferences
+- negative preferences
+- recurring procedures
+- active priorities
+- trust boundaries
+
+This lets an agent draft, summarize, reply, plan, code, and prioritize in ways that feel materially closer to the user.
+
+
+3. MEMORY THAT UPDATES ITSELF
+
+Most AI memory is append-only. Cortex should be self-editing.
+
+Memory should support:
+- valid_from
+- valid_to
+- superseded_by
+- source trust
+- confidence
+- relationship to entities/projects
+- review status
+- archival
+- correction
+- contradiction detection
+
+Examples:
+- "I prefer short technical answers" can remain durable.
+- "Use Linear for roadmap tracking" can be superseded if the team moves to Jira.
+- "Project Atlas launches next week" should expire after launch.
+- "Pricing is $19/month" should be replaced if a later decision changes it.
+
+The major product difference:
+AI does not just know old facts. It knows what is currently true and can prove why.
+
+
+4. CONTEXT FIREWALL
+
+Cortex should be the permission and trust layer between private data and external AI.
+
+Every context output should answer:
+- what memory was used?
+- from what source?
+- why was it allowed?
+- what was withheld?
+- what app requested it?
+- can the user revoke it?
+- can the user delete it?
+
+This is essential if users connect email, chat, docs, calendar, GitHub, Notion, and personal notes.
+
+
+5. PRE-WORK INTELLIGENCE
+
+Cortex should not only answer search questions. It should prepare context before work starts.
+
+Examples:
+- before a meeting: last conversation, open loops, relationship notes, likely agenda
+- before writing email: recipient history, tone, promises, constraints
+- before coding: repo decisions, style preferences, product direction, relevant issues
+- before asking Claude/ChatGPT: inject project context and user preferences automatically
+- before planning: decisions, goals, blockers, tasks, unresolved questions
+
+This is more useful than search because users often do not know what they need to search for.
+
+
+KILLER FIRST USE CASES
+
+1. AI WORK MEMORY
+
+For founders, engineers, students, designers, operators.
+
+Core value:
+- remembers product decisions
+- remembers project context
+- remembers user feedback
+- remembers writing style
+- powers Claude/ChatGPT/Codex through MCP
+
+Primary workflows:
+- "Ask Cortex what matters before I work on this."
+- "Give Codex the project context."
+- "Draft this in my style."
+- "What did we decide and why?"
+- "What is still unresolved?"
+
+
+2. DECISION LEDGER
+
+A living log of:
+- decisions
+- reasons
+- constraints
+- alternatives rejected
+- source conversations
+- who influenced the decision
+- when the decision became stale
+
+This is valuable for startups, teams, founders, and students because it preserves reasoning, not just outcomes.
+
+
+3. RELATIONSHIP MEMORY
+
+Not a CRM. A personal relationship context layer.
+
+Memory types:
+- what someone cares about
+- last conversation
+- promises made
+- communication style
+- recurring concerns
+- preferences
+- important dates/events
+- mutual projects
+
+Example workflows:
+- "Brief me before I talk to Alex."
+- "What did I promise this person?"
+- "What should I not forget about this relationship?"
+- "Draft a follow-up that sounds like me and respects our history."
+
+
+4. STYLE AND VOICE ENGINE
+
+Wispr Flow makes it faster to produce text.
+Cortex should make AI output sound like the user and respect their taste.
+
+Style memory should include:
+- tone
+- sentence length
+- formatting preferences
+- phrases the user uses
+- phrases the user avoids
+- examples by context: email, code review, investor update, support reply, tweet, product spec
+
+Example workflows:
+- "Write this investor update in my style."
+- "Reply like me, but more concise."
+- "Convert these notes into my product-spec format."
+- "Make this sound like something I would actually send."
+
+
+5. AGENT READINESS LAYER
+
+Before an agent acts, Cortex gives it:
+- project context
+- relevant decisions
+- active constraints
+- user preferences
+- style profile
+- procedures
+- permission boundaries
+- cited source memory
+
+This is the path from "memory app" to "agents can actually work for me."
+
+
+PRODUCT EXPERIENCE PRINCIPLES
+
+1. Automatic by default
+Users should not manually upload data as the main product model. They should connect sources once, and Cortex should sync.
+
+2. Review only what matters
+The app should not become an inbox of extracted fragments. Review should prioritize memories that are useful, risky, contradictory, or high leverage.
+
+3. Ask with citations
+Answers should cite sources or abstain. This builds trust and helps users debug memory.
+
+4. Minimal visible controls
+The app should feel closer to Wispr Flow's restraint than an admin dashboard.
+
+5. Trust is a first-class surface
+Privacy, permissions, source access, deletion, and audit logs should be understandable.
+
+6. Local-first credibility
+For the first users, local-first is a differentiator. Hosted sync can come later, but privacy posture should remain core.
+
+
+TECHNICAL ROADMAP
+
+PHASE 1: FIRST-100 MVP
+
+Goal:
+A local Mac app that 100 users can install and use with minimal founder support.
+
+Product scope:
+- Home
+- Review
+- Ask
+- Connections & Privacy sheet
+- Obsidian/local notes connector
+- MCP server/tools
+- at least 10 real source connectors in backend
+- local backup
+- support bundle
+- clear source health
+
+Do not make primary:
+- manual upload
+- dropzone
+- copy memory brief
+- fake/planned connectors
+- dense settings UI
+
+Backend requirements:
+- local SQLite store
+- FTS search
+- vector search where available
+- stable source records
+- stable citations
+- pause/resume source account lifecycle
+- do not delete memory on disconnect
+- connector error/backoff handling
+- no secret leakage in errors
+- Ask abstains when no cited evidence exists
+- temporal validity filtering
+- related memory retrieval
+
+Acceptance:
+- user connects source in under 5 minutes
+- synced memory appears in Review
+- approved memory appears in Ask
+- Ask returns citations or abstains
+- source disconnect pauses sync but preserves memory
+- failed connector shows useful status and backs off
+- local DMG works for first users
+
+
+PHASE 2: MEMORY COMPILER
+
+Goal:
+Turn raw data into high-quality memory layers.
+
+Inputs:
+- Claude chats
+- ChatGPT chats
+- email
+- Slack/Discord/messages
+- Notion
+- Google Docs/Drive
+- Obsidian/local Markdown
+- Calendar
+- GitHub/Linear/Jira
+- Readwise/Raindrop/Zotero
+- future: browser/research history, voice notes, meetings
+
+Outputs:
+- semantic memory
+- episodic memory
+- style memory
+- decision memory
+- preference memory
+- negative memory
+- procedural memory
+- relationship memory
+- project/sector memory
+
+Compiler steps:
+1. source normalization
+2. boilerplate cleanup
+3. author-role detection
+4. entity extraction
+5. memory candidate extraction
+6. classification into memory layer
+7. source citation path assignment
+8. temporal validity assignment
+9. contradiction/supersession detection
+10. review priority scoring
+
+Critical quality rules:
+- external people saying "I prefer" must not become user preference
+- quoted text must be tracked separately
+- generated summaries must not overwrite source-backed facts
+- stale facts must become inactive or superseded
+- style memory must come from user-authored text where possible
+- decisions must preserve reason and constraint
+
+
+PHASE 3: RETRIEVAL AND CONTEXT ASSEMBLY
+
+Goal:
+Cortex should retrieve the right memory for a task, not just the semantically closest text.
+
+Retrieval signals:
+- keyword match
+- vector similarity
+- recency
+- importance
+- source trust
+- review status
+- active project
+- entity relation
+- temporal validity
+- user permissions
+- app requesting context
+- task type
+- source type
+
+Hybrid search:
+For local-first, keep SQLite + FTS + vector extension.
+sqlite-vec is relevant because it runs embedded with SQLite.
+Reference: https://github.com/asg017/sqlite-vec
+
+For hosted 10k-user scale, use Postgres + pgvector + full-text search.
+pgvector supports vector similarity inside Postgres and can be combined with Postgres FTS for hybrid retrieval.
+Reference: https://github.com/pgvector/pgvector
+
+Context assembly:
+Given a user task, Cortex should build a context pack with:
+- minimal relevant facts
+- current project state
+- decisions
+- procedures
+- style hints
+- constraints
+- citations
+- source confidence
+- withheld memory explanation when relevant
+
+Output should be token-budgeted and permission-scoped.
+
+
+PHASE 4: PERSONAL KNOWLEDGE GRAPH
+
+Goal:
+Model the user's world as entities and time-aware relationships.
+
+Entities:
+- people
+- companies
+- projects
+- documents
+- repositories
+- tasks
+- meetings
+- decisions
+- preferences
+- procedures
+
+Relations:
+- person works on project
+- document supports decision
+- decision supersedes decision
+- task belongs to project
+- meeting discussed project
+- user promised person something
+- procedure applies to project
+- preference applies to context
+
+Temporal graph requirements:
+- relation valid_from
+- relation valid_to
+- source evidence
+- confidence
+- superseded_by
+
+Graphiti/Zep are relevant references because they focus on temporal context graphs for agent memory.
+Reference: https://github.com/getzep/graphiti
+Reference: https://www.getzep.com/platform/graphiti/
+
+Implementation:
+- do not immediately adopt a heavy graph DB
+- start with lightweight relation tables
+- use graph traversal as one retrieval signal
+- graduate to dedicated graph infrastructure only after local relation tables become limiting
+
+
+PHASE 5: MCP AND AGENT OUTPUT LAYER
+
+Goal:
+Every AI tool can safely ask Cortex for context.
+
+MCP tools:
+- search_memory
+- ask_cortex
+- get_style_profile
+- get_project_context
+- get_decision_history
+- get_relationship_context
+- get_current_priorities
+- get_user_constraints
+- get_procedure
+- get_recent_context
+
+MCP resources:
+- active project context
+- style profile
+- recent decisions
+- open loops
+- trusted facts
+- source health
+
+Permission model:
+- per-tool token
+- scopes
+- read-only default
+- no write/delete without explicit approval
+- per-source allow/deny
+- per-memory allow/deny
+- audit log for every MCP request
+
+User-facing value:
+- Claude knows the project before coding
+- ChatGPT writes in the user's style
+- Codex gets repo and product context
+- future computer-use agents know procedures and constraints
+
+
+PHASE 6: AUTOMATIC CONNECTOR PLATFORM
+
+Goal:
+Data arrives automatically and stays fresh.
+
+Priority connector groups:
+
+Work memory:
+- Gmail
+- Outlook
+- Slack
+- Notion
+- Google Drive/Docs
+- Calendar
+- GitHub
+- Linear
+- Jira
+
+Personal knowledge:
+- Obsidian
+- Apple Notes
+- Readwise
+- Raindrop
+- Zotero
+
+AI history:
+- ChatGPT
+- Claude
+- Gemini
+- Perplexity
+
+Relationship context:
+- Contacts
+- Messages/iMessage where feasible
+- LinkedIn eventually
+- WhatsApp/Telegram/Discord eventually
+
+Connector contract:
+- OAuth/token setup
+- background sync
+- incremental cursor
+- stable external ID
+- stable source URL/citation
+- source account ID
+- source health
+- retry/backoff
+- last error
+- pause/resume
+- disconnect without memory deletion
+- deletion/export behavior
+
+
+PHASE 7: TRUST AND PRIVACY SYSTEM
+
+Goal:
+Make trust a product feature, not a legal page.
+
+User surfaces:
+- What Cortex knows
+- Why Cortex believes this
+- Where this came from
+- Where this can be used
+- Which AI tools accessed it
+- Forget this
+- Correct this
+- Never use this with AI
+- Work-only / personal-only memory
+- Sensitive memory controls
+
+Technical controls:
+- local encryption
+- scoped MCP tokens
+- audit log
+- deletion guarantees
+- export
+- source revocation
+- no raw memory in support issues
+- sanitized support bundles
+- optional hosted sync encryption
+
+This is a wedge against cloud-first memory products.
+
+
+PHASE 8: HOSTED 10K-USER PLATFORM
+
+Goal:
+Support 10k+ users with optional hosted sync and reliable connector jobs.
+
+Architecture:
+- FastAPI service
+- Postgres primary database
+- pgvector embeddings
+- Postgres full-text search
+- background workers
+- queue for connector sync/extraction jobs
+- object storage for encrypted artifacts/backups
+- per-user scoped auth
+- hosted MCP endpoint
+- local app sync client
+
+Data model:
+- users
+- devices
+- source_accounts
+- source_credentials
+- source_records
+- captures
+- memories
+- memory_embeddings
+- memory_relations
+- projects/sectors
+- entities
+- tasks/open loops
+- audit_events
+- support_bundles
+
+Operational requirements:
+- connector job monitoring
+- retry/backoff
+- rate-limit handling
+- source-specific error dashboards
+- per-user data export
+- per-user deletion
+- incident playbook
+- basic observability
+- admin support tools
+- billing later
+
+Do not overbuild:
+- do not introduce Qdrant/LanceDB unless Postgres+pgvector fails benchmarks
+- do not add graph database before relation tables prove insufficient
+- do not add multi-tenant complexity before auth and deletion are correct
+
+
+PHASE 9: ADAPTATION LAYER
+
+Goal:
+Make AI output genuinely more like the user and more useful to the user.
+
+Adaptation should include:
+- style profile
+- tone profile
+- formatting profile
+- decision profile
+- preference profile
+- negative constraints
+- project-specific context
+- recipient-specific relationship context
+- examples of prior writing/work
+
+Examples:
+- "Write this like me."
+- "Reply to this person with the right context."
+- "Draft the investor update using my usual structure."
+- "Help Codex implement this using our product direction."
+- "Prepare me for this meeting."
+
+Important distinction:
+Do not claim the agent "is the person."
+Claim it has permissioned, cited context that lets it work in the user's style and constraints.
+
+
+PHASE 10: COMPUTER-USE SUPPORT
+
+Goal:
+Let agents act with user context while keeping user control.
+
+This comes later, after memory quality and permissions are strong.
+
+Capabilities:
+- prepare context before action
+- draft actions
+- ask user for approval
+- execute safe low-risk actions
+- log what happened
+- rollback where possible
+
+Examples:
+- draft reply
+- create follow-up task
+- summarize meeting into project memory
+- update Linear/Jira issue
+- prepare PR context
+- produce daily briefing
+
+Controls:
+- review before send
+- source-specific write permissions
+- risk tiers
+- no destructive actions without confirmation
+- action audit log
+
+
+PRODUCT ROADMAP BY USER VALUE
+
+Milestone A: "It remembers my work"
+- connect Obsidian/Gmail/Slack/GitHub/Calendar
+- review extracted memory
+- Ask returns cited answers
+- MCP gives Claude/Codex context
+
+Milestone B: "It understands my projects"
+- sectors/projects
+- decisions
+- open loops
+- procedures
+- project briefings
+
+Milestone C: "It writes and works like me"
+- style profile
+- examples
+- task-specific context assembly
+- AI tool integration
+
+Milestone D: "It keeps itself current"
+- temporal validity
+- supersession
+- contradiction review
+- stale memory cleanup
+
+Milestone E: "It is safe enough to trust"
+- permissions
+- audit
+- deletion/export
+- local-first controls
+- scoped MCP
+
+Milestone F: "It powers my agents"
+- hosted MCP
+- multi-device sync
+- agent context API
+- controlled computer-use workflows
+
+
+DIFFERENTIATION
+
+Against notes apps:
+Cortex is automatic, source-backed, and agent-facing.
+
+Against meeting note apps:
+Cortex spans all sources, not just meetings.
+
+Against AI chat memory:
+Cortex is inspectable, cited, permissioned, and cross-tool.
+
+Against RAG/search apps:
+Cortex models the user, time, decisions, relationships, procedures, and preferences.
+
+Against always-recording products:
+Cortex can be local-first, connector-first, and privacy-forward.
+
+Against CRM/project tools:
+Cortex is personal, adaptive, and works across tools rather than replacing them.
+
+
+NORTH STAR METRICS
+
+Activation:
+- time to first connected source
+- time to first approved memory
+- time to first cited Ask answer
+- time to first MCP context used by external AI
+
+Quality:
+- cited answer rate
+- abstention correctness
+- retrieval eval score
+- memory approval rate
+- correction rate
+- duplicate/stale memory rate
+
+Retention:
+- weekly Ask usage
+- weekly MCP usage
+- active source count
+- review completion rate
+- project context usage
+
+Trust:
+- source permission changes
+- memory deletion/correction usage
+- support bundle generation
+- audit log views
+- uninstall reasons
+
+Outcome:
+- number of useful AI outputs improved by Cortex
+- number of decisions/procedures remembered
+- number of follow-ups recovered
+- user-reported "AI knew what I meant" moments
+
+
+WHAT TO BUILD NEXT
+
+Immediate:
+1. Finish connector failure/backoff normalization.
+2. Remove primary clipboard/manual-copy UX.
+3. Make first source setup dead simple.
+4. Polish Home/Review/Ask readability.
+5. DMG smoke test.
+
+Next:
+1. Relationship memory.
+2. Decision ledger UI.
+3. Project briefings.
+4. Better style profile output.
+5. MCP permissions and audit view.
+
+Then:
+1. Hosted sync foundation.
+2. OAuth-managed connectors.
+3. Multi-device.
+4. Hosted MCP.
+5. Agent action layer.
+
+
+FINAL PRODUCT VISION
+
+Cortex is the user's private memory and context layer.
+
+It connects to the user's real data, compiles it into structured memory, keeps that memory current, and safely gives AI tools the exact context they need.
+
+The app should feel simple.
+The backend should be deep.
+The value should be obvious:
+
+Every AI tool becomes more useful because it finally understands the user.
+

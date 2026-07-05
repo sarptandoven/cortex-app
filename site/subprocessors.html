@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cortex Subprocessors</title>
+    <meta name="description" content="The third-party subprocessors that process Cortex Cloud user data, with purpose and data touched." />
+    <meta name="theme-color" content="#f8f7f1" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      /* Scoped table styling; reuses the site palette from styles.css (:root vars). */
+      .subprocessor-table {
+        border-collapse: collapse;
+        margin: 8px 0 4px;
+        width: 100%;
+      }
+      .subprocessor-table th,
+      .subprocessor-table td {
+        border: 1px solid var(--line);
+        font-size: 15px;
+        line-height: 1.45;
+        padding: 10px 12px;
+        text-align: left;
+        vertical-align: top;
+      }
+      .subprocessor-table th {
+        background: #fffdf8;
+        color: var(--ink);
+        font-weight: 760;
+      }
+      .subprocessor-table td {
+        color: var(--muted);
+      }
+      .subprocessor-table caption {
+        caption-side: bottom;
+        color: var(--muted);
+        font-size: 13px;
+        margin-top: 8px;
+        text-align: left;
+      }
+      .subprocessor-table-wrap {
+        overflow-x: auto;
+      }
+      .confirm-flag {
+        color: var(--coral);
+        font-weight: 700;
+      }
+    </style>
+  </head>
+  <body class="privacy-page">
+    <header class="site-header">
+      <a class="brand" href="index.html" aria-label="Cortex home">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>Cortex</span>
+      </a>
+      <nav aria-label="Primary">
+        <a href="index.html#loop">Loop</a>
+        <a href="index.html#integrations">Integrations</a>
+        <a href="index.html#privacy">Privacy</a>
+        <a href="index.html#download">Download</a>
+      </nav>
+      <a class="header-download" href="index.html#download">macOS app</a>
+    </header>
+
+    <main class="privacy-main">
+      <p class="eyebrow">Legal</p>
+      <h1>Subprocessors</h1>
+      <p class="privacy-draft-note">
+        <strong>Draft — pending legal review before public launch.</strong> This list is written
+        to reflect the stack Cortex Cloud actually uses or plans to use. Provider names marked
+        <span class="confirm-flag">(confirm)</span> are the operator's choice and must be
+        confirmed before this page is published. The operating entity is
+        <strong>[LEGAL ENTITY NAME]</strong>.
+      </p>
+      <p>
+        A "subprocessor" is a third party that processes Cortex Cloud user data on our behalf.
+        The <strong>local app</strong> uses <strong>no subprocessors</strong> — it runs entirely
+        on your Mac. The table below applies only to the optional hosted
+        <strong>Cortex Cloud</strong> tier. See the <a href="privacy.html">Privacy page</a> for
+        how data is handled overall.
+      </p>
+
+      <section>
+        <h2>Current subprocessors</h2>
+        <div class="subprocessor-table-wrap">
+          <table class="subprocessor-table">
+            <caption>Subprocessors for Cortex Cloud. Last updated <strong>[DATE]</strong>.</caption>
+            <thead>
+              <tr>
+                <th scope="col">Provider</th>
+                <th scope="col">Purpose</th>
+                <th scope="col">Data it touches</th>
+                <th scope="col">When it applies</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Hetzner Online GmbH</td>
+                <td>Cloud hosting and infrastructure — runs the servers and stores all Cortex Cloud application data and backups.</td>
+                <td>All hosted user data: account records, encrypted connector credentials, memory content and derived indexes, backups.</td>
+                <td>Always (hosted tier).</td>
+              </tr>
+              <tr>
+                <td>Postmark <span class="confirm-flag">(confirm)</span> — or Amazon SES <span class="confirm-flag">(confirm)</span></td>
+                <td>Transactional email — sends verification, password-reset, and account emails.</td>
+                <td>Your email address and the contents of those transactional messages. No memory content.</td>
+                <td>When email verification/reset is enabled (public launch).</td>
+              </tr>
+              <tr>
+                <td>Paddle <span class="confirm-flag">(confirm)</span> — or Stripe <span class="confirm-flag">(confirm)</span></td>
+                <td>Payments and billing (merchant of record where applicable).</td>
+                <td>Your email and payment/subscription metadata. Card details are handled by the provider, not stored by Cortex.</td>
+                <td><strong>Only if a paid tier is enabled.</strong> Not used while Cortex is free.</td>
+              </tr>
+              <tr>
+                <td>Cloud AI model provider <span class="confirm-flag">(confirm — usually none)</span></td>
+                <td>Generating embeddings or model output, if the operator enables a cloud model instead of the on-device default.</td>
+                <td>The memory content sent for embedding or processing.</td>
+                <td><strong>Only if the operator enables a cloud AI model.</strong> The default deployment uses on-device model2vec embeddings and sends nothing to a third-party AI processor.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          By default the hosted deployment generates embeddings <strong>on-device</strong> with the
+          model2vec model, so <strong>no third-party AI processor is involved</strong>. A cloud AI
+          provider appears on this list only if the operator turns one on; if none is enabled, the
+          last row does not apply.
+        </p>
+      </section>
+
+      <section>
+        <h2>Changes and requests</h2>
+        <ul>
+          <li>We update this page when we add, remove, or change a subprocessor. Check the "last updated" date above.</li>
+          <li>You can request the current subprocessor list at any time by emailing <a href="mailto:privacy@trydoppl.com">privacy@trydoppl.com</a>.</li>
+          <li>Do not send raw notes, chats, memory records, prompts, exports, API keys, or tokens by email.</li>
+        </ul>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>Cortex</span>
+      <a href="index.html">Home</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Terms</a>
+      <a href="faq.html">FAQ</a>
+      <a href="mailto:support@trydoppl.com">Support</a>
+    </footer>
+  </body>
+</html>

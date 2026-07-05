@@ -2,63 +2,68 @@
 
 ## Goal
 
-The first launch should make Cortex usable without docs:
+The first launch should make Cortex understandable without docs:
 
-1. Confirm local vault storage.
-2. Let the user accept the default vault or choose a folder.
-3. Set memory review behavior.
-4. Save one useful memory.
-5. Copy a working local MCP config or a context pack.
-6. Leave the user in the daily workflow.
+1. Confirm the private local memory folder.
+2. Connect one real memory path: MCP AI tools or Obsidian.
+3. Show that new source memory goes through Review.
+4. Let the user Ask Cortex with citations once approved memory exists.
+5. Confirm privacy defaults and make a backup decision.
+6. Leave the user in Home, with Review, Ask, and Connections & Privacy available.
 
 ## Product Principles
 
 - Local-first by default.
-- No account required.
-- No background capture.
-- The user can open the vault folder at any time.
-- The local SQLite index is not the source of truth.
-- Setup can be reopened from `More -> Setup`.
+- No account required for the local beta.
+- No file-dump or context-copy workflow as the primary setup path.
+- No background collection.
+- Review-first memory.
+- Setup can be dismissed without marking onboarding complete.
+- Setup can be reopened from Connections & Privacy.
 
 ## Steps
 
-### 1. Vault
+### 1. Private Memory Folder
 
-Shows the active vault path and the backend-reported vault diagnostics. Users can:
+Shows the active memory folder path, local service state, and backend-reported storage diagnostics. Users can:
 
-- use the default vault
+- use the default memory folder
 - choose another folder
-- open the current vault folder
+- reveal the current memory folder
 
-Changing the vault path restarts the bundled local backend and verifies that `/health` reports the same vault path.
+Changing the memory folder path restarts the bundled local backend and verifies that `/health` reports the same path.
 
-### 2. Rules
+### 2. Connect Cortex
 
-Controls user trust settings:
+Prompts the user to connect one working path:
 
-- review new saves before they become trusted
-- allow or block pending saves from AI context
-- context pack size
+- local AI tools through MCP
+- an Obsidian or local notes folder through the native local connector
 
-These settings are persisted in the backend and mirrored into the vault `settings.json`.
+The Obsidian connector chooses a notes folder once, scans Markdown/text notes locally, registers a source account, syncs records through `/v1/source-accounts/{account_id}/sync`, and preserves file citations.
 
-### 3. First Save
+Future account sign-ins for Gmail, Notion, Slack, Drive, Calendar, GitHub, Mail, Messages, and browser history should use the same source-account sync contract. Unsupported service exports remain advanced/fallback, not onboarding.
 
-Prompts the user to save one memory through the real capture endpoint. This exercises extraction, vault writes, the local index, Today review, and diagnostics.
+### 3. Review Path
 
-### 4. Connect
+Explains that Review is the approval boundary. Connected source records and MCP-written memory candidates wait here before becoming approved memory.
 
-Provides copy actions:
+The step can continue once a real connection path exists, because MCP/source sync may create reviewable items asynchronously. If pending items already exist, onboarding lets the user approve or archive them directly.
 
-- MCP config for local tools such as Claude Desktop and agent runners
-- context pack for browser chats
-- local API settings for advanced setup
+### 4. Ask Path
 
-The packaged app bundles `scripts/cortex_mcp_stdio.py`, so the copied MCP config points inside the `.app` resources.
+Shows the Ask box and cited answer surface. Ask becomes useful once approved memory exists.
 
-### 5. Ready
+The product goal is cited retrieval from approved memory. Context-copy handoffs are secondary advanced/fallback tools and do not define onboarding success.
 
-Summarizes the chosen vault, backend state, and review behavior. Users can create a first backup or open the vault before finishing.
+### 5. Privacy & Backup
+
+Confirms privacy defaults:
+
+- review new memories first
+- keep pending memory private from AI tools
+- redact exported/handoff memory where possible
+- create a local backup or explicitly skip the first backup
 
 ## Persistence
 
@@ -66,10 +71,17 @@ The app stores:
 
 ```text
 UserDefaults.onboardingComplete.v1
+UserDefaults.onboardingStep.v2
+UserDefaults.onboardingFirstSourceImported.v1
+UserDefaults.onboardingFirstMemoryReviewed.v1
+UserDefaults.onboardingCortexUsed.v1
+UserDefaults.onboardingBackupDecision.v1
+UserDefaults.connectedObsidianVaultPath.v1
+UserDefaults.connectedObsidianVaultBookmark.v1
 UserDefaults.vaultPath
 ```
 
-The backend stores user memory behavior in:
+The backend stores memory behavior in:
 
 ```text
 Cortex.vault/settings.json
@@ -79,9 +91,12 @@ index.sqlite:user_settings
 ## Verification Checklist
 
 - Fresh install shows onboarding automatically.
-- `Skip` dismisses and persists completion.
-- `More -> Setup -> Open Setup` reopens the flow.
-- Choosing a vault folder restarts the backend and `/health` returns the chosen path.
-- Saving the first memory writes capture and memory JSON files.
-- Copy MCP config uses the bundled script path.
-- Creating a backup writes `backups/cortex-vault-*.zip`.
+- Finish later dismisses setup without marking onboarding complete.
+- Connections & Privacy can reopen setup.
+- Choosing a memory folder restarts the backend and `/health` returns the chosen path.
+- Connecting MCP tools or Obsidian satisfies the first source gate.
+- Obsidian sync creates a source account, sync cursor, cited source records, and reviewable memory.
+- Review remains the approval boundary before memory is approved.
+- Ask with cited results marks Cortex as used.
+- Creating a backup writes a local backup archive; skipping backup records an explicit decision.
+- Legacy import labels stay absent from the app binary.

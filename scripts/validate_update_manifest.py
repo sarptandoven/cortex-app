@@ -59,7 +59,7 @@ def validate(manifest_path: Path) -> dict:
         if missing_artifact:
             raise ValueError(f"artifact missing keys: {', '.join(missing_artifact)}")
         kind = str(artifact["kind"])
-        if kind not in {"dmg", "zip"}:
+        if kind not in {"dmg", "zip", "obsidian-plugin"}:
             raise ValueError(f"unsupported artifact kind: {kind}")
         seen_kinds.add(kind)
         path = artifact_path(root, str(artifact["filename"]), str(artifact["url"]))

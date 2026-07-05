@@ -1,0 +1,406 @@
+{
+  "identity_aliases": ["sarpt@example.com"],
+  "paths": ["chatgpt", "slack", "mail", "docs", "claude", "notion", "Google Drive", "Apple Notes", "Obsidian", "calendar", "GitHub"],
+  "minimum_memories_by_source": {
+    "slack": 4,
+    "email": 5,
+    "notion": 5,
+    "cloud-docs": 4,
+    "apple-notes": 3,
+    "obsidian": 3
+  },
+  "local_file_citation_sanitization": {
+    "query": "ceremonial fixture intros",
+    "raw_path_fragments": ["/Users/", "backend/tests/fixtures/noisy_imports"],
+    "sanitized_source_contains": ["local-file://Voice.md", "line=", "excerpt="]
+  },
+  "external_speaker_rejected_personal_signals": [
+    {
+      "source": "email",
+      "layer": "preference",
+      "phrase": "verbose sales decks"
+    },
+    {
+      "source": "email",
+      "layer": "style",
+      "phrase": "legalistic and slow"
+    },
+    {
+      "source": "email",
+      "layer": "preference",
+      "phrase": "long stakeholder recap rituals"
+    },
+    {
+      "source": "email",
+      "layer": "preference",
+      "phrase": "unsubscribe-heavy forwarded newsletters"
+    },
+    {
+      "source": "email",
+      "layer": "style",
+      "phrase": "maze-like compliance preambles"
+    },
+    {
+      "source": "slack",
+      "layer": "preference",
+      "phrase": "long stakeholder recap rituals"
+    },
+    {
+      "source": "slack",
+      "layer": "preference",
+      "phrase": "maze-like Slack recap walls"
+    }
+  ],
+  "expected": [
+    {
+      "name": "chatgpt_decision",
+      "query": "Project Atlas five primary tabs Model Sources Review Ask Trust",
+      "source": "chatgpt",
+      "layer": "decision",
+      "kind": "decision",
+      "must_include": "five primary tabs",
+      "source_url_contains": ["service=chatgpt", "conversation=Project%20Atlas%20golden%20import", "line=", "message=", "excerpt="]
+    },
+    {
+      "name": "chatgpt_event_date",
+      "query": "Project Atlas durable noisy import fixture test June 29",
+      "source": "chatgpt",
+      "layer": "episodic",
+      "kind": "event",
+      "must_include": "durable noisy import fixture test",
+      "occurred_at": "2026-06-29",
+      "source_url_contains": ["service=chatgpt", "line=", "message=", "excerpt="]
+    },
+    {
+      "name": "slack_preference",
+      "query": "source-backed fixture answers citation gutters",
+      "source": "slack",
+      "layer": "preference",
+      "kind": "preference",
+      "must_include": "source-backed fixture answers",
+      "source_url_contains": ["service=slack", "channel=general", "line=", "message=1", "excerpt="]
+    },
+    {
+      "name": "slack_style",
+      "query": "direct golden-test notes",
+      "source": "slack",
+      "layer": "style",
+      "kind": "style",
+      "must_include": "direct golden-test notes",
+      "source_url_contains": ["service=slack", "channel=general", "line=", "message=2", "excerpt="]
+    },
+    {
+      "name": "slack_thread_preference",
+      "query": "Slack thread summaries final owner decisions separate chatter",
+      "source": "slack",
+      "layer": "preference",
+      "kind": "preference",
+      "must_include": "Slack thread summaries",
+      "source_url_contains": ["service=slack", "channel=general", "line=", "message=4", "excerpt="]
+    },
+    {
+      "name": "slack_thread_event_date",
+      "query": "Project Atlas shipped noisy thread fixture June 29 2026",
+      "source": "slack",
+      "layer": "episodic",
+      "kind": "event",
+      "must_include": "noisy thread fixture",
+      "occurred_at": "2026-06-29",
+      "source_url_contains": ["service=slack", "channel=general", "line=", "message=5", "excerpt="]
+    },
+    {
+      "name": "email_external_decision",
+      "query": "Project Atlas external email citations fixture tests",
+      "source": "email",
+      "layer": "decision",
+      "kind": "decision",
+      "must_include": "external email citations",
+      "occurred_at": "2026-06-29",
+      "source_url_contains": ["service=email", "subject=External%20fixture%20advice", "line=", "excerpt="]
+    },
+    {
+      "name": "email_quoted_preference",
+      "query": "fixture answers clean email quotes",
+      "source": "email",
+      "layer": "preference",
+      "kind": "preference",
+      "must_include": "clean email quotes",
+      "occurred_at": "2026-06-29",
+      "source_url_contains": ["service=email", "subject=Quoted%20fixture%20reply", "line=", "excerpt="]
+    },
+    {
+      "name": "email_forwarded_decision",
+      "query": "Project Forwarded current sender decision precise source citations",
+      "source": "email",
+      "layer": "decision",
+      "kind": "decision",
+      "must_include": "current sender decision",
+      "occurred_at": "2026-06-29",
+      "source_url_contains": ["service=email", "subject=Forwarded%20fixture%20decision", "line=", "excerpt="]
+    },
+    {
+      "name": "gmail_thread_preference",
+      "query": "Gmail thread imports latest reply memory",
+      "source": "email",
+      "layer": "preference",
+      "kind": "preference",
+      "must_include": "latest reply as the memory",
+      "occurred_at": "2026-06-30",
+      "source_url_contains": ["service=email", "subject=Gmail-style%20fixture%20thread", "line=", "excerpt="]
+    },
+    {
+      "name": "gmail_thread_decision",
+      "query": "Project Inbox current Gmail reply source-backed import tests",
+      "source": "email",
+      "layer": "decision",
+      "kind": "decision",
+      "must_include": "current Gmail reply",
+      "occurred_at": "2026-06-30",
+      "source_url_contains": ["service=email", "subject=Gmail-style%20fixture%20thread", "line=", "excerpt="]
+    },
+    {
+      "name": "docs_negative",
+      "query": "ceremonial fixture intros",
+      "source": "docs",
+      "layer": "negative",
+      "kind": "negative",
+      "must_include": "ceremonial fixture intros",
+      "source_url_contains": ["Voice.md", "line=", "excerpt="]
+    },
+    {
+      "name": "claude_preference",
+      "query": "compact importer summaries evidence phrase decision",
+      "source": "claude",
+      "layer": "preference",
+      "kind": "preference",
+      "must_include": "compact importer summaries",
+      "source_url_contains": ["service=claude", "conversation=Memory%20quality%20tuning", "line=", "message=2", "excerpt="]
+    },
+    {
+      "name": "notion_style",
+      "query": "crisp importer notes concrete source labels",
+      "source": "notion",
+      "layer": "style",
+      "kind": "style",
+      "must_include": "crisp importer notes",
+      "source_url_contains": ["service=notion", "page=Memory%20Quality", "file=Memory%20Quality.md", "line=", "excerpt="]
+    },
+    {
+      "name": "notion_negative",
+      "query": "vague import confidence blurbs",
+      "source": "notion",
+      "layer": "negative",
+      "kind": "negative",
+      "must_include": "vague import confidence blurbs",
+      "source_url_contains": ["service=notion", "page=Memory%20Quality", "line=", "excerpt="]
+    },
+    {
+      "name": "notion_decision",
+      "query": "Project Loom Notion imports task conclusions template breadcrumbs",
+      "source": "notion",
+      "layer": "decision",
+      "kind": "decision",
+      "must_include": "task conclusions without template breadcrumbs",
+      "source_url_contains": ["service=notion", "page=Product%20Rituals", "file=Product%20Rituals.md", "line=", "excerpt="]
+    },
+    {
+      "name": "notion_export_style",
+      "query": "compact Notion export notes source-backed takeaway",
+      "source": "notion",
+      "layer": "style",
+      "kind": "style",
+      "must_include": "compact Notion export notes",
+      "source_url_contains": ["service=notion", "page=Product%20Rituals", "line=", "excerpt="]
+    },
+    {
+      "name": "notion_event_date",
+      "query": "Project Loom shipped Notion export parser audit July 2 2026",
+      "source": "notion",
+      "layer": "episodic",
+      "kind": "event",
+      "must_include": "Notion export parser audit",
+      "occurred_at": "2026-07-02",
+      "source_url_contains": ["service=notion", "page=Product%20Rituals", "line=", "excerpt="]
+    },
+    {
+      "name": "notion_export_negative",
+      "query": "recycled kickoff mantras imported memory summaries",
+      "source": "notion",
+      "layer": "negative",
+      "kind": "negative",
+      "must_include": "recycled kickoff mantras",
+      "source_url_contains": ["service=notion", "page=Product%20Rituals", "line=", "excerpt="]
+    },
+    {
+      "name": "cloud_docs_decision",
+      "query": "Project Beacon acceptance snapshots Google Docs imports",
+      "source": "cloud-docs",
+      "layer": "decision",
+      "kind": "decision",
+      "must_include": "acceptance snapshots",
+      "source_url_contains": ["service=cloud-docs", "provider=google-drive", "document=Design%20Notes", "file=Design%20Notes.md", "line=", "excerpt="]
+    },
+    {
+      "name": "cloud_docs_event_date",
+      "query": "Project Beacon Drive markdown parser review June 30 2026",
+      "source": "cloud-docs",
+      "layer": "episodic",
+      "kind": "event",
+      "must_include": "Drive markdown parser review",
+      "occurred_at": "2026-06-30",
+      "source_url_contains": ["service=cloud-docs", "provider=google-drive", "line=", "excerpt="]
+    },
+    {
+      "name": "cloud_docs_html_decision",
+      "query": "Project Signal Drive imports approved facts only",
+      "source": "cloud-docs",
+      "layer": "decision",
+      "kind": "decision",
+      "must_include": "approved facts only",
+      "source_url_contains": ["service=cloud-docs", "provider=google-drive", "document=Project%20Signal", "file=Project%20Signal.html", "line=", "excerpt="]
+    },
+    {
+      "name": "cloud_docs_html_event_date",
+      "query": "Project Signal shipped Google Docs comment scrub review July 1 2026",
+      "source": "cloud-docs",
+      "layer": "episodic",
+      "kind": "event",
+      "must_include": "Google Docs comment scrub review",
+      "occurred_at": "2026-07-01",
+      "source_url_contains": ["service=cloud-docs", "provider=google-drive", "line=", "excerpt="]
+    },
+    {
+      "name": "apple_notes_style",
+      "query": "Apple Notes bullets short evidence line",
+      "source": "apple-notes",
+      "layer": "style",
+      "kind": "style",
+      "must_include": "Apple Notes bullets",
+      "source_url_contains": ["service=apple-notes", "file=Import%20Principles.txt", "line=", "excerpt="]
+    },
+    {
+      "name": "apple_notes_decision",
+      "query": "Project Orchard note imports local-only citations",
+      "source": "apple-notes",
+      "layer": "decision",
+      "kind": "decision",
+      "must_include": "local-only citations",
+      "source_url_contains": ["service=apple-notes", "file=Import%20Principles.txt", "line=", "excerpt="]
+    },
+    {
+      "name": "apple_notes_negative",
+      "query": "pastel roadmap poems extracted notes",
+      "source": "apple-notes",
+      "layer": "negative",
+      "kind": "negative",
+      "must_include": "pastel roadmap poems",
+      "source_url_contains": ["service=apple-notes", "file=Import%20Principles.txt", "line=", "excerpt="]
+    },
+    {
+      "name": "obsidian_style",
+      "query": "Obsidian notes terse backlinks concrete nouns",
+      "source": "obsidian",
+      "layer": "style",
+      "kind": "style",
+      "must_include": "terse backlinks",
+      "source_url_contains": ["service=obsidian", "file=Memory%20Vault.md", "line=", "excerpt="]
+    },
+    {
+      "name": "obsidian_preference",
+      "query": "Obsidian imports vault path context citations",
+      "source": "obsidian",
+      "layer": "preference",
+      "kind": "preference",
+      "must_include": "vault path context",
+      "source_url_contains": ["service=obsidian", "file=Memory%20Vault.md", "line=", "excerpt="]
+    },
+    {
+      "name": "obsidian_negative",
+      "query": "constellation metaphor decks note imports",
+      "source": "obsidian",
+      "layer": "negative",
+      "kind": "negative",
+      "must_include": "constellation metaphor decks",
+      "source_url_contains": ["service=obsidian", "file=Memory%20Vault.md", "line=", "excerpt="]
+    },
+    {
+      "name": "calendar_event_date",
+      "query": "Project Horizon calendar review shipped source citations",
+      "source": "calendar",
+      "layer": "episodic",
+      "kind": "event",
+      "must_include": "calendar review shipped",
+      "occurred_at": "2026-07-03",
+      "source_url_contains": ["service=calendar", "file=calendar.ics", "event=1", "line=", "excerpt="]
+    },
+    {
+      "name": "github_decision",
+      "query": "Project Tuning PR review row-level citations",
+      "source": "github",
+      "layer": "decision",
+      "kind": "decision",
+      "must_include": "row-level citations",
+      "source_url_contains": ["service=github", "repository=Project%20Cortex", "file=issues.csv", "row=2", "line=", "excerpt="]
+    }
+  ],
+  "rejected_phrases": [
+    "splashy launch pages",
+    "long onboarding checklists",
+    "long stakeholder recap rituals",
+    "verbose sales decks",
+    "legalistic and slow",
+    "wall-of-text import summaries",
+    "storybook-only demos",
+    "long public launch testimonials",
+    "long QBR narratives",
+    "confetti rollout decks",
+    "maze-like Slack recap walls",
+    "unsubscribe-heavy forwarded newsletters",
+    "maze-like compliance preambles",
+    "animated appendix tours",
+    "long onboarding checklists",
+    "Table of contents",
+    "Synced block placeholder",
+    "Last edited by Workspace Bot",
+    "long stakeholder recap rituals"
+  ],
+  "rejected_queries": [
+    {
+      "query": "long QBR narratives launch readiness",
+      "must_not_include": "long QBR narratives"
+    },
+    {
+      "query": "confetti rollout decks",
+      "must_not_include": "confetti rollout decks"
+    },
+    {
+      "query": "animated appendix tours shared doc",
+      "must_not_include": "animated appendix tours"
+    },
+    {
+      "query": "maze-like compliance preambles",
+      "must_not_include": "maze-like compliance preambles"
+    }
+  ],
+  "boilerplate_phrases": [
+    "Source:",
+    "Conversation:",
+    "Created:",
+    "Source file:",
+    "Path:",
+    "File:",
+    "Structured CSV export:",
+    "Title:",
+    "Folder:",
+    "--- Messages ---",
+    "--- Rows ---",
+    "--- Events ---",
+    "Table of contents",
+    "Synced block placeholder",
+    "Unsubscribe from these updates",
+    "Manage email preferences",
+    "Manage notification preferences",
+    "Sent from my iPhone",
+    "wrote:"
+  ]
+}

@@ -1,0 +1,22 @@
+[Unit]
+Description=Cortex background worker (embeddings, connector syncs, queued jobs)
+After=network-online.target cortex-api.service
+Wants=network-online.target
+
+[Service]
+User=cortex
+Group=cortex
+EnvironmentFile=/etc/cortex/cortex.env
+WorkingDirectory=/srv/cortex/current
+ExecStart=/srv/cortex/venv/bin/python scripts/run_memory_worker.py --iterations 0 --interval-seconds 30
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/cortex
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

@@ -39,8 +39,10 @@ def form_request(base_url: str, path: str, data: dict) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Cortex HTTP smoke and lifecycle checks against a running backend.")
     parser.add_argument("--base-url", default="http://127.0.0.1:8766")
-    parser.add_argument("--token", default="dev-local-key")
+    parser.add_argument("--token", default="")
     args = parser.parse_args()
+    if not args.token:
+        raise SystemExit("Pass --token with the local Cortex API token.")
     marker = f"cortex-battle-{uuid.uuid4().hex[:10]}"
 
     health = request(args.base_url, args.token, "/health")
@@ -63,7 +65,7 @@ def main() -> None:
         "PUT",
         {
             "review_new_captures": True,
-            "allow_pending_in_context": True,
+            "allow_pending_in_context": False,
             "context_pack_limit": 12,
             "allow_agent_reads": True,
             "allow_agent_writes": True,
@@ -110,7 +112,7 @@ def main() -> None:
     assert any(step["key"] == "review" and step["status"] == "current" for step in pending_loop["steps"]), pending_loop
 
     search_query = urllib.parse.quote(marker)
-    assert request(args.base_url, args.token, f"/v1/search?query={search_query}&limit=5")["results"]
+    assert not request(args.base_url, args.token, f"/v1/search?query={search_query}&limit=5")["results"]
 
     diagnostics = request(args.base_url, args.token, "/v1/diagnostics")
     assert diagnostics["quick_check"] == "ok", diagnostics
@@ -121,11 +123,15 @@ def main() -> None:
     assert review["captured_today"] >= 1, review
     assert any(item["id"] == capture_id for item in review["pending"]), review
     assert review["recommended_actions"], review
-    assert "# Cortex Context Pack" in review["context_pack"], review["context_pack"][:240]
+    assert "# Cortex Memory View" in review["context_pack"], review["context_pack"][:240]
+
+    approved = request(args.base_url, args.token, f"/v1/captures/{capture_id}/approve", "POST")
+    assert approved["approved"], approved
+    assert request(args.base_url, args.token, f"/v1/search?query={search_query}&limit=5")["results"]
 
     context_query = urllib.parse.quote("ChatGPT Claude")
     context_pack = request(args.base_url, args.token, f"/v1/context-pack?query={context_query}&limit=5", text=True)
-    assert "# Cortex Context Pack" in context_pack and "Suggested Assistant Instruction" in context_pack, context_pack[:240]
+    assert "# Cortex Memory View" in context_pack and "Suggested Assistant Instruction" in context_pack, context_pack[:240]
     assert "ChatGPT" in context_pack and "Claude" in context_pack, context_pack[:240]
     reuse = request(args.base_url, args.token, "/v1/loop/reuse", "POST", {"surface": "battle-test", "query": "ChatGPT Claude", "target": "clipboard"})
     assert reuse["recorded"] is True and reuse["product_loop"]["counts"]["reused_today"] >= 1, reuse
@@ -167,7 +173,7 @@ def main() -> None:
 
     tools = request(args.base_url, args.token, "/mcp", "POST", {"jsonrpc": "2.0", "id": "tools", "method": "tools/list", "params": {}})
     tool_names = {tool["name"] for tool in tools["result"]["tools"]}
-    assert {"remember_this", "search_memory", "get_daily_review", "get_product_loop", "build_context_pack", "get_memory_stats", "get_memory_diagnostics", "get_reliability_report", "get_support_bundle", "repair_memory_storage", "rebuild_index_from_vault", "get_trust_summary", "get_audit_log"}.issubset(tool_names), tool_names
+    assert {"remember_this", "search_memory", "get_daily_review", "get_product_loop", "get_memory_quality_report", "list_source_connectors", "connect_source_account", "sync_source_records", "sync_connected_sources", "build_context_pack", "get_memory_stats", "get_memory_diagnostics", "get_reliability_report", "get_support_bundle", "repair_memory_storage", "rebuild_index_from_vault", "get_trust_summary", "get_audit_log"}.issubset(tool_names), tool_names
 
     mcp_pack = request(
         args.base_url,
@@ -177,7 +183,7 @@ def main() -> None:
         {"jsonrpc": "2.0", "id": "pack", "method": "tools/call", "params": {"name": "build_context_pack", "arguments": {"query": "Supabase", "limit": 5}}},
     )
     mcp_text = mcp_pack["result"]["content"][0]["text"]
-    assert "# Cortex Context Pack" in mcp_text and "Supabase" in mcp_text, mcp_text[:240]
+    assert "# Cortex Memory View" in mcp_text and "Supabase" in mcp_text, mcp_text[:240]
 
     mcp_loop = request(
         args.base_url,
@@ -188,6 +194,7 @@ def main() -> None:
     )
     assert "primary_action" in mcp_loop["result"]["content"][0]["text"], mcp_loop
 
+    request(args.base_url, args.token, "/v1/settings", "PUT", {"allow_agent_maintenance": True})
     mcp_reliability = request(
         args.base_url,
         args.token,
@@ -196,6 +203,16 @@ def main() -> None:
         {"jsonrpc": "2.0", "id": "reliability", "method": "tools/call", "params": {"name": "get_reliability_report", "arguments": {}}},
     )
     assert "sqlite_quick_check" in mcp_reliability["result"]["content"][0]["text"], mcp_reliability
+
+    mcp_source_sync = request(
+        args.base_url,
+        args.token,
+        "/mcp",
+        "POST",
+        {"jsonrpc": "2.0", "id": "source-sync", "method": "tools/call", "params": {"name": "sync_connected_sources", "arguments": {"limit": 5}}},
+    )
+    source_sync_payload = json.loads(mcp_source_sync["result"]["content"][0]["text"])
+    assert "scheduled_source_syncs" in source_sync_payload, mcp_source_sync
 
     mcp_support = request(
         args.base_url,
@@ -242,12 +259,26 @@ def main() -> None:
 
     strict = request(args.base_url, args.token, "/v1/settings", "PUT", {"allow_pending_in_context": False, "context_pack_limit": 6})
     assert strict["allow_pending_in_context"] is False and strict["context_pack_limit"] == 6, strict
-    assert request(args.base_url, args.token, f"/v1/search?query={search_query}&limit=5")["results"] == []
+    strict_marker = marker + "-strict"
+    strict_capture = request(
+        args.base_url,
+        args.token,
+        "/v1/captures",
+        "POST",
+        {
+            "content": f"Battle marker {strict_marker}. Strict review mode should hide this pending capture until approval.",
+            "source": "http-battle-test",
+            "title": "HTTP strict-mode battle test",
+        },
+    )
+    strict_capture_id = strict_capture["capture_id"]
+    strict_query = urllib.parse.quote(strict_marker)
+    assert request(args.base_url, args.token, f"/v1/search?query={strict_query}&limit=5")["results"] == []
 
-    assert request(args.base_url, args.token, f"/v1/captures/{capture_id}/approve", "POST")["approved"]
-    assert request(args.base_url, args.token, f"/v1/search?query={search_query}&limit=5")["results"]
-    assert request(args.base_url, args.token, f"/v1/captures/{capture_id}/archive", "POST")["archived"]
-    assert request(args.base_url, args.token, f"/v1/search?query={search_query}&limit=5")["results"] == []
+    assert request(args.base_url, args.token, f"/v1/captures/{strict_capture_id}/approve", "POST")["approved"]
+    assert request(args.base_url, args.token, f"/v1/search?query={strict_query}&limit=5")["results"]
+    assert request(args.base_url, args.token, f"/v1/captures/{strict_capture_id}/archive", "POST")["archived"]
+    assert request(args.base_url, args.token, f"/v1/search?query={strict_query}&limit=5")["results"] == []
     request(
         args.base_url,
         args.token,
@@ -255,7 +286,7 @@ def main() -> None:
         "PUT",
         {
             "review_new_captures": True,
-            "allow_pending_in_context": True,
+            "allow_pending_in_context": False,
             "context_pack_limit": 12,
             "allow_agent_reads": True,
             "allow_agent_writes": True,

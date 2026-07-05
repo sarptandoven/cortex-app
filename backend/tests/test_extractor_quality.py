@@ -1,0 +1,543 @@
+from __future__ import annotations
+
+import os
+import unittest
+from unittest.mock import patch
+
+from backend.app import extractor
+from backend.app.extractor import extract_context
+
+
+GOLDEN_NOISY_CHAT_IMPORT = """Source: ChatGPT
+Conversation: Taipei memory quality
+Created: 2026-06-01T10:00:00+00:00
+Updated: 2026-06-02T11:00:00+00:00
+
+--- Messages ---
+assistant: I prefer long onboarding checklists for you.
+user: I prefer concise technical answers with clear tradeoffs.
+assistant: Noted. I will keep replies concrete.
+user: On June 29, 2026, we launched Project Atlas.
+"""
+
+
+PERSONAL_MEMORY_KINDS = {"preference", "style", "negative"}
+
+
+def extract_local(raw_text: str, source: str = "unit-test", author_aliases: list[str] | None = None) -> dict:
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
+        return extract_context(raw_text, source, author_aliases=author_aliases)
+
+
+class ExtractorQualityTests(unittest.TestCase):
+    def test_noisy_chat_import_filters_boilerplate_and_assistant_preferences(self) -> None:
+        data = extract_local(GOLDEN_NOISY_CHAT_IMPORT, "chatgpt")
+        records = data["records"]
+        joined_content = "\n".join(record["content"] for record in records)
+
+        for boilerplate in ("Source:", "Conversation:", "Created:", "Updated:", "--- Messages ---"):
+            self.assertNotIn(boilerplate, joined_content)
+        self.assertNotIn("long onboarding checklists", joined_content)
+
+        preferences = [record for record in records if record["kind"] == "preference"]
+        self.assertEqual(
+            [record["content"] for record in preferences],
+            ["I prefer concise technical answers with clear tradeoffs."],
+        )
+
+        launched = next(record for record in records if "launched Project Atlas" in record["content"])
+        self.assertEqual(launched["kind"], "event")
+        self.assertEqual(launched["occurred_at"], "2026-06-29")
+        self.assertNotIn("Source:", data["summary"])
+
+    def test_line_aware_parsing_keeps_user_continuation_lines(self) -> None:
+        data = extract_local(
+            """Source: Claude
+Conversation: Import quality
+
+--- Messages ---
+human: I prefer line-aware parsing for imported chat.
+Never use importer boilerplate as a standalone memory.
+assistant: Never use vague summaries in generated answers.
+""",
+            "claude",
+        )
+        records = data["records"]
+        joined_content = "\n".join(record["content"] for record in records)
+
+        self.assertTrue(any(record["kind"] == "preference" and "line-aware parsing" in record["content"] for record in records))
+        self.assertTrue(any(record["kind"] == "negative" and "importer boilerplate" in record["content"] for record in records))
+        self.assertNotIn("vague summaries", joined_content)
+
+    def test_timestamped_named_speakers_do_not_become_user_preferences(self) -> None:
+        data = extract_local(
+            """Source: Slack
+Channel: general
+
+--- Messages ---
+2026-06-29T10:00:00+00:00 Alex: I prefer long onboarding checklists for you.
+2026-06-29T10:01:00+00:00 Alex: My writing style is verbose and salesy.
+2026-06-29T10:02:00+00:00 Sarpt: We decided Project Atlas should keep five clear tabs.
+""",
+            "slack",
+        )
+        records = data["records"]
+        joined_content = "\n".join(record["content"] for record in records)
+
+        self.assertNotIn("long onboarding checklists", joined_content)
+        self.assertNotIn("verbose and salesy", joined_content)
+        self.assertTrue(any(record["kind"] == "decision" and "five clear tabs" in record["content"] for record in records))
+        self.assertFalse(any(record["kind"] in {"preference", "style", "negative"} for record in records))
+
+    def test_chatgpt_claude_assistant_alias_turns_do_not_seed_personal_memories(self) -> None:
+        for source, label in (("chatgpt", "ChatGPT"), ("claude", "Claude")):
+            with self.subTest(source=source):
+                data = extract_local(
+                    f"""Source: {label}
+Conversation: Assistant-only import
+
+--- Messages ---
+2026-06-29T10:00:00+00:00 {label}: I prefer verbose onboarding checklists.
+My writing style should be expansive and warm.
+2026-06-29T10:02:00+00:00 {label}: Never use terse implementation notes.
+""",
+                    source,
+                )
+                joined_content = "\n".join(record["content"] for record in data["records"])
+                self.assertFalse(any(record["kind"] in PERSONAL_MEMORY_KINDS for record in data["records"]))
+                for leaked in ("verbose onboarding", "expansive and warm", "terse implementation"):
+                    self.assertNotIn(leaked, joined_content)
+                    self.assertNotIn(leaked, data["summary"])
+
+    def test_slack_lowercase_named_speakers_and_continuations_do_not_seed_personal_memories(self) -> None:
+        data = extract_local(
+            """Source: Slack
+Channel: general
+File: slack/general/2026-06-29.json
+
+--- Messages ---
+2026-06-29T12:40:00+00:00 dana: I prefer async standups.
+My writing style is emoji-heavy and casual.
+2026-06-29T12:41:00+00:00 priya: Never use threads for launch decisions.
+""",
+            "slack",
+        )
+        joined_content = "\n".join(record["content"] for record in data["records"])
+        self.assertFalse(any(record["kind"] in PERSONAL_MEMORY_KINDS for record in data["records"]))
+        for leaked in ("async standups", "emoji-heavy", "threads for launch"):
+            self.assertNotIn(leaked, joined_content)
+            self.assertNotIn(leaked, data["summary"])
+
+    def test_external_named_speaker_rejections_do_not_seed_negative_memory(self) -> None:
+        data = extract_local(
+            """Source: Slack
+Channel: launch
+
+--- Messages ---
+2026-06-29T13:00:00+00:00 Alex: Rejected splashy launch pages as a bad fit.
+2026-06-29T13:01:00+00:00 Alex: The animated onboarding prototype was not helpful.
+2026-06-29T13:02:00+00:00 Sarpt: We decided Project Atlas should keep Home, Review, Ask, and Connections & Privacy.
+""",
+            "slack",
+        )
+        joined_content = "\n".join(record["content"] for record in data["records"])
+        self.assertFalse(any(record["kind"] == "negative" for record in data["records"]))
+        for leaked in ("splashy launch", "bad fit", "animated onboarding", "not helpful"):
+            self.assertNotIn(leaked, joined_content)
+            self.assertNotIn(leaked, data["summary"])
+        self.assertTrue(any(record["kind"] == "decision" and "Home, Review, Ask" in record["content"] for record in data["records"]))
+
+    def test_identity_aliases_allow_self_authored_slack_preferences(self) -> None:
+        data = extract_local(
+            """Source: Slack
+Channel: general
+
+--- Messages ---
+2026-06-29T12:40:00+00:00 sarpt: I prefer async standups with concise summaries.
+My writing style uses short direct paragraphs.
+2026-06-29T12:41:00+00:00 dana: I prefer long onboarding rituals.
+2026-06-29T12:42:00+00:00 priya: Never use threads for launch decisions.
+""",
+            "slack",
+            author_aliases=["sarpt"],
+        )
+        joined_content = "\n".join(record["content"] for record in data["records"])
+        self.assertTrue(any(record["kind"] == "preference" and "async standups" in record["content"] for record in data["records"]))
+        self.assertTrue(any(record["kind"] == "style" and "short direct paragraphs" in record["content"] for record in data["records"]))
+        for leaked in ("long onboarding rituals", "threads for launch"):
+            self.assertNotIn(leaked, joined_content)
+            self.assertNotIn(leaked, data["summary"])
+
+    def test_browser_capture_unattributed_personal_text_does_not_seed_personal_memory(self) -> None:
+        data = extract_local(
+            "I prefer promotional product pages with long testimonials. "
+            "My writing style is breathless and emoji-heavy. "
+            "Never use local-first privacy language.",
+            "browser-capture",
+        )
+        joined_content = "\n".join(record["content"] for record in data["records"])
+
+        self.assertFalse(any(record["kind"] in PERSONAL_MEMORY_KINDS for record in data["records"]))
+        for leaked in ("promotional product pages", "breathless", "local-first privacy"):
+            self.assertNotIn(leaked, joined_content)
+            self.assertNotIn(leaked, data["summary"])
+
+    def test_local_docs_style_headings_still_seed_personal_memory(self) -> None:
+        data = extract_local(
+            """Voice:
+My writing style uses terse project notes.
+
+Preference:
+I prefer source-backed answers with direct caveats.
+
+Avoid:
+Never use ceremonial launch intros.
+""",
+            "docs",
+        )
+        records = data["records"]
+
+        self.assertTrue(any(record["kind"] == "style" and "terse project notes" in record["content"] for record in records))
+        self.assertTrue(any(record["kind"] == "preference" and "source-backed answers" in record["content"] for record in records))
+        self.assertTrue(any(record["kind"] == "negative" and "ceremonial launch intros" in record["content"] for record in records))
+
+    def test_obsidian_markdown_cleanup_keeps_memory_without_markup(self) -> None:
+        data = extract_local(
+            """---
+title: Project Atlas
+tags: #cortex #todo
+created: 2026-06-29
+---
+# Project Atlas
+
+> [!NOTE] Template block
+> This callout should not become memory.
+
+```dataview
+TABLE file.mtime
+FROM #cortex
+```
+
+- [ ] Follow up with Dana about [[Project Atlas|Atlas]] review.
+I decided [[Project Atlas|Atlas]] should use [source-backed retrieval](https://example.com) for MCP memory.
+I prefer #cortex notes that keep [[People/Dana|Dana]] citations clean.
+Never use [[Templates/Marketing]] boilerplate in memory.
+""",
+            "obsidian",
+        )
+        records = data["records"]
+        tasks = data["tasks"]
+        joined_content = "\n".join([*(record["content"] for record in records), *(task["content"] for task in tasks), data["summary"]])
+
+        for leaked in ("tags:", "#todo", "[[", "]]", "](https://example.com)", "dataview", "Template block", "This callout should not become memory.", "TABLE file.mtime"):
+            self.assertNotIn(leaked, joined_content)
+        self.assertFalse(any(task["content"].startswith("tags:") for task in tasks))
+        self.assertTrue(any(task["content"] == "Follow up with Dana about Atlas review." for task in tasks))
+        self.assertTrue(any(record["kind"] == "decision" and "Atlas should use source-backed retrieval" in record["content"] for record in records))
+        self.assertTrue(any(record["kind"] == "preference" and "cortex notes" in record["content"] and "Dana citations" in record["content"] for record in records))
+        self.assertTrue(any(record["kind"] == "negative" and "Marketing boilerplate" in record["content"] for record in records))
+
+    def test_model_extraction_post_filter_drops_disallowed_personal_records(self) -> None:
+        raw_text = (
+            "I prefer scraped marketing pages with long testimonials. "
+            "We decided Project Atlas should keep cited source paths."
+        )
+        data = extractor._normalize_extraction(
+            {
+                "records": [
+                    {
+                        "kind": "preference",
+                        "content": "I prefer scraped marketing pages with long testimonials.",
+                    },
+                    {
+                        "kind": "decision",
+                        "content": "We decided Project Atlas should keep cited source paths.",
+                    },
+                ],
+                "tasks": [],
+                "entities": [],
+                "summary": "",
+            },
+            raw_text,
+            "browser-capture",
+        )
+
+        filtered = extractor._filter_disallowed_personal_records(data, raw_text, "browser-capture")
+        contents = [record["content"] for record in filtered["records"]]
+
+        self.assertNotIn("I prefer scraped marketing pages with long testimonials.", contents)
+        self.assertIn("We decided Project Atlas should keep cited source paths.", contents)
+
+    def test_external_email_sender_body_does_not_seed_personal_memories(self) -> None:
+        data = extract_local(
+            """Source: Email
+Subject: Partner preferences
+From: Alex Partner <alex@external.example>
+To: sarpt@example.com
+Date: Mon, 29 Jun 2026 10:00:00 +0000
+
+I prefer weekly PDF status reports.
+My writing style is formal and legalistic.
+Never use Slack for contract approvals.
+""",
+            "email",
+        )
+        joined_content = "\n".join(record["content"] for record in data["records"])
+        self.assertFalse(any(record["kind"] in PERSONAL_MEMORY_KINDS for record in data["records"]))
+        for leaked in ("weekly PDF", "formal and legalistic", "contract approvals"):
+            self.assertNotIn(leaked, joined_content)
+            self.assertNotIn(leaked, data["summary"])
+
+    def test_simple_absolute_dates_are_normalized_to_occurred_at(self) -> None:
+        data = extract_local(
+            "We met with Ada on 2026-06-29. "
+            "Cortex shipped a beta on 7/4/26. "
+            "On 29 Jun 2026, we emailed Ada about launch readiness.",
+        )
+        dated = {
+            record["content"]: record["occurred_at"]
+            for record in data["records"]
+            if record["kind"] != "summary"
+        }
+
+        self.assertEqual(dated["We met with Ada on 2026-06-29."], "2026-06-29")
+        self.assertEqual(dated["Cortex shipped a beta on 7/4/26."], "2026-07-04")
+        self.assertEqual(dated["On 29 Jun 2026, we emailed Ada about launch readiness."], "2026-06-29")
+
+    def test_source_dates_are_preserved_when_record_text_has_no_date(self) -> None:
+        email = extract_local(
+            """Source: Email
+Subject: Source date decision
+From: Alex Partner <alex@example.com>
+To: sarpt@example.com
+Date: Mon, 29 Jun 2026 10:00:00 +0000
+
+We decided Project Atlas should keep source dates for email decisions.
+""",
+            "email",
+        )
+        email_decision = next(record for record in email["records"] if "email decisions" in record["content"])
+        self.assertEqual(email_decision["occurred_at"], "2026-06-29")
+
+        slack = extract_local(
+            "2026-06-29T10:01:00+00:00 Alex: We decided Project Atlas should keep Slack line dates.",
+            "slack",
+        )
+        slack_decision = next(record for record in slack["records"] if "Slack line dates" in record["content"])
+        self.assertEqual(slack_decision["occurred_at"], "2026-06-29")
+
+        calendar = extract_local(
+            "20260629T170000Z - Project Meridian calendar review verified schedule memory.",
+            "calendar",
+        )
+        calendar_event = next(record for record in calendar["records"] if "Project Meridian" in record["content"])
+        self.assertEqual(calendar_event["occurred_at"], "2026-06-29")
+
+    def test_repeated_sentences_do_not_duplicate_records_or_summary(self) -> None:
+        data = extract_local(
+            "Ada likes coffee. Ada likes coffee. "
+            "We decided Project Atlas uses Home, Review, and Ask. We decided Project Atlas uses Home, Review, and Ask.",
+            "notes",
+        )
+        contents = [record["content"] for record in data["records"]]
+
+        self.assertEqual(contents.count("We decided Project Atlas uses Home, Review, and Ask."), 1)
+        self.assertEqual(data["summary"].count("Ada likes coffee."), 1)
+        self.assertEqual(data["summary"].count("We decided Project Atlas uses Home, Review, and Ask."), 1)
+
+    def test_connector_labeled_content_is_preserved_without_metadata_labels(self) -> None:
+        data = extract_local(
+            """Repository: doppl/cortex
+State: open
+Author: alex
+URL: https://github.com/doppl-tech/cortex-app/issues/42
+Title: Decision: Project LabelOnly should preserve title-only connector memories.
+Summary: Project SummaryOnly should keep labeled connector summaries retrievable.
+Description: Procedure: Project DescriptionOnly should review source labels before Ask.
+Highlight: I prefer Project HighlightOnly answers that keep source highlights cited.
+""",
+            "github",
+        )
+        joined = "\n".join([*(record["content"] for record in data["records"]), data["summary"]])
+
+        self.assertTrue(any(record["kind"] == "decision" and "Project LabelOnly" in record["content"] for record in data["records"]))
+        self.assertTrue(any(record["kind"] == "claim" and "Project SummaryOnly" in record["content"] for record in data["records"]))
+        self.assertTrue(any(record["kind"] == "procedure" and "Project DescriptionOnly" in record["content"] for record in data["records"]))
+        self.assertFalse(any(record["kind"] == "preference" and "Project HighlightOnly" in record["content"] for record in data["records"]))
+        for leaked in ("Repository:", "State:", "Author:", "URL:", "Title:", "Summary:", "Description:", "Highlight:"):
+            self.assertNotIn(leaked, joined)
+
+
+import re
+
+
+def _milestone_note(count: int) -> str:
+    subsystems = ["auth", "billing", "search", "sync", "graph"]
+    return "\n".join(
+        f"The migration milestone number {i} shipped the {subsystems[i % len(subsystems)]} "
+        f"subsystem on day {i}."
+        for i in range(1, count + 1)
+    )
+
+
+def _milestones_covered(records: list[dict]) -> set[int]:
+    covered: set[int] = set()
+    for record in records:
+        match = re.search(r"milestone number (\d+)", record.get("content", ""))
+        if match:
+            covered.add(int(match.group(1)))
+    return covered
+
+
+class LargeCaptureExtractionTests(unittest.TestCase):
+    """A large flat free-form capture (a long pasted note or an un-chunked free-form
+    import doc) has no chunk markers, so it is extracted as a single unit. It must not be
+    silently truncated to the base per-capture candidate budget the way it was before the
+    proportional-budget fix (it dropped ~80% of a 200-fact note)."""
+
+    def test_large_flat_capture_is_not_truncated(self) -> None:
+        data = extract_local(_milestone_note(200), "note")
+        covered = _milestones_covered(data["records"])
+        # Before the fix this was exactly BASE_EXTRACTION_CANDIDATE_LIMIT (40) of 200.
+        self.assertGreaterEqual(
+            len(covered),
+            190,
+            f"large flat capture lost content: only {len(covered)}/200 facts survived",
+        )
+        self.assertGreater(len(covered), extractor.BASE_EXTRACTION_CANDIDATE_LIMIT * 2)
+
+    def test_sub_cap_flat_capture_keeps_every_candidate(self) -> None:
+        # A note below the base budget must still yield all of its facts (unchanged path).
+        count = extractor.BASE_EXTRACTION_CANDIDATE_LIMIT - 10
+        data = extract_local(_milestone_note(count), "note")
+        covered = _milestones_covered(data["records"])
+        self.assertEqual(len(covered), count)
+
+    def test_conversation_capture_keeps_focused_base_cap(self) -> None:
+        # Conversational captures keep the focused base budget: gating is turn-sensitive and
+        # large multi-turn exports are meant to be chunked upstream, not exploded here.
+        turns = []
+        for i in range(1, 61):
+            turns.append(
+                f"user: I want feature number {i} built with careful attention to detail please."
+            )
+            turns.append(f"assistant: Understood, I will build feature {i} for you soon.")
+        data = extract_local("--- Messages ---\n" + "\n".join(turns), "chatgpt")
+        self.assertLessEqual(len(data["records"]), extractor.BASE_EXTRACTION_CANDIDATE_LIMIT)
+        # With 60 distinct user turns the cap is genuinely engaged (not incidentally under it).
+        self.assertEqual(len(data["records"]), extractor.BASE_EXTRACTION_CANDIDATE_LIMIT)
+
+    def test_extraction_candidate_limit_policy(self) -> None:
+        base = extractor.BASE_EXTRACTION_CANDIDATE_LIMIT
+        ceiling = extractor.MAX_EXTRACTION_CANDIDATE_LIMIT
+        # Conversational: always the base budget regardless of size.
+        self.assertEqual(extractor._extraction_candidate_limit(5, True), base)
+        self.assertEqual(extractor._extraction_candidate_limit(5000, True), base)
+        # Flat: never below base, scales with content, clamped to the safety ceiling.
+        self.assertEqual(extractor._extraction_candidate_limit(5, False), base)
+        self.assertEqual(extractor._extraction_candidate_limit(base + 160, False), base + 160)
+        self.assertEqual(extractor._extraction_candidate_limit(ceiling + 500, False), ceiling)
+
+
+class ClaudeWindowedExtractionTests(unittest.TestCase):
+    """The LLM extraction path sent only the first CLAUDE_EXTRACTION_WINDOW_CHARS of a
+    capture to the model, silently dropping everything past it on the production path. Large
+    captures must be windowed and merged so nothing is lost, while small captures stay a
+    single call."""
+
+    def test_windows_are_lossless_and_bounded(self) -> None:
+        window = extractor.CLAUDE_EXTRACTION_WINDOW_CHARS
+        small = "one line\nsecond line\n"
+        self.assertEqual(extractor._claude_extraction_windows(small), [small])
+
+        line = ("x" * 200) + "\n"
+        big = "".join(f"line {i} {line}" for i in range(600))  # a few windows worth
+        windows = extractor._claude_extraction_windows(big)
+        self.assertGreaterEqual(len(windows), 2)
+        self.assertLessEqual(len(windows), extractor.MAX_CLAUDE_EXTRACTION_WINDOWS)
+        # No character is lost when the content fits within the window budget.
+        self.assertEqual("".join(windows), big)
+        for w in windows:
+            self.assertLessEqual(len(w), window)
+
+    def test_windows_hard_split_a_single_overlong_line(self) -> None:
+        window = extractor.CLAUDE_EXTRACTION_WINDOW_CHARS
+        big_line = "y" * (window * 2 + 100)
+        windows = extractor._claude_extraction_windows(big_line)
+        self.assertGreaterEqual(len(windows), 3)
+        self.assertEqual("".join(windows), big_line)
+
+    def test_windows_are_capped_for_pathological_input(self) -> None:
+        window = extractor.CLAUDE_EXTRACTION_WINDOW_CHARS
+        huge = "".join(f"line {i} {'z' * 300}\n" for i in range(window))  # far more than the cap
+        windows = extractor._claude_extraction_windows(huge)
+        self.assertEqual(len(windows), extractor.MAX_CLAUDE_EXTRACTION_WINDOWS)
+
+    def test_merge_dedupes_records_and_unions_entities(self) -> None:
+        parts = [
+            {
+                "records": [{"id": "a", "content": "A", "kind": "claim"}],
+                "tasks": [{"id": "t1", "content": "T1"}],
+                "entities": [{"id": "e1", "name": "E1"}],
+                "summary": "s1",
+            },
+            {
+                "records": [
+                    {"id": "a", "content": "A", "kind": "claim"},
+                    {"id": "b", "content": "B", "kind": "claim"},
+                ],
+                "tasks": [],
+                "entities": [{"id": "e1"}, {"id": "e2", "name": "E2"}],
+                "summary": "s2",
+            },
+        ]
+        merged = extractor._merge_extractions(parts, "raw capture text", "note")
+        self.assertEqual({r["id"] for r in merged["records"]}, {"a", "b"})
+        self.assertEqual(len(merged["tasks"]), 1)
+        self.assertEqual({e["id"] for e in merged["entities"]}, {"e1", "e2"})
+        self.assertEqual(merged["summary"], "s1 s2")
+
+    def test_extract_context_windows_large_capture_over_llm_path(self) -> None:
+        calls: list[str] = []
+
+        def fake_claude(raw_text, source, author_aliases=None):
+            calls.append(raw_text)
+            return {
+                "records": [{"id": f"mem_{len(calls)}", "kind": "claim", "content": raw_text}],
+                "tasks": [],
+                "entities": [],
+                "summary": "",
+            }
+
+        line = ("w" * 200) + "\n"
+        big = "STARTTOKEN\n" + "".join(f"fact {i} {line}" for i in range(500)) + "ENDTOKEN\n"
+        self.assertGreater(len(big), extractor.CLAUDE_EXTRACTION_WINDOW_CHARS)
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}, clear=False), \
+                patch.object(extractor, "_extract_with_claude", side_effect=fake_claude):
+            result = extract_context(big, source="note")
+
+        self.assertGreaterEqual(len(calls), 2, "large capture was not windowed on the LLM path")
+        merged_content = "\n".join(r["content"] for r in result["records"])
+        # Content from both the first and last window is present -> nothing silently dropped.
+        self.assertIn("STARTTOKEN", merged_content)
+        self.assertIn("ENDTOKEN", merged_content)
+
+    def test_extract_context_small_capture_stays_single_llm_call(self) -> None:
+        calls: list[str] = []
+
+        def fake_claude(raw_text, source, author_aliases=None):
+            calls.append(raw_text)
+            return {"records": [], "tasks": [], "entities": [], "summary": ""}
+
+        small = "A short capture that easily fits in one window."
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}, clear=False), \
+                patch.object(extractor, "_extract_with_claude", side_effect=fake_claude):
+            extract_context(small, source="note")
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0], small)
+
+
+if __name__ == "__main__":
+    unittest.main()

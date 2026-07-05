@@ -1,0 +1,562 @@
+================================================================================
+CORTEX ROADMAP — PART II: THE DEEP DIVE & BEYOND
+Build ON TOP of what exists. Own verifiable current-truth. Stay dead simple.
+================================================================================
+Date: 2026-07-02 · Extends docs/CORTEX_VISION_AND_ROADMAP.txt (Part I)
+Grounded in a repo audit (real files/line numbers verified) + a deep landscape
+teardown (4 competitor lanes, unmet-needs mining) + outside-the-box ideation with
+ruthless prioritization. Where this contradicts Part I, this is the correction.
+
+HOW TO READ THIS: Part I set the positioning (neutral, local-first, cross-tool
+memory) and the compaction wedge. Part II goes deeper: it names the ONE job to
+own, gives concrete "build on top of the real code" engineering guides keyed to
+verified line numbers, adds the outside-the-box big swings that survived a hard
+prioritization, and — importantly — fixes three overclaims from Part I with what
+the code actually supports.
+
+--------------------------------------------------------------------------------
+0. THREE HONEST CORRECTIONS TO PART I (read these first)
+--------------------------------------------------------------------------------
+A deep repo grep changed three things. Own them; they make the plan stronger.
+
+  1. "We reuse GLiNER / Presidio / Model2Vec (already chosen)." FALSE today.
+     None of them exist in the backend — embeddings are hash-only
+     (embeddings.py: provider set is literally {"hash","openai"}). Treat the
+     local embedding model as EXPLICIT NEW INFRA (it's small, ~1-2 days), and
+     either build the NER redaction or drop the egress-redaction promise. Do not
+     price them as "reuse."
+
+  2. Cortex is MORE built than Part I implied — several "new" ideas already exist
+     as MCP primitives and just need to become GREAT:
+       - remember_this          -> agent write-back into Review (exists)
+       - prepare_action_brief    -> per-task cited context assembly (exists)
+       - get_agent_adaptation    -> cited "operate like this user" rules
+                                    (storage.py:11957, with an honest-boundary block)
+       - get_memory_graph, get_daily_review, get_memory_quality_report (exist)
+       - export_json             -> serializes memories+captures+provenance with
+                                    source-policy/redaction filtering (storage.py:12366)
+     So the work is quality / proactivity / local-model, not greenfield.
+
+  3. "Cryptographically verifiable by any third party" / "attested provenance."
+     The signing path is SYMMETRIC HMAC scoped to a device
+     (storage.py:14211-14216). That gives tamper-evidence, NOT third-party
+     non-repudiation. Ship it as an INTEGRITY SEAL + undo history, never as a
+     "any auditor can verify without Cortex" attestation, until asymmetric
+     signing exists. Marketing HMAC as public attestation would invert the moat.
+
+--------------------------------------------------------------------------------
+1. THE DEEPER THESIS — THE ONE JOB TO OWN
+--------------------------------------------------------------------------------
+Part I's compaction wedge is now VALIDATED and therefore only table stakes:
+Sourcegraph's Amp retired context-compaction entirely in 2026, citing OpenAI's
+own Codex data that recursive summarization is a "vicious cycle." The whole field
+now agrees the fix is to externalize memory into a durable store — which is
+Cortex's architecture. But "externalize memory" is what mem0 (41k stars, AWS's
+exclusive memory provider), Supermemory, and native ChatGPT/Claude memory all do.
+Recall accuracy is benchmark-gamed; portability is commoditized. Neither is the
+win anymore.
+
+THE WINNING AXIS is TRUTHFULNESS OVER TIME, MADE VERIFIABLE. It has two
+ingredients every competitor structurally lacks:
+  (1) citations-or-abstain, so a human can see the source and catch a stale fact
+      (Cortex ships this; mem0/Pieces/agent memory-banks do not), and
+  (2) automatic contradiction/supersession self-correction, so the store does not
+      ROT (NOBODY ships this — mem0's own audit, issue #4573, found 97.8% junk:
+      hallucinated user profiles and an 808-entry "User prefers Vim" feedback
+      loop; Cline/agent memory-banks re-introduce reverted decisions).
+
+THE ONE JOB CORTEX SHOULD OWN (the convergent answer across all four lanes):
+
+  >>> Own the currently-true, provenance-backed model of ME that any AI can
+  >>> safely act on. When my auto-ingested sources disagree or go stale, Cortex
+  >>> decides what is CURRENTLY true, shows the receipt (which source, when it
+  >>> became true, why it outranks the alternative), abstains or asks when it
+  >>> genuinely can't tell, and refuses to let a poisoned or compaction-flattened
+  >>> write silently corrupt that belief.
+
+Why THIS job, and why it's defensible:
+  - The 2026 portability race provably cannot solve it. Vendor exports move stale
+    facts in a lossy 30-day, facts-only window; they do NOT adjudicate current
+    truth. (mywrittenword.com, 2026-03, named the real lock-in as "learned
+    behavior and task context" that export tools drop by design.)
+  - It sits on ALREADY-BUILT-BUT-DORMANT assets: provenance_json (storage.py:2105),
+    superseded_by (UPDATE at 10906), valid_from/valid_to, the read-time authority
+    ranking _answer_claim_conflict / _answer_current_item / _answer_authority_score
+    (storage.py:9502-9601), memory_events audit (2618), citations-or-abstain. This
+    is mostly ACTIVATION, not new infra.
+  - It is structurally impossible for model vendors: their memory is single-source,
+    append-and-trust, and a black box.
+  - It is the honest core of every downstream promise (act-on-it, portable
+    behavioral fit, companion permanence, team memory) — all compound on a memory
+    the user can VERIFY is currently true and uncorrupted.
+
+Part I's other pillars (neutral/portable, private-by-default, model-of-you,
+context firewall) become the SUPPORTING CAST for verifiable current-truth.
+
+--------------------------------------------------------------------------------
+2. SHARPENED COMPETITOR GAPS — the exact opening per lane
+--------------------------------------------------------------------------------
+Part I named the camps. Here is the precise structural flaw and the repo asset
+that already points at the opening.
+
+LANE: DEV / BUILDER MEMORY (Claude Code, Cursor, Cline banks, mem0, Pieces,
+Supermemory)
+  Structural flaw: memory ROTS. Append-only stores drift from current code;
+    agents re-introduce reverted decisions ("re-added a deleted UI column").
+    mem0 = 97.8% junk. Cursor "rules" get ignored after N turns (users quit them).
+  The opening: AUTOMATIC DETERMINISTIC contradiction/supersession — the one thing
+    nobody ships. Rides storage.py:9502-9601 (today it only WARNS at read time).
+  Where NOT to fight: don't become an agent runtime or promise "hard guardrails
+    the model always obeys" (Cursor's exact broken promise — you can't force a
+    host model to comply).
+
+LANE: CONSUMER PKM / SECOND BRAIN (Notion AI, Mem, Tana, Reflect, Obsidian+Smart
+Connections, NotebookLM)
+  Structural flaw: CAPTURE is the unsolved job, not organization — every product
+    makes YOU be the bridge. Reflect proves privacy and cross-corpus AI are
+    mutually exclusive (its E2EE cripples its own AI).
+  The opening: connector-first automatic capture + PRIVATE cross-corpus reasoning
+    AT ONCE — the "both" Reflect structurally can't offer. Requires real LOCAL
+    embeddings so plaintext never leaves the Mac (the gap to close first).
+  Where NOT to fight: no editor / daily-notes / object-browser UI — that's their
+    surface AND their churn driver.
+
+LANE: AMBIENT / VOICE (Rewind->Meta shutdown, Wispr, Granola, Plaud/Bee/Friend
+pendants, Personal.ai)
+  Structural flaw: capture is RADIOACTIVE (wiretap law in 11+ states, the Wispr
+    screenshot scandal, acquisition trauma) and produces a LOG, not RECALL
+    ("perfect recording, not perfect recall").
+  The opening: be the RECALL layer AFTER capture, never a recorder. Ingest the
+    artifacts a user already produces; win on "survives our death" ownership +
+    verifiable-local processing. Rides connector-first ingestion + no-delete-on-
+    disconnect + export_json.
+  Where NOT to fight: no always-on audio/screen/pendant capture. Ever.
+
+LANE: ENTERPRISE / TEAM INFRA (Glean, Dust, Zep/Graphiti, Letta, Agentspace)
+  Structural flaw: TOP-DOWN only (need IT/SSO) or invisible LLM extraction no
+    human vouched for. Trust is contagious in reverse: one visibly-wrong fact
+    poisons the whole system.
+  The opening: personal->team via a human VOUCH on a git-Markdown vault — the
+    bottom-up path incumbents can't run (no individual wedge) and can't trust (no
+    human vouch). Rides the `sector` field already threaded through 152 storage.py
+    call-sites but unused in the UI (2 Swift refs) — a config gate + one checkbox,
+    not a migration.
+  Where NOT to fight: no permission-aware org-wide search / real-time ACL / SSO /
+    SCIM — that's Glean's genuine moat and it makes Cortex heavy.
+
+THE THROUGH-LINE: every lane's unsolved job is a facet of verifiable current-truth
+(dev = truth-over-time; consumer = capture-then-trust; ambient = recall-not-record;
+team = auditable-vouch). Cortex is the only contender pointed at the union.
+
+--------------------------------------------------------------------------------
+3. WHAT USERS ACTUALLY NEED (deeper than "it forgot")
+--------------------------------------------------------------------------------
+Verified, self-diagnosed jobs from forums/reviews/research. Ranked by pain x
+defensibility. These go beyond the obvious.
+
+TOP UNSOLVED JOBS
+  1. "Carry my ACCUMULATED BEHAVIORAL FIT when I switch tools — not just my
+     facts." Portability tools move name/job/preferences but explicitly drop
+     implicit tone calibration and task-context built over hundreds of sessions —
+     the part that took months to build. THIS is the one thing the portability
+     race provably cannot deliver. Converts "portable facts" (commodity) into
+     "portable YOU" (moat).
+  2. "When my sources disagree about me (notes say Python, email says Rust;
+     calendar says one job, Slack says another), tell me which one the AI will
+     believe and WHY — and abstain when you can't tell." Turns provenance columns
+     into the trust product. (A user's direct statement outranks an inference; a
+     recent source outranks a stale one.)
+  3. "Protect my memory from silent corruption — a bad agent write, a poisoned
+     doc I ingested, or a compaction that flattened nuance into a wrong 'fact' —
+     so a false belief doesn't compound across every future AI interaction." The
+     trust moat's dark twin: if Cortex is the ONE memory every AI reads,
+     corrupting it corrupts everything downstream.
+  4. "Make the AI ACT on what it remembers, not just recall it." It knows my
+     rules but stops applying them after 30-50 messages ("recognition vs.
+     execution"). A live, re-injected MUST-HOLD constraint pack (style + negatives
+     + current decisions), verified against output, is where the negative-memory
+     layer uniquely wins.
+  5. "Let me trust and VERIFY what my AI believes about me — show everything,
+     prove each source, edit without the memory editing ITSELF (duplicating or
+     resurrecting deleted things)." Converts local-first + citations-or-abstain
+     from a pitch into a felt experience.
+
+SLEEPER NEEDS (under-served, high-retention, mostly ignored by builder-first plans)
+  - COMPANION-MEMORY PERMANENCE. r/MyBoyfriendIsAI (27k+) and, per MIT, the 93.5%
+    who "stumbled into" AI bonds via work/writing experience "patch breakups" with
+    clinically-real grief when a model updates. A neutral, user-owned store that
+    preserves the learned relationship across model migrations is a large,
+    high-emotional-retention consumer market — and the PUREST proof of the moat
+    ("your memory survives their model update"). Do not build a companion; be the
+    memory a companion can't take with it.
+  - THE "WHAT ACTUALLY WORKS FOR ME" LIBRARY. Users' best prompts/context are
+    "scattered across chats, notes, Slack — effectively lost" and rewritten each
+    time. Cortex's procedural + style layers can auto-surface the right context —
+    an anti-feature (prompt manager) becoming a native capability.
+  - MULTI-AGENT SAFE WRITE. Flat Markdown "cannot handle concurrent access —
+    multiple agents can't safely write the same file." Cortex's SQLite+FTS+vec
+    over the vault is a real differentiator — but ONLY if writes are adjudicated,
+    not last-write-wins. (This is the Memory Bus, section 5.)
+  - RELATIONSHIP-GRAPH TRAVERSAL. "Who does this contact know that works on
+    projects I'm connected to?" — graph questions flat notes/vendor memory can't
+    answer. Cortex's entity + relation tables + relationship-memory v1 are latent
+    infra for "brief me on the web around this person/decision."
+  - ABSTENTION-AS-A-FEATURE. "The AI that admits what it doesn't know about you."
+    Cortex ships citations-or-abstain in retrieval but hasn't surfaced abstention
+    as a user-facing trust SIGNAL. Deeply trust-building; the opposite of vendor
+    memory's confidently-wrong behavior.
+  - AUTHORSHIP PROVENANCE. CHI 2026 ("The AI Memory Gap"): users can't recall
+    whether they made something WITH AI or alone. "You decided this / the AI
+    suggested this / you did this yourself" is an unclaimed accountability need
+    adjacent to the decision-ledger.
+
+EMERGING NEEDS (next 12 months — get ahead of these)
+  - MEMORY-POISONING DEFENSE as a consumer trust feature (OWASP ASI06 2026;
+    Microsoft "AI Recommendation Poisoning" 2026-02). Provenance-based QUARANTINE
+    of untrusted-origin memories + one-tap rollback of any belief. Extends
+    source_trust + tombstones into an audit-grade "undo history for what my AI
+    believes."
+  - POST-PORTABILITY DISILLUSIONMENT. As everyone ships lossy facts-only import,
+    the complaint shifts from "I can't move my memory" to "I moved it and the AI
+    STILL doesn't know me." The winning message becomes "the memory that resumes
+    the RELATIONSHIP — tone, decisions, working style — not just the facts."
+  - EEA/UK PRIVACY-REFUGEE INFLOW. Google disabled memory import in the EEA (GDPR);
+    ChatGPT connectors are legally blocked in EEA/CH/UK; Rewind/Khoj cloud
+    shutdowns stranded privacy users. A verifiable local-first memory that legally
+    and technically WORKS in Europe is an underserved beachhead.
+  - ON-DEVICE / PHONE MEMORY expectation (2026 "local AI on your phone" is
+    mainstream). Users will expect a read-only/queryable local memory surface on
+    mobile — still local-first, NOT cloud sync-back.
+  - LONG-SESSION CONSTRAINT ENFORCEMENT becomes a named category as 1.5M-context
+    models arrive: "it has the fact but stopped honoring my rules after 30-50
+    turns." (Same as job #4 — own it.)
+
+--------------------------------------------------------------------------------
+4. BUILD-ON-TOP ENGINEERING GUIDE (keyed to the real code)
+--------------------------------------------------------------------------------
+Ordered by dependency. Each: extension point (verified) -> smallest change ->
+OSS/tech -> simplicity guardrail -> Definition of Done.
+
+3.1 REAL LOCAL EMBEDDINGS (the floor under everything)
+  Extension point: configured_embedding_provider() (embeddings.py:27-29) = {"hash",
+    "openai"}; embed_text_result() (embeddings.py:66-77) is the switch;
+    VECTOR_DIMENSIONS=384 (embeddings.py:14) already matches Model2Vec
+    potion-base-8M output -> NO schema change.
+  Smallest change: add a "model2vec" branch + _model2vec_embedding(text, dims)
+    mirroring _openai_embedding's EmbeddingResult contract, with graceful fallback
+    to hash_embed_text when the model file is absent; background re-embed via the
+    existing embed_memory job in worker.py; lazily download the ~8MB model so the
+    base app stays small and notarization isn't bloated.
+  OSS: Model2Vec potion-base-8M (MIT, CPU-only, no key). NEW infra, ~1-2 days.
+  Guardrail: silent swap. No UI, no key, no vocabulary. It just gets smarter.
+  DoD: semantic + style eval categories rise measurably above the hash baseline,
+    OFFLINE; absent-model fallback error rate = 0. GATE: no "local semantics"
+    claim ships anywhere until this lands.
+
+3.2 LEARNED LOCAL RERANKER
+  Extension point: the fusion/rank choke point _fuse_search_rows ->
+    _rank_rows_with_layer_boosts (storage.py:~8839-8863) after FTS(bm25)+vector.
+  Smallest change: an optional cross-encoder rerank of the fused top-N behind the
+    existing deterministic-boost stage; gate on the eval showing lift.
+  OSS: answerai-colbert-small-v1 (Apache-2.0) or bge-reranker-v2-m3 via ONNX/
+    fastembed. No key.
+  Guardrail: invisible; must beat the CI gate or it doesn't ship.
+  DoD: precision@3 up on the eval corpus, p95 latency regression < 150ms.
+
+3.3 AUTOMATIC DETERMINISTIC CONTRADICTION / SUPERSESSION SCANNER  <-- highest leverage
+  Extension point: the read-time authority logic _answer_claim_conflict /
+    _answer_current_item / _answer_authority_score (storage.py:9502-9601) TODAY
+    only WARNS at answer time; superseded_by UPDATE already exists (10906);
+    memory_events audit (2618).
+  Smallest change: promote that logic into a BACKGROUND scanner (a new worker.py
+    job type) that flags same-subject + overlapping-validity conflicts, surfaces
+    ONE card in the existing Review inbox for a human "vouch," and sets
+    superseded_by on confirm. NO LLM in the path. NEVER auto-rewrite.
+  Guardrail: one card in the Review inbox users already have; nothing auto-changes.
+  DoD: contradiction precision (flagged conflicts a human confirms) >= floor;
+    stale-fact-served rate trends to 0; zero auto-rewrites in the codepath;
+    false-positive/nag rate floored. This is the lane's single unsolved job and
+    the prerequisite every provenance/bus/team bet quietly assumes.
+
+3.4 CONTEXT ASSEMBLY WITH TEMPORAL/CONFLICT WARNINGS
+  Extension point: prepare_action_brief / context_pack / personal_profile already
+    assemble cited packs (mcp_tools.py + storage.py).
+  Smallest change: thread the scanner's current-truth + conflict signals INTO the
+    assembled pack as additive warnings ("belief X is contested; using the source-
+    authoritative one"); keep token budget + citations.
+  Guardrail: warnings are additive; no new surface. DoD: assembled packs beat raw
+    search on the eval; every pack cited and within budget.
+
+3.5 WRITE-BACK MEMORY (agents propose, human vouches)
+  Extension point: remember_this already writes into Review.
+  Smallest change: keep agent writes PENDING + ATTRIBUTED by default (off unless
+    the tool token is trusted); poisoning-injection cannot become active belief
+    without a human vouch.
+  Guardrail: agent writes always pending + attributed; opt-in, default off.
+  DoD: % agent writes that stay pending+attributed = 100%; poisoning-injection
+    success rate -> 0; zero silent overwrites.
+
+3.6 PROACTIVE PRE-WORK BRIEFINGS (ambient, no microphone)
+  Extension point: worker.py run_worker_tick already runs scheduled jobs per user;
+    prepare_action_brief already produces cited briefs; Calendar connector exists.
+  Smallest change: a "briefing" worker job that, at T-15 before a calendar event,
+    assembles a cited person/project brief and delivers it via the existing
+    notification/menu-bar surface.
+  Guardrail: reuse the existing brief format; off by default; no new capture.
+  DoD: briefs delivered at T-15 with citations; abstains on thin corpus.
+
+3.7 PORTABLE-MEMORY SUBSTRATE (the PCP emitter — see section 5)
+  Extension point: export_json (storage.py:12366) already serializes memories +
+    captures + tasks + entities + edges WITH provenance and applies source-policy
+    + redaction filtering.
+  Smallest change: a versioned envelope + JSON Schema around export_json, a
+    round-trip importer, and an HMAC INTEGRITY SEAL (not attestation).
+  DoD: export->import->export is byte-stable (lossless round-trip).
+
+3.8 VOICE FINGERPRINT + PORTABLE PERSONA CARD  <-- the founder's "writes like me," made falsifiable
+  Extension point: _style_draft_review (mcp_tools.py:~956) currently uses a
+    HARDCODED hype-term list and a magic `average_words > 28` threshold;
+    get_agent_adaptation / agent_adaptation (storage.py:11957) already compiles
+    cited style/preference/negative/decision rules with an honest-boundary block.
+  Smallest change: replace the two hardcoded constants with a PER-USER statistical
+    fingerprint computed over already-ingested authored text (strip quoted/
+    boilerplate first: sentence-length distribution, punctuation, hedging,
+    signature phrases used/avoided). Then wrap agent_adaptation + the fingerprint
+    as a versioned, cited "persona card" exposed as an MCP resource.
+  Guardrail: it "conditions toward your voice," NEVER "guaranteed"; honest-boundary
+    line always present; % rules cited must = 100%.
+  DoD: author-vs-distractor separation (deterministic z-distance) above a CI floor;
+    abstains on thin corpus; no "guaranteed voice" language ships.
+
+3.9 STYLE CI (the guardrail that makes 3.8 falsifiable)
+  Extension point: retrieval_eval.py already has style + style_recall categories
+    with per-category CI floors and an adversarial distractor fixture
+    (rq_distractor_verbose_style).
+  Smallest change: add an author-vs-distractor separation FLOOR to the gate so a
+    voice-fidelity regression fails the build.
+  DoD: separation never drops below floor across releases; metric reproducible
+    offline. (Ships in the same PR series as 3.8.)
+
+3.10 VOUCH-TO-PROMOTE (personal -> team, read-mostly)
+  Extension point: `sector` is threaded through search/context_pack across 152
+    storage.py call-sites but unused in UI (2 Swift refs); ShardRouter supports
+    local/user/bucket modes.
+  Smallest change: a config gate + one checkbox to promote a sector to a
+    read-mostly git-Markdown TEAM vault; a new teammate asks "what should I know"
+    and gets CITED team decisions. NO SSO/ACL/admin console. Multi-writer waits
+    for the Memory Bus.
+  Guardrail: one button; solo experience byte-for-byte unchanged.
+  DoD: promote->vouch conversion; "what should I know" answered from cited team
+    decisions; no ACL/SSO code exists.
+
+3.11 LOW-CREEPINESS ARTIFACT CAPTURE (win on connectors, not microphones)
+  Extension point: the uniform connector contract (fetch_*_records + *Sync /
+    *SyncRecord in backend/app/connectors/).
+  Smallest change: add capture of the HIGH-signal artifacts a user already
+    PRODUCES — merged commits, sent emails, authored docs, closed issues — as
+    memory sources, via the existing contract. Optional browser-history trail
+    (browserexport, MIT) as opt-in "what I researched."
+  Guardrail: no microphone/screen path; opt-in per source.
+  DoD: authored-artifact capture rate; abstains on thin corpus.
+
+--------------------------------------------------------------------------------
+5. THE BIG SWINGS (outside-the-box bets that survived prioritization)
+--------------------------------------------------------------------------------
+Four survived. Each is 10x/defensible, builds on verified assets, and names its
+simplicity guardrail. The ONE bold bet is called out first.
+
+*** THE ONE BOLD BET — PCP: THE PERSONAL CONTEXT PROTOCOL ***
+  Author the portability STANDARD (the "iCal/vCard/OAuth for personal memory"),
+  earned by SELF-ADOPTION — not proclaimed.
+  Why it's 10x/defensible: every vendor treats export as a compliance checkbox
+    designed to be minimally useful (export IS their lock-in, so they'll never
+    make it good). Whoever authors the envelope that a decision, its supersession,
+    its source, and its validity window travel inside becomes the neutral center
+    of gravity — and vendors racing to LOOK open will adopt it precisely because
+    it's anti-lock-in (GDPR optics). A model vendor will NEVER author an
+    anti-lock-in standard. That neutrality is structural, not a feature.
+  Why it's THE one (over the boldest): the Memory Bus is bolder but its claimed
+    foundations are NOT wired (change feed signs per-device HMAC; scoped tokens
+    are a separate subsystem) — betting the moat on the least-built, highest-
+    corruption surface. PCP sits on the one export asset confirmed shipping
+    (export_json) and converts a COMMODITIZED feature into an OWNED position.
+  Builds on repo: section 3.7 is the whole substrate. PCP = a signing wrapper +
+    round-trip importer + conformance suite over export_json.
+  Simplicity guardrail: user sees TWO buttons in the existing Privacy sheet
+    ("Download my memory" / "Bring my memory in"). Spec/JSON/signatures/conformance
+    live in docs/ + CI. No new tab.
+  The discipline that makes it win (not a PDF nobody reads): (1) ship a delightful,
+    REAL round-trip INSIDE Cortex first — self-adoption is the proof; (2) publish
+    an MIT reference lib + JSON Schema + a conformance corpus in-repo; (3) ship the
+    HMAC signature as an INTEGRITY SEAL, not a false "anyone can attest" claim,
+    until asymmetric signing exists; (4) seed via Khoj + Obsidian communities
+    BEFORE ever using the word "standard."
+  Timing: AFTER the near-term must-dos (embeddings, contradiction scanner, voice
+    fingerprint) land — because those make Cortex the highest-fidelity EMITTER
+    (real connectors + adjudicated current-truth vendors can't produce), which is
+    exactly what makes being the format-everyone-imports-FROM defensible rather
+    than copyable.
+
+SWING 2 — THE MEMORY BUS (A2A adjudicated safe-write)
+  Turn Cortex from a read-side context lender into the WRITE-SIDE coordination
+  point a user's whole agent fleet commits through. Boldest and stickiest
+  (hardest switching cost). BUT: requires REAL integration — bridge per-agent
+  scoped tokens (cxm_/cxa_) into the change-feed writer identity, and turn the
+  read-time conflict WARNING (3.3) into a write-time PROPOSED/pending GATE. Keep
+  it deterministic, human-vouch-on-conflict, opt-in, never auto-rewrite, no LLM in
+  the commit path. Guardrail: no bus UI; conflicts land as Review cards.
+  (Deferred: depends on the contradiction scanner AND the token->identity bridge
+  that does not yet exist.)
+
+SWING 3 — VOUCH-TO-PROMOTE (personal -> team)
+  The land-and-expand axis no top-down incumbent can run (they have no individual
+  wedge and no human vouch). Ship read-mostly team vaults first (3.10); gate
+  multi-writer behind the Memory Bus so shared memory never drifts.
+
+SWING 4 — PORTABLE PERSONA CARD (style adapter as an MCP resource)
+  The neutral cross-tool "portable YOU" that vendors won't build and a LoRA can't
+  be (cited, local, versioned, honest-boundaried). Fast-follow to the voice
+  fingerprint that gives it a real fidelity number (3.8). This is the concrete
+  answer to unsolved-job #1 (carry my behavioral fit across tools).
+
+SLEEPER (emit as a byproduct, don't build a product around it):
+  DECISION ATTESTATION for agent actions — snapshot the cited pack + hash-chain it
+  whenever provenance/integrity lands. No dedicated effort until demand appears.
+
+--------------------------------------------------------------------------------
+6. ENHANCED PHASED ROADMAP (P0..P6) — swings folded in, simplicity intact
+--------------------------------------------------------------------------------
+P0 — THE HONEST FLOOR (must do now).
+  Real local embeddings (3.1, Model2Vec + graceful hash fallback).
+  Guardrail: silent swap, no UI, no key. GATE: no "local semantics" claim until
+  this lands.
+
+P1 — FALSIFIABLE VOICE + SELF-CORRECTION (must do now).
+  - Voice Fingerprint + Style CI as ONE unit (3.8 + 3.9): replace the two
+    hardcoded constants; floor author-vs-distractor separation.
+  - Automatic deterministic contradiction scanner (3.3): the highest-leverage
+    build; background scan; human-vouch; never auto-rewrite.
+  - Claim the MCP-registry "local memory server" slot with one-command install
+    (AFTER 3.1); lead the listing with connector-first + citations, not a commodity
+    key-value claim.
+  Guardrail: one number in the existing style output; one card in the existing
+  Review inbox. No new tabs.
+
+P2 — THE PERSON YOU CAN CARRY.
+  Persona card as MCP resource (3.8/Swing 4); write-back memory hardened (3.5, off
+  by default); learned local reranker (3.2, silent, must beat the gate).
+  Guardrail: "conditions toward your voice," never "guaranteed"; agent writes
+  always pending + attributed.
+
+P3 — HONEST ASSEMBLY + AMBIENT RECALL.
+  Context-assembly with temporal/conflict warnings (3.4); calendar briefings (3.6,
+  off by default); artifact capture (3.11, no microphone).
+  Guardrail: warnings additive; briefings reuse the existing format; no new capture
+  surface.
+
+P4 — *** THE BOLD BET: PCP *** (3.7 + section 5).
+  Ship the delightful round-trip inside Cortex; publish MIT lib + schema +
+  conformance corpus; integrity-seal only; seed Khoj/Obsidian BEFORE "standard."
+  Guardrail: two buttons in the Privacy sheet; spec in docs/CI. P4 precisely
+  because P0-P3 make Cortex the highest-fidelity emitter — the durable edge that
+  makes the standard defensible.
+
+P5 — PERSONAL -> TEAM.
+  Vouch-to-Promote read-mostly team vaults (3.10).
+  Guardrail: one button; no SSO/ACL/admin console; solo experience unchanged.
+
+P6 — THE WRITE-SIDE COORDINATION POINT.
+  Memory Bus (Swing 2): bridge per-agent token identity into the change feed; turn
+  the read-time warning into a write-time pending gate; then multi-writer team
+  vaults. Emit Decision Attestation receipts silently as a byproduct.
+  Guardrail: no bus UI; deterministic, human-vouch-on-conflict, no LLM in commit path.
+
+CROSS-CUTTING (parallelizable, from Part I P4): Developer-ID signing +
+NOTARIZATION + auto-update; accounts/self-serve onboarding; encryption-at-rest
+(SQLCipher) + secret store; observability/alerting/backups; billing on the quota
+scaffolding; the storage.py god-object refactor behind the test suite.
+
+--------------------------------------------------------------------------------
+7. WHAT NOT TO BUILD / CLAIMS TO AVOID (guardrails)
+--------------------------------------------------------------------------------
+Claims to avoid (trust-breaking overclaims):
+  - "Cryptographically verifiable by any third party." HMAC = tamper-evidence, not
+    non-repudiation (storage.py:14216). Ship as integrity seal until asymmetric
+    signing exists.
+  - "We reuse GLiNER/Presidio/Model2Vec (already chosen)." None exist in the
+    backend yet. Fund the local embedding provider as explicit new infra.
+  - "Memory Bus sits on already-wired agent-identity + signing." False; the
+    integration is real work. Scope it explicitly.
+  - "Portable memory" as the headline — commoditized. AUTHOR the standard (PCP).
+  - "Memory as hard guardrails the model always obeys." Cursor's broken promise;
+    you can't force a host model to comply. Cortex makes retrieval verifiable and
+    cross-tool; that's the honest claim.
+  - "An AI that IS you / your digital twin." Overreach. Claim: permissioned, cited
+    context that lets AI work in your voice and constraints.
+
+What NOT to build (keeps Cortex simple + defensible):
+  - No graph DB (Zep/Cognee territory) — deliver temporal correctness on SQLite.
+  - No agent runtime (Letta) or agent-builder platform (Dust/Agentspace) — stay
+    the neutral memory they READ via MCP.
+  - No org-wide permission-aware search / real-time ACL / SSO / SCIM — that's
+    Glean's moat and it makes Cortex heavy. Team = coarse git-Markdown, in-or-out.
+  - No always-on audio/screen/pendant capture — legal + trust catastrophe. Win on
+    connectors, not microphones.
+  - No editor / workspace / daily-notes / object-browser UI — Notion/Tana's surface
+    AND their churn driver. The vault is source-of-truth; add no editing chrome.
+  - No LoCoMo/LongMemEval leaderboard chasing — contested numbers, wrong axis.
+    Cortex's edge is the CI regression gate + citations (truthfulness).
+
+Overengineering traps:
+  - NO LLM in any commit/adjudication path — the contradiction/bus story depends on
+    DETERMINISTIC scanning; an LLM rewrite loop reintroduces mem0's 97.8%-junk
+    failure.
+  - NO auto-rewrite on conflict — always flag for human vouch.
+  - Don't ship Postgres/pgvector/multi-region for 10k — sharded SQLite suffices.
+
+--------------------------------------------------------------------------------
+8. METRICS — measure truthfulness-over-time, not recall vanity
+--------------------------------------------------------------------------------
+  Real local embeddings: semantic+style eval categories rise >= X above hash,
+    offline, no key; absent-model fallback error = 0.
+  Contradiction scanner: contradiction precision (human-confirmed) >= floor;
+    stale-fact-served rate -> 0; false-positive/nag rate floored; zero auto-rewrites.
+  Voice fingerprint + Style CI: author-vs-distractor separation above CI floor;
+    abstain rate on thin corpus; reproducible offline.
+  Persona card: % of MCP sessions loading it; % rules cited = 100%; no "guaranteed
+    voice" language.
+  Write-back / Memory Bus: % agent writes pending+attributed = 100%; poisoning-
+    injection success -> 0; zero silent overwrites.
+  PCP: round-trip losslessness (export->import->export stable); >= 1 external
+    emitter/consumer (Khoj/Obsidian); integrity-seal framing; conformance corpus
+    green in CI.
+  Vouch-to-Promote: promote->vouch conversion; new-teammate "what should I know"
+    answered from cited team decisions; solo experience byte-for-byte unchanged.
+  Briefings / artifact capture: briefs delivered at T-15 with citations; authored-
+    artifact capture rate; abstain on thin corpus; no microphone path.
+
+THE ONE META-METRIC ACROSS ALL BETS: FALSIFIABILITY COVERAGE — the fraction of
+user-facing claims ("writes like you," "this is current," "this wasn't poisoned")
+backed by a deterministic, CI-gated number OR a citation, not a vibe. That
+coverage IS the moat.
+
+--------------------------------------------------------------------------------
+9. THE FIRST FOUR THINGS TO DO (build-on-top, in order)
+--------------------------------------------------------------------------------
+  1. embeddings.py: add the Model2Vec "model2vec" provider branch (dims already
+     384, hash fallback), re-embed via worker.py. -> makes "local semantics" TRUE.
+  2. storage.py:9502-9601 -> promote the read-time conflict/authority logic into a
+     background contradiction scanner that surfaces ONE Review card and sets
+     superseded_by on human vouch. -> owns the one unsolved job.
+  3. mcp_tools.py:~956 -> replace the hardcoded hype list + `average_words>28` with
+     a per-user statistical voice fingerprint; floor author-vs-distractor
+     separation in retrieval_eval.py. -> "writes like me," falsifiable.
+  4. Wrap export_json (storage.py:12366) in a versioned PCP envelope + round-trip
+     importer with two buttons in the Privacy sheet. -> plant the standard by
+     self-adopting it.
+
+Make the memory SEMANTIC (P0), make it HONEST and SELF-CORRECTING (P1), make the
+PERSON PORTABLE (P2 + Swing 4), then own the STANDARD everyone imports from (P4).
+The moat is not features — it is a memory the user can VERIFY is currently true,
+uncorrupted, and theirs.
+================================================================================

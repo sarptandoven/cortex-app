@@ -63,8 +63,6 @@ def main() -> None:
 
     summary = {
         "prepared_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-        "release_dir": str(release_dir),
-        "site_dir": str(site_dir),
         "version": manifest["version"],
         "build": manifest["build"],
         "channel": manifest["channel"],
@@ -72,7 +70,6 @@ def main() -> None:
             {
                 "kind": artifact["kind"],
                 "filename": artifact["filename"],
-                "path": str(downloads_dir / artifact["filename"]),
                 "url": artifact_url(artifact["filename"], args.artifact_base_url or None),
                 "size_bytes": artifact["size_bytes"],
                 "sha256": artifact["sha256"],

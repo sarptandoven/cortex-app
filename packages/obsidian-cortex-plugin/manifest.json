@@ -1,0 +1,10 @@
+{
+  "id": "cortex-memory",
+  "name": "Cortex Memory",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Sync this vault into Cortex local memory and use cited Cortex context from Obsidian.",
+  "author": "Doppl",
+  "authorUrl": "https://trydoppl.com",
+  "isDesktopOnly": true
+}

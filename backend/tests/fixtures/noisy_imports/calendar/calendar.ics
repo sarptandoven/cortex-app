@@ -1,0 +1,12 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Cortex Golden Fixtures//EN
+BEGIN:VEVENT
+UID:memory-quality-calendar@example.com
+SUMMARY:Project Horizon import review
+DTSTART:20260703T180000Z
+DTEND:20260703T183000Z
+LOCATION:Remote
+DESCRIPTION:On July 3, 2026, Project Horizon calendar review shipped with source citations.
+END:VEVENT
+END:VCALENDAR

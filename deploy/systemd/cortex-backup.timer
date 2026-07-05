@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly Cortex backup
+
+[Timer]
+OnCalendar=*-*-* 03:17:00 UTC
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

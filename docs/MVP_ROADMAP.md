@@ -4,9 +4,9 @@
 
 Cortex is the shared memory layer for every AI assistant a person uses. The first product should make one promise extremely well:
 
-> Save context once. ChatGPT, Claude, and other AI tools can retrieve it later with sources.
+> Connect your trusted life and work context once. ChatGPT, Claude, and other AI tools can retrieve it later with sources.
 
-The current repo proves the core idea: capture text, extract structured memory, store it, search it, and expose it to AI through MCP. The MVP turns that prototype into a product with a hosted backend, a native macOS capture client, and a stable API contract.
+The current repo proves the core idea: sync source data, extract structured memory, store it, search it, and expose it to AI through MCP. The MVP turns that prototype into a restrained macOS product with Home, Review, Ask, a Connections & Privacy sheet, a local-first backend, and a stable sync/API contract.
 
 ## Target User
 
@@ -14,11 +14,38 @@ Start with AI power users who already use ChatGPT, Claude, Cursor, Slack, Notion
 
 ## MVP Magic Moment
 
-1. The user copies text from any app.
-2. They press `Cmd+Shift+V`.
-3. Cortex saves and structures the memory.
-4. In a later ChatGPT or Claude session, the user asks, "What did I decide about this?"
-5. The AI retrieves the relevant memories with sources.
+1. The user connects MCP AI tools or an Obsidian vault.
+2. Cortex syncs source records locally, preserves citations, and queues extraction automatically.
+3. The user approves useful memory candidates in Review and archives noise.
+4. The user asks Cortex a question and sees cited memory.
+5. Connected AI tools can retrieve approved memory through MCP with sources.
+
+## Repository Status - 2026-06-30
+
+### Complete Now
+
+- The macOS app has the intended local-beta shell: Home, Review, Ask, and a secondary Connections & Privacy sheet for source setup, MCP tools, privacy, backup, export, support, and diagnostics.
+- The local backend has capture, extraction, review, memory storage, search, ask, graph, diagnostics, backup/restore, export/delete, support bundle, and MCP endpoints.
+- Source-account sync is implemented locally with catalog/readiness APIs, sync cursors, duplicate-safe `source_account_id + external_id` identity, citations, and review-first capture processing.
+- MCP includes the connected-source tools `list_source_connectors`, `connect_source_account`, `sync_source_records`, and `sync_connected_sources`, plus focused retrieval tools `get_style_profile`, `get_project_context`, and `get_procedure`.
+- Obsidian/local notes are the first real native source path: Swift chooses and remembers the vault folder, while backend connector code scans Markdown/text notes, cleans Obsidian markup, preserves `file://` citations, and resyncs saved vaults.
+- The local memory model includes procedural memory, sectors, source type/provenance, validity windows, supersession, and lightweight memory relations; retrieval filters expired, future-valid, and superseded memory.
+- Local beta trust and operations primitives exist: scoped local tokens, review-first defaults, redaction/export controls, backups, support bundles, reliability/ops checks, package scripts, update manifests, and distribution-site scripts.
+
+### Remaining For First 100
+
+- Complete the clean-profile hands-on QA loop from the packaged DMG: install, first-run setup, MCP or Obsidian sync, Review approve/archive, cited Ask, backup/export, support bundle, update, and rollback.
+- Run the release gates against the actual generated release directory: unit tests, retrieval eval, backend smoke, reliability check, battle test, package validation, checksum validation, update manifest validation, distribution-site preparation/checks, and ops readiness.
+- Keep Gmail, Notion, Slack, Drive, Calendar, GitHub, Mail, Messages, browser, and similar connectors out of the primary setup path until they complete real source-account sync with data/cursor evidence.
+- Continue dogfooding extraction quality, citation quality, review ergonomics, and noisy-source behavior with real notes and AI-tool records before widening invites.
+
+### Deferred For First 10k
+
+- Hosted accounts, login/session management, token issuance UI, organization membership, billing, quotas, public telemetry, and incident operations.
+- Hosted FastAPI deployment backed by Postgres plus `pgvector`, background workers, hosted MCP, object storage for vault/export artifacts, hosted deletion/export receipts, and observability.
+- The repo now has an honest hosted readiness contract: non-local shard modes block until scoped API tokens, HTTPS public URL, sync signing, a Postgres database URL, non-hash embeddings, pgvector, external workers, and observability are configured.
+- Live OAuth/API connectors for Gmail, Notion, Slack, Drive/Docs, GitHub, calendar, mail, browser, and work-tool sources.
+- Additional graph/entity/correction MCP tools, team memories, project sharing, automatic updates, hosted cloud backup, and enterprise policy.
 
 ## Build Phases
 
@@ -29,24 +56,27 @@ Goal: one developer can run Cortex locally and use the macOS app every day.
 - FastAPI backend with capture, extraction, memory storage, search, graph, and MCP-style endpoints
 - SQLite database with full-text search for zero-cost local use
 - SQLite schema with review status, normalized topics/entities, source graph edges, and lifecycle events
-- Native macOS menu bar app with global hotkey, clipboard capture, quick note, review inbox, search, recent memories, stats, export, and graph view
+- Native macOS app with Home, Review, Ask, Connections & Privacy, local backups, and advanced diagnostics
+- Stage 1 source ingestion through MCP AI tools, Obsidian vault sync, and source-account sync APIs
+- Advanced/Fallback import retained for unsupported services, migration, tests, and support recovery, not as the primary setup path
 - Health diagnostics, local backups, and search-index maintenance
 - Regression and HTTP battle tests before packaging
 - Deterministic extraction fallback so the product works without model keys
 - Optional Claude extraction when `ANTHROPIC_API_KEY` is present
 
-### Phase 1: Hosted Free Beta
+### Phase 1: Hosted 10k-User Platform
 
-Goal: non-technical users can sign up and use Cortex without Docker, Redis, GitHub tokens, or local Python.
+Goal: non-technical users can sign up and use Cortex without a local backend while preserving the same review, citation, and MCP contracts.
 
-- Hosted API on Render, Fly.io, Railway, or a small VPS
-- Supabase Auth for Google login
-- SQLite WAL with `sqlite-vec` for local and hosted semantic search
-- Per-user API tokens for the macOS app and MCP tools
+- Hosted FastAPI service
+- Account auth and scoped user/API tokens
+- Postgres with `pgvector` as the default hosted memory store
+- Background workers for source sync, extraction, embedding, and deletion jobs
+- Hosted MCP endpoint for approved-memory retrieval
 - Web dashboard for inbox review, delete/export, and source history
-- Hosted export/delete account flow with per-user retention policy
+- Hosted export/delete account flow with per-user retention policy and audit logs
 
-Recommended cheapest path: keep FastAPI, deploy one service, use SQLite WAL plus `sqlite-vec`, and add hosted auth around it. This keeps local and hosted storage behavior aligned, avoids a premature database rewrite, and preserves user-owned portable memory files.
+Local beta remains SQLite/vault-first. Hosted scale should use FastAPI plus Postgres/pgvector unless retrieval evals or latency prove another vector service is needed.
 
 ### Phase 2: AI Tool Connectors
 
@@ -75,7 +105,7 @@ Goal: make Cortex valuable enough that users invite teammates and collaborators.
 
 - Project brains
 - Shared team memories
-- Slack/Notion/Gmail import
+- Live Slack/Notion/Gmail sync through source-account connectors
 - Meeting transcript ingestion
 - Decision and task digests
 
@@ -90,8 +120,8 @@ Goal: make Cortex valuable enough that users invite teammates and collaborators.
 
 ## MVP Success Criteria
 
-- A user can capture from any macOS app in under two seconds.
-- A user can search old context from the app.
+- A user can connect MCP or Obsidian in under five minutes.
+- Synced memory appears in Review automatically.
+- A user can ask approved memory from the app and see citations.
 - The backend returns structured memories with source metadata.
-- The graph endpoint shows people, projects, tasks, sources, and their relationships.
 - The API contract is ready for ChatGPT, Claude, and other MCP-compatible tools.

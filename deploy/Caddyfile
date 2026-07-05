@@ -1,0 +1,16 @@
+# Cortex hosted API — Caddy terminates TLS (automatic Let's Encrypt) and proxies to
+# the loopback-only uvicorn. __API_DOMAIN__ is substituted by bootstrap.sh.
+__API_DOMAIN__ {
+	encode gzip
+	request_body {
+		max_size 50MB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Content-Security-Policy "default-src 'none'; form-action 'self'"
+		-Server
+	}
+	reverse_proxy 127.0.0.1:8766
+}

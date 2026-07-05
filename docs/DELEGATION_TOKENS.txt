@@ -1,0 +1,103 @@
+================================================================================
+CORTEX — DELEGATION TOKEN SHOPPING LIST
+How to hand Cortex's launch setup to an agent and minimize your own clicking.
+================================================================================
+Written 2026-07-04. Create these SCOPED, least-privilege tokens in one sitting.
+Paste them to the agent (privately). REVOKE them once the setup is done.
+
+Golden rules:
+  - Scope each token to the ONE project / zone / repo it needs — never account-wide.
+  - Prefer tokens with an EXPIRY (e.g. 7 days) so they self-destruct.
+  - Revoke immediately after launch setup is complete.
+  - Never paste a token into a file that gets committed; hand it to the agent
+    directly in chat.
+
+--------------------------------------------------------------------------------
+TOKEN 1 — Hetzner Cloud API token   → unblocks: provision VM + deploy (F5)
+--------------------------------------------------------------------------------
+Get it:  console.hetzner.cloud -> your project -> Security -> API Tokens ->
+         Generate API Token -> permission: Read & Write -> copy.
+Scope:   it's already project-scoped (create a dedicated project "cortex-prod"
+         first so the token can't touch anything else).
+Lets the agent: create the Ubuntu VM with an SSH key baked in, then SSH in and
+         run deploy/push.sh end to end. You never open a terminal.
+Revoke:  delete the token after deploy; the VM keeps running.
+
+--------------------------------------------------------------------------------
+TOKEN 2 — Cloudflare API token   → unblocks: all DNS + site hosting (F3 DNS, F9)
+--------------------------------------------------------------------------------
+Get it:  dash.cloudflare.com -> My Profile -> API Tokens -> Create Token ->
+         use the "Edit zone DNS" template for the trydoppl.com zone, and add
+         "Cloudflare Pages: Edit" (account-level) if you want the agent to
+         publish the site too.
+Scope:   Zone -> DNS -> Edit, restricted to the trydoppl.com zone. (+ Pages:Edit
+         if publishing the site.)
+Lets the agent: add the api.trydoppl.com A record, all SPF/DKIM/DMARC records
+         your email provider needs, and deploy the static site to Cloudflare
+         Pages mapped to trydoppl.com.
+Revoke:  after DNS + site are set (you rarely change DNS after launch).
+
+--------------------------------------------------------------------------------
+TOKEN 3 — GitHub fine-grained PAT   → unblocks: CI, Releases, status page (F4, H2, H6)
+--------------------------------------------------------------------------------
+Get it:  github.com -> Settings -> Developer settings -> Fine-grained tokens ->
+         Generate. Resource owner: your ORG. Repository access: only the
+         canonical Cortex repo. Expiry: 30 days.
+Scope (repo permissions): Contents: Read/Write (Releases + pushing),
+         Workflows: Read/Write (CI), Pages: Read/Write (status/site if via
+         GitHub Pages), Administration: Read/Write ONLY if you want the agent to
+         set branch protection (otherwise you toggle that one setting yourself).
+Lets the agent: push the branch to the org repo (only if you approve DECISION 0),
+         open the PR so CI runs, upload notarized DMGs as GitHub Releases, set
+         repo secrets, and scaffold the status page.
+Note:    enabling GitHub Actions itself and org billing are OWNER settings you
+         click once; the token covers the rest.
+Revoke:  after CI is green + the first Release is published.
+
+--------------------------------------------------------------------------------
+TOKEN 4 — Email provider API key   → unblocks: transactional email (F3)
+--------------------------------------------------------------------------------
+Get it:  Postmark: sign up -> Servers -> API Tokens (Server token). OR Amazon
+         SES: an IAM user with ses:SendEmail + SMTP credentials.
+Scope:   send-only server token (Postmark) / ses:SendEmail only (SES).
+Lets the agent: configure the backend's SMTP settings and send a real test
+         verification email; combined with TOKEN 2 it also adds the SPF/DKIM/
+         DMARC DNS records for you.
+Revoke:  optional — this one you keep (the running server uses it). Rotate it if
+         it was ever pasted anywhere risky.
+
+--------------------------------------------------------------------------------
+OPTIONAL TOKENS (nice-to-have automation)
+--------------------------------------------------------------------------------
+- UptimeRobot API key -> agent creates the /ready + site uptime monitors (F11).
+- Backblaze B2 / Cloudflare R2 key -> agent wires offsite backups (F11).
+- healthchecks.io project API key -> agent wires the backup dead-man ping (F11).
+
+--------------------------------------------------------------------------------
+WHAT STILL NEEDS **YOU** EVEN WITH ALL TOKENS (irreducible, ~1-2 hrs total)
+--------------------------------------------------------------------------------
+- Pay with your card (you're fine with this).
+- Form the legal entity (Stripe Atlas form — your identity).
+- Apple: create the Developer ID certificate (Keychain request + Apple console
+  with 2FA on your devices) — ~15 min. AFTER that, the agent can run the
+  notarized build on this Mac itself.
+- Create the GitHub OAuth app + Google OAuth app and press "submit for
+  verification" on Google (console 2FA) — ~15 min; the agent gives you the exact
+  values to paste.
+- Paddle/Stripe KYC (only if charging) — identity verification.
+- Physically store the second KEK escrow copy — 2 min.
+- Approve occasional 2FA prompts while the agent acts for you.
+- A lawyer reviews the terms/privacy drafts. Run a 5-8 person usability test.
+  Make the final go decision.
+
+--------------------------------------------------------------------------------
+SUGGESTED HANDOFF (one message to the agent)
+--------------------------------------------------------------------------------
+"Here are scoped tokens: HETZNER=<..>, CLOUDFLARE=<..>, GITHUB_PAT=<..>,
+ POSTMARK=<..>. Canonical org repo is <org/repo> (DECISION 0 = Option A).
+ Provision cortex-prod, deploy to api.trydoppl.com in BETA mode, wire DNS +
+ email DNS, publish the site, set up CI + a Release for the DMG I'll notarize,
+ and run the launch gate. Stop and ask me before anything destructive or before
+ flipping to PUBLIC mode."
+Then revoke the tokens when it reports done.
+================================================================================

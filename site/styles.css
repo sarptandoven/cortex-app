@@ -318,6 +318,10 @@ h3 {
   background: #fffdf8;
 }
 
+.download-copy {
+  max-width: 540px;
+}
+
 .release-meta {
   flex-wrap: wrap;
   gap: 8px;
@@ -334,8 +338,89 @@ h3 {
   padding: 7px 9px;
 }
 
+.download-primary-panel {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 14px 34px rgba(24, 33, 31, 0.08);
+  margin: 28px 0 16px;
+  padding: 16px;
+}
+
+.download-primary-panel .button.primary {
+  font-size: 18px;
+  min-height: 58px;
+  width: 100%;
+}
+
+.download-primary-panel p {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.45;
+  margin: 12px 0 0;
+}
+
+.download-advanced {
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 14px;
+}
+
+.download-advanced summary {
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 760;
+  list-style: none;
+}
+
+.download-advanced summary::-webkit-details-marker {
+  display: none;
+}
+
+.download-advanced summary::after {
+  content: "+";
+  float: right;
+}
+
+.download-advanced[open] summary::after {
+  content: "-";
+}
+
+.advanced-downloads {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.advanced-download {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  text-decoration: none;
+}
+
+.advanced-download span {
+  font-size: 14px;
+  font-weight: 760;
+}
+
+.advanced-download small {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.checksum-list {
+  margin-top: 12px;
+}
+
 .checksum {
   font-size: 14px;
+  overflow-wrap: anywhere;
 }
 
 .install-list {
@@ -474,4 +559,13 @@ h3 {
   .site-footer span {
     margin-right: 0;
   }
+}
+
+.privacy-draft-note {
+  border-left: 3px solid #c9a23a;
+  background: #fbf6e6;
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  font-size: 0.95rem;
+  margin: 1rem 0 1.5rem;
 }

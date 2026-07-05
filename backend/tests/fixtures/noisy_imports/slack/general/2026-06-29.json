@@ -1,0 +1,55 @@
+[
+  {
+    "type": "message",
+    "user": "U1",
+    "text": "I prefer source-backed fixture answers with citation gutters.",
+    "ts": "1782739300.0001"
+  },
+  {
+    "type": "message",
+    "user": "U1",
+    "text": "My writing style uses direct golden-test notes.",
+    "ts": "1782739301.0001"
+  },
+  {
+    "type": "message",
+    "user": "U2",
+    "text": "I prefer long stakeholder recap rituals for Project Atlas.",
+    "ts": "1782739302.0001"
+  },
+  {
+    "type": "message",
+    "user": "U1",
+    "text": "Thread note: I prefer Slack thread summaries that keep final owner decisions separate from chatter.",
+    "thread_ts": "1782739300.0001",
+    "parent_user_id": "U1",
+    "ts": "1782739303.0001"
+  },
+  {
+    "type": "message",
+    "user": "U1",
+    "text": "In the Slack thread on June 29, 2026, Project Atlas shipped the noisy thread fixture.",
+    "thread_ts": "1782739300.0001",
+    "parent_user_id": "U1",
+    "ts": "1782739304.0001"
+  },
+  {
+    "type": "message",
+    "user": "U2",
+    "text": "I prefer maze-like Slack recap walls for every project.",
+    "thread_ts": "1782739300.0001",
+    "ts": "1782739305.0001"
+  },
+  {
+    "type": "message",
+    "username": "workflowbot",
+    "text": "[bot] Source: Slack workflow reminder",
+    "attachments": [
+      {
+        "title": "Project Atlas reminder",
+        "text": "Manage notification preferences"
+      }
+    ],
+    "ts": "1782739306.0001"
+  }
+]

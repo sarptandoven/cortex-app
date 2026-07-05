@@ -2,6 +2,57 @@
 
 Cortex is currently a local-first macOS beta. The release system should make it easy to create a repeatable app package today while leaving a clean path to signed, notarized, automatic updates later.
 
+The first-100 release track is explicitly the unnotarized `local-beta`
+track unless a specific build completes the Apple Developer ID flow in
+`docs/APPLE_RELEASE.md`. Treat it as a controlled direct beta for named testers,
+not as a public macOS distribution.
+
+## Current First-100 Track
+
+Use the current local-beta path for the first 100 testers only when the invite
+copy, operator handoff, and support runbook all say the same thing:
+
+- The app is packaged as a DMG and ZIP by `macos/package_release.sh`.
+- The app is ad-hoc signed for local verification, not Developer ID signed.
+- The app and DMG are not notarized or stapled.
+- macOS Gatekeeper may block first launch until the user uses Control-click >
+  Open.
+- Updates and rollback are manual app replacement flows.
+- The local memory folder is outside `Cortex.app` and must not be deleted during
+  install, update, or rollback.
+- The static site and `latest.json` are release metadata and download plumbing,
+  not automatic update infrastructure.
+
+If any operator, invite, landing page, or handoff copy describes the current
+local-beta build as notarized, auto-updating, production-ready, or broadly
+public, the build is a no-go for first-100 invites.
+
+## Ready And Not Ready
+
+Ready for the first-100 local-beta track:
+
+- repeatable DMG, ZIP, checksum file, `latest.json`, and `BETA_HANDOFF.md`
+  generation
+- checksum and manifest validation for generated artifacts
+- manual install from DMG on macOS 13 or newer
+- manual update by replacing `Cortex.app`
+- manual rollback by replacing `Cortex.app` with the previous build
+- local memory folder preservation across install, update, and rollback
+- static distribution-site validation
+- live packaged-app smoke testing after launch
+- content-free support bundle generation
+
+Not ready for the current first-100 local-beta track:
+
+- Gatekeeper-ready public distribution
+- Developer ID notarization or stapling, unless the exact build completed
+  `docs/APPLE_RELEASE.md`
+- automatic background updates or in-app rollback
+- Sparkle appcast or signed update-feed rollout
+- hosted accounts, cloud sync, cloud backup, billing, teams, or production
+  telemetry
+- production incident response for broad external launch
+
 ## Current Release Artifacts
 
 `macos/package_release.sh` creates a full local beta release:
@@ -10,6 +61,7 @@ Cortex is currently a local-first macOS beta. The release system should make it 
 - `Cortex-<version>-<build>.app.zip`
 - `Cortex-<version>-<build>.checksums.txt`
 - `latest.json`
+- `BETA_HANDOFF.md`
 
 The DMG is the user-facing installer. It contains:
 
@@ -19,20 +71,29 @@ The DMG is the user-facing installer. It contains:
 
 The ZIP is useful for direct download, testing, CI artifacts, and update tooling.
 
+`BETA_HANDOFF.md` is the tester-facing local beta artifact. It gives one
+repeatable source build path, package install path, checksum check, manifest
+validation command, readiness gate, live-backend verification commands, support
+bundle commands, update/rollback notes, known limitations, and the required
+manual QA checklist.
+
 ## Build A Release
 
 ```bash
 ./macos/package_release.sh \
   --channel local-beta \
-  --note "Local-first Cortex beta with installer, update manifest, capture, MCP, and trust controls."
+  --base-url https://trydoppl.com/downloads \
+  --output outputs \
+  --note "First-100 local beta DMG with source connection, Review, cited Ask, MCP retrieval, backup, and support bundle checks."
 ```
 
 For a hosted beta feed:
 
 ```bash
 ./macos/package_release.sh \
-  --channel public-beta \
-  --base-url https://download.example.com/cortex/public-beta
+  --channel local-beta \
+  --base-url https://trydoppl.com/downloads \
+  --output outputs
 ```
 
 For Apple Developer ID signing and notarization, see `docs/APPLE_RELEASE.md`.
@@ -43,6 +104,116 @@ The script reads version metadata from `macos/Info.plist`:
 - `CFBundleVersion`
 - `LSMinimumSystemVersion`
 - `CortexReleaseChannel`
+
+## First-100 Ship Gate
+
+For a beta candidate that will go to testers, generate and verify a package in
+one gate:
+
+```bash
+python3 scripts/ops_readiness_check.py --refresh-site --include-package
+```
+
+To verify an already generated release directory without rebuilding:
+
+```bash
+RELEASE_DIR="outputs/Cortex-0.1.0-1"
+python3 scripts/ops_readiness_check.py \
+  --skip-tests \
+  --skip-build \
+  --require-package-artifacts \
+  --release-dir "$RELEASE_DIR"
+```
+
+The package-artifact gate validates:
+
+- `latest.json` with `scripts/validate_update_manifest.py`
+- DMG and ZIP presence, byte sizes, and SHA-256 hashes
+- checksum file entries matching the manifest
+- `BETA_HANDOFF.md` presence and required handoff sections
+- `latest.json` beta-readiness metadata for install, update, rollback, known limitations, manual QA, and artifact verification
+- `latest.json` source provenance matching the current git commit, unless `--allow-stale-package` is used for an explicit stale-artifact audit
+
+Do not publish `latest.json` or invite first-100 testers if this gate fails.
+
+## First-100 Go / No-Go Before Invites
+
+Run this gate before sending a build to any first-100 tester. Every step must be
+green for the exact build, release directory, and download location that users
+will receive.
+
+1. Confirm release track and copy:
+   - `latest.json` uses the intended beta channel, normally `local-beta`.
+   - Invite copy says the build is an unnotarized local beta when Developer ID
+     notarization has not completed.
+   - `BETA_HANDOFF.md`, landing-page copy, and support copy do not promise
+     automatic updates, hosted accounts, cloud backup, broad OAuth sync, or
+     production support.
+2. Generate or verify the package:
+
+   ```bash
+   python3 scripts/ops_readiness_check.py --refresh-site --include-package
+   ```
+
+3. Verify the generated release directory:
+
+   ```bash
+   RELEASE_DIR="outputs/Cortex-0.1.0-1"
+   python3 scripts/validate_update_manifest.py "$RELEASE_DIR/latest.json"
+   python3 scripts/ops_readiness_check.py \
+     --skip-tests \
+     --skip-build \
+     --require-package-artifacts \
+     --release-dir "$RELEASE_DIR"
+   (cd "$RELEASE_DIR" && shasum -a 256 -c "Cortex-0.1.0-1.checksums.txt")
+   ```
+
+4. Verify the distribution site:
+
+   ```bash
+   python3 scripts/prepare_distribution_site.py
+   python3 scripts/check_distribution_site.py
+   python3 scripts/ops_readiness_check.py --refresh-site
+   ```
+
+5. Test the exact user path on a clean macOS 13 or newer user profile:
+   - download the DMG from the planned tester location;
+   - verify the checksum;
+   - drag `Cortex.app` to Applications;
+   - for an unnotarized build, confirm the documented Control-click > Open path
+     works;
+   - complete first-run setup without source-code instructions;
+   - connect MCP tools or Obsidian/local notes and confirm sync health;
+   - approve memory in Review and get at least one cited Ask result;
+   - create a backup;
+   - export a support bundle and confirm it omits raw memory content;
+   - update over the previous beta and confirm the memory folder remains intact;
+   - roll back to the previous beta and confirm the memory folder remains intact.
+6. Run live checks after launching the packaged app:
+
+   ```bash
+   python3 scripts/first100_live_smoke.py
+   python3 scripts/ops_readiness_check.py \
+     --require-live \
+     --base-url http://127.0.0.1:8766 \
+     --token "$CORTEX_API_KEY"
+   ```
+
+7. Keep rollback artifacts available:
+   - current DMG, ZIP, checksum file, manifest, and `BETA_HANDOFF.md`;
+   - previous beta DMG, ZIP, checksum file, and manifest;
+   - operator notes for known limitations and support escalation.
+
+Go only if every automated check passes, clean-profile install succeeds,
+Gatekeeper handling is understood for the exact signing state, update and
+rollback preserve the memory folder, and support can explain backup, export,
+delete, and support-bundle behavior.
+
+No-go if any package check fails, the clean-profile app cannot open, Gatekeeper
+blocks the unnotarized path beyond the documented Control-click > Open flow,
+manual update or rollback risks the memory folder, checksums or manifests do not
+match the hosted artifacts, support bundle redaction fails, or current copy
+overstates notarization, automatic updates, hosted sync, or production support.
 
 ## Update Manifest
 
@@ -57,6 +228,12 @@ Required shape:
   "channel": "local-beta",
   "version": "0.1.0",
   "build": "1",
+  "source_provenance": {
+    "git_commit": "abc123",
+    "git_branch": "mass-scale-app-redesign",
+    "git_dirty": false,
+    "built_at": "2026-06-25T00:00:00Z"
+  },
   "minimum_macos": "13.0",
   "released_at": "2026-06-25T00:00:00Z",
   "mandatory": false,
@@ -73,6 +250,12 @@ Required shape:
 }
 ```
 
+The generated manifest also includes `beta_readiness` metadata. That field is
+intended for operators and release automation, not the in-app updater. It marks
+manual QA as required and carries the install steps, update steps, rollback
+steps, known limitations, manual QA checklist, and generated artifact
+verification commands for the packaged beta.
+
 Validate a feed:
 
 ```bash
@@ -83,7 +266,7 @@ The validator confirms required keys, artifact existence, byte size, and SHA-256
 
 ## In-App Update Check
 
-The macOS app has a More -> Installer and updates section.
+The macOS app keeps update controls under Connections & Privacy.
 
 Users can:
 
@@ -98,25 +281,41 @@ The static landing page and download directory are covered in `docs/DISTRIBUTION
 
 For the local beta, updates are manual:
 
-1. Download/open the DMG.
-2. Quit Cortex.
-3. Replace `Cortex.app` in `/Applications`.
-4. Reopen Cortex.
+1. Download the DMG from the release site.
+2. Verify the DMG against `Cortex-<version>-<build>.checksums.txt`.
+3. Quit Cortex.
+4. Replace `Cortex.app` in `/Applications`.
+5. Reopen Cortex.
+6. Confirm Connections & Privacy shows local service health and the expected memory folder path.
+7. Create a fresh backup after the new build opens.
 
-The user vault remains at:
+The default memory folder remains at:
 
 ```text
 ~/Library/Application Support/Cortex/Cortex.vault
 ```
 
+Rollback is manual too:
+
+1. Keep the local memory folder unchanged.
+2. Download or retain the previous beta DMG and ZIP.
+3. Quit Cortex.
+4. Replace `Cortex.app` in `/Applications` with the previous build.
+5. Reopen Cortex.
+6. Run the reliability report and create a fresh backup.
+
+The download host should keep at least one previous beta DMG, ZIP, checksum
+file, and manifest until the next build has passed package verification and
+manual QA.
+
 ## Why Manual Updates First
 
 Manual updates are acceptable for early local beta because:
 
-- there is no hosted backend yet
+- there is no hosted account service yet
 - the app is ad-hoc signed in local builds
 - automatic updates require a signing/notarization/key-management decision
-- users must retain confidence that their local vault is not touched by app replacement
+- users must retain confidence that their local memory folder is not touched by app replacement
 
 ## Production Upgrade Path
 
@@ -137,19 +336,41 @@ Sparkle is the likely production path for background update download/install. Th
 
 - Increment `CFBundleShortVersionString` or `CFBundleVersion`.
 - Run `python3 -m unittest discover backend/tests`.
+- Run `python3 scripts/retrieval_eval.py`.
+- Run `python3 scripts/adaptation_eval.py`.
 - Run `./macos/build.sh`.
 - Run `codesign --verify --deep --strict --verbose=2 macos/build/Cortex.app`.
-- Launch the app and verify the bundled backend starts.
-- Run `python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token dev-local-key`.
+- Launch the app and verify the bundled local service starts.
+- Run `python3 scripts/first100_live_smoke.py` after launching the packaged app. It reads the local API token from the macOS Keychain first, falls back to the legacy `~/Library/Application Support/Cortex/credentials.json` file and defaults for older local builds, uses an isolated smoke user, and cleans up after itself.
+- Keep `python3 scripts/battle_test_http.py --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"` for deeper service lifecycle QA because it writes broader test data into the target memory folder.
 - Run `./macos/package_release.sh`.
+- Confirm the generated release directory includes `BETA_HANDOFF.md`.
+- Run `(cd <release> && shasum -a 256 -c Cortex-<version>-<build>.checksums.txt)`.
 - Run `python3 scripts/prepare_distribution_site.py`.
 - Run `python3 scripts/check_distribution_site.py`.
 - Run `python3 scripts/ops_readiness_check.py --refresh-site`.
+- Run `python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir <release>`.
+  Use `--allow-stale-package` only when intentionally inspecting an old artifact that must not be shipped.
 - Run `python3 scripts/validate_update_manifest.py <release>/latest.json`.
 - Test the landing page download buttons against `site/downloads/latest.json`.
 - Test the DMG by opening it and launching a copied app.
-- Test More -> Installer and updates with the generated `latest.json`.
+- Test the Connections & Privacy update controls with the generated `latest.json`.
 - Export a support bundle with `python3 scripts/export_support_bundle.py --mode live` after launch.
+
+## Required Manual QA
+
+Before first-100 distribution, complete the manual QA loop on a clean macOS 13
+or newer user profile:
+
+- install from the DMG and launch from Applications
+- complete first-run setup without source-code instructions
+- connect MCP AI tools or Obsidian/local notes from Connections & Privacy and confirm sync health
+- approve at least one useful memory and archive obvious noise in Review
+- ask a question that returns cited memory from the approved source
+- confirm Connections & Privacy shows memory folder path, local service health, backup, export, support bundle, and update feed controls
+- create a backup and confirm the support bundle does not include raw memory content
+- update over a previous beta and confirm the memory folder remains intact
+- roll back to the previous beta and confirm the memory folder remains intact
 
 ## Current Boundaries
 
@@ -161,5 +382,6 @@ This system does not yet:
 - run delta updates
 - verify update signatures beyond SHA-256 in the feed
 - provide rollback from inside the app
+- provide hosted accounts, cloud backup, live OAuth/API sync, remote MCP/OAuth, billing, teams, or production telemetry
 
-Those are appropriate for the public-beta release track, not the local-first MVP package.
+Those are appropriate for the public-beta release track, not the local-first beta package.

@@ -25,6 +25,9 @@ Backend endpoints:
 - `GET /v1/reliability/report`: user-readable health checks and recovery actions
 - `GET /v1/support/bundle`: sanitized support payload for support triage
 - `POST /v1/backups`: backup-first recovery action
+- `POST /v1/backups/restore-latest`: restore readable vault records from the latest backup archive and rebuild the local index
+- `DELETE /v1/backups`: remove local backup archives after hard deletion or retention changes
+- `DELETE /v1/user-data`: remove the current user's local vault/index data; includes backups by default
 - `POST /v1/maintenance/repair-storage`: backup, clean derived rows, rebuild search
 - `POST /v1/maintenance/rebuild-search`: rebuild full-text and vector index rows
 - `POST /v1/maintenance/rebuild-index-from-vault`: restore SQLite index from vault files
@@ -43,17 +46,22 @@ MCP tools:
 Operator scripts:
 
 - `python3 scripts/reliability_check.py`
+- `python3 scripts/backend_beta_smoke.py` verifies the first-100 loop with a temp Obsidian vault, MCP tool discovery, Review approval, cited Ask, backup, support bundle, queue health, and Trust gates
+- `python3 scripts/first100_live_smoke.py` verifies the same connection-first loop against the running packaged app with an isolated smoke user
 - `python3 scripts/battle_test_http.py`
 - `python3 scripts/export_support_bundle.py`
 - `python3 scripts/ops_readiness_check.py`
+- `python3 scripts/check_connector_baseline.py` verifies the 10k baseline connector claim against real modules, routes, catalog setup, disconnect behavior, and tests
 - `python3 scripts/check_distribution_site.py`
 - `python3 scripts/validate_update_manifest.py`
+- `python3 scripts/check_docs_current.py`
 
 ## Ship Gate
 
 Run before sharing a beta build:
 
 ```bash
+python3 scripts/backend_beta_smoke.py
 python3 scripts/ops_readiness_check.py --refresh-site
 ```
 
@@ -66,19 +74,23 @@ python3 scripts/ops_readiness_check.py --refresh-site --include-package
 For a live installed app:
 
 ```bash
-python3 scripts/ops_readiness_check.py --require-live --base-url http://127.0.0.1:8766 --token dev-local-key
+python3 scripts/first100_live_smoke.py
+python3 scripts/ops_readiness_check.py --require-live --base-url http://127.0.0.1:8766 --token "$CORTEX_API_KEY"
 ```
 
-The gate checks:
+The local readiness gate checks:
 
 - Python syntax without creating bytecode as the syntax step
 - required operator docs
+- beta docs and committed direct-release manifest currency
+- backend beta smoke on temp data with network sockets blocked
 - backend unit tests
+- 10k connector baseline contract for real source-account sync coverage
 - macOS local build
-- optional DMG/ZIP packaging
+- DMG/ZIP packaging when `--include-package` is set
 - static distribution links and artifact hashes
 - site update feed
-- latest packaged release update feed
+- latest packaged release update feed when package output exists, or when package/site refresh is requested
 - offline support-bundle generation
 - optional live backend health, reliability, and support-bundle contracts
 
@@ -102,7 +114,7 @@ The support bundle intentionally omits:
 - memory content
 - task content
 - entity bodies
-- context packs
+- copied-context payloads
 - exported user files
 - raw MCP query values
 
@@ -161,12 +173,12 @@ Immediate response:
 5. Generate an offline support bundle.
 6. If a new release exists, ask the user to replace the app, not the vault.
 
-### SEV 2: Search, MCP, or Context Packs Are Wrong
+### SEV 2: Search, Citations, or Connected AI Tools Are Wrong
 
 Examples:
 
 - search misses known approved memory
-- context pack contains stale content
+- Ask or copied context shows stale approved memory
 - MCP tool returns unexpected empty results
 
 Immediate response:
@@ -227,7 +239,7 @@ Support must not ask users for:
 - full vault zips
 - Markdown exports
 - raw captures
-- context packs
+- copied-context payloads
 - screenshots containing memory content
 
 Ask for the support bundle first. Escalate to full vault sharing only if the user explicitly consents and the issue is a true data-recovery case.
@@ -238,8 +250,10 @@ Until analytics exists, track launch readiness manually:
 
 - number of users invited
 - number of users who installed successfully
-- number of users who saved one memory
-- number of users who copied one context pack
+- number of users who connected MCP or Obsidian/local notes
+- number of users whose connected source synced automatically
+- number of users who reviewed one memory
+- number of users who asked one cited question
 - number of support bundles received
 - number of backup/rebuild incidents
 - number of users who returned the next day

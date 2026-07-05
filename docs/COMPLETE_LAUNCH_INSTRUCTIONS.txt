@@ -1,0 +1,896 @@
+================================================================================
+CORTEX — COMPLETE, STEP-BY-STEP LAUNCH INSTRUCTIONS
+From "code in a repo" to "thousands of people using it."
+================================================================================
+Written: 2026-07-04. Accurate to the current repository (branch
+mass-scale-app-redesign, through commit b25322d). Where this file and the older
+docs/LAUNCH_RUNBOOK.md disagree, THIS FILE WINS — the runbook was written before
+we built the deploy kit, the web account front door, the SMTP sender, and the
+in-app cloud sign-in, so a few of its "does not exist" notes are now stale.
+
+HOW TO READ THIS FILE
+- It is written so a careful non-expert can follow it. Every command is meant to
+  be copy-pasted. Placeholders look like <THIS> — replace the whole thing,
+  angle brackets included.
+- "[YOU]" = a human decision or an account you create on some website.
+  "[TERMINAL]" = a command you run. "[WAIT]" = an external review/propagation
+  clock you cannot speed up — start these EARLY.
+- Do the PART 0 clocks FIRST, today, in parallel — they are what actually set
+  your launch date. Everything else is fast once they clear.
+- There are two launch shapes. Read PART 1 and decide which you're doing before
+  you spend money:
+    BETA (private/invite): possible THIS WEEK. No legal entity strictly required
+      to start, no Apple notarization strictly required (users right-click→Open),
+      no email server (beta autoverify), no billing.
+    PUBLIC (anyone can sign up): needs the entity, notarization, real email,
+      privacy/terms, and abuse controls. ~2–5 weeks out, mostly waiting.
+
+TABLE OF CONTENTS
+  PART 0  — Start-the-clock items (do today, in parallel)
+  PART 1  — Decide: Beta vs Public, and the money/decisions checklist
+  PART 2  — Domain & DNS
+  PART 3  — Backend hosting: order the server
+  PART 4  — Backend hosting: deploy Cortex (the one command + what it does)
+  PART 5  — Verify the backend is healthy
+  PART 6  — Secrets, the encryption KEK, and escrow (DO NOT SKIP)
+  PART 7  — Accounts: how they work + turning on Google/GitHub login
+  PART 8  — Email delivery (required for PUBLIC launch)
+  PART 9  — The macOS app: notarize it (you're enrolled in Apple Dev)
+  PART 10 — Hosting the DMG (the download site)
+  PART 11 — Connecting the app to your hosted backend (what users do)
+  PART 12 — Backups, monitoring, alerting (so 3am failures wake you, not users)
+  PART 13 — Security hardening checklist
+  PART 14 — Legal: privacy policy, terms, data rights
+  PART 15 — Billing (Stripe/Paddle) — only if charging
+  PART 16 — Load & scale: from tens to thousands to a million
+  PART 17 — Support: inbox, FAQ, incident runbook
+  PART 18 — The go/no-go launch checklist
+  PART 19 — Day-2 operations: updates, rollback, routine tasks
+  PART 20 — Cost summary
+  PART 21 — Glossary
+  APPENDIX A — Every environment variable, explained
+  APPENDIX B — Common failures and fixes
+  APPENDIX C — Exact command cheat-sheet
+
+================================================================================
+PART 0 — START-THE-CLOCK ITEMS (do TODAY, in parallel)
+================================================================================
+These have external waiting periods. Nothing else you do matters for the PUBLIC
+launch date if these haven't been started. None of them block a BETA.
+
+0.1 [YOU][WAIT ~1–3 days] Buy/confirm the domain you'll use for the API and site.
+    You already control trydoppl.com. You will use a subdomain, e.g.
+    api.trydoppl.com for the backend. No new purchase needed if you use it.
+
+0.2 [YOU][WAIT ~1–2 weeks] Apple: you said you enrolled in the Apple Developer
+    Program. Confirm the enrollment is under the ENTITY you will operate as
+    (a company Team ID), NOT your personal Apple ID, if you can — switching the
+    Team ID later resets every user's macOS permission grants and breaks the
+    update feed. If you enrolled personally and intend to stay solo for the beta,
+    that is acceptable for a beta but plan to move to an Org enrollment (needs a
+    D-U-N-S number, free, 1–2 weeks) before a big public push. Then in Apple
+    Developer create a "Developer ID Application" certificate (PART 9).
+
+0.3 [YOU][WAIT ~1–2 weeks] Google Sign-In (optional but expected): create a
+    Google Cloud project, configure the OAuth consent screen, and SUBMIT it for
+    "publishing" verification. Until verified you're capped at 100 users. GitHub
+    login has NO review and can be turned on in 5 minutes (PART 7), so you can
+    launch with GitHub + email/password and add Google when it clears.
+
+0.4 [YOU][WAIT: days + weeks of "warm-up"] Email provider: sign up for a
+    transactional email service (Postmark or Amazon SES recommended). Add the DNS
+    records they give you (SPF, DKIM, DMARC). Start sending a little real mail now
+    (even to yourself) so the sending domain builds reputation — a brand-new
+    domain that suddenly blasts thousands of verification emails gets sent to spam
+    regardless of correct setup. (PART 8.)
+
+0.5 [YOU][WAIT ~1–5 days] Legal entity (for PUBLIC launch / taking money): form a
+    company (e.g. Stripe Atlas ~$500, or a local incorporation). You need it for
+    billing, for a real privacy policy / terms, and to be the named data
+    controller. Not required to START a private beta.
+
+0.6 [YOU][WAIT ~days] Business email inboxes: create support@trydoppl.com and
+    privacy@trydoppl.com (Google Workspace ~$7/user/month). The privacy page and
+    account emails already reference these addresses — they must exist and be
+    monitored.
+
+0.7 [YOU][WAIT ~days] Billing provider (only if charging at launch): apply to
+    Paddle (recommended — they are "merchant of record" and handle worldwide
+    sales tax/VAT for you) or Stripe. Approval needs the entity from 0.5.
+
+If you do ONLY 0.1 and skim PART 3–5, you can run a private beta today. The rest
+is the public-launch path.
+
+================================================================================
+PART 1 — DECIDE: BETA vs PUBLIC, AND THE DECISIONS CHECKLIST
+================================================================================
+1.1 Pick your launch shape now (you can do beta first, then public):
+
+  PRIVATE BETA (recommended first step — possible today)
+    - Backend on one small VM (PART 3–4).
+    - Accounts on, with CORTEX_AUTH_AUTOVERIFY=1 (signup works with NO email
+      server — the account activates immediately). (PART 7.)
+    - GitHub login optional; email/password works out of the box.
+    - Distribute the app as an unnotarized DMG; tell testers to right-click the
+      app and choose Open the first time (macOS Gatekeeper). OR notarize now if
+      your Apple cert is ready (PART 9) — then it's a clean double-click.
+    - No billing, no legal entity strictly required to start, but DO put up a
+      basic privacy page (already in the repo) and use a real support email.
+    - Invite people you can talk to. Aim for the first ~20–100 users, learn,
+      fix, then open up.
+
+  PUBLIC LAUNCH (anyone signs up)
+    - Everything in beta, PLUS:
+    - CORTEX_AUTH_AUTOVERIFY=0 and a real email provider (verification + reset
+      emails must send). (PART 8.)
+    - Notarized DMG (PART 9) so there's no scary Gatekeeper prompt.
+    - Abuse controls turned up (rate limits already on; add a signup captcha if
+      you see bots — PART 13).
+    - Legal entity + privacy policy + terms + the support inbox live (PART 14).
+    - Billing if you're charging (PART 15).
+    - Monitoring/alerting + tested backups (PART 12).
+
+1.2 Decisions to lock before you spend money (write the answers down):
+    ( ) Brand name shown to users: "Cortex"? "Doppl"? (Site + emails + app use it.)
+    ( ) Domain for the API: api.trydoppl.com (assumed throughout this doc).
+    ( ) Free-only at launch, or paid tier at launch? (Changes whether you need
+        Paddle/Stripe on day one.)
+    ( ) Which logins: email/password (always), GitHub (easy), Google (needs
+        review). "Sign in with ChatGPT/Claude" DO NOT promise — they are not
+        publicly available; the code has a disabled slot for when/if they open.
+    ( ) Region to launch in first (US-only avoids some EU obligations initially;
+        you can widen later — note it in your terms).
+
+================================================================================
+PART 2 — DOMAIN & DNS
+================================================================================
+You need one DNS record for the backend, and (for the download site) a way to
+publish static files.
+
+2.1 [YOU] Log in to wherever trydoppl.com's DNS is managed (the registrar or
+    Cloudflare, if you use it).
+
+2.2 [YOU] After you have the server's IP (PART 3), add ONE record:
+      Type: A
+      Name: api          (this makes api.trydoppl.com)
+      Value: <SERVER-IP>
+      TTL: automatic / 300
+    If your host gives you an IPv6 address too, also add an AAAA record with the
+    same Name "api" and the IPv6 value.
+
+2.3 [WAIT ~5–60 min] DNS propagates. Check with:
+      [TERMINAL] dig +short api.trydoppl.com
+    It should print your server IP. HTTPS certificates (PART 4) only work AFTER
+    this resolves.
+
+2.4 NO domain yet and just want to test? The deploy tool supports a no-domain
+    mode that gives you real HTTPS at api.<ip-with-dashes>.sslip.io — fine for a
+    private test, not for public links. See PART 4.5.
+
+================================================================================
+PART 3 — BACKEND HOSTING: ORDER THE SERVER
+================================================================================
+The cheapest honest production setup is ONE virtual machine. The app's hosted
+plane is designed to run on a single box (the "sharded-SQLite tier"); it was
+load-tested at 10,000 users on one machine.
+
+3.1 [YOU] Create a Hetzner Cloud account (console.hetzner.cloud). (Alternatives:
+    DigitalOcean, Linode/Akamai, AWS Lightsail — any Ubuntu VM works; Hetzner is
+    the cheapest by a lot.)
+
+3.2 [YOU] Create a project, then "Add Server":
+      - Location: closest to most of your users.
+      - Image: Ubuntu 24.04.
+      - Type:
+          * CX22 (2 vCPU, 4 GB RAM, 40 GB disk) — ~€3.79/mo — fine for a small
+            beta (tens to low hundreds of users).
+          * CX32 (4 vCPU, 8 GB, 80 GB) — ~€6.80/mo — recommended starting point
+            for a real beta / early public.
+      - SSH key: add your public key (see 3.3). Do NOT use password login.
+      - Backups: tick the "Backups" box (+20%, ~€1.40/mo). One click, worth it —
+        this is your safety net in addition to Cortex's own backups.
+      - Create. Note the server's public IP.
+
+3.3 [TERMINAL] If you don't have an SSH key yet, on your Mac:
+      ssh-keygen -t ed25519 -C "you@trydoppl.com"
+      (press Enter through the prompts; then paste ~/.ssh/id_ed25519.pub into
+      Hetzner's SSH-key field). Confirm you can log in:
+      ssh root@<SERVER-IP>            # type "yes" once; you should get a shell
+      exit
+
+3.4 Disk sizing rule of thumb: each user's data (their memory shard slice +
+    vault files + backups) is small at first but grows. 80 GB comfortably holds
+    hundreds to low thousands of active users. When "df -h" on the box passes
+    ~70% full, resize the VM to a bigger disk (Hetzner does this in-place in
+    minutes) or move to the bigger dedicated box in PART 16.
+
+================================================================================
+PART 4 — BACKEND HOSTING: DEPLOY CORTEX (ONE COMMAND)
+================================================================================
+Everything below runs FROM YOUR MAC, inside the repo. The repo already contains a
+complete deploy kit under deploy/ that does all the server setup for you.
+
+4.1 [TERMINAL] On your Mac, in the repo folder:
+      cd <path-to>/cortex/taipei        # the folder containing deploy/ and backend/
+      git pull                          # make sure you have the latest
+      ls deploy/                        # you should see push.sh, bootstrap.sh, etc.
+
+4.2 [TERMINAL] Run the deploy (replace the IP and domain):
+      deploy/push.sh root@<SERVER-IP> api.trydoppl.com
+
+    What this does, automatically, on the server (you don't type any of it):
+      - Uploads the current committed code to /srv/cortex/releases/<timestamp>.
+      - Hardens the OS: firewall (only SSH + HTTPS open), disables SSH password
+        login, installs automatic security updates + fail2ban.
+      - Installs Caddy, which gets a REAL HTTPS certificate for api.trydoppl.com
+        automatically (this is why DNS in PART 2 must resolve first).
+      - Creates a Python virtual environment and installs the backend's
+        dependencies.
+      - GENERATES YOUR SECRETS ONCE: the operator admin token, the per-user
+        encryption KEK, and a signing key. THESE ARE PRINTED AT THE END — copy
+        them somewhere safe immediately (PART 6).
+      - Installs systemd services so the API and the background worker run 24/7,
+        restart on crash, and start on reboot.
+      - Sets up a nightly backup timer.
+      - Runs a health check and tells you the result.
+
+4.3 [YOU] When it finishes it prints a block like:
+      Admin token : cxop_....................
+      KEK (escrow offline + password manager): <base64>
+      API         : https://api.trydoppl.com
+    COPY THE ADMIN TOKEN AND THE KEK NOW. You will not be shown them again.
+    See PART 6 for exactly what to do with them.
+
+4.4 The beta profile is on by default in deploy/cortex.env.example:
+      - Accounts enabled.
+      - CORTEX_AUTH_AUTOVERIFY=1 (no email server needed for beta).
+      - On-device embeddings (model2vec) — zero AI API cost, private.
+      - Rate limits + per-user quotas set to sane non-zero values.
+      - Per-user encryption on (KEK from /etc/cortex/kek).
+    To change any of these later, edit /etc/cortex/cortex.env on the server and
+    run: systemctl restart cortex-api cortex-worker
+
+4.5 [TERMINAL] No domain yet (quick test only):
+      deploy/push.sh root@<SERVER-IP> --sslip
+    It prints the api.<ip>.sslip.io URL it set up, with real HTTPS. Re-run with a
+    real domain later; it's non-destructive.
+
+4.6 [TERMINAL] To deploy a NEW version of the code later (after git pull):
+      deploy/push.sh root@<SERVER-IP> --update
+    This snapshots the databases first, switches to the new code, smoke-tests it,
+    and AUTO-ROLLS-BACK if the smoke test fails. Safe to run anytime.
+
+================================================================================
+PART 5 — VERIFY THE BACKEND IS HEALTHY
+================================================================================
+5.1 [TERMINAL] From your Mac:
+      curl https://api.trydoppl.com/health
+    Expect JSON with "status":"ok". If you get a certificate error, wait a minute
+    (Caddy is still issuing the cert) and retry.
+
+5.2 [TERMINAL] Readiness (checks the multi-tenant runtime is correctly set up):
+      curl https://api.trydoppl.com/ready
+    Should return a JSON contract with status "ok". If it says "blocked", read
+    the "checks" list — each blocked item names exactly what env var to set
+    (e.g. rate limit is zero, KEK missing). Fix in /etc/cortex/cortex.env and
+    restart.
+
+5.3 [TERMINAL] Create your first real account through the API to prove it works
+    end to end (in beta autoverify mode this immediately activates):
+      curl -X POST https://api.trydoppl.com/v1/auth/signup \
+        -H "Content-Type: application/json" \
+        -d '{"email":"you@trydoppl.com","password":"<a-long-password>"}'
+      curl -X POST https://api.trydoppl.com/v1/auth/login \
+        -H "Content-Type: application/json" \
+        -d '{"email":"you@trydoppl.com","password":"<a-long-password>"}'
+    The login should return an access_token starting with "cxs_".
+
+5.4 [YOU] Open https://api.trydoppl.com/account/signup in a browser — you should
+    see the actual signup page. This is the front door your users use.
+
+================================================================================
+PART 6 — SECRETS, THE ENCRYPTION KEK, AND ESCROW (DO NOT SKIP)
+================================================================================
+Cortex encrypts each user's connector credentials with a key derived from a
+master key called the KEK (Key Encryption Key). This is what makes "delete my
+account" cryptographically final and protects a stolen backup.
+
+6.1 THE GOLDEN RULE: If you lose the KEK, every user's encrypted data becomes
+    permanently unreadable. If someone STEALS the KEK *and* a backup, they can
+    read that data. So the KEK must be (a) never lost, (b) stored separately from
+    the data backups.
+
+6.2 [YOU] Right after deploy, take the KEK that was printed (also at
+    /etc/cortex/kek on the server) and store TWO copies:
+      - In your password manager (1Password/Bitwarden), labeled "Cortex KEK —
+        production".
+      - In a second offline place you control (an encrypted USB drive, a sealed
+        printout in a safe). NOT in the same cloud as your server backups.
+
+6.3 [YOU] The admin token (cxop_...) is the operator master key for the control
+    plane (provisioning, admin endpoints). Store it in your password manager too.
+    Never give it to a user, never put it in the app.
+
+6.4 On the server, permissions are already set (KEK file is root:cortex, mode
+    0440). Do NOT loosen them. The nightly backup job intentionally EXCLUDES the
+    KEK so a stolen backup stays unreadable — keep it that way.
+
+6.5 Before you ever tell users their data is "encrypted," make sure you have
+    done a restore drill (PART 12.4) proving you can recover with your escrowed
+    KEK. Claiming encryption you can't restore is worse than not claiming it.
+
+================================================================================
+PART 7 — ACCOUNTS: HOW THEY WORK + GOOGLE/GITHUB LOGIN
+================================================================================
+7.1 What already exists (no work needed): email+password signup and login,
+    sessions with automatic refresh and revocation, self-serve API/MCP token
+    minting, password reset, account deletion (with crypto-erasure of keys), and
+    a browser front door at /account/*. Each account gets its own isolated,
+    encrypted data store.
+
+7.2 [BETA] With CORTEX_AUTH_AUTOVERIFY=1 (the default in the deploy kit), a new
+    account is active immediately at signup — no email needed. Good for a closed
+    beta. TURN THIS OFF for public launch (PART 8.5).
+
+7.3 Turn on "Continue with GitHub" (5 minutes, no review):
+    a. [YOU] github.com → Settings → Developer settings → OAuth Apps → New OAuth
+       App.
+       - Application name: Cortex
+       - Homepage URL: https://trydoppl.com
+       - Authorization callback URL:
+           https://api.trydoppl.com/v1/auth/oauth/github/callback
+       - Register, then "Generate a new client secret".
+    b. [TERMINAL] On the server, edit /etc/cortex/cortex.env and set:
+           CORTEX_OIDC_GITHUB_CLIENT_ID=<the client id>
+           CORTEX_OIDC_GITHUB_CLIENT_SECRET=<the client secret>
+    c. [TERMINAL] systemctl restart cortex-api
+    d. The GitHub button now appears automatically on /account/login.
+
+7.4 Turn on "Continue with Google" (needs the review from PART 0.3):
+    a. [YOU] Google Cloud Console → APIs & Services → Credentials → Create OAuth
+       client ID → Web application.
+       - Authorized redirect URI:
+           https://api.trydoppl.com/v1/auth/oauth/google/callback
+    b. [YOU] Configure the OAuth consent screen; add your privacy policy + terms
+       URLs (PART 14); submit for verification. Until it's verified you can still
+       test with up to 100 users.
+    c. [TERMINAL] Set in /etc/cortex/cortex.env:
+           CORTEX_OIDC_GOOGLE_CLIENT_ID=<...>
+           CORTEX_OIDC_GOOGLE_CLIENT_SECRET=<...>
+       Then: systemctl restart cortex-api
+
+7.5 Existing (pre-account) users, if any: there is an operator "invite/claim"
+    flow so a user who was provisioned before accounts can attach a login to the
+    SAME data. If you have no such users, ignore this. If you do, contact them
+    with a claim link generated via the admin endpoint (see APPENDIX C).
+
+7.6 Sessions & security defaults already in place: passwords hashed with
+    argon2id; login is enumeration-resistant (won't reveal if an email exists);
+    reused refresh tokens revoke the whole session family; a session token can
+    NEVER call admin or MCP endpoints. You don't need to configure any of this.
+
+================================================================================
+PART 8 — EMAIL DELIVERY (REQUIRED FOR PUBLIC LAUNCH)
+================================================================================
+For a public launch you must turn OFF autoverify, which means verification and
+password-reset emails must actually reach inboxes.
+
+8.1 [YOU] Choose a provider: Postmark (easiest, great deliverability, ~$15/mo for
+    10k emails) or Amazon SES (cheapest at scale, more setup). Create an account.
+
+8.2 [YOU] Add a sending domain (e.g. trydoppl.com or mail.trydoppl.com) and add
+    the DNS records they show you:
+      - SPF (a TXT record)
+      - DKIM (one or more CNAME records)
+      - DMARC (a TXT record at _dmarc; start with p=quarantine)
+    Verify them in the provider dashboard (turns green).
+
+8.3 [YOU][WAIT days-weeks] Warm up: send yourself and a few friends real emails
+    over a few days before you open public signups, so the domain isn't "cold."
+
+8.4 [TERMINAL] On the server, set in /etc/cortex/cortex.env:
+      CORTEX_AUTH_EMAIL_MODE=smtp
+      CORTEX_SMTP_HOST=smtp.postmarkapp.com     # or your provider's host
+      CORTEX_SMTP_PORT=587
+      CORTEX_SMTP_USERNAME=<provider username / token>
+      CORTEX_SMTP_PASSWORD=<provider password / token>
+      CORTEX_SMTP_FROM_ADDR=Cortex <hello@trydoppl.com>
+    Then: systemctl restart cortex-api
+    (If you set mode=smtp but leave the host blank, the server safely falls back
+    to logging — it won't break signup, but no email will send. So set the host.)
+
+8.5 [TERMINAL] Turn OFF beta autoverify for public launch, in the same env file:
+      CORTEX_AUTH_AUTOVERIFY=0
+    Restart. Now new users must click the verification link in their email.
+
+8.6 [YOU] Test the real thing: sign up with a Gmail AND an Outlook address you
+    own, confirm the verification email lands in the INBOX (not spam), the link
+    activates the account, and password reset works. Do this before opening
+    signups.
+
+================================================================================
+PART 9 — THE macOS APP: NOTARIZE IT (you're enrolled in Apple Developer)
+================================================================================
+Notarization is what makes the app open with a normal double-click instead of a
+scary "unidentified developer" block. The tooling is already built into the repo
+(macos/package_release.sh --production). You just need your Apple credentials.
+
+9.1 [YOU] In Apple Developer, create a "Developer ID Application" certificate:
+      - developer.apple.com → Certificates, IDs & Profiles → Certificates → "+"
+      - Type: "Developer ID Application". Follow the prompts (you'll create a
+        certificate signing request from Keychain Access → Certificate Assistant).
+      - Download and double-click the .cer to install it into your login keychain.
+    [TERMINAL] Confirm it's there and note its exact name:
+      security find-identity -v -p codesigning
+    It shows a line like: "Developer ID Application: Your Name (TEAMID)". Copy
+    that whole quoted string.
+
+9.2 [YOU] Create an app-specific password for notarization:
+      - appleid.apple.com → Sign-In & Security → App-Specific Passwords → generate
+        one, label it "cortex-notary". Copy it.
+
+9.3 [TERMINAL] Store notary credentials once (replace the three values):
+      xcrun notarytool store-credentials cortex-notary \
+        --apple-id "<your-apple-id-email>" \
+        --team-id "<TEAMID>" \
+        --password "<the app-specific password>"
+
+9.4 [TERMINAL] Build the signed, notarized, stapled DMG:
+      cd macos
+      CORTEX_CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+      CORTEX_NOTARY_PROFILE=cortex-notary \
+      CORTEX_BUNDLE_PYTHON=1 \
+      ./package_release.sh --production
+    This signs the app with a hardened runtime, submits it to Apple, WAITS for
+    the result, staples the ticket, and verifies with spctl. It produces the DMG
+    + a checksums file + a latest.json update manifest under the outputs folder.
+
+9.5 [IF THE FIRST SUBMISSION IS REJECTED] Apple sometimes rejects a bundled-
+    Python app on the first try for a missing "hardened runtime" entitlement
+    (e.g. allow-unsigned-executable-memory / disable-library-validation).
+    notarytool's log will name the exact issue. This is a small entitlements
+    addition to the signing step — if it happens, that's the fix; re-run 9.4.
+
+9.6 [TERMINAL] Sanity check the result opens cleanly:
+      spctl -a -t open --context context:primary-signature -v <path-to>.dmg
+    (Should say "accepted".) On a clean Mac, the app should now open with a
+    double-click.
+
+9.7 For a BETA you can skip 9.1–9.6 and ship the unnotarized DMG; tell testers:
+    "Right-click Cortex.app → Open → Open" the first time (macOS Sequoia/26:
+    if double-click is blocked, go to System Settings → Privacy & Security →
+    scroll down → 'Open Anyway')."
+
+================================================================================
+PART 10 — HOSTING THE DMG (THE DOWNLOAD SITE)
+================================================================================
+The repo has a ready static site in site/ (landing page, privacy page, and a
+downloads/ folder + an update manifest). You just need to publish it.
+
+10.1 [YOU] Simplest free option: Cloudflare Pages (or Netlify).
+     - Create a Cloudflare account, add trydoppl.com if not already there.
+     - Pages → Create → connect the git repo (or "Direct Upload" the site/
+       folder) → set the build output directory to "site".
+     - Point a domain at it (e.g. trydoppl.com or get.trydoppl.com).
+
+10.2 [YOU] Put the notarized DMG where the site links to it. Two options:
+     a. Simple: copy the DMG + checksums into site/downloads/ and let Pages serve
+        them. Fine for beta and early public.
+     b. Better at scale: upload the DMG to Cloudflare R2 (object storage, ZERO
+        egress fees) and point the download button + latest.json at the R2 URL.
+        Keeps large binaries out of git and downloads cheap.
+     NOTE: today the repo has an OLD unnotarized DMG committed in site/downloads/.
+     Replace it with your freshly notarized one from PART 9 before publishing.
+     There's a checker you can run to validate the site is consistent:
+       [TERMINAL] python3 scripts/check_distribution_site.py
+
+10.3 [YOU] Verify from a browser (ideally a different computer): visit the site,
+     click Download, confirm the DMG downloads and its checksum matches the
+     checksums file.
+
+10.4 Auto-update (nice-to-have, not required for launch): the build produces a
+     latest.json manifest. Wiring the app to a real auto-updater (Sparkle) is a
+     follow-up; for launch, users just download the new DMG. Note this in your
+     "how to update" FAQ.
+
+================================================================================
+PART 11 — CONNECTING THE APP TO YOUR HOSTED BACKEND (what users do)
+================================================================================
+11.1 The Mac app works two ways and users choose:
+     - LOCAL (default): everything runs on their Mac, no account, works offline.
+       Nothing to configure.
+     - CORTEX CLOUD (your hosted backend): they sign in with an account.
+
+11.2 To use your hosted backend, in the app's Settings → "Cortex Cloud" section:
+     - Enter the hosted URL: https://api.trydoppl.com
+     - Sign in with email+password, or "Sign in with browser" (Google/GitHub).
+     - The app stores the session securely in the Mac Keychain and refreshes it
+       automatically. There's a "Create an account" link that opens your signup
+       page.
+
+11.3 [YOU] MANUAL TEST BEFORE LAUNCH (the one thing not automatically tested):
+     On a real Mac with the app, actually click through: enter your hosted URL,
+     sign in, confirm you land signed-in, capture something, ask a question and
+     get a cited answer, then sign out. This exercises the GUI path end to end.
+
+11.4 Power users / self-hosters can still paste a raw endpoint + token in the
+     manual fields — that's intentional and unchanged.
+
+================================================================================
+PART 12 — BACKUPS, MONITORING, ALERTING
+================================================================================
+12.1 Cortex's own nightly backups are already installed by the deploy kit
+     (systemd timer cortex-backup). They make consistent SQLite snapshots + copy
+     the vaults, keep 7 nights locally, and EXCLUDE the KEK.
+     [TERMINAL] Check it ran: systemctl status cortex-backup.timer
+     [TERMINAL] See backups: ls -lh /var/lib/cortex/backups
+
+12.2 [YOU] Add OFFSITE backups (local-only backups die with the box). Easiest:
+     - Create a Hetzner Storage Box (~€3–4/mo) or a Backblaze B2 / Cloudflare R2
+       bucket.
+     - Install rclone on the server (apt install rclone), run `rclone config` to
+       add the remote, then set in /etc/cortex/cortex.env:
+         BACKUP_RCLONE_REMOTE=<remotename>:cortex-backups
+       The backup script copies each archive off-box automatically.
+     - Also keep Hetzner's VM snapshot backups (the checkbox from PART 3.2) on.
+
+12.3 [YOU] Uptime + alerts so YOU find out before users:
+     - UptimeRobot (free): monitor https://api.trydoppl.com/ready every 5 min,
+       alert to your phone/email on failure.
+     - healthchecks.io (free): create a check; set BACKUP_PING_URL in the env so
+       the nightly backup "pings" it — you get alerted if a backup ever misses.
+     - (Optional, deeper) Grafana Cloud free tier scraping the /metrics endpoint
+       for latency/error dashboards.
+
+12.4 [YOU] DO A RESTORE DRILL before launch (this is a launch gate):
+     - Spin up a scratch VM (or use staging).
+     - Copy a backup archive to it, restore the SQLite + vault files, set the
+       ESCROWED KEK, boot the API, and confirm you can read data and decrypt a
+       connector credential.
+     - Write down how long it took (your recovery time). If you can't do this,
+       you are not ready to hold users' data.
+
+================================================================================
+PART 13 — SECURITY HARDENING CHECKLIST
+================================================================================
+Much of this is already done by the deploy kit; verify and add the rest.
+  ( ) Firewall: only 22 (SSH), 80, 443 open. Verify from another machine:
+        nmap <SERVER-IP>   (or an online port scanner)
+  ( ) SSH: key-only login (deploy kit sets this). Consider changing the SSH port
+      or restricting by IP if you're comfortable.
+  ( ) HTTPS + security headers: Caddy config sets HSTS, no-sniff, frame-deny,
+      and a strict CSP. (Already done.)
+  ( ) Rate limits + quotas: non-zero in the env (already set). Tune later.
+  ( ) KEK escrowed and OFF the data backups (PART 6). File perms not loosened.
+  ( ) Secrets only in /etc/cortex/cortex.env (root:cortex 0640) — never in git,
+      never in the app.
+  ( ) Turn ON encrypted-credential enforcement once you've run the admin backfill
+      (so no plaintext creds linger): after users exist, call the admin backfill
+      endpoint, confirm the "remaining plaintext" count is 0, then set
+      CORTEX_REQUIRE_ENCRYPTED_CREDENTIALS=1 (see APPENDIX A) and restart.
+  ( ) Signup abuse (public launch): if you see bot signups, add Cloudflare
+      Turnstile (free captcha) in front of the signup page and/or lower the auth
+      rate limit. The server already blocks obvious floods via rate limiting and
+      argon2 cost.
+  ( ) Dependency updates: periodically `git pull` and redeploy; the repo has a
+      security scan (bandit + pip-audit) you can run: run the test/security suite
+      before deploying.
+  ( ) Publish a security contact (e.g. security@trydoppl.com or a line in your
+      site) so researchers report to you, not to Twitter.
+  ( ) (First month) budget a professional penetration test scoped to auth flows,
+      tenant isolation, and token boundaries before you're holding a lot of data.
+
+================================================================================
+PART 14 — LEGAL: PRIVACY POLICY, TERMS, DATA RIGHTS
+================================================================================
+You are storing people's personal data. You need real documents. THIS IS NOT
+LEGAL ADVICE — have a lawyer review before public launch; a few hours is enough.
+
+14.1 [YOU] The repo's site/privacy.html has been rewritten to be ACCURATE (it no
+     longer falsely claims "no accounts"), with honest encryption wording
+     ("encrypted at rest with a per-user key; NOT end-to-end/zero-knowledge;
+     servers can read your memory to serve you"). Use it as the base. Fill in:
+       - Your legal entity name and address.
+       - The list of sub-processors (companies in your stack): the hosting
+         provider (Hetzner), the email provider (Postmark/SES), the billing
+         provider (Paddle/Stripe), and any AI API you use. Put them on a
+         subprocessors page.
+       - Data-retention periods.
+     Remove the "draft — pending legal review" banner only after a lawyer signs off.
+
+14.2 [YOU] Write Terms of Service (a template like Common Paper or a lawyer):
+     acceptable use, the user owns their memory content, disclaimers, liability
+     cap, refund policy (if paid), and for the EU: the right-of-withdrawal note.
+
+14.3 [YOU] Data rights (you already have the mechanisms, wire up the policy):
+     - Export: users can export their data; make sure your export truly covers
+       everything for a data request (verify it includes attachments and isn't
+       silently limited).
+     - Deletion: "delete account" performs crypto-erasure of keys + removes data.
+     - Publish an email (privacy@trydoppl.com) for rights requests and answer
+       within the legal window (30 days GDPR).
+
+14.4 [YOU] Age gate: signup should require the user to confirm they're old enough
+     (e.g. 16+) and accept the terms — the web signup page already includes this
+     checkbox; make sure your terms/policy match.
+
+14.5 [YOU] EU/UK: if you accept EU users you may need an EU representative
+     (~€500–1500/yr services exist) OR geo-limit to US/Canada at first and say so
+     in your terms. Decide before you advertise widely.
+
+================================================================================
+PART 15 — BILLING (only if charging at launch)
+================================================================================
+15.1 [YOU] Recommended: Paddle (merchant of record — they collect and remit sales
+     tax/VAT worldwide, which is a huge headache removed). Stripe is fine if you'll
+     handle tax yourself (or start US-only).
+
+15.2 The account system already has a "plan" field and per-plan quota scaffolding.
+     To charge:
+     - [YOU] Create your product/price in Paddle (e.g. "Cortex Pro $20/mo").
+     - [ENGINEERING — small follow-up] Add a billing webhook endpoint that flips a
+       user's plan on checkout/cancel/past-due, and a "Manage subscription" link.
+       This is the one piece not yet built; it's a contained addition when you're
+       ready to charge. (You can launch FREE and add billing later without
+       reworking anything.)
+
+15.3 [YOU] Decide free-tier limits (how much memory / rate on free) vs Pro. The
+     quota knobs already exist per PART Appendix A.
+
+================================================================================
+PART 16 — LOAD & SCALE: TENS → THOUSANDS → A MILLION
+================================================================================
+16.1 The single VM (PART 3) comfortably serves a beta and early public
+     (hundreds to low thousands of active users). It was load-tested at 10k users
+     on one machine.
+
+16.2 [YOU] Before a big public push, re-run the load test against your REAL
+     server (not a laptop):
+       [TERMINAL] python3 scripts/load_test_10k.py --users 10000 --duration 300 \
+         --concurrency 64 --base-url https://staging.trydoppl.com
+     Run it against a STAGING copy, not production. Confirm error rate ~0 and
+     acceptable latency. (Do this after the accounts/encryption code is deployed,
+     since encryption changes the performance profile.)
+
+16.3 Scaling path, in order, each is a config/hardware change NOT a rewrite:
+     - Resize the VM to more CPU/RAM/disk (minutes, in place).
+     - Move to a dedicated box (Hetzner AX42/AX52, ~€46–64/mo) — this is the
+       tier the 10k test targeted. Restore from backup onto it.
+     - Beyond ~100k users / multiple servers: switch the control store to
+       Postgres and the encryption KEK to a cloud KMS. Both are already designed
+       as swap-in options (see docs/ACCOUNTS_ENCRYPTION_DESIGN.md section 5). Do
+       NOT do this early — it's wasted complexity below ~100k.
+
+16.4 Watch these signals to know when to scale: disk >70% (df -h), sustained CPU,
+     API p95 latency climbing, or the worker's job queue backing up (visible in
+     /metrics). Set alerts (PART 12.3) so you notice.
+
+================================================================================
+PART 17 — SUPPORT: INBOX, FAQ, INCIDENT RUNBOOK
+================================================================================
+17.1 [YOU] Monitor support@trydoppl.com. Even a shared Gmail is fine at first.
+
+17.2 [YOU] Write a short FAQ page (site/faq.html) covering the top questions you
+     WILL get:
+     - "macOS won't open the app" → Gatekeeper steps (or: it's notarized, just
+       double-click).
+     - "How do I connect it to my account?" → PART 11 steps.
+     - "How do I reset my password / verify my email?"
+     - "How do I export or delete my data?"
+     - "A connector says it needs to reconnect" → re-auth steps.
+
+17.3 [YOU] Write an incident runbook (docs/runbooks/) for yourself: what to do if
+     the API is down (check systemctl status, journalctl -u cortex-api), if disk
+     is full (prune backups, resize), if a deploy broke something (deploy/update
+     auto-rolls-back; or manually re-point the release symlink), and if the KEK is
+     ever compromised (rotate — advanced).
+
+17.4 [YOU] Put a status page up (free: Instatus, or a simple GitHub-hosted one)
+     so during an outage users have somewhere to look.
+
+================================================================================
+PART 18 — THE GO/NO-GO LAUNCH CHECKLIST
+================================================================================
+Do not open PUBLIC signups until every box is checked. (Beta needs only the
+first group.)
+
+INFRASTRUCTURE & DATA SAFETY
+  ( ) https://api.trydoppl.com/health and /ready both green.
+  ( ) Rate limit and quota are non-zero (in /ready checks).
+  ( ) Nightly backup ran at least 7 nights; offsite copy confirmed.
+  ( ) Restore drill done in the last 30 days (data recovered + credential
+      decrypted with the escrowed KEK).
+  ( ) KEK escrowed in 2 places, neither in the data backup.
+  ( ) Uptime monitor + phone alert verified by deliberately triggering it.
+  ( ) External port scan shows only 22/80/443.
+
+SIGNUP-TO-VALUE PATH
+  ( ) Signup → verification email lands in a real Gmail AND Outlook inbox (not
+      spam) → login → session works. (Public: autoverify OFF.)
+  ( ) GitHub login round-trips; Google login round-trips (consent screen
+      PUBLISHED, not "testing").
+  ( ) Password reset works; account delete works (data gone, session invalid).
+  ( ) A signup flood from one IP gets rate-limited (memory stays flat).
+  ( ) The Mac app: hosted sign-in works on a clean machine; capture → cited
+      answer against the hosted backend; sign out.
+
+DISTRIBUTION
+  ( ) DMG is notarized (spctl accepts it); Team ID is the entity's.
+  ( ) Download link works from another computer; checksum matches.
+  ( ) Update manifest (latest.json) is published and correct.
+
+LEGAL & MONEY
+  ( ) Privacy policy + terms + subprocessors pages live under the entity's name,
+      no "zero-knowledge"/"E2E" claims, lawyer-reviewed.
+  ( ) Age + terms acceptance recorded at signup.
+  ( ) (If charging) Paddle/Stripe live checkout works; plan flips on payment;
+      cancel path tested; refund policy published.
+  ( ) EU decision made (representative listed, or geo-limited in terms).
+
+HUMANS
+  ( ) Usability test: 5–8 non-technical people install and reach a cited answer
+      unaided in under ~10 minutes. Fix what trips them up; re-test.
+  ( ) support@ inbox monitored; you answered a test request end-to-end.
+  ( ) Incident runbook + status page exist.
+
+================================================================================
+PART 19 — DAY-2 OPERATIONS
+================================================================================
+19.1 Deploy a new version:
+       git pull ; deploy/push.sh root@<SERVER-IP> --update
+     (snapshots first, smoke-tests, auto-rolls-back on failure).
+
+19.2 Roll back manually if needed (the previous release is kept):
+       ssh root@<SERVER-IP>
+       ls /srv/cortex/releases            # find the previous timestamp
+       ln -sfn /srv/cortex/releases/<PREV> /srv/cortex/current
+       systemctl restart cortex-api cortex-worker
+
+19.3 Read logs:
+       journalctl -u cortex-api -n 200 --no-pager
+       journalctl -u cortex-worker -n 200 --no-pager
+
+19.4 Change a setting: edit /etc/cortex/cortex.env, then
+       systemctl restart cortex-api cortex-worker
+
+19.5 Provision/suspend/delete a user as operator: use the admin endpoints with
+     your cxop_ admin token (APPENDIX C).
+
+19.6 Watch health: the UptimeRobot check, plus occasionally curl /ready and
+     `df -h` / `free -m` on the box.
+
+================================================================================
+PART 20 — COST SUMMARY (monthly, approximate)
+================================================================================
+BETA (tens–hundreds of users):
+  Hetzner CX32 VM ................ ~€7
+  Hetzner VM backups ............. ~€1.4
+  Offsite backup (Storage Box) ... ~€3–4
+  Domain (amortized) ............. ~$1–2
+  TOTAL .......................... roughly $12–18 / month
+  (No email cost in beta autoverify; no billing; Apple Dev $99/yr amortized ~$8.)
+
+PUBLIC (up to ~10k users), add:
+  Email (Postmark 10k–50k) ....... $15–55
+  Google Workspace (support/privacy inboxes) ... $7–14
+  Monitoring/uptime/status ....... $0 (free tiers)
+  Legal docs tooling ............. ~$8 (or one-time lawyer $1–2k)
+  EU representative (if needed) ... $45–125
+  Bigger box when needed (AX42/52) ~€46–64 replaces the CX32
+  TOTAL fixed .................... roughly $120–250 / month at 10k users
+  Billing fees (Paddle) .......... ~5% + $0.50/txn, only on revenue.
+ONE-TIME: entity ~$500; lawyer review $1–2k; (later) pen test $10–25k.
+At $20/mo Pro, ~10–13 paying users cover the entire fixed run-rate at 10k users.
+
+================================================================================
+PART 21 — GLOSSARY
+================================================================================
+KEK — Key Encryption Key: the master key that protects each user's data key.
+      Escrow it; never lose it; keep it off the backups.
+Shard — one of 16 database files that user data is split across on the box, for
+      isolation and performance. Automatic; you don't manage it.
+Notarization — Apple's automated malware scan that lets the app open without a
+      warning. One command once you have a Developer ID cert.
+OIDC / OAuth — the standard behind "Sign in with Google/GitHub."
+cxs_ / cxr_ — a user's session (access) and refresh tokens. Short-lived,
+      auto-refreshed by the app. Not something you handle.
+cxop_ — YOUR operator admin token. Master key for the control plane. Guard it.
+Autoverify — beta setting that activates accounts at signup without email. OFF
+      for public launch.
+Sharded-SQLite tier — running everything on one box (the sanctioned setup for up
+      to ~10k users). Upgrades to dedicated hardware, then Postgres, later.
+
+================================================================================
+APPENDIX A — EVERY ENVIRONMENT VARIABLE (in /etc/cortex/cortex.env)
+================================================================================
+Identity / URLs
+  CORTEX_PUBLIC_BASE_URL   Public HTTPS URL of the API (https://api.trydoppl.com).
+  CORTEX_PUBLIC_APP_URL    URL used in email links / OAuth redirects (usually same).
+Operator
+  CORTEX_API_KEY           Your operator admin token (cxop_...). Control plane only.
+Multi-tenant runtime
+  CORTEX_SHARD_MODE=bucket        Tenant isolation mode. Keep "bucket".
+  CORTEX_SHARD_COUNT=16           Number of shards. Do NOT change after launch
+                                   (changing it looks like data loss).
+  CORTEX_SHARD_ROOT=/var/lib/cortex/shards
+  CORTEX_REQUIRE_SCOPED_API_TOKENS=1
+  CORTEX_HOSTED_RUNTIME_TIER=sharded_sqlite   (postgres = future scale-out)
+  CORTEX_WORKER_MODE=external     The background worker runs as its own service.
+  CORTEX_SYNC_SIGNING_KEY=...     Generated by bootstrap.
+Accounts / auth
+  CORTEX_AUTH_ENABLED=1
+  CORTEX_AUTH_AUTOVERIFY=1        BETA only; set 0 for public launch.
+  CORTEX_AUTH_EMAIL_MODE=log      "log" (beta) or "smtp" (public).
+  CORTEX_AUTH_RATE_LIMIT_PER_MINUTE=30   Per-action auth throttle.
+  CORTEX_OIDC_GITHUB_CLIENT_ID / _SECRET   GitHub login.
+  CORTEX_OIDC_GOOGLE_CLIENT_ID / _SECRET   Google login (after review).
+Email (when mode=smtp)
+  CORTEX_SMTP_HOST / _PORT / _USERNAME / _PASSWORD / _FROM_ADDR
+  (STARTTLS on 587 by default; set CORTEX_SMTP_USE_SSL=1 for implicit TLS :465.)
+Encryption
+  CORTEX_KEK_FILE=/etc/cortex/kek   The master key file. Escrow it (PART 6).
+  CORTEX_REQUIRE_ENCRYPTED_CREDENTIALS=1   Turn on AFTER backfill (PART 13).
+Fair use
+  CORTEX_RATE_LIMIT_PER_MINUTE=120   General API throttle (0 disables — don't).
+  CORTEX_DEFAULT_MEMORY_QUOTA=20000  Per-user memory cap (0 disables).
+Retrieval
+  CORTEX_EMBEDDING_PROVIDER=model2vec   On-device, free, private. Keep this.
+Observability
+  CORTEX_OBSERVABILITY_ENABLED=1   Enables /metrics.
+Backups (optional offsite)
+  BACKUP_RCLONE_REMOTE=<remote>:cortex-backups
+  BACKUP_PING_URL=<healthchecks.io url>
+
+================================================================================
+APPENDIX B — COMMON FAILURES AND FIXES
+================================================================================
+"curl https://api... certificate error" → Caddy is still issuing the cert, or DNS
+   isn't resolving yet. Wait a minute; confirm `dig +short api.trydoppl.com`
+   returns your IP; check `journalctl -u caddy`.
+"/ready says blocked" → read the "checks" array; each blocked check's "detail"
+   says exactly which env var to set. Common: rate limit/quota is 0, or KEK not
+   configured.
+"Signup works but no email arrives" → mode isn't smtp, or SMTP host/creds wrong,
+   or DNS (SPF/DKIM) not verified, or the domain is cold (spam). Check
+   `journalctl -u cortex-api` for send warnings; test the provider separately.
+"App won't open on a tester's Mac" → not notarized: right-click → Open, or System
+   Settings → Privacy & Security → Open Anyway. Fix permanently by notarizing.
+"App can't reach hosted backend" → the URL must be https and reachable; check the
+   endpoint field is exactly https://api.trydoppl.com and /health works in a
+   browser.
+"Worker not processing" → `systemctl status cortex-worker`; restart it; check
+   disk isn't full (`df -h`).
+"Disk filling up" → prune old backups, or resize the VM; set the disk alert.
+
+================================================================================
+APPENDIX C — COMMAND CHEAT-SHEET
+================================================================================
+Deploy (first time):   deploy/push.sh root@<IP> api.trydoppl.com
+Deploy (update):       git pull && deploy/push.sh root@<IP> --update
+Health:                curl https://api.trydoppl.com/health
+Ready:                 curl https://api.trydoppl.com/ready
+Logs (API):            ssh root@<IP> journalctl -u cortex-api -n 200 --no-pager
+Logs (worker):         ssh root@<IP> journalctl -u cortex-worker -n 200 --no-pager
+Edit settings:         ssh root@<IP> nano /etc/cortex/cortex.env
+Apply settings:        ssh root@<IP> systemctl restart cortex-api cortex-worker
+Backups:               ssh root@<IP> ls -lh /var/lib/cortex/backups
+Notarized DMG:         (PART 9.4)
+Validate site:         python3 scripts/check_distribution_site.py
+Load test (staging):   python3 scripts/load_test_10k.py --users 10000 \
+                          --duration 300 --concurrency 64 --base-url https://staging.trydoppl.com
+
+Provision a user as operator (admin token):
+  curl -X POST https://api.trydoppl.com/v1/admin/users \
+    -H "Authorization: Bearer <cxop_ADMIN_TOKEN>" \
+    -H "Content-Type: application/json" \
+    -d '{"user_id":"<id>","plan":"free"}'
+
+Encryption backfill (then set CORTEX_REQUIRE_ENCRYPTED_CREDENTIALS=1):
+  curl -X POST https://api.trydoppl.com/v1/admin/encryption/backfill \
+    -H "Authorization: Bearer <cxop_ADMIN_TOKEN>"
+
+================================================================================
+END. Keep this file with the repo (docs/COMPLETE_LAUNCH_INSTRUCTIONS.txt).
+For the deeper "why" behind the architecture decisions, see
+docs/ACCOUNTS_ENCRYPTION_DESIGN.md and docs/LAUNCH_RUNBOOK.md.
+================================================================================

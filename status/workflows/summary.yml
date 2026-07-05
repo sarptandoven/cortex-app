@@ -1,0 +1,22 @@
+# Copy to .github/workflows/summary.yml in the dedicated status repo.
+# Regenerates the README summary table of current status + uptime.
+name: Summary CI
+on:
+  schedule:
+    - cron: "0 0 * * *" # once a day
+  repository_dispatch:
+    types: [summary]
+  workflow_dispatch:
+jobs:
+  release:
+    name: Generate README summary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Await previous runs
+        uses: ahmadnassri/action-workflow-queue@v1
+      - name: Generate README
+        uses: upptime/uptime-monitor@v1.35.0
+        with:
+          command: "readme"
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}

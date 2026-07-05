@@ -1,3 +1,11 @@
-90608d1df390653544011e74fdbff08a1462abb6bf178f6c48d71423ca4fa588  release-artifacts/app-store/Doppl-AppStore-0.1.0-1.pkg
-bdd4d38813143ca3af0fada361576ea973bf65e80ecbe7c2e47cffb5cb1d9f80  release-artifacts/direct-mac/Cortex-0.1.0-1.dmg
-5748d6714f467dbd6dd39ea705474f1b9f6e299de0a9f03b525f3c5a9f405c9d  release-artifacts/direct-mac/Cortex-0.1.0-1.app.zip
+6b63586d6754b5f0a106f4d9d9d6f656219d622c77d5c3f30a67ad06c851ad91  Cortex-0.1.0-1.dmg
+a8153d91ea34b6b93786b777a29249b262ac08adbd4b926127fa10a3a8b3b94e  Cortex-0.1.0-1.app.zip
+b7067d589feccf710efa1582886c62c5bdbf2fbcbf15e9ed491ec159f96afa64  cortex-memory-0.1.0.zip
+654169cdb9c49ddf5b89a5f8d57209d035e453b02ec31092964adaf357295c15  Cortex-0.1.0-1.checksums.txt
+96ab7966dfd97bc21c49ea882a116c8580e6c6d8cb31af2ed3a68a08716de676  latest.json
+6b63586d6754b5f0a106f4d9d9d6f656219d622c77d5c3f30a67ad06c851ad91  Cortex-0.1.0-1.dmg
+a8153d91ea34b6b93786b777a29249b262ac08adbd4b926127fa10a3a8b3b94e  Cortex-0.1.0-1.app.zip
+b7067d589feccf710efa1582886c62c5bdbf2fbcbf15e9ed491ec159f96afa64  cortex-memory-0.1.0.zip
+654169cdb9c49ddf5b89a5f8d57209d035e453b02ec31092964adaf357295c15  Cortex-0.1.0-1.checksums.txt
+96ab7966dfd97bc21c49ea882a116c8580e6c6d8cb31af2ed3a68a08716de676  latest.json
+1fee47018d36d4eeb09014d2d7928ab0b8407ce607bfb2e9dda11056be6c9f1c  distribution.json

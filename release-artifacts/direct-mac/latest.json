@@ -4,26 +4,86 @@
     {
       "filename": "Cortex-0.1.0-1.dmg",
       "kind": "dmg",
-      "sha256": "bdd4d38813143ca3af0fada361576ea973bf65e80ecbe7c2e47cffb5cb1d9f80",
-      "size_bytes": 1518633,
-      "url": "file:///Users/sarptandoven/Documents/Codex/2026-06-23/can-you-take-a-look-my-2/outputs/Cortex-0.1.0-1/Cortex-0.1.0-1.dmg"
+      "sha256": "6b63586d6754b5f0a106f4d9d9d6f656219d622c77d5c3f30a67ad06c851ad91",
+      "size_bytes": 78453565,
+      "url": "https://trydoppl.com/downloads/Cortex-0.1.0-1.dmg"
     },
     {
       "filename": "Cortex-0.1.0-1.app.zip",
       "kind": "zip",
-      "sha256": "5748d6714f467dbd6dd39ea705474f1b9f6e299de0a9f03b525f3c5a9f405c9d",
-      "size_bytes": 1075926,
-      "url": "file:///Users/sarptandoven/Documents/Codex/2026-06-23/can-you-take-a-look-my-2/outputs/Cortex-0.1.0-1/Cortex-0.1.0-1.app.zip"
+      "sha256": "a8153d91ea34b6b93786b777a29249b262ac08adbd4b926127fa10a3a8b3b94e",
+      "size_bytes": 57517741,
+      "url": "https://trydoppl.com/downloads/Cortex-0.1.0-1.app.zip"
+    },
+    {
+      "filename": "cortex-memory-0.1.0.zip",
+      "kind": "obsidian-plugin",
+      "sha256": "b7067d589feccf710efa1582886c62c5bdbf2fbcbf15e9ed491ec159f96afa64",
+      "size_bytes": 3423,
+      "url": "https://trydoppl.com/downloads/cortex-memory-0.1.0.zip"
     }
   ],
+  "beta_readiness": {
+    "audience": "first-100 local beta",
+    "generated_artifact_verification": [
+      "shasum -a 256 -c Cortex-0.1.0-1.checksums.txt",
+      "python3 scripts/validate_update_manifest.py <release-dir>/latest.json",
+      "python3 scripts/check_vector_runtime.py --app macos/build/Cortex.app",
+      "python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir <release-dir>"
+    ],
+    "install_steps": [
+      "Verify the downloaded DMG or ZIP against the release checksums.",
+      "Open the DMG and drag Cortex.app to Applications.",
+      "Launch Cortex from Applications.",
+      "If macOS blocks an unnotarized local beta, Control-click Cortex.app and choose Open.",
+      "Complete getting started by connecting a memory source, reviewing one memory, asking a cited question, then deciding on backup in Connections & Privacy."
+    ],
+    "known_limitations": [
+      "Manual app replacement is the only update path for this local beta.",
+      "Google, Notion, and Outlook managed OAuth sign-in require configured OAuth app credentials in the app build.",
+      "Hosted accounts, cloud backup, and remote MCP/OAuth are not enabled.",
+      "Support starts from the sanitized support bundle, not raw memory folder data.",
+      "Developer ID signing, notarization, hosted HTTPS downloads, and a support process are required before broad public distribution."
+    ],
+    "manual_qa_checklist": [
+      "Install from the DMG on a clean macOS 13 or newer user profile.",
+      "Launch from Applications and complete first-run setup.",
+      "Connect a memory source in Connections & Privacy.",
+      "Approve at least one useful memory and archive obvious noise in Review.",
+      "Ask a question that returns cited memory from the approved connected source.",
+      "Verify Connections & Privacy shows memory folder path, backend health, backup, export, support bundle, and update feed controls.",
+      "Create a backup and confirm the support bundle contains no raw memory content.",
+      "Replace the app with this build over a previous build and confirm the memory folder remains intact.",
+      "Roll back to the previous build and confirm the memory folder remains intact."
+    ],
+    "manual_qa_required": true,
+    "rollback_steps": [
+      "Keep the user's memory folder unchanged.",
+      "Quit Cortex.",
+      "Replace Cortex.app in Applications with the previous beta build.",
+      "Relaunch, run the reliability report, and create a fresh backup."
+    ],
+    "update_steps": [
+      "Quit Cortex before replacing the app.",
+      "Install the new Cortex.app over the old app in Applications.",
+      "Keep the memory folder unchanged.",
+      "Relaunch, confirm backend health, and run the reliability report."
+    ]
+  },
   "build": "1",
   "bundle_id": "com.cortex.doppl",
   "channel": "local-beta",
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "Local-first Cortex beta with bundled backend, capture, MCP, and trust controls."
+    "Local-first Cortex beta for trydoppl.com with MCP memory, source connections, Review, cited Ask, backup, and Connections & Privacy controls."
   ],
-  "released_at": "2026-06-25T18:20:42Z",
+  "released_at": "2026-07-05T00:43:50Z",
+  "source_provenance": {
+    "built_at": "2026-07-05T00:43:50Z",
+    "git_branch": "main",
+    "git_commit": "096b65afcc58964127b8672d6b4f8ba47fb8c24f",
+    "git_dirty": true
+  },
   "version": "0.1.0"
 }

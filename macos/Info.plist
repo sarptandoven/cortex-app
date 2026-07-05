@@ -30,6 +30,16 @@
   <string>direct</string>
   <key>CortexUpdateFeedURL</key>
   <string></string>
+  <key>CortexGoogleOAuthClientID</key>
+  <string></string>
+  <key>CortexNotionOAuthClientID</key>
+  <string></string>
+  <key>CortexNotionOAuthClientSecret</key>
+  <string></string>
+  <key>CortexMicrosoftOAuthClientID</key>
+  <string></string>
+  <key>CortexMicrosoftOAuthClientSecret</key>
+  <string></string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>NSHumanReadableCopyright</key>
