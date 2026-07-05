@@ -578,6 +578,7 @@ private struct ConnectionsObsidianSection: View {
 private struct ConnectionsDirectSourcesSection: View {
     @ObservedObject var state: AppState
     @State private var selectedTokenConnector: SourceConnectorCatalogItem?
+    @State private var connectorSearch: String = ""
 
     private var wiredConnectors: [SourceConnectorCatalogItem] {
         state.sourceConnectorCatalog
@@ -588,6 +589,21 @@ private struct ConnectionsDirectSourcesSection: View {
                 if leftRank != rightRank { return leftRank < rightRank }
                 return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
+    }
+
+    // Library search + category grouping (VSCode-extensions style: searchable, sectioned list of
+    // optional connections). Reuses the existing, correct ConnectionsDirectSourceRow per connector.
+    private var filteredConnectors: [SourceConnectorCatalogItem] {
+        let query = connectorSearch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return wiredConnectors }
+        return wiredConnectors.filter {
+            $0.name.lowercased().contains(query) || ($0.category ?? "").lowercased().contains(query)
+        }
+    }
+
+    private var connectorsByCategory: [(category: String, connectors: [SourceConnectorCatalogItem])] {
+        let groups = Dictionary(grouping: filteredConnectors) { $0.category ?? "Other" }
+        return groups.keys.sorted().map { (category: $0, connectors: groups[$0] ?? []) }
     }
 
     private var plannedConnectorNames: [String] {
@@ -615,8 +631,8 @@ private struct ConnectionsDirectSourcesSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
-                title: "More connections",
-                detail: "Optional read-only services that already sync into Review. Planned sign-in services stay hidden until they are real."
+                title: "Connections library",
+                detail: "Browse and connect optional read-only services. Search, pick one, and Cortex shows exactly how to connect it. Everything here is optional and syncs into your memory."
             )
 
             if state.sourceConnectorCatalog.isEmpty {
@@ -630,16 +646,39 @@ private struct ConnectionsDirectSourcesSection: View {
             } else if wiredConnectors.isEmpty {
                 QuietState(title: "No extra connectors ready", detail: "Use notes sync as the default source path.")
             } else {
-                VStack(spacing: 10) {
-                    ForEach(wiredConnectors) { connector in
-                        ConnectionsDirectSourceRow(
-                            state: state,
-                            connector: connector,
-                            connected: isConnected(connector),
-                            openTokenSetup: {
-                                selectedTokenConnector = connector
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+                    TextField("Search connections", text: $connectorSearch)
+                        .textFieldStyle(.plain)
+                    if !connectorSearch.isEmpty {
+                        Button { connectorSearch = "" } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.borderless)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+
+                if filteredConnectors.isEmpty {
+                    QuietState(title: "No matching connections", detail: "Try a different search term.")
+                } else {
+                    ForEach(connectorsByCategory, id: \.category) { group in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(group.category.uppercased())
+                                .font(.caption2)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.secondary)
+                            ForEach(group.connectors) { connector in
+                                ConnectionsDirectSourceRow(
+                                    state: state,
+                                    connector: connector,
+                                    connected: isConnected(connector),
+                                    openTokenSetup: {
+                                        selectedTokenConnector = connector
+                                    }
+                                )
                             }
-                        )
+                        }
                     }
                 }
             }
@@ -1145,6 +1184,35 @@ private struct ConnectorTokenSetupSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    if let setup, !setup.setupSteps.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("How to connect")
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.secondary)
+                            ForEach(Array(setup.setupSteps.enumerated()), id: \.offset) { index, step in
+                                HStack(alignment: .top, spacing: 8) {
+                                    Text("\(index + 1).")
+                                        .font(.callout)
+                                        .fontWeight(.semibold)
+                                        .foregroundColor(.accentColor)
+                                        .monospacedDigit()
+                                    Text(step)
+                                        .font(.callout)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            if let url = setup.helpURL {
+                                Link(destination: url) {
+                                    Label("Open setup help", systemImage: "arrow.up.right.square")
+                                        .font(.caption)
+                                }
+                            }
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.06)))
+                    }
                     if setup == nil {
                         QuietState(title: "Setup contract unavailable", detail: "Update Cortex and try this connection again.")
                     } else {

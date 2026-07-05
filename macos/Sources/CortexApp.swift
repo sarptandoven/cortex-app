@@ -201,6 +201,16 @@ struct SourceConnectorConnectionSetup: Codable, Hashable {
     let credential_fields: [SourceConnectorSetupField]
     let configuration_fields: [SourceConnectorSetupField]
     let require_one_of: [String]
+    // Human, step-by-step "how to connect this" instructions + a help link, supplied by the
+    // backend so the setup sheet can show exactly what to do (get a token, sign in, export).
+    let setup_instructions: [String]?
+    let help_url: String?
+
+    var setupSteps: [String] { setup_instructions ?? [] }
+    var helpURL: URL? {
+        guard let raw = help_url?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+        return URL(string: raw)
+    }
 
     var hasEndpoint: Bool {
         guard let endpoint else { return false }
