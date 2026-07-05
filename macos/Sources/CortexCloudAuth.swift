@@ -51,11 +51,17 @@ enum CortexCloudAuthError: LocalizedError {
         case .badResponse:
             return "Cortex Cloud returned an unexpected response."
         case .httpStatus(let code, let body):
-            if code == 401 || code == 403 {
+            switch code {
+            case 401, 403:
                 return "Incorrect email or password."
+            case 429:
+                return "Too many sign-in attempts. Wait a minute, then try again."
+            case 500...599:
+                return "Cortex Cloud is temporarily unavailable (HTTP \(code)). Try again shortly."
+            default:
+                let detail = (body?.isEmpty == false) ? " (\(body!))" : ""
+                return "Cortex Cloud sign-in failed (HTTP \(code))\(detail)."
             }
-            let detail = (body?.isEmpty == false) ? " (\(body!))" : ""
-            return "Cortex Cloud sign-in failed (HTTP \(code))\(detail)."
         case .pollTimedOut:
             return "Browser sign-in did not complete in time. Try again."
         case .missingRefreshToken:
@@ -170,10 +176,11 @@ extension AppState {
             NSWorkspace.shared.open(browserURL)
             cloudAuthMessage = "Finish sign-in in your browser..."
 
-            // Browser sign-in (account picker / SSO / 2FA) routinely takes minutes.
-            // Poll for up to 3 minutes with visible progress and a short backoff.
+            // Browser sign-in (account picker / SSO / 2FA / first-time account creation)
+            // routinely takes minutes. Poll for up to 5 minutes with visible progress and a
+            // short backoff so a first-time user setting up 2FA does not get timed out.
             let start = Date()
-            let deadline = start.addingTimeInterval(180)
+            let deadline = start.addingTimeInterval(300)
             var delay: UInt64 = 2 * 1_000_000_000
             var tick = 0
             while Date() < deadline {
@@ -333,6 +340,21 @@ enum CortexCloudAuth {
         if error is DecodingError {
             return CortexCloudAuthError.badResponse.localizedDescription
         }
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed:
+                return "You appear to be offline. Check your internet connection and try again."
+            case .timedOut:
+                return "Cortex Cloud took too long to respond. Check the URL and that the server is reachable."
+            case .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed:
+                return "Could not reach Cortex Cloud at that address. Check the URL and that the server is running."
+            case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate,
+                 .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid, .clientCertificateRejected:
+                return "Could not establish a secure (HTTPS) connection to Cortex Cloud. On a corporate or VPN network, check with your IT admin."
+            default:
+                break
+            }
+        }
         return "Cortex Cloud sign-in failed. \(error.localizedDescription)"
     }
 }
@@ -423,13 +445,16 @@ struct CortexCloudSection: View {
                 } label: {
                     Label("Sign in", systemImage: "person.crop.circle.badge.checkmark")
                 }
-                .disabled(state.cloudAuthBusy || email.isEmpty || password.isEmpty || hostedURL.isEmpty)
+                .disabled(state.cloudAuthBusy
+                    || email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || password.isEmpty
+                    || hostedURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Button {
                     state.signInToCloudWithBrowser(hostedURL: hostedURL)
                 } label: {
                     Label("Sign in with browser (Google/GitHub)", systemImage: "globe")
                 }
-                .disabled(state.cloudAuthBusy || hostedURL.isEmpty)
+                .disabled(state.cloudAuthBusy || hostedURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 if state.cloudAuthBusy {
                     ProgressView().scaleEffect(0.6)
                 }

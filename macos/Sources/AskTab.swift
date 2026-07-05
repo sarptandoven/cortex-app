@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct AskTab: View {
@@ -736,7 +737,28 @@ struct AskAnswerPanel: View {
 struct AskCitationRow: View {
     let citation: AskCitationItem
 
+    /// The user-openable source for this citation, if any. Internal-only provenance
+    /// (e.g. cortex-capture://) returns nil and the row stays plain text.
+    private var openableURL: URL? {
+        CitationDisplay.openableURL(path: citation.citation_path, sourceURL: citation.source_url)
+    }
+
     var body: some View {
+        if let url = openableURL {
+            Button {
+                NSWorkspace.shared.open(url)
+            } label: {
+                rowContent(openable: true)
+            }
+            .buttonStyle(.plain)
+            .help("Open source")
+            .accessibilityAddTraits(.isLink)
+        } else {
+            rowContent(openable: false)
+        }
+    }
+
+    private func rowContent(openable: Bool) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Text("[\(citation.index)]")
                 .font(.caption)
@@ -744,11 +766,18 @@ struct AskCitationRow: View {
                 .foregroundColor(.secondary)
                 .monospacedDigit()
             VStack(alignment: .leading, spacing: 2) {
-                Text(sourceLabel)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                HStack(spacing: 4) {
+                    Text(sourceLabel)
+                        .font(.caption)
+                        .foregroundColor(openable ? .accentColor : .secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if openable {
+                        Image(systemName: "arrow.up.right.square")
+                            .font(.caption2)
+                            .foregroundColor(.accentColor)
+                    }
+                }
                 if let detail = sourceDetail {
                     Text(detail)
                         .font(.caption2)
@@ -766,6 +795,7 @@ struct AskCitationRow: View {
             }
             Spacer(minLength: 0)
         }
+        .contentShape(Rectangle())
     }
 
     private var sourceLabel: String {

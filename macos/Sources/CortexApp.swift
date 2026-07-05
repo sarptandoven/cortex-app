@@ -2290,6 +2290,13 @@ final class BackendSupervisor {
                 if await healthCheck(endpoint: normalizedEndpoint, apiKey: apiKey, expectedVaultPath: vaultPath) == .healthy {
                     return "Local memory engine started"
                 }
+                // If the process exited during startup (most often because port 8766 is
+                // already in use), stop waiting the full timeout and surface an actionable
+                // failure now instead of leaving the user on a spinner. "failed" keeps this
+                // routed to the recovery card (see backendNeedsRecovery).
+                if tick > 1, let process, !process.isRunning {
+                    return "Local memory engine failed to start — port 8766 may already be in use. Quit any other Cortex instance (or whatever is using that port), then click Reconnect."
+                }
                 if tick > 0, tick % 10 == 0 {
                     onProgress?("Starting the local memory engine (\(tick / 2)s)...")
                 }

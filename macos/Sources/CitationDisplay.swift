@@ -17,6 +17,26 @@ enum CitationDisplay {
         return "\(base) - \(line)"
     }
 
+    /// The user-openable URL for a citation, or nil when there is nothing to open
+    /// (internal-only provenance such as `cortex-capture://…`). Prefers an explicit
+    /// source URL (http/https/file/local-file), then an absolute on-disk path.
+    static func openableURL(path: String? = nil, sourceURL: String? = nil) -> URL? {
+        if let raw = sourceURL?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            let lower = raw.lowercased()
+            if lower.hasPrefix("http://") || lower.hasPrefix("https://") || lower.hasPrefix("file://") {
+                return URL(string: raw)
+            }
+            // Internal/sanitized schemes are NOT user-openable, so the row stays plain
+            // text: `cortex-capture://` is internal provenance, and `local-file://` is
+            // reduced by the backend to a privacy-safe basename (real path stripped), so
+            // building a file URL from it would only produce a dead link. Fall through.
+        }
+        if let filePath = path?.trimmingCharacters(in: .whitespacesAndNewlines), filePath.hasPrefix("/") {
+            return URL(fileURLWithPath: filePath)
+        }
+        return nil
+    }
+
     static func cleanSourceURL(_ value: String?) -> String? {
         guard let value = cleanPlain(value) else { return nil }
         // A memory the user captured directly in Cortex; its provenance is the capture itself.
