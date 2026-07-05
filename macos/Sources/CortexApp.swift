@@ -896,6 +896,26 @@ struct ScheduledSourceSyncSkip: Codable {
     let reason: String?
 }
 
+/// GET /v1/jobs/health — the queue snapshot that drives a real (changing) sync progress bar.
+struct JobHealthResponse: Codable {
+    let counts: JobCounts?
+    struct JobCounts: Codable {
+        let queued: Int?
+        let running: Int?
+        let succeeded: Int?
+        let failed: Int?
+    }
+}
+
+/// A determinate sync-progress value derived from the job queue: `done` finished of `total`
+/// in-flight+finished. `active` while there is still queued/running work.
+struct SyncProgress: Equatable {
+    let done: Int
+    let total: Int
+    var active: Bool { total > 0 && done < total }
+    var fraction: Double { total > 0 ? min(1.0, max(0.0, Double(done) / Double(total))) : 0 }
+}
+
 struct SearchResponse: Codable {
     let query: String
     let results: [MemoryItem]
@@ -2825,6 +2845,7 @@ final class AppState: ObservableObject {
     @Published var graphNodes: [GraphNode] = []
     @Published var graphEdges: [GraphEdge] = []
     @Published var stats: StatsResponse?
+    @Published var syncProgress: SyncProgress?
     @Published var mirrorInsight: MirrorInsight?
     @Published private var mirrorDismissedHeadlines: Set<String> = Set(
         UserDefaults.standard.stringArray(forKey: AppState.mirrorDismissedDefaultsKey) ?? []
@@ -2877,6 +2898,7 @@ final class AppState: ObservableObject {
     private var obsidianAutoSyncTask: Task<Void, Never>?
     private var directConnectorAutoSyncTask: Task<Void, Never>?
     private var ensureBackendTask: Task<Void, Never>?
+    private var syncProgressPollTask: Task<Void, Never>?
     private var obsidianSyncInFlight = false
     private var jobDrainInFlight = false
     private var onboardingDismissedForSession = false
@@ -3250,6 +3272,7 @@ final class AppState: ObservableObject {
         refreshStoredConnectorConfigState()
         refreshIntegrationStates()
         startConnectedSourceAutoSync()
+        startSyncProgressPolling()
         presentOnboardingIfNeeded()
     }
 
@@ -3560,6 +3583,43 @@ final class AppState: ObservableObject {
             await loadMemoryQuality()
         } catch {
             status = CortexRecoveryText.failureStatus("Stats", error: error)
+        }
+    }
+
+    /// Poll the job queue and expose a real, changing sync-progress fraction (done/total from
+    /// GET /v1/jobs/health). While work is in flight, also refresh the "learning about you"
+    /// panel (stats/profile/mirror) so the user watches memory build in real time.
+    /// Best-effort: any failure leaves current progress untouched (never surfaces an error).
+    func loadJobProgress() async {
+        do {
+            let data = try await request(path: "/v1/jobs/health", method: "GET")
+            let health = try JSONDecoder().decode(JobHealthResponse.self, from: data)
+            let queued = health.counts?.queued ?? 0
+            let running = health.counts?.running ?? 0
+            let succeeded = health.counts?.succeeded ?? 0
+            let inFlight = queued + running
+            if inFlight > 0 {
+                let progress = SyncProgress(done: succeeded, total: inFlight + succeeded)
+                if syncProgress != progress { syncProgress = progress }
+                await loadProfile()
+                await loadMirrorInsight()
+            } else if syncProgress != nil {
+                syncProgress = nil
+            }
+        } catch {
+            // best-effort; leave any existing progress as-is
+        }
+    }
+
+    /// A lightweight repeating poll started at bootstrap. job_health is a cheap local query, and
+    /// the profile/mirror refresh only fires while a sync is actually running.
+    func startSyncProgressPolling() {
+        guard syncProgressPollTask == nil else { return }
+        syncProgressPollTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                await self?.loadJobProgress()
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+            }
         }
     }
 

@@ -7,6 +7,9 @@ struct ModelTab: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                if let progress = state.syncProgress, progress.active {
+                    SyncProgressCard(progress: progress)
+                }
                 if state.mirrorInsight != nil {
                     MirrorMomentCard(state: state)
                 }
@@ -20,6 +23,38 @@ struct ModelTab: View {
             .padding(16)
         }
         .background(CortexDesign.appBackground)
+    }
+}
+
+/// A real, changing sync-progress bar (determinate, driven by the job queue) shown while Cortex
+/// is turning newly-synced content into cited memory. The "learning about you" panel below it
+/// refreshes live as the queue drains, so the user watches memory build in real time.
+struct SyncProgressCard: View {
+    let progress: SyncProgress
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                ProgressView().scaleEffect(0.7)
+                Text("Syncing your memory…")
+                    .font(.callout)
+                    .fontWeight(.semibold)
+                Spacer()
+                Text("\(progress.done) of \(progress.total)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .monospacedDigit()
+            }
+            ProgressView(value: progress.fraction)
+                .progressViewStyle(.linear)
+            Text("Cortex is turning new content into cited memory — what it learns appears below as it goes.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.accentColor.opacity(0.06)))
     }
 }
 
