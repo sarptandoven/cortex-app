@@ -4,16 +4,16 @@
     {
       "filename": "Cortex-0.1.0-1.dmg",
       "kind": "dmg",
-      "sha256": "cde129a551ab926256c7ce16a5ec57d442cc5020ded4ad1bc864d00c210fd347",
-      "size_bytes": 22052036,
-      "url": "https://trydoppl.com/downloads/Cortex-0.1.0-1.dmg"
+      "sha256": "9bb76af9fbcc909d862701a73e607b545e6e0f2d6b1289e7091027da246cee65",
+      "size_bytes": 84157422,
+      "url": "file:///Users/sarptandoven/conductor/workspaces/cortex-by-doppl/taipei/outputs/Cortex-0.1.0-1/Cortex-0.1.0-1.dmg"
     },
     {
       "filename": "Cortex-0.1.0-1.app.zip",
       "kind": "zip",
-      "sha256": "2b0fb126c9af8787d8d196c6839cbc660633fab7285b87191d5e3836af63b141",
-      "size_bytes": 16861289,
-      "url": "https://trydoppl.com/downloads/Cortex-0.1.0-1.app.zip"
+      "sha256": "7f2982f06585e58171917fb6616453ca72fda2828f8cc4665b4cf382bd508156",
+      "size_bytes": 65365595,
+      "url": "file:///Users/sarptandoven/conductor/workspaces/cortex-by-doppl/taipei/outputs/Cortex-0.1.0-1/Cortex-0.1.0-1.app.zip"
     }
   ],
   "beta_readiness": {
@@ -21,6 +21,7 @@
     "generated_artifact_verification": [
       "shasum -a 256 -c Cortex-0.1.0-1.checksums.txt",
       "python3 scripts/validate_update_manifest.py <release-dir>/latest.json",
+      "python3 scripts/check_vector_runtime.py --app macos/build/Cortex.app",
       "python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir <release-dir>"
     ],
     "install_steps": [
@@ -32,7 +33,8 @@
     ],
     "known_limitations": [
       "Manual app replacement is the only update path for this local beta.",
-      "Managed OAuth sign-in, hosted accounts, cloud backup, and remote MCP/OAuth are not enabled.",
+      "Google, Notion, and Outlook managed OAuth sign-in require configured OAuth app credentials in the app build.",
+      "Hosted accounts, cloud backup, and remote MCP/OAuth are not enabled.",
       "Support starts from the sanitized support bundle, not raw memory folder data.",
       "Developer ID signing, notarization, hosted HTTPS downloads, and a support process are required before broad public distribution."
     ],
@@ -67,14 +69,14 @@
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "Local beta package with credential-backed scheduled sync coverage across the 10 baseline sources: Obsidian, Calendar, Zotero, Readwise, Raindrop, Linear, Jira, Slack, GitHub, and Notion."
+    "Local-first Cortex beta with bundled local service, source connections, Review, cited Ask, backup, and Connections & Privacy controls."
   ],
-  "released_at": "2026-07-01T18:11:36Z",
+  "released_at": "2026-07-05T09:26:28Z",
   "source_provenance": {
-    "built_at": "2026-07-01T18:11:36Z",
+    "built_at": "2026-07-05T09:26:28Z",
     "git_branch": "mass-scale-app-redesign",
-    "git_commit": "808809802c839d69cdcc0627795e2a3e052fb66c",
-    "git_dirty": false
+    "git_commit": "9e817f623001ccf3dccd9ebae9260dcfa616ff75",
+    "git_dirty": true
   },
   "version": "0.1.0"
 }
