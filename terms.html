@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cortex Terms of Service</title>
+    <meta name="description" content="Terms of Service for Cortex: the local-first macOS app and the optional Cortex Cloud account tier." />
+    <meta name="theme-color" content="#f8f7f1" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="privacy-page">
+    <header class="site-header">
+      <a class="brand" href="index.html" aria-label="Cortex home">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>Cortex</span>
+      </a>
+      <nav aria-label="Primary">
+        <a href="index.html#loop">Loop</a>
+        <a href="index.html#integrations">Integrations</a>
+        <a href="index.html#privacy">Privacy</a>
+        <a href="index.html#download">Download</a>
+      </nav>
+      <a class="header-download" href="index.html#download">macOS app</a>
+    </header>
+
+    <main class="privacy-main">
+      <p class="eyebrow">Legal</p>
+      <h1>Terms of Service</h1>
+      <p class="privacy-draft-note">
+        <strong>Draft — pending legal review before public launch.</strong> This page is
+        written to be accurate to how the software actually behaves; it is not yet a
+        lawyer-reviewed agreement. Bracketed items like <code>[LEGAL ENTITY NAME]</code> and
+        <code>[JURISDICTION]</code> must be filled in, and the liability clauses flagged below
+        must be reviewed by counsel, before this becomes a binding agreement.
+      </p>
+      <p>
+        These Terms govern your use of Cortex — the local-first macOS application and the
+        optional hosted <strong>Cortex Cloud</strong> account tier — provided by
+        <strong>[LEGAL ENTITY NAME]</strong> ("Cortex," "we," "us"). By downloading, installing,
+        creating an account, or otherwise using Cortex, you agree to these Terms. If you do not
+        agree, do not use Cortex. Our <a href="privacy.html">Privacy page</a> explains how your
+        data is handled and is part of your agreement with us.
+      </p>
+
+      <section>
+        <h2>1. Eligibility and acceptance</h2>
+        <ul>
+          <li>You must be at least 16 years old (or older if your country sets a higher age for consenting to data processing) to use Cortex. By using it you confirm you meet this age.</li>
+          <li>If you use Cortex on behalf of an organization, you confirm you are authorized to accept these Terms for it.</li>
+          <li>Signing up records that you accepted these Terms and confirmed your age at that time.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>2. What Cortex is</h2>
+        <ul>
+          <li><strong>Local app (the default):</strong> a macOS application that keeps your memory on your own Mac and needs no account. It works with the network off. Nothing in these Terms about accounts, servers, or cloud processing applies while you use Cortex only locally.</li>
+          <li><strong>Cortex Cloud (optional):</strong> a hosted service you sign in to. It syncs your memory and serves it back to your AI tools with cited context. Using it means your data is processed on our servers as described below and in the <a href="privacy.html">Privacy page</a>.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>3. Accounts and security</h2>
+        <ul>
+          <li>A Cortex Cloud account is created with an email and password, or by signing in with Google or GitHub. You are responsible for keeping your password and devices secure and for activity under your account.</li>
+          <li>We hash passwords with argon2id and use server-side sessions that can be revoked; reusing a rotated session token revokes the whole session family. A session can never reach admin or MCP surfaces.</li>
+          <li>Tell us promptly at <a href="mailto:support@trydoppl.com">support@trydoppl.com</a> if you believe your account has been accessed without your permission.</li>
+          <li>You may not share, sell, or transfer your account, and you may not create accounts by automated means or to evade limits or suspensions.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>4. Acceptable use</h2>
+        <p>You agree not to:</p>
+        <ul>
+          <li>Use Cortex for anything unlawful, or to store, process, or share content that is illegal where you or we operate.</li>
+          <li>Upload material you have no right to store or process, or content that infringes someone else's rights.</li>
+          <li>Abuse the service — attempt to break, overload, probe, or circumvent security, rate limits, quotas, or per-account isolation; access another account's data; or scrape the service.</li>
+          <li>Resell, sublicense, or provide Cortex Cloud as a service to third parties without our written agreement.</li>
+          <li>Use Cortex to build a competing service by copying it, or to reverse-engineer it except to the extent that restriction is prohibited by law.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>5. Your content and the license you give us</h2>
+        <ul>
+          <li><strong>You own your memory content.</strong> The notes, captures, memories, connected-source data, and everything derived for you remain yours. We claim no ownership of it.</li>
+          <li>You grant us only the limited license needed to operate the service <em>for you</em>: to store, process, transmit, index, embed, and display your content so we can sync it and serve retrieval and cited context to the AI tools you connect. This license exists only to run Cortex Cloud for you and ends when you delete the content or your account, except for content already in backups pending their rotation.</li>
+          <li>We do not sell your content, and we do not use your memory content to train general-purpose AI models.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>6. How your data is processed (AI processing disclosure)</h2>
+        <ul>
+          <li>When you use Cortex Cloud, your content is processed on our servers to build embeddings, run retrieval, and assemble cited context. This means <strong>Cortex servers can read your memory in order to serve you.</strong> Your data is encrypted at rest with a per-user key; this is <strong>not</strong> end-to-end or "zero-knowledge" encryption. The <a href="privacy.html">Privacy page</a> states this plainly.</li>
+          <li>By default the hosted deployment generates embeddings with an on-device model and uses no third-party AI processor. If the operator enables a cloud AI model, that provider is disclosed on the <a href="subprocessors.html">Subprocessors page</a>.</li>
+          <li>Context is shared with an AI tool only when you connect it, and only within the permissions you grant.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>7. Connectors and connected sources</h2>
+        <ul>
+          <li>Connectors (e.g. Obsidian, Gmail, GitHub, Slack, Notion, Calendar) are <strong>read-only</strong> and run only for sources you explicitly connect and authorize.</li>
+          <li>Cortex does not crawl accounts you have not connected. You can revoke any connector or token at any time; you are responsible for complying with the terms of the third-party services you connect.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>8. Availability</h2>
+        <ul>
+          <li>Cortex Cloud is provided on an "as is" and "as available" basis. The free tier carries <strong>no uptime commitment or service-level agreement</strong>. We may change, suspend, or discontinue features, and we perform maintenance that can cause downtime.</li>
+          <li>The local app keeps working regardless of the hosted service's availability.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>9. Paid plans (future)</h2>
+        <p>Cortex may launch a paid tier. When it does, the following applies to paid plans:</p>
+        <ul>
+          <li><strong>Billing:</strong> payments are handled by a third-party merchant of record ([billing provider — confirm]), who processes your payment and, where a merchant of record, collects and remits applicable taxes. We receive payment metadata (not your full card details). Subscriptions renew automatically until cancelled; you can cancel at any time and keep access through the paid period you already bought.</li>
+          <li><strong>Refunds:</strong> <em>[REFUND POLICY PLACEHOLDER — state the window and conditions, e.g. "full refund within 14 days of a charge if the service was unused," and confirm the billing provider's own refund handling.]</em></li>
+          <li><strong>EU/UK right of withdrawal:</strong> if you are a consumer in the EU/UK, you have a statutory 14-day right to withdraw from a purchase of digital services. Where you ask us to begin the service immediately, you acknowledge you may lose that right once the service is fully performed, to the extent the law allows. Nothing here limits your mandatory statutory rights.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>10. Disclaimers</h2>
+        <p>
+          <strong>[LAWYER REVIEW REQUIRED — clause 10.]</strong> To the fullest extent permitted
+          by law, Cortex Cloud and the app are provided "as is" without warranties of any kind,
+          express or implied, including merchantability, fitness for a particular purpose, and
+          non-infringement. We do not warrant that the service will be uninterrupted, error-free,
+          or that retrieval, embeddings, or AI-assisted output will be accurate or complete. You
+          are responsible for keeping your own backups of anything important. This does not
+          exclude warranties or rights that cannot be excluded under applicable law.
+        </p>
+      </section>
+
+      <section>
+        <h2>11. Limitation of liability</h2>
+        <p>
+          <strong>[LAWYER REVIEW REQUIRED — clause 11; cap amounts and carve-outs to be
+          confirmed for [JURISDICTION].]</strong> To the fullest extent permitted by law, we are
+          not liable for indirect, incidental, special, consequential, or exemplary damages, or
+          for lost data, profits, or goodwill. Our total liability arising out of or relating to
+          Cortex is capped at the greater of the fees you paid us in the 12 months before the
+          claim, or, for free-tier users who paid nothing, a nominal amount of
+          <code>[NOMINAL AMOUNT, e.g. US$50]</code>. Some jurisdictions do not allow certain
+          limitations, so parts of this section may not apply to you.
+        </p>
+      </section>
+
+      <section>
+        <h2>12. Termination and account deletion</h2>
+        <ul>
+          <li>You may stop using Cortex at any time. You can delete your account from the app or the account page; deletion destroys your per-user key (crypto-erasure), which permanently renders your encrypted credentials — including in any backup — unreadable, and removes your derived data. As broader content encryption ships, this crypto-erasure extends to it.</li>
+          <li>We may suspend or terminate accounts that violate these Terms, create legal risk, or abuse the service. Where practical and lawful we will give notice and a chance to export your data first.</li>
+          <li>Sections that by their nature should survive termination (ownership, disclaimers, limitation of liability, governing law) do so.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>13. Changes to these Terms</h2>
+        <p>
+          We may update these Terms. For material changes we will give reasonable notice (for
+          example, by email or an in-app or on-page notice) before they take effect. Continuing
+          to use Cortex after the effective date means you accept the updated Terms; if you do not
+          agree, stop using the service and, if you wish, delete your account.
+        </p>
+      </section>
+
+      <section>
+        <h2>14. Governing law</h2>
+        <p>
+          These Terms are governed by the laws of <strong>[JURISDICTION]</strong>, without regard
+          to its conflict-of-laws rules, and any disputes are subject to the courts of
+          <strong>[JURISDICTION]</strong>, except where mandatory consumer-protection law in your
+          country of residence gives you a different forum or protections that cannot be waived.
+        </p>
+      </section>
+
+      <section>
+        <h2>15. Contact</h2>
+        <p>
+          Questions about these Terms: <a href="mailto:support@trydoppl.com">support@trydoppl.com</a>.
+          Privacy and data-rights requests: <a href="mailto:privacy@trydoppl.com">privacy@trydoppl.com</a>.
+          Do not send raw notes, chats, memory records, prompts, exports, API keys, or tokens by email.
+        </p>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>Cortex</span>
+      <a href="index.html">Home</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="subprocessors.html">Subprocessors</a>
+      <a href="faq.html">FAQ</a>
+      <a href="mailto:support@trydoppl.com">Support</a>
+    </footer>
+  </body>
+</html>

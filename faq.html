@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cortex FAQ &amp; Support</title>
+    <meta name="description" content="Answers to the most common Cortex questions: opening the macOS app, privacy, connecting your account, resets, export/delete, connectors, offline use, updates, and support." />
+    <meta name="theme-color" content="#f8f7f1" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="privacy-page">
+    <header class="site-header">
+      <a class="brand" href="index.html" aria-label="Cortex home">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>Cortex</span>
+      </a>
+      <nav aria-label="Primary">
+        <a href="index.html#loop">Loop</a>
+        <a href="index.html#integrations">Integrations</a>
+        <a href="index.html#privacy">Privacy</a>
+        <a href="index.html#download">Download</a>
+      </nav>
+      <a class="header-download" href="index.html#download">macOS app</a>
+    </header>
+
+    <main class="privacy-main">
+      <p class="eyebrow">Support</p>
+      <h1>FAQ &amp; support</h1>
+      <p class="privacy-draft-note">
+        <strong>Draft — pending legal review before public launch.</strong> These answers describe
+        how the software actually behaves; the privacy answer below is a plain summary of the
+        <a href="privacy.html">Privacy page</a>, not a legal statement.
+      </p>
+      <p>
+        Short answers to the questions we hear most. Still stuck? Email
+        <a href="mailto:support@trydoppl.com">support@trydoppl.com</a>. See also the
+        <a href="privacy.html">Privacy page</a> and the <a href="terms.html">Terms of Service</a>.
+      </p>
+
+      <section>
+        <h2>macOS won't let me open the app</h2>
+        <ul>
+          <li><strong>If the app is notarized</strong> (the normal download), just double-click <code>Cortex.app</code> — macOS opens it without a warning.</li>
+          <li><strong>If you get a "cannot be opened" / "unidentified developer" warning</strong> (for example on an early build), <strong>right-click (or Control-click) <code>Cortex.app</code> → Open → Open</strong>. You only need to do this once.</li>
+          <li><strong>On macOS 15 (Sequoia) and macOS 26</strong>, if the right-click trick is blocked, open <strong>System Settings → Privacy &amp; Security</strong>, scroll down to the message about Cortex, and click <strong>"Open Anyway."</strong> Then open the app again.</li>
+          <li>This is macOS Gatekeeper, not a Cortex bug. Always download Cortex from the official site and verify the checksum if you want to be sure of the file.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Is my data private? Is it encrypted?</h2>
+        <ul>
+          <li><strong>Local app (the default):</strong> your memory stays on your Mac and needs no account. It works with the network off, and nothing is sent to us.</li>
+          <li><strong>Cortex Cloud (optional):</strong> your data is stored in an isolated per-account store and is <strong>encrypted at rest with a key unique to your account</strong>. This is <em>not</em> end-to-end or "zero-knowledge" encryption: Cortex servers can read your memory in order to build embeddings, retrieve, and serve cited context to your AI tools. That is what makes the cloud features work.</li>
+          <li>Full detail — including deletion by crypto-erasure and what connectors read — is on the <a href="privacy.html">Privacy page</a>.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>How do I connect the app to my account?</h2>
+        <ul>
+          <li>Open the app's <strong>Settings → "Cortex Cloud"</strong> section.</li>
+          <li>Enter the hosted URL (for example <code>https://api.trydoppl.com</code>).</li>
+          <li>Sign in with your email and password, or use "Sign in with browser" for Google/GitHub. The "Create an account" link opens the signup page.</li>
+          <li>The app stores your session securely in the macOS Keychain and refreshes it automatically. Power users can still paste a raw endpoint and token in the manual fields.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>How do I reset my password or verify my email?</h2>
+        <ul>
+          <li><strong>Verify your email:</strong> after signing up you get a verification email — click the link to activate your account. If it did not arrive, check spam, then request a new one from the sign-in page. Some email is required before you can store connector credentials.</li>
+          <li><strong>Reset your password:</strong> use the "Forgot password" link on the sign-in page. We email a single-use reset link that expires shortly. Setting a new password signs out your other sessions.</li>
+          <li>If a link expired, just request a fresh one.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>How do I export or delete my data?</h2>
+        <ul>
+          <li><strong>Export:</strong> you can export your memory at any time; the export is meant to cover everything associated with your account.</li>
+          <li><strong>Delete:</strong> deleting your account destroys your per-user key (crypto-erasure), which permanently renders your encrypted credentials — including in any backup — unreadable, and removes your derived data. This cannot be undone, so export first if you want a copy.</li>
+          <li>For a formal data-rights request, email <a href="mailto:privacy@trydoppl.com">privacy@trydoppl.com</a>.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>A connector says it needs to reconnect — what do I do?</h2>
+        <ul>
+          <li>This usually means the third-party service (e.g. Gmail, GitHub, Slack, Notion, Calendar) expired or revoked the access token — it is normal and expected periodically.</li>
+          <li>Open <strong>Settings → the connector</strong> and click <strong>Reconnect</strong>, then re-authorize in the browser window that opens.</li>
+          <li>Connectors are read-only, so reconnecting only restores read access; it does not change anything in the connected account.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Does it work offline?</h2>
+        <ul>
+          <li>Yes. In <strong>local mode</strong> (the default) Cortex runs entirely on your Mac and works with the network off.</li>
+          <li>Cortex Cloud features (syncing, hosted retrieval) need a connection, since they run against the hosted backend.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>How do I update the app?</h2>
+        <ul>
+          <li>Cortex checks for updates and will prompt you when a new version is available; follow the prompt to install it.</li>
+          <li>You can also download the latest version from the <a href="index.html#download">download section</a> and replace the app in your Applications folder.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>How do I contact support?</h2>
+        <p>
+          Email <a href="mailto:support@trydoppl.com">support@trydoppl.com</a>. For privacy or
+          data-rights requests use <a href="mailto:privacy@trydoppl.com">privacy@trydoppl.com</a>.
+          Please do not send raw notes, chats, memory records, prompts, exports, API keys, or
+          tokens by email — describe the problem instead.
+        </p>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>Cortex</span>
+      <a href="index.html">Home</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Terms</a>
+      <a href="subprocessors.html">Subprocessors</a>
+      <a href="mailto:support@trydoppl.com">Support</a>
+    </footer>
+  </body>
+</html>
