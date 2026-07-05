@@ -3174,7 +3174,13 @@ final class AppState: ObservableObject {
         case .privateVault:
             return isLocalServiceReady
         case .firstSource:
-            return onboardingHasSource
+            // The "connect a source" step is done once a source has actually been connected +
+            // synced (firstSourceAdded is the @Published flag set right after a successful
+            // connect on every path — Obsidian folder, OAuth, or token). Previously this required
+            // fully synced, health-checked, citable memory (onboardingHasSource), which trapped
+            // users at "I connected my notes but Continue never enables" while the readiness
+            // health check lagged. The next step (Review) handles the actual memory.
+            return firstSourceAdded || onboardingHasSource
         case .reviewMemory:
             return onboardingHasReviewedMemory
         case .askUse:
