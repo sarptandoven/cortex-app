@@ -12,8 +12,43 @@ from pathlib import Path
 from unittest.mock import patch
 
 from backend.app.database import init_db
-from backend.app.source_ingest import analyze_sources, import_source_records, import_source_records_page
+from backend.app.source_ingest import (
+    analyze_sources,
+    import_source_records,
+    import_source_records_page,
+    scan_export_candidates,
+)
 from backend.app.storage import CortexStore
+
+
+class ExportDetectionTests(unittest.TestCase):
+    """The app auto-detects AI-chat exports in a folder (e.g. Downloads) so users don't hunt for
+    the file; unrelated JSON must not be reported."""
+
+    def test_scan_detects_chatgpt_export_and_ignores_decoys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            downloads = Path(tmp)
+            (downloads / "conversations.json").write_text(
+                json.dumps([
+                    {"title": "Prefs", "create_time": 1700000000,
+                     "mapping": {"a": {"message": {"author": {"role": "user"},
+                        "content": {"content_type": "text", "parts": ["My favorite language is Rust."]},
+                        "create_time": 1700000000}}}},
+                ]),
+                encoding="utf-8",
+            )
+            (downloads / "random.json").write_text('{"unrelated": true}', encoding="utf-8")
+            (downloads / "receipt.txt").write_text("not an export", encoding="utf-8")
+
+            found = scan_export_candidates([str(downloads)])
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0]["service"], "chatgpt")
+            self.assertGreaterEqual(found[0]["records_found"], 1)
+            self.assertEqual(found[0]["filename"], "conversations.json")
+            self.assertFalse(any(c["filename"] == "random.json" for c in found))
+
+    def test_scan_missing_directory_is_safe(self) -> None:
+        self.assertEqual(scan_export_candidates(["/no/such/dir/anywhere-xyz"]), [])
 
 
 class SourceIngestTests(unittest.TestCase):

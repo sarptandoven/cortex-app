@@ -1419,6 +1419,21 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     include_deleted=include_deleted,
                 )})
                 return
+            if method == "GET" and path == "/v1/imports/detect":
+                # Local-first convenience: scan the user's Downloads/Desktop (and a dedicated
+                # ~/CortexImports drop folder we create) for AI-chat / app exports so the app can
+                # offer "found your ChatGPT export (N conversations) — import" without a file picker.
+                from .source_ingest import scan_export_candidates, default_export_scan_dirs
+                import os as _os
+                extra = params.get("dir") or []
+                dirs = [d for d in extra if d] or default_export_scan_dirs()
+                drop = _os.path.join(_os.path.expanduser("~"), "CortexImports")
+                try:
+                    _os.makedirs(drop, exist_ok=True)  # initialize the drop folder so it always exists
+                except OSError:
+                    pass
+                self._send_json({"candidates": scan_export_candidates(dirs), "scanned_dirs": dirs, "drop_folder": drop})
+                return
             if method == "POST" and path == "/v1/imports/analyze":
                 body = self._json_body()
                 try:

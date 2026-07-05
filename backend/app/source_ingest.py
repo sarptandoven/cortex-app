@@ -423,6 +423,85 @@ def analyze_sources(paths: Iterable[str], source_hint: str = "", max_records: in
     }
 
 
+# Filenames/patterns that mark a file as an AI-chat or app data export worth probing.
+_EXPORT_JSON_NAMES = {"conversations.json", "conversations.jsonl", "result.json", "messages.json"}
+_EXPORT_ZIP_HINTS = ("chatgpt", "claude", "openai", "anthropic", "gemini", "notebooklm",
+                     "export", "conversations", "takeout", "slack", "discord", "telegram")
+
+
+def scan_export_candidates(directories: Iterable[str], *, max_files: int = 60, max_records: int = 200) -> list[dict[str, Any]]:
+    """Shallow-scan folders (e.g. ~/Downloads) for files that look like an AI-chat / app data
+    export — an OpenAI/Claude export .zip, a `conversations.json`, or an unzipped export folder —
+    run the importer's analysis on each, and return only the ones that actually parse into
+    records: {path, filename, service, records_found, sources, kind}. So the app can say
+    "found your ChatGPT export (142 conversations) in Downloads" instead of asking you to hunt
+    for the file. Non-recursive beyond one nested level; skips unreadable entries."""
+    candidates: list[Path] = []
+    for directory in directories:
+        try:
+            base = Path(directory).expanduser()
+        except (OSError, ValueError):
+            continue
+        if not base.is_dir():
+            continue
+        try:
+            entries = sorted(base.iterdir(), key=lambda p: p.name.lower())
+        except OSError:
+            continue
+        for entry in entries:
+            if len(candidates) >= max_files:
+                break
+            name = entry.name.lower()
+            try:
+                if entry.is_file():
+                    if name in _EXPORT_JSON_NAMES or (name.endswith(".zip") and any(h in name for h in _EXPORT_ZIP_HINTS)):
+                        candidates.append(entry)
+                elif entry.is_dir() and any(h in name for h in _EXPORT_ZIP_HINTS):
+                    # an already-unzipped export folder — grab its conversations.json if present
+                    for sub in entry.iterdir():
+                        if sub.is_file() and sub.name.lower() in _EXPORT_JSON_NAMES:
+                            candidates.append(sub)
+                            break
+            except OSError:
+                continue
+
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for path in candidates:
+        try:
+            resolved = str(path.resolve())
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        try:
+            analysis = analyze_sources([resolved], max_records=max_records)
+        except Exception:
+            continue
+        found = int(analysis.get("records_found") or 0)
+        if found <= 0:
+            continue
+        sources = analysis.get("sources") or []
+        service = str(sources[0]["source"]) if sources else "unknown"
+        results.append({
+            "path": resolved,
+            "filename": path.name,
+            "service": service,
+            "records_found": found,
+            "sources": sources,
+            "kind": "zip" if path.suffix.lower() == ".zip" else "file",
+        })
+    return results
+
+
+def default_export_scan_dirs() -> list[str]:
+    """The folders Cortex looks in for exports by default: the user's Downloads and Desktop, plus
+    a dedicated ~/CortexImports drop folder the app can create and point users at."""
+    home = Path.home()
+    return [str(home / "Downloads"), str(home / "Desktop"), str(home / "CortexImports")]
+
+
 def _parsed_source_records(paths: Iterable[str], source_hint: str = "") -> list[SourceRecord]:
     """Parse + chunk every source record from the given paths (no cap/order applied)."""
     assets = _collect_assets(paths)
