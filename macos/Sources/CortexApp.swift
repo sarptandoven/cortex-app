@@ -2876,6 +2876,10 @@ final class AppState: ObservableObject {
     @Published var onboardingComplete: Bool = UserDefaults.standard.bool(forKey: "onboardingComplete.v1")
     @Published var showOnboarding: Bool = false
     @Published var showConnectionsPrivacy: Bool = false
+    // Onboarding and Connections are separate sheets on the same presenter — only one can show at
+    // a time. These coordinate handing off from one to the other (see openConnectionsPrivacy).
+    private var pendingOpenConnectionsAfterOnboarding = false
+    private var reopenOnboardingAfterConnections = false
     @Published var onboardingStep: OnboardingStep = OnboardingStep(rawValue: UserDefaults.standard.integer(forKey: "onboardingStep.v2")) ?? .privateVault
     @Published var firstSourceAdded: Bool = UserDefaults.standard.bool(forKey: "onboardingFirstSourceImported.v1")
     @Published var firstMemoryReviewed: Bool = UserDefaults.standard.bool(forKey: "onboardingFirstMemoryReviewed.v1")
@@ -3737,8 +3741,37 @@ final class AppState: ObservableObject {
     }
 
     func openConnectionsPrivacy(statusMessage: String = "Connections and privacy") {
-        showConnectionsPrivacy = true
         status = statusMessage
+        // If the user tapped "Open Connections" from inside the onboarding sheet, we can't just
+        // set showConnectionsPrivacy = true — both are sheets on the same presenter, so the new
+        // one won't appear while onboarding is still up (this was the "button does nothing" bug).
+        // Dismiss onboarding first and present Connections in its onDismiss; reopen onboarding
+        // when Connections closes so the user returns to the flow.
+        if showOnboarding {
+            reopenOnboardingAfterConnections = !onboardingComplete
+            pendingOpenConnectionsAfterOnboarding = true
+            showOnboarding = false
+            return
+        }
+        showConnectionsPrivacy = true
+    }
+
+    /// Called when the onboarding sheet finishes dismissing. If it was dismissed to hand off to
+    /// Connections, present Connections now (after the first sheet is fully gone).
+    func onboardingSheetDismissed() {
+        guard pendingOpenConnectionsAfterOnboarding else { return }
+        pendingOpenConnectionsAfterOnboarding = false
+        showConnectionsPrivacy = true
+    }
+
+    /// Called when the Connections sheet finishes dismissing. If we interrupted onboarding to get
+    /// here, return the user to onboarding (unless they finished or dismissed it meanwhile).
+    func connectionsSheetDismissed() {
+        let shouldReopen = reopenOnboardingAfterConnections
+        reopenOnboardingAfterConnections = false
+        if shouldReopen, !onboardingComplete, !onboardingDismissedForSession {
+            showOnboardingAgain()
+        }
     }
 
     func loadSettings() async {
@@ -6062,13 +6095,13 @@ struct CortexView: View {
         .preferredColorScheme(nil)
         .accentColor(CortexDesign.accent)
         .frame(minWidth: 560, minHeight: 640)
-        .sheet(isPresented: $state.showOnboarding) {
+        .sheet(isPresented: $state.showOnboarding, onDismiss: { state.onboardingSheetDismissed() }) {
             OnboardingView(state: state)
                 .preferredColorScheme(nil)
                 .accentColor(CortexDesign.accent)
                 .frame(width: 760, height: 660)
         }
-        .sheet(isPresented: $state.showConnectionsPrivacy) {
+        .sheet(isPresented: $state.showConnectionsPrivacy, onDismiss: { state.connectionsSheetDismissed() }) {
             ConnectionsPrivacySheet(state: state)
                 .preferredColorScheme(nil)
                 .accentColor(CortexDesign.accent)
