@@ -98,8 +98,8 @@ jobs:
       - name: Audit backend dependencies for known vulnerabilities
         run: pip-audit --strict -r backend/requirements.txt
 
-      - name: Audit top-level dependencies for known vulnerabilities
-        run: pip-audit --strict -r requirements.txt
+      - name: Audit runtime dependencies for known vulnerabilities
+        run: pip-audit --strict -r backend/runtime-requirements.txt
 
   distribution:
     name: Distribution site and update manifest
