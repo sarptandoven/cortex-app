@@ -3029,6 +3029,14 @@ final class AppState: ObservableObject {
         sourceAccounts.contains { $0.isConnected }
     }
 
+    /// Cortex isn't usable until at least one real data source feeds it, so onboarding may only
+    /// COMPLETE — and the vault is only treated as initialized — once the user has connected a
+    /// service, their Obsidian vault, or completed an import. firstSourceAdded is authoritative
+    /// (it persists the "a source was connected" event) since sourceAccounts may still be loading.
+    var hasAtLeastOneConnectedSource: Bool {
+        firstSourceAdded || hasConnectedSourceAccount || hasConnectedObsidianVault
+    }
+
     // "Active" = registered and not disconnected (includes unconfigured placeholders); used to
     // locate the account row for a connector card. "Connected" = actually authenticated.
     var activeSourceAccounts: [SourceAccountItem] {
@@ -5244,6 +5252,13 @@ final class AppState: ObservableObject {
     }
 
     func completeOnboarding() {
+        // Hard requirement: you cannot finish setup (and initialize storage) without connecting a
+        // real data source. This is the "onboarding requires a data connection" gate.
+        guard hasAtLeastOneConnectedSource else {
+            setOnboardingStep(.firstSource)
+            status = "Connect at least one source — a service, your Obsidian vault, or an export — to finish setup."
+            return
+        }
         guard canCompleteOnboarding else {
             let remaining = incompleteOnboardingStepTitles.prefix(2).joined(separator: ", ")
             status = remaining.isEmpty ? "Finish the first memory loop before completing." : "Finish: \(remaining)."
@@ -5308,10 +5323,17 @@ final class AppState: ObservableObject {
     }
 
     func presentOnboardingIfNeeded() {
+        // Self-heal: if a prior run left onboarding "complete" but no source is actually connected
+        // (stale flag, or the user reset their data), setup isn't really done — reopen onboarding,
+        // because Cortex has nothing to work from until a source is connected.
+        if onboardingComplete && !hasAtLeastOneConnectedSource {
+            onboardingComplete = false
+            UserDefaults.standard.set(false, forKey: "onboardingComplete.v1")
+        }
         guard !onboardingComplete, !onboardingDismissedForSession, !showOnboarding else { return }
         setOnboardingStep(firstIncompleteOnboardingStep())
         showOnboarding = true
-        status = "Finish the first memory loop to activate Cortex."
+        status = "Connect a source to finish setting up Cortex."
     }
 
     private func firstIncompleteOnboardingStep() -> OnboardingStep {
