@@ -68,7 +68,7 @@ _TOPIC_LAYER_WEIGHT = 2.5  # between episodic and procedural
 # to a title-cased version of the id, so the headline is always readable.
 _SOURCE_DISPLAY: dict[str, str] = {
     "calendar": "your calendar",
-    "obsidian": "your Obsidian notes",
+    "obsidian": "your notes",
     "github": "GitHub",
     "email": "your email",
     "gmail": "your email",

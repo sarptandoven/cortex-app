@@ -589,7 +589,7 @@ SOURCE_CONNECTOR_CATALOG: tuple[dict[str, Any], ...] = (
     {"id": "knowledge-base", "name": "Knowledge base", "category": "Research", "auth": "file", "live_status": "import_ready", "scopes": [], "notes": "Knowledge base connector coverage for local notes and read-later services."},
     {"id": "twitter-x", "name": "Twitter/X", "category": "Social", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Direct Twitter/X account connector is required before this can be a primary source."},
     {"id": "apple-notes", "name": "Apple Notes", "category": "Notes", "auth": "export", "live_status": "export_only", "scopes": [], "notes": "Local Apple Notes integration is the intended source path."},
-    {"id": "obsidian", "name": "Obsidian", "category": "Notes", "auth": "local_folder", "live_status": "import_ready", "scopes": [], "notes": "Local Obsidian vault integration is the intended connector path."},
+    {"id": "obsidian", "name": "Cortex Notes", "category": "Notes", "auth": "local_folder", "live_status": "import_ready", "scopes": [], "notes": "Local notes-folder integration is the intended connector path."},
 )
 
 
@@ -638,7 +638,7 @@ SOURCE_CONNECTOR_IMPORT_METADATA: dict[str, dict[str, Any]] = {
     "knowledge-base": {"source_ids": ["knowledge-base", "obsidian", "logseq", "roam", "readwise", "zotero", "pocket", "instapaper", "raindrop"], "export_status": "generic", "import_status": "generic", "import_label": "Knowledge base local records"},
     "twitter-x": {"source_ids": ["twitter-x"], "export_status": "native", "import_label": "Native Twitter/X account connector records"},
     "apple-notes": {"source_ids": ["apple-notes", "docs"], "export_status": "generic", "import_status": "generic", "import_label": "Apple Notes local records map to Notes and writing"},
-    "obsidian": {"source_ids": ["obsidian", "knowledge-base"], "export_status": "generic", "import_status": "generic", "import_label": "Obsidian vault local records map to Knowledge bases"},
+    "obsidian": {"source_ids": ["obsidian", "knowledge-base"], "export_status": "generic", "import_status": "generic", "import_label": "Notes folder local records map to Knowledge bases"},
 }
 
 PRIMARY_BETA_CONNECTOR_IDS: frozenset[str] = frozenset({"obsidian"})
@@ -1246,8 +1246,8 @@ def _copy_setup_fields(fields: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
 # (paste a token, sign in, or export a file). Kept next to the machine-readable blueprints so the
 # UI can render "here's exactly how to connect this" instead of a bare form.
 CONNECTOR_SETUP_GUIDES: dict[str, dict[str, Any]] = {
-    "obsidian": {"help_url": "https://help.obsidian.md", "steps": [
-        "Click Choose Folder and pick your Obsidian vault (the folder that holds your .md notes).",
+    "obsidian": {"help_url": "https://trydoppl.com", "steps": [
+        "Click Choose Folder and pick your notes folder (the folder that holds your .md notes).",
         "Cortex reads those notes and keeps them in sync as you edit — everything stays on your Mac.",
     ]},
     "github": {"help_url": "https://github.com/settings/tokens", "steps": [
@@ -3504,10 +3504,10 @@ class CortexStore:
                 next_action = f"Review {pending} pending capture{'s' if pending != 1 else ''}."
             elif obsidian_empty_sync:
                 status = "empty"
-                next_action = "No Markdown notes were found in this Obsidian vault. Choose a vault with notes before Cortex can build memory."
+                next_action = "No Markdown notes were found in this notes folder. Choose a folder with notes before Cortex can build memory."
             elif sync_incomplete:
                 status = "syncing"
-                next_action = "Cortex is still scanning this Obsidian vault in batches."
+                next_action = "Cortex is still scanning this notes folder in batches."
             elif planned_connector and (current_captures or active_memories):
                 status = "imported"
                 next_action = "Local records are available; direct account sign-in sync is still planned for this source."
@@ -3679,13 +3679,13 @@ class CortexStore:
         if summary["needs_attention"]:
             recommendations.append("Resolve source account or sync errors before relying on those memories.")
         if summary["empty"]:
-            recommendations.append("Choose an Obsidian vault with Markdown notes before Cortex can build memory from it.")
+            recommendations.append("Choose a notes folder with Markdown notes before Cortex can build memory from it.")
         if summary["syncing"]:
             recommendations.append("Wait for source processing to finish before judging Review and Ask coverage.")
         if summary["needs_review"]:
             recommendations.append("Review pending source captures so they can become trusted model memory.")
         if not summary["sources_with_data"]:
-            recommendations.append("Connect Obsidian notes or local AI tools so Cortex can start building reviewed memory.")
+            recommendations.append("Connect your notes or local AI tools so Cortex can start building reviewed memory.")
         if not recommendations:
             recommendations.append("Source readiness is healthy for local beta use.")
         return {
@@ -4973,7 +4973,7 @@ class CortexStore:
         self._ensure_source_account_can_sync(user_id, resolved_account_id, expected_source=OBSIDIAN_SOURCE)
         previous_cursor = self._latest_sync_cursor_value(user_id, resolved_account_id, cursor_name)
         scan = scan_vault(vault_path, max_records=max_records, cursor_value=previous_cursor)
-        label = (account_label or f"Obsidian: {scan.vault_name}").strip()[:160]
+        label = (account_label or f"Notes: {scan.vault_name}").strip()[:160]
         identifier = (account_identifier or scan.vault_id).strip()[:240]
         metadata = {
             "connector": OBSIDIAN_SOURCE,
@@ -12214,7 +12214,7 @@ class CortexStore:
         recommendations: list[str] = []
         if totals["active_memories"] == 0:
             warnings.append("No active memories are available yet.")
-            recommendations.append("Connect local AI tools or Obsidian notes and approve useful memory before relying on Ask.")
+            recommendations.append("Connect local AI tools or your notes and approve useful memory before relying on Ask.")
         if totals["active_memories"] > 0 and citation_coverage < 0.8:
             warnings.append("Some active memories are missing source citations.")
             recommendations.append("Prefer connected-source sync and cited captures so retrieved memory has citations.")
@@ -12432,7 +12432,7 @@ class CortexStore:
                 "action": "capture",
                 "label": "Connect Source",
                 "title": "Start memory sync",
-                "detail": "Connect local AI tools or Obsidian notes so Cortex can sync memory into Review.",
+                "detail": "Connect local AI tools or your notes so Cortex can sync memory into Review.",
             }
         elif stats["pending_captures"] > 0:
             primary = {

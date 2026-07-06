@@ -124,10 +124,10 @@ class _MarkdownBlockRef:
 def vault_identity(vault_path: str | Path) -> ObsidianVaultIdentity:
     root = Path(vault_path).expanduser().resolve()
     if not root.exists() or not root.is_dir():
-        raise ValueError("Obsidian vault path must be a readable folder")
+        raise ValueError("Notes folder path must be a readable folder")
     return ObsidianVaultIdentity(
         vault_path=str(root),
-        vault_name=root.name or "Obsidian vault",
+        vault_name=root.name or "Notes folder",
         vault_id=_stable_scan_id(str(root)),
     )
 
@@ -416,9 +416,9 @@ def _records_for_canvas(root: Path, path: Path, raw: str, *, modified: float, si
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"Invalid Obsidian Canvas JSON: {exc.msg}") from exc
+        raise ValueError(f"Invalid Canvas JSON: {exc.msg}") from exc
     if not isinstance(payload, dict):
-        raise ValueError("Invalid Obsidian Canvas JSON: root must be an object")
+        raise ValueError("Invalid Canvas JSON: root must be an object")
 
     nodes_payload = payload.get("nodes")
     edges_payload = payload.get("edges")
@@ -554,7 +554,7 @@ def _canvas_node_edges(edges: list[Any], node_id: str) -> list[dict[str, str]]:
 
 
 def _canvas_title(path: Path) -> str:
-    return path.stem.strip() or "Obsidian canvas"
+    return path.stem.strip() or "Canvas"
 
 
 def _first_content_line(text: str) -> str:

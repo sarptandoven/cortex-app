@@ -3222,13 +3222,17 @@ final class AppState: ObservableObject {
     var canAdvanceOnboarding: Bool {
         switch onboardingStep {
         case .privateVault:
+            // Legitimate hard prerequisite: Cortex is unusable without its memory engine.
             return isLocalServiceReady
         case .firstSource:
+            // Legitimate gate: onboarding must connect at least one real source.
             return onboardingStepIsComplete(.firstSource)
-        case .reviewMemory:
-            return onboardingStepIsComplete(.reviewMemory)
-        case .askUse:
-            return onboardingStepIsComplete(.askUse)
+        case .reviewMemory, .askUse:
+            // Review and Ask are ENCOURAGED, not mandatory. Previously these were hard-gated on
+            // having reviewed/used memory, which trapped any user with nothing to review (empty or
+            // still-syncing source) on a permanently-disabled Continue. Always allow proceeding;
+            // the footer shows "Skip for now" until the step is actually completed.
+            return true
         case .trustBackup:
             return true
         }
@@ -3397,7 +3401,7 @@ final class AppState: ObservableObject {
             method: "POST",
             body: [
                 "token": token,
-                "label": "Obsidian vault bridge",
+                "label": "Cortex notes bridge",
                 "scopes": ["read", "write"]
             ]
         )
@@ -4928,7 +4932,7 @@ final class AppState: ObservableObject {
             try installBundledObsidianPlugin(vaultURL: vaultURL, apiToken: pluginToken)
             return true
         } catch {
-            NSLog("Cortex Obsidian plugin install failed: \(error.localizedDescription)")
+            NSLog("Cortex notes-bridge plugin install failed: \(error.localizedDescription)")
             return false
         }
     }
@@ -5057,15 +5061,15 @@ final class AppState: ObservableObject {
             await refreshAfterCapture()
 
             if synced.scan.truncated == true {
-                status = "\(connector.name) synced \(synced.scan.records_returned) of \(synced.scan.records_found) notes. Larger-vault sync is partial."
+                status = "\(connector.name) synced \(synced.scan.records_returned) of \(synced.scan.records_found) notes. Larger libraries sync partially."
             } else if synced.saved > 0 || synced.queued > 0 {
                 let count = synced.saved + synced.queued
-                let bridge = pluginInstalled ? " Obsidian bridge installed." : ""
+                let bridge = pluginInstalled ? " Cortex bridge installed." : ""
                 status = "\(connector.name) synced \(count) note\(count == 1 ? "" : "s") into Review.\(bridge)"
             } else if synced.skipped > 0, !automatic {
-                status = pluginInstalled ? "\(connector.name) already up to date. Obsidian bridge installed." : "\(connector.name) already up to date"
+                status = pluginInstalled ? "\(connector.name) already up to date. Cortex bridge installed." : "\(connector.name) already up to date"
             } else if !automatic {
-                status = pluginInstalled ? "\(connector.name) sync finished. Obsidian bridge installed." : "\(connector.name) sync finished"
+                status = pluginInstalled ? "\(connector.name) sync finished. Cortex bridge installed." : "\(connector.name) sync finished"
             }
         } catch {
             if automatic {
@@ -5481,7 +5485,7 @@ final class AppState: ObservableObject {
         // real data source. This is the "onboarding requires a data connection" gate.
         guard hasAtLeastOneConnectedSource else {
             setOnboardingStep(.firstSource)
-            status = "Connect at least one source — a service, your Obsidian vault, or an export — to finish setup."
+            status = "Connect at least one source — a service, your notes folder, or an export — to finish setup."
             return
         }
         guard canCompleteOnboarding else {
@@ -6188,23 +6192,75 @@ final class AppState: ObservableObject {
     }
 }
 
+/// The primary navigation: large, prominent Home / Review / Ask segments. Replaces the small
+/// native TabView tab strip so the three sections are easy to see and tap. Reads and writes the
+/// same `state.selectedTab` every other setter uses, so navigation stays consistent everywhere.
+struct CortexTabBar: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        HStack(spacing: CortexDesign.Space.sm) {
+            ForEach(Array(AppTab.allCases.enumerated()), id: \.element) { index, tab in
+                let selected = state.selectedTab == tab
+                Button {
+                    state.selectedTab = tab
+                } label: {
+                    HStack(spacing: CortexDesign.Space.sm) {
+                        Image(systemName: tab.systemImage)
+                            .font(.system(size: 18, weight: .semibold))
+                        Text(tab.label)
+                            .font(.system(size: 16, weight: .semibold))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 46)
+                    .foregroundColor(selected ? CortexDesign.accent : .secondary)
+                    .background(selected ? CortexDesign.accentSoft : Color.clear)
+                    .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                            .stroke(selected ? CortexDesign.accent.opacity(0.35) : Color.clear, lineWidth: 1)
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
+                .help("\(tab.label) (⌘\(index + 1))")
+                .accessibilityLabel(tab.label)
+                .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+            }
+        }
+        .padding(.horizontal, CortexDesign.Space.md)
+        .padding(.vertical, CortexDesign.Space.sm)
+        .background(CortexDesign.appBackground)
+    }
+}
+
 struct CortexView: View {
     @ObservedObject var state: AppState
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            TabView(selection: $state.selectedTab) {
+            CortexTabBar(state: state)
+            Divider().overlay(CortexDesign.hairline)
+            // A ZStack (not a switch) keeps all three tabs mounted so their .onChange(of:
+            // selectedTab) reload triggers keep firing on tab switch — identical lifecycle to the
+            // TabView this replaced, but with a large, custom, easy-to-see tab bar above.
+            ZStack {
                 ModelTab(state: state)
-                    .tabItem { Label("Home", systemImage: "circle.grid.cross") }
-                    .tag(AppTab.model)
+                    .opacity(state.selectedTab == .model ? 1 : 0)
+                    .allowsHitTesting(state.selectedTab == .model)
+                    .accessibilityHidden(state.selectedTab != .model)
                 ReviewTab(state: state)
-                    .tabItem { Label("Review", systemImage: "checklist") }
-                    .tag(AppTab.review)
+                    .opacity(state.selectedTab == .review ? 1 : 0)
+                    .allowsHitTesting(state.selectedTab == .review)
+                    .accessibilityHidden(state.selectedTab != .review)
                 AskTab(state: state)
-                    .tabItem { Label("Ask", systemImage: "magnifyingglass") }
-                    .tag(AppTab.ask)
+                    .opacity(state.selectedTab == .ask ? 1 : 0)
+                    .allowsHitTesting(state.selectedTab == .ask)
+                    .accessibilityHidden(state.selectedTab != .ask)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             footer
         }
         .background(CortexDesign.appBackground)
@@ -8158,11 +8214,20 @@ struct SettingsBackendSection: View {
             Text("Engine: \(state.displayBackendStatus)")
                 .font(.caption)
                 .foregroundColor(.secondary)
-            Text("Log: \(state.backendLogPath)")
+            Button {
+                state.revealBackendLog()
+            } label: {
+                Label("Reveal Log in Finder", systemImage: "doc.text.magnifyingglass")
+                    .font(.caption)
+            }
+            .buttonStyle(.link)
+            .help(state.backendLogPath)
+            Text(state.backendLogPath)
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .textSelection(.enabled)
         }
     }
 }

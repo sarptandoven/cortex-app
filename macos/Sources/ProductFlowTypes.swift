@@ -1,9 +1,25 @@
 import SwiftUI
 
-enum AppTab: Hashable {
+enum AppTab: Hashable, CaseIterable {
     case model
     case review
     case ask
+
+    var label: String {
+        switch self {
+        case .model: return "Home"
+        case .review: return "Review"
+        case .ask: return "Ask"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .model: return "house"
+        case .review: return "checklist"
+        case .ask: return "magnifyingglass"
+        }
+    }
 }
 
 enum OnboardingStep: Int, CaseIterable, Identifiable {

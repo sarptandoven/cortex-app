@@ -135,7 +135,7 @@ struct OnboardingView: View {
                 Button {
                     state.nextOnboardingStep()
                 } label: {
-                    Label(continueButtonTitle, systemImage: state.canAdvanceOnboarding ? "chevron.right" : continueButtonIcon)
+                    Label(footerAdvanceTitle, systemImage: footerAdvanceIcon)
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
@@ -143,6 +143,24 @@ struct OnboardingView: View {
             }
         }
         .padding(18)
+    }
+
+    /// True when the current step can be advanced but hasn't been completed — i.e. the user is
+    /// choosing to move on without finishing an optional step (Review / Ask). Drives the "Skip for
+    /// now" affordance so the primary button is always meaningful instead of a dead, disabled state.
+    private var footerAdvanceIsSkip: Bool {
+        state.canAdvanceOnboarding
+            && !state.onboardingStepIsComplete(state.onboardingStep)
+            && (state.onboardingStep == .reviewMemory || state.onboardingStep == .askUse)
+    }
+
+    private var footerAdvanceTitle: String {
+        footerAdvanceIsSkip ? "Skip for now" : continueButtonTitle
+    }
+
+    private var footerAdvanceIcon: String {
+        if footerAdvanceIsSkip { return "arrow.right" }
+        return state.canAdvanceOnboarding ? "chevron.right" : continueButtonIcon
     }
 
     private var continueButtonTitle: String {
@@ -356,7 +374,7 @@ struct OnboardingFirstSourceStep: View {
         if state.hasConnectedObsidianVault {
             return "Cortex checks connected notes on launch and every 30 minutes, then sends new memory to Review with citations."
         }
-        return "Choose Obsidian or a local notes folder to start. Cortex will keep it synced and send useful memory to Review."
+        return "Choose a local notes folder to start. Cortex will keep it synced and send useful memory to Review."
     }
 
     private var sourceCardIcon: String {
@@ -443,8 +461,9 @@ struct OnboardingFirstSourceStep: View {
         if let connector = obsidianConnector {
             state.connectLocalNotesFolder(connector, chooseNew: state.notesNeedContent)
         } else {
-            Task { await state.loadSourceConnectivity() }
-            state.status = "Checking source connector"
+            // No local-notes connector in the catalog yet: don't leave the user with a button that
+            // only refreshes. Open Connections so they always have a concrete way to pick a source.
+            state.openConnectionsPrivacy(statusMessage: "Choose a source to connect")
         }
     }
 }

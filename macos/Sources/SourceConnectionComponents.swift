@@ -83,18 +83,29 @@ struct SourceConnectorStatusCard: View {
                     }
                 }
             } else {
-                HStack(spacing: 8) {
-                    Image(systemName: "lock.shield")
-                        .foregroundColor(.secondary)
-                    Text("Open Connections & Privacy")
-                        .font(.callout)
-                        .fontWeight(.medium)
-                    Spacer()
+                // A real, working control — previously this was a card styled like a button that
+                // did nothing when tapped. It now actually opens Connections & Privacy.
+                Button {
+                    state.openConnectionsPrivacy()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "lock.shield")
+                        Text("Open Connections & Privacy")
+                            .font(.callout)
+                            .fontWeight(.medium)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity)
+                    .background(CortexDesign.cardBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .contentShape(RoundedRectangle(cornerRadius: 8))
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(CortexDesign.cardBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .buttonStyle(.plain)
             }
         }
         .padding(16)

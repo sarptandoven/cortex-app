@@ -143,7 +143,8 @@ class MacOSConnectorUIContractTests(unittest.TestCase):
         display_text = "\n".join(path.read_text(encoding="utf-8").lower() for path in PRIMARY_UI_SURFACES)
 
         self.assertIn("connect notes", display_text)
-        self.assertIn("choose obsidian or a local notes folder", display_text)
+        # Notes-first onboarding copy (Obsidian is no longer named in the UI).
+        self.assertIn("choose a local notes folder", display_text)
         for forbidden in (
             "direct service connections live",
             "manual import",
@@ -228,7 +229,8 @@ class MacOSConnectorUIContractTests(unittest.TestCase):
         self.assertIn('"maxRecords": 5000', app_source)
         self.assertIn("community-plugins.json", app_source)
         self.assertIn("enabledPlugins.append(Self.obsidianPluginID)", app_source)
-        self.assertIn("Obsidian bridge installed.", app_source)
+        # The plugin-bridge status is user-facing, so it no longer names Obsidian.
+        self.assertIn("Cortex bridge installed.", app_source)
 
     def test_connections_advanced_shows_mcp_permissions_and_audit_summary(self) -> None:
         source = CONNECTIONS_SHEET.read_text(encoding="utf-8")
