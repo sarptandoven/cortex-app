@@ -1,31 +1,44 @@
 import AppKit
 
-/// What the menu-bar icon should be conveying right now. Derived from AppState by the
-/// AppDelegate; the animator only knows about these three visual modes.
-enum MenuBarMode: Equatable {
-    /// Nothing in flight — a calm, static brain glyph (standard menu-bar etiquette: no motion at rest).
-    case idle
-    /// A sync/import/backup is running — the icon spins so the user can see work is happening.
-    case syncing
-    /// Reviewable memory is waiting — the icon breathes slowly to gently pull the eye.
-    case attention
+/// A snapshot of the app state the menu-bar icon reflects. Provided by the AppDelegate each tick.
+struct MenuBarSnapshot: Equatable {
+    /// Something is in flight (a real source sync OR any busy work) — the icon spins.
+    var syncing: Bool
+    /// Specifically a real source sync is running. Its active→inactive edge triggers the
+    /// "sync complete" checkmark flourish (a plain `busy` blip does not, to avoid flicker).
+    var realSyncActive: Bool
+    /// How many items are waiting in Review — shown as a count next to the icon.
+    var pendingCount: Int
 }
 
-/// Drives the menu-bar `NSStatusItem` icon with lightweight, power-friendly animation.
+/// What the icon is currently rendering.
+private enum MenuBarVisual: Equatable {
+    case idle
+    case syncing
+    case attention(Int)
+    case success
+}
+
+/// Drives the menu-bar `NSStatusItem` icon: a calm brain at rest, a spinner while Cortex syncs, a
+/// review count when memory is waiting, and a brief checkmark when a sync finishes.
 ///
-/// A single main-actor `Task` loop polls the desired mode. At rest it wakes only a couple of times a
-/// second and shows a plain template glyph (standard menu-bar etiquette: no motion when idle). While
-/// a sync runs it advances a pre-baked spinner; while review is pending it slowly pulses the glyph.
-/// Everything here is macOS 13 compatible (no `symbolEffect`), and frames are pre-rendered as
-/// template images so the glyph tints correctly to the menu-bar appearance (light or dark bar).
+/// A single main-actor `Task` loop polls the snapshot. At rest it wakes only ~twice a second and
+/// shows a static glyph (standard menu-bar etiquette — no motion when idle); motion is reserved for
+/// the transient sync spinner and the completion checkmark, so idle energy cost stays near zero.
+/// macOS 13 compatible (no `symbolEffect`); spinner frames are pre-baked rotated template images so
+/// the glyph tints correctly on light/dark menu bars.
 @MainActor
 final class MenuBarAnimator {
     private weak var statusItem: NSStatusItem?
-    private let modeProvider: @MainActor () -> MenuBarMode
+    private let snapshotProvider: @MainActor () -> MenuBarSnapshot
 
     private var loopTask: Task<Void, Never>?
-    private var mode: MenuBarMode = .idle
+    private var currentVisual: MenuBarVisual = .idle
     private var frameIndex = 0
+
+    // Edge detection for the completion flourish.
+    private var lastRealSyncActive = false
+    private var successFramesRemaining = 0
 
     // Pre-baked assets, built lazily once.
     private lazy var spinnerFrames: [NSImage] = Self.makeRotationFrames(
@@ -33,17 +46,19 @@ final class MenuBarAnimator {
     )
     private lazy var idleImage: NSImage? = Self.makeSymbol("brain.head.profile", pointSize: 15)
     private lazy var attentionImage: NSImage? = Self.makeSymbol("tray.full.fill", pointSize: 14)
+    private lazy var successImage: NSImage? = Self.makeSymbol("checkmark.circle.fill", pointSize: 15)
 
     private let frameInterval: TimeInterval = 0.05   // ~20fps spin (~1.2s / revolution)
-    private let idleInterval: TimeInterval = 0.45    // slow heartbeat: notice mode changes cheaply
+    private let idleInterval: TimeInterval = 0.45    // slow heartbeat: notice state changes cheaply
+    private let successDuration: TimeInterval = 1.6   // how long the checkmark lingers
 
-    init(statusItem: NSStatusItem, modeProvider: @escaping @MainActor () -> MenuBarMode) {
+    init(statusItem: NSStatusItem, snapshotProvider: @escaping @MainActor () -> MenuBarSnapshot) {
         self.statusItem = statusItem
-        self.modeProvider = modeProvider
+        self.snapshotProvider = snapshotProvider
     }
 
     func start() {
-        applyMode(.idle)
+        render(.idle)
         loopTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -60,48 +75,79 @@ final class MenuBarAnimator {
 
     /// Advance one animation step and return how long to sleep before the next one.
     private func tick() -> TimeInterval {
-        let desired = modeProvider()
-        if desired != mode { applyMode(desired) }
-        guard let button = statusItem?.button else { return idleInterval }
-        switch mode {
-        case .idle:
+        let snapshot = snapshotProvider()
+
+        // A real sync just finished → play the completion checkmark.
+        if lastRealSyncActive && !snapshot.realSyncActive && !snapshot.syncing {
+            successFramesRemaining = Int((successDuration / frameInterval).rounded())
+        }
+        lastRealSyncActive = snapshot.realSyncActive
+
+        // Resolve what to show, in priority order.
+        let visual: MenuBarVisual
+        if snapshot.syncing {
+            successFramesRemaining = 0            // an in-flight sync outranks a stale checkmark
+            visual = .syncing
+        } else if successFramesRemaining > 0 {
+            successFramesRemaining -= 1
+            visual = .success
+        } else if snapshot.pendingCount > 0 {
+            visual = .attention(snapshot.pendingCount)
+        } else {
+            visual = .idle
+        }
+
+        if visual != currentVisual {
+            render(visual)
+        } else if case .syncing = visual {
+            advanceSpinner()
+        }
+
+        switch visual {
+        case .syncing, .success:
+            return frameInterval
+        case .idle, .attention:
             return idleInterval
-        case .syncing:
-            frameIndex &+= 1
-            if !spinnerFrames.isEmpty {
-                button.image = spinnerFrames[frameIndex % spinnerFrames.count]
-            }
-            return frameInterval
-        case .attention:
-            frameIndex &+= 1
-            // Slow breathing pulse (~1.8s period) between 0.55 and 1.0 opacity.
-            let phase = Double(frameIndex) * frameInterval * (2 * Double.pi / 1.8)
-            button.alphaValue = 0.55 + 0.45 * (0.5 + 0.5 * sin(phase))
-            return frameInterval
         }
     }
 
-    private func applyMode(_ newMode: MenuBarMode) {
-        mode = newMode
+    private func advanceSpinner() {
+        guard let button = statusItem?.button, !spinnerFrames.isEmpty else { return }
+        frameIndex &+= 1
+        button.image = spinnerFrames[frameIndex % spinnerFrames.count]
+    }
+
+    private func render(_ visual: MenuBarVisual) {
+        currentVisual = visual
         frameIndex = 0
         guard let button = statusItem?.button else { return }
-        button.imagePosition = .imageOnly
-        button.title = ""
         button.alphaValue = 1.0
-        switch newMode {
+        switch visual {
         case .idle:
+            button.imagePosition = .imageOnly
+            button.title = ""
             button.image = idleImage
             button.toolTip = "Cortex"
         case .syncing:
+            button.imagePosition = .imageOnly
+            button.title = ""
             button.image = spinnerFrames.first ?? idleImage
             button.toolTip = "Cortex — syncing your memory…"
-        case .attention:
+        case .attention(let count):
+            // Icon + a live count of items waiting in Review. Title text tints itself to the menu
+            // bar automatically, so this stays legible on light and dark menu bars.
             button.image = attentionImage ?? idleImage
-            button.toolTip = "Cortex — memory is waiting for review"
+            button.title = " \(count > 99 ? "99+" : String(count))"
+            button.imagePosition = .imageLeading
+            button.toolTip = "Cortex — \(count) item\(count == 1 ? "" : "s") waiting for review"
+        case .success:
+            button.imagePosition = .imageOnly
+            button.title = ""
+            button.image = successImage ?? idleImage
+            button.toolTip = "Cortex — sync complete"
         }
-        // Safety net: if symbol rendering ever fails, fall back to a visible text title so the
-        // menu-bar item can never become invisible.
-        if button.image == nil {
+        // Safety net: if symbol rendering ever fails, fall back to a visible text title.
+        if button.image == nil && button.title.isEmpty {
             button.imagePosition = .noImage
             button.title = "Cortex"
         }

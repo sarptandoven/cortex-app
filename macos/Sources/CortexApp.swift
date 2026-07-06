@@ -4031,6 +4031,21 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Menu-bar "Sync Now": run a real sync of connected sources, prepare queued jobs, then refresh
+    /// Review/stats so the menu-bar count and Review tab reflect anything new.
+    func syncNowFromMenu() {
+        guard syncProgress?.active != true else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.status = "Syncing connected sources…"
+            _ = await self.syncDueConnectedSources(automatic: false)
+            _ = await self.drainQueuedMemoryJobs(automatic: true)
+            await self.loadInbox()
+            await self.loadReview()
+            await self.loadStats()
+        }
+    }
+
     @discardableResult
     private func drainQueuedMemoryJobs(limit: Int = 50, automatic: Bool = true) async -> JobRunResponse? {
         guard !jobDrainInFlight else { return nil }
@@ -8921,7 +8936,7 @@ struct GraphCanvas: View {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     private let state = AppState()
     private var statusItem: NSStatusItem!
     private var menuBarAnimator: MenuBarAnimator?
@@ -8971,28 +8986,109 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.toolTip = "Cortex"
-        statusItem.button?.action = #selector(toggleMainWindow)
-        statusItem.button?.target = self
-        // A live menu-bar icon: spins while Cortex syncs, breathes when memory is waiting for
-        // review, and rests as a calm brain glyph otherwise.
+        // Clicking the icon opens a live menu (status + quick actions + Quit). The menu is rebuilt
+        // on open via menuNeedsUpdate so counts and status stay current.
+        let menu = NSMenu()
+        menu.delegate = self
+        menu.autoenablesItems = false
+        statusItem.menu = menu
+        // A live menu-bar icon: spins while Cortex syncs, shows the review count when memory is
+        // waiting, flashes a checkmark when a sync completes, and rests as a calm brain otherwise.
         let animator = MenuBarAnimator(statusItem: statusItem) { [weak self] in
-            self?.currentMenuBarMode() ?? .idle
+            self?.currentMenuBarSnapshot() ?? MenuBarSnapshot(syncing: false, realSyncActive: false, pendingCount: 0)
         }
         menuBarAnimator = animator
         animator.start()
     }
 
-    /// Translates the app's live state into the menu-bar's visual mode. A running sync (or any
-    /// in-flight work) spins the icon; otherwise pending review items make it breathe.
-    private func currentMenuBarMode() -> MenuBarMode {
-        if state.syncProgress?.active == true || state.isBusy {
-            return .syncing
+    /// Translates the app's live state into the snapshot the menu-bar icon renders.
+    private func currentMenuBarSnapshot() -> MenuBarSnapshot {
+        let realSync = state.syncProgress?.active == true
+        let pending = state.review?.stats.pending_captures ?? state.inbox.count
+        return MenuBarSnapshot(
+            syncing: realSync || state.isBusy,
+            realSyncActive: realSync,
+            pendingCount: max(0, pending)
+        )
+    }
+
+    // MARK: - Menu-bar menu
+
+    /// Rebuild the status-item menu each time it opens so status text + counts are current.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === statusItem?.menu else { return }
+        menu.removeAllItems()
+
+        let header = NSMenuItem(title: menuStatusTitle(), action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        menu.addItem(header)
+        menu.addItem(.separator())
+
+        addMenuItem(to: menu, title: "Open Cortex", action: #selector(menuOpenCortex), key: "o")
+
+        let pending = state.review?.stats.pending_captures ?? state.inbox.count
+        let reviewTitle = pending > 0 ? "Review (\(pending))" : "Review"
+        addMenuItem(to: menu, title: reviewTitle, action: #selector(menuOpenReview), key: "")
+
+        addMenuItem(to: menu, title: "Ask Cortex", action: #selector(menuOpenAsk), key: "")
+
+        let syncItem = addMenuItem(to: menu, title: "Sync Now", action: #selector(menuSyncNow), key: "")
+        syncItem.isEnabled = !(state.syncProgress?.active == true)
+
+        addMenuItem(to: menu, title: "Connections…", action: #selector(menuOpenConnections), key: "")
+
+        menu.addItem(.separator())
+        addMenuItem(to: menu, title: "Quit Cortex", action: #selector(menuQuit), key: "q")
+    }
+
+    @discardableResult
+    private func addMenuItem(to menu: NSMenu, title: String, action: Selector, key: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        item.target = self
+        item.isEnabled = true
+        menu.addItem(item)
+        return item
+    }
+
+    private func menuStatusTitle() -> String {
+        if state.syncProgress?.active == true {
+            return "Syncing your memory…"
         }
         let pending = state.review?.stats.pending_captures ?? state.inbox.count
         if pending > 0 {
-            return .attention
+            return "\(pending) item\(pending == 1 ? "" : "s") to review"
         }
-        return .idle
+        if (state.stats?.memories ?? 0) > 0 {
+            return "Memory ready"
+        }
+        return "No sources connected yet"
+    }
+
+    @objc private func menuOpenCortex() {
+        showMainWindow()
+    }
+
+    @objc private func menuOpenReview() {
+        state.selectedTab = .review
+        showMainWindow()
+    }
+
+    @objc private func menuOpenAsk() {
+        state.selectedTab = .ask
+        showMainWindow()
+    }
+
+    @objc private func menuSyncNow() {
+        state.syncNowFromMenu()
+    }
+
+    @objc private func menuOpenConnections() {
+        showMainWindow()
+        state.openConnectionsPrivacy()
+    }
+
+    @objc private func menuQuit() {
+        NSApp.terminate(nil)
     }
 
     // A comfortable, desktop-app-sized default derived from the current screen: large on big
