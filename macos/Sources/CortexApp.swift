@@ -2545,6 +2545,12 @@ final class BackendSupervisor {
     /// itself the next time it runs), falling back to /usr/bin/python3 and then PATH.
     @discardableResult
     func installStableMCPBridge() -> URL? {
+        // App Store (sandbox / Guideline 2.5.2): never write or install an executable launcher.
+        // The MAS build connects AI tools via guided MANUAL setup (copy config), so there is no
+        // "3rd party MCP tools installation method" and no launched/installed executable code.
+        if DistributionMode.isAppStore {
+            return nil
+        }
         let manager = FileManager.default
         let bridgeDir = appSupportURL.appendingPathComponent("mcp", isDirectory: true)
         let launcherURL = bridgeDir.appendingPathComponent("cortex-mcp-bridge")
@@ -9402,6 +9408,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         // sheets, and the palette's dynamic colors) to Aqua so it stays light regardless of the
         // system's Dark Mode setting.
         NSApp.appearance = NSAppearance(named: .aqua)
+        setupApplicationMenu()
         setupStatusItem()
         registerGlobalHotKey()
         setupMainWindow()
@@ -9425,6 +9432,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         logApp("applicationWillTerminate")
         unregisterGlobalHotKey()
         BackendSupervisor.shared.terminate()
+    }
+
+    /// A standard macOS main menu. Cortex runs with .regular activation policy (Dock icon +
+    /// menu bar), so App Review requires a proper App menu with a Quit item (Guideline 4) — the
+    /// status-bar menu is not the App menu. We also add Edit (so text fields get Cut/Copy/Paste/
+    /// Select All + Undo) and Window, which reviewers expect from a Mac app.
+    private func setupApplicationMenu() {
+        let mainMenu = NSMenu()
+
+        // App menu (first submenu; title is replaced by the app name at runtime).
+        let appMenuItem = NSMenuItem()
+        mainMenu.addItem(appMenuItem)
+        let appMenu = NSMenu()
+        appMenuItem.submenu = appMenu
+        let appName = ProcessInfo.processInfo.processName
+        appMenu.addItem(withTitle: "About \(appName)", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Hide \(appName)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hideOthers = appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(withTitle: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Quit \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+
+        // Edit menu — standard responder-chain actions so text entry (search, tokens) works.
+        let editMenuItem = NSMenuItem()
+        mainMenu.addItem(editMenuItem)
+        let editMenu = NSMenu(title: "Edit")
+        editMenuItem.submenu = editMenu
+        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+
+        // Window menu.
+        let windowMenuItem = NSMenuItem()
+        mainMenu.addItem(windowMenuItem)
+        let windowMenu = NSMenu(title: "Window")
+        windowMenuItem.submenu = windowMenu
+        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(.separator())
+        windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+
+        NSApp.mainMenu = mainMenu
+        NSApp.windowsMenu = windowMenu
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

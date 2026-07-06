@@ -59,22 +59,22 @@ mkdir -p "$RES/backend"
 cp -R "$ROOT/../backend/app" "$RES/backend/app"
 find "$RES/backend/app" -type d -name "__pycache__" -prune -exec rm -rf {} +
 find "$RES/backend/app" -type f -name "*.pyc" -delete
-if [[ "$DISTRIBUTION_MODE" == "app-store" ]]; then
-  # App-store source protection + App Store 2.5.2 "scripts" surface reduction:
-  # compile the first-party backend to legacy in-place .pyc (next to source) and
-  # delete every .py, shipping bytecode only. This is pragmatic obfuscation — a
-  # determined attacker can decompile .pyc; Nuitka (true native compilation) is
-  # the stronger follow-up. Direct/notarized-DMG mode keeps .py untouched.
-  #
+# Source protection (BOTH distribution modes): compile the first-party backend to legacy
+# in-place .pyc and delete every .py, shipping bytecode only — the plaintext engine no longer
+# ships in the .app/.dmg (previously any user could read Resources/backend/*.py). This is
+# pragmatic obfuscation (a determined attacker can decompile .pyc); Nuitka native compilation
+# is the stronger follow-up (see docs/APPLE_RELEASE.md). App-store mode additionally reduces the
+# Guideline 2.5.2 "scripts" surface. Set CORTEX_SKIP_PYC=1 to opt out (e.g. local debugging).
+if [[ "${CORTEX_SKIP_PYC:-0}" != "1" ]]; then
   # We need a python to compile with: prefer the framework source we're bundling,
   # else any python3 on PATH. compileall -b writes name.pyc beside name.py.
   COMPILE_PY="$PYTHON_FRAMEWORK_SOURCE/bin/python3.12"
   [[ -x "$COMPILE_PY" ]] || COMPILE_PY="$(command -v python3.12 || command -v python3)"
   if [[ -z "$COMPILE_PY" ]]; then
-    echo "ERROR: app-store mode needs a python3 to compile the backend to .pyc" >&2
+    echo "ERROR: source protection needs a python3 to compile the backend to .pyc (set CORTEX_SKIP_PYC=1 to skip)" >&2
     exit 3
   fi
-  echo "app-store: compiling first-party backend to .pyc (source-protection / 2.5.2 scripts reduction)..."
+  echo "compiling first-party backend to .pyc (source protection)..."
   # -b: legacy in-place bytecode (foo.pyc next to foo.py, no __pycache__).
   # -q -q: silence output but still exit non-zero on any compile error.
   "$COMPILE_PY" -m compileall -b -q -q "$RES/backend/app"
