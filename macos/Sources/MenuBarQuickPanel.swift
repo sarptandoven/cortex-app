@@ -28,6 +28,7 @@ struct MenuBarQuickPanel: View {
     @State private var askError: String?
     @State private var savingCapture = false
     @State private var captureSaved = false
+    @State private var captureFailed = false
     @FocusState private var fieldFocused: Bool
     @Namespace private var segment
 
@@ -178,6 +179,11 @@ struct MenuBarQuickPanel: View {
 
             askResultArea
         }
+        .task {
+            // The suggestion chips derive from `state.recent`; the panel can open before the main
+            // window ever loaded it, so fetch once here to keep the idle state alive, not blank.
+            if state.recent.isEmpty { await state.loadRecent() }
+        }
     }
 
     @ViewBuilder
@@ -186,10 +192,39 @@ struct MenuBarQuickPanel: View {
             QuickPanelSkeleton()
                 .transition(.opacity)
         } else if let answer, !answer.answer.isEmpty {
-            ScrollView {
-                AskAnswerPanel(answer: answer.answer, citations: answer.citations)
+            VStack(alignment: .leading, spacing: 6) {
+                ScrollView {
+                    AskAnswerPanel(answer: answer.answer, citations: answer.citations)
+                }
+                .frame(maxHeight: 280)
+                .overlay(alignment: .bottom) {
+                    // Long answers hard-clip at the panel height; a soft fade signals "there's more —
+                    // scroll" without stealing clicks from the content beneath it.
+                    LinearGradient(
+                        colors: [CortexDesign.appBackground.opacity(0), CortexDesign.appBackground],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                    .frame(height: 16)
+                    .allowsHitTesting(false)
+                }
+                HStack {
+                    Spacer()
+                    Button {
+                        // Hand the same question to the full Ask tab so follow-ups don't dead-end
+                        // in the 384pt panel.
+                        state.searchQuery = query
+                        state.selectedTab = .ask
+                        state.runSearch()
+                        onOpenApp()
+                    } label: {
+                        Label("Continue in Cortex", systemImage: "arrow.up.forward.app")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(CortexDesign.accent)
+                }
             }
-            .frame(maxHeight: 300)
             .transition(.opacity.combined(with: .move(edge: .top)))
         } else if let answer, answer.answer.isEmpty {
             quietRow(icon: "sparkles", text: "No cited memory found. Try a different question, or connect more sources.")
@@ -198,9 +233,80 @@ struct MenuBarQuickPanel: View {
             quietRow(icon: "exclamationmark.triangle", text: askError)
                 .transition(.opacity)
         } else {
-            quietRow(icon: "quote.bubble", text: "Ask a question and Cortex answers from your own memory — with citations.")
+            idleContent
                 .transition(.opacity)
         }
+    }
+
+    /// The idle state is alive, not a placeholder: tappable suggested questions from the user's own
+    /// memory, plus the top item waiting for review with one-tap Approve/Archive.
+    private var idleContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            let suggestions = Array(state.onboardingAskSuggestions.prefix(2))
+            if suggestions.isEmpty {
+                quietRow(icon: "quote.bubble", text: "Ask a question and Cortex answers from your own memory — with citations.")
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Try asking")
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.secondary)
+                    ForEach(suggestions, id: \.self) { suggestion in
+                        QuickSuggestionChip(text: suggestion) {
+                            query = suggestion
+                            runAsk()
+                        }
+                    }
+                }
+            }
+            if let pending = state.inbox.first {
+                pendingReviewCard(pending)
+            }
+        }
+    }
+
+    private func pendingReviewCard(_ capture: CaptureItem) -> some View {
+        let inFlight = state.inFlightCaptureIds.contains(capture.id)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "tray.full")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+                Text("Waiting for review")
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
+                Spacer()
+            }
+            Text(cortexCaptureTitle(capture))
+                .font(.caption)
+                .fontWeight(.semibold)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if let summary = capture.summary, !summary.isEmpty {
+                Text(summary)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+            }
+            HStack(spacing: 8) {
+                Button("Approve") { state.approveCapture(capture) }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(inFlight)
+                Button("Archive") { state.archiveCapture(capture) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(inFlight)
+                if inFlight {
+                    ProgressView().controlSize(.small)
+                }
+                Spacer()
+            }
+        }
+        .padding(10)
+        .background(CortexDesign.quietBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
     private var captureContent: some View {
@@ -230,13 +336,20 @@ struct MenuBarQuickPanel: View {
             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
 
             HStack(spacing: 10) {
+                // Honest states: a keyboard hint before anything happens, green only after a
+                // verified save, and a visible (retry-able) failure instead of a silent swallow.
                 if captureSaved {
-                    Label("Saved to memory", systemImage: "checkmark.circle.fill")
+                    Label("Saved — Ask can use it now", systemImage: "checkmark.circle.fill")
                         .font(.caption).fontWeight(.semibold)
                         .foregroundColor(.green)
                         .transition(.scale(scale: 0.8).combined(with: .opacity))
+                } else if captureFailed {
+                    Label("Couldn't save — try again", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .transition(.opacity)
                 } else {
-                    Text("Saved to your memory — Ask can use it right away.")
+                    Text("Press ⌘↩ to save to your memory")
                         .font(.caption).foregroundColor(.secondary)
                 }
                 Spacer()
@@ -280,7 +393,7 @@ struct MenuBarQuickPanel: View {
                          action: onSync, disabled: isSyncing)
             footerAction("Connections", icon: "lock.shield", action: onConnections)
             Spacer(minLength: 0)
-            footerAction("Quit", icon: "power", action: { NSApp.terminate(nil) })
+            QuickFooterQuitButton()
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -288,44 +401,11 @@ struct MenuBarQuickPanel: View {
     }
 
     private func footerAction(_ title: String, icon: String, action: @escaping () -> Void, disabled: Bool = false) -> some View {
-        Button(action: action) {
-            VStack(spacing: 3) {
-                Image(systemName: icon).font(.system(size: 14, weight: .medium))
-                Text(title).font(.system(size: 9.5, weight: .medium))
-            }
-            .frame(width: 58, height: 40)
-            .foregroundColor(.secondary)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .help(title)
+        QuickFooterButton(title: title, icon: icon, disabled: disabled, action: action)
     }
 
     private func footerBadgeAction(_ title: String, icon: String, badge: Int, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 3) {
-                ZStack(alignment: .topTrailing) {
-                    Image(systemName: icon).font(.system(size: 14, weight: .medium))
-                    if badge > 0 {
-                        Text(badge > 99 ? "99+" : String(badge))
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 4).padding(.vertical, 1)
-                            .background(Capsule().fill(Color.orange))
-                            .offset(x: 11, y: -7)
-                            .transition(.scale.combined(with: .opacity))
-                    }
-                }
-                Text(title).font(.system(size: 9.5, weight: .medium))
-            }
-            .frame(width: 58, height: 40)
-            .foregroundColor(badge > 0 ? CortexDesign.accent : .secondary)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(badge > 0 ? "\(badge) waiting for review" : title)
-        .animation(.spring(response: 0.35, dampingFraction: 0.7), value: badge)
+        QuickFooterBadgeButton(title: title, icon: icon, badge: badge, action: action)
     }
 
     // MARK: Actions
@@ -361,11 +441,16 @@ struct MenuBarQuickPanel: View {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !savingCapture else { return }
         savingCapture = true
+        captureFailed = false
         Task {
             let ok = await state.captureFromPanel(text: text)
             await MainActor.run {
                 savingCapture = false
-                guard ok else { return }
+                guard ok else {
+                    // The draft is kept so the user's thought never silently vanishes.
+                    withAnimation(.easeOut(duration: 0.2)) { captureFailed = true }
+                    return
+                }
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                     captureSaved = true
                     draft = ""
@@ -375,6 +460,136 @@ struct MenuBarQuickPanel: View {
                 }
             }
         }
+    }
+}
+
+/// One tappable suggested question in the idle state, built from the user's own memories. Hover
+/// brightens the chip and reveals a return-arrow so "click to ask" is legible before committing.
+private struct QuickSuggestionChip: View {
+    let text: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: "sparkle.magnifyingglass")
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.accent)
+                Text(text)
+                    .font(.caption)
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.turn.down.left")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .opacity(hovering ? 1 : 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(hovering ? CortexDesign.accentSoft : CortexDesign.quietBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovering = h } }
+    }
+}
+
+/// A footer action with a hover affordance: soft rounded highlight + accent icon on hover, so the
+/// row reads as clickable at a glance instead of five identical gray stacks.
+private struct QuickFooterButton: View {
+    let title: String
+    let icon: String
+    var disabled = false
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: icon).font(.system(size: 14, weight: .medium))
+                Text(title).font(.system(size: 9.5, weight: .medium))
+            }
+            .frame(width: 58, height: 40)
+            .foregroundColor(hovering && !disabled ? CortexDesign.accent : .secondary)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(hovering && !disabled ? CortexDesign.quietBackground : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .help(title)
+        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovering = h } }
+    }
+}
+
+/// The Review footer action: same hover treatment as QuickFooterButton, plus the orange
+/// waiting-count badge that keeps the accent tint even when not hovered.
+private struct QuickFooterBadgeButton: View {
+    let title: String
+    let icon: String
+    let badge: Int
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: icon).font(.system(size: 14, weight: .medium))
+                    if badge > 0 {
+                        Text(badge > 99 ? "99+" : String(badge))
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 4).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.orange))
+                            .offset(x: 11, y: -7)
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                }
+                Text(title).font(.system(size: 9.5, weight: .medium))
+            }
+            .frame(width: 58, height: 40)
+            .foregroundColor(badge > 0 || hovering ? CortexDesign.accent : .secondary)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(hovering ? CortexDesign.quietBackground : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(badge > 0 ? "\(badge) waiting for review" : title)
+        .animation(.spring(response: 0.35, dampingFraction: 0.7), value: badge)
+        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovering = h } }
+    }
+}
+
+/// Quit, demoted: icon-only, smaller, and quieter than the primary footer actions — the most
+/// destructive action shouldn't carry the same visual weight as "Open Cortex".
+private struct QuickFooterQuitButton: View {
+    @State private var hovering = false
+
+    var body: some View {
+        Button { NSApp.terminate(nil) } label: {
+            Image(systemName: "power")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(hovering ? .secondary : .secondary.opacity(0.6))
+                .frame(width: 28, height: 40)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(hovering ? CortexDesign.quietBackground : Color.clear)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Quit Cortex")
+        .accessibilityLabel("Quit Cortex")
+        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovering = h } }
     }
 }
 

@@ -3,27 +3,67 @@ import SwiftUI
 struct OnboardingView: View {
     @ObservedObject var state: AppState
     private let steps = OnboardingStep.allCases
+    @State private var celebrating = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            ScrollView {
-                stepContent
-                    .padding(24)
-                    .frame(maxWidth: 640, alignment: .leading)
-                    .frame(maxWidth: .infinity)
-                    .id(state.onboardingStep)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .trailing).combined(with: .opacity),
-                        removal: .move(edge: .leading).combined(with: .opacity)
-                    ))
+        ZStack {
+            VStack(spacing: 0) {
+                header
+                Divider()
+                ScrollView {
+                    stepContent
+                        .padding(24)
+                        .frame(maxWidth: 640, alignment: .leading)
+                        .frame(maxWidth: .infinity)
+                        .id(state.onboardingStep)
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .trailing).combined(with: .opacity),
+                            removal: .move(edge: .leading).combined(with: .opacity)
+                        ))
+                }
+                .animation(.easeInOut(duration: 0.32), value: state.onboardingStep)
+                Divider()
+                footer
             }
-            .animation(.easeInOut(duration: 0.32), value: state.onboardingStep)
-            Divider()
-            footer
+
+            if celebrating {
+                celebrationOverlay
+                    .transition(.opacity)
+            }
         }
         .background(CortexDesign.appBackground)
+    }
+
+    /// A brief full-panel beat acknowledging a completed setup before the sheet closes — and the
+    /// one thing worth remembering (the ⌃⌥Space hotkey) gets its moment.
+    private var celebrationOverlay: some View {
+        VStack(spacing: 14) {
+            OnboardingHeroMark(systemImage: "checkmark.seal.fill", tint: .green)
+            Text("You're all set")
+                .font(.system(size: 24, weight: .bold))
+            Text("Ask anytime — press ⌃⌥Space or click the brain in your menu bar.")
+                .font(.callout)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(CortexDesign.appBackground.opacity(0.97))
+    }
+
+    /// Finish with everything complete earns a short celebration before the sheet closes; the
+    /// "Finish Later" path stays instant.
+    private func finishTapped() {
+        guard !celebrating else { return }
+        guard state.canCompleteOnboarding else {
+            state.finishOnboarding()
+            return
+        }
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) { celebrating = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            state.finishOnboarding()
+        }
     }
 
     private var stepNumber: Int {
@@ -32,6 +72,13 @@ struct OnboardingView: View {
 
     private var heroTint: Color {
         state.onboardingStepIsComplete(state.onboardingStep) ? .green : .accentColor
+    }
+
+    /// Review and Ask are explicitly skippable — mirror the footer's "Skip for now" affordance in
+    /// the header so the step count doesn't read as five mandatory gates.
+    private var currentStepIsOptional: Bool {
+        (state.onboardingStep == .reviewMemory || state.onboardingStep == .askUse)
+            && !state.onboardingStepIsComplete(state.onboardingStep)
     }
 
     private var header: some View {
@@ -49,6 +96,17 @@ struct OnboardingView: View {
                 Text("Step \(stepNumber) of \(steps.count)")
                     .font(.caption)
                     .foregroundColor(.secondary)
+                if currentStepIsOptional {
+                    // Label the skippable steps up front so "Skip for now" reads as legitimate,
+                    // not like giving up — only three of the five steps are actually required.
+                    Text("Optional")
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                        .foregroundColor(CortexDesign.accent)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(CortexDesign.accentSoft))
+                }
                 Button {
                     state.dismissOnboardingForSession()
                 } label: {
@@ -122,7 +180,7 @@ struct OnboardingView: View {
 
             if state.onboardingStep == steps.last {
                 Button {
-                    state.finishOnboarding()
+                    finishTapped()
                 } label: {
                     Label(
                         state.canCompleteOnboarding ? "Finish" : "Finish Later",
@@ -131,6 +189,7 @@ struct OnboardingView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
+                .disabled(celebrating)
             } else {
                 Button {
                     state.nextOnboardingStep()
@@ -244,7 +303,8 @@ struct OnboardingVaultStep: View {
 
             OnboardingHowTo(
                 title: OnboardingStep.privateVault.howToTitle,
-                steps: OnboardingStep.privateVault.howToSteps
+                steps: OnboardingStep.privateVault.howToSteps,
+                initiallyExpanded: true
             )
 
             if state.isLocalServiceReady {
@@ -952,30 +1012,57 @@ struct OnboardingHeroMark: View {
     }
 }
 
-/// A compact, numbered "here's exactly how" panel. Used in every onboarding step so users always
-/// see the concrete actions to take, not just a description.
+/// A compact, numbered "here's exactly how" panel used in every onboarding step. Collapsible so
+/// the help stays one click away without turning steps into walls of text — only the first step
+/// starts expanded (there it IS the content).
 struct OnboardingHowTo: View {
     let title: String
     let steps: [String]
+    @State private var expanded: Bool
+
+    init(title: String, steps: [String], initiallyExpanded: Bool = false) {
+        self.title = title
+        self.steps = steps
+        _expanded = State(initialValue: initiallyExpanded)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label(title, systemImage: "list.number")
-                .font(.subheadline)
-                .fontWeight(.semibold)
-            ForEach(Array(steps.enumerated()), id: \.offset) { index, text in
-                HStack(alignment: .top, spacing: 10) {
-                    Text("\(index + 1)")
-                        .font(.caption)
-                        .fontWeight(.bold)
-                        .foregroundColor(.white)
-                        .frame(width: 20, height: 20)
-                        .background(Circle().fill(Color.accentColor))
-                    Text(text)
-                        .font(.callout)
+            Button {
+                withAnimation(.easeInOut(duration: 0.22)) { expanded.toggle() }
+            } label: {
+                HStack {
+                    Label(title, systemImage: "list.number")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.primary)
+                    Spacer()
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
+                        .rotationEffect(.degrees(expanded ? 0 : -90))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(expanded ? "Collapse: \(title)" : "Expand: \(title)")
+
+            if expanded {
+                ForEach(Array(steps.enumerated()), id: \.offset) { index, text in
+                    HStack(alignment: .top, spacing: 10) {
+                        Text("\(index + 1)")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(.white)
+                            .frame(width: 20, height: 20)
+                            .background(Circle().fill(Color.accentColor))
+                        Text(text)
+                            .font(.callout)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                    .transition(.opacity)
                 }
             }
         }

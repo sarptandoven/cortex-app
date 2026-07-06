@@ -4298,8 +4298,16 @@ final class AppState: ObservableObject {
         }
 
         if !chooseNew, let storedURL = storedObsidianVaultURL() {
-            Task { await syncLocalNotesFolder(connector, folderURL: storedURL, rememberPath: false) }
-            return
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: storedURL.path, isDirectory: &isDirectory),
+               isDirectory.boolValue {
+                Task { await syncLocalNotesFolder(connector, folderURL: storedURL, rememberPath: false) }
+                return
+            }
+            // The remembered folder moved, was renamed, or is on an unmounted disk. Don't silently
+            // no-op — say so and fall through to the picker so the user can re-choose in place.
+            status = "Your notes folder moved or is unavailable — choose it again."
+            connectorLastMessages[connector.id] = "The connected notes folder could not be found. Choose the folder again to resume syncing."
         }
 
         let panel = NSOpenPanel()
@@ -5828,6 +5836,11 @@ final class AppState: ObservableObject {
             defer { inFlightCaptureIds.remove(capture.id) }
             do {
                 _ = try await request(path: "/v1/captures/\(capture.id)/approve", method: "POST")
+                // The POST succeeded, so drop the card now — loadInbox below reassigns the
+                // array anyway; this just makes the slide-out immediate instead of seconds late.
+                withAnimation(.easeOut(duration: 0.25)) {
+                    inbox.removeAll { $0.id == capture.id }
+                }
                 status = "Approved review item"
                 markFirstMemoryReviewed(capture: capture)
                 await drainQueuedMemoryJobs(automatic: true)
@@ -5857,6 +5870,10 @@ final class AppState: ObservableObject {
             defer { inFlightCaptureIds.remove(capture.id) }
             do {
                 _ = try await request(path: "/v1/captures/\(capture.id)/archive", method: "POST")
+                // Same optimistic removal as approveCapture: server confirmed, so animate out now.
+                withAnimation(.easeOut(duration: 0.25)) {
+                    inbox.removeAll { $0.id == capture.id }
+                }
                 status = "Archived review item"
                 await loadInbox()
                 await loadRecent()
@@ -5878,27 +5895,41 @@ final class AppState: ObservableObject {
         let visibleCaptures = Array(captures.prefix(10))
         guard !visibleCaptures.isEmpty else { return }
         Task {
-            do {
-                for capture in visibleCaptures {
+            // Per-item like the single-action path: one failure doesn't abort the rest, each row
+            // shows its own in-flight state, and errors land on the failing capture — not a vague
+            // batch message that leaves the user guessing which items made it.
+            visibleCaptures.forEach { inFlightCaptureIds.insert($0.id) }
+            defer { visibleCaptures.forEach { inFlightCaptureIds.remove($0.id) } }
+            var approved = 0
+            var failed = 0
+            for capture in visibleCaptures {
+                do {
                     _ = try await request(path: "/v1/captures/\(capture.id)/approve", method: "POST")
+                    captureActionErrors[capture.id] = nil
                     markFirstMemoryReviewed(capture: capture)
+                    approved += 1
+                } catch {
+                    captureActionErrors[capture.id] = CortexRecoveryText.failureStatus("Approve", error: error)
+                    failed += 1
                 }
-                status = "Approved \(visibleCaptures.count) visible review item\(visibleCaptures.count == 1 ? "" : "s")"
-                await drainQueuedMemoryJobs(automatic: true)
-                await loadInbox()
-                await loadRecent()
-                await loadStats()
-                await loadGraph()
-                await loadReview()
-                await loadProductLoop()
-                await loadDiagnostics()
-                await loadReliability()
-                await loadTrust()
-                await loadMirrorInsight()
-                await loadProfile()
-            } catch {
-                status = CortexRecoveryText.failureStatus("Batch approve", error: error)
             }
+            if failed == 0 {
+                status = "Approved \(approved) review item\(approved == 1 ? "" : "s")"
+            } else {
+                status = "Approved \(approved), \(failed) failed — see the item\(failed == 1 ? "" : "s") for details"
+            }
+            await drainQueuedMemoryJobs(automatic: true)
+            await loadInbox()
+            await loadRecent()
+            await loadStats()
+            await loadGraph()
+            await loadReview()
+            await loadProductLoop()
+            await loadDiagnostics()
+            await loadReliability()
+            await loadTrust()
+            await loadMirrorInsight()
+            await loadProfile()
         }
     }
 
@@ -5906,23 +5937,34 @@ final class AppState: ObservableObject {
         let visibleCaptures = Array(captures.prefix(10))
         guard !visibleCaptures.isEmpty else { return }
         Task {
-            do {
-                for capture in visibleCaptures {
+            visibleCaptures.forEach { inFlightCaptureIds.insert($0.id) }
+            defer { visibleCaptures.forEach { inFlightCaptureIds.remove($0.id) } }
+            var archived = 0
+            var failed = 0
+            for capture in visibleCaptures {
+                do {
                     _ = try await request(path: "/v1/captures/\(capture.id)/archive", method: "POST")
+                    captureActionErrors[capture.id] = nil
+                    archived += 1
+                } catch {
+                    captureActionErrors[capture.id] = CortexRecoveryText.failureStatus("Archive", error: error)
+                    failed += 1
                 }
-                status = "Archived \(visibleCaptures.count) visible review item\(visibleCaptures.count == 1 ? "" : "s")"
-                await loadInbox()
-                await loadRecent()
-                await loadStats()
-                await loadGraph()
-                await loadReview()
-                await loadProductLoop()
-                await loadDiagnostics()
-                await loadReliability()
-                await loadTrust()
-            } catch {
-                status = CortexRecoveryText.failureStatus("Batch archive", error: error)
             }
+            if failed == 0 {
+                status = "Archived \(archived) review item\(archived == 1 ? "" : "s")"
+            } else {
+                status = "Archived \(archived), \(failed) failed — see the item\(failed == 1 ? "" : "s") for details"
+            }
+            await loadInbox()
+            await loadRecent()
+            await loadStats()
+            await loadGraph()
+            await loadReview()
+            await loadProductLoop()
+            await loadDiagnostics()
+            await loadReliability()
+            await loadTrust()
         }
     }
 

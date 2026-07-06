@@ -16,10 +16,14 @@ struct AskTab: View {
                     AskMemoryContextStrip(state: state)
 
                     if state.isBusy {
-                        AskLoadingCard()
+                        AskLoadingCard(query: state.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines))
                     } else if let askError = state.askError {
                         AskErrorCard(state: state, message: askError)
-                    } else if state.hasSearched {
+                    } else if state.hasSearched,
+                              !state.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        // Only show an answer that matches the query in the box — a result carried
+                        // over from onboarding (shared state) with an empty field here reads as a
+                        // stale answer the user never asked for on this screen.
                         AskResponseSection(
                             state: state,
                             citedMemoriesExpanded: $citedMemoriesExpanded
@@ -31,6 +35,7 @@ struct AskTab: View {
                             detail: "Ask about a project, person, decision, or detail from your reviewed notes. Cortex answers with sources.",
                             showActionsWhenMemoryExists: false
                         )
+                        AskSuggestedQuestions(state: state)
                     }
                 } else {
                     AskEmptyGuidance(
@@ -63,6 +68,8 @@ struct AskTab: View {
         await state.loadSourceConnectivity()
         await state.loadReview()
         await state.loadStats()
+        // Suggested questions derive from recent memory — load it so the chips have data.
+        await state.loadRecent()
     }
 
     private var hasReviewedMemory: Bool {
@@ -98,7 +105,7 @@ struct AskHeaderSection: View {
             Text("Ask Cortex")
                 .font(.title3)
                 .fontWeight(.semibold)
-            Text("Cortex answers from reviewed notes and shows sources.")
+            Text("Every answer shows its sources.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -107,17 +114,21 @@ struct AskHeaderSection: View {
 
 struct AskQuerySection: View {
     @ObservedObject var state: AppState
+    @FocusState private var queryFocused: Bool
 
     private var trimmedQuery: String {
         state.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     var body: some View {
-        HStack(spacing: CortexDesign.Space.md) {
-            TextField("Ask about a project, person, decision, or phrase", text: $state.searchQuery)
-                .textFieldStyle(.roundedBorder)
+        HStack(spacing: CortexDesign.Space.sm) {
+            Image(systemName: "magnifyingglass")
                 .font(.title3)
-                .frame(minHeight: 52)
+                .foregroundColor(queryFocused ? CortexDesign.accent : .secondary)
+            TextField("Ask about a project, person, or decision", text: $state.searchQuery)
+                .textFieldStyle(.plain)
+                .font(.title2)
+                .focused($queryFocused)
                 .onSubmit {
                     guard !state.isBusy, !trimmedQuery.isEmpty else { return }
                     state.runSearch()
@@ -129,19 +140,47 @@ struct AskQuerySection: View {
                         state.clearAskResults()
                     }
                 }
+            if !state.searchQuery.isEmpty {
+                Button {
+                    state.searchQuery = ""
+                    queryFocused = true
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear")
+            }
             Button {
                 state.runSearch()
             } label: {
-                Label("Ask", systemImage: "magnifyingglass")
-                    .frame(minWidth: 104, minHeight: 52)
+                Text("Ask")
+                    .fontWeight(.semibold)
+                    .frame(minWidth: 76, minHeight: 40)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .disabled(state.isBusy || trimmedQuery.isEmpty)
         }
-        .cortexCard(padding: CortexDesign.Space.md, background: CortexDesign.panelBackground)
+        .padding(.horizontal, CortexDesign.Space.md)
+        .padding(.vertical, CortexDesign.Space.sm)
+        .frame(minHeight: 60)
+        .background(CortexDesign.panelBackground)
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                .stroke(queryFocused ? CortexDesign.accent.opacity(0.55) : CortexDesign.softBorder,
+                        lineWidth: queryFocused ? 1.5 : 1)
+        )
+        .animation(.easeOut(duration: 0.15), value: queryFocused)
+        .onAppear {
+            // Focus after the field joins the hierarchy — an immediate assignment is
+            // silently dropped on macOS 13.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                queryFocused = true
+            }
+        }
     }
-
 }
 
 struct AskMemoryContextStrip: View {
@@ -438,13 +477,23 @@ private func shortDate(_ value: String) -> String {
 }
 
 struct AskLoadingCard: View {
+    var query: String = ""
+
     var body: some View {
         HStack(spacing: 12) {
             ProgressView()
                 .controlSize(.small)
-            Text("Searching…")
-                .font(.body)
-                .foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Finding a cited answer…")
+                    .font(.body)
+                if !query.isEmpty {
+                    Text("\u{201C}\(query)\u{201D}")
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -524,17 +573,22 @@ struct AskResponseSection: View {
             }
 
             if !state.searchResults.isEmpty {
-                DisclosureGroup(memoryDisclosureTitle, isExpanded: $citedMemoriesExpanded) {
+                // Quiet secondary label on the toggle only — the rows inside keep full contrast.
+                DisclosureGroup(isExpanded: $citedMemoriesExpanded) {
                     AskResultsSection(state: state)
                         .frame(maxHeight: 280)
                         .padding(.top, 8)
+                } label: {
+                    Text(memoryDisclosureTitle)
+                        .font(.callout)
+                        .foregroundColor(.secondary)
                 }
             }
         }
     }
 
     private var memoryDisclosureTitle: String {
-        "Sources (\(state.searchResults.count))"
+        "Related memory (\(state.searchResults.count))"
     }
 }
 
@@ -627,6 +681,65 @@ struct AskEmptyGuidance: View {
         if state.notesNeedContent { return "folder.badge.questionmark" }
         if state.hasConnectedObsidianVault || state.hasConnectedSourceAccount { return "arrow.triangle.2.circlepath" }
         return "folder.badge.plus"
+    }
+}
+
+/// Clickable "Try asking" questions drawn from the user's own reviewed memory —
+/// one click gets a first cited answer instead of a blank page.
+struct AskSuggestedQuestions: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        let suggestions = state.onboardingAskSuggestions
+        if !suggestions.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Try asking")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
+                ForEach(suggestions, id: \.self) { suggestion in
+                    AskSuggestionChip(text: suggestion) {
+                        state.searchQuery = suggestion
+                        state.runSearch()
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct AskSuggestionChip: View {
+    let text: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkle.magnifyingglass")
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.accent)
+                Text(text)
+                    .font(.callout)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.right")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .opacity(hovering ? 1 : 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(hovering ? CortexDesign.accentSoft : CortexDesign.panelBackground)
+            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                    .stroke(CortexDesign.hairline, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
     }
 }
 
@@ -736,6 +849,7 @@ struct AskAnswerPanel: View {
     let citations: [AskCitationItem]
 
     @State private var showAllCitations = false
+    @State private var justCopied = false
 
     private static let collapsedCitationCount = 3
 
@@ -749,6 +863,17 @@ struct AskAnswerPanel: View {
                 Label("Answer", systemImage: "quote.bubble")
                     .font(.headline)
                 Spacer()
+                Button {
+                    copyAnswerWithSources()
+                } label: {
+                    Label(justCopied ? "Copied" : "Copy",
+                          systemImage: justCopied ? "checkmark" : "doc.on.doc")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(justCopied)
+                .help("Copy the answer with its sources")
             }
             Text(answer)
                 .font(.body)
@@ -781,12 +906,35 @@ struct AskAnswerPanel: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .onChange(of: answer) { _ in
             showAllCitations = false
+            justCopied = false
+        }
+    }
+
+    private func copyAnswerWithSources() {
+        var text = answer
+        if !citations.isEmpty {
+            let lines = citations.map { citation -> String in
+                let label = CitationDisplay.label(
+                    path: citation.citation_path,
+                    sourceURL: citation.source_url,
+                    fallback: citation.source
+                ) ?? citation.source
+                return "[\(citation.index)] \(label)"
+            }
+            text += "\n\nSources:\n" + lines.joined(separator: "\n")
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        justCopied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            justCopied = false
         }
     }
 }
 
 struct AskCitationRow: View {
     let citation: AskCitationItem
+    @State private var hovering = false
 
     /// The user-openable source for this citation, if any. Internal-only provenance
     /// (e.g. cortex-capture://) returns nil and the row stays plain text.
@@ -846,23 +994,32 @@ struct AskCitationRow: View {
             }
             Spacer(minLength: 0)
         }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(hovering && openable ? CortexDesign.accentSoft : Color.clear)
+        )
         .contentShape(Rectangle())
+        .onHover { inside in
+            hovering = inside
+        }
     }
 
     private var sourceLabel: String {
+        // Line numbers are NOT passed here — sourceDetail owns the line label in all cases, so the
+        // range can never print twice ("file.md - line 12" + "Line 12").
         CitationDisplay.label(
             path: citation.citation_path,
             sourceURL: citation.source_url,
-            fallback: citation.source,
-            lineStart: citation.line_start,
-            lineEnd: citation.line_end
+            fallback: citation.source
         ) ?? citation.source
     }
 
     private var sourceDetail: String? {
         let pieces = [
             citation.section_title?.trimmingCharacters(in: .whitespacesAndNewlines),
-            citation.citation_path == nil ? lineLabel : nil,
+            lineLabel,
             citation.record_scope?.trimmingCharacters(in: .whitespacesAndNewlines)
         ]
         let detail = pieces.compactMap { value -> String? in
@@ -881,6 +1038,9 @@ struct AskCitationRow: View {
     }
 
     private var excerpt: String {
-        citation.excerpt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = citation.excerpt.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A bare file path adds nothing under a row that already names the source — suppress it.
+        if MemoryText.isPathLike(raw) { return "" }
+        return raw
     }
 }

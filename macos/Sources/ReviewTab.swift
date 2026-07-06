@@ -343,8 +343,25 @@ struct ReviewInboxSection: View {
                     Text(queueDetail)
                         .font(.callout)
                         .foregroundColor(.secondary)
+                    if !captures.isEmpty {
+                        Text("⌘↩ approves the top item · ⌘⌫ archives it")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
                 Spacer()
+                if captures.count > 1 {
+                    Button {
+                        state.approveCaptures(visibleCaptures)
+                    } label: {
+                        Label("Approve \(visibleCount) shown", systemImage: "checkmark.seal")
+                            .frame(minHeight: 40)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .disabled(!state.inFlightCaptureIds.isEmpty)
+                    .help("Approve every item shown below")
+                }
             }
             .onChange(of: captures.count) { _ in
                 // Reset pagination when the list changes (after approve/archive/sync) so the
@@ -366,8 +383,13 @@ struct ReviewInboxSection: View {
                             isInFlight: state.inFlightCaptureIds.contains(capture.id),
                             actionError: state.captureActionErrors[capture.id],
                             approve: { state.approveCapture(capture) },
-                            archive: { state.archiveCapture(capture) }
+                            archive: { state.archiveCapture(capture) },
+                            isTopItem: capture.id == visibleCaptures.first?.id
                         )
+                        .transition(.asymmetric(
+                            insertion: .opacity,
+                            removal: .move(edge: .trailing).combined(with: .opacity)
+                        ))
                     }
 
                     if captures.count > visibleCount {
@@ -381,6 +403,7 @@ struct ReviewInboxSection: View {
                         .controlSize(.large)
                     }
                 }
+                .animation(.spring(response: 0.35, dampingFraction: 0.8), value: captures.map(\.id))
             }
         }
     }
@@ -435,7 +458,11 @@ struct ReviewEmptyState: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            QuietState(title: emptyTitle, detail: detail)
+            if approvedMemoryCount > 0 {
+                ReviewAllClearState()
+            } else {
+                QuietState(title: emptyTitle, detail: detail)
+            }
 
             HStack(spacing: 10) {
                 if approvedMemoryCount > 0 {
@@ -491,6 +518,36 @@ struct ReviewEmptyState: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .center)
+        }
+    }
+}
+
+struct ReviewAllClearState: View {
+    @State private var appeared = false
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "checkmark.seal.fill")
+                .font(.system(size: 34))
+                .foregroundColor(.green)
+                .scaleEffect(appeared ? 1 : 0.5)
+                .opacity(appeared ? 1 : 0)
+            Text("All caught up")
+                .font(.title3)
+                .fontWeight(.semibold)
+            Text("Everything you approved is ready to use in Ask.")
+                .font(.body)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 460)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 26)
+        .padding(.horizontal, 18)
+        .background(CortexDesign.panelBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .onAppear {
+            withAnimation(.spring(response: 0.45, dampingFraction: 0.6)) { appeared = true }
         }
     }
 }
@@ -582,7 +639,11 @@ struct ReviewQueueCaptureCard: View {
     var actionError: String? = nil
     let approve: () -> Void
     let archive: () -> Void
+    var isTopItem: Bool = false
     @State private var confirmArchive = false
+    @State private var isHovered = false
+    // Flips on the first confirmed archive so triage is one click after one informed consent.
+    @AppStorage("cortex.review.archiveConfirmedOnce") private var archiveConfirmedOnce = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -609,8 +670,6 @@ struct ReviewQueueCaptureCard: View {
 
             ReviewQueuePreviewList(capture: capture)
 
-            Divider()
-
             ReviewQueueSourceBox(capture: capture)
 
             if let actionError, !actionError.isEmpty {
@@ -627,7 +686,11 @@ struct ReviewQueueCaptureCard: View {
                 }
                 Spacer()
                 Button {
-                    confirmArchive = true
+                    if archiveConfirmedOnce {
+                        archive()
+                    } else {
+                        confirmArchive = true
+                    }
                 } label: {
                     Label("Archive", systemImage: "archivebox")
                         .frame(minWidth: 132, minHeight: 48)
@@ -635,17 +698,20 @@ struct ReviewQueueCaptureCard: View {
                 .controlSize(.large)
                 .buttonStyle(.bordered)
                 .disabled(isInFlight)
+                // Optional-shortcut overload (macOS 12.3+): only the top card answers ⌘⌫.
+                .keyboardShortcut(isTopItem ? KeyboardShortcut(.delete, modifiers: .command) : nil)
                 .confirmationDialog(
                     "Archive this review item?",
                     isPresented: $confirmArchive,
                     titleVisibility: .visible
                 ) {
                     Button("Archive", role: .destructive) {
+                        archiveConfirmedOnce = true
                         archive()
                     }
                     Button("Cancel", role: .cancel) {}
                 } message: {
-                    Text("Cortex will not remember this item, and archiving cannot be undone from here. To keep it, choose Approve instead.")
+                    Text("Cortex won't remember archived items. Your original note stays in your source. We'll only ask this once.")
                 }
                 Button {
                     approve()
@@ -656,9 +722,14 @@ struct ReviewQueueCaptureCard: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .disabled(isInFlight)
+                .keyboardShortcut(isTopItem ? KeyboardShortcut(.return, modifiers: .command) : nil)
             }
         }
         .cortexCard(padding: CortexDesign.Space.lg, background: CortexDesign.panelBackground)
+        .shadow(color: Color.black.opacity(isHovered ? 0.07 : 0), radius: 10, y: 3)
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.15)) { isHovered = hovering }
+        }
     }
 
     private var title: String {
@@ -743,32 +814,27 @@ struct ReviewQueueSourceBox: View {
     let capture: CaptureItem
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: "doc.text.magnifyingglass")
-                    .foregroundColor(.secondary)
-                Text("From \(sourceName)")
-                    .font(.callout)
-                    .fontWeight(.semibold)
-                Spacer(minLength: 0)
-            }
-
-            if let capturedDate = capturedDate {
-                Text("Added \(capturedDate)")
-                    .font(.callout)
-                    .foregroundColor(.secondary)
-            }
-
-            if let citation = citation {
-                Label(citation, systemImage: "link")
-                    .font(.callout)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(capture.source_url ?? citation)
-            }
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "doc.text")
+                .font(.callout)
+                .foregroundColor(.secondary)
+                .accessibilityHidden(true)
+            Text(line)
+                .font(.callout)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(capture.source_url ?? capture.source)
+            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var line: String {
+        var text = "From \(sourceName)"
+        if let capturedDate = capturedDate {
+            text += " · added \(capturedDate)"
+        }
+        return text
     }
 
     private var sourceName: String {
@@ -785,10 +851,6 @@ struct ReviewQueueSourceBox: View {
             return nil
         }
         return String(capturedAt.prefix(10))
-    }
-
-    private var citation: String? {
-        CitationDisplay.label(sourceURL: capture.source_url)
     }
 }
 

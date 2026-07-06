@@ -114,10 +114,11 @@ private struct ConnectionsPrivacyOverview: View {
                 ConnectionsOverviewHero(state: state)
 
                 ConnectionsObsidianSection(state: state)
-                // Source-connection options (the connections library + ChatGPT/Claude import) must be
-                // available even on first run — a user who doesn't want the local notes folder needs a
-                // way to connect any other source to get past onboarding. Only the privacy/trust and
+                // The two easy paths in (notes folder, chat import) stay visible at top level, even
+                // on first run — a user who doesn't want the local notes folder needs a way to
+                // connect any other source to get past onboarding. Only the privacy/trust and
                 // advanced controls wait until at least one source is connected.
+                AIChatsImportCard(state: state)
                 otherSourceConnections
                 if !state.firstRunNeedsSource {
                     if state.connectedAIIntegrationCount > 0 {
@@ -160,10 +161,11 @@ private struct ConnectionsPrivacyOverview: View {
                 .padding(.top, 10)
         } label: {
             ConnectionsDisclosureLabel(
-                systemImage: "link.badge.plus",
-                title: "More connections",
+                systemImage: "square.grid.2x2",
+                title: "Add more sources",
                 detail: advancedSourceDisclosureDetail
             )
+            .accessibilityLabel("Add more sources — Connections library")
         }
         .padding(14)
         .background(connectionsPanelBackground)
@@ -176,7 +178,15 @@ private struct ConnectionsPrivacyOverview: View {
         if extraSources > 0 {
             return "\(extraSources) extra source\(extraSources == 1 ? "" : "s") connected"
         }
-        return "Optional services with read-only sync"
+        let wired = state.sourceConnectorCatalog.filter {
+            state.isDirectConnectorSyncWired($0) && $0.id != "obsidian"
+        }
+        let names = wired.prefix(3).map(\.name)
+        guard !names.isEmpty else { return "Optional extras — connect any time" }
+        let more = wired.count - names.count
+        return more > 0
+            ? "\(names.joined(separator: ", ")) + \(more) more — optional"
+            : "\(names.joined(separator: ", ")) — optional"
     }
 
     private var optionalAITools: some View {
@@ -385,6 +395,45 @@ private struct ConnectionsOverviewHero: View {
     }
 
     var body: some View {
+        // Once notes are healthy the big hero has done its job — collapse it to a slim
+        // one-line confirmation so the next actions (import chats, add sources) rise into view.
+        if notesConnected {
+            connectedBar
+        } else {
+            fullHero
+        }
+    }
+
+    private var connectedBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.seal.fill")
+                .foregroundColor(.green)
+                .font(.title3)
+            Text("Notes connected")
+                .font(.headline)
+            Text("New memory goes to Review first.")
+                .font(.callout)
+                .foregroundColor(.secondary)
+            Spacer(minLength: 8)
+            Button {
+                runPrimaryAction()
+            } label: {
+                Label(state.hasConnectedObsidianVault ? "Sync now" : "Reconnect",
+                      systemImage: "arrow.triangle.2.circlepath")
+                    .frame(minHeight: 36)
+            }
+            .buttonStyle(.bordered)
+            .disabled(primaryActionDisabled)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(connectionsPanelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var fullHero: some View {
         HStack(alignment: .center, spacing: 18) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
@@ -654,10 +703,9 @@ private struct ConnectionsDirectSourcesSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            AIChatsImportCard(state: state)
             SectionHeader(
                 title: "Connections library",
-                detail: "Browse and connect optional read-only services. Search, pick one, and Cortex shows exactly how to connect it. Everything here is optional and syncs into your memory."
+                detail: "All optional. Everything you connect stays on this Mac."
             )
 
             if state.sourceConnectorCatalog.isEmpty {
@@ -693,7 +741,11 @@ private struct ConnectionsDirectSourcesSection: View {
                                 .font(.caption2)
                                 .fontWeight(.semibold)
                                 .foregroundColor(.secondary)
-                            ForEach(group.connectors) { connector in
+                            // Full management rows only for connectors the user has actually
+                            // touched; everything else browses as a compact app-store shelf.
+                            let managedConnectors = group.connectors.filter { isManaged($0) }
+                            let availableConnectors = group.connectors.filter { !isManaged($0) }
+                            ForEach(managedConnectors) { connector in
                                 ConnectionsDirectSourceRow(
                                     state: state,
                                     connector: connector,
@@ -702,6 +754,19 @@ private struct ConnectionsDirectSourcesSection: View {
                                         selectedTokenConnector = connector
                                     }
                                 )
+                            }
+                            if !availableConnectors.isEmpty {
+                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 10)], spacing: 10) {
+                                    ForEach(availableConnectors) { connector in
+                                        ConnectorLibraryTile(
+                                            connector: connector,
+                                            enabled: !(connector.connectionSetup?.supportsManagedOAuth == true
+                                                       && !state.managedOAuthIsConfigured(connector))
+                                        ) {
+                                            libraryAction(connector)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -726,6 +791,88 @@ private struct ConnectionsDirectSourcesSection: View {
             account.source == connector.id || (connector.source_ids ?? []).contains(account.source)
         }
     }
+
+    /// Connected, paused, or configured connectors keep the full management row;
+    /// untouched connectors render as compact library tiles instead.
+    private func isManaged(_ connector: SourceConnectorCatalogItem) -> Bool {
+        isConnected(connector)
+            || state.disconnectedSourceAccount(connector) != nil
+            || state.hasStoredDirectConnectorConfig(connector)
+    }
+
+    private func libraryAction(_ connector: SourceConnectorCatalogItem) {
+        if connector.connectionSetup?.supportsManagedOAuth == true {
+            if state.managedOAuthIsConfigured(connector) {
+                state.startManagedOAuthConnector(connector)
+            }
+            return
+        }
+        switch connector.id {
+        case "calendar":
+            state.connectCalendarFile(connector)
+        case "zotero":
+            state.syncZoteroLocal(connector)
+        default:
+            selectedTokenConnector = connector
+        }
+    }
+}
+
+/// Compact, hoverable "app store" tile for a connector the user hasn't set up yet.
+/// Management chrome (Sync / Pause / Remove) only appears once a connector is connected.
+private struct ConnectorLibraryTile: View {
+    let connector: SourceConnectorCatalogItem
+    let enabled: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 8) {
+                Image(systemName: connectorLibraryIcon(connector.id))
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundColor(enabled ? CortexDesign.accent : .secondary)
+                Text(connector.name)
+                    .font(.headline)
+                    .foregroundColor(.primary)
+                Text(connector.category ?? "Read-only sync")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Spacer(minLength: 0)
+                Text(enabled ? "Set up" : "Coming soon")
+                    .font(.callout)
+                    .fontWeight(.semibold)
+                    .foregroundColor(enabled ? CortexDesign.accent : .secondary)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, minHeight: 118, alignment: .topLeading)
+            .background(hovering && enabled ? CortexDesign.accentSoft : CortexDesign.cardBackground)
+            .overlay(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm).stroke(CortexDesign.softBorder, lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .help(enabled ? "Connect \(connector.name)" : "\(connector.name) sign-in isn't available in this build yet.")
+    }
+}
+
+/// Shared connector glyphs for the library tiles and the management rows.
+private func connectorLibraryIcon(_ id: String) -> String {
+    switch id {
+    case "calendar": return "calendar"
+    case "gmail", "outlook": return "envelope.fill"
+    case "google-drive": return "folder.fill"
+    case "zotero": return "books.vertical.fill"
+    case "notion": return "doc.richtext"
+    case "slack": return "bubble.left.and.bubble.right.fill"
+    case "github": return "chevron.left.forwardslash.chevron.right"
+    case "readwise": return "highlighter"
+    case "raindrop": return "bookmark.fill"
+    case "linear", "jira": return "checklist.checked"
+    default: return "link.circle.fill"
+    }
 }
 
 /// Import your ChatGPT / Claude history. There's no live sign-in for these (the providers don't
@@ -736,9 +883,8 @@ private struct AIChatsImportCard: View {
     @State private var isTargeted = false
 
     private let steps = [
-        "In ChatGPT: Settings → Data controls → Export data (Claude: Settings → Account → Export data).",
-        "Download the export email's .zip — it contains conversations.json.",
-        "Drop it below, or click Choose export file. Cortex imports it into your memory right away."
+        "In ChatGPT: Settings → Data controls → Export data. In Claude: Settings → Privacy → Export data.",
+        "You'll get an email with a .zip — download it, then drop it above or click Choose export file."
     ]
 
     var body: some View {
@@ -748,8 +894,8 @@ private struct AIChatsImportCard: View {
                     .font(.title3)
                     .foregroundColor(.accentColor)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("AI chats — ChatGPT & Claude").font(.headline)
-                    Text("These have no live sign-in, so import your export. It becomes usable immediately.")
+                    Text("Import your ChatGPT or Claude chats").font(.headline)
+                    Text("Drop your export file here — it's ready to use right away.")
                         .font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
@@ -766,13 +912,6 @@ private struct AIChatsImportCard: View {
                 }
                 .padding(10)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.10)))
-            }
-
-            ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
-                HStack(alignment: .top, spacing: 8) {
-                    Text("\(index + 1).").font(.caption).fontWeight(.semibold).foregroundColor(.accentColor).monospacedDigit()
-                    Text(step).font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
             }
 
             RoundedRectangle(cornerRadius: 10)
@@ -805,6 +944,21 @@ private struct AIChatsImportCard: View {
                     }
                     return true
                 }
+
+            // The export walkthrough stays one click away for those who need it.
+            DisclosureGroup("How do I get my export?") {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                        HStack(alignment: .top, spacing: 8) {
+                            Text("\(index + 1).").font(.caption).fontWeight(.semibold).foregroundColor(.accentColor).monospacedDigit()
+                            Text(step).font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                .padding(.top, 6)
+            }
+            .font(.caption)
+            .foregroundColor(.secondary)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -820,6 +974,7 @@ private struct ConnectionsDirectSourceRow: View {
     let openTokenSetup: () -> Void
     @State private var confirmRemove = false
     @State private var confirmPause = false
+    @State private var hovering = false
 
     private var isSyncing: Bool {
         state.connectorSyncingIDs.contains(connector.id)
@@ -1007,9 +1162,11 @@ private struct ConnectionsDirectSourceRow: View {
             }
         }
         .padding(14)
-        .background(connectionsPanelBackground)
+        .background(hovering ? CortexDesign.accentSoft.opacity(0.5) : connectionsPanelBackground)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
     }
 
     private var statusTitle: String {
@@ -1064,19 +1221,7 @@ private struct ConnectionsDirectSourceRow: View {
     }
 
     private var sourceIcon: String {
-        switch connector.id {
-        case "calendar": return "calendar"
-        case "gmail", "outlook": return "envelope.fill"
-        case "google-drive": return "folder.fill"
-        case "zotero": return "books.vertical.fill"
-        case "notion": return "doc.richtext"
-        case "slack": return "bubble.left.and.bubble.right.fill"
-        case "github": return "chevron.left.forwardslash.chevron.right"
-        case "readwise": return "highlighter"
-        case "raindrop": return "bookmark.fill"
-        case "linear", "jira": return "checklist.checked"
-        default: return "link.circle.fill"
-        }
+        connectorLibraryIcon(connector.id)
     }
 
     private var detail: String {
@@ -1884,7 +2029,11 @@ private struct ConnectionsAIToolsSection: View {
 
                 Spacer(minLength: 8)
 
-                if !detectedConnectable.isEmpty {
+                if !detectedConnectable.isEmpty, !DistributionMode.isAppStore {
+                    // Automatic config-file install only works outside the App Store sandbox; in
+                    // App Store builds installDetectedIntegrations() is a no-op, so showing this
+                    // prominent button there was a dead end. Those builds get the copy-guide path
+                    // below instead.
                     Button {
                         state.installDetectedIntegrations()
                     } label: {
@@ -1893,6 +2042,16 @@ private struct ConnectionsAIToolsSection: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
+                } else if !detectedConnectable.isEmpty {
+                    Button {
+                        state.copyMCPConfig()
+                    } label: {
+                        Label("Copy setup config", systemImage: "doc.on.doc")
+                            .frame(minWidth: 138, minHeight: 46)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .help("Copies the tool configuration to paste into your AI app's settings.")
                 } else {
                     Button {
                         state.refreshIntegrationStates()
@@ -1984,7 +2143,7 @@ private struct ConnectionsPrivacyDefaultsSection: View {
             HStack(alignment: .center) {
                 SectionHeader(
                     title: "Backup & privacy",
-                    detail: "Review first, reviewed AI reads, AI saves to Review, and local backups."
+                    detail: "New memory waits for your approval, and everything stays on this Mac."
                 )
                 Spacer(minLength: 12)
                 Button {

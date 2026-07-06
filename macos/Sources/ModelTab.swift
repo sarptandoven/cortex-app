@@ -9,18 +9,27 @@ struct ModelTab: View {
             VStack(alignment: .leading, spacing: 16) {
                 if let progress = state.syncProgress, progress.active {
                     SyncProgressCard(progress: progress)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
+                HomeHeroSection(state: state, review: state.review)
                 if state.mirrorInsight != nil {
                     MirrorMomentCard(state: state)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
                 if let profile = state.profile, !profile.sections.isEmpty {
+                    SectionHeader(
+                        title: "What Cortex has learned",
+                        detail: "From your notes — every line can show where it came from."
+                    )
+                    .padding(.top, CortexDesign.Space.sm)
                     ForEach(profile.sections) { section in
                         ProfileCard(section: section)
                     }
                 }
-                HomeHeroSection(state: state, review: state.review)
             }
             .padding(16)
+            .animation(.easeInOut(duration: 0.25), value: state.mirrorInsight)
+            .animation(.easeInOut(duration: 0.25), value: state.syncProgress)
         }
         .background(CortexDesign.appBackground)
     }
@@ -145,6 +154,8 @@ struct MirrorMomentCard: View {
 struct ProfileCard: View {
     let section: ProfileSection
 
+    @State private var showSources = false
+
     /// At most three grounding elements, and only those with something to show.
     private var visibleElements: [ProfileElement] {
         Array(section.elements.filter { ($0.text?.isEmpty == false) }.prefix(3))
@@ -172,17 +183,37 @@ struct ProfileCard: View {
 
             if let statement = section.statement, !statement.isEmpty {
                 Text(statement)
-                    .font(.system(size: 21, weight: .semibold))
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(.primary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: 620, alignment: .leading)
             }
 
             if !visibleElements.isEmpty {
-                VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
-                    ForEach(visibleElements) { element in
-                        ProfileElementRow(element: element)
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) { showSources.toggle() }
+                } label: {
+                    HStack(spacing: CortexDesign.Space.xs) {
+                        Image(systemName: "chevron.right")
+                            .font(.caption2.weight(.semibold))
+                            .rotationEffect(.degrees(showSources ? 90 : 0))
+                        Text(showSources ? "Hide sources" : "Where this comes from (\(visibleElements.count))")
                     }
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundColor(CortexDesign.accent)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(showSources ? "Hide sources" : "Show \(visibleElements.count) sources")
+
+                if showSources {
+                    VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
+                        ForEach(visibleElements) { element in
+                            ProfileElementRow(element: element)
+                        }
+                    }
+                    .transition(.opacity)
                 }
             }
         }
@@ -526,30 +557,49 @@ struct HomeHeroSection: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .disabled(state.isBusy)
-                // The action explanation lives in the tooltip — the headline + detail above already
-                // say what's next, so repeating it beside the button just added noise.
-                .help(actionDetail)
+
+                Text(actionDetail)
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Spacer(minLength: 0)
             }
 
-            VStack(alignment: .leading, spacing: CortexDesign.Space.xs) {
-                HomeStatusRow(
-                    title: "Source",
-                    detail: sourceStatus.detail,
-                    systemImage: sourceStatus.systemImage,
-                    color: sourceStatus.color
-                )
-                Divider().overlay(CortexDesign.hairline)
-                HomeStatusRow(
-                    title: "Memory",
-                    detail: memoryStatus.detail,
-                    systemImage: memoryStatus.systemImage,
-                    color: memoryStatus.color
-                )
+            if state.isLocalServiceReady && activeSources == 0 && !hasMemory && !hasEmptySource && pendingCount == 0 {
+                // Brand-new users get the product model in one glance instead of
+                // two gray "not connected / no memory" rows.
+                HStack(spacing: CortexDesign.Space.lg) {
+                    HomeStep(number: 1, text: "Connect notes")
+                    HomeStep(number: 2, text: "Review what it learns")
+                    HomeStep(number: 3, text: "Ask, with sources")
+                }
+                .cortexCard(padding: CortexDesign.Space.md)
+                .frame(maxWidth: 620, alignment: .leading)
+            } else {
+                VStack(alignment: .leading, spacing: CortexDesign.Space.xs) {
+                    HomeStatusRow(
+                        title: "Source",
+                        detail: sourceStatus.detail,
+                        systemImage: sourceStatus.systemImage,
+                        color: sourceStatus.color,
+                        action: { state.openConnectionsPrivacy(statusMessage: "Source status") }
+                    )
+                    Divider().overlay(CortexDesign.hairline)
+                    HomeStatusRow(
+                        title: "Memory",
+                        detail: memoryStatus.detail,
+                        systemImage: memoryStatus.systemImage,
+                        color: memoryStatus.color,
+                        action: (pendingCount > 0 || memoryCount > 0)
+                            ? { state.selectedTab = pendingCount > 0 ? .review : .ask }
+                            : nil
+                    )
+                }
+                .cortexCard()
+                .frame(maxWidth: 620, alignment: .leading)
             }
-            .cortexCard()
-            .frame(maxWidth: 620, alignment: .leading)
         }
         .padding(.vertical, CortexDesign.Space.xl)
         .padding(.horizontal, CortexDesign.Space.xs)
@@ -619,13 +669,57 @@ struct HomeHeroSection: View {
     }
 }
 
+/// One numbered step in the first-run "connect -> review -> ask" map shown to
+/// brand-new users in place of the Source/Memory status rows.
+private struct HomeStep: View {
+    let number: Int
+    let text: String
+
+    var body: some View {
+        HStack(spacing: CortexDesign.Space.xs) {
+            Text("\(number)")
+                .font(.caption)
+                .fontWeight(.bold)
+                .foregroundColor(CortexDesign.accent)
+                .frame(width: 22, height: 22)
+                .background(CortexDesign.accentSoft)
+                .clipShape(Circle())
+            Text(text)
+                .font(.callout)
+                .foregroundColor(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Step \(number): \(text)")
+    }
+}
+
 struct HomeStatusRow: View {
     let title: String
     let detail: String
     let systemImage: String
     let color: Color
+    var action: (() -> Void)? = nil
+
+    @State private var hovering = false
 
     var body: some View {
+        if let action {
+            Button(action: action) {
+                row
+            }
+            .buttonStyle(.plain)
+            .onHover { hovering = $0 }
+            .background(
+                RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                    .fill(hovering ? CortexDesign.quietBackground : Color.clear)
+            )
+            .accessibilityHint("Opens \(title.lowercased()) details")
+        } else {
+            row
+        }
+    }
+
+    private var row: some View {
         HStack(spacing: 10) {
             Image(systemName: systemImage)
                 .font(.title3)
@@ -641,8 +735,15 @@ struct HomeStatusRow: View {
                     .lineLimit(2)
             }
             Spacer(minLength: 0)
+            if action != nil {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.secondary)
+                    .opacity(hovering ? 1 : 0.45)
+            }
         }
         .padding(.vertical, 6)
         .frame(minHeight: 44, alignment: .leading)
+        .contentShape(Rectangle())
     }
 }
