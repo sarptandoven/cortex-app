@@ -44,10 +44,10 @@ struct ReviewTab: View {
     }
 
     private var shouldShowSourceHealth: Bool {
-        state.hasConnectedSourceAccount
-            || state.hasConnectedObsidianVault
-            || state.onboardingHasReviewedMemory
-            || !state.inbox.isEmpty
+        // The health strip is a diagnostic, not a headline — only surface it when a source actually
+        // needs the user. In the healthy case Review goes straight to the pending items, which is
+        // what the tab is for.
+        (state.sourceReadinessReport?.summary.needs_attention ?? 0) > 0
     }
 }
 

@@ -526,11 +526,9 @@ struct HomeHeroSection: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .disabled(state.isBusy)
-
-                Text(actionDetail)
-                    .font(.callout)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                // The action explanation lives in the tooltip — the headline + detail above already
+                // say what's next, so repeating it beside the button just added noise.
+                .help(actionDetail)
 
                 Spacer(minLength: 0)
             }

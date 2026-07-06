@@ -239,102 +239,122 @@ private struct ConnectionsPrivacyOverview: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
+    /// Formerly one "Advanced" mega-disclosure nesting three levels deep. Split into flat,
+    /// clearly-named cards so users can find backups without wading through developer diagnostics.
     private func advancedControls(summary: TrustSummaryResponse) -> some View {
-        DisclosureGroup(isExpanded: $advancedExpanded) {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Create a local backup from the main privacy card. Recovery, repair, and support tools stay here for setup help and incident response.")
-                    .font(.callout)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if state.connectedAIIntegrationCount == 0 {
-                    optionalAITools
-                }
-
-                ConnectionsMCPAccessSection(state: state)
-
-                DisclosureGroup("Recovery and support tools", isExpanded: $recoveryToolsExpanded) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        SettingsDataRecoverySection(state: state)
-                        Divider()
-                        SettingsReliabilitySection(state: state)
+        VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
+            DisclosureGroup(isExpanded: $advancedExpanded) {
+                VStack(alignment: .leading, spacing: 16) {
+                    if state.connectedAIIntegrationCount == 0 {
+                        optionalAITools
                     }
-                    .padding(.top, 8)
+                    ConnectionsMCPAccessSection(state: state)
                 }
+                .padding(.top, 10)
+            } label: {
+                ConnectionsDisclosureLabel(
+                    systemImage: "wand.and.stars",
+                    title: "AI tools & permissions",
+                    detail: "Use your memory in Claude, Cursor & other AI apps"
+                )
+            }
+            .padding(14)
+            .background(connectionsPanelBackground)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
 
-                DisclosureGroup("Advanced support details", isExpanded: $developerDetailsExpanded) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Group {
-                            DisclosureGroup("Privacy history", isExpanded: $sourceAuditExpanded) {
-                                VStack(alignment: .leading, spacing: 14) {
-                                    TrustSourceSection(state: state, summary: summary)
-                                    TrustAuditSection(events: state.auditEvents, refresh: {
-                                        Task { await state.loadTrust() }
-                                    })
-                                }
-                                .padding(.top, 8)
-                            }
-                            Divider()
-                            IntegrationTokensSection(state: state)
-                            Divider()
-                            IntegrationCenterView(state: state, compact: true)
-                            Divider()
-                        }
-                        Group {
-                            SettingsPrivacySection(state: state)
-                            Divider()
-                            SettingsHealthSection(state: state)
-                            Divider()
-                        }
-                        if let lifecycle = state.dataLifecycleReport {
-                            TrustLifecycleSection(report: lifecycle)
-                            Divider()
-                        }
-                        Group {
-                            SettingsOnboardingSection(state: state)
-                            Divider()
-                            AdvancedGraphSection(state: state)
-                            SettingsStatsSection(state: state)
-                            Divider()
-                        }
-                        Group {
-                            TrustSyncManifestSection(state: state)
-                            Divider()
-                            SettingsUpdatesSection(state: state)
-                            Divider()
-                            CortexCloudSection(state: state)
-                            Divider()
-                            SettingsBackendSection(state: state)
-                        }
-                    }
-                    .padding(.top, 8)
+            DisclosureGroup(isExpanded: $recoveryToolsExpanded) {
+                VStack(alignment: .leading, spacing: 14) {
+                    SettingsDataRecoverySection(state: state)
+                    Divider()
+                    SettingsReliabilitySection(state: state)
                 }
-                .onChange(of: developerDetailsExpanded) { expanded in
-                    if expanded {
-                        Task {
-                            await state.loadStats()
-                            await state.loadGraph()
-                        }
+                .padding(.top, 10)
+            } label: {
+                ConnectionsDisclosureLabel(
+                    systemImage: "arrow.counterclockwise.circle",
+                    title: "Backups & recovery",
+                    detail: "Back up, restore, repair your local memory"
+                )
+            }
+            .padding(14)
+            .background(connectionsPanelBackground)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .onChange(of: recoveryToolsExpanded) { expanded in
+                if expanded {
+                    Task {
+                        await state.loadDiagnostics()
+                        await state.loadReliability()
                     }
                 }
             }
-            .padding(.top, 10)
-        } label: {
-            ConnectionsDisclosureLabel(
-                systemImage: "wrench.and.screwdriver",
-                title: "Advanced",
-                detail: "Recovery, diagnostics, support details"
-            )
-        }
-        .padding(14)
-        .background(connectionsPanelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .onChange(of: advancedExpanded) { expanded in
-            if expanded {
-                Task {
-                    await state.loadDiagnostics()
-                    await state.loadReliability()
+
+            DisclosureGroup(isExpanded: $developerDetailsExpanded) {
+                VStack(alignment: .leading, spacing: 14) {
+                    Group {
+                        DisclosureGroup("Privacy history", isExpanded: $sourceAuditExpanded) {
+                            VStack(alignment: .leading, spacing: 14) {
+                                TrustSourceSection(state: state, summary: summary)
+                                TrustAuditSection(events: state.auditEvents, refresh: {
+                                    Task { await state.loadTrust() }
+                                })
+                            }
+                            .padding(.top, 8)
+                        }
+                        Divider()
+                        IntegrationTokensSection(state: state)
+                        Divider()
+                        IntegrationCenterView(state: state, compact: true)
+                        Divider()
+                    }
+                    Group {
+                        SettingsPrivacySection(state: state)
+                        Divider()
+                        SettingsHealthSection(state: state)
+                        Divider()
+                    }
+                    if let lifecycle = state.dataLifecycleReport {
+                        TrustLifecycleSection(report: lifecycle)
+                        Divider()
+                    }
+                    Group {
+                        SettingsOnboardingSection(state: state)
+                        Divider()
+                        AdvancedGraphSection(state: state)
+                        SettingsStatsSection(state: state)
+                        Divider()
+                    }
+                    Group {
+                        TrustSyncManifestSection(state: state)
+                        Divider()
+                        SettingsUpdatesSection(state: state)
+                        Divider()
+                        CortexCloudSection(state: state)
+                        Divider()
+                        SettingsBackendSection(state: state)
+                    }
+                }
+                .padding(.top, 10)
+            } label: {
+                ConnectionsDisclosureLabel(
+                    systemImage: "wrench.and.screwdriver",
+                    title: "Developer & diagnostics",
+                    detail: "Support details, engine status, updates"
+                )
+            }
+            .padding(14)
+            .background(connectionsPanelBackground)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .onChange(of: developerDetailsExpanded) { expanded in
+                if expanded {
+                    Task {
+                        await state.loadStats()
+                        await state.loadGraph()
+                        await state.loadDiagnostics()
+                        await state.loadReliability()
+                    }
                 }
             }
         }

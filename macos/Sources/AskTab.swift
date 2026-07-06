@@ -243,6 +243,39 @@ struct AskMemoryContextStrip: View {
     }
 
     var body: some View {
+        // Healthy = one quiet caption line under the search box, so the pre-search screen stays
+        // calm and the question field is the star. The full diagnostic card only appears when
+        // something actually needs the user (a source needs attention or items wait in Review).
+        if needsAttentionCount > 0 || (memoryCount == 0 && pendingCount > 0) {
+            fullDiagnosticCard
+        } else {
+            HStack(spacing: 6) {
+                Image(systemName: statusIcon)
+                    .font(.caption)
+                    .foregroundColor(statusColor)
+                Text(quietSummary)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .help(detail + " " + sourceHealthLabel)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 6)
+        }
+    }
+
+    private var quietSummary: String {
+        if memoryCount > 0 {
+            var line = "Answering from \(memoryCount) reviewed memor\(memoryCount == 1 ? "y" : "ies") across \(sourceCount) source\(sourceCount == 1 ? "" : "s")"
+            if let latestSync {
+                line += " · synced \(shortDate(latestSync))"
+            }
+            return line
+        }
+        return detail
+    }
+
+    private var fullDiagnosticCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: statusIcon)

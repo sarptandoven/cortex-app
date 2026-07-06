@@ -3286,6 +3286,10 @@ final class AppState: ObservableObject {
     }
 
     func bootstrap() async {
+        // Launch is real work — spin the menu-bar icon while the engine starts and data loads.
+        // (Also serves as a visible on-launch proof that the icon animates at all.)
+        beginMenuBarWork()
+        defer { endMenuBarWork() }
         // Cortex Cloud only: the cxs_ access token lives in memory, so on launch (and any
         // full bootstrap) it must be re-minted from the stored refresh token before any
         // authenticated call fires. Local mode never enters this branch.
@@ -3599,6 +3603,31 @@ final class AppState: ObservableObject {
         askCitations = []
         askError = nil
         hasSearched = false
+    }
+
+    // MARK: Menu-bar activity signaling
+
+    // The menu-bar icon animates from these LEVEL-based signals, not from sampled transients.
+    // Previously the spinner keyed off syncProgress (derived from a 4-second job poll — fast syncs
+    // finished between polls and were never observed) and isBusy (a brief flag the 0.45s animator
+    // sample could miss entirely), so in practice the icon never moved. A counter that stays >0 for
+    // the whole duration of an operation cannot be missed by sampling, and an explicit completion
+    // timestamp drives the checkmark deterministically instead of via poll edge-detection.
+    @Published private(set) var menuBarWorkCount = 0
+    @Published private(set) var menuBarSyncCompletedAt: Date?
+
+    /// Mark the start of user-visible work (sync/import/backup/launch) for the menu-bar icon.
+    func beginMenuBarWork() {
+        menuBarWorkCount += 1
+    }
+
+    /// Mark the end of that work. `completedSync: true` also stamps the completion time so the
+    /// menu-bar icon plays its "sync complete" checkmark.
+    func endMenuBarWork(completedSync: Bool = false) {
+        menuBarWorkCount = max(0, menuBarWorkCount - 1)
+        if completedSync {
+            menuBarSyncCompletedAt = Date()
+        }
     }
 
     func search() async {
@@ -4088,6 +4117,8 @@ final class AppState: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.status = "Syncing your sources…"
+            self.beginMenuBarWork()
+            defer { self.endMenuBarWork(completedSync: true) }
             // Mirror the auto-sync tick so a manual "Sync Now" covers EVERY source — most importantly
             // the local notes folder (client-only path), which the backend sync-due job can't reach.
             // Previously this only ran sync-due, so the default notes-folder user saw "up to date"
@@ -4188,7 +4219,13 @@ final class AppState: ObservableObject {
         guard !trimmed.isEmpty, !importInFlight else { return }
         importInFlight = true
         if !automatic { isBusy = true }
-        defer { importInFlight = false; if !automatic { isBusy = false } }
+        beginMenuBarWork()
+        var importSucceeded = false
+        defer {
+            importInFlight = false
+            if !automatic { isBusy = false }
+            endMenuBarWork(completedSync: importSucceeded)
+        }
         do {
             status = "Importing your chats…"
             let started = URL(fileURLWithPath: trimmed).startAccessingSecurityScopedResource()
@@ -4213,6 +4250,7 @@ final class AppState: ObservableObject {
             await loadImportHistory()
             detectedExportSummary = nil
             if added > 0 {
+                importSucceeded = true
                 status = "Imported \(added) conversation\(added == 1 ? "" : "s") into your memory."
             } else if result.skipped > 0 {
                 status = "Already imported — nothing new to add."
@@ -5078,11 +5116,14 @@ final class AppState: ObservableObject {
         if !automatic {
             isBusy = true
         }
+        beginMenuBarWork()
+        var syncedSomething = false
         defer {
             obsidianSyncInFlight = false
             if !automatic {
                 isBusy = false
             }
+            endMenuBarWork(completedSync: syncedSomething)
         }
 
         do {
@@ -5117,6 +5158,7 @@ final class AppState: ObservableObject {
                 }
                 return
             }
+            syncedSomething = true
 
             if rememberPath {
                 rememberObsidianVaultPath(folderURL)
@@ -8767,20 +8809,26 @@ struct StatsGrid: View {
 struct QuietState: View {
     let title: String
     let detail: String
+    var systemImage: String = "sparkles"
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.system(size: 26, weight: .regular))
+                .foregroundColor(CortexDesign.accent.opacity(0.55))
             Text(title)
                 .font(.headline)
             Text(detail)
                 .font(.body)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
+                .frame(maxWidth: 460)
         }
         .frame(maxWidth: .infinity)
-        .padding(18)
+        .padding(.vertical, 26)
+        .padding(.horizontal, 18)
         .background(CortexDesign.panelBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 }
 
@@ -9063,7 +9111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         // A live menu-bar icon: spins while Cortex syncs, shows the review count when memory is
         // waiting, flashes a checkmark when a sync completes, and rests as a calm brain otherwise.
         let animator = MenuBarAnimator(statusItem: statusItem) { [weak self] in
-            self?.currentMenuBarSnapshot() ?? MenuBarSnapshot(syncing: false, realSyncActive: false, pendingCount: 0)
+            self?.currentMenuBarSnapshot() ?? MenuBarSnapshot(syncing: false, syncCompletedAt: nil, pendingCount: 0)
         }
         menuBarAnimator = animator
         animator.start()
@@ -9071,13 +9119,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     /// Translates the app's live state into the snapshot the menu-bar icon renders.
     private func currentMenuBarSnapshot() -> MenuBarSnapshot {
-        let realSync = state.syncProgress?.active == true
+        // menuBarWorkCount is the primary (level-based) signal — it stays raised for the entire
+        // duration of any sync/import/backup/launch, so the sampling loop can never miss it. The
+        // job-poll progress and isBusy remain as supplements for backend-side queue work.
+        let working = state.menuBarWorkCount > 0
+            || state.syncProgress?.active == true
+            || state.isBusy
         // Use the larger of the two pending signals so the badge shows whenever either source knows
         // about waiting items (they can lag each other right after a sync/import).
         let pending = max(state.review?.stats.pending_captures ?? 0, state.inbox.count)
         return MenuBarSnapshot(
-            syncing: realSync || state.isBusy,
-            realSyncActive: realSync,
+            syncing: working,
+            syncCompletedAt: state.menuBarSyncCompletedAt,
             pendingCount: max(0, pending)
         )
     }

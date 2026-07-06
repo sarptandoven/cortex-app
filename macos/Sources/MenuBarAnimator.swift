@@ -2,11 +2,12 @@ import AppKit
 
 /// A snapshot of the app state the menu-bar icon reflects. Provided by the AppDelegate each tick.
 struct MenuBarSnapshot: Equatable {
-    /// Something is in flight (a real source sync OR any busy work) — the icon spins.
+    /// Something is in flight (sync/import/backup/launch or busy work) — the icon spins. This is a
+    /// LEVEL signal (true for the whole duration of the operation), so sampling can never miss it.
     var syncing: Bool
-    /// Specifically a real source sync is running. Its active→inactive edge triggers the
-    /// "sync complete" checkmark flourish (a plain busy blip does not, to avoid flicker).
-    var realSyncActive: Bool
+    /// When the last real sync/import completed. A NEW timestamp triggers the checkmark flourish —
+    /// deterministic, instead of edge-detecting a polled transient that fast syncs slipped past.
+    var syncCompletedAt: Date?
     /// How many items are waiting in Review — shown as a count next to the icon.
     var pendingCount: Int
 }
@@ -42,8 +43,8 @@ final class MenuBarAnimator {
     private var frameIndex = 0
     private var pulseFrame = 0
 
-    // Edge/hold state.
-    private var lastRealSyncActive = false
+    // Completion/hold state.
+    private var lastSeenCompletion: Date?
     private var pendingSuccess = false
     private var successFramesRemaining = 0
     private var spinHoldRemaining = 0
@@ -89,11 +90,15 @@ final class MenuBarAnimator {
     private func tick() -> TimeInterval {
         let snap = snapshotProvider()
 
-        // Real-sync completion edge → queue the checkmark (played after any minimum-spin hold).
-        if lastRealSyncActive && !snap.realSyncActive {
-            pendingSuccess = true
+        // A NEW (and recent) completion stamp → queue the checkmark (played after any spin hold).
+        // Keyed to the timestamp itself, so it can never be missed or double-played.
+        if let completed = snap.syncCompletedAt,
+           completed != lastSeenCompletion {
+            lastSeenCompletion = completed
+            if completed.timeIntervalSinceNow > -5 {
+                pendingSuccess = true
+            }
         }
-        lastRealSyncActive = snap.realSyncActive
 
         // Minimum spin: once spinning, keep spinning for at least minSpinFrames so brief work is seen.
         if snap.syncing {
