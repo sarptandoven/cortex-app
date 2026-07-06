@@ -3511,6 +3511,40 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// One-off ask for the menu-bar quick panel. Deliberately does NOT touch the shared Ask-tab
+    /// @Published buffers (searchQuery/askAnswer/askCitations) or `isBusy`, so the panel is fully
+    /// independent of the Ask tab and doesn't spin the menu-bar icon for a quick lookup.
+    func askOnce(_ query: String) async -> AskResponse? {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return nil }
+        do {
+            let encoded = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q
+            let data = try await request(path: "/v1/ask?query=\(encoded)&limit=8", method: "GET")
+            return try JSONDecoder().decode(AskResponse.self, from: data)
+        } catch {
+            return nil
+        }
+    }
+
+    /// Quick capture from the menu-bar panel: saves a manual memory via the same capture endpoint,
+    /// then refreshes just the review/stats surfaces so the panel + icon counts update. Keeps its
+    /// own in-flight state out of the shared `isBusy` so a 200ms save doesn't spin the menu-bar icon.
+    func captureFromPanel(text: String) async -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        do {
+            let title = String(trimmed.prefix(60))
+            let body: [String: Any] = ["content": trimmed, "source": "quick-capture", "title": title]
+            _ = try await request(path: "/v1/captures", method: "POST", body: body)
+            await loadInbox()
+            await loadReview()
+            await loadStats()
+            return true
+        } catch {
+            return false
+        }
+    }
+
     private func refreshAfterCapture() async {
         await loadInbox()
         await loadRecent()
@@ -8936,10 +8970,16 @@ struct GraphCanvas: View {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
     private let state = AppState()
     private var statusItem: NSStatusItem!
     private var menuBarAnimator: MenuBarAnimator?
+    private var quickPanelPopover: NSPopover?
+    // When a transient popover auto-dismisses on the mouse-DOWN that lands on the status button, the
+    // button's action still fires on mouse-UP; without this we'd immediately re-open it. We record
+    // the close time and suppress a click-driven re-open that lands within a short window.
+    private var popoverClosedAt: Date?
+    fileprivate var hotKeyRef: EventHotKeyRef?
     private var mainWindow: NSWindow!
     private var mainWindowController: NSWindowController!
 
@@ -8951,6 +8991,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         // system's Dark Mode setting.
         NSApp.appearance = NSAppearance(named: .aqua)
         setupStatusItem()
+        registerGlobalHotKey()
         setupMainWindow()
         NotificationCenter.default.addObserver(self, selector: #selector(onboardingCompleted), name: .cortexOnboardingCompleted, object: nil)
         showMainWindow()
@@ -8970,6 +9011,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     func applicationWillTerminate(_ notification: Notification) {
         logApp("applicationWillTerminate")
+        unregisterGlobalHotKey()
         BackendSupervisor.shared.terminate()
     }
 
@@ -8985,13 +9027,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.toolTip = "Cortex"
-        // Clicking the icon opens a live menu (status + quick actions + Quit). The menu is rebuilt
-        // on open via menuNeedsUpdate so counts and status stay current.
-        let menu = NSMenu()
-        menu.delegate = self
-        menu.autoenablesItems = false
-        statusItem.menu = menu
+        statusItem.button?.toolTip = "Cortex — click to ask your memory (⌃⌥Space)"
+        // Click-split so both surfaces coexist on one status item WITHOUT statusItem.menu hijacking
+        // every click: LEFT-click / hotkey → the rich "Cortex Spotlight" popover; RIGHT-click (or
+        // ⌃-click) → a lean native menu (Open/Review/Ask/Sync/Connections/Quit).
+        statusItem.button?.action = #selector(statusItemClicked)
+        statusItem.button?.target = self
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         // A live menu-bar icon: spins while Cortex syncs, shows the review count when memory is
         // waiting, flashes a checkmark when a sync completes, and rests as a calm brain otherwise.
         let animator = MenuBarAnimator(statusItem: statusItem) { [weak self] in
@@ -9012,25 +9054,118 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         )
     }
 
-    // MARK: - Menu-bar menu
+    // MARK: - Status-item click routing
 
-    /// Rebuild the status-item menu each time it opens so status text + counts are current.
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        guard menu === statusItem?.menu else { return }
-        menu.removeAllItems()
+    @objc private func statusItemClicked() {
+        if let event = NSApp.currentEvent,
+           event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
+            showStatusMenu()
+        } else {
+            togglePopover(fromClick: true)
+        }
+    }
+
+    // MARK: - Cortex Spotlight popover
+
+    private func ensurePopover() -> NSPopover {
+        if let quickPanelPopover { return quickPanelPopover }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = true
+        let panel = MenuBarQuickPanel(
+            state: state,
+            onOpenApp: { [weak self] in self?.quickPanelOpenApp() },
+            onOpenReview: { [weak self] in self?.quickPanelOpenReview() },
+            onSync: { [weak self] in self?.state.syncNowFromMenu() },
+            onConnections: { [weak self] in self?.quickPanelOpenConnections() },
+            onClose: { [weak self] in self?.quickPanelPopover?.performClose(nil) }
+        )
+        let hosting = NSHostingController(rootView: panel)
+        hosting.sizingOptions = [.preferredContentSize]   // popover sizes to the SwiftUI content
+        popover.contentViewController = hosting
+        popover.delegate = self
+        quickPanelPopover = popover
+        return popover
+    }
+
+    /// Open (or, from a hotkey/click on an already-open panel, close) the Spotlight popover.
+    /// `fromClick` distinguishes a status-button click (which may have just auto-dismissed a transient
+    /// popover) from the hotkey path (which never does), so only the click path guards against re-open.
+    func togglePopover(fromClick: Bool = false) {
+        let popover = ensurePopover()
+        if popover.isShown {
+            popover.performClose(nil)
+            return
+        }
+        if fromClick, let closedAt = popoverClosedAt, Date().timeIntervalSince(closedAt) < 0.3 {
+            // This click is the same gesture that just dismissed the popover — leave it closed.
+            popoverClosedAt = nil
+            return
+        }
+        showPopover()
+    }
+
+    private func showPopover() {
+        guard let button = statusItem.button else { return }
+        let popover = ensurePopover()
+        // Bring the app forward so the popover can take keyboard focus even when invoked by the
+        // global hotkey while another app is frontmost.
+        NSApp.activate(ignoringOtherApps: true)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        // Belt-and-suspenders focus: NSPopover often fails to give a TextField first responder on
+        // open, so make the hosting window key and tell the panel to focus its field. Gated on the
+        // popover still being open, so a racing transient dismissal doesn't refocus a dead window.
+        DispatchQueue.main.async { [weak self] in
+            guard let popover = self?.quickPanelPopover, popover.isShown else { return }
+            popover.contentViewController?.view.window?.makeKey()
+            NotificationCenter.default.post(name: .cortexFocusQuickPanel, object: nil)
+        }
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        popoverClosedAt = Date()
+    }
+
+    private func quickPanelOpenApp() {
+        quickPanelPopover?.performClose(nil)
+        showMainWindow()
+    }
+
+    private func quickPanelOpenReview() {
+        quickPanelPopover?.performClose(nil)
+        state.selectedTab = .review
+        showMainWindow()
+    }
+
+    private func quickPanelOpenConnections() {
+        quickPanelPopover?.performClose(nil)
+        showMainWindow()
+        state.openConnectionsPrivacy()
+    }
+
+    // MARK: - Right-click quick menu
+
+    private func showStatusMenu() {
+        guard let button = statusItem.button else { return }
+        let menu = buildStatusMenu()
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 5), in: button)
+    }
+
+    private func buildStatusMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
 
         let header = NSMenuItem(title: menuStatusTitle(), action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
         menu.addItem(.separator())
 
+        addMenuItem(to: menu, title: "Ask Cortex…  (⌃⌥Space)", action: #selector(menuAskSpotlight), key: "")
         addMenuItem(to: menu, title: "Open Cortex", action: #selector(menuOpenCortex), key: "o")
 
         let pending = state.review?.stats.pending_captures ?? state.inbox.count
         let reviewTitle = pending > 0 ? "Review (\(pending))" : "Review"
         addMenuItem(to: menu, title: reviewTitle, action: #selector(menuOpenReview), key: "")
-
-        addMenuItem(to: menu, title: "Ask Cortex", action: #selector(menuOpenAsk), key: "")
 
         let syncItem = addMenuItem(to: menu, title: "Sync Now", action: #selector(menuSyncNow), key: "")
         syncItem.isEnabled = !(state.syncProgress?.active == true)
@@ -9039,6 +9174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
         menu.addItem(.separator())
         addMenuItem(to: menu, title: "Quit Cortex", action: #selector(menuQuit), key: "q")
+        return menu
     }
 
     @discardableResult
@@ -9062,6 +9198,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             return "Memory ready"
         }
         return "No sources connected yet"
+    }
+
+    @objc private func menuAskSpotlight() {
+        showPopover()
     }
 
     @objc private func menuOpenCortex() {
@@ -9089,6 +9229,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     @objc private func menuQuit() {
         NSApp.terminate(nil)
+    }
+
+    // MARK: - Global hotkey (Carbon)
+
+    fileprivate func handleGlobalHotKey() {
+        togglePopover()
+    }
+
+    private func registerGlobalHotKey() {
+        var eventSpec = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: OSType(kEventHotKeyPressed)
+        )
+        InstallEventHandler(
+            GetApplicationEventTarget(),
+            cortexHotKeyEventHandler,
+            1,
+            &eventSpec,
+            Unmanaged.passUnretained(self).toOpaque(),
+            nil
+        )
+        let hotKeyID = EventHotKeyID(signature: cortexHotKeySignature, id: 1)
+        // ⌃⌥Space — deliberately not a default macOS shortcut (avoids ⌘Space Spotlight and the
+        // ⌥⌘Space Finder search-window collision). Failure to register is non-fatal.
+        let status = RegisterEventHotKey(
+            UInt32(kVK_Space),
+            UInt32(controlKey | optionKey),
+            hotKeyID,
+            GetApplicationEventTarget(),
+            0,
+            &hotKeyRef
+        )
+        if status != noErr {
+            logApp("global hotkey registration failed (status \(status))")
+        }
+    }
+
+    private func unregisterGlobalHotKey() {
+        if let hotKeyRef {
+            UnregisterEventHotKey(hotKeyRef)
+            self.hotKeyRef = nil
+        }
     }
 
     // A comfortable, desktop-app-sized default derived from the current screen: large on big
@@ -9249,6 +9431,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             // Launch logging should never block app startup.
         }
     }
+}
+
+// FourCharCode 'CXTX' identifying the Cortex global hotkey.
+private let cortexHotKeySignature = OSType(0x43585458)
+
+/// Carbon C event handler for the global hotkey. It runs as a bare C function pointer (no captured
+/// context), recovers the AppDelegate from userData, and hops to the main actor to toggle the
+/// Spotlight popover.
+private func cortexHotKeyEventHandler(
+    _ nextHandler: EventHandlerCallRef?,
+    _ event: EventRef?,
+    _ userData: UnsafeMutableRawPointer?
+) -> OSStatus {
+    guard let userData else { return noErr }
+    let delegate = Unmanaged<AppDelegate>.fromOpaque(userData).takeUnretainedValue()
+    Task { @MainActor in
+        delegate.handleGlobalHotKey()
+    }
+    return noErr
 }
 
 @main
