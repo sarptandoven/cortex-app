@@ -17,21 +17,21 @@ Nothing is sent to, and nothing needs to be fetched from, any remote server.
 - The loopback server (`127.0.0.1:8766`) is an internal implementation detail; it is not
   reachable off-device and there is no hosted endpoint.
 
-**How to review every feature (no server, no login):**
-1. Launch Cortex. It opens straight into the app — no login wall.
-2. On the Home/onboarding screen, click **Connect notes** and choose any folder containing
-   `.md` text files (or create one with a couple of `.txt`/`.md` notes). Cortex reads them
-   locally and builds your memory. A progress bar shows it importing.
-3. Alternatively, drag any exported ChatGPT/Claude `.zip`/`.json` onto the import area, or use
-   **Choose export file…**. (A tiny sample export is included at the URL below.)
-4. Open the **Home** tab to see the distilled profile, the **Review** tab to approve captured
-   memories, and the **Ask** tab to query your memory — all offline.
+**How to review every feature (no server, no login, no download required):**
+1. Launch Cortex. It opens straight into the app — no login wall, no network needed.
+2. Create a folder anywhere (e.g. on the Desktop) with two small text files, for example
+   `note1.md` containing "I prefer concise, direct writing." and `note2.md` containing
+   "We decided to use PostgreSQL for the main store." (Any `.md`/`.txt` files work.)
+3. In Cortex click **Connect notes** and choose that folder. Cortex reads the files **locally**
+   and builds your memory; a progress bar shows the import.
+4. Open **Home** to see the distilled profile, **Review** to approve captured memories, and
+   **Ask** to query your memory (e.g. "how do I like to write?") — all fully offline.
 5. **Connect an AI tool** (in Connections) shows guided, copy‑paste instructions only; the app
    does not install or launch any external code.
 
-**Sample import file (hosted, remains available for future reviews):**
-`https://github.com/doppl-tech/cortex-app/releases/download/v0.2.0-2/cortex-sample-export.zip`
-(A small, synthetic notes/chat export containing no real personal data.)
+No hosted backend or sample credentials are needed — the two text files above exercise the
+entire pipeline. If a hosted sample export file is nonetheless required, we will host one at a
+public `https://trydoppl.com/…` URL on request (the app itself never fetches it; import is local).
 
 ## 2.5.2 — "The app installed or launched executable code (3rd party MCP tools installation)"
 
