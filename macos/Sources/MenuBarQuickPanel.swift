@@ -90,8 +90,13 @@ struct MenuBarQuickPanel: View {
 
     private var statusLine: String {
         if isSyncing { return "Syncing your memory…" }
-        if pendingCount > 0 { return "\(pendingCount) waiting for review" }
-        if memoryCount > 0 { return "\(memoryCount) memories · ready" }
+        if pendingCount > 0 {
+            return "\(pendingCount) item\(pendingCount == 1 ? "" : "s") waiting for review"
+        }
+        if memoryCount > 0 {
+            let shown = memoryCount > 999 ? "999+" : String(memoryCount)
+            return "\(shown) memor\(memoryCount == 1 ? "y" : "ies") ready"
+        }
         return "Connect a source to begin"
     }
 
@@ -100,7 +105,7 @@ struct MenuBarQuickPanel: View {
     private var modeSwitcher: some View {
         HStack(spacing: 4) {
             segmentButton("Ask", icon: "sparkle.magnifyingglass", value: .ask)
-            segmentButton("Capture", icon: "square.and.pencil", value: .capture)
+            segmentButton("Note", icon: "square.and.pencil", value: .capture)
         }
         .padding(3)
         .background(CortexDesign.quietBackground)
@@ -231,7 +236,7 @@ struct MenuBarQuickPanel: View {
                         .foregroundColor(.green)
                         .transition(.scale(scale: 0.8).combined(with: .opacity))
                 } else {
-                    Text("Saved as a memory your agents can cite.")
+                    Text("Saved to your memory — Ask can use it right away.")
                         .font(.caption).foregroundColor(.secondary)
                 }
                 Spacer()

@@ -98,3 +98,60 @@ enum CitationDisplay {
         return "line \(start)"
     }
 }
+
+/// Makes raw memory content read cleanly for a normal user. Synced content is often a bare file
+/// path (e.g. `file '/Users/.../scene_2.mp4'`); showing the filename as the headline and the path as
+/// a quiet secondary line is far more legible than dumping the whole string.
+enum MemoryText {
+    /// Strip a leading `file '…'` wrapper and surrounding quotes to get the inner path/string.
+    static func unwrap(_ raw: String) -> String {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.lowercased().hasPrefix("file ") {
+            s = String(s.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+        }
+        if s.count >= 2,
+           (s.hasPrefix("'") && s.hasSuffix("'")) || (s.hasPrefix("\"") && s.hasSuffix("\"")) {
+            s = String(s.dropFirst().dropLast())
+        }
+        return s
+    }
+
+    /// True when the content is essentially a single filesystem path (optionally `file '…'`-wrapped).
+    static func isPathLike(_ raw: String) -> Bool {
+        let s = unwrap(raw)
+        guard !s.isEmpty, !s.contains("\n") else { return false }
+        if s.hasPrefix("/") || s.hasPrefix("~/") || s.hasPrefix("file://") { return true }
+        return s.range(of: "/[^/ ]+\\.[A-Za-z0-9]{1,8}$", options: .regularExpression) != nil
+    }
+
+    /// The trailing filename of a path-like string, else nil.
+    static func filename(_ raw: String) -> String? {
+        let s = unwrap(raw).replacingOccurrences(of: "file://", with: "")
+        guard let last = s.split(separator: "/").last, !last.isEmpty else { return nil }
+        return String(last)
+    }
+
+    /// Middle-truncate so both the leading context and the trailing filename survive.
+    static func middleTruncated(_ s: String, max: Int = 72) -> String {
+        guard s.count > max else { return s }
+        let keep = max - 1
+        let head = keep / 2
+        let tail = keep - head
+        return String(s.prefix(head)) + "…" + String(s.suffix(tail))
+    }
+
+    /// A clean (headline, secondaryPath?) for display: for a path-like value the filename is the
+    /// headline and the middle-truncated path is secondary; otherwise the raw text is the headline.
+    static func displayContent(_ raw: String) -> (headline: String, path: String?) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isPathLike(trimmed), let name = filename(trimmed) {
+            return (name, middleTruncated(unwrap(trimmed)))
+        }
+        return (trimmed, nil)
+    }
+
+    /// A normalized key for collapsing near-identical previews.
+    static func dedupeKey(_ raw: String) -> String {
+        unwrap(raw).lowercased()
+    }
+}

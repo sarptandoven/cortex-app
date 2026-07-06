@@ -114,8 +114,12 @@ private struct ConnectionsPrivacyOverview: View {
                 ConnectionsOverviewHero(state: state)
 
                 ConnectionsObsidianSection(state: state)
+                // Source-connection options (the connections library + ChatGPT/Claude import) must be
+                // available even on first run — a user who doesn't want the local notes folder needs a
+                // way to connect any other source to get past onboarding. Only the privacy/trust and
+                // advanced controls wait until at least one source is connected.
+                otherSourceConnections
                 if !state.firstRunNeedsSource {
-                    otherSourceConnections
                     if state.connectedAIIntegrationCount > 0 {
                         ConnectionsAIToolsSection(state: state)
                     }
@@ -2035,7 +2039,7 @@ private struct ConnectionsMCPAccessSection: View {
 
     private var activeScopeSummary: String {
         let scopes = Set(activeMCPTokens.flatMap(\.scopes))
-        if scopes.isEmpty { return "No active MCP token" }
+        if scopes.isEmpty { return "No AI tool connected" }
         return scopes.sorted().joined(separator: ", ")
     }
 
@@ -2052,7 +2056,7 @@ private struct ConnectionsMCPAccessSection: View {
             HStack(alignment: .center, spacing: 12) {
                 SectionHeader(
                     title: "Tool permissions",
-                    detail: "MCP-compatible tools can only use the permissions below. Recent activity is shown without raw memory content."
+                    detail: "Connected AI tools can only use the permissions below. Recent activity is shown without raw memory content."
                 )
                 Spacer(minLength: 12)
                 Button {
@@ -2098,7 +2102,7 @@ private struct ConnectionsMCPAccessSection: View {
                     .foregroundColor(activeMCPTokens.isEmpty ? .secondary : .accentColor)
                     .frame(width: 28)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(activeMCPTokens.isEmpty ? "No active MCP tool token" : "\(activeMCPTokens.count) active MCP token\(activeMCPTokens.count == 1 ? "" : "s")")
+                    Text(activeMCPTokens.isEmpty ? "No AI tool connected yet" : "\(activeMCPTokens.count) active MCP token\(activeMCPTokens.count == 1 ? "" : "s")")
                         .font(.callout)
                         .fontWeight(.semibold)
                     Text("\(activeScopeSummary) · \(lastUsedLabel)")
@@ -2124,7 +2128,7 @@ private struct ConnectionsMCPAccessSection: View {
                     .fontWeight(.semibold)
                     .foregroundColor(.secondary)
                 if recentToolEvents.isEmpty {
-                    Text("No MCP tool activity recorded yet.")
+                    Text("No AI tool activity recorded yet.")
                         .font(.callout)
                         .foregroundColor(.secondary)
                 } else {

@@ -2196,7 +2196,7 @@ enum CortexRecoveryText {
             return "The local memory endpoint is invalid. Check the endpoint, then reconnect."
         }
         if lowered.contains("existing config") || lowered.contains("config is not a json") {
-            return "That tool connection could not be updated automatically. Open Advanced settings, then MCP config."
+            return "That tool connection could not be updated automatically. Open Advanced settings, then Copy tool config."
         }
         if lowered.contains("data couldn") || lowered.contains("correct format") || lowered.contains("decoding") {
             return "Cortex received an unexpected response. Click Reconnect, then try again."
@@ -3591,6 +3591,16 @@ final class AppState: ObservableObject {
         Task { await search() }
     }
 
+    /// Clear the current Ask answer/results (used when the query field is emptied) so a stale answer
+    /// doesn't linger under an empty search box.
+    func clearAskResults() {
+        searchResults = []
+        askAnswer = ""
+        askCitations = []
+        askError = nil
+        hasSearched = false
+    }
+
     func search() async {
         guard !isBusy else { return }
         let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4077,8 +4087,14 @@ final class AppState: ObservableObject {
         guard syncProgress?.active != true else { return }
         Task { @MainActor [weak self] in
             guard let self else { return }
-            self.status = "Syncing connected sources…"
+            self.status = "Syncing your sources…"
+            // Mirror the auto-sync tick so a manual "Sync Now" covers EVERY source — most importantly
+            // the local notes folder (client-only path), which the backend sync-due job can't reach.
+            // Previously this only ran sync-due, so the default notes-folder user saw "up to date"
+            // and no new notes even after editing them.
+            await self.syncSavedObsidianVaultIfAvailable(automatic: false)
             _ = await self.syncDueConnectedSources(automatic: false)
+            await self.syncConfiguredDirectConnectorsIfAvailable(automatic: true)
             _ = await self.drainQueuedMemoryJobs(automatic: true)
             await self.loadInbox()
             await self.loadReview()
@@ -6539,7 +6555,7 @@ struct IntegrationCenterView: View {
             Text(compact ? "AI tools" : "AI access")
                 .font(compact ? .headline : .title3)
                 .fontWeight(.semibold)
-            Text(compact ? "Connect local AI tools so reviewed memory is available where you already work." : "Connect local tools so reviewed memory is available where you work. Advanced MCP config stays collapsed unless an app asks for it.")
+            Text(compact ? "Connect local AI tools so reviewed memory is available where you already work." : "Connect local tools so reviewed memory is available where you work. Advanced setup stays collapsed unless an app asks for it.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -6577,7 +6593,7 @@ struct IntegrationCenterView: View {
     }
 
     private var troubleshootingSetupActions: some View {
-        DisclosureGroup("Advanced MCP config") {
+        DisclosureGroup("Advanced tool config") {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Most tools connect automatically. Open this only when a local AI app asks for connection details.")
                     .font(.caption)
@@ -6586,7 +6602,7 @@ struct IntegrationCenterView: View {
                     Button {
                         state.copyMCPConfig()
                     } label: {
-                        Label("Copy MCP config", systemImage: "doc.on.doc")
+                        Label("Copy tool config", systemImage: "doc.on.doc")
                     }
                     Spacer()
                 }

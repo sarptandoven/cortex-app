@@ -237,7 +237,7 @@ class MacOSConnectorUIContractTests(unittest.TestCase):
 
         self.assertIn("ConnectionsMCPAccessSection", source)
         self.assertIn("Tool permissions", source)
-        self.assertIn("MCP-compatible tools can only use the permissions below", source)
+        self.assertIn("Connected AI tools can only use the permissions below", source)
         self.assertIn("allow_agent_reads", source)
         self.assertIn("allow_agent_writes", source)
         self.assertIn("allow_agent_exports", source)
@@ -246,7 +246,7 @@ class MacOSConnectorUIContractTests(unittest.TestCase):
         self.assertIn("recentToolEvents", source)
         self.assertIn("Recent tool activity", source)
         self.assertIn("resetMCPIntegrationToken", source)
-        self.assertIn("No MCP tool activity recorded yet.", source)
+        self.assertIn("No AI tool activity recorded yet.", source)
         self.assertIn("Recent activity is shown without raw memory content.", source)
 
 

@@ -726,7 +726,27 @@ struct OnboardingAskUseStep: View {
                 AskAnswerPanel(answer: state.askAnswer, citations: state.askCitations)
             }
 
-            if !state.searchResults.isEmpty {
+            if let askError = state.askError {
+                // A real engine/network failure must not masquerade as "no answer" — surface it with
+                // a retry so the user doesn't conclude Ask is broken and abandon setup.
+                VStack(alignment: .leading, spacing: 8) {
+                    OnboardingCheckRow(
+                        title: "Ask hit a problem",
+                        detail: askError,
+                        systemImage: "exclamationmark.triangle.fill",
+                        color: .orange
+                    )
+                    Button {
+                        state.runSearch()
+                    } label: {
+                        Label("Try again", systemImage: "arrow.clockwise")
+                            .frame(minWidth: 120, minHeight: 40)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(state.isBusy)
+                }
+            } else if !state.searchResults.isEmpty {
                 ForEach(state.searchResults.prefix(2)) { item in
                     MemoryCard(item: item)
                 }

@@ -37,7 +37,7 @@ enum OnboardingStep: Int, CaseIterable, Identifiable {
         case .firstSource: return "Source"
         case .reviewMemory: return "Review"
         case .askUse: return "Ask"
-        case .trustBackup: return "Trust"
+        case .trustBackup: return "Backup"
         }
     }
 

@@ -122,6 +122,13 @@ struct AskQuerySection: View {
                     guard !state.isBusy, !trimmedQuery.isEmpty else { return }
                     state.runSearch()
                 }
+                .onChange(of: state.searchQuery) { newValue in
+                    // Clearing the box clears the previous answer, so a stale result never lingers
+                    // beneath an empty search field.
+                    if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        state.clearAskResults()
+                    }
+                }
             Button {
                 state.runSearch()
             } label: {
@@ -638,10 +645,21 @@ struct AskSourceDetailRow: View {
                 }
                 Spacer(minLength: 0)
             }
-            Text(item.content)
+            let display = MemoryText.displayContent(item.content)
+            Text(display.headline)
                 .font(.body)
+                .lineLimit(display.path == nil ? 6 : 2)
+                .truncationMode(.middle)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
+            if let path = display.path {
+                Text(path)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(MemoryText.unwrap(item.content))
+            }
             if let citation = citationLabel {
                 HStack(spacing: 6) {
                     Image(systemName: "link")

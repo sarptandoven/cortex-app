@@ -129,7 +129,7 @@ struct ReviewSourceHealthStrip: View {
             return "\(needsAttentionCount) source\(needsAttentionCount == 1 ? "" : "s") need attention. Already synced local memory stays available."
         }
         if pendingCount > 0 {
-            return "Approve useful items, archive noise, and Cortex will use approved memory in Ask and MCP retrieval."
+            return "Approve useful items, archive noise, and Cortex will use approved memory in Ask and connected AI tools."
         }
         if !sources.isEmpty {
             return "Cortex will place new synced memories here before they are used."
@@ -345,6 +345,11 @@ struct ReviewInboxSection: View {
                         .foregroundColor(.secondary)
                 }
                 Spacer()
+            }
+            .onChange(of: captures.count) { _ in
+                // Reset pagination when the list changes (after approve/archive/sync) so the
+                // "Show more" state and "Showing N of M" counter track the current list.
+                visibleLimit = Self.pageSize
             }
 
             if captures.isEmpty {
@@ -657,8 +662,7 @@ struct ReviewQueueCaptureCard: View {
     }
 
     private var title: String {
-        let candidate = capture.title ?? capture.source
-        return candidate.isEmpty ? "Untitled review item" : candidate
+        cortexCaptureTitle(capture)
     }
 
     private var cleanedSummary: String? {
@@ -682,7 +686,7 @@ struct ReviewQueuePreviewList: View {
     let capture: CaptureItem
 
     private var memories: [MemoryItem] {
-        Array((capture.preview_memories ?? []).prefix(3))
+        cortexDedupedMemories(capture.preview_memories ?? [], limit: 3)
     }
 
     private var tasks: [TaskItem] {
@@ -856,8 +860,7 @@ struct ReviewCaptureCard: View {
     }
 
     private var title: String {
-        let candidate = capture.title ?? capture.source
-        return candidate.isEmpty ? "Untitled review item" : candidate
+        cortexCaptureTitle(capture)
     }
 
     private var sourceDetail: String {
@@ -876,7 +879,7 @@ struct ReviewPreviewList: View {
     let capture: CaptureItem
 
     private var memories: [MemoryItem] {
-        Array((capture.preview_memories ?? []).prefix(5))
+        cortexDedupedMemories(capture.preview_memories ?? [], limit: 5)
     }
 
     private var tasks: [TaskItem] {
@@ -925,12 +928,20 @@ struct ReviewMemoryPreviewRow: View {
         HStack(alignment: .top, spacing: 8) {
             ReviewPreviewKindPill(label: memoryLabel, color: color(for: memory.kind))
             VStack(alignment: .leading, spacing: 3) {
-                Text(memory.content)
+                Text(display.headline)
                     .font(.callout)
-                    .lineLimit(4)
-                    .truncationMode(.tail)
+                    .lineLimit(display.path == nil ? 4 : 2)
+                    .truncationMode(.middle)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+                if let path = display.path {
+                    Text(path)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(MemoryText.unwrap(memory.content))
+                }
                 if let citation = CitationDisplay.label(sourceURL: memory.source_url) {
                     Label(citation, systemImage: "quote.bubble")
                         .font(.caption2)
@@ -942,6 +953,10 @@ struct ReviewMemoryPreviewRow: View {
             }
             Spacer(minLength: 0)
         }
+    }
+
+    private var display: (headline: String, path: String?) {
+        MemoryText.displayContent(memory.content)
     }
 
     private var memoryLabel: String {
@@ -1017,6 +1032,33 @@ func cortexFriendlyMemoryKind(_ kind: String) -> String {
     case "": return "Memory"
     default: return kind.prefix(1).uppercased() + kind.dropFirst()
     }
+}
+
+/// Collapse near-identical preview memories (e.g. a folder of near-identical file paths) so a
+/// review card doesn't show the same line five times, then cap to `limit`.
+func cortexDedupedMemories(_ items: [MemoryItem], limit: Int) -> [MemoryItem] {
+    var seen = Set<String>()
+    var out: [MemoryItem] = []
+    for memory in items {
+        let key = MemoryText.dedupeKey(memory.content)
+        if seen.contains(key) { continue }
+        seen.insert(key)
+        out.append(memory)
+        if out.count == limit { break }
+    }
+    return out
+}
+
+/// A human-friendly title for a review card: the capture's title if present, otherwise a cleaned
+/// filename/source rather than a raw path or bare id.
+func cortexCaptureTitle(_ capture: CaptureItem) -> String {
+    if let title = capture.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+        return title
+    }
+    let source = capture.source.trimmingCharacters(in: .whitespacesAndNewlines)
+    if source.isEmpty { return "Untitled review item" }
+    if MemoryText.isPathLike(source), let name = MemoryText.filename(source) { return name }
+    return CitationDisplay.cleanSourceURL(source) ?? source
 }
 
 struct ReviewCountPill: View {
