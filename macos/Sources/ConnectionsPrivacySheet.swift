@@ -630,6 +630,7 @@ private struct ConnectionsDirectSourcesSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            AIChatsImportCard(state: state)
             SectionHeader(
                 title: "Connections library",
                 detail: "Browse and connect optional read-only services. Search, pick one, and Cortex shows exactly how to connect it. Everything here is optional and syncs into your memory."
@@ -700,6 +701,91 @@ private struct ConnectionsDirectSourcesSection: View {
         state.activeSourceAccounts.contains { account in
             account.source == connector.id || (connector.source_ids ?? []).contains(account.source)
         }
+    }
+}
+
+/// Import your ChatGPT / Claude history. There's no live sign-in for these (the providers don't
+/// offer one), so this card guides the export, auto-detects it in Downloads, and takes a
+/// drag-drop or file pick. Imported content is trusted and usable immediately.
+private struct AIChatsImportCard: View {
+    @ObservedObject var state: AppState
+    @State private var isTargeted = false
+
+    private let steps = [
+        "In ChatGPT: Settings → Data controls → Export data (Claude: Settings → Account → Export data).",
+        "Download the export email's .zip — it contains conversations.json.",
+        "Drop it below, or click Choose export file. Cortex imports it into your memory right away."
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "bubble.left.and.text.bubble.right")
+                    .font(.title3)
+                    .foregroundColor(.accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("AI chats — ChatGPT & Claude").font(.headline)
+                    Text("These have no live sign-in, so import your export. It becomes usable immediately.")
+                        .font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+
+            if let summary = state.detectedExportSummary {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles").foregroundColor(.accentColor)
+                    Text(summary).font(.callout).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Button { state.importDetectedExports() } label: { Text("Import") }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(state.importInFlight)
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.10)))
+            }
+
+            ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                HStack(alignment: .top, spacing: 8) {
+                    Text("\(index + 1).").font(.caption).fontWeight(.semibold).foregroundColor(.accentColor).monospacedDigit()
+                    Text(step).font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6]))
+                .foregroundColor(isTargeted ? Color.accentColor : Color.secondary.opacity(0.4))
+                .frame(height: 66)
+                .overlay(
+                    HStack(spacing: 8) {
+                        if state.importInFlight { ProgressView().scaleEffect(0.7) }
+                        Text(state.importInFlight ? "Importing…" : "Drag your export here, or")
+                            .font(.callout).foregroundColor(.secondary)
+                        if !state.importInFlight {
+                            Button { state.importAIChatExport() } label: {
+                                Label("Choose export file…", systemImage: "folder.badge.plus")
+                            }
+                        }
+                    }
+                )
+                .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
+                    guard let provider = providers.first else { return false }
+                    provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                        var resolved: String?
+                        if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
+                            resolved = url.standardizedFileURL.path
+                        } else if let url = item as? URL {
+                            resolved = url.standardizedFileURL.path
+                        }
+                        guard let path = resolved else { return }
+                        Task { @MainActor in await state.importFromPath(path) }
+                    }
+                    return true
+                }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(connectionsPanelBackground))
+        .onAppear { Task { await state.detectAvailableExports() } }
     }
 }
 

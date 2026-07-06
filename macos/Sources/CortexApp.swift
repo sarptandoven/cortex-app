@@ -916,6 +916,28 @@ struct SyncProgress: Equatable {
     var fraction: Double { total > 0 ? min(1.0, max(0.0, Double(done) / Double(total))) : 0 }
 }
 
+/// POST /v1/imports result (subset we render after importing an export).
+struct SourceImportResultLite: Codable {
+    let saved: Int
+    let queued: Int
+    let skipped: Int
+    let records_found: Int?
+}
+
+/// GET /v1/imports/detect — AI-chat / app exports auto-found in Downloads/CortexImports.
+struct ExportDetectResponse: Codable {
+    let candidates: [ExportCandidate]
+    let drop_folder: String?
+}
+
+struct ExportCandidate: Codable, Identifiable, Hashable {
+    var id: String { path }
+    let path: String
+    let filename: String
+    let service: String
+    let records_found: Int
+}
+
 struct SearchResponse: Codable {
     let query: String
     let results: [MemoryItem]
@@ -2846,6 +2868,9 @@ final class AppState: ObservableObject {
     @Published var graphEdges: [GraphEdge] = []
     @Published var stats: StatsResponse?
     @Published var syncProgress: SyncProgress?
+    @Published var detectedExportSummary: String?
+    @Published var importInFlight: Bool = false
+    private var detectedExportPaths: [String] = []
     @Published var mirrorInsight: MirrorInsight?
     @Published private var mirrorDismissedHeadlines: Set<String> = Set(
         UserDefaults.standard.stringArray(forKey: AppState.mirrorDismissedDefaultsKey) ?? []
@@ -4059,6 +4084,97 @@ final class AppState: ObservableObject {
                 continue
             }
             await syncDirectConnector(connector, payload: payload, automatic: automatic)
+        }
+    }
+
+    // MARK: AI-chat exports (ChatGPT / Claude) — pick a file, drag it in, or auto-detect it.
+
+    /// Open a file picker for a ChatGPT/Claude export (a .zip, its conversations.json, or the
+    /// unzipped export folder) and import it.
+    func importAIChatExport(sourceHint: String = "") {
+        let panel = NSOpenPanel()
+        panel.title = "Choose export file"
+        panel.message = "Select your ChatGPT or Claude export — a .zip, its conversations.json, or the unzipped folder."
+        panel.prompt = "Import"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.allowedFileTypes = ["zip", "json", "jsonl"]
+        if panel.runModal() == .OK, let url = panel.url {
+            Task { await importFromPath(url.standardizedFileURL.path, sourceHint: sourceHint) }
+        }
+    }
+
+    /// Import an export from a local path (POST /v1/imports). Imported content is trusted, so it
+    /// becomes usable immediately; on success we mark the first-source-connected flag so onboarding
+    /// can advance, and refresh memory + import history.
+    func importFromPath(_ path: String, sourceHint: String = "", automatic: Bool = false) async {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !importInFlight else { return }
+        importInFlight = true
+        if !automatic { isBusy = true }
+        defer { importInFlight = false; if !automatic { isBusy = false } }
+        do {
+            status = "Importing your chats…"
+            let started = URL(fileURLWithPath: trimmed).startAccessingSecurityScopedResource()
+            defer { if started { URL(fileURLWithPath: trimmed).stopAccessingSecurityScopedResource() } }
+            let data = try await request(
+                path: "/v1/imports",
+                method: "POST",
+                body: ["paths": [trimmed], "source_hint": sourceHint, "processing": "sync", "max_records": 5000]
+            )
+            let result = try JSONDecoder().decode(SourceImportResultLite.self, from: data)
+            let added = result.saved + result.queued
+            if added > 0 {
+                firstSourceAdded = true
+                UserDefaults.standard.set(true, forKey: "onboardingFirstSourceImported.v1")
+                let label = sourceHint.isEmpty ? "Imported chats" : sourceHint.capitalized
+                onboardingFirstSourceNames = Array(Set(onboardingFirstSourceNames + [label])).sorted()
+                UserDefaults.standard.set(onboardingFirstSourceNames, forKey: "onboardingFirstSourceNames.v1")
+            }
+            await drainQueuedMemoryJobs(automatic: true)
+            await refreshAfterCapture()
+            await loadStats()
+            await loadImportHistory()
+            detectedExportSummary = nil
+            if added > 0 {
+                status = "Imported \(added) conversation\(added == 1 ? "" : "s") into your memory."
+            } else if result.skipped > 0 {
+                status = "Already imported — nothing new to add."
+            } else {
+                status = "No conversations found in that file. Choose the export .zip or its conversations.json."
+            }
+        } catch {
+            status = CortexRecoveryText.failureStatus("Import", error: error)
+        }
+    }
+
+    /// Scan Downloads / Desktop / ~/CortexImports for AI-chat exports so the app can offer a
+    /// one-tap "found your ChatGPT export" import. Best-effort; silent on failure.
+    func detectAvailableExports() async {
+        do {
+            let data = try await request(path: "/v1/imports/detect", method: "GET")
+            let result = try JSONDecoder().decode(ExportDetectResponse.self, from: data)
+            detectedExportPaths = result.candidates.map { $0.path }
+            if let first = result.candidates.first {
+                let total = result.candidates.reduce(0) { $0 + $1.records_found }
+                let svc = first.service.replacingOccurrences(of: "chatgpt", with: "ChatGPT").capitalized
+                detectedExportSummary = "Found a \(svc) export (\(total) conversation\(total == 1 ? "" : "s")) in your Downloads."
+            } else {
+                detectedExportSummary = nil
+            }
+        } catch {
+            detectedExportSummary = nil
+        }
+    }
+
+    /// Import every export the detector found (the "Import found export" one-tap action).
+    func importDetectedExports() {
+        let paths = detectedExportPaths
+        guard !paths.isEmpty else { return }
+        Task {
+            for path in paths { await importFromPath(path, sourceHint: "") }
+            detectedExportPaths = []
         }
     }
 
