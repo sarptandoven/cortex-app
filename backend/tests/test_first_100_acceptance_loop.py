@@ -189,7 +189,11 @@ I prefer Cortex answers that cite the edited Obsidian note when memory changes.
         self.assertEqual(tool_required_capabilities("sync_connected_sources"), ["maintenance"])
         self.assertEqual(tool_required_capabilities("approve_memory_capture"), ["write"])
         self.assertEqual(tool_required_capabilities("approve_memory_capture", scoped=True), ["write", "maintenance"])
-        self.assertEqual(tool_required_capabilities("get_agent_adaptation"), ["read", "export"])
+        # Reading the distilled profile/adaptation is a read (the product's core value to agents);
+        # only the raw bulk dump (export_memory) stays behind the export scope.
+        self.assertEqual(tool_required_capabilities("get_agent_adaptation"), ["read"])
+        self.assertEqual(tool_required_capabilities("get_personal_profile"), ["read"])
+        self.assertEqual(tool_required_capabilities("export_memory"), ["read", "export"])
 
         quality = call_tool(self.store, self.user_id, "get_memory_quality_report", {})
         self.assertIn(quality["status"], {"usable", "strong"})

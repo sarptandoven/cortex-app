@@ -30,6 +30,46 @@ def extract_local(raw_text: str, source: str = "unit-test", author_aliases: list
 
 
 class ExtractorQualityTests(unittest.TestCase):
+    def test_self_authored_keeps_personal_memory_on_conversation_sources(self) -> None:
+        # remember_this is an explicit "save this about me": personal memories must survive even
+        # when the calling agent labels the source claude/chatgpt/slack (conversation sources that
+        # gate unattributed personal text on the import path). Regression for the silent drop
+        # where remember_this("I dislike ...", source="claude") produced ZERO memories.
+        for source in ("claude", "chatgpt", "slack", "ai-chat"):
+            with self.subTest(source=source):
+                with patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
+                    data = extract_context("I dislike long status meetings.", source, self_authored=True)
+                self.assertTrue(
+                    any(record["kind"] == "negative" for record in data["records"]),
+                    data["records"],
+                )
+        # The import path (self_authored omitted) still drops unattributed personal text from
+        # multi-author sources — anti-pollution stays intact.
+        unattributed = extract_local("I dislike long status meetings.", "slack")
+        self.assertFalse(any(record["kind"] in PERSONAL_MEMORY_KINDS for record in unattributed["records"]))
+
+    def test_deterministic_triggers_cover_all_memory_layers(self) -> None:
+        # Every layer must be reachable from natural phrasing variants — not just canonical
+        # keyword forms. Regression for preference/negative/episodic falling through to semantic.
+        cases = {
+            "I strongly prefer concise, direct writing over long prose.": "preference",
+            "I always use tabs over spaces.": "preference",
+            "I really dislike long status meetings.": "negative",
+            "I can't stand vague acceptance criteria.": "negative",
+            "My writing voice is warm but precise.": "style",
+            "We decided to use PostgreSQL for the main store.": "decision",
+            "To release: bump the version, tag it, then notarize.": "procedural",
+            "I met Marcus in Lisbon to plan the offsite.": "episodic",
+            "Had a call with Priya about the roadmap.": "episodic",
+            "Our Q3 revenue target is two million dollars.": "semantic",
+            "Users prefer the dark theme in our surveys.": "semantic",  # not the USER's preference
+        }
+        for text, expected_layer in cases.items():
+            with self.subTest(text=text):
+                data = extract_local(text, "docs")
+                layers = [record.get("layer") for record in data["records"]]
+                self.assertIn(expected_layer, layers, f"{text!r} -> {layers}")
+
     def test_noisy_chat_import_filters_boilerplate_and_assistant_preferences(self) -> None:
         data = extract_local(GOLDEN_NOISY_CHAT_IMPORT, "chatgpt")
         records = data["records"]
@@ -500,7 +540,7 @@ class ClaudeWindowedExtractionTests(unittest.TestCase):
     def test_extract_context_windows_large_capture_over_llm_path(self) -> None:
         calls: list[str] = []
 
-        def fake_claude(raw_text, source, author_aliases=None):
+        def fake_claude(raw_text, source, author_aliases=None, self_authored=False):
             calls.append(raw_text)
             return {
                 "records": [{"id": f"mem_{len(calls)}", "kind": "claim", "content": raw_text}],
@@ -526,7 +566,7 @@ class ClaudeWindowedExtractionTests(unittest.TestCase):
     def test_extract_context_small_capture_stays_single_llm_call(self) -> None:
         calls: list[str] = []
 
-        def fake_claude(raw_text, source, author_aliases=None):
+        def fake_claude(raw_text, source, author_aliases=None, self_authored=False):
             calls.append(raw_text)
             return {"records": [], "tasks": [], "entities": [], "summary": ""}
 

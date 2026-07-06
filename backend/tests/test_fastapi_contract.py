@@ -821,8 +821,8 @@ class FastAPIContractTests(unittest.TestCase):
         bad_format = self.client.post("/v1/context", json={"task": "x", "format": "yaml"}, headers=headers)
         self.assertEqual(bad_format.status_code, 422)
 
-        # A READ-scoped API token can use the engine (not export-gated) but the identity
-        # layer degrades to a visible omission record.
+        # A READ-scoped API token can use the engine AND receives the identity layer — the
+        # distilled picture of the user is a read, which is the whole point of the product.
         read_token = "cxa-context-read-token"
         registered = self.client.post(
             "/v1/integrations/api-token",
@@ -837,7 +837,7 @@ class FastAPIContractTests(unittest.TestCase):
         )
         self.assertEqual(scoped.status_code, 200)
         scoped_identity = next(layer for layer in scoped.json()["layers"] if layer["layer"] == "identity")
-        self.assertEqual(scoped_identity.get("omitted"), {"reason": "requires export scope", "required_scopes": ["export"]})
+        self.assertIsNone(scoped_identity.get("omitted"))
 
         # The MCP core tool round-trips through /mcp with the same engine.
         mcp_token = "cxm-context-tool-token"
@@ -863,7 +863,7 @@ class FastAPIContractTests(unittest.TestCase):
         structured = payload["result"]["structuredContent"]
         self.assertEqual(structured["receipt"]["tool"], "get_context")
         mcp_identity = next(layer for layer in structured["layers"] if layer["layer"] == "identity")
-        self.assertEqual(mcp_identity.get("omitted"), {"reason": "requires export scope", "required_scopes": ["export"]})
+        self.assertIsNone(mcp_identity.get("omitted"))
 
         asked = self.client.post(
             "/mcp",
@@ -1250,9 +1250,9 @@ class FastAPIContractTests(unittest.TestCase):
             )
             self.assertEqual(scoped.status_code, 200)
 
+            # A read/write token still cannot pull the raw bulk dump (distilled reads are allowed).
             export_blocked = self.client.get(
-                "/v1/context-pack",
-                params={"query": "anything"},
+                "/v1/export.json",
                 headers={"Authorization": f"Bearer {scoped_token}", "X-Cortex-User": "alice"},
             )
             self.assertEqual(export_blocked.status_code, 403)
@@ -1307,8 +1307,7 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertIn("writes are disabled", write_blocked.json()["detail"])
 
         export_blocked = self.client.get(
-            "/v1/context-pack",
-            params={"query": "anything"},
+            "/v1/export.json",
             headers={"Authorization": f"Bearer {tokens['export']}", "X-Cortex-User": user},
         )
         self.assertEqual(export_blocked.status_code, 403)
@@ -2957,7 +2956,7 @@ END:VCALENDAR
         tool_names = {tool["name"] for tool in mcp.json()["result"]["tools"]}
         self.assertEqual(
             tool_names,
-            {"get_context", "ask_memory", "search_memory", "get_entity_context", "list_capabilities"},
+            {"get_context", "ask_memory", "search_memory", "get_entity_context", "get_person_map", "list_capabilities"},
         )
         self.assertNotIn("connect_source_account", tool_names)
         self.assertNotIn("sync_source_records", tool_names)
@@ -3473,7 +3472,7 @@ END:VCALENDAR
         tool_names = {tool["name"] for tool in tools.json()["result"]["tools"]}
         self.assertEqual(
             tool_names,
-            {"get_context", "ask_memory", "search_memory", "get_entity_context", "list_capabilities"},
+            {"get_context", "ask_memory", "search_memory", "get_entity_context", "get_person_map", "list_capabilities"},
         )
         self.assertNotIn("connect_source_account", tool_names)
         self.assertNotIn("sync_source_records", tool_names)
@@ -3514,7 +3513,7 @@ END:VCALENDAR
         write_tool_names = {tool["name"] for tool in write_tools.json()["result"]["tools"]}
         self.assertEqual(
             write_tool_names,
-            {"get_context", "ask_memory", "search_memory", "get_entity_context", "list_capabilities", "remember_this"},
+            {"get_context", "ask_memory", "search_memory", "get_entity_context", "get_person_map", "list_capabilities", "remember_this"},
         )
         self.assertNotIn("sync_connected_sources", write_tool_names)
         self.assertNotIn("approve_memory_capture", write_tool_names)

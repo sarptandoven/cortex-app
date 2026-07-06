@@ -103,11 +103,11 @@ class ContextEngineTests(ContextEngineBase):
         for layer in pack["layers"]:
             self.assertFalse(layer.get("items"), layer)
 
-    def test_identity_layer_export_gated_with_visible_omission(self) -> None:
+    def test_identity_layer_read_gated_with_visible_omission(self) -> None:
         self._seed_corpus()
         gated = self.store.assemble_context(self.user_id, "draft a reply about Atlas", include_identity=False)
         identity = next(layer for layer in gated["layers"] if layer["layer"] == "identity")
-        self.assertEqual(identity.get("omitted"), {"reason": "requires export scope", "required_scopes": ["export"]})
+        self.assertEqual(identity.get("omitted"), {"reason": "requires read scope", "required_scopes": ["read"]})
         self.assertEqual(gated["coverage"]["sections_omitted"], ["identity"])
         open_pack = self.store.assemble_context(self.user_id, "draft a reply about Atlas", include_identity=True)
         identity_open = next(layer for layer in open_pack["layers"] if layer["layer"] == "identity")

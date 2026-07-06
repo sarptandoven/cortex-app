@@ -436,12 +436,23 @@ private struct ConnectionsDirectSourcesSection: View {
             }
     }
 
+    /// Managed-OAuth connectors without provider credentials in this build can't be connected,
+    /// so untouched ones don't get a tile at all — a hidden connector beats a dead end.
+    /// Connectors the user already set up keep their management row regardless.
+    private var browsableConnectors: [SourceConnectorCatalogItem] {
+        wiredConnectors.filter { isManaged($0) || !isUnconfiguredOAuth($0) }
+    }
+
+    private var hasHiddenOAuthConnectors: Bool {
+        wiredConnectors.contains { !isManaged($0) && isUnconfiguredOAuth($0) }
+    }
+
     // Library search + category grouping (VSCode-extensions style: searchable, sectioned list of
     // optional connections). Reuses the existing, correct ConnectionsDirectSourceRow per connector.
     private var filteredConnectors: [SourceConnectorCatalogItem] {
         let query = connectorSearch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else { return wiredConnectors }
-        return wiredConnectors.filter {
+        guard !query.isEmpty else { return browsableConnectors }
+        return browsableConnectors.filter {
             $0.name.lowercased().contains(query) || ($0.category ?? "").lowercased().contains(query)
         }
     }
@@ -463,8 +474,8 @@ private struct ConnectionsDirectSourcesSection: View {
     }
 
     // Single summarizer for planned sign-in connectors. No longer rendered as a roadmap
-    // footer — each unavailable tile already says "Coming soon" — but kept as the one
-    // place that names the planned sign-in set.
+    // footer — unavailable connectors simply aren't listed — but kept as the one place
+    // that names the planned sign-in set.
     private var plannedConnectorSummary: String? {
         let names = plannedConnectorNames
         guard !names.isEmpty else { return nil }
@@ -533,11 +544,7 @@ private struct ConnectionsDirectSourcesSection: View {
                             if !availableConnectors.isEmpty {
                                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 10)], spacing: 10) {
                                     ForEach(availableConnectors) { connector in
-                                        ConnectorLibraryTile(
-                                            connector: connector,
-                                            enabled: !(connector.connectionSetup?.supportsManagedOAuth == true
-                                                       && !state.managedOAuthIsConfigured(connector))
-                                        ) {
+                                        ConnectorLibraryTile(connector: connector) {
                                             libraryAction(connector)
                                         }
                                     }
@@ -546,6 +553,12 @@ private struct ConnectionsDirectSourcesSection: View {
                         }
                     }
                 }
+            }
+
+            if hasHiddenOAuthConnectors {
+                Text("Email and Drive connect via export import for now.")
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.inkFaint)
             }
         }
         .sheet(item: $selectedTokenConnector) { connector in
@@ -568,6 +581,12 @@ private struct ConnectionsDirectSourcesSection: View {
             || state.hasStoredDirectConnectorConfig(connector)
     }
 
+    /// Managed-OAuth connector whose provider sign-in has no credentials in this build.
+    private func isUnconfiguredOAuth(_ connector: SourceConnectorCatalogItem) -> Bool {
+        connector.connectionSetup?.supportsManagedOAuth == true
+            && !state.managedOAuthIsConfigured(connector)
+    }
+
     private func libraryAction(_ connector: SourceConnectorCatalogItem) {
         if connector.connectionSetup?.supportsManagedOAuth == true {
             if state.managedOAuthIsConfigured(connector) {
@@ -587,10 +606,10 @@ private struct ConnectionsDirectSourcesSection: View {
 }
 
 /// Compact, hoverable "app store" tile for a connector the user hasn't set up yet.
+/// Only connectable connectors get a tile — dead "Coming soon" tiles are hidden upstream.
 /// Management chrome (Sync / Pause / Remove) only appears once a connector is connected.
 private struct ConnectorLibraryTile: View {
     let connector: SourceConnectorCatalogItem
-    let enabled: Bool
     let action: () -> Void
     @State private var hovering = false
 
@@ -599,7 +618,7 @@ private struct ConnectorLibraryTile: View {
             VStack(alignment: .leading, spacing: 8) {
                 Image(systemName: connectorLibraryIcon(connector.id))
                     .font(.system(size: 22, weight: .semibold))
-                    .foregroundColor(enabled ? CortexDesign.accent : CortexDesign.inkFaint)
+                    .foregroundColor(CortexDesign.accent)
                 Text(connector.name)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(CortexDesign.ink)
@@ -607,21 +626,20 @@ private struct ConnectorLibraryTile: View {
                     .font(.caption)
                     .foregroundColor(CortexDesign.inkSecondary)
                 Spacer(minLength: 0)
-                Text(enabled ? "Set up" : "Coming soon")
+                Text("Set up")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(enabled ? CortexDesign.accent : CortexDesign.inkFaint)
+                    .foregroundColor(CortexDesign.accent)
             }
             .padding(14)
             .frame(maxWidth: .infinity, minHeight: 118, alignment: .topLeading)
-            .background(hovering && enabled ? CortexDesign.accentSoft : CortexDesign.panelBackground)
+            .background(hovering ? CortexDesign.accentSoft : CortexDesign.panelBackground)
             .overlay(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).stroke(CortexDesign.hairline, lineWidth: 1))
             .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
         }
         .buttonStyle(.plain)
-        .disabled(!enabled)
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
-        .help(enabled ? "Connect \(connector.name)" : "\(connector.name) sign-in isn't available in this build yet.")
+        .help("Connect \(connector.name)")
     }
 }
 
@@ -649,11 +667,19 @@ private struct AIChatsImportCard: View {
     @ObservedObject var state: AppState
     @State private var isTargeted = false
     @State private var dropZoneHovering = false
+    // The export walkthrough starts open until an export shows up — requesting the export is
+    // where people stall, not the drop zone. Once one is detected or imported, it tucks away.
+    @State private var guideExpanded = true
 
     private let steps = [
         "In ChatGPT: Settings → Data controls → Export data. In Claude: Settings → Privacy → Export data.",
-        "You'll get an email with a .zip — download it, then drop it above or click Choose export file."
+        "The export arrives by email after a short wait — watch your inbox for the download link.",
+        "Download the .zip, then drop it above or click Choose export file."
     ]
+
+    private var hasCompletedImport: Bool {
+        state.importHistory.contains { $0.deleted_at == nil && $0.saved > 0 }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -717,8 +743,7 @@ private struct AIChatsImportCard: View {
                     return true
                 }
 
-            // The export walkthrough stays one click away for those who need it.
-            DisclosureGroup("How do I get my export?") {
+            DisclosureGroup(isExpanded: $guideExpanded) {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
                         HStack(alignment: .top, spacing: 8) {
@@ -726,8 +751,15 @@ private struct AIChatsImportCard: View {
                             Text(step).font(.caption).foregroundColor(CortexDesign.inkSecondary).fixedSize(horizontal: false, vertical: true)
                         }
                     }
+                    HStack(spacing: 16) {
+                        exportSettingsLink("Open ChatGPT export settings", urlString: "https://chatgpt.com/#settings/DataControls")
+                        exportSettingsLink("Open Claude export settings", urlString: "https://claude.ai/settings/data-privacy-controls")
+                    }
+                    .padding(.top, 4)
                 }
                 .padding(.top, 6)
+            } label: {
+                Text("How do I get my export?")
             }
             .font(.caption)
             .foregroundColor(CortexDesign.inkSecondary)
@@ -736,7 +768,35 @@ private struct AIChatsImportCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).fill(connectionsPanelBackground))
         .overlay(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).stroke(CortexDesign.hairline, lineWidth: 1))
-        .onAppear { Task { await state.detectAvailableExports() } }
+        .onAppear {
+            Task {
+                await state.detectAvailableExports()
+                // Collapse the walkthrough only once an export exists or chats have landed;
+                // otherwise it stays open so the path in is visible without a click.
+                if state.detectedExportSummary != nil || hasCompletedImport {
+                    guideExpanded = false
+                }
+            }
+        }
+    }
+
+    /// Quiet mono link straight to the provider's export page — the step users abandon.
+    private func exportSettingsLink(_ title: String, urlString: String) -> some View {
+        Button {
+            if let url = URL(string: urlString) {
+                NSWorkspace.shared.open(url)
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(title)
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .font(CortexDesign.Typography.stamp)
+            .foregroundColor(CortexDesign.inkSecondary)
+            .underline()
+        }
+        .buttonStyle(.plain)
     }
 }
 

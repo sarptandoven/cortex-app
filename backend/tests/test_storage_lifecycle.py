@@ -5795,13 +5795,14 @@ Never use [[Templates/Marketing]] boilerplate in memory.
         with self.assertRaises(PermissionError):
             call_tool(self.store, self.user_id, "search_memory", {"query": "permission"})
 
+        # The distilled profile / context pack are READS — a read-scoped agent gets the holistic
+        # picture with exports OFF. Only the raw bulk dump (export_memory) stays export-gated.
         self.store.update_settings(self.user_id, {"allow_agent_reads": True, "allow_agent_exports": False})
+        self.assertIsInstance(call_tool(self.store, self.user_id, "build_context_pack", {"query": "permission"}), str)
+        self.assertIsInstance(call_tool(self.store, self.user_id, "get_personal_profile", {}), dict)
+        self.assertIsInstance(call_tool(self.store, self.user_id, "get_agent_adaptation", {}), dict)
         with self.assertRaises(PermissionError):
-            call_tool(self.store, self.user_id, "build_context_pack", {"query": "permission"})
-        with self.assertRaises(PermissionError):
-            call_tool(self.store, self.user_id, "get_personal_profile", {})
-        with self.assertRaises(PermissionError):
-            call_tool(self.store, self.user_id, "get_agent_adaptation", {})
+            call_tool(self.store, self.user_id, "export_memory", {"format": "json"})
 
         with self.assertRaises(PermissionError):
             call_tool(self.store, self.user_id, "create_memory_backup", {})
@@ -5822,7 +5823,8 @@ Never use [[Templates/Marketing]] boilerplate in memory.
         self.assertTrue(deleted["deleted"])
 
         self.store.record_agent_event(self.user_id, "search_memory", {"query": "permission"}, success=False, error="blocked")
-        audit = self.store.audit_log(self.user_id, limit=5)
+        # Window kept wide enough that same-second event ties can't hide the agent tool_call.
+        audit = self.store.audit_log(self.user_id, limit=25)
         self.assertTrue(any(item["object_type"] == "agent" and item["event_type"] == "tool_call" for item in audit))
         trust = self.store.trust_summary(self.user_id)
         self.assertIn("trust_score", trust)

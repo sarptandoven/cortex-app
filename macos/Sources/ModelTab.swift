@@ -17,13 +17,29 @@ struct ModelTab: View {
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
                 if let profile = state.profile, !profile.sections.isEmpty {
-                    SectionHeader(
-                        title: "What Cortex has learned",
-                        detail: ""
-                    )
+                    VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
+                        SectionHeader(
+                            title: "What Cortex has learned",
+                            detail: ""
+                        )
+                        if let segments = profileStampSegments(for: profile) {
+                            AccessionStamp(segments: segments)
+                                .accessibilityElement(children: .ignore)
+                                .accessibilityLabel(segments.joined(separator: ", "))
+                        }
+                    }
                     .padding(.top, CortexDesign.Space.xl)
                     ForEach(profile.sections) { section in
                         ProfileCard(section: section)
+                    }
+                    if let footnote = limitationsFootnote(for: profile) {
+                        Text(footnote)
+                            .font(CortexDesign.Typography.prose(13).italic())
+                            .lineSpacing(3)
+                            .foregroundColor(CortexDesign.inkFaint)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: 620, alignment: .leading)
+                            .accessibilityLabel("Note: \(footnote)")
                     }
                 }
             }
@@ -36,6 +52,51 @@ struct ModelTab: View {
         }
         .background(CortexDesign.appBackground)
     }
+
+    /// The profile's own accession line — "PROFILE READINESS · 62/100 · COMPILED · 6 JUL 2026".
+    /// Readiness disappears at 100 (silence = confidence); the compiled date stays as provenance.
+    /// Never fabricate a segment; nil hides the stamp entirely.
+    private func profileStampSegments(for profile: ProfileResponse) -> [String]? {
+        var segments: [String] = []
+        if let readiness = profile.readiness, readiness < 100 {
+            segments.append("Profile readiness")
+            segments.append("\(readiness)/100")
+        }
+        if let compiled = ModelTab.compiledDateText(profile.generatedAt) {
+            segments.append("Compiled")
+            segments.append(compiled)
+        }
+        return segments.isEmpty ? nil : segments
+    }
+
+    /// One marginal note at the foot of the profile column: the first couple of backend
+    /// limitations, joined. No card, no icon — just faint serif italic in the margin.
+    private func limitationsFootnote(for profile: ProfileResponse) -> String? {
+        let notes = (profile.limitations ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .prefix(2)
+        return notes.isEmpty ? nil : notes.joined(separator: " ")
+    }
+
+    /// Parses the backend's ISO-8601 `generated_at` into "6 Jul 2026" (AccessionStamp applies
+    /// the stamp casing). Returns nil when absent or unparseable.
+    static func compiledDateText(_ raw: String?) -> String? {
+        guard let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        let iso = ISO8601DateFormatter()
+        var date = iso.date(from: value)
+        if date == nil {
+            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            date = iso.date(from: value)
+        }
+        guard let date else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "d MMM yyyy"
+        return formatter.string(from: date)
+    }
 }
 
 /// A real, changing sync-progress bar (determinate, driven by the job queue) shown while Cortex
@@ -46,15 +107,31 @@ struct SyncProgressCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Syncing your memory…")
-                .font(.callout)
-                .fontWeight(.semibold)
-                .foregroundColor(CortexDesign.ink)
+            HStack(alignment: .firstTextBaseline, spacing: CortexDesign.Space.sm) {
+                Text("Syncing your memory…")
+                    .font(.callout)
+                    .fontWeight(.semibold)
+                    .foregroundColor(CortexDesign.ink)
+                Spacer(minLength: 0)
+                if progress.total > 0 {
+                    Text("\(progress.done) of \(progress.total)")
+                        .font(CortexDesign.Typography.stamp)
+                        .kerning(0.8)
+                        .foregroundColor(CortexDesign.inkFaint)
+                        .accessibilityHidden(true)
+                }
+            }
             ProgressView(value: progress.fraction)
                 .progressViewStyle(.linear)
                 .tint(CortexDesign.gold)
         }
         .cortexCard(padding: 14, background: CortexDesign.goldSoft)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            progress.total > 0
+                ? "Syncing your memory, \(progress.done) of \(progress.total)"
+                : "Syncing your memory"
+        )
     }
 }
 
@@ -138,8 +215,9 @@ struct MirrorMomentCard: View {
 
 /// One card in the "What Cortex knows about you" Personal Profile stack. Each card is a
 /// single section (how you work, preferences, ...): a confident one-line statement plus a
-/// few quiet grounding rows. Settled facts carry no chip; only a pattern still taking shape
-/// is flagged with a secondary "Emerging" pill. Rows whose
+/// few quiet grounding rows. Confidence is a three-band mark: settled (high) facts carry no
+/// chip, a pattern still taking shape (medium) is flagged with a secondary "Emerging" pill,
+/// and a first hint (low) gets a fainter "Early signal" pill. Rows whose
 /// element carries a source_url can be opened. This view assumes the caller only renders it
 /// for non-empty profiles; a section with no statement and no elements shows just its title.
 struct ProfileCard: View {
@@ -152,11 +230,16 @@ struct ProfileCard: View {
         Array(section.elements.filter { ($0.text?.isEmpty == false) }.prefix(3))
     }
 
+    /// The lowest confidence band; medium (and unknown) stay "Emerging" as before.
+    private var isEarlySignal: Bool {
+        (section.confidence ?? "").lowercased() == "low"
+    }
+
     private var confidencePill: some View {
         CortexStatusPill(
-            label: "Emerging",
+            label: isEarlySignal ? "Early signal" : "Emerging",
             systemImage: "sparkles",
-            color: CortexDesign.inkSecondary
+            color: isEarlySignal ? CortexDesign.inkFaint : CortexDesign.inkSecondary
         )
     }
 
@@ -220,7 +303,14 @@ struct ProfileCard: View {
     }
 
     private var accessibilityLabel: String {
-        let prefix = section.isConfident ? section.title : "\(section.title), Emerging"
+        let prefix: String
+        if section.isConfident {
+            prefix = section.title
+        } else if isEarlySignal {
+            prefix = "\(section.title), Early signal"
+        } else {
+            prefix = "\(section.title), Emerging"
+        }
         if let statement = section.statement, !statement.isEmpty {
             return "\(prefix): \(statement)"
         }

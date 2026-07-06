@@ -209,16 +209,21 @@ def extract_context(
     source: str = "unknown",
     author_aliases: Iterable[str] | None = None,
     extraction_mode: str | None = None,
+    self_authored: bool = False,
 ) -> dict[str, Any]:
+    """self_authored=True means the user explicitly authored this text (e.g. remember_this, a
+    note they typed): personal memories (preference/style/negative) are always trusted as theirs,
+    regardless of the source label an agent may pass (claude/chatgpt are conversation sources that
+    would otherwise gate unattributed personal memory and silently drop the user's own statement)."""
     mode = (extraction_mode or os.environ.get("CORTEX_EXTRACTION_MODE") or "auto").strip().lower()
     if mode in {"local", "deterministic", "connector"}:
-        return _extract_locally(raw_text, source, author_aliases=author_aliases)
+        return _extract_locally(raw_text, source, author_aliases=author_aliases, self_authored=self_authored)
     if os.environ.get("ANTHROPIC_API_KEY"):
         try:
-            return _extract_with_claude_windowed(raw_text, source, author_aliases=author_aliases)
+            return _extract_with_claude_windowed(raw_text, source, author_aliases=author_aliases, self_authored=self_authored)
         except Exception:
             pass
-    return _extract_locally(raw_text, source, author_aliases=author_aliases)
+    return _extract_locally(raw_text, source, author_aliases=author_aliases, self_authored=self_authored)
 
 
 def _claude_extraction_windows(raw_text: str) -> list[str]:
@@ -286,16 +291,16 @@ def _merge_extractions(parts: list[dict[str, Any]], raw_text: str, source: str) 
 
 
 def _extract_with_claude_windowed(
-    raw_text: str, source: str, author_aliases: Iterable[str] | None = None
+    raw_text: str, source: str, author_aliases: Iterable[str] | None = None, self_authored: bool = False
 ) -> dict[str, Any]:
     windows = _claude_extraction_windows(raw_text)
     if len(windows) <= 1:
-        return _extract_with_claude(raw_text, source, author_aliases=author_aliases)
-    parts = [_extract_with_claude(window, source, author_aliases=author_aliases) for window in windows]
+        return _extract_with_claude(raw_text, source, author_aliases=author_aliases, self_authored=self_authored)
+    parts = [_extract_with_claude(window, source, author_aliases=author_aliases, self_authored=self_authored) for window in windows]
     return _merge_extractions(parts, raw_text, source)
 
 
-def _extract_with_claude(raw_text: str, source: str, author_aliases: Iterable[str] | None = None) -> dict[str, Any]:
+def _extract_with_claude(raw_text: str, source: str, author_aliases: Iterable[str] | None = None, self_authored: bool = False) -> dict[str, Any]:
     from anthropic import Anthropic
 
     client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
@@ -318,7 +323,7 @@ Use stable IDs and keep each memory atomic. Return JSON only.""" + alias_instruc
     text = re.sub(r"\s*```$", "", text)
     data = json.loads(text)
     normalized = _normalize_extraction(data, raw_text, source)
-    return _filter_disallowed_personal_records(normalized, raw_text, source, author_aliases)
+    return _filter_disallowed_personal_records(normalized, raw_text, source, author_aliases, self_authored=self_authored)
 
 
 def _extraction_candidate_limit(memory_candidate_count: int, has_known_turns: bool) -> int:
@@ -338,10 +343,10 @@ def _extraction_candidate_limit(memory_candidate_count: int, has_known_turns: bo
     )
 
 
-def _extract_locally(raw_text: str, source: str, author_aliases: Iterable[str] | None = None) -> dict[str, Any]:
+def _extract_locally(raw_text: str, source: str, author_aliases: Iterable[str] | None = None, self_authored: bool = False) -> dict[str, Any]:
     candidates = _sentence_candidates(raw_text, source, author_aliases=author_aliases)
     has_known_turns = any(candidate.get("role") in KNOWN_TURN_ROLES for candidate in candidates)
-    allow_unattributed_personal_memory = _allow_unattributed_personal_memory(raw_text, source)
+    allow_unattributed_personal_memory = self_authored or _allow_unattributed_personal_memory(raw_text, source)
     memory_candidates = [
         candidate
         for candidate in candidates
@@ -440,10 +445,11 @@ def _filter_disallowed_personal_records(
     raw_text: str,
     source: str,
     author_aliases: Iterable[str] | None = None,
+    self_authored: bool = False,
 ) -> dict[str, Any]:
     candidates = _sentence_candidates(raw_text, source, author_aliases=author_aliases)
     has_known_turns = any(candidate.get("role") in KNOWN_TURN_ROLES for candidate in candidates)
-    allow_unattributed_personal_memory = _allow_unattributed_personal_memory(raw_text, source)
+    allow_unattributed_personal_memory = self_authored or _allow_unattributed_personal_memory(raw_text, source)
     filtered: list[dict[str, Any]] = []
     for record in data.get("records", []):
         kind = str(record.get("kind") or "").strip().lower()
@@ -923,34 +929,43 @@ def _looks_like_decision(lower: str) -> bool:
     return any(signal in lower for signal in signals)
 
 
+_PREFERENCE_VERB_RE = re.compile(r"\bi(?:'d| would)? (?:\w+ )?(?:prefer|like|love|want|need|favor|favour)\b")
+
+
 def _looks_like_preference(lower: str) -> bool:
-    signals = ["i prefer", "i like", "i don't like", "i want", "i need", "preference"]
-    return any(signal in lower for signal in signals)
+    signals = [
+        "preference",
+        # Habitual-choice phrasings are preferences too ("I always use tabs", "I tend to...").
+        "i always use",
+        "i usually use",
+        "i usually",
+        "i tend to",
+        "i default to",
+        "by default i",
+        "i go with",
+        "i stick with",
+        "i typically",
+        "i generally",
+        "my go-to",
+        "i'd rather",
+        "i would rather",
+    ]
+    # The regex tolerates one adverb ("I strongly prefer", "I really like") — bare "prefer"
+    # elsewhere in a sentence ("users prefer...") intentionally does NOT match.
+    return _PREFERENCE_VERB_RE.search(lower) is not None or any(signal in lower for signal in signals)
 
 
 def _looks_like_user_preference_memory(lower: str) -> bool:
-    return _looks_like_preference(lower) or _looks_like_style(lower) or any(
-        signal in lower
-        for signal in [
-            "i don't like",
-            "i dislike",
-            "i hate",
-            "avoid ",
-            "rejected",
-            "do not ",
-            "don't ",
-            "never use",
-            "not helpful",
-            "bad fit",
-        ]
-    )
+    return _looks_like_preference(lower) or _looks_like_style(lower) or _looks_like_negative(lower)
 
 
 def _looks_like_negative(lower: str) -> bool:
     signals = [
         "i don't like",
         "i dislike",
+        "dislike",  # catches "I really dislike", "dislikes", etc.
         "i hate",
+        " hate ",  # "really hate", "absolutely hate" (spaced to avoid matching inside words)
         "avoid ",
         "rejected",
         "do not ",
@@ -958,6 +973,12 @@ def _looks_like_negative(lower: str) -> bool:
         "never use",
         "not helpful",
         "bad fit",
+        "can't stand",
+        "cannot stand",
+        "not a fan",
+        "pet peeve",
+        "annoy",  # annoying / annoys / annoyed
+        "frustrat",  # frustrating / frustrated
     ]
     return any(signal in lower for signal in signals)
 
@@ -984,7 +1005,21 @@ def _looks_like_event(lower: str) -> bool:
         "last week",
         "last month",
         "met with",
+        " met ",  # "I met Marcus", "we met" (spaced to avoid matching inside words)
+        "we met",
         "talked to",
+        "talked with",
+        "spoke to",
+        "spoke with",
+        "call with",
+        "had a call",
+        "meeting with",
+        "caught up with",
+        "sat down with",
+        "had lunch with",
+        "visited",
+        "attended",
+        "flew to",
         "emailed",
         "shipped",
         "launched",

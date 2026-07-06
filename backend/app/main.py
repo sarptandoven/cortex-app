@@ -224,11 +224,11 @@ def _google_oauth_callback_page(title: str, detail: str, *, success: bool) -> HT
 def _required_api_scope(method: str, path: str) -> str:
     normalized_method = method.upper()
     normalized_path = path.rstrip("/") or "/"
-    if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/context-pack", "/v1/personal-profile", "/v1/agent-adaptation", "/v1/support/bundle"}:
+    # Raw bulk dumps of the corpus stay export-gated. The DISTILLED profile / adaptation / context
+    # pack are reads — that is the holistic picture Cortex exists to hand an agent.
+    if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/support/bundle"}:
         return "export"
-    if normalized_path == "/v1/context":
-        # The context engine is a READ (POST only carries parameters); the identity layer is
-        # export-gated inside the engine itself.
+    if normalized_path in {"/v1/context", "/v1/context-pack", "/v1/personal-profile", "/v1/agent-adaptation"}:
         return "read"
     if normalized_path == "/v1/settings" and normalized_method in {"PUT", "PATCH"}:
         return "maintenance"
@@ -1690,7 +1690,9 @@ def get_context(
         project=project,
         as_of=as_of,
         intent=intent,
-        include_identity=_bearer_has_export_scope(request),
+        # Reaching this endpoint already required the read scope, and the identity layer is a read
+        # of distilled context — so it is always included here.
+        include_identity=True,
         format=format,
     )
     return _context_response(pack, format)

@@ -782,6 +782,13 @@ READ_TOOLS = {
     "get_support_bundle",
     "get_trust_summary",
     "get_audit_log",
+    # Reading your own DISTILLED profile is a read, not a bulk export — these are the tools an
+    # external agent (Claude/ChatGPT) uses to pull a holistic, cited picture of the user. Only the
+    # raw bulk dump (export_memory) stays gated behind the export scope + trust toggle.
+    "get_personal_profile",
+    "get_person_map",
+    "get_agent_adaptation",
+    "build_context_pack",
 }
 REVIEW_TOOLS = {
     "get_daily_review",
@@ -808,7 +815,7 @@ WRITE_TOOLS = {
     "forget_memory",
     "delete_memory_capture",
 }
-EXPORT_TOOLS = {"build_context_pack", "get_personal_profile", "get_person_map", "get_agent_adaptation", "export_memory"}
+EXPORT_TOOLS = {"export_memory"}
 MAINTENANCE_TOOLS = {
     "create_memory_backup",
     "sync_connected_sources",
@@ -1377,7 +1384,15 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
     if name == "remember_this":
         content = args.get("content", "")
         source = args.get("source", "ai-chat")
-        extracted = extract_context(content, source, author_aliases=store.settings(user_id).get("identity_aliases"))
+        # remember_this is an explicit "save this about me" instruction, so the content is the
+        # user's own — trust personal memories (preference/style/dislike) as theirs even when the
+        # agent labels the source "claude"/"chatgpt" (otherwise those get silently dropped).
+        extracted = extract_context(
+            content,
+            source,
+            author_aliases=store.settings(user_id).get("identity_aliases"),
+            self_authored=True,
+        )
         return store.agent_payload(user_id, store.save_capture(
             user_id=user_id,
             content=content,
@@ -1389,9 +1404,10 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             auto_approve=load_settings().auto_approve_captures,
         ))
     if name == "get_context":
-        # Identity/persona layer requires export scope; instead of erroring the whole call for
-        # read-only tokens, the engine emits a visible omission record for that layer.
-        include_identity = token_scopes is None or "export" in set(token_scopes)
+        # The identity/persona layer is distilled, cited context about the user — a read, like the
+        # rest of the picture. Any read-scoped agent gets it; a token with neither read nor export
+        # (write/maintenance-only) still sees a visible omission record instead of a hard error.
+        include_identity = token_scopes is None or bool({"read", "export"} & set(token_scopes))
         return store.agent_payload(
             user_id,
             store.assemble_context(

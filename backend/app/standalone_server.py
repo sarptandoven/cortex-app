@@ -59,6 +59,14 @@ def _env_int(name: str, default: int, low: int, high: int) -> int:
     return min(high, max(low, value))
 
 
+def _env_float(name: str, default: float, low: float, high: float) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except ValueError:
+        value = default
+    return min(high, max(low, value))
+
+
 def _standalone_worker_enabled() -> bool:
     configured = os.environ.get("CORTEX_STANDALONE_WORKER_ENABLED")
     if configured is not None:
@@ -99,11 +107,11 @@ def _start_standalone_worker() -> threading.Thread | None:
 def _required_api_scope(method: str, path: str) -> str:
     normalized_method = method.upper()
     normalized_path = path.rstrip("/") or "/"
-    if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/context-pack", "/v1/personal-profile", "/v1/profile", "/v1/person-map", "/v1/agent-adaptation", "/v1/support/bundle"}:
+    # Raw bulk dumps of the corpus stay export-gated. The DISTILLED profile / person map /
+    # adaptation / context pack are reads — the holistic picture Cortex exists to hand an agent.
+    if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/support/bundle"}:
         return "export"
-    if normalized_path == "/v1/context":
-        # The context engine is a READ (POST only carries parameters); the identity layer is
-        # export-gated inside the engine itself.
+    if normalized_path in {"/v1/context", "/v1/context-pack", "/v1/personal-profile", "/v1/profile", "/v1/person-map", "/v1/agent-adaptation"}:
         return "read"
     if normalized_path == "/v1/settings" and normalized_method in {"PUT", "PATCH"}:
         return "maintenance"
@@ -331,6 +339,61 @@ class _BadRequestBody(Exception):
     server which rejects malformed bodies with 422 rather than surfacing a 500."""
 
 
+class _RequestGuards:
+    """Overload protection for the request-serving surface (/mcp and /v1/*). A runaway MCP
+    client — an agent stuck in a loop — could otherwise wedge the backend: ThreadingHTTPServer
+    spawns a thread per connection with no cap and no throttle. Two lightweight layers:
+
+    1. A bounded concurrency gate (CORTEX_MAX_CONCURRENT_REQUESTS, default 8) acquired
+       non-blockingly; when saturated the request is rejected with 503 + Retry-After.
+    2. A per-bearer-token token bucket (CORTEX_RATE_LIMIT_RPS / CORTEX_RATE_LIMIT_BURST,
+       defaults 20 req/s sustained with a burst of 60; set either to 0 to disable). This is
+       wedge protection, not quota policy — the admin app token gets the same generous limit.
+
+    Health endpoints (/health, /ready) never pass through either layer, so the app can always
+    supervise a saturated backend.
+    """
+
+    def __init__(self) -> None:
+        self.max_concurrent = _env_int("CORTEX_MAX_CONCURRENT_REQUESTS", 8, 1, 256)
+        self.rate_limit_rps = _env_float("CORTEX_RATE_LIMIT_RPS", 20.0, 0.0, 10_000.0)
+        self.rate_limit_burst = _env_float("CORTEX_RATE_LIMIT_BURST", 60.0, 0.0, 100_000.0)
+        self._gate = threading.BoundedSemaphore(self.max_concurrent)
+        self._lock = threading.Lock()
+        # identity -> [tokens, last_refill] (time.monotonic seconds).
+        self._buckets: dict[str, list[float]] = {}
+
+    def acquire_slot(self) -> bool:
+        return self._gate.acquire(blocking=False)
+
+    def release_slot(self) -> None:
+        self._gate.release()
+
+    def allow_request(self, identity: str) -> bool:
+        if self.rate_limit_rps <= 0 or self.rate_limit_burst <= 0:
+            return True
+        now = time.monotonic()
+        with self._lock:
+            bucket = self._buckets.get(identity)
+            if bucket is None:
+                # Callers cycling random tokens must not grow this dict unbounded; resetting
+                # all buckets is harmless at these rates.
+                if len(self._buckets) >= 4096:
+                    self._buckets.clear()
+                self._buckets[identity] = [self.rate_limit_burst - 1.0, now]
+                return True
+            tokens = min(self.rate_limit_burst, bucket[0] + (now - bucket[1]) * self.rate_limit_rps)
+            bucket[1] = now
+            if tokens < 1.0:
+                bucket[0] = tokens
+                return False
+            bucket[0] = tokens - 1.0
+            return True
+
+
+REQUEST_GUARDS = _RequestGuards()
+
+
 def _source_import_request(body: dict, *, analyze: bool = False) -> dict:
     raw_paths = body.get("paths")
     if not isinstance(raw_paths, list):
@@ -459,6 +522,43 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         params = parse_qs(parsed.query)
+        if path == "/mcp" or path.startswith("/v1/"):
+            # A rejected request's body is never read, so close the connection to avoid a
+            # keep-alive protocol desync from leftover unread bytes (as for _RequestTooLarge).
+            # For /mcp these are plain HTTP JSON errors, not JSON-RPC — clients treat any
+            # non-200 as retryable.
+            if not REQUEST_GUARDS.allow_request(self._rate_limit_identity()):
+                self.close_connection = True
+                self._send_json(
+                    {"detail": "Too many requests; slow down and retry."},
+                    status=HTTPStatus.TOO_MANY_REQUESTS,
+                    retry_after=1,
+                )
+                return
+            if not REQUEST_GUARDS.acquire_slot():
+                self.close_connection = True
+                self._send_json(
+                    {"detail": "Cortex is busy handling other requests; retry shortly."},
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                    retry_after=1,
+                )
+                return
+            try:
+                self._dispatch(method, path, params)
+            finally:
+                REQUEST_GUARDS.release_slot()
+            return
+        self._dispatch(method, path, params)
+
+    def _rate_limit_identity(self) -> str:
+        # Rate limiting keys on the caller's bearer token and runs before auth, so floods of
+        # invalid credentials are throttled too; anonymous callers share one bucket.
+        authorization = self.headers.get("Authorization", "")
+        if authorization.lower().startswith("bearer "):
+            return authorization.split(" ", 1)[1].strip()
+        return ""
+
+    def _dispatch(self, method: str, path: str, params: dict[str, list[str]]) -> None:
         try:
             if method == "GET" and path == "/":
                 self._send_text(ROOT_HTML, media_type="text/html")
@@ -1715,7 +1815,9 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     project=project,
                     as_of=as_of,
                     intent=intent,
-                    include_identity=self._bearer_has_export_scope(),
+                    # Reaching /v1/context already required read scope; the identity layer is a read
+                    # of distilled context, so it is always included.
+                    include_identity=True,
                     format=output_format,
                 )
                 if output_format == "markdown":
@@ -2133,16 +2235,18 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
         except UnicodeDecodeError as exc:
             raise _BadRequestBody("Request body must be valid form data") from exc
 
-    def _send_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
+    def _send_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK, retry_after: int | None = None) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self._send_bytes(data, status=status, media_type="application/json")
+        self._send_bytes(data, status=status, media_type="application/json", retry_after=retry_after)
 
     def _send_text(self, text: str, status: HTTPStatus = HTTPStatus.OK, media_type: str = "text/plain") -> None:
         self._send_bytes(text.encode("utf-8"), status=status, media_type=f"{media_type}; charset=utf-8")
 
-    def _send_bytes(self, data: bytes, status: HTTPStatus = HTTPStatus.OK, media_type: str = "application/octet-stream") -> None:
+    def _send_bytes(self, data: bytes, status: HTTPStatus = HTTPStatus.OK, media_type: str = "application/octet-stream", retry_after: int | None = None) -> None:
         self.send_response(status)
         self.send_header("Content-Type", media_type)
+        if retry_after is not None:
+            self.send_header("Retry-After", str(retry_after))
         self.send_header("Content-Length", str(len(data)))
         origin = (self.headers.get("Origin") or "").rstrip("/")
         if origin and origin in ALLOWED_CORS_ORIGINS:

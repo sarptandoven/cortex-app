@@ -12744,7 +12744,7 @@ class CortexStore:
         for layer in CONTEXT_LAYER_ORDER:
             if layer == "identity" and identity_omitted:
                 layers_payload.append(
-                    {"layer": "identity", "omitted": {"reason": "requires export scope", "required_scopes": ["export"]}}
+                    {"layer": "identity", "omitted": {"reason": "requires read scope", "required_scopes": ["read"]}}
                 )
                 continue
             available = allocations.get(layer, 0) + carry

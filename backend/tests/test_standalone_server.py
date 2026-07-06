@@ -2342,6 +2342,9 @@ class StandaloneServerTests(unittest.TestCase):
             public_base_url="http://127.0.0.1:8766",
         )
         standalone_server.ALLOWED_CORS_ORIGINS = {"http://127.0.0.1:8766", "http://localhost:8766"}
+        # Fresh guards per test so one test's rate-limit spend cannot leak into the next.
+        self.original_guards = standalone_server.REQUEST_GUARDS
+        standalone_server.REQUEST_GUARDS = standalone_server._RequestGuards()
         self.server = standalone_server.ThreadingHTTPServer(("127.0.0.1", 0), standalone_server.CortexRequestHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -2354,6 +2357,7 @@ class StandaloneServerTests(unittest.TestCase):
         standalone_server.store = self.original_store
         standalone_server.settings = self.original_settings
         standalone_server.ALLOWED_CORS_ORIGINS = self.original_origins
+        standalone_server.REQUEST_GUARDS = self.original_guards
         self.tmp.cleanup()
 
     def get(self, path: str, origin: str | None = None):
@@ -4011,10 +4015,12 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(payload["results"][0]["content"], "Layer-aware result")
         self.assertEqual(self.fake_store.search_calls[-1]["user_id"], "alice")
 
+        # A token without export scope is still denied the raw bulk dump (distilled reads like
+        # context-pack are now allowed with read scope).
         with self.assertRaises(error.HTTPError) as context:
             request.urlopen(
                 request.Request(
-                    self.base_url + "/v1/context-pack?query=voice",
+                    self.base_url + "/v1/export.json",
                     headers={"Authorization": "Bearer cxa-standalone-token", "X-Cortex-User": "alice"},
                 ),
                 timeout=5,
@@ -4062,12 +4068,12 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertIn("read actions are disabled", context.exception.read().decode("utf-8"))
         self.assertEqual(self.fake_store.search_calls, [])
 
+        # The raw bulk dump stays export-gated (the distilled context-pack is now a read).
         self.fake_store.denied_agent_access = {"export"}
         with self.assertRaises(error.HTTPError) as context:
-            request.urlopen(request.Request(self.base_url + "/v1/context-pack?query=voice", headers=scoped_headers), timeout=5)
+            request.urlopen(request.Request(self.base_url + "/v1/export.json", headers=scoped_headers), timeout=5)
         self.assertEqual(context.exception.code, 403)
         self.assertIn("export actions are disabled", context.exception.read().decode("utf-8"))
-        self.assertEqual(self.fake_store.context_pack_calls, [])
 
         self.fake_store.denied_agent_access = {"write"}
         with self.assertRaises(error.HTTPError) as context:
@@ -4262,7 +4268,7 @@ class StandaloneServerTests(unittest.TestCase):
         tool_names = {tool["name"] for tool in payload["result"]["tools"]}
         self.assertEqual(
             tool_names,
-            {"get_context", "ask_memory", "search_memory", "get_entity_context", "list_capabilities"},
+            {"get_context", "ask_memory", "search_memory", "get_entity_context", "get_person_map", "list_capabilities"},
         )
         self.assertNotIn("connect_source_account", tool_names)
         self.assertNotIn("sync_source_records", tool_names)

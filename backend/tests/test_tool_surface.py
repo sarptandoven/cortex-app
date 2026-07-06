@@ -32,13 +32,19 @@ class CuratedToolSurfaceTests(unittest.TestCase):
             tool = next(tool for tool in TOOLS if tool.get("name") == name)
             self.assertIn("inputSchema", tool, name)
 
-    def test_read_token_sees_only_core_read_tools(self) -> None:
+    def test_read_token_sees_core_read_tools_including_person_map(self) -> None:
+        # get_person_map is a distilled-profile READ (holistic picture of the user), so a plain
+        # read token sees it. Write-only tools (remember_this) stay hidden until write is granted.
         names = _names(tools_for_scopes(["read"]))
-        self.assertEqual(names, {"get_context", "ask_memory", "search_memory", "get_entity_context", "list_capabilities"})
+        self.assertEqual(
+            names,
+            {"get_context", "ask_memory", "search_memory", "get_entity_context", "get_person_map", "list_capabilities"},
+        )
 
-    def test_export_scope_adds_person_map_and_write_adds_remember(self) -> None:
+    def test_person_map_is_read_and_write_adds_remember(self) -> None:
         self.assertIn("get_person_map", _names(tools_for_scopes(["read", "export"])))
-        self.assertNotIn("get_person_map", _names(tools_for_scopes(["read"])))
+        self.assertIn("get_person_map", _names(tools_for_scopes(["read"])))
+        self.assertEqual(tool_required_capabilities("get_person_map"), ["read"])
         self.assertIn("remember_this", _names(tools_for_scopes(["read", "write"])))
         self.assertNotIn("remember_this", _names(tools_for_scopes(["read"])))
 
