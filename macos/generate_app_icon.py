@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Generate Cortex's macOS app icon.
+
+macOS (unlike iOS) does NOT round or mask app icons for you — the icon must ship as a rounded
+"squircle" tile sitting on transparent padding, with its own soft contact shadow, exactly like every
+other Mac app. The art is Cortex's aperture/shutter mark in ink on warm "Archive" paper.
+"""
 from __future__ import annotations
 
 import math
@@ -14,6 +20,10 @@ ICONSET = ASSETS / "AppIcon.iconset"
 ICNS = ASSETS / "AppIcon.icns"
 SOURCE = ASSETS / "AppIcon.source.png"
 
+# The Archive palette.
+PAPER = "#F7F4ED"
+INK = "#2B2620"
+
 SLOTS = [
     ("icon_16x16.png", 16),
     ("icon_16x16@2x.png", 32),
@@ -28,26 +38,15 @@ SLOTS = [
 ]
 
 
-def rounded_rect_mask(size: int, radius: int) -> Image.Image:
-    mask = Image.new("L", (size, size), 0)
-    draw = ImageDraw.Draw(mask)
-    draw.rounded_rectangle((0, 0, size, size), radius=radius, fill=255)
-    return mask
-
-
 def polar(cx: float, cy: float, radius: float, degrees: float) -> tuple[float, float]:
     radians = math.radians(degrees)
     return cx + radius * math.cos(radians), cy + radius * math.sin(radians)
 
 
-def draw_shutter_mark(draw: ImageDraw.ImageDraw, size: int) -> None:
-    cx = cy = size / 2
-    outer = size * 0.295
-    inner = size * 0.106
+def draw_shutter_mark(draw: ImageDraw.ImageDraw, cx: float, cy: float, outer: float) -> None:
+    inner = outer * 0.36
     gap = 5.5
     skew = 24
-    blade = "#111111"
-
     for index in range(6):
         start = -92 + index * 60
         end = start + 60
@@ -57,65 +56,59 @@ def draw_shutter_mark(draw: ImageDraw.ImageDraw, size: int) -> None:
             polar(cx, cy, inner, end - gap - skew),
             polar(cx, cy, inner, start + gap - skew),
         ]
-        draw.polygon(points, fill=blade)
-
+        draw.polygon(points, fill=INK)
     draw.ellipse(
-        (
-            cx - inner * 0.74,
-            cy - inner * 0.74,
-            cx + inner * 0.74,
-            cy + inner * 0.74,
-        ),
-        fill="#f8f5ef",
+        (cx - inner * 0.74, cy - inner * 0.74, cx + inner * 0.74, cy + inner * 0.74),
+        fill=PAPER,
     )
 
 
 def make_base(size: int = 1024) -> Image.Image:
-    scale = size / 1024
+    """A transparent canvas holding a rounded paper tile (with macOS-standard padding + shadow)
+    and the shutter mark. Alpha OUTSIDE the tile stays transparent so the corners are truly round."""
     image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    background_mask = rounded_rect_mask(size, int(224 * scale))
 
-    background = Image.new("RGBA", (size, size), "#f8f5ef")
-    background.putalpha(background_mask)
-    image.alpha_composite(background)
+    # macOS icon grid: the tile is ~82% of the canvas, centered, corners at the ~22.4% continuous
+    # radius, leaving transparent padding all around (a touch more at the bottom for the shadow).
+    pad = round(size * 0.090)
+    left = top = pad
+    right = bottom = size - pad
+    tile_w = right - left
+    radius = round(tile_w * 0.2237)
 
+    # Soft contact shadow beneath the tile.
     shadow = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    shadow_draw = ImageDraw.Draw(shadow)
-    shadow_draw.rounded_rectangle(
-        (
-            int(38 * scale),
-            int(48 * scale),
-            int(986 * scale),
-            int(1000 * scale),
-        ),
-        radius=int(218 * scale),
-        fill=(0, 0, 0, 28),
+    ImageDraw.Draw(shadow).rounded_rectangle(
+        (left, top + round(size * 0.012), right, bottom + round(size * 0.012)),
+        radius=radius,
+        fill=(20, 18, 16, 70),
     )
-    shadow = shadow.filter(ImageFilter.GaussianBlur(int(22 * scale)))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(round(size * 0.018)))
     image.alpha_composite(shadow)
-    image.alpha_composite(background)
+
+    # The paper tile.
+    tile = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    tdraw = ImageDraw.Draw(tile)
+    tdraw.rounded_rectangle((left, top, right, bottom), radius=radius, fill=PAPER)
+    # A hairline ink edge so the pale tile reads crisply on light desktops.
+    tdraw.rounded_rectangle(
+        (left, top, right, bottom),
+        radius=radius,
+        outline=(43, 38, 32, 40),
+        width=max(1, round(size * 0.002)),
+    )
+    image.alpha_composite(tile)
 
     draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle(
-        (
-            int(22 * scale),
-            int(22 * scale),
-            int(1002 * scale),
-            int(1002 * scale),
-        ),
-        radius=int(218 * scale),
-        outline=(18, 18, 18, 18),
-        width=max(1, int(3 * scale)),
-    )
-    draw_shutter_mark(draw, size)
+    draw_shutter_mark(draw, size / 2, size / 2, tile_w * 0.30)
     return image
 
 
-def save_rgb_icon(base: Image.Image, path: Path, size: int) -> None:
+def save_icon(base: Image.Image, path: Path, size: int) -> None:
+    # Preserve alpha (RGBA) so the rounded corners and padding survive — the previous version
+    # flattened onto an opaque paper canvas, which repainted the corners and made a hard square.
     resized = base.resize((size, size), Image.Resampling.LANCZOS)
-    canvas = Image.new("RGB", (size, size), "#f8f5ef")
-    canvas.paste(resized, mask=resized.getchannel("A"))
-    canvas.save(path)
+    resized.save(path)
 
 
 def write_icns() -> None:
@@ -144,7 +137,7 @@ def main() -> None:
     base = make_base()
     base.save(SOURCE)
     for filename, size in SLOTS:
-        save_rgb_icon(base, ICONSET / filename, size)
+        save_icon(base, ICONSET / filename, size)
     write_icns()
     print(ICNS)
 

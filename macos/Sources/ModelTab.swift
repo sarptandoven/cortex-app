@@ -27,6 +27,8 @@ struct ModelTab: View {
                     }
                 }
             }
+            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
             .padding(.horizontal, 32)
             .padding(.vertical, 28)
             .animation(.easeInOut(duration: 0.25), value: state.mirrorInsight)

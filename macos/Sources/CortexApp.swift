@@ -2671,7 +2671,14 @@ enum CortexCredentialStore {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: key
+            kSecAttrAccount as String: key,
+            // Use the data-protection keychain, NOT the file-based login keychain. The login
+            // keychain gates access behind a code-signature ACL, and because this build is ad-hoc
+            // signed its identity isn't stable across launches — so macOS re-prompted for the login
+            // password on every launch and "Always Allow" never stuck. The data-protection keychain
+            // is scoped to the app itself and reads/writes silently (and if it's unavailable for any
+            // reason, saveKeychainSecret falls back to a 0600 file — also promptless).
+            kSecUseDataProtectionKeychain as String: true
         ]
     }
 
@@ -9396,6 +9403,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             defer: false
         )
         window.title = "Cortex"
+        // Unified paper titlebar: the transparent titlebar + hidden system title + paper background
+        // let the Archive canvas run edge-to-edge under the traffic lights, with no gray system bar
+        // (the hallmark of a premium Mac app). Content still lays out below the titlebar, so the
+        // custom header never collides with the traffic-light buttons.
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.backgroundColor = NSColor(srgbRed: 0xF7 / 255, green: 0xF4 / 255, blue: 0xED / 255, alpha: 1)
         window.minSize = NSSize(width: 820, height: 640)
         window.isReleasedWhenClosed = false
         window.hidesOnDeactivate = false
