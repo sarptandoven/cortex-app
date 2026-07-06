@@ -3963,18 +3963,24 @@ final class AppState: ObservableObject {
     }
 
     func loadTrust() async {
-        do {
-            let summaryData = try await request(path: "/v1/trust/summary", method: "GET")
-            trustSummary = try JSONDecoder().decode(TrustSummaryResponse.self, from: summaryData)
-            let lifecycleData = try await request(path: "/v1/privacy/lifecycle", method: "GET")
-            dataLifecycleReport = try JSONDecoder().decode(DataLifecycleReportResponse.self, from: lifecycleData)
-            let auditData = try await request(path: "/v1/audit-log?limit=80", method: "GET")
-            auditEvents = try JSONDecoder().decode(AuditLogResponse.self, from: auditData).results
-            await loadIntegrationTokens()
-            await loadSourceConnectivity()
-        } catch {
-            status = CortexRecoveryText.failureStatus("Trust", error: error)
+        // Each fetch is independent and keeps its last-known value on failure. Previously all four
+        // ran in one try/catch, so a single transient timeout or partial decode flipped the whole
+        // app status to a scary "Trust failed" in the footer even though trust data was fine. Trust
+        // summary / lifecycle / audit / tokens are separate surfaces — never let one drag the rest.
+        if let summaryData = try? await request(path: "/v1/trust/summary", method: "GET"),
+           let summary = try? JSONDecoder().decode(TrustSummaryResponse.self, from: summaryData) {
+            trustSummary = summary
         }
+        if let lifecycleData = try? await request(path: "/v1/privacy/lifecycle", method: "GET"),
+           let lifecycle = try? JSONDecoder().decode(DataLifecycleReportResponse.self, from: lifecycleData) {
+            dataLifecycleReport = lifecycle
+        }
+        if let auditData = try? await request(path: "/v1/audit-log?limit=80", method: "GET"),
+           let audit = try? JSONDecoder().decode(AuditLogResponse.self, from: auditData) {
+            auditEvents = audit.results
+        }
+        await loadIntegrationTokens()
+        await loadSourceConnectivity()
     }
 
     func loadSourceConnectivity() async {
@@ -6369,7 +6375,11 @@ struct CortexView: View {
                     Text(state.displayStatus)
                         .font(.caption)
                         .foregroundColor(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .help(state.displayStatus)
                     Spacer()
                 }
                 .padding(.horizontal, 16)
@@ -9046,7 +9056,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     /// Translates the app's live state into the snapshot the menu-bar icon renders.
     private func currentMenuBarSnapshot() -> MenuBarSnapshot {
         let realSync = state.syncProgress?.active == true
-        let pending = state.review?.stats.pending_captures ?? state.inbox.count
+        // Use the larger of the two pending signals so the badge shows whenever either source knows
+        // about waiting items (they can lag each other right after a sync/import).
+        let pending = max(state.review?.stats.pending_captures ?? 0, state.inbox.count)
         return MenuBarSnapshot(
             syncing: realSync || state.isBusy,
             realSyncActive: realSync,

@@ -815,7 +815,11 @@ struct ReviewCaptureCard: View {
             if let summary = capture.summary, !summary.isEmpty {
                 Text(summary)
                     .font(.body)
+                    .lineLimit(4)
+                    .truncationMode(.tail)
+                    .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+                    .help(summary)
             } else {
                 Text("No summary yet.")
                     .font(.body)
@@ -923,6 +927,9 @@ struct ReviewMemoryPreviewRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(memory.content)
                     .font(.callout)
+                    .lineLimit(4)
+                    .truncationMode(.tail)
+                    .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                 if let citation = CitationDisplay.label(sourceURL: memory.source_url) {
                     Label(citation, systemImage: "quote.bubble")
@@ -938,10 +945,7 @@ struct ReviewMemoryPreviewRow: View {
     }
 
     private var memoryLabel: String {
-        if let layer = memory.layer, !layer.isEmpty, layer != memory.kind {
-            return "\(memory.kind) · \(layer)"
-        }
-        return memory.kind
+        cortexFriendlyMemoryKind(memory.kind)
     }
 
     private func color(for kind: String) -> Color {
@@ -962,9 +966,12 @@ struct ReviewTaskPreviewRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            ReviewPreviewKindPill(label: "task", color: .green)
+            ReviewPreviewKindPill(label: "To-do", color: .green)
             Text(task.content)
                 .font(.callout)
+                .lineLimit(3)
+                .truncationMode(.tail)
+                .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
@@ -976,17 +983,39 @@ struct ReviewPreviewKindPill: View {
     let color: Color
 
     var body: some View {
-        Text(label.uppercased())
+        // A capsule sized to its (short, friendly) label — never uppercased-and-truncated into
+        // "EVENT · EPIS…". A fixed min-width keeps rows visually aligned without clipping longer words.
+        Text(label)
             .font(.caption2)
             .fontWeight(.semibold)
             .foregroundColor(color)
             .lineLimit(1)
-            .truncationMode(.tail)
-            .padding(.horizontal, 7)
+            .fixedSize()
+            .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background(color.opacity(0.10))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .frame(width: 92, alignment: .leading)
+            .background(color.opacity(0.12))
+            .clipShape(Capsule())
+            .frame(minWidth: 62, alignment: .leading)
+    }
+}
+
+/// A short, human-friendly name for a memory kind — shown in the review pills instead of the raw
+/// backend kind/layer (e.g. "event · episodic" → "Event"). Users shouldn't see internal jargon.
+func cortexFriendlyMemoryKind(_ kind: String) -> String {
+    switch kind.lowercased() {
+    case "decision": return "Decision"
+    case "preference": return "Preference"
+    case "style": return "Style"
+    case "negative": return "Dislike"
+    case "procedure", "procedural": return "How-to"
+    case "action": return "To-do"
+    case "event", "episodic": return "Event"
+    case "semantic", "fact": return "Fact"
+    case "question": return "Question"
+    case "source": return "Source"
+    case "task": return "Task"
+    case "": return "Memory"
+    default: return kind.prefix(1).uppercased() + kind.dropFirst()
     }
 }
 
