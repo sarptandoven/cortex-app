@@ -59,11 +59,11 @@ struct ReviewHeaderSection: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Review")
-                        .font(.title2)
-                        .fontWeight(.semibold)
+                        .font(CortexDesign.Typography.display(22))
+                        .foregroundColor(CortexDesign.ink)
                     Text("Approve what Cortex should remember. Archive anything noisy or unclear.")
-                        .font(.body)
-                        .foregroundColor(.secondary)
+                        .font(CortexDesign.Typography.body)
+                        .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
@@ -138,10 +138,10 @@ struct ReviewSourceHealthStrip: View {
     }
 
     private var statusColor: Color {
-        if needsAttentionCount > 0 { return .orange }
-        if pendingCount > 0 { return .orange }
-        if !sources.isEmpty { return .green }
-        return .secondary
+        if needsAttentionCount > 0 { return CortexDesign.accent }
+        if pendingCount > 0 { return CortexDesign.gold }
+        if !sources.isEmpty { return CortexDesign.sealMoss }
+        return CortexDesign.inkSecondary
     }
 
     private var statusIcon: String {
@@ -164,10 +164,11 @@ struct ReviewSourceHealthStrip: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
-                        .font(.headline)
+                        .font(CortexDesign.Typography.title)
+                        .foregroundColor(CortexDesign.ink)
                     Text(detail)
-                        .font(.callout)
-                        .foregroundColor(.secondary)
+                        .font(CortexDesign.Typography.body)
+                        .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -200,11 +201,11 @@ struct ReviewSourceHealthStrip: View {
                     }
                     if sources.count > 3 {
                         Text("+\(sources.count - 3) more")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            .font(CortexDesign.Typography.caption)
+                            .foregroundColor(CortexDesign.inkSecondary)
                             .padding(.horizontal, 9)
                             .padding(.vertical, 5)
-                            .background(Color(nsColor: .controlBackgroundColor))
+                            .background(CortexDesign.quietBackground)
                             .clipShape(Capsule())
                     }
                     Spacer(minLength: 0)
@@ -244,16 +245,17 @@ struct ReviewHealthMetric: View {
         HStack(spacing: 7) {
             Image(systemName: systemImage)
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .foregroundColor(CortexDesign.inkSecondary)
                 .frame(width: 18)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
                     .font(.caption2)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(CortexDesign.inkSecondary)
                 Text(value)
                     .font(.caption)
                     .fontWeight(.semibold)
+                    .foregroundColor(CortexDesign.ink)
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
             }
@@ -262,8 +264,8 @@ struct ReviewHealthMetric: View {
         .padding(.horizontal, 9)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(CortexDesign.quietBackground)
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(title): \(value)")
     }
@@ -274,13 +276,13 @@ struct ReviewSourceHealthChip: View {
 
     var body: some View {
         Text(label)
-            .font(.caption)
-            .foregroundColor(.secondary)
+            .font(CortexDesign.Typography.caption)
+            .foregroundColor(CortexDesign.inkSecondary)
             .lineLimit(1)
             .truncationMode(.tail)
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
-            .background(Color(nsColor: .controlBackgroundColor))
+            .background(CortexDesign.quietBackground)
             .clipShape(Capsule())
             .help(helpText)
             .accessibilityElement(children: .combine)
@@ -311,16 +313,18 @@ struct ReviewPendingBadge: View {
     var body: some View {
         VStack(alignment: .trailing, spacing: 2) {
             Text("\(count)")
-                .font(.title2)
-                .fontWeight(.semibold)
-            Text("Pending")
-                .font(.caption)
-                .foregroundColor(.secondary)
+                .font(CortexDesign.Typography.stat)
+                .monospacedDigit()
+                .foregroundColor(CortexDesign.ink)
+            Text("Pending".uppercased())
+                .font(CortexDesign.Typography.stamp)
+                .kerning(0.8)
+                .foregroundColor(CortexDesign.inkFaint)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
-        .background(CortexDesign.panelBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(CortexDesign.goldSoft)
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(count) pending review item\(count == 1 ? "" : "s")")
     }
@@ -338,15 +342,15 @@ struct ReviewInboxSection: View {
             HStack(alignment: .center, spacing: 14) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Pending items")
-                        .font(.title3)
-                        .fontWeight(.semibold)
+                        .font(CortexDesign.Typography.title)
+                        .foregroundColor(CortexDesign.ink)
                     Text(queueDetail)
-                        .font(.callout)
-                        .foregroundColor(.secondary)
+                        .font(CortexDesign.Typography.body)
+                        .foregroundColor(CortexDesign.inkSecondary)
                     if !captures.isEmpty {
                         Text("⌘↩ approves the top item · ⌘⌫ archives it")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            .font(CortexDesign.Typography.caption)
+                            .foregroundColor(CortexDesign.inkSecondary)
                     }
                 }
                 Spacer()
@@ -529,15 +533,15 @@ struct ReviewAllClearState: View {
         VStack(spacing: 10) {
             Image(systemName: "checkmark.seal.fill")
                 .font(.system(size: 34))
-                .foregroundColor(.green)
+                .foregroundColor(CortexDesign.sealMoss)
                 .scaleEffect(appeared ? 1 : 0.5)
                 .opacity(appeared ? 1 : 0)
             Text("All caught up")
-                .font(.title3)
-                .fontWeight(.semibold)
+                .font(CortexDesign.Typography.display(20))
+                .foregroundColor(CortexDesign.ink)
             Text("Everything you approved is ready to use in Ask.")
-                .font(.body)
-                .foregroundColor(.secondary)
+                .font(CortexDesign.Typography.body)
+                .foregroundColor(CortexDesign.inkSecondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 460)
         }
@@ -558,8 +562,8 @@ struct ReviewLoadingCard: View {
             ProgressView()
                 .controlSize(.small)
             Text("Loading review queue…")
-                .font(.body)
-                .foregroundColor(.secondary)
+                .font(CortexDesign.Typography.body)
+                .foregroundColor(CortexDesign.inkSecondary)
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -593,17 +597,18 @@ struct ReviewServiceStartingState: View {
                 if needsAttention {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.headline)
-                        .foregroundColor(.orange)
+                        .foregroundColor(CortexDesign.accent)
                 } else {
                     ProgressView()
                         .controlSize(.small)
                 }
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
-                        .font(.headline)
+                        .font(CortexDesign.Typography.title)
+                        .foregroundColor(CortexDesign.ink)
                     Text(detail)
-                        .font(.body)
-                        .foregroundColor(.secondary)
+                        .font(CortexDesign.Typography.body)
+                        .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
@@ -650,20 +655,23 @@ struct ReviewQueueCaptureCard: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top, spacing: 12) {
                     Text(title)
-                        .font(.title3)
-                        .fontWeight(.semibold)
+                        .font(CortexDesign.Typography.title)
+                        .foregroundColor(CortexDesign.ink)
                         .lineLimit(3)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 12)
-                    Text(reviewSizeLabel)
-                        .font(.callout)
-                        .foregroundColor(.secondary)
+                    Text(reviewSizeLabel.uppercased())
+                        .font(CortexDesign.Typography.stamp)
+                        .kerning(0.8)
+                        .foregroundColor(CortexDesign.inkFaint)
+                        .lineLimit(1)
                 }
 
                 if let summary = cleanedSummary {
                     Text(summary)
-                        .font(.body)
-                        .lineSpacing(2)
+                        .font(CortexDesign.Typography.prose(14))
+                        .foregroundColor(CortexDesign.ink)
+                        .lineSpacing(3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -674,8 +682,8 @@ struct ReviewQueueCaptureCard: View {
 
             if let actionError, !actionError.isEmpty {
                 Label(actionError, systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout)
-                    .foregroundColor(.orange)
+                    .font(CortexDesign.Typography.body)
+                    .foregroundColor(CortexDesign.accent)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -725,8 +733,11 @@ struct ReviewQueueCaptureCard: View {
                 .keyboardShortcut(isTopItem ? KeyboardShortcut(.return, modifiers: .command) : nil)
             }
         }
+        // The unreviewed index card: content clears the gold margin rule by 10pt.
+        .padding(.leading, 10)
         .cortexCard(padding: CortexDesign.Space.lg, background: CortexDesign.panelBackground)
-        .shadow(color: Color.black.opacity(isHovered ? 0.07 : 0), radius: 10, y: 3)
+        .archiveSpine(CortexDesign.gold)
+        .shadow(color: CortexDesign.ink.opacity(isHovered ? 0.07 : 0), radius: 10, y: 3)
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.15)) { isHovered = hovering }
         }
@@ -768,17 +779,17 @@ struct ReviewQueuePreviewList: View {
         if memories.isEmpty && tasks.isEmpty {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: "hourglass")
-                    .foregroundColor(.secondary)
+                    .foregroundColor(CortexDesign.inkSecondary)
                 Text("Cortex is preparing this item.")
             }
-            .font(.callout)
-            .foregroundColor(.secondary)
+            .font(CortexDesign.Typography.body)
+            .foregroundColor(CortexDesign.inkSecondary)
         } else {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Will remember")
-                    .font(.callout)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.secondary)
+                Text("Will remember".uppercased())
+                    .font(CortexDesign.Typography.stamp)
+                    .kerning(0.8)
+                    .foregroundColor(CortexDesign.inkFaint)
 
                 ForEach(memories) { memory in
                     ReviewQueuePlainPreviewRow(text: memory.content)
@@ -800,10 +811,11 @@ struct ReviewQueuePlainPreviewRow: View {
         HStack(alignment: .firstTextBaseline, spacing: 9) {
             Image(systemName: "circle.fill")
                 .font(.system(size: 6))
-                .foregroundColor(.accentColor)
+                .foregroundColor(CortexDesign.accent)
             Text(text)
-                .font(.body)
-                .lineSpacing(2)
+                .font(CortexDesign.Typography.prose(13.5))
+                .foregroundColor(CortexDesign.ink)
+                .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
@@ -814,35 +826,34 @@ struct ReviewQueueSourceBox: View {
     let capture: CaptureItem
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: "doc.text")
-                .font(.callout)
-                .foregroundColor(.secondary)
-                .accessibilityHidden(true)
-            Text(line)
-                .font(.callout)
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .help(capture.source_url ?? capture.source)
-            Spacer(minLength: 0)
+        // The card-catalog accession line: known provenance only, never a fabricated segment.
+        if !segments.isEmpty {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                AccessionStamp(segments: segments)
+                    .truncationMode(.middle)
+                    .help(capture.source_url ?? capture.source)
+                Spacer(minLength: 0)
+            }
         }
     }
 
-    private var line: String {
-        var text = "From \(sourceName)"
-        if let capturedDate = capturedDate {
-            text += " · added \(capturedDate)"
+    private var segments: [String] {
+        var parts: [String] = []
+        if let sourceName {
+            parts.append(sourceName)
         }
-        return text
+        if let capturedDate {
+            parts.append(capturedDate)
+        }
+        return parts
     }
 
-    private var sourceName: String {
+    private var sourceName: String? {
         let trimmed = capture.source.trimmingCharacters(in: .whitespacesAndNewlines)
         if let citation = CitationDisplay.cleanSourceURL(trimmed) {
             return citation
         }
-        return trimmed.isEmpty ? "source" : trimmed
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private var capturedDate: String? {
@@ -870,7 +881,8 @@ struct ReviewCaptureCard: View {
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
-                        .font(.headline)
+                        .font(CortexDesign.Typography.title)
+                        .foregroundColor(CortexDesign.ink)
                         .lineLimit(2)
                 }
                 Spacer()
@@ -880,7 +892,9 @@ struct ReviewCaptureCard: View {
 
             if let summary = capture.summary, !summary.isEmpty {
                 Text(summary)
-                    .font(.body)
+                    .font(CortexDesign.Typography.prose(14))
+                    .foregroundColor(CortexDesign.ink)
+                    .lineSpacing(3)
                     .lineLimit(4)
                     .truncationMode(.tail)
                     .textSelection(.enabled)
@@ -888,19 +902,18 @@ struct ReviewCaptureCard: View {
                     .help(summary)
             } else {
                 Text("No summary yet.")
-                    .font(.body)
-                    .foregroundColor(.secondary)
+                    .font(CortexDesign.Typography.body)
+                    .foregroundColor(CortexDesign.inkSecondary)
             }
 
             ReviewPreviewList(capture: capture)
 
             HStack(alignment: .center, spacing: 10) {
-                Label(sourceDetail, systemImage: capture.source_url?.isEmpty == false ? "quote.bubble" : "link")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(sourceDetail)
+                if !sourceSegments.isEmpty {
+                    AccessionStamp(segments: sourceSegments)
+                        .truncationMode(.middle)
+                        .help(sourceDetail)
+                }
                 Spacer()
                 Button {
                     archive()
@@ -915,25 +928,33 @@ struct ReviewCaptureCard: View {
                 .buttonStyle(.borderedProminent)
             }
         }
-        .padding(12)
-        .background(CortexDesign.panelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.softBorder))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        // A pending index card: content clears the gold (unreviewed) margin rule.
+        .padding(.leading, 10)
+        .cortexCard(padding: 12, background: CortexDesign.panelBackground)
+        .archiveSpine(CortexDesign.gold)
     }
 
     private var title: String {
         cortexCaptureTitle(capture)
     }
 
-    private var sourceDetail: String {
-        var parts = [capture.source]
-        if let date = capture.captured_at {
+    private var sourceSegments: [String] {
+        var parts: [String] = []
+        let source = capture.source.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !source.isEmpty {
+            parts.append(source)
+        }
+        if let date = capture.captured_at?.trimmingCharacters(in: .whitespacesAndNewlines), !date.isEmpty {
             parts.append(String(date.prefix(10)))
         }
         if let citation = CitationDisplay.label(sourceURL: capture.source_url) {
             parts.append(citation)
         }
-        return parts.joined(separator: " · ")
+        return parts
+    }
+
+    private var sourceDetail: String {
+        sourceSegments.joined(separator: " · ")
     }
 }
 
@@ -954,18 +975,14 @@ struct ReviewPreviewList: View {
                 Image(systemName: "hourglass")
                 Text("Cortex is still preparing proposed memory for this item.")
             }
-            .font(.caption)
-            .foregroundColor(.secondary)
+            .font(CortexDesign.Typography.caption)
+            .foregroundColor(CortexDesign.inkSecondary)
         } else {
             VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 6) {
-                    Image(systemName: "brain.head.profile")
-                    Text("What Cortex will remember")
-                        .fontWeight(.semibold)
-                    Spacer()
-                }
-                .font(.caption)
-                .foregroundColor(.secondary)
+                Text("What Cortex will remember".uppercased())
+                    .font(CortexDesign.Typography.stamp)
+                    .kerning(0.8)
+                    .foregroundColor(CortexDesign.inkFaint)
 
                 ForEach(memories) { memory in
                     ReviewMemoryPreviewRow(memory: memory)
@@ -988,18 +1005,19 @@ struct ReviewMemoryPreviewRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            ReviewPreviewKindPill(label: memoryLabel, color: color(for: memory.kind))
+            ReviewPreviewKindPill(label: memoryLabel)
             VStack(alignment: .leading, spacing: 3) {
                 Text(display.headline)
-                    .font(.callout)
+                    .font(CortexDesign.Typography.prose(13.5))
+                    .foregroundColor(CortexDesign.ink)
                     .lineLimit(display.path == nil ? 4 : 2)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                 if let path = display.path {
                     Text(path)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundColor(CortexDesign.inkFaint)
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .help(MemoryText.unwrap(memory.content))
@@ -1007,7 +1025,7 @@ struct ReviewMemoryPreviewRow: View {
                 if let citation = CitationDisplay.label(sourceURL: memory.source_url) {
                     Label(citation, systemImage: "quote.bubble")
                         .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(CortexDesign.inkSecondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .help(memory.source_url ?? citation)
@@ -1024,18 +1042,6 @@ struct ReviewMemoryPreviewRow: View {
     private var memoryLabel: String {
         cortexFriendlyMemoryKind(memory.kind)
     }
-
-    private func color(for kind: String) -> Color {
-        switch kind {
-        case "decision": return .red
-        case "preference": return .purple
-        case "style": return .teal
-        case "negative": return .orange
-        case "procedure": return .indigo
-        case "action": return .green
-        default: return .accentColor
-        }
-    }
 }
 
 struct ReviewTaskPreviewRow: View {
@@ -1043,9 +1049,10 @@ struct ReviewTaskPreviewRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            ReviewPreviewKindPill(label: "To-do", color: .green)
+            ReviewPreviewKindPill(label: "To-do")
             Text(task.content)
-                .font(.callout)
+                .font(CortexDesign.Typography.prose(13.5))
+                .foregroundColor(CortexDesign.ink)
                 .lineLimit(3)
                 .truncationMode(.tail)
                 .textSelection(.enabled)
@@ -1057,21 +1064,17 @@ struct ReviewTaskPreviewRow: View {
 
 struct ReviewPreviewKindPill: View {
     let label: String
-    let color: Color
 
     var body: some View {
-        // A capsule sized to its (short, friendly) label — never uppercased-and-truncated into
-        // "EVENT · EPIS…". A fixed min-width keeps rows visually aligned without clipping longer words.
-        Text(label)
-            .font(.caption2)
-            .fontWeight(.semibold)
-            .foregroundColor(color)
+        // The archive voice: a catalog stamp word, not a colored bubble — state is words and ink.
+        // A fixed min-width keeps rows visually aligned without clipping longer words.
+        Text(label.uppercased())
+            .font(CortexDesign.Typography.stamp)
+            .kerning(0.8)
+            .foregroundColor(CortexDesign.inkSecondary)
             .lineLimit(1)
             .fixedSize()
-            .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background(color.opacity(0.12))
-            .clipShape(Capsule())
             .frame(minWidth: 62, alignment: .leading)
     }
 }
@@ -1130,11 +1133,11 @@ struct ReviewCountPill: View {
 
     var body: some View {
         Label("\(value) \(label.lowercased())", systemImage: systemImage)
-            .font(.caption)
-            .foregroundColor(.secondary)
+            .font(CortexDesign.Typography.caption)
+            .foregroundColor(CortexDesign.inkSecondary)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(CortexDesign.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .background(CortexDesign.quietBackground)
+            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
     }
 }

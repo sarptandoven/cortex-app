@@ -48,22 +48,23 @@ struct SyncProgressCard: View {
                 Text("Syncing your memory…")
                     .font(.callout)
                     .fontWeight(.semibold)
+                    .foregroundColor(CortexDesign.ink)
                 Spacer()
-                Text("\(progress.done) of \(progress.total)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                Text("\(progress.done) OF \(progress.total)")
+                    .font(CortexDesign.Typography.stamp)
+                    .kerning(0.8)
                     .monospacedDigit()
+                    .foregroundColor(CortexDesign.inkFaint)
             }
             ProgressView(value: progress.fraction)
                 .progressViewStyle(.linear)
+                .tint(CortexDesign.gold)
             Text("Cortex is turning new content into cited memory — what it learns appears below as it goes.")
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .foregroundColor(CortexDesign.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color.accentColor.opacity(0.06)))
+        .cortexCard(padding: 14, background: CortexDesign.goldSoft)
     }
 }
 
@@ -94,22 +95,22 @@ struct MirrorMomentCard: View {
     var body: some View {
         if let insight {
             VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
-                Label("Cortex noticed", systemImage: "sparkles")
-                    .font(.caption)
-                    .fontWeight(.semibold)
+                Text("CORTEX NOTICED")
+                    .font(CortexDesign.Typography.stamp)
+                    .kerning(0.8)
                     .foregroundColor(CortexDesign.accent)
                     .accessibilityHidden(true)
 
                 Text(insight.headline)
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundColor(.primary)
+                    .font(CortexDesign.Typography.display(22))
+                    .foregroundColor(CortexDesign.ink)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: 620, alignment: .leading)
 
                 if let evidenceCaption {
                     Label(evidenceCaption, systemImage: "doc.text.magnifyingglass")
                         .font(.callout)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -165,16 +166,16 @@ struct ProfileCard: View {
         CortexStatusPill(
             label: section.isConfident ? "Confident" : "Emerging",
             systemImage: section.isConfident ? "checkmark.seal" : "sparkles",
-            color: section.isConfident ? .green : .secondary
+            color: section.isConfident ? CortexDesign.sealMoss : CortexDesign.inkSecondary
         )
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
             HStack(alignment: .firstTextBaseline, spacing: CortexDesign.Space.sm) {
-                Text(section.title)
-                    .font(.caption)
-                    .fontWeight(.semibold)
+                Text(section.title.uppercased())
+                    .font(CortexDesign.Typography.stamp)
+                    .kerning(0.8)
                     .foregroundColor(CortexDesign.accent)
                 Spacer(minLength: 0)
                 confidencePill
@@ -183,8 +184,9 @@ struct ProfileCard: View {
 
             if let statement = section.statement, !statement.isEmpty {
                 Text(statement)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundColor(.primary)
+                    .font(CortexDesign.Typography.prose(15))
+                    .lineSpacing(3)
+                    .foregroundColor(CortexDesign.ink)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: 620, alignment: .leading)
             }
@@ -217,7 +219,9 @@ struct ProfileCard: View {
                 }
             }
         }
+        .padding(.leading, 10)
         .cortexCard()
+        .archiveSpine(CortexDesign.accent)
         .frame(maxWidth: 620, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityLabel)
@@ -276,14 +280,14 @@ private struct ProfileElementRow: View {
             if let text = element.text, !text.isEmpty {
                 Text("\u{201C}\(text)\u{201D}")
                     .font(.callout)
-                    .foregroundColor(.primary)
+                    .foregroundColor(CortexDesign.ink)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             if let sourceCaption {
                 Text(sourceCaption)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -387,35 +391,35 @@ struct HomeHeroSection: View {
     private var statusSummary: (label: String, systemImage: String, color: Color) {
         if !state.isLocalServiceReady {
             if CortexRecoveryText.needsAttention(state.displayStatus) {
-                return ("Needs attention", "exclamationmark.triangle.fill", .orange)
+                return ("Needs attention", "exclamationmark.triangle.fill", CortexDesign.accent)
             }
-            return ("Starting", "power", .accentColor)
+            return ("Starting", "power", CortexDesign.accent)
         }
         if needsAttentionSources > 0 {
-            return ("Source needs attention", "exclamationmark.triangle.fill", .orange)
+            return ("Source needs attention", "exclamationmark.triangle.fill", CortexDesign.accent)
         }
         if pendingCount > 0 {
-            return ("Ready for Review", "tray.full.fill", .orange)
+            return ("Ready for Review", "tray.full.fill", CortexDesign.gold)
         }
         if dueSyncSources > 0 {
-            return ("Sync due", "arrow.triangle.2.circlepath.circle.fill", .accentColor)
+            return ("Sync due", "arrow.triangle.2.circlepath.circle.fill", CortexDesign.gold)
         }
         if hasMemory {
-            return ("Ready to ask", "checkmark.seal.fill", .green)
+            return ("Ready to ask", "checkmark.seal.fill", CortexDesign.sealMoss)
         }
         if syncingSources > 0 {
-            return ("Syncing source", "arrow.triangle.2.circlepath", .accentColor)
+            return ("Syncing source", "arrow.triangle.2.circlepath", CortexDesign.gold)
         }
         if activeSources > 0 {
-            return ("Source connected", "link.circle.fill", .accentColor)
+            return ("Source connected", "link.circle.fill", CortexDesign.sealMoss)
         }
         if hasEmptySource {
-            return ("No source content", "folder.badge.questionmark", .orange)
+            return ("No source content", "folder.badge.questionmark", CortexDesign.accent)
         }
         if state.connectedAIIntegrationCount > 0 {
-            return ("Connect a source", "link.badge.plus", .accentColor)
+            return ("Connect a source", "link.badge.plus", CortexDesign.accent)
         }
-        return ("Private on this Mac", "lock.shield", .secondary)
+        return ("Private on this Mac", "lock.shield", CortexDesign.sealMoss)
     }
 
     private var title: String {
@@ -539,10 +543,11 @@ struct HomeHeroSection: View {
 
             VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
                 Text(title)
-                    .font(.system(size: 34, weight: .semibold))
+                    .font(CortexDesign.Typography.display(30))
+                    .foregroundColor(CortexDesign.ink)
                 Text(detail)
-                    .font(.title3)
-                    .foregroundColor(.secondary)
+                    .font(CortexDesign.Typography.body)
+                    .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: 680, alignment: .leading)
             }
@@ -560,7 +565,7 @@ struct HomeHeroSection: View {
 
                 Text(actionDetail)
                     .font(.callout)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(CortexDesign.inkSecondary)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -582,16 +587,14 @@ struct HomeHeroSection: View {
                     HomeStatusRow(
                         title: "Source",
                         detail: sourceStatus.detail,
-                        systemImage: sourceStatus.systemImage,
-                        color: sourceStatus.color,
+                        dotColor: sourceStatus.color,
                         action: { state.openConnectionsPrivacy(statusMessage: "Source status") }
                     )
                     Divider().overlay(CortexDesign.hairline)
                     HomeStatusRow(
                         title: "Memory",
                         detail: memoryStatus.detail,
-                        systemImage: memoryStatus.systemImage,
-                        color: memoryStatus.color,
+                        dotColor: memoryStatus.color,
                         action: (pendingCount > 0 || memoryCount > 0)
                             ? { state.selectedTab = pendingCount > 0 ? .review : .ask }
                             : nil
@@ -606,33 +609,35 @@ struct HomeHeroSection: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var sourceStatus: (detail: String, systemImage: String, color: Color) {
+    // Ledger-row states are a small ink dot, not a colored icon: moss = healthy,
+    // gold = pending/due, wax = needs attention, secondary ink = neutral.
+    private var sourceStatus: (detail: String, color: Color) {
         if needsAttentionSources > 0 {
-            return ("\(needsAttentionSources) source\(needsAttentionSources == 1 ? "" : "s") need attention", "exclamationmark.triangle.fill", .orange)
+            return ("\(needsAttentionSources) source\(needsAttentionSources == 1 ? "" : "s") need attention", CortexDesign.accent)
         }
         if dueSyncSources > 0 {
-            return ("\(dueSyncSources) connected source\(dueSyncSources == 1 ? "" : "s") ready to sync", "arrow.triangle.2.circlepath.circle.fill", .accentColor)
+            return ("\(dueSyncSources) connected source\(dueSyncSources == 1 ? "" : "s") ready to sync", CortexDesign.gold)
         }
         if syncingSources > 0 {
-            return ("\(activeSources) connected, sync in progress", "arrow.triangle.2.circlepath.circle.fill", .accentColor)
+            return ("\(activeSources) connected, sync in progress", CortexDesign.gold)
         }
         if activeSources > 0 {
-            return ("\(activeSources) connected", "folder.fill.badge.checkmark", .green)
+            return ("\(activeSources) connected", CortexDesign.sealMoss)
         }
         if hasEmptySource {
-            return ("No usable content found", "folder.badge.questionmark", .orange)
+            return ("No usable content found", CortexDesign.accent)
         }
-        return ("Notes not connected", "folder.badge.plus", .accentColor)
+        return ("Notes not connected", CortexDesign.accent)
     }
 
-    private var memoryStatus: (detail: String, systemImage: String, color: Color) {
+    private var memoryStatus: (detail: String, color: Color) {
         if pendingCount > 0 {
-            return ("\(pendingCount) waiting for Review", "tray.full.fill", .orange)
+            return ("\(pendingCount) waiting for Review", CortexDesign.gold)
         }
         if memoryCount > 0 {
-            return ("\(memoryCount) saved for Ask", "brain.head.profile", .green)
+            return ("\(memoryCount) saved for Ask", CortexDesign.sealMoss)
         }
-        return ("No saved memory yet", "checklist", .secondary)
+        return ("No saved memory yet", CortexDesign.inkSecondary)
     }
 
     private func runNextAction() {
@@ -678,15 +683,14 @@ private struct HomeStep: View {
     var body: some View {
         HStack(spacing: CortexDesign.Space.xs) {
             Text("\(number)")
-                .font(.caption)
-                .fontWeight(.bold)
+                .font(.system(size: 13, weight: .semibold, design: .serif))
                 .foregroundColor(CortexDesign.accent)
                 .frame(width: 22, height: 22)
                 .background(CortexDesign.accentSoft)
                 .clipShape(Circle())
             Text(text)
                 .font(.callout)
-                .foregroundColor(.secondary)
+                .foregroundColor(CortexDesign.inkSecondary)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Step \(number): \(text)")
@@ -696,8 +700,7 @@ private struct HomeStep: View {
 struct HomeStatusRow: View {
     let title: String
     let detail: String
-    let systemImage: String
-    let color: Color
+    let dotColor: Color
     var action: (() -> Void)? = nil
 
     @State private var hovering = false
@@ -721,24 +724,25 @@ struct HomeStatusRow: View {
 
     private var row: some View {
         HStack(spacing: 10) {
-            Image(systemName: systemImage)
-                .font(.title3)
-                .foregroundColor(color)
-                .frame(width: 28, height: 28)
+            Circle()
+                .fill(dotColor)
+                .frame(width: 7, height: 7)
+                .frame(width: 16, height: 28)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.callout)
                     .fontWeight(.semibold)
+                    .foregroundColor(CortexDesign.ink)
                 Text(detail)
                     .font(.callout)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(CortexDesign.inkSecondary)
                     .lineLimit(2)
             }
             Spacer(minLength: 0)
             if action != nil {
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(CortexDesign.inkSecondary)
                     .opacity(hovering ? 1 : 0.45)
             }
         }

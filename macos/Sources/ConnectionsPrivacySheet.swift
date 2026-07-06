@@ -24,21 +24,26 @@ struct ConnectionsPrivacySheet: View {
         HStack(alignment: .top, spacing: 14) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.accentColor.opacity(0.12))
+                    .fill(CortexDesign.accentSoft)
                 Image(systemName: "lock.shield")
                     .font(.system(size: 24, weight: .semibold))
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(CortexDesign.accent)
             }
             .frame(width: 48, height: 48)
 
             VStack(alignment: .leading, spacing: 5) {
                 Text("Connections & Privacy")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                Text("Connect notes, keep memory local, and choose what AI tools can use.")
-                    .font(.callout)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .font(CortexDesign.Typography.display(22))
+                    .foregroundColor(CortexDesign.ink)
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(CortexDesign.sealMoss)
+                        .frame(width: 7, height: 7)
+                    Text("Connect notes, keep memory local, and choose what AI tools can use.")
+                        .font(CortexDesign.Typography.body)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Spacer(minLength: 0)
@@ -169,7 +174,7 @@ private struct ConnectionsPrivacyOverview: View {
         }
         .padding(14)
         .background(connectionsPanelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -202,7 +207,7 @@ private struct ConnectionsPrivacyOverview: View {
         }
         .padding(14)
         .background(connectionsPanelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -228,7 +233,7 @@ private struct ConnectionsPrivacyOverview: View {
         }
         .padding(14)
         .background(connectionsPanelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -245,7 +250,7 @@ private struct ConnectionsPrivacyOverview: View {
         }
         .padding(14)
         .background(connectionsPanelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -270,7 +275,7 @@ private struct ConnectionsPrivacyOverview: View {
             }
             .padding(14)
             .background(connectionsPanelBackground)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
             DisclosureGroup(isExpanded: $recoveryToolsExpanded) {
@@ -289,7 +294,7 @@ private struct ConnectionsPrivacyOverview: View {
             }
             .padding(14)
             .background(connectionsPanelBackground)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .onChange(of: recoveryToolsExpanded) { expanded in
                 if expanded {
@@ -355,7 +360,7 @@ private struct ConnectionsPrivacyOverview: View {
             }
             .padding(14)
             .background(connectionsPanelBackground)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .onChange(of: developerDetailsExpanded) { expanded in
                 if expanded {
@@ -407,13 +412,14 @@ private struct ConnectionsOverviewHero: View {
     private var connectedBar: some View {
         HStack(spacing: 10) {
             Image(systemName: "checkmark.seal.fill")
-                .foregroundColor(.green)
+                .foregroundColor(CortexDesign.sealMoss)
                 .font(.title3)
             Text("Notes connected")
                 .font(.headline)
+                .foregroundColor(CortexDesign.ink)
             Text("New memory goes to Review first.")
                 .font(.callout)
-                .foregroundColor(.secondary)
+                .foregroundColor(CortexDesign.inkSecondary)
             Spacer(minLength: 8)
             Button {
                 runPrimaryAction()
@@ -425,19 +431,21 @@ private struct ConnectionsOverviewHero: View {
             .buttonStyle(.bordered)
             .disabled(primaryActionDisabled)
         }
-        .padding(.horizontal, 16)
+        .padding(.leading, 26)
+        .padding(.trailing, 16)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(connectionsPanelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .archiveSpine(CortexDesign.accent)
     }
 
     private var fullHero: some View {
         HStack(alignment: .center, spacing: 18) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.accentColor.opacity(0.14))
+                    .fill(statusColor.opacity(0.12))
                 Image(systemName: statusIcon)
                     .font(.system(size: 34, weight: .semibold))
                     .foregroundColor(statusColor)
@@ -446,10 +454,11 @@ private struct ConnectionsOverviewHero: View {
 
             VStack(alignment: .leading, spacing: 7) {
                 Text(title)
-                    .font(.system(size: 28, weight: .semibold))
+                    .font(CortexDesign.Typography.display(28))
+                    .foregroundColor(CortexDesign.ink)
                 Text(detail)
                     .font(.title3)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -460,7 +469,7 @@ private struct ConnectionsOverviewHero: View {
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(connectionsPanelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -552,10 +561,12 @@ private struct ConnectionsOverviewHero: View {
     }
 
     private var statusColor: Color {
-        if notesConnected { return .green }
-        if notesNeedAttention { return .orange }
-        if notesNeedContent { return .orange }
-        return .accentColor
+        if notesConnected { return CortexDesign.sealMoss }
+        if notesNeedAttention { return CortexDesign.accent }
+        // Waiting on content is a pending state — marginalia gold, used here only as a
+        // large glyph over its own soft fill (never small text).
+        if notesNeedContent { return CortexDesign.gold }
+        return CortexDesign.accent
     }
 
     private func runPrimaryAction() {
@@ -705,8 +716,17 @@ private struct ConnectionsDirectSourcesSection: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
                 title: "Connections library",
-                detail: "All optional. Everything you connect stays on this Mac."
+                detail: "All optional."
             )
+            // The moss mark — the archive's private-by-default signature.
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(CortexDesign.sealMoss)
+                    .frame(width: 7, height: 7)
+                Text("Everything you connect stays on this Mac.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(CortexDesign.sealMoss)
+            }
 
             if state.sourceConnectorCatalog.isEmpty {
                 ConnectionsRetryState(
@@ -720,17 +740,17 @@ private struct ConnectionsDirectSourcesSection: View {
                 QuietState(title: "No extra connectors ready", detail: "Use notes sync as the default source path.")
             } else {
                 HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+                    Image(systemName: "magnifyingglass").foregroundColor(CortexDesign.inkSecondary)
                     TextField("Search connections", text: $connectorSearch)
                         .textFieldStyle(.plain)
                     if !connectorSearch.isEmpty {
                         Button { connectorSearch = "" } label: { Image(systemName: "xmark.circle.fill") }
                             .buttonStyle(.borderless)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(CortexDesign.inkSecondary)
                     }
                 }
                 .padding(8)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+                .background(RoundedRectangle(cornerRadius: 8).fill(CortexDesign.quietBackground))
 
                 if filteredConnectors.isEmpty {
                     QuietState(title: "No matching connections", detail: "Try a different search term.")
@@ -738,9 +758,9 @@ private struct ConnectionsDirectSourcesSection: View {
                     ForEach(connectorsByCategory, id: \.category) { group in
                         VStack(alignment: .leading, spacing: 8) {
                             Text(group.category.uppercased())
-                                .font(.caption2)
-                                .fontWeight(.semibold)
-                                .foregroundColor(.secondary)
+                                .font(CortexDesign.Typography.stamp)
+                                .kerning(0.8)
+                                .foregroundColor(CortexDesign.inkFaint)
                             // Full management rows only for connectors the user has actually
                             // touched; everything else browses as a compact app-store shelf.
                             let managedConnectors = group.connectors.filter { isManaged($0) }
@@ -776,7 +796,7 @@ private struct ConnectionsDirectSourcesSection: View {
             if let plannedConnectorSummary {
                 Text(plannedConnectorSummary)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -831,24 +851,23 @@ private struct ConnectorLibraryTile: View {
             VStack(alignment: .leading, spacing: 8) {
                 Image(systemName: connectorLibraryIcon(connector.id))
                     .font(.system(size: 22, weight: .semibold))
-                    .foregroundColor(enabled ? CortexDesign.accent : .secondary)
+                    .foregroundColor(enabled ? CortexDesign.accent : CortexDesign.inkFaint)
                 Text(connector.name)
-                    .font(.headline)
-                    .foregroundColor(.primary)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(CortexDesign.ink)
                 Text(connector.category ?? "Read-only sync")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(CortexDesign.inkSecondary)
                 Spacer(minLength: 0)
                 Text(enabled ? "Set up" : "Coming soon")
-                    .font(.callout)
-                    .fontWeight(.semibold)
-                    .foregroundColor(enabled ? CortexDesign.accent : .secondary)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(enabled ? CortexDesign.accent : CortexDesign.inkFaint)
             }
             .padding(14)
             .frame(maxWidth: .infinity, minHeight: 118, alignment: .topLeading)
-            .background(hovering && enabled ? CortexDesign.accentSoft : CortexDesign.cardBackground)
-            .overlay(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm).stroke(CortexDesign.softBorder, lineWidth: 1))
-            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm))
+            .background(hovering && enabled ? CortexDesign.accentSoft : CortexDesign.panelBackground)
+            .overlay(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).stroke(CortexDesign.hairline, lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
@@ -881,6 +900,7 @@ private func connectorLibraryIcon(_ id: String) -> String {
 private struct AIChatsImportCard: View {
     @ObservedObject var state: AppState
     @State private var isTargeted = false
+    @State private var dropZoneHovering = false
 
     private let steps = [
         "In ChatGPT: Settings → Data controls → Export data. In Claude: Settings → Privacy → Export data.",
@@ -892,37 +912,39 @@ private struct AIChatsImportCard: View {
             HStack(spacing: 10) {
                 Image(systemName: "bubble.left.and.text.bubble.right")
                     .font(.title3)
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(CortexDesign.accent)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Import your ChatGPT or Claude chats").font(.headline)
+                    Text("Import your ChatGPT or Claude chats")
+                        .font(.headline)
+                        .foregroundColor(CortexDesign.ink)
                     Text("Drop your export file here — it's ready to use right away.")
-                        .font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+                        .font(.caption).foregroundColor(CortexDesign.inkSecondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
             }
 
             if let summary = state.detectedExportSummary {
                 HStack(spacing: 8) {
-                    Image(systemName: "sparkles").foregroundColor(.accentColor)
-                    Text(summary).font(.callout).fixedSize(horizontal: false, vertical: true)
+                    Image(systemName: "sparkles").foregroundColor(CortexDesign.accent)
+                    Text(summary).font(.callout).foregroundColor(CortexDesign.ink).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
                     Button { state.importDetectedExports() } label: { Text("Import") }
                         .buttonStyle(.borderedProminent)
                         .disabled(state.importInFlight)
                 }
                 .padding(10)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.10)))
+                .background(RoundedRectangle(cornerRadius: 8).fill(CortexDesign.accentSoft))
             }
 
             RoundedRectangle(cornerRadius: 10)
                 .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6]))
-                .foregroundColor(isTargeted ? Color.accentColor : Color.secondary.opacity(0.4))
+                .foregroundColor(isTargeted || dropZoneHovering ? CortexDesign.accent : CortexDesign.hairline)
                 .frame(height: 66)
                 .overlay(
                     HStack(spacing: 8) {
                         if state.importInFlight { ProgressView().scaleEffect(0.7) }
                         Text(state.importInFlight ? "Importing…" : "Drag your export here, or")
-                            .font(.callout).foregroundColor(.secondary)
+                            .font(.callout).foregroundColor(CortexDesign.inkSecondary)
                         if !state.importInFlight {
                             Button { state.importAIChatExport() } label: {
                                 Label("Choose export file…", systemImage: "folder.badge.plus")
@@ -930,6 +952,8 @@ private struct AIChatsImportCard: View {
                         }
                     }
                 )
+                .onHover { dropZoneHovering = $0 }
+                .animation(.easeOut(duration: 0.12), value: dropZoneHovering)
                 .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
                     guard let provider = providers.first else { return false }
                     provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
@@ -950,19 +974,20 @@ private struct AIChatsImportCard: View {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
                         HStack(alignment: .top, spacing: 8) {
-                            Text("\(index + 1).").font(.caption).fontWeight(.semibold).foregroundColor(.accentColor).monospacedDigit()
-                            Text(step).font(.caption).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+                            Text("\(index + 1).").font(.caption).fontWeight(.semibold).foregroundColor(CortexDesign.accent).monospacedDigit()
+                            Text(step).font(.caption).foregroundColor(CortexDesign.inkSecondary).fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
                 .padding(.top, 6)
             }
             .font(.caption)
-            .foregroundColor(.secondary)
+            .foregroundColor(CortexDesign.inkSecondary)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(connectionsPanelBackground))
+        .background(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).fill(connectionsPanelBackground))
+        .overlay(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).stroke(CortexDesign.hairline, lineWidth: 1))
         .onAppear { Task { await state.detectAvailableExports() } }
     }
 }
@@ -1052,23 +1077,29 @@ private struct ConnectionsDirectSourceRow: View {
             .frame(width: 52, height: 52)
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(connector.name)
                         .font(.headline)
-                    SourceStatusChip(
-                        title: statusTitle,
-                        systemImage: statusChipIcon,
-                        color: statusColor
-                    )
+                        .foregroundColor(CortexDesign.ink)
+                    // Quiet catalog stamp instead of a colored capsule: state is words and ink.
+                    Text(statusTitle.uppercased())
+                        .font(CortexDesign.Typography.stamp)
+                        .kerning(0.8)
+                        .foregroundColor(
+                            activeAccount?.needsAttention == true
+                                ? CortexDesign.accent
+                                : CortexDesign.inkFaint
+                        )
+                        .lineLimit(1)
                 }
                 Text(detail)
                     .font(.callout)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let lastMessage = state.connectorLastMessages[connector.id] {
                     Text(lastMessage)
                         .font(.caption)
-                        .foregroundColor(CortexRecoveryText.needsAttention(lastMessage) ? .orange : .secondary)
+                        .foregroundColor(CortexRecoveryText.needsAttention(lastMessage) ? CortexDesign.accent : CortexDesign.inkSecondary)
                         .lineLimit(2)
                 }
                 if let sourceHealthLine {
@@ -1087,10 +1118,10 @@ private struct ConnectionsDirectSourceRow: View {
                 Label("Setup required", systemImage: "key.slash")
                     .font(.callout)
                     .fontWeight(.medium)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(CortexDesign.inkSecondary)
                     .frame(minWidth: 126, minHeight: 46)
                     .padding(.horizontal, 12)
-                    .background(Color(nsColor: .controlBackgroundColor))
+                    .background(CortexDesign.quietBackground)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .help(state.managedOAuthConfigurationMessage(connector) ?? "\(connector.name) sign-in is not configured for this build yet.")
                     .accessibilityLabel("\(connector.name): setup required, not available in this build")
@@ -1120,7 +1151,7 @@ private struct ConnectionsDirectSourceRow: View {
                         .frame(minWidth: 98, minHeight: 42)
                 }
                 .buttonStyle(.bordered)
-                .foregroundColor(.secondary)
+                .foregroundColor(CortexDesign.inkSecondary)
                 .help("Pause automatic sync. Already synced local memory and the saved connection are kept, so you can resume without reconnecting.")
                 .disabled(state.isBusy || isSyncing || isOAuthStarting)
                 .confirmationDialog(
@@ -1161,10 +1192,14 @@ private struct ConnectionsDirectSourceRow: View {
                 }
             }
         }
-        .padding(14)
+        .padding(.vertical, 14)
+        .padding(.trailing, 14)
+        .padding(.leading, connected ? 25 : 14)
         .background(hovering ? CortexDesign.accentSoft.opacity(0.5) : connectionsPanelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        // Kept and recorded: connected sources carry the wax-red margin spine.
+        .archiveSpine(connected ? CortexDesign.accent : Color.clear)
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
     }
@@ -1181,30 +1216,17 @@ private struct ConnectionsDirectSourceRow: View {
         return "Ready"
     }
 
-    private var statusChipIcon: String {
-        if isPaused { return "pause.circle.fill" }
-        if activeAccount?.needsAttention == true { return "exclamationmark.circle.fill" }
-        if let readiness, readiness.pending > 0 { return "tray.full.fill" }
-        if let readiness { return readiness.syncPlanIcon }
-        if connected { return "checkmark.circle.fill" }
-        if hasStoredConfig { return "checkmark.circle" }
-        if hasManagedOAuth && !managedOAuthConfigured { return "key.slash.fill" }
-        if hasManagedOAuth { return "person.crop.circle.badge.checkmark" }
-        if connector.connectionSetup?.mode == "native-token-connector" { return "key.fill" }
-        if connector.connectionSetup?.mode == "native-local-connector" { return "externaldrive.fill" }
-        return "link.circle"
-    }
-
     private var statusColor: Color {
-        if isPaused { return .secondary }
-        if activeAccount?.needsAttention == true { return .orange }
-        if let readiness, readiness.pending > 0 { return .orange }
+        if isPaused { return CortexDesign.inkSecondary }
+        if activeAccount?.needsAttention == true { return CortexDesign.accent }
+        // Pending review is a gold moment — used only for the large glyph and its soft fill.
+        if let readiness, readiness.pending > 0 { return CortexDesign.gold }
         if let readiness { return readiness.syncPlanColor }
-        if connected { return .green }
-        if hasStoredConfig { return .green }
-        if hasManagedOAuth && !managedOAuthConfigured { return .secondary }
-        if connector.connectionSetup?.available == true { return .accentColor }
-        return .secondary
+        if connected { return CortexDesign.sealMoss }
+        if hasStoredConfig { return CortexDesign.sealMoss }
+        if hasManagedOAuth && !managedOAuthConfigured { return CortexDesign.inkSecondary }
+        if connector.connectionSetup?.available == true { return CortexDesign.accent }
+        return CortexDesign.inkSecondary
     }
 
     private var setupModeTitle: String? {
@@ -1275,8 +1297,9 @@ private struct ConnectionsDirectSourceRow: View {
     }
 
     private var sourceHealthColor: Color {
-        if let readiness, readiness.pending > 0 { return .orange }
-        return .secondary
+        // Gold stays a fill; pending emphasis in running text is full ink instead.
+        if let readiness, readiness.pending > 0 { return CortexDesign.ink }
+        return CortexDesign.inkSecondary
     }
 
     private func shortTimestamp(_ value: String) -> String {
@@ -1399,25 +1422,32 @@ private struct ConnectorTokenSetupSheet: View {
             HStack(alignment: .top, spacing: 12) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.accentColor.opacity(0.12))
+                        .fill(CortexDesign.accentSoft)
                     Image(systemName: "key.fill")
                         .font(.system(size: 22, weight: .semibold))
-                        .foregroundColor(.accentColor)
+                        .foregroundColor(CortexDesign.accent)
                 }
                 .frame(width: 46, height: 46)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Connect \(connector.name)")
-                        .font(.title2)
-                        .fontWeight(.semibold)
+                        .font(CortexDesign.Typography.display(22))
+                        .foregroundColor(CortexDesign.ink)
                     Text(headerDetail)
                         .font(.callout)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("Setup is stored locally on this Mac. Pausing sync keeps already-synced memory and the saved connection, so you can resume without reconnecting.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    // The moss mark: the local-only promise carries the privacy signature.
+                    HStack(alignment: .top, spacing: 7) {
+                        Circle()
+                            .fill(CortexDesign.sealMoss)
+                            .frame(width: 7, height: 7)
+                            .padding(.top, 3)
+                        Text("Setup is stored locally on this Mac. Pausing sync keeps already-synced memory and the saved connection, so you can resume without reconnecting.")
+                            .font(.caption)
+                            .foregroundColor(CortexDesign.inkSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
 
                 Spacer(minLength: 0)
@@ -1444,16 +1474,17 @@ private struct ConnectorTokenSetupSheet: View {
                             Text("How to connect")
                                 .font(.caption)
                                 .fontWeight(.semibold)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(CortexDesign.inkSecondary)
                             ForEach(Array(setup.setupSteps.enumerated()), id: \.offset) { index, step in
                                 HStack(alignment: .top, spacing: 8) {
                                     Text("\(index + 1).")
                                         .font(.callout)
                                         .fontWeight(.semibold)
-                                        .foregroundColor(.accentColor)
+                                        .foregroundColor(CortexDesign.accent)
                                         .monospacedDigit()
                                     Text(step)
                                         .font(.callout)
+                                        .foregroundColor(CortexDesign.ink)
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                             }
@@ -1466,7 +1497,7 @@ private struct ConnectorTokenSetupSheet: View {
                         }
                         .padding(12)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.06)))
+                        .background(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).fill(CortexDesign.accentSoft))
                     }
                     if setup == nil {
                         QuietState(title: "Setup contract unavailable", detail: "Update Cortex and try this connection again.")
@@ -1476,7 +1507,7 @@ private struct ConnectorTokenSetupSheet: View {
                                 Text("Required")
                                     .font(.caption)
                                     .fontWeight(.semibold)
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(CortexDesign.inkSecondary)
                                 ForEach(requiredFields) { field in
                                     setupField(field)
                                 }
@@ -1517,7 +1548,7 @@ private struct ConnectorTokenSetupSheet: View {
                     if let validationMessage {
                         Text(validationMessage)
                             .font(.caption)
-                            .foregroundColor(.orange)
+                            .foregroundColor(CortexDesign.accent)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -1592,7 +1623,7 @@ private struct ConnectorTokenSetupSheet: View {
             Text(field.displayLabel + (field.isRequired ? "" : " optional"))
                 .font(.caption)
                 .fontWeight(.semibold)
-                .foregroundColor(.secondary)
+                .foregroundColor(CortexDesign.inkSecondary)
 
             if field.isSecret {
                 SecureField(placeholder(for: field), text: stringBinding(for: field))
@@ -1665,7 +1696,7 @@ private struct ConnectorTokenSetupSheet: View {
                 if let missingDiscoveryCredentialMessage = missingDiscoveryCredentialMessage(for: field) {
                     Text(missingDiscoveryCredentialMessage)
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -1673,7 +1704,7 @@ private struct ConnectorTokenSetupSheet: View {
             if let message = discoveryMessages[field.name] {
                 Text(message)
                     .font(.caption)
-                    .foregroundColor(CortexRecoveryText.needsAttention(message) ? .orange : .secondary)
+                    .foregroundColor(CortexRecoveryText.needsAttention(message) ? CortexDesign.accent : CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -1686,17 +1717,17 @@ private struct ConnectorTokenSetupSheet: View {
                             HStack(alignment: .top, spacing: 10) {
                                 Image(systemName: remoteOptionSelected(option, for: field) ? "checkmark.circle.fill" : "circle")
                                     .font(.system(size: 18, weight: .semibold))
-                                    .foregroundColor(remoteOptionSelected(option, for: field) ? .accentColor : .secondary)
+                                    .foregroundColor(remoteOptionSelected(option, for: field) ? CortexDesign.accent : CortexDesign.inkSecondary)
                                     .frame(width: 22, height: 22)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(option.label)
                                         .font(.callout)
                                         .fontWeight(.medium)
-                                        .foregroundColor(.primary)
+                                        .foregroundColor(CortexDesign.ink)
                                     if let detail = option.detail {
                                         Text(detail)
                                             .font(.caption)
-                                            .foregroundColor(.secondary)
+                                            .foregroundColor(CortexDesign.inkSecondary)
                                             .lineLimit(2)
                                     }
                                 }
@@ -1704,8 +1735,8 @@ private struct ConnectorTokenSetupSheet: View {
                             }
                             .padding(10)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(remoteOptionSelected(option, for: field) ? Color.accentColor.opacity(0.09) : CortexDesign.cardBackground)
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+                            .background(remoteOptionSelected(option, for: field) ? CortexDesign.accentSoft : CortexDesign.cardBackground)
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                         }
                         .buttonStyle(.plain)
@@ -2014,16 +2045,17 @@ private struct ConnectionsAIToolsSection: View {
                 .frame(width: 56, height: 56)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("AI apps")
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.secondary)
+                    Text("AI apps".uppercased())
+                        .font(CortexDesign.Typography.stamp)
+                        .kerning(0.8)
+                        .foregroundColor(CortexDesign.inkFaint)
                     Text(statusTitle)
                         .font(.title3)
                         .fontWeight(.semibold)
+                        .foregroundColor(CortexDesign.ink)
                     Text(statusDetail)
                         .font(.callout)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -2065,7 +2097,7 @@ private struct ConnectionsAIToolsSection: View {
             }
             .padding(14)
             .background(connectionsPanelBackground)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
             if !connectedIntegrations.isEmpty {
@@ -2073,20 +2105,24 @@ private struct ConnectionsAIToolsSection: View {
                     ForEach(connectedIntegrations.prefix(3)) { integration in
                         HStack(spacing: 10) {
                             Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
+                                .foregroundColor(CortexDesign.sealMoss)
                                 .frame(width: 24)
                             Text(integration.name)
                                 .font(.callout)
                                 .fontWeight(.medium)
+                                .foregroundColor(CortexDesign.ink)
                             Spacer(minLength: 0)
                             Text("Enabled")
-                                .font(.caption)
-                                .fontWeight(.semibold)
-                                .foregroundColor(.green)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(CortexDesign.sealMoss)
                         }
-                        .padding(10)
+                        .padding(.vertical, 10)
+                        .padding(.trailing, 10)
+                        .padding(.leading, 25)
                         .background(CortexDesign.cardBackground)
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
                         .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .archiveSpine(CortexDesign.accent)
                     }
                 }
             }
@@ -2094,9 +2130,9 @@ private struct ConnectionsAIToolsSection: View {
     }
 
     private var statusColor: Color {
-        if connectedCount > 0 { return .green }
-        if !detectedConnectable.isEmpty { return .accentColor }
-        return .secondary
+        if connectedCount > 0 { return CortexDesign.sealMoss }
+        if !detectedConnectable.isEmpty { return CortexDesign.accent }
+        return CortexDesign.inkSecondary
     }
 
     private var statusIcon: String {
@@ -2141,10 +2177,21 @@ private struct ConnectionsPrivacyDefaultsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center) {
-                SectionHeader(
-                    title: "Backup & privacy",
-                    detail: "New memory waits for your approval, and everything stays on this Mac."
-                )
+                VStack(alignment: .leading, spacing: 6) {
+                    SectionHeader(
+                        title: "Backup & privacy",
+                        detail: "New memory waits for your approval."
+                    )
+                    // The moss mark — the archive's private-by-default signature.
+                    HStack(spacing: 7) {
+                        Circle()
+                            .fill(CortexDesign.sealMoss)
+                            .frame(width: 7, height: 7)
+                        Text("Everything stays on this Mac.")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(CortexDesign.sealMoss)
+                    }
+                }
                 Spacer(minLength: 12)
                 Button {
                     state.createBackup()
@@ -2161,25 +2208,25 @@ private struct ConnectionsPrivacyDefaultsSection: View {
                     title: settings.review_new_captures ? "Review first" : "Auto-approve",
                     detail: settings.review_new_captures ? "new memory waits for approval" : "new memory can activate",
                     systemImage: settings.review_new_captures ? "checklist" : "bolt.fill",
-                    color: settings.review_new_captures ? .green : .orange
+                    color: settings.review_new_captures ? CortexDesign.sealMoss : CortexDesign.accent
                 )
                 ConnectionsTrustTile(
                     title: settings.allow_agent_reads ? "AI access on" : "AI access off",
                     detail: aiAccessDetail(settings),
                     systemImage: settings.allow_agent_reads ? "eye.fill" : "eye.slash.fill",
-                    color: settings.allow_agent_reads ? .accentColor : .secondary
+                    color: settings.allow_agent_reads ? CortexDesign.accent : CortexDesign.inkSecondary
                 )
                 ConnectionsTrustTile(
                     title: backupCount > 0 ? "Backup ready" : "No backup yet",
                     detail: backupCount > 0 ? "\(backupCount) local archive\(backupCount == 1 ? "" : "s")" : "create one before big changes",
                     systemImage: backupCount > 0 ? "externaldrive.fill" : "externaldrive.badge.exclamationmark",
-                    color: backupCount > 0 ? .green : .orange
+                    color: backupCount > 0 ? CortexDesign.sealMoss : CortexDesign.accent
                 )
             }
         }
         .padding(16)
         .background(connectionsPanelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -2233,10 +2280,21 @@ private struct ConnectionsMCPAccessSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center, spacing: 12) {
-                SectionHeader(
-                    title: "Tool permissions",
-                    detail: "Connected AI tools can only use the permissions below. Recent activity is shown without raw memory content."
-                )
+                VStack(alignment: .leading, spacing: 6) {
+                    SectionHeader(
+                        title: "Tool permissions",
+                        detail: "Connected AI tools can only use the permissions below."
+                    )
+                    // The moss mark — the archive's private-by-default signature.
+                    HStack(spacing: 7) {
+                        Circle()
+                            .fill(CortexDesign.sealMoss)
+                            .frame(width: 7, height: 7)
+                        Text("Recent activity is shown without raw memory content.")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(CortexDesign.sealMoss)
+                    }
+                }
                 Spacer(minLength: 12)
                 Button {
                     Task {
@@ -2254,39 +2312,40 @@ private struct ConnectionsMCPAccessSection: View {
                     title: settings.allow_agent_reads ? "Read" : "Read off",
                     detail: settings.allow_agent_reads ? "reviewed memory" : "blocked",
                     systemImage: settings.allow_agent_reads ? "eye.fill" : "eye.slash.fill",
-                    color: settings.allow_agent_reads ? .green : .secondary
+                    color: settings.allow_agent_reads ? CortexDesign.sealMoss : CortexDesign.inkSecondary
                 )
                 ConnectionsTrustTile(
                     title: settings.allow_agent_writes ? "Save" : "Save off",
                     detail: settings.allow_agent_writes ? "new memory to Review" : "blocked",
                     systemImage: settings.allow_agent_writes ? "square.and.pencil" : "pencil.slash",
-                    color: settings.allow_agent_writes ? .accentColor : .secondary
+                    color: settings.allow_agent_writes ? CortexDesign.accent : CortexDesign.inkSecondary
                 )
                 ConnectionsTrustTile(
                     title: settings.allow_agent_exports ? "Export on" : "Export off",
                     detail: settings.allow_agent_exports ? "redacted exports" : "blocked",
                     systemImage: "square.and.arrow.up",
-                    color: settings.allow_agent_exports ? .orange : .secondary
+                    color: settings.allow_agent_exports ? CortexDesign.accent : CortexDesign.inkSecondary
                 )
                 ConnectionsTrustTile(
                     title: settings.allow_agent_maintenance ? "Maintenance on" : "Maintenance off",
                     detail: settings.allow_agent_destructive_actions ? "delete allowed" : "no deletion",
                     systemImage: settings.allow_agent_maintenance ? "wrench.and.screwdriver.fill" : "wrench.and.screwdriver",
-                    color: settings.allow_agent_maintenance ? .orange : .secondary
+                    color: settings.allow_agent_maintenance ? CortexDesign.accent : CortexDesign.inkSecondary
                 )
             }
 
             HStack(alignment: .center, spacing: 12) {
                 Image(systemName: activeMCPTokens.isEmpty ? "key.slash" : "key.fill")
-                    .foregroundColor(activeMCPTokens.isEmpty ? .secondary : .accentColor)
+                    .foregroundColor(activeMCPTokens.isEmpty ? CortexDesign.inkSecondary : CortexDesign.accent)
                     .frame(width: 28)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(activeMCPTokens.isEmpty ? "No AI tool connected yet" : "\(activeMCPTokens.count) active MCP token\(activeMCPTokens.count == 1 ? "" : "s")")
                         .font(.callout)
                         .fontWeight(.semibold)
+                        .foregroundColor(CortexDesign.ink)
                     Text("\(activeScopeSummary) · \(lastUsedLabel)")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(CortexDesign.inkSecondary)
                         .lineLimit(2)
                 }
                 Spacer(minLength: 8)
@@ -2299,41 +2358,46 @@ private struct ConnectionsMCPAccessSection: View {
             }
             .padding(12)
             .background(CortexDesign.cardBackground)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Recent tool activity")
                     .font(.caption)
                     .fontWeight(.semibold)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(CortexDesign.inkSecondary)
                 if recentToolEvents.isEmpty {
                     Text("No AI tool activity recorded yet.")
                         .font(.callout)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(CortexDesign.inkSecondary)
                 } else {
                     ForEach(recentToolEvents) { event in
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Image(systemName: "wand.and.stars")
-                                .foregroundColor(.accentColor)
+                                .foregroundColor(CortexDesign.accent)
                                 .frame(width: 20)
                             Text(event.event_type.replacingOccurrences(of: "_", with: " ").capitalized)
                                 .font(.callout)
                                 .fontWeight(.medium)
+                                .foregroundColor(CortexDesign.ink)
                             Spacer(minLength: 0)
-                            Text(shortDate(event.created_at))
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                            // Dates speak in the catalog-stamp voice.
+                            Text(shortDate(event.created_at).uppercased())
+                                .font(CortexDesign.Typography.stamp)
+                                .kerning(0.8)
+                                .foregroundColor(CortexDesign.inkFaint)
                         }
                     }
                 }
             }
             .padding(12)
             .background(CortexDesign.cardBackground)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
         .padding(14)
-        .background(CortexDesign.cardBackground.opacity(0.55))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.22)))
+        .background(connectionsPanelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .onAppear {
             Task {
@@ -2363,10 +2427,11 @@ private struct ConnectionsTrustTile: View {
                 Text(title)
                     .font(.callout)
                     .fontWeight(.semibold)
+                    .foregroundColor(CortexDesign.ink)
                     .lineLimit(2)
                 Text(detail)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(CortexDesign.inkSecondary)
                     .lineLimit(2)
             }
             Spacer(minLength: 0)
@@ -2374,6 +2439,7 @@ private struct ConnectionsTrustTile: View {
         .padding(12)
         .frame(minHeight: 72, alignment: .leading)
         .background(CortexDesign.cardBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
@@ -2439,14 +2505,15 @@ private struct ConnectionsDisclosureLabel: View {
         HStack(spacing: 10) {
             Image(systemName: systemImage)
                 .font(.title3)
-                .foregroundColor(.accentColor)
+                .foregroundColor(CortexDesign.accent)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.headline)
+                    .foregroundColor(CortexDesign.ink)
                 Text(detail)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)

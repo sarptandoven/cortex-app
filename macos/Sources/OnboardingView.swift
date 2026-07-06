@@ -38,9 +38,10 @@ struct OnboardingView: View {
     /// one thing worth remembering (the ⌃⌥Space hotkey) gets its moment.
     private var celebrationOverlay: some View {
         VStack(spacing: 14) {
-            OnboardingHeroMark(systemImage: "checkmark.seal.fill", tint: .green)
+            OnboardingHeroMark(systemImage: "checkmark.seal.fill", tint: CortexDesign.sealMoss)
             Text("You're all set")
-                .font(.system(size: 24, weight: .bold))
+                .font(CortexDesign.Typography.display(24))
+                .foregroundColor(CortexDesign.ink)
             Text("Ask anytime — press ⌃⌥Space or click the brain in your menu bar.")
                 .font(.callout)
                 .foregroundColor(.secondary)
@@ -71,7 +72,7 @@ struct OnboardingView: View {
     }
 
     private var heroTint: Color {
-        state.onboardingStepIsComplete(state.onboardingStep) ? .green : .accentColor
+        state.onboardingStepIsComplete(state.onboardingStep) ? CortexDesign.sealMoss : .accentColor
     }
 
     /// Review and Ask are explicitly skippable — mirror the footer's "Skip for now" affordance in
@@ -87,25 +88,27 @@ struct OnboardingView: View {
                 HStack(spacing: 7) {
                     Image(systemName: "sparkles")
                         .foregroundColor(.accentColor)
-                    Text("Welcome to Cortex")
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.secondary)
+                    Text("WELCOME TO CORTEX")
+                        .font(CortexDesign.Typography.stamp)
+                        .kerning(0.8)
+                        .foregroundColor(CortexDesign.inkFaint)
                 }
                 Spacer()
-                Text("Step \(stepNumber) of \(steps.count)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                Text("STEP \(stepNumber) OF \(steps.count)")
+                    .font(CortexDesign.Typography.stamp)
+                    .kerning(0.8)
+                    .foregroundColor(CortexDesign.inkFaint)
                 if currentStepIsOptional {
                     // Label the skippable steps up front so "Skip for now" reads as legitimate,
                     // not like giving up — only three of the five steps are actually required.
+                    // Gold marks "not yet done" — ink text on a gold wash (gold is never text).
                     Text("Optional")
                         .font(.caption2)
                         .fontWeight(.semibold)
-                        .foregroundColor(CortexDesign.accent)
+                        .foregroundColor(CortexDesign.ink)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)
-                        .background(Capsule().fill(CortexDesign.accentSoft))
+                        .background(Capsule().fill(CortexDesign.goldSoft))
                 }
                 Button {
                     state.dismissOnboardingForSession()
@@ -121,13 +124,14 @@ struct OnboardingView: View {
                 OnboardingHeroMark(systemImage: state.onboardingStep.systemImage, tint: heroTint)
                 VStack(alignment: .leading, spacing: 6) {
                     Text(state.onboardingStep.headline)
-                        .font(.system(size: 25, weight: .bold))
+                        .font(CortexDesign.Typography.display(26))
+                        .foregroundColor(CortexDesign.ink)
                         .fixedSize(horizontal: false, vertical: true)
                         .id("title-\(state.onboardingStep.rawValue)")
                         .transition(.opacity.combined(with: .move(edge: .trailing)))
                     Text(state.onboardingStep.subtitle)
-                        .font(.title3)
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 15))
+                        .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .id("sub-\(state.onboardingStep.rawValue)")
                         .transition(.opacity)
@@ -308,7 +312,7 @@ struct OnboardingVaultStep: View {
             )
 
             if state.isLocalServiceReady {
-                OnboardingCheckRow(title: "Private memory ready", detail: "Next, connect a source so Cortex can start finding useful memory.", systemImage: "checkmark.seal.fill", color: .green)
+                OnboardingCheckRow(title: "Private memory ready", detail: "Next, connect a source so Cortex can start finding useful memory.", systemImage: "checkmark.seal.fill", color: CortexDesign.sealMoss)
             } else if state.backendNeedsRecovery {
                 OnboardingBackendRecoveryCard(state: state)
             } else {
@@ -462,7 +466,7 @@ struct OnboardingFirstSourceStep: View {
 
     private var sourceCheckColor: Color {
         if state.onboardingHasSource {
-            return .green
+            return CortexDesign.sealMoss
         }
         if state.onboardingHasConnectedMemoryLayer {
             return .orange
@@ -629,7 +633,7 @@ struct OnboardingReviewMemoryStep: View {
                 title: reviewPathTitle,
                 detail: reviewPathDetail,
                 systemImage: state.onboardingHasReviewedMemory ? "checkmark.seal.fill" : "tray.full",
-                color: state.onboardingHasReviewedMemory ? .green : .orange
+                color: state.onboardingHasReviewedMemory ? CortexDesign.sealMoss : CortexDesign.gold
             )
         }
         .task {
@@ -818,7 +822,7 @@ struct OnboardingAskUseStep: View {
                 title: askPathTitle,
                 detail: askPathDetail,
                 systemImage: askStepReady ? "checkmark.seal.fill" : "sparkle.magnifyingglass",
-                color: askStepReady ? .green : .orange
+                color: askStepReady ? CortexDesign.sealMoss : CortexDesign.gold
             )
         }
     }
@@ -914,7 +918,7 @@ struct OnboardingBackupStep: View {
                     title: "Backup saved",
                     detail: backup,
                     systemImage: "checkmark.seal.fill",
-                    color: .green
+                    color: CortexDesign.sealMoss
                 )
             } else if state.onboardingBackupDecision == "skipped" {
                 OnboardingCheckRow(
@@ -928,7 +932,7 @@ struct OnboardingBackupStep: View {
                     title: "Backup already exists",
                     detail: "\(backupCount) local backup\(backupCount == 1 ? "" : "s") available.",
                     systemImage: "checkmark.seal.fill",
-                    color: .green
+                    color: CortexDesign.sealMoss
                 )
             } else {
                 OnboardingCheckRow(
@@ -1052,10 +1056,10 @@ struct OnboardingHowTo: View {
                     HStack(alignment: .top, spacing: 10) {
                         Text("\(index + 1)")
                             .font(.caption)
-                            .fontWeight(.bold)
-                            .foregroundColor(.white)
+                            .fontWeight(.semibold)
+                            .foregroundColor(CortexDesign.accent)
                             .frame(width: 20, height: 20)
-                            .background(Circle().fill(Color.accentColor))
+                            .background(Circle().fill(CortexDesign.accentSoft))
                         Text(text)
                             .font(.callout)
                             .foregroundColor(.secondary)

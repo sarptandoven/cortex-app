@@ -72,12 +72,24 @@ struct MenuBarQuickPanel: View {
                     .foregroundColor(CortexDesign.accent)
             }
             VStack(alignment: .leading, spacing: 1) {
-                Text("Cortex").font(.system(size: 14, weight: .bold))
-                Text(statusLine)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .id(statusLine)
-                    .transition(.opacity)
+                Text("Cortex")
+                    .font(.system(size: 15, weight: .semibold, design: .serif))
+                    .foregroundColor(CortexDesign.ink)
+                Group {
+                    if statusIsTelemetry {
+                        // Counts speak in the catalog-stamp voice; sentences stay in the working voice.
+                        Text(statusLine.uppercased())
+                            .font(CortexDesign.Typography.stamp)
+                            .kerning(0.8)
+                            .foregroundColor(CortexDesign.inkFaint)
+                    } else {
+                        Text(statusLine)
+                            .font(.caption)
+                            .foregroundColor(CortexDesign.inkSecondary)
+                    }
+                }
+                .id(statusLine)
+                .transition(.opacity)
             }
             Spacer()
             if isSyncing {
@@ -87,6 +99,11 @@ struct MenuBarQuickPanel: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
         .animation(.easeInOut(duration: 0.25), value: statusLine)
+    }
+
+    /// Telemetry-shaped states (counts) take the mono stamp voice; sentence states stay SF.
+    private var statusIsTelemetry: Bool {
+        !isSyncing && (pendingCount > 0 || memoryCount > 0)
     }
 
     private var statusLine: String {
@@ -126,13 +143,17 @@ struct MenuBarQuickPanel: View {
             .font(.system(size: 12.5, weight: .semibold))
             .frame(maxWidth: .infinity)
             .frame(height: 26)
-            .foregroundColor(selected ? CortexDesign.accent : .secondary)
+            .foregroundColor(selected ? CortexDesign.ink : CortexDesign.inkSecondary)
             .background(
                 ZStack {
                     if selected {
                         RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(Color.white)
-                            .shadow(color: .black.opacity(0.06), radius: 2, y: 1)
+                            .fill(CortexDesign.panelBackground)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .stroke(CortexDesign.hairline, lineWidth: 1)
+                            )
+                            .shadow(color: CortexDesign.ink.opacity(0.06), radius: 2, y: 1)
                             .matchedGeometryEffect(id: "segbg", in: segment)
                     }
                 }
@@ -268,25 +289,20 @@ struct MenuBarQuickPanel: View {
     private func pendingReviewCard(_ capture: CaptureItem) -> some View {
         let inFlight = state.inFlightCaptureIds.contains(capture.id)
         return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: "tray.full")
-                    .font(.caption)
-                    .foregroundColor(.orange)
-                Text("Waiting for review")
-                    .font(.caption2)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.secondary)
-                Spacer()
-            }
+            // The catalog-stamp eyebrow; the gold spine on the card edge marks "unreviewed".
+            Text("WAITING FOR REVIEW")
+                .font(CortexDesign.Typography.stamp)
+                .kerning(0.8)
+                .foregroundColor(CortexDesign.inkFaint)
             Text(cortexCaptureTitle(capture))
-                .font(.caption)
-                .fontWeight(.semibold)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(CortexDesign.ink)
                 .lineLimit(1)
                 .truncationMode(.middle)
             if let summary = capture.summary, !summary.isEmpty {
                 Text(summary)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(CortexDesign.inkSecondary)
                     .lineLimit(2)
             }
             HStack(spacing: 8) {
@@ -305,8 +321,10 @@ struct MenuBarQuickPanel: View {
             }
         }
         .padding(10)
+        .padding(.leading, 10)
         .background(CortexDesign.quietBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        .archiveSpine(CortexDesign.gold)
     }
 
     private var captureContent: some View {
@@ -339,18 +357,18 @@ struct MenuBarQuickPanel: View {
                 // Honest states: a keyboard hint before anything happens, green only after a
                 // verified save, and a visible (retry-able) failure instead of a silent swallow.
                 if captureSaved {
-                    Label("Saved — Ask can use it now", systemImage: "checkmark.circle.fill")
+                    Label("Saved — Ask can use it now", systemImage: "checkmark.seal.fill")
                         .font(.caption).fontWeight(.semibold)
-                        .foregroundColor(.green)
+                        .foregroundColor(CortexDesign.sealMoss)
                         .transition(.scale(scale: 0.8).combined(with: .opacity))
                 } else if captureFailed {
                     Label("Couldn't save — try again", systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
-                        .foregroundColor(.orange)
+                        .foregroundColor(CortexDesign.accent)
                         .transition(.opacity)
                 } else {
                     Text("Press ⌘↩ to save to your memory")
-                        .font(.caption).foregroundColor(.secondary)
+                        .font(.caption).foregroundColor(CortexDesign.inkSecondary)
                 }
                 Spacer()
                 Button(action: saveCapture) {
@@ -478,18 +496,22 @@ private struct QuickSuggestionChip: View {
                     .foregroundColor(CortexDesign.accent)
                 Text(text)
                     .font(.caption)
-                    .foregroundColor(.primary)
+                    .foregroundColor(CortexDesign.ink)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer(minLength: 0)
                 Image(systemName: "arrow.turn.down.left")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(CortexDesign.inkSecondary)
                     .opacity(hovering ? 1 : 0)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .background(hovering ? CortexDesign.accentSoft : CortexDesign.quietBackground)
+            .background(hovering ? CortexDesign.accentSoft : CortexDesign.panelBackground)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(CortexDesign.hairline, lineWidth: 1)
+            )
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
@@ -528,8 +550,8 @@ private struct QuickFooterButton: View {
     }
 }
 
-/// The Review footer action: same hover treatment as QuickFooterButton, plus the orange
-/// waiting-count badge that keeps the accent tint even when not hovered.
+/// The Review footer action: same hover treatment as QuickFooterButton, plus the marginalia-gold
+/// waiting-count badge (ink numerals on a gold fill — gold is never text).
 private struct QuickFooterBadgeButton: View {
     let title: String
     let icon: String
@@ -544,10 +566,13 @@ private struct QuickFooterBadgeButton: View {
                     Image(systemName: icon).font(.system(size: 14, weight: .medium))
                     if badge > 0 {
                         Text(badge > 99 ? "99+" : String(badge))
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundColor(.white)
+                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                            .foregroundColor(CortexDesign.ink)
                             .padding(.horizontal, 4).padding(.vertical, 1)
-                            .background(Capsule().fill(Color.orange))
+                            .background(
+                                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                    .fill(CortexDesign.gold.opacity(0.85))
+                            )
                             .offset(x: 11, y: -7)
                             .transition(.scale.combined(with: .opacity))
                     }
@@ -555,10 +580,10 @@ private struct QuickFooterBadgeButton: View {
                 Text(title).font(.system(size: 9.5, weight: .medium))
             }
             .frame(width: 58, height: 40)
-            .foregroundColor(badge > 0 || hovering ? CortexDesign.accent : .secondary)
+            .foregroundColor(badge > 0 || hovering ? CortexDesign.accent : CortexDesign.inkSecondary)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(hovering ? CortexDesign.quietBackground : Color.clear)
+                    .fill(hovering ? CortexDesign.accentSoft : Color.clear)
             )
             .contentShape(Rectangle())
         }

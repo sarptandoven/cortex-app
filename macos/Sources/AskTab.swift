@@ -103,10 +103,11 @@ struct AskHeaderSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Ask Cortex")
-                .font(.title3)
-                .fontWeight(.semibold)
+                .font(CortexDesign.Typography.display(20))
+                .foregroundColor(CortexDesign.ink)
             Text("Every answer shows its sources.")
-                .foregroundColor(.secondary)
+                .font(CortexDesign.Typography.body)
+                .foregroundColor(CortexDesign.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -124,7 +125,7 @@ struct AskQuerySection: View {
         HStack(spacing: CortexDesign.Space.sm) {
             Image(systemName: "magnifyingglass")
                 .font(.title3)
-                .foregroundColor(queryFocused ? CortexDesign.accent : .secondary)
+                .foregroundColor(queryFocused ? CortexDesign.accent : CortexDesign.inkSecondary)
             TextField("Ask about a project, person, or decision", text: $state.searchQuery)
                 .textFieldStyle(.plain)
                 .font(.title2)
@@ -146,7 +147,7 @@ struct AskQuerySection: View {
                     queryFocused = true
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundColor(.secondary)
+                        .foregroundColor(CortexDesign.inkFaint)
                 }
                 .buttonStyle(.plain)
                 .help("Clear")
@@ -166,11 +167,17 @@ struct AskQuerySection: View {
         .padding(.vertical, CortexDesign.Space.sm)
         .frame(minHeight: 60)
         .background(CortexDesign.panelBackground)
+        // The brand focus cue: a ruled bottom line that turns wax-red when the field is active.
+        // Placed before the clip so the rule's ends follow the card's rounded corners.
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(queryFocused ? CortexDesign.accent : CortexDesign.hairline)
+                .frame(height: 2)
+        }
         .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
-                .stroke(queryFocused ? CortexDesign.accent.opacity(0.55) : CortexDesign.softBorder,
-                        lineWidth: queryFocused ? 1.5 : 1)
+                .stroke(CortexDesign.hairline, lineWidth: 1)
         )
         .animation(.easeOut(duration: 0.15), value: queryFocused)
         .onAppear {
@@ -268,10 +275,10 @@ struct AskMemoryContextStrip: View {
     }
 
     private var statusColor: Color {
-        if needsAttentionCount > 0 { return .orange }
-        if pendingCount > 0 { return .orange }
-        if memoryCount > 0 { return .green }
-        return .secondary
+        if needsAttentionCount > 0 { return CortexDesign.accent }
+        if pendingCount > 0 { return CortexDesign.gold }
+        if memoryCount > 0 { return CortexDesign.sealMoss }
+        return CortexDesign.inkFaint
     }
 
     private var statusIcon: String {
@@ -293,8 +300,8 @@ struct AskMemoryContextStrip: View {
                     .font(.caption)
                     .foregroundColor(statusColor)
                 Text(quietSummary)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.inkSecondary)
                     .lineLimit(1)
                     .help(detail + " " + sourceHealthLabel)
                 Spacer(minLength: 0)
@@ -322,14 +329,15 @@ struct AskMemoryContextStrip: View {
                     .foregroundColor(statusColor)
                     .frame(width: 28, height: 28)
                     .background(statusColor.opacity(0.11))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
-                        .font(.headline)
+                        .font(CortexDesign.Typography.title)
+                        .foregroundColor(CortexDesign.ink)
                     Text(detail)
-                        .font(.callout)
-                        .foregroundColor(.secondary)
+                        .font(CortexDesign.Typography.body)
+                        .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -361,12 +369,13 @@ struct AskMemoryContextStrip: View {
                     }
                     if relevantSources.count > 3 {
                         Text("+\(relevantSources.count - 3) more")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            .font(CortexDesign.Typography.caption)
+                            .foregroundColor(CortexDesign.inkSecondary)
                             .padding(.horizontal, 9)
                             .padding(.vertical, 5)
-                            .background(Color(nsColor: .controlBackgroundColor))
+                            .background(CortexDesign.panelBackground)
                             .clipShape(Capsule())
+                            .overlay(Capsule().stroke(CortexDesign.hairline, lineWidth: 1))
                     }
                     Spacer(minLength: 0)
                 }
@@ -415,15 +424,16 @@ struct AskContextMetric: View {
         HStack(spacing: 7) {
             Image(systemName: systemImage)
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .foregroundColor(CortexDesign.inkSecondary)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
                     .font(.caption2)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(CortexDesign.inkSecondary)
                 Text(value)
                     .font(.caption)
                     .fontWeight(.semibold)
+                    .foregroundColor(CortexDesign.ink)
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
             }
@@ -432,8 +442,8 @@ struct AskContextMetric: View {
         .padding(.horizontal, 9)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(CortexDesign.quietBackground)
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
     }
 }
 
@@ -442,14 +452,15 @@ struct AskSourceConfidenceChip: View {
 
     var body: some View {
         Text(label)
-            .font(.caption)
-            .foregroundColor(.secondary)
+            .font(CortexDesign.Typography.caption)
+            .foregroundColor(CortexDesign.inkSecondary)
             .lineLimit(1)
             .truncationMode(.tail)
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
-            .background(Color(nsColor: .controlBackgroundColor))
+            .background(CortexDesign.panelBackground)
             .clipShape(Capsule())
+            .overlay(Capsule().stroke(CortexDesign.hairline, lineWidth: 1))
             .help(helpText)
     }
 
@@ -485,21 +496,20 @@ struct AskLoadingCard: View {
                 .controlSize(.small)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Finding a cited answer…")
-                    .font(.body)
+                    .font(CortexDesign.Typography.body)
+                    .foregroundColor(CortexDesign.ink)
                 if !query.isEmpty {
                     Text("\u{201C}\(query)\u{201D}")
-                        .font(.callout)
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 13, design: .serif))
+                        .italic()
+                        .foregroundColor(CortexDesign.inkSecondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
             }
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .background(CortexDesign.panelBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .cortexCard(padding: 18, background: CortexDesign.panelBackground)
     }
 }
 
@@ -512,16 +522,17 @@ struct AskErrorCard: View {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.headline)
-                    .foregroundColor(.orange)
+                    .foregroundColor(CortexDesign.accent)
                     .frame(width: 28, height: 28)
-                    .background(Color.orange.opacity(0.11))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .background(CortexDesign.accentSoft)
+                    .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Ask could not reach your memory")
-                        .font(.headline)
+                        .font(CortexDesign.Typography.title)
+                        .foregroundColor(CortexDesign.ink)
                     Text(message)
-                        .font(.callout)
-                        .foregroundColor(.secondary)
+                        .font(CortexDesign.Typography.body)
+                        .foregroundColor(CortexDesign.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
@@ -542,8 +553,11 @@ struct AskErrorCard: View {
         }
         .padding(12)
         .background(CortexDesign.panelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.35)))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md)
+                .stroke(CortexDesign.accent.opacity(0.35))
+        )
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
     }
 }
 
@@ -556,7 +570,8 @@ struct AskResponseSection: View {
             if !state.askAnswer.isEmpty {
                 AskAnswerPanel(
                     answer: state.askAnswer,
-                    citations: state.askCitations
+                    citations: state.askCitations,
+                    question: state.searchQuery
                 )
             } else if state.searchResults.isEmpty {
                 AskEmptyGuidance(
@@ -566,7 +581,7 @@ struct AskResponseSection: View {
                     showActionsWhenMemoryExists: true
                 )
             } else {
-                QuietState(
+                AskQuietState(
                     title: "Matching memory found",
                     detail: "Cortex found related memory, but no answer was returned. Open sources below."
                 )
@@ -581,7 +596,7 @@ struct AskResponseSection: View {
                 } label: {
                     Text(memoryDisclosureTitle)
                         .font(.callout)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(CortexDesign.inkSecondary)
                 }
             }
         }
@@ -620,7 +635,7 @@ struct AskEmptyGuidance: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            QuietState(title: title, detail: detail)
+            AskQuietState(title: title, detail: detail)
 
             if approvedMemoryCount == 0 || showActionsWhenMemoryExists {
                 HStack(spacing: 10) {
@@ -684,6 +699,41 @@ struct AskEmptyGuidance: View {
     }
 }
 
+/// Ask's empty states in the archive voice: a serif display title over SF body detail, set on an
+/// index card. Local to Ask so the shared QuietState's call sites elsewhere stay untouched.
+private struct AskQuietState: View {
+    let title: String
+    let detail: String
+    var systemImage: String = "sparkles"
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.system(size: 26, weight: .regular))
+                .foregroundColor(CortexDesign.accent.opacity(0.55))
+            Text(title)
+                .font(CortexDesign.Typography.display(20))
+                .foregroundColor(CortexDesign.ink)
+                .multilineTextAlignment(.center)
+            Text(detail)
+                .font(CortexDesign.Typography.body)
+                .foregroundColor(CortexDesign.inkSecondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 460)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 26)
+        .padding(.horizontal, 18)
+        .background(CortexDesign.panelBackground)
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
+                .stroke(CortexDesign.hairline, lineWidth: 1)
+        )
+    }
+}
+
 /// Clickable "Try asking" questions drawn from the user's own reviewed memory —
 /// one click gets a first cited answer instead of a blank page.
 struct AskSuggestedQuestions: View {
@@ -696,7 +746,7 @@ struct AskSuggestedQuestions: View {
                 Text("Try asking")
                     .font(.caption)
                     .fontWeight(.semibold)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(CortexDesign.inkSecondary)
                 ForEach(suggestions, id: \.self) { suggestion in
                     AskSuggestionChip(text: suggestion) {
                         state.searchQuery = suggestion
@@ -720,13 +770,14 @@ struct AskSuggestionChip: View {
                     .font(.caption)
                     .foregroundColor(CortexDesign.accent)
                 Text(text)
-                    .font(.callout)
+                    .font(CortexDesign.Typography.caption)
+                    .foregroundColor(CortexDesign.ink)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer(minLength: 0)
                 Image(systemName: "arrow.right")
                     .font(.caption2)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(CortexDesign.inkFaint)
                     .opacity(hovering ? 1 : 0)
             }
             .padding(.horizontal, 12)
@@ -749,10 +800,10 @@ struct AskResultsSection: View {
     var body: some View {
         Group {
             if state.searchResults.isEmpty && !state.hasSearched {
-                QuietState(title: "Ask your notes", detail: "Ask about a project, person, decision, or detail from reviewed notes.")
+                AskQuietState(title: "Ask your notes", detail: "Ask about a project, person, decision, or detail from reviewed notes.")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if state.searchResults.isEmpty {
-                QuietState(title: "No cited result matched", detail: "Review new synced items or try a more specific question.")
+                AskQuietState(title: "No cited result matched", detail: "Review new synced items or try a more specific question.")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -775,33 +826,35 @@ struct AskSourceDetailRow: View {
             HStack(alignment: .center, spacing: 8) {
                 Image(systemName: "quote.bubble")
                     .font(.callout)
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(CortexDesign.accent)
                     .frame(width: 28, height: 28)
-                    .background(Color.accentColor.opacity(0.11))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .background(CortexDesign.accentSoft)
+                    .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(sourceTitle)
                         .font(.callout)
                         .fontWeight(.semibold)
+                        .foregroundColor(CortexDesign.ink)
                         .lineLimit(1)
                     Text(detailLine)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
             }
             let display = MemoryText.displayContent(item.content)
             Text(display.headline)
-                .font(.body)
+                .font(CortexDesign.Typography.body)
+                .foregroundColor(CortexDesign.ink)
                 .lineLimit(display.path == nil ? 6 : 2)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             if let path = display.path {
                 Text(path)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(.secondary)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundColor(CortexDesign.inkFaint)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .help(MemoryText.unwrap(item.content))
@@ -811,19 +864,19 @@ struct AskSourceDetailRow: View {
                     Image(systemName: "link")
                         .font(.caption2)
                     Text(citation)
-                        .font(.caption)
+                        .font(CortexDesign.Typography.caption)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 0)
                 }
-                .foregroundColor(.secondary)
+                .foregroundColor(CortexDesign.inkSecondary)
                 .help(item.source_url ?? citation)
             }
         }
         .padding(12)
         .background(CortexDesign.panelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.32)))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).stroke(CortexDesign.hairline, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
     }
 
     private var sourceTitle: String {
@@ -847,6 +900,9 @@ struct AskSourceDetailRow: View {
 struct AskAnswerPanel: View {
     let answer: String
     let citations: [AskCitationItem]
+    /// The question echoed back in italic serif above the answer — an annotated reply, not a
+    /// bare result. Defaults nil so existing call sites render unchanged.
+    var question: String? = nil
 
     @State private var showAllCitations = false
     @State private var justCopied = false
@@ -857,11 +913,19 @@ struct AskAnswerPanel: View {
         showAllCitations ? citations : Array(citations.prefix(Self.collapsedCitationCount))
     }
 
+    private var echoedQuestion: String? {
+        guard let trimmed = question?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
-                Label("Answer", systemImage: "quote.bubble")
-                    .font(.headline)
+                Text(verbatim: "ANSWER")
+                    .font(CortexDesign.Typography.stamp)
+                    .kerning(0.8)
+                    .foregroundColor(CortexDesign.inkFaint)
                 Spacer()
                 Button {
                     copyAnswerWithSources()
@@ -875,17 +939,32 @@ struct AskAnswerPanel: View {
                 .disabled(justCopied)
                 .help("Copy the answer with its sources")
             }
+            if let echoedQuestion {
+                Text(echoedQuestion)
+                    .font(.system(size: 14, design: .serif))
+                    .italic()
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 620, alignment: .leading)
+            }
             Text(answer)
-                .font(.body)
+                .font(CortexDesign.Typography.prose(14.5))
+                .lineSpacing(3.5)
+                .foregroundColor(CortexDesign.ink)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 620, alignment: .leading)
             if !citations.isEmpty {
-                Divider()
+                // The footnote ledger: a short divider rule ends the page the way a book does,
+                // then numbered footnotes with dotted leaders out to their line ranges.
+                Rectangle()
+                    .fill(CortexDesign.hairline)
+                    .frame(width: 56, height: 1)
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Citations")
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.secondary)
+                    Text(verbatim: "CITATIONS")
+                        .font(CortexDesign.Typography.stamp)
+                        .kerning(0.8)
+                        .foregroundColor(CortexDesign.inkFaint)
                     ForEach(visibleCitations) { citation in
                         AskCitationRow(citation: citation)
                     }
@@ -902,8 +981,11 @@ struct AskAnswerPanel: View {
         }
         .padding(12)
         .background(CortexDesign.panelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(nsColor: .separatorColor).opacity(0.35)))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.md)
+                .stroke(CortexDesign.hairline, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
         .onChange(of: answer) { _ in
             showAllCitations = false
             justCopied = false
@@ -958,41 +1040,55 @@ struct AskCitationRow: View {
     }
 
     private func rowContent(openable: Bool) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text("[\(citation.index)]")
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundColor(.secondary)
-                .monospacedDigit()
+        // A footnote ledger entry: mono wax-red numeral, SF title in ink, then a dotted leader
+        // running out to a right-aligned mono line-range/date — a table-of-contents line.
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("\(citation.index).")
+                .font(CortexDesign.Typography.stamp)
+                .foregroundColor(CortexDesign.accent)
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(sourceLabel)
-                        .font(.caption)
-                        .foregroundColor(openable ? .accentColor : .secondary)
+                        .font(.system(size: 12))
+                        .foregroundColor(CortexDesign.ink)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     if openable {
                         Image(systemName: "arrow.up.right.square")
                             .font(.caption2)
-                            .foregroundColor(.accentColor)
+                            .foregroundColor(CortexDesign.accent)
+                    }
+                    if let trailing = leaderLabel {
+                        AskDottedLeader()
+                            .stroke(CortexDesign.hairline, style: StrokeStyle(lineWidth: 1, dash: [1, 3]))
+                            .frame(height: 3)
+                            .frame(minWidth: 12)
+                        Text(trailing.uppercased())
+                            .font(CortexDesign.Typography.stamp)
+                            .kerning(0.8)
+                            .foregroundColor(CortexDesign.inkFaint)
+                            .lineLimit(1)
+                            .layoutPriority(1)
+                    } else {
+                        Spacer(minLength: 0)
                     }
                 }
                 if let detail = sourceDetail {
                     Text(detail)
                         .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(CortexDesign.inkSecondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
                 if !excerpt.isEmpty {
                     Text(excerpt)
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(CortexDesign.inkSecondary)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
@@ -1016,10 +1112,21 @@ struct AskCitationRow: View {
         ) ?? citation.source
     }
 
+    /// The right end of the dotted leader: the line range where available, else the memory's
+    /// date — never fabricated, omitted entirely when neither is known.
+    private var leaderLabel: String? {
+        if let lineLabel { return lineLabel }
+        let date = (citation.occurred_at ?? citation.captured_at)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let date, !date.isEmpty else { return nil }
+        return shortDate(date)
+    }
+
     private var sourceDetail: String? {
+        // The dotted leader owns the line label (leaderLabel above), so the range can never
+        // print twice ("file.md - line 12" + a "LINE 12" leader).
         let pieces = [
             citation.section_title?.trimmingCharacters(in: .whitespacesAndNewlines),
-            lineLabel,
             citation.record_scope?.trimmingCharacters(in: .whitespacesAndNewlines)
         ]
         let detail = pieces.compactMap { value -> String? in
@@ -1042,5 +1149,16 @@ struct AskCitationRow: View {
         // A bare file path adds nothing under a row that already names the source — suppress it.
         if MemoryText.isPathLike(raw) { return "" }
         return raw
+    }
+}
+
+/// The dotted leader of a footnote ledger row — a hairline of 1pt dots stretching between the
+/// source title and its right-aligned line range, like a table-of-contents line.
+private struct AskDottedLeader: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: 0, y: rect.midY))
+        path.addLine(to: CGPoint(x: rect.width, y: rect.midY))
+        return path
     }
 }

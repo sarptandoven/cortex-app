@@ -637,14 +637,14 @@ struct SourceReadinessItem: Codable, Identifiable, Hashable {
     var statusColor: Color {
         switch status {
         case "needs_attention": return .orange
-        case "empty": return .orange
-        case "needs_review": return .yellow
-        case "synced": return .green
-        case "connected": return .blue
-        case "imported": return .accentColor
-        case "import_ready": return .purple
-        case "planned": return .secondary
-        default: return .secondary
+        case "empty": return CortexDesign.accent
+        case "needs_review": return CortexDesign.gold
+        case "synced": return CortexDesign.sealMoss
+        case "connected": return CortexDesign.sealMoss
+        case "imported": return CortexDesign.sealMoss
+        case "import_ready": return CortexDesign.gold
+        case "planned": return CortexDesign.inkFaint
+        default: return CortexDesign.inkSecondary
         }
     }
 }
@@ -8031,9 +8031,9 @@ struct TrustAuditSection: View {
 
     private func color(for event: AuditEventItem) -> Color {
         if event.metadata_text.contains("success=False") { return .red }
-        if event.object_type == "agent" { return .purple }
-        if event.event_type.contains("archive") { return .orange }
-        return .accentColor
+        if event.object_type == "agent" { return CortexDesign.accent }
+        if event.event_type.contains("archive") { return CortexDesign.inkSecondary }
+        return CortexDesign.accent
     }
 }
 
@@ -9049,13 +9049,13 @@ struct MemoryCard: View {
 
     private func color(for kind: String) -> Color {
         switch kind {
-        case "decision": return .red
-        case "preference": return .purple
-        case "style": return .teal
-        case "negative": return .orange
-        case "question": return .orange
-        case "action": return .green
-        default: return .blue
+        case "decision": return CortexDesign.accent
+        case "preference": return CortexDesign.accent
+        case "style": return CortexDesign.inkSecondary
+        case "negative": return CortexDesign.gold
+        case "question": return CortexDesign.gold
+        case "action": return CortexDesign.sealMoss
+        default: return CortexDesign.inkSecondary
         }
     }
 
@@ -9112,14 +9112,14 @@ struct GraphCanvas: View {
 
     private func color(for type: String) -> Color {
         switch type {
-        case "person": return .pink
-        case "project": return .purple
-        case "decision": return .red
-        case "style": return .teal
-        case "negative": return .orange
-        case "action", "question": return .orange
-        case "source": return .green
-        default: return .blue
+        case "person": return CortexDesign.accent
+        case "project": return CortexDesign.inkSecondary
+        case "decision": return CortexDesign.accent
+        case "style": return CortexDesign.inkSecondary
+        case "negative": return CortexDesign.gold
+        case "action", "question": return CortexDesign.gold
+        case "source": return CortexDesign.sealMoss
+        default: return CortexDesign.inkSecondary
         }
     }
 }
