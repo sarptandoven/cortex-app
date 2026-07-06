@@ -6347,35 +6347,57 @@ final class AppState: ObservableObject {
     }
 }
 
-/// The primary navigation: large, prominent Home / Review / Ask segments. Replaces the small
-/// native TabView tab strip so the three sections are easy to see and tap. Reads and writes the
-/// same `state.selectedTab` every other setter uses, so navigation stays consistent everywhere.
+/// The primary navigation, in the archive's voice: serif Home / Review / Ask labels with a
+/// wax-red pen-stroke underline that slides between tabs (the "ink tick"), plus quiet monospaced
+/// ⌘-hints. Reads and writes the same `state.selectedTab` every other setter uses, so navigation
+/// stays consistent everywhere.
 struct CortexTabBar: View {
     @ObservedObject var state: AppState
+    @Namespace private var inkTick
+
+    private var pendingCount: Int {
+        max(state.review?.stats.pending_captures ?? 0, state.inbox.count)
+    }
 
     var body: some View {
-        HStack(spacing: CortexDesign.Space.sm) {
+        HStack(alignment: .bottom, spacing: CortexDesign.Space.xl) {
             ForEach(Array(AppTab.allCases.enumerated()), id: \.element) { index, tab in
                 let selected = state.selectedTab == tab
                 Button {
                     state.selectedTab = tab
                 } label: {
-                    HStack(spacing: CortexDesign.Space.sm) {
-                        Image(systemName: tab.systemImage)
-                            .font(.system(size: 18, weight: .semibold))
-                        Text(tab.label)
-                            .font(.system(size: 16, weight: .semibold))
+                    VStack(spacing: 7) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(tab.label)
+                                .font(.system(size: 16, weight: selected ? .semibold : .regular, design: .serif))
+                                .foregroundColor(selected ? CortexDesign.ink : CortexDesign.inkSecondary)
+                            if tab == .review, pendingCount > 0 {
+                                // Review's backlog badge: gold fill, ink numerals (gold is never text).
+                                Text(pendingCount > 99 ? "99+" : String(pendingCount))
+                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(CortexDesign.ink)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1.5)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                            .fill(CortexDesign.gold.opacity(0.85))
+                                    )
+                            }
+                            Text("⌘\(index + 1)")
+                                .font(CortexDesign.Typography.hint)
+                                .foregroundColor(CortexDesign.inkFaint)
+                        }
+                        ZStack {
+                            Color.clear.frame(height: 2.5)
+                            if selected {
+                                Capsule()
+                                    .fill(CortexDesign.accent)
+                                    .frame(height: 2.5)
+                                    .matchedGeometryEffect(id: "inkTick", in: inkTick)
+                            }
+                        }
                     }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 46)
-                    .foregroundColor(selected ? CortexDesign.accent : .secondary)
-                    .background(selected ? CortexDesign.accentSoft : Color.clear)
-                    .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous)
-                            .stroke(selected ? CortexDesign.accent.opacity(0.35) : Color.clear, lineWidth: 1)
-                    )
-                    .contentShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
@@ -6383,10 +6405,12 @@ struct CortexTabBar: View {
                 .accessibilityLabel(tab.label)
                 .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
             }
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal, CortexDesign.Space.md)
-        .padding(.vertical, CortexDesign.Space.sm)
+        .padding(.horizontal, CortexDesign.Space.lg)
+        .padding(.top, CortexDesign.Space.sm)
         .background(CortexDesign.appBackground)
+        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: state.selectedTab)
     }
 }
 
@@ -6439,13 +6463,10 @@ struct CortexView: View {
     private var header: some View {
         VStack(spacing: 0) {
             HStack(spacing: CortexDesign.Space.md) {
-                HStack(spacing: CortexDesign.Space.sm) {
-                    Image(systemName: "brain.head.profile")
-                        .foregroundColor(.accentColor)
-                    Text("Cortex")
-                        .font(.headline)
-                        .fontWeight(.semibold)
-                }
+                // The wordmark speaks in the archive's voice: serif ink on bare paper.
+                Text("Cortex")
+                    .font(.system(size: 20, weight: .semibold, design: .serif))
+                    .foregroundColor(CortexDesign.ink)
                 Spacer()
                 Button {
                     state.openConnectionsPrivacy()
@@ -6458,23 +6479,36 @@ struct CortexView: View {
                 .controlSize(.regular)
                 CortexLayerStatusPill(state: state)
             }
-            .padding(.horizontal, CortexDesign.Space.md)
+            .padding(.horizontal, CortexDesign.Space.lg)
             .padding(.vertical, CortexDesign.Space.sm)
-            Divider().overlay(CortexDesign.hairline)
         }
         .background(CortexDesign.appBackground)
     }
 
     private var footer: some View {
-        Group {
+        // The ledger line: a hairline top rule with the gold progress beam running along it while
+        // Cortex syncs (gold is a fill, never text), then quiet working-voice status below.
+        VStack(spacing: 0) {
+            ZStack(alignment: .leading) {
+                Rectangle().fill(CortexDesign.hairline).frame(height: 1)
+                if state.syncProgress?.active == true || state.menuBarWorkCount > 0 {
+                    GeometryReader { geo in
+                        Rectangle()
+                            .fill(CortexDesign.gold)
+                            .frame(width: max(24, geo.size.width * beamFraction), height: 2)
+                            .animation(.easeInOut(duration: 0.5), value: beamFraction)
+                    }
+                    .frame(height: 2)
+                }
+            }
             if state.isBusy || footerNeedsAttention {
                 HStack {
                     if state.isBusy {
                         ProgressView().scaleEffect(0.7)
                     }
                     Text(state.displayStatus)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(footerNeedsAttention ? CortexDesign.accent : CortexDesign.inkSecondary)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
@@ -6484,9 +6518,14 @@ struct CortexView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
-                .background(CortexDesign.panelBackground)
+                .background(CortexDesign.quietBackground)
             }
         }
+    }
+
+    private var beamFraction: CGFloat {
+        guard let progress = state.syncProgress, progress.total > 0 else { return 0.35 }
+        return CGFloat(max(0.08, min(1.0, progress.fraction)))
     }
 
     private var footerNeedsAttention: Bool {
