@@ -2316,6 +2316,9 @@ final class BackendSupervisor {
         guard normalizedEndpoint.contains("127.0.0.1") || normalizedEndpoint.contains("localhost") else {
             return "Using remote memory engine"
         }
+        // Keep the stable MCP bridge (and its recorded interpreter path) current on every
+        // backend start — this is what lets AI-app configs survive app moves and updates.
+        installStableMCPBridge()
         let initialHealth = await healthCheck(endpoint: normalizedEndpoint, apiKey: apiKey, expectedVaultPath: vaultPath)
         if initialHealth == .healthy {
             return "Local memory engine connected"
@@ -2505,6 +2508,56 @@ final class BackendSupervisor {
             }
         }
         return true
+    }
+
+    /// AI-app MCP configs must survive app moves, updates, and Gatekeeper translocation, so they
+    /// can never point inside the .app bundle. This installs the stdio bridge at a stable
+    /// Application Support path: a POSIX-sh launcher that re-resolves the interpreter from the
+    /// sidecar `python-path` file (rewritten here on every backend start, so a moved app heals
+    /// itself the next time it runs), falling back to /usr/bin/python3 and then PATH.
+    @discardableResult
+    func installStableMCPBridge() -> URL? {
+        let manager = FileManager.default
+        let bridgeDir = appSupportURL.appendingPathComponent("mcp", isDirectory: true)
+        let launcherURL = bridgeDir.appendingPathComponent("cortex-mcp-bridge")
+        guard let bundledScript = Bundle.main.resourceURL?
+                .appendingPathComponent("scripts", isDirectory: true)
+                .appendingPathComponent("cortex_mcp_stdio.py"),
+              manager.fileExists(atPath: bundledScript.path) else {
+            return manager.isExecutableFile(atPath: launcherURL.path) ? launcherURL : nil
+        }
+        do {
+            try manager.createDirectory(at: bridgeDir, withIntermediateDirectories: true)
+            let scriptData = try Data(contentsOf: bundledScript)
+            try scriptData.write(to: bridgeDir.appendingPathComponent("cortex_mcp_stdio.py"), options: .atomic)
+            try Data((pythonExecutableURL().path + "\n").utf8)
+                .write(to: bridgeDir.appendingPathComponent("python-path"), options: .atomic)
+            let launcher = """
+            #!/bin/sh
+            # Cortex MCP bridge launcher. AI apps point here (a stable path outside the .app
+            # bundle); the interpreter is re-resolved from python-path, which the Cortex app
+            # rewrites every time its backend starts.
+            DIR="$(cd "$(dirname "$0")" && pwd)"
+            PY="${CORTEX_MCP_PYTHON:-}"
+            if [ -z "$PY" ] && [ -f "$DIR/python-path" ]; then
+              CANDIDATE="$(head -n 1 "$DIR/python-path" 2>/dev/null)"
+              if [ -n "$CANDIDATE" ] && [ -x "$CANDIDATE" ]; then PY="$CANDIDATE"; fi
+            fi
+            if [ -z "$PY" ] && [ -x /usr/bin/python3 ]; then PY=/usr/bin/python3; fi
+            if [ -z "$PY" ]; then PY="$(command -v python3 2>/dev/null || true)"; fi
+            if [ -z "$PY" ]; then
+              echo "cortex-mcp-bridge: no usable python3 found; open the Cortex app once to repair" >&2
+              exit 1
+            fi
+            exec "$PY" -S "$DIR/cortex_mcp_stdio.py" "$@"
+            """
+            try Data(launcher.utf8).write(to: launcherURL, options: .atomic)
+            try manager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: launcherURL.path)
+            return launcherURL
+        } catch {
+            writeLog("MCP bridge install failed: \(error.localizedDescription)")
+            return manager.isExecutableFile(atPath: launcherURL.path) ? launcherURL : nil
+        }
     }
 
     private func pythonExecutableURL() -> URL {
@@ -3395,7 +3448,12 @@ final class AppState: ObservableObject {
                 body: [
                     "token": mcpAPIKey,
                     "label": "Connected AI tools",
-                    "scopes": ["read", "write", "export", "maintenance"]
+                    // Least privilege: read covers the whole distilled picture (profile, person
+                    // map, context) and write covers remember_this + source syncs. Raw exports,
+                    // maintenance, and review approvals stay off this shared agent token — the
+                    // review gate is a human surface, and a leaked host config must not be able
+                    // to bulk-dump the corpus.
+                    "scopes": ["read", "write"]
                 ]
             )
             return true
@@ -5429,6 +5487,22 @@ final class AppState: ObservableObject {
 
     private func mcpServerDefinition(redactToken: Bool = false) -> [String: Any] {
         ensureUsableMCPAPIKey()
+        let env = [
+            "CORTEX_BASE_URL": endpoint,
+            "CORTEX_API_KEY": redactToken ? "<copy-secret-connection-details>" : mcpAPIKey
+        ]
+        // Host configs must never point inside the .app bundle — moves, updates, and Gatekeeper
+        // translocation would silently break every connected AI app. The supervisor maintains a
+        // stable bridge launcher in Application Support that also resolves a working interpreter
+        // (the old shape hardcoded /usr/bin/python3, which needs the CLT on a fresh Mac).
+        if let launcher = BackendSupervisor.shared.installStableMCPBridge() {
+            return [
+                "command": launcher.path,
+                "args": [] as [String],
+                "env": env
+            ]
+        }
+        // Pathological fallback (Application Support unwritable): the legacy in-bundle shape.
         let scriptURL = Bundle.main.resourceURL?
             .appendingPathComponent("scripts", isDirectory: true)
             .appendingPathComponent("cortex_mcp_stdio.py")
@@ -5436,10 +5510,7 @@ final class AppState: ObservableObject {
         return [
             "command": "/usr/bin/python3",
             "args": [scriptPath],
-            "env": [
-                "CORTEX_BASE_URL": endpoint,
-                "CORTEX_API_KEY": redactToken ? "<copy-secret-connection-details>" : mcpAPIKey
-            ]
+            "env": env
         ]
     }
 
@@ -5534,12 +5605,19 @@ final class AppState: ObservableObject {
             return false
         }
         guard let command = cortex["command"] as? String,
-              command == "/usr/bin/python3",
-              let args = cortex["args"] as? [String],
-              let scriptPath = args.first,
-              scriptPath.hasSuffix("cortex_mcp_stdio.py"),
-              FileManager.default.fileExists(atPath: scriptPath),
               let env = cortex["env"] as? [String: String] else {
+            return false
+        }
+        // Current shape: the stable Application Support bridge launcher. Legacy shape
+        // (/usr/bin/python3 + in-bundle script) stays verified while its path still resolves;
+        // reinstalling upgrades it in place.
+        let args = cortex["args"] as? [String] ?? []
+        let stableShape = command.hasSuffix("cortex-mcp-bridge")
+            && FileManager.default.isExecutableFile(atPath: command)
+        let legacyShape = command == "/usr/bin/python3"
+            && (args.first?.hasSuffix("cortex_mcp_stdio.py") ?? false)
+            && FileManager.default.fileExists(atPath: args.first ?? "")
+        guard stableShape || legacyShape else {
             return false
         }
         let configuredBaseURL = (env["CORTEX_BASE_URL"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))

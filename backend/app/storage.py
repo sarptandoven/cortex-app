@@ -9522,8 +9522,9 @@ class CortexStore:
 
     def build_profile(self, user_id: str, *, limit: int = 6, include_pending: bool = False, sector: str | None = None) -> dict[str, Any]:
         """A cited, structured "model of you": regroups the existing personal_profile output into a
-        small fixed set of Sections (how you work / preferences / dislikes / decisions / focus /
-        people & projects), each with a condensed statement, honest confidence, and cited elements.
+        small fixed set of Sections (how you work / voice & style / preferences / dislikes /
+        decisions / facts / recent timeline / focus / people & projects / open loops), each with a
+        condensed statement, honest confidence, and cited elements.
         Deterministic organize + optional LLM prose (see _condense_llm_enabled). Abstains per-section
         (and overall) on a thin corpus — sections with no cited support are omitted."""
         # Over-fetch candidates (personal_profile caps limit at 20) so the grouping/support signal
@@ -9546,6 +9547,17 @@ class CortexStore:
         allow_llm = self._condense_llm_enabled()
         rendered: list[dict[str, Any]] = []
         for section in sections:
+            # Facts / recent timeline / open loops are enumerations of cited records, not
+            # behavioral inferences — condense's second-person rewriting ("You tend to ...")
+            # would misstate them, so they get a deterministic lead-in statement instead.
+            direct = self._direct_section_statement(section)
+            if direct is not None:
+                if not direct:
+                    continue  # no usable cited elements -> abstain
+                section["statement"] = direct
+                section["method"] = "template"
+                rendered.append(section)
+                continue
             condensed = condense_section(section, allow_llm=allow_llm)
             if not condensed:
                 continue
@@ -9559,6 +9571,37 @@ class CortexStore:
             "sections": rendered,
             "limitations": profile.get("limitations") or [],
         }
+
+    # Sections whose statement is a deterministic lead-in over cited records (not a
+    # second-person behavioral claim). id -> lead phrase.
+    _DIRECT_STATEMENT_LEADS = {
+        "facts": "In your world",
+        "recent_timeline": "Recently",
+        "open_loops": "Still open",
+    }
+
+    def _direct_section_statement(self, section: dict[str, Any]) -> str | None:
+        """Deterministic statement for enumeration-style sections.
+
+        Returns ``None`` for sections that should go through ``condense_section``,
+        ``""`` when the section has no usable cited elements (caller abstains), and
+        the statement otherwise.
+        """
+        lead = self._DIRECT_STATEMENT_LEADS.get(str(section.get("id") or ""))
+        if lead is None:
+            return None
+        texts = [
+            str(element.get("text") or "").strip().rstrip(".")
+            for element in section.get("elements") or []
+            if isinstance(element, dict) and str(element.get("text") or "").strip()
+        ]
+        if not texts:
+            return ""
+        statement = f"{lead}: {'; '.join(texts[:2])}."
+        extra = len(texts) - 2
+        if extra > 0:
+            statement += f" Plus {extra} more cited item{'s' if extra != 1 else ''}."
+        return statement
 
     def person_map(self, user_id: str, *, include_pending: bool = False, sector: str | None = None, hub_limit: int = 12) -> dict[str, Any]:
         """The whole "full image" of a person in ONE call, so a model can load everything at once:

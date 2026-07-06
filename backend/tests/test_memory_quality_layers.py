@@ -617,6 +617,210 @@ class MemoryQualityLayerTests(unittest.TestCase):
         project_tool = call_tool(self.store, self.user_id, "get_project_context", {"name": "Project Atlas", "query": "release checklist", "limit": 5})
         self.assertEqual([item["id"] for item in project_tool["memories"]], ["mem_atlas_release_sector"])
 
+    def _seed_holistic_corpus(self) -> None:
+        """Cited memories in EVERY layer (preference, style, negative, decision,
+        procedural, episodic w/ occurred_at, semantic) plus an open task."""
+        extracted = {
+            "_timestamp": "2026-07-02T10:00:00+00:00",
+            "summary": "Holistic profile fixture",
+            "records": [
+                {
+                    "id": "mem_holistic_pref_a",
+                    "kind": "preference",
+                    "layer": "preference",
+                    "content": "Prefers concise release notes that lead with the recommendation.",
+                    "importance": 4,
+                    "topics": ["writing"],
+                },
+                {
+                    "id": "mem_holistic_pref_b",
+                    "kind": "preference",
+                    "layer": "preference",
+                    "content": "Prefers concise release notes that lead with the recommendation always.",
+                    "importance": 4,
+                    "topics": ["writing"],
+                },
+                {
+                    "id": "mem_holistic_style",
+                    "kind": "style",
+                    "layer": "style",
+                    "content": "Writing style: short direct sentences, tradeoff first, no filler.",
+                    "importance": 4,
+                    "topics": ["style"],
+                },
+                {
+                    "id": "mem_holistic_negative",
+                    "kind": "negative",
+                    "layer": "negative",
+                    "content": "Rejected hype-heavy launch language for product updates.",
+                    "importance": 4,
+                },
+                {
+                    "id": "mem_holistic_decision",
+                    "kind": "decision",
+                    "layer": "decision",
+                    "content": "Decided to keep the beta local-first because the risk budget is strict.",
+                    "importance": 5,
+                },
+                {
+                    "id": "mem_holistic_procedure",
+                    "kind": "procedure",
+                    "layer": "procedural",
+                    "content": "Procedure: before release, run backend tests, build the app, verify health.",
+                    "importance": 4,
+                },
+                {
+                    "id": "mem_holistic_epi_old",
+                    "kind": "event",
+                    "layer": "episodic",
+                    "content": "Kickoff review with Riley about the launch checklist.",
+                    "importance": 4,
+                    "occurred_at": "2026-06-20",
+                },
+                {
+                    "id": "mem_holistic_epi_recent",
+                    "kind": "event",
+                    "layer": "episodic",
+                    "content": "Shipped the beta build to the first external tester.",
+                    "importance": 4,
+                    "occurred_at": "2026-07-01",
+                },
+                {
+                    "id": "mem_holistic_fact",
+                    "kind": "claim",
+                    "layer": "semantic",
+                    "content": "Riley owns launch copy and reviews every release announcement.",
+                    "importance": 4,
+                },
+                {
+                    "id": "mem_holistic_fact_noise",
+                    "kind": "claim",
+                    "layer": "semantic",
+                    "content": "/Users/example/vault/build/output.log",
+                    "importance": 5,
+                },
+            ],
+            "tasks": [
+                {
+                    "id": "task_holistic_open",
+                    "kind": "action",
+                    "content": "Send the beta invite list to Riley before Friday.",
+                    "status": "open",
+                    "importance": 4,
+                    "topics": ["launch"],
+                    "entity_ids": [],
+                }
+            ],
+            "entities": [],
+        }
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Holistic profile fixture",
+            source="unit-test",
+            source_url="unit-test://holistic-profile",
+            title="Holistic profile fixture",
+            extracted=extracted,
+        )
+
+    def test_build_profile_represents_every_memory_layer_with_citations(self) -> None:
+        self._seed_holistic_corpus()
+
+        profile = self.store.build_profile(self.user_id, include_pending=True)
+
+        # Contract: response keys unchanged.
+        self.assertEqual(set(profile.keys()), {"generated_at", "readiness", "condensed", "sections", "limitations"})
+
+        sections_by_id = {section["id"]: section for section in profile["sections"]}
+        # Every seeded layer is represented in some section.
+        for expected in ("how_you_work", "voice_style", "preferences", "dislikes", "decisions", "facts", "recent_timeline", "open_loops"):
+            self.assertIn(expected, sections_by_id, f"expected section {expected} for a fully-seeded corpus")
+
+        # Every section keeps the Section shape and is cited-or-abstain.
+        for section in profile["sections"]:
+            self.assertTrue(str(section.get("title") or "").strip())
+            self.assertTrue(str(section.get("statement") or "").strip(), section["id"])
+            self.assertIn(section.get("method"), {"template", "llm"})
+            self.assertIn(section.get("confidence"), {"high", "medium", "low"})
+            self.assertTrue(section.get("elements"))
+            for element in section["elements"]:
+                self.assertTrue(str(element.get("text") or "").strip())
+                self.assertTrue(element.get("memory_ids") or str(element.get("source") or "").strip(), element)
+                self.assertIn("source_url", element)
+                self.assertIn("count", element)
+
+        def cited_ids(section_id: str) -> set[str]:
+            return {
+                memory_id
+                for element in sections_by_id[section_id]["elements"]
+                for memory_id in element["memory_ids"]
+            }
+
+        # Layer-to-section evidence mapping, with citations.
+        self.assertIn("mem_holistic_procedure", cited_ids("how_you_work"))
+        self.assertIn("mem_holistic_style", cited_ids("voice_style"))
+        self.assertTrue({"mem_holistic_pref_a", "mem_holistic_pref_b"} & cited_ids("preferences"))
+        self.assertIn("mem_holistic_negative", cited_ids("dislikes"))
+        self.assertIn("mem_holistic_decision", cited_ids("decisions"))
+        # Facts: the semantic claim surfaces; the bare-path noise record does not.
+        self.assertIn("mem_holistic_fact", cited_ids("facts"))
+        self.assertNotIn("mem_holistic_fact_noise", cited_ids("facts"))
+        # Recent timeline: episodic memories, most-recent-first by occurred_at.
+        timeline = sections_by_id["recent_timeline"]["elements"]
+        self.assertEqual(timeline[0]["memory_ids"], ["mem_holistic_epi_recent"])
+        self.assertIn("2026-07-01", timeline[0]["text"])
+        self.assertIn("mem_holistic_epi_old", cited_ids("recent_timeline"))
+        # Open loops reuse the personal_profile open_loops (task-id cited).
+        self.assertIn("task_holistic_open", cited_ids("open_loops"))
+
+        # Honest limitations: with every layer present, none is reported missing.
+        self.assertFalse(
+            [item for item in profile["limitations"] if "Missing or weak layers" in item],
+            profile["limitations"],
+        )
+
+        # The whole-person map carries the same sections (preference + style included).
+        pmap = self.store.person_map(self.user_id, include_pending=True)
+        pmap_ids = {section["id"] for section in pmap["profile"]}
+        for expected in ("voice_style", "preferences", "facts", "recent_timeline", "open_loops"):
+            self.assertIn(expected, pmap_ids)
+
+        # The agent adaptation pack's persona carries the new sections too.
+        adaptation = self.store.agent_adaptation(self.user_id, include_pending=True)
+        persona_ids = {section["id"] for section in adaptation["persona"]}
+        for expected in ("voice_style", "facts", "recent_timeline", "open_loops"):
+            self.assertIn(expected, persona_ids)
+
+    def test_build_profile_abstains_on_thin_corpus(self) -> None:
+        # Empty corpus: nothing to say -> no fabricated sections.
+        empty = self.store.build_profile(self.user_id, include_pending=True)
+        self.assertEqual(empty["sections"], [])
+
+        # A single low-importance signal is below every surfacing floor.
+        self.store.save_capture(
+            user_id=self.user_id,
+            content="Thin corpus fixture",
+            source="unit-test",
+            source_url="unit-test://thin-profile",
+            title="Thin corpus fixture",
+            extracted={
+                "_timestamp": "2026-07-02T10:00:00+00:00",
+                "summary": "Thin corpus fixture",
+                "records": [
+                    {
+                        "id": "mem_thin_pref",
+                        "kind": "preference",
+                        "layer": "preference",
+                        "content": "Used a dark editor theme once.",
+                        "importance": 2,
+                    }
+                ],
+                "tasks": [],
+                "entities": [],
+            },
+        )
+        thin = self.store.build_profile(self.user_id, include_pending=True)
+        self.assertEqual(thin["sections"], [])
+
     def test_get_style_profile_prefers_current_trusted_style_over_stale_generated(self) -> None:
         # Conflicting style guidance with similar lexical overlap: a current,
         # trusted, user-authored concise style vs a stale, untrusted, generated,

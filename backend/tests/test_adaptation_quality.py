@@ -52,7 +52,21 @@ class AdaptationQualityHarnessTests(unittest.TestCase):
         self.assertTrue(pack["persona"], "expected persona sections for a well-seeded corpus")
         self.assertTrue(pack["rules"])  # per-layer rules still present (no regression)
         for section in pack["persona"]:
-            self.assertIn(section["id"], {"how_you_work", "preferences", "dislikes", "decisions", "focus", "people_projects"})
+            self.assertIn(
+                section["id"],
+                {
+                    "how_you_work",
+                    "voice_style",
+                    "preferences",
+                    "dislikes",
+                    "decisions",
+                    "facts",
+                    "recent_timeline",
+                    "focus",
+                    "people_projects",
+                    "open_loops",
+                },
+            )
             self.assertTrue(str(section.get("statement") or "").strip())
             # Cited-or-abstain: every persona element carries a citation (memory_ids or a source).
             for element in section.get("elements", []):

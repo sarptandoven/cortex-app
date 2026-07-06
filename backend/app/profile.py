@@ -63,22 +63,36 @@ from .mirror import (
 # ``people_projects`` are derived from the profile's ``topics`` / ``entities``.
 
 # id -> (title, [source layers])
+#
+# Style is its OWN section ("Voice & style") so voice evidence stays visible and
+# distinct from procedural workflow evidence, instead of being folded invisibly
+# into "How you work".
 _BEHAVIORAL_SECTIONS: list[tuple[str, str, tuple[str, ...]]] = [
-    ("how_you_work", "How you work", ("style", "procedural")),
+    ("how_you_work", "How you work", ("procedural",)),
+    ("voice_style", "Voice & style", ("style",)),
     ("preferences", "Your preferences", ("preference",)),
     ("dislikes", "What you avoid", ("negative",)),
     ("decisions", "Key decisions", ("decision",)),
 ]
 
+_FACTS_SECTION_ID = "facts"
+_FACTS_SECTION_TITLE = "Facts"
+_TIMELINE_SECTION_ID = "recent_timeline"
+_TIMELINE_SECTION_TITLE = "Recent timeline"
 _FOCUS_SECTION_ID = "focus"
 _FOCUS_SECTION_TITLE = "Focus areas"
 _PEOPLE_SECTION_ID = "people_projects"
 _PEOPLE_SECTION_TITLE = "People & projects"
+_OPEN_LOOPS_SECTION_ID = "open_loops"
+_OPEN_LOOPS_SECTION_TITLE = "Open loops"
 
 # Fixed catalog order used to sort the returned sections.
 _SECTION_ORDER: list[str] = [sid for sid, _, _ in _BEHAVIORAL_SECTIONS] + [
+    _FACTS_SECTION_ID,
+    _TIMELINE_SECTION_ID,
     _FOCUS_SECTION_ID,
     _PEOPLE_SECTION_ID,
+    _OPEN_LOOPS_SECTION_ID,
 ]
 
 
@@ -117,6 +131,10 @@ _MEDIUM_SUPPORT = 3
 
 # Keep at most this many elements per section (ranked).
 _MAX_ELEMENTS = 3
+
+# Open loops are the user's concrete commitment queue, so a downstream agent gets
+# a little more room than the behavioral sections.
+_MAX_OPEN_LOOP_ELEMENTS = 5
 
 # Source-quality signal used inline in the ranking score. Structured/first-party
 # sources read as slightly more trustworthy than free-form dumps. Absolute scale
@@ -193,6 +211,14 @@ def build_profile_sections(
         if section is not None:
             sections.append(section)
 
+    facts = _build_facts_section(layer_items, merger)
+    if facts is not None:
+        sections.append(facts)
+
+    timeline = _build_timeline_section(layer_items)
+    if timeline is not None:
+        sections.append(timeline)
+
     focus = _build_focus_section(profile, graph)
     if focus is not None:
         sections.append(focus)
@@ -200,6 +226,10 @@ def build_profile_sections(
     people = _build_people_section(profile, graph)
     if people is not None:
         sections.append(people)
+
+    open_loops = _build_open_loops_section(profile)
+    if open_loops is not None:
+        sections.append(open_loops)
 
     order = {sid: i for i, sid in enumerate(_SECTION_ORDER)}
     sections.sort(key=lambda s: order.get(s["id"], len(order)))
@@ -294,6 +324,144 @@ def _cluster_to_element(cluster: list[dict]) -> Optional[dict]:
         "count": len(cluster),
         "memory_ids": memory_ids,
         "source_url": source_url,
+    }
+
+
+# --- Facts section (from the semantic layer) ---------------------------------
+
+# Cheap noise heuristic: a "fact" that is just a bare file path / URL-ish token
+# (no spaces, path separators) is plumbing, not a claim about the user's world.
+_PATH_NOISE_RE = re.compile(r"^\s*(?:file://|[a-zA-Z][a-zA-Z0-9+.-]*://|[A-Za-z]:[\\/]|~?[\\/])\S*\s*$")
+
+
+def _looks_like_path_noise(text: str) -> bool:
+    text = (text or "").strip()
+    if not text:
+        return True
+    if _PATH_NOISE_RE.match(text):
+        return True
+    # A single token with path separators and no prose around it.
+    return " " not in text and ("/" in text or "\\" in text)
+
+
+def _build_facts_section(layer_items: dict[str, list[dict]], merger: "_ClusterMerger") -> Optional[dict]:
+    """Top cited semantic claims about the user's world.
+
+    Reuses the behavioral pipeline (cluster -> cite-or-abstain -> rank by
+    support/distinct sources/importance/recency) over the semantic layer, after
+    dropping bare-path noise. A lone, low-importance claim abstains, exactly like
+    the behavioral sections.
+    """
+    candidates = [
+        item
+        for item in layer_items.get("semantic", [])
+        if not _looks_like_path_noise(_item_text(item))
+    ]
+    return _build_behavioral_section(_FACTS_SECTION_ID, _FACTS_SECTION_TITLE, candidates, merger)
+
+
+# --- Recent timeline section (from the episodic layer) -----------------------
+
+
+def _build_timeline_section(layer_items: dict[str, list[dict]]) -> Optional[dict]:
+    """The user's most recent episodic memories, most-recent-first.
+
+    Each element is one cited event, dated by ``occurred_at`` when present (else
+    ``captured_at``). Cited-or-abstain per event; the section abstains entirely
+    when the corpus is thin (a single low-importance event is not a timeline),
+    mirroring the behavioral floors.
+    """
+    entries: list[dict] = []
+    for item in layer_items.get("episodic", []):
+        source = _text(item.get("source"))
+        source_url = _clean_source_url(item.get("source_url"))
+        if not source and not source_url:
+            continue  # nothing to cite -> abstain
+        text = _shorten(_item_text(item))
+        item_id = _text(item.get("id"))
+        if not text or not item_id:
+            continue
+        when = _text(item.get("occurred_at")) or _text(item.get("captured_at"))
+        date = when[:10] if _DATE_RE.match(when) else ""
+        entries.append(
+            {
+                "element": {
+                    "text": f"{date} — {text}" if date else text,
+                    "source": source,
+                    "count": 1,
+                    "memory_ids": [item_id],
+                    "source_url": source_url,
+                },
+                "importance": _as_int(item.get("importance"), default=3),
+                "_when": when,
+                "_id": item_id,
+            }
+        )
+
+    if not entries:
+        return None
+    if len(entries) < _MIN_ELEMENT_SUPPORT and max(e["importance"] for e in entries) < _IMPORTANT_FLOOR:
+        return None
+
+    # Most recent first; unknown timestamps sort last; id breaks ties.
+    entries.sort(key=lambda e: (_neg_ts(e["_when"]), e["_id"]))
+    kept = entries[:_MAX_ELEMENTS]
+
+    # Single-event elements never clear the behavioral high band; the timeline is
+    # descriptive, so its confidence is capped at medium.
+    confidence = "medium" if len(entries) >= _MEDIUM_SUPPORT else "low"
+    return {
+        "id": _TIMELINE_SECTION_ID,
+        "title": _TIMELINE_SECTION_TITLE,
+        _CONFIDENCE_STR: confidence,
+        "elements": [e["element"] for e in kept],
+    }
+
+
+# --- Open loops section (from the profile's open_loops) ----------------------
+
+
+def _build_open_loops_section(profile: dict) -> Optional[dict]:
+    """The user's open tasks/questions, reusing the SAME ``open_loops`` list the
+    personal profile already builds (never re-derived here).
+
+    Each element cites its task id in ``memory_ids`` — an open loop is a direct
+    record of the user's own queue, not an inference, so a single loop is enough
+    to surface (nothing is fabricated; everything is enumerated and cited).
+    """
+    loops = profile.get("open_loops")
+    if not isinstance(loops, list):
+        return None
+
+    elements: list[dict] = []
+    for task in loops:
+        if not isinstance(task, dict):
+            continue
+        text = _shorten(_text(task.get("content")))
+        task_id = _text(task.get("id"))
+        if not text or not task_id:
+            continue
+        elements.append(
+            {
+                "text": text,
+                "source": "tasks",
+                "count": 1,
+                "memory_ids": [task_id],
+                "source_url": None,
+            }
+        )
+
+    if not elements:
+        return None
+
+    kept = elements[:_MAX_OPEN_LOOP_ELEMENTS]
+    # Direct records, but still a partial view of the queue -> capped at medium.
+    confidence = "medium" if len(elements) >= _MEDIUM_SUPPORT else "low"
+    return {
+        "id": _OPEN_LOOPS_SECTION_ID,
+        "title": _OPEN_LOOPS_SECTION_TITLE,
+        _CONFIDENCE_STR: confidence,
+        "elements": kept,
     }
 
 

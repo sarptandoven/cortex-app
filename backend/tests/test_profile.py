@@ -133,10 +133,12 @@ class DeterminismTest(unittest.TestCase):
         )
         out = build_profile_sections(profile, provider="hash")
         ids = [s["id"] for s in out]
-        # Fixed catalog order.
+        # Fixed catalog order. This fixture seeds style (its own voice_style section — no
+        # procedural, so no how_you_work) and no semantic/episodic/open-loop layers, so the
+        # holistic sections (facts/recent_timeline/open_loops) correctly abstain.
         self.assertEqual(
             ids,
-            ["how_you_work", "preferences", "dislikes", "decisions", "focus", "people_projects"],
+            ["voice_style", "preferences", "dislikes", "decisions", "focus", "people_projects"],
         )
 
 

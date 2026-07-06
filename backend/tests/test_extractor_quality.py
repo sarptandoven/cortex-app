@@ -385,6 +385,37 @@ We decided Project Atlas should keep source dates for email decisions.
         self.assertEqual(data["summary"].count("Ada likes coffee."), 1)
         self.assertEqual(data["summary"].count("We decided Project Atlas uses Home, Review, and Ask."), 1)
 
+    def test_sentence_initial_trigger_words_do_not_become_entities(self) -> None:
+        # "Decided"/"Process" opening a sentence are extraction labels, not people — before
+        # the common-word guard they polluted the graph and People & projects as fake persons.
+        data = extract_local("Decided to use PostgreSQL. Process: always tag releases.", "notes")
+        entities = {entity["name"]: entity for entity in data["entities"]}
+        self.assertNotIn("Decided", entities)
+        self.assertNotIn("Process", entities)
+        # The real mid-sentence CamelCase product still survives, classified as an org.
+        self.assertIn("PostgreSQL", entities)
+        self.assertEqual(entities["PostgreSQL"]["kind"], "org")
+
+    def test_person_and_project_entities_survive_the_common_word_guard(self) -> None:
+        # Multi-word candidates shed the sentence-initial trigger verb ("Met") instead of
+        # being dropped wholesale or kept as the bogus person "Met Marcus Feld".
+        data = extract_local("Met Marcus Feld about Project Atlas.", "notes")
+        ids = {entity["id"] for entity in data["entities"]}
+        self.assertIn("person_marcus-feld", ids)
+        self.assertIn("project_project-atlas", ids)
+        self.assertNotIn("person_met-marcus-feld", ids)
+
+    def test_sentence_initial_person_name_is_still_extracted(self) -> None:
+        # A sentence-initial capitalized token that is NOT a common English word stays a person.
+        data = extract_local("Marcus joined the call yesterday.", "notes")
+        ids = {entity["id"] for entity in data["entities"]}
+        self.assertIn("person_marcus", ids)
+
+    def test_path_fragments_do_not_become_entities(self) -> None:
+        # "/Users/me/data/index.sqlite" must not seed person "Users" or filename entities.
+        data = extract_local("The db is at /Users/me/data/index.sqlite", "notes")
+        self.assertEqual(data["entities"], [])
+
     def test_connector_labeled_content_is_preserved_without_metadata_labels(self) -> None:
         data = extract_local(
             """Repository: doppl/cortex

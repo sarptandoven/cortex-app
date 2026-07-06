@@ -238,6 +238,9 @@ class FakeStore:
             "vault": {"record_counts": {}},
         }
 
+    def stats(self, user_id: str) -> dict:
+        return {"captures": 1, "memories": 1, "tasks": 0, "entities": 0}
+
     def health_payload(self, *, mode: str, auth: bool) -> dict:
         return {
             "status": "ok",
@@ -2379,6 +2382,18 @@ class StandaloneServerTests(unittest.TestCase):
         data = json.dumps(payload).encode("utf-8")
         return request.urlopen(request.Request(self.base_url + path, data=data, headers=headers, method="POST"), timeout=5)
 
+    def get_raw(self, path: str):
+        # Like get(), but never raises on 4xx/5xx: returns (status, headers, body) so guard
+        # tests can inspect rejected responses alongside accepted ones.
+        req = request.Request(self.base_url + path, headers={"Authorization": "Bearer test-token"})
+        try:
+            with request.urlopen(req, timeout=5) as response:
+                return response.status, response.headers, response.read().decode("utf-8")
+        except error.HTTPError as exc:
+            body = exc.read().decode("utf-8")
+            exc.close()
+            return exc.code, exc.headers, body
+
     def test_github_discover_endpoint_present_on_shipping_server(self) -> None:
         # The macOS "Find Repositories" button POSTs here; the shipping server must implement it
         # (it previously 404'd because only the FastAPI dev server had the route).
@@ -4331,6 +4346,54 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertTrue(revoked["revoked"])
         self.assertEqual(self.fake_store.revoke_token_calls, [("alice", "tok_standalone_api")])
+
+    def test_rate_limit_burst_returns_429_with_retry_after(self) -> None:
+        # A tiny bucket (burst 3, refill 1/s) must reject a rapid burst from one bearer token.
+        with mock.patch.dict(os.environ, {"CORTEX_RATE_LIMIT_RPS": "1", "CORTEX_RATE_LIMIT_BURST": "3"}):
+            standalone_server.REQUEST_GUARDS = standalone_server._RequestGuards()
+
+        results = [self.get_raw("/v1/stats") for _ in range(6)]
+        statuses = [status for status, _, _ in results]
+        # The burst allowance is honored before throttling kicks in.
+        self.assertEqual(statuses[:3], [200, 200, 200])
+        self.assertIn(429, statuses)
+        _, headers, body = next(result for result in results if result[0] == 429)
+        self.assertEqual(headers.get("Retry-After"), "1")
+        self.assertEqual(json.loads(body), {"detail": "Too many requests; slow down and retry."})
+
+    def test_rate_limit_defaults_leave_sequential_requests_unaffected(self) -> None:
+        # setUp installs default guards (20 rps / burst 60): normal app traffic never sees 429.
+        for _ in range(5):
+            with self.get("/v1/stats") as response:
+                self.assertEqual(response.status, 200)
+
+    def test_health_and_ready_bypass_saturated_guards(self) -> None:
+        # Health endpoints never pass through either guard layer, so the app can supervise a
+        # saturated backend.
+        with mock.patch.object(standalone_server.REQUEST_GUARDS, "allow_request", return_value=False), \
+                mock.patch.object(standalone_server.REQUEST_GUARDS, "acquire_slot", return_value=False):
+            status, _, _ = self.get_raw("/v1/stats")
+            self.assertEqual(status, 429)
+            with self.get("/health") as response:
+                self.assertEqual(response.status, 200)
+            with self.get("/ready") as response:
+                self.assertEqual(response.status, 200)
+
+    def test_rate_limit_disabled_when_rps_zero(self) -> None:
+        with mock.patch.dict(os.environ, {"CORTEX_RATE_LIMIT_RPS": "0", "CORTEX_RATE_LIMIT_BURST": "3"}):
+            standalone_server.REQUEST_GUARDS = standalone_server._RequestGuards()
+
+        statuses = [self.get_raw("/v1/stats")[0] for _ in range(10)]
+        self.assertEqual(statuses, [200] * 10)
+
+    def test_concurrency_gate_saturation_returns_503_but_health_still_serves(self) -> None:
+        with mock.patch.object(standalone_server.REQUEST_GUARDS, "acquire_slot", return_value=False):
+            status, headers, body = self.get_raw("/v1/stats")
+            self.assertEqual(status, 503)
+            self.assertEqual(headers.get("Retry-After"), "1")
+            self.assertEqual(json.loads(body), {"detail": "Cortex is busy handling other requests; retry shortly."})
+            with self.get("/health") as response:
+                self.assertEqual(response.status, 200)
 
 
 if __name__ == "__main__":

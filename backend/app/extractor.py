@@ -1113,8 +1113,97 @@ def _task(content: str) -> dict[str, Any]:
     }
 
 
+# A sentence-initial capitalized token that is an ordinary English word is almost always a
+# label or verb starting the sentence ("Decided to...", "Process: ...", "Avoid X", "Met
+# Marcus"), not a name — matched alone it pollutes the entity graph, person map, and the
+# profile's People & projects ranking as a fake person/org. A single-word candidate whose
+# lowercased form is in this set is dropped when it appears sentence-initial; a multi-word
+# candidate sheds a sentence-initial leading common word instead ("Met Marcus Feld" ->
+# "Marcus Feld"). Mid-sentence capitalization stays real proper-noun signal ("Marcus joined
+# the call"), so mid-sentence tokens are never touched.
+ENTITY_COMMON_WORDS = {
+    # Extraction-trigger verbs and note labels.
+    "action", "actions", "agree", "agreed", "always", "answer", "answers", "attended",
+    "avoid", "call", "called", "calls", "caught", "choice", "choose", "chose", "decide",
+    "decided", "decision", "decisions", "dislike", "draft", "drafts", "emailed", "finally",
+    "first", "flew", "follow", "goal", "goals", "going", "hate", "idea", "ideas",
+    "launched", "like", "liked", "likes", "love", "meeting", "meetings", "met", "need",
+    "needed", "needs", "never", "new", "next", "note", "noted", "notes", "open", "plan",
+    "plans", "prefer", "preference", "preferences", "preferred", "prefers", "procedure",
+    "procedures", "process", "processes", "question", "questions", "remember", "reminder",
+    "reminders", "review", "reviews", "runbook", "runbooks", "second", "shipped", "spoke",
+    "spoken", "started", "step", "steps", "stopped", "summary", "talked", "third", "today",
+    "todo", "tomorrow", "tonight", "tried", "update", "updated", "updates", "visited",
+    "want", "wanted", "wants", "workflow", "workflows", "yesterday",
+    # Pronouns, determiners, auxiliaries, conjunctions, prepositions, common adverbs/verbs.
+    "about", "add", "added", "after", "again", "against", "all", "also", "although", "and",
+    "another", "any", "are", "because", "been", "before", "being", "between", "both",
+    "but", "can", "check", "could", "did", "does", "doing", "done", "during", "each",
+    "even", "every", "few", "for", "from", "get", "got", "had", "has", "have", "having",
+    "hello", "her", "here", "hers", "him", "his", "how", "however", "instead", "into",
+    "its", "just", "keep", "kept", "let", "lets", "made", "make", "makes", "many", "may",
+    "maybe", "meanwhile", "might", "most", "much", "must", "nor", "not", "now", "okay",
+    "once", "only", "other", "otherwise", "our", "ours", "over", "own", "perhaps",
+    "please", "put", "said", "same", "say", "see", "send", "sent", "set", "shall", "she",
+    "should", "since", "some", "soon", "still", "such", "take", "thanks", "that", "the",
+    "their", "theirs", "them", "then", "there", "therefore", "these", "they", "this",
+    "those", "though", "through", "took", "under", "unless", "until", "use", "used",
+    "using", "very", "was", "were", "what", "when", "where", "which", "while", "who",
+    "whom", "whose", "why", "will", "with", "within", "without", "would", "yes", "you",
+    "your", "yours",
+    # Weekdays (weekday/month names are also dropped by the calendar-word guard below
+    # regardless of position; this catches them when trimmed into leading-word position).
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    # Generic tech/work nouns that are noise when they appear alone.
+    "afternoon", "app", "apps", "bug", "bugs", "code", "content", "context", "data",
+    "database", "day", "days", "doc", "docs", "document", "documents", "email", "emails",
+    "evening", "file", "files", "folder", "folders", "home", "issue", "issues", "item",
+    "items", "link", "links", "list", "lists", "message", "messages", "month", "months",
+    "morning", "night", "page", "pages", "path", "project", "projects", "release",
+    "releases", "repo", "repos", "report", "reports", "server", "servers", "source",
+    "sources", "state", "status", "subject", "task", "tasks", "team", "teams", "time",
+    "title", "url", "user", "users", "version", "versions", "week", "weeks", "work",
+    "year", "years",
+}
+
+_SENTENCE_LEADING_TRIVIA = " \t\"'“”‘’([{-–—•"
+_SENTENCE_TERMINATORS = ".!?:;\n"
+
+
+def _is_sentence_initial(text: str, index: int) -> bool:
+    cursor = index - 1
+    while cursor >= 0 and text[cursor] in _SENTENCE_LEADING_TRIVIA:
+        cursor -= 1
+    return cursor < 0 or text[cursor] in _SENTENCE_TERMINATORS
+
+
+def _strip_path_and_url_fragments(text: str) -> str:
+    """Filesystem paths, URLs, and filenames must never seed entities ("/Users/me/data"
+    reads as person "Users"). Tokens containing / \\ ~ or an interior dot (index.sqlite,
+    example.com) are replaced with a sentence break before candidate matching; a
+    sentence-ending dot is followed by whitespace, not a word character, so prose survives
+    untouched."""
+    without_paths = re.sub(r"\S*[/\\~]\S*", " . ", text)
+    return re.sub(r"[\w-]+\.\w[\w.-]*", " . ", without_paths)
+
+
+def _entity_candidate(name: str, text: str, start: int) -> str:
+    """Drop or trim a sentence-initial leading common word (see ENTITY_COMMON_WORDS)."""
+    if not _is_sentence_initial(text, start):
+        return name
+    first, _, rest = name.partition(" ")
+    if first.lower() not in ENTITY_COMMON_WORDS:
+        return name
+    return rest
+
+
 def _entities(text: str) -> list[dict[str, Any]]:
-    candidates = set(re.findall(r"\b[A-Z][a-zA-Z0-9]+(?:\s+[A-Z][a-zA-Z0-9]+){0,3}\b", text))
+    searchable = _strip_path_and_url_fragments(text)
+    candidates: set[str] = set()
+    for match in re.finditer(r"\b[A-Z][a-zA-Z0-9]+(?:\s+[A-Z][a-zA-Z0-9]+){0,3}\b", searchable):
+        candidate = _entity_candidate(match.group(0), searchable, match.start())
+        if candidate:
+            candidates.add(candidate)
     stop = {"I", "The", "This", "That", "We", "You", "Next", "Open"}
     org_like = {
         "ChatGPT",

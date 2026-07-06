@@ -112,6 +112,12 @@ private struct ConnectionsPrivacyOverview: View {
         }.count
     }
 
+    /// Connector accounts beyond the primary notes source. Chat imports live in import
+    /// history, not source accounts, so notes + chat import alone still counts as zero.
+    private var extraConnectedSourceCount: Int {
+        state.activeSourceAccounts.filter { $0.source != "obsidian" }.count
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: CortexDesign.Space.xl) {
@@ -150,6 +156,14 @@ private struct ConnectionsPrivacyOverview: View {
             .padding(.vertical, CortexDesign.Space.xl)
         }
         .background(connectionsSheetBackground)
+        .onAppear {
+            // First run: the connector library is the discovery surface, so it starts open
+            // until an extra source is connected. Expands once per presentation and never
+            // auto-collapses while visible.
+            if extraConnectedSourceCount == 0 {
+                advancedSourcesExpanded = true
+            }
+        }
         .task {
             await state.loadTrust()
             if state.sourceConnectorCatalog.isEmpty {
@@ -177,7 +191,7 @@ private struct ConnectionsPrivacyOverview: View {
     }
 
     private var advancedSourceDisclosureDetail: String {
-        let extraSources = state.activeSourceAccounts.filter { $0.source != "obsidian" }.count
+        let extraSources = extraConnectedSourceCount
         if extraSources > 0 {
             return "\(extraSources) extra source\(extraSources == 1 ? "" : "s") connected"
         }

@@ -49,6 +49,7 @@ from .mirror import (
 # listed falls back to a neutral, still-honest lead.
 _SECTION_LEAD: dict[str, str] = {
     "how_you_work": "You tend to",
+    "voice_style": "Your voice:",
     "preferences": "You prefer",
     "dislikes": "You avoid",
     "decisions": "You decided",
