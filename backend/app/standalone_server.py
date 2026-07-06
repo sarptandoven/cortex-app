@@ -354,7 +354,10 @@ def _source_import_request(body: dict, *, analyze: bool = False) -> dict:
         offset = max(0, int(body.get("offset") or 0))
     except (TypeError, ValueError):
         raise ValueError("offset must be a non-negative integer")
-    return {"paths": paths, "source_hint": source_hint, "max_records": max_records, "processing": processing, "offset": offset}
+    # A user-initiated import is trusted (its content is usable immediately, not held per-record
+    # in Review) unless the caller explicitly opts back into review.
+    auto_approve = bool(body.get("auto_approve", True))
+    return {"paths": paths, "source_hint": source_hint, "max_records": max_records, "processing": processing, "offset": offset, "auto_approve": auto_approve}
 
 
 def _capture_page(message: str = "", status: str = "ready", token: str = "", title: str = "", url: str = "", content: str = "") -> str:
@@ -1457,6 +1460,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         processing=parsed["processing"],
                         max_records=parsed["max_records"],
                         offset=parsed["offset"],
+                        auto_approve=parsed["auto_approve"],
                     ))
                 except ValueError as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)

@@ -32,6 +32,10 @@ class SourceImportRequest(BaseModel):
     max_records: int = Field(default=1000, ge=1, le=5000)
     offset: int = Field(default=0, ge=0)
     user_id: str = "local"
+    # A file the user explicitly imports (e.g. their ChatGPT/Claude export) is trusted, so its
+    # content is usable immediately instead of sitting per-conversation in Review. Set false to
+    # route imported captures through Review.
+    auto_approve: bool = True
 
 
 class SourceAnalyzeRequest(BaseModel):

@@ -8040,6 +8040,7 @@ class CortexStore:
         processing: str = "async",
         max_records: int = 1000,
         offset: int = 0,
+        auto_approve: bool = False,
     ) -> dict[str, Any]:
         cleaned_paths = [str(path).strip() for path in paths if str(path).strip()]
         if not cleaned_paths:
@@ -8168,6 +8169,7 @@ class CortexStore:
                         title=record.title,
                         extracted=extracted,
                         import_id=import_id,
+                        auto_approve=auto_approve,
                     )
                     saved += 1
                     capture_ids.append(result["capture_id"])
@@ -8192,6 +8194,7 @@ class CortexStore:
                         source_url=record.source_url,
                         title=record.title,
                         import_id=import_id,
+                        auto_approve=auto_approve,
                     )
                     queued += 1
                     capture_ids.append(result["capture_id"])

@@ -1413,6 +1413,7 @@ def import_sources(request: SourceImportRequest, user_id: str = Depends(auth)) -
         processing=request.processing,
         max_records=request.max_records,
         offset=request.offset,
+        auto_approve=request.auto_approve,
     )
 
 

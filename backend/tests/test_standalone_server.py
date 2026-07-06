@@ -2213,7 +2213,7 @@ class FakeStore:
         self.import_analysis_calls.append((paths, source_hint, max_records))
         return {"records_found": 1, "sources": [{"source": "chatgpt", "count": 1}], "sample": [], "supported_sources": self.supported_import_sources()}
 
-    def import_sources(self, *, user_id: str, paths: list[str], source_hint: str = "", processing: str = "async", max_records: int = 1000, offset: int = 0) -> dict:
+    def import_sources(self, *, user_id: str, paths: list[str], source_hint: str = "", processing: str = "async", max_records: int = 1000, offset: int = 0, auto_approve: bool = True) -> dict:
         self.import_sources_calls.append((user_id, paths, source_hint, processing, max_records, offset))
         return {
             "import_id": "imp_test",
