@@ -1104,6 +1104,15 @@ def _normalize_validity_bound(value: Any, *, end_of_day: bool) -> Any:
     return text
 
 
+def _memory_occurrences(value: Any) -> int:
+    """Tolerant occurrences coercion: vault notes are user-editable, so a hand-mangled
+    frontmatter value must degrade to the 1-occurrence default rather than break a rebuild."""
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 1
+
+
 def _retrieval_filter_payload(
     *,
     source: str | None = None,
@@ -1256,9 +1265,11 @@ CONNECTOR_SETUP_GUIDES: dict[str, dict[str, Any]] = {
         "Copy the token, paste it below, then choose the repositories to sync.",
     ]},
     "slack": {"help_url": "https://api.slack.com/apps", "steps": [
-        "Go to api.slack.com/apps and create an app for your workspace (or open an existing one).",
-        "Under OAuth & Permissions add read scopes (channels:history, channels:read), then Install to Workspace.",
-        "Copy the User OAuth token (starts with xoxp-) and paste it below.",
+        "Open api.slack.com/apps → Create New App → From scratch. Name it (e.g. Cortex) and pick your workspace.",
+        "In the left sidebar open OAuth & Permissions, scroll to Scopes → User Token Scopes.",
+        "Add channels:history and channels:read (add groups:history and groups:read too if you want private channels).",
+        "Scroll back up and click Install to Workspace, then Allow.",
+        "Copy the User OAuth Token (starts with xoxp-) and paste it below, then choose the channels to sync.",
     ]},
     "linear": {"help_url": "https://linear.app/settings/api", "steps": [
         "Open Linear → Settings → API → Personal API keys.",
@@ -2743,6 +2754,23 @@ class CortexStore:
         # Reconcile the vector index to the active model's dimension once, up front, on a dedicated
         # connection (safe: not nested in any caller transaction).
         self._ensure_vector_index()
+        # Store-owned lightweight migration (same duplicate-column-tolerant pattern as
+        # database.MIGRATIONS): the memories dedup/occurrence semantics live here, so the
+        # occurrences column is ensured here too. Legacy databases upgrade in place; every
+        # production path constructs the store after init_db, so all memories reads/writes
+        # below can rely on the column existing.
+        self._ensure_memory_occurrences_column()
+
+    def _ensure_memory_occurrences_column(self) -> None:
+        with connect(self.db_path) as conn:
+            try:
+                conn.execute("ALTER TABLE memories ADD COLUMN occurrences INTEGER NOT NULL DEFAULT 1")
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                # "no such table" = brand-new path before init_db; init_db + the next store
+                # open will converge, and nothing can touch memories before then.
+                if "duplicate column name" not in message and "no such table" not in message:
+                    raise
 
     def settings(self, user_id: str) -> dict[str, Any]:
         with connect(self.db_path) as conn:
@@ -2811,6 +2839,7 @@ class CortexStore:
                         "topics": json.loads(row["topics_json"] or "[]"),
                         "entity_ids": json.loads(row["entity_ids_json"] or "[]"),
                         "occurred_at": row["occurred_at"],
+                        "occurrences": _memory_occurrences(row["occurrences"] if "occurrences" in row.keys() else 1),
                         "captured_at": row["captured_at"],
                         "updated_at": row["updated_at"],
                         "raw_excerpt": row["raw_excerpt"],
@@ -8573,6 +8602,19 @@ class CortexStore:
                 "SELECT created_at FROM memory_jobs WHERE user_id = ? AND status = 'queued'",
                 (user_id,),
             ).fetchall()
+            # WHAT is syncing right now: a small sample of in-flight work (running first,
+            # then oldest-queued) so the app can name it, not just count it.
+            active_rows = conn.execute(
+                """
+                SELECT job_type, payload_json, created_at
+                FROM memory_jobs
+                WHERE user_id = ?
+                  AND status IN ('queued', 'running')
+                ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, created_at ASC, id ASC
+                LIMIT 5
+                """,
+                (user_id,),
+            ).fetchall()
 
         counts = {"queued": 0, "running": 0, "succeeded": 0, "failed": 0}
         for row in count_rows:
@@ -8604,6 +8646,18 @@ class CortexStore:
         }
         queue_age_seconds = _percentile_summary([float(age) for age in queue_ages])
 
+        active: list[dict[str, Any]] = []
+        for row in active_rows:
+            payload = self._json_or_empty(row["payload_json"])
+            source = str(payload.get("source") or "").strip() or None
+            active.append(
+                {
+                    "job_type": row["job_type"],
+                    "source": source,
+                    "created_at": row["created_at"],
+                }
+            )
+
         recent_failures = [self._job_health_item(self._job_from_row(row), now=now) for row in failed_rows]
         stale_running: list[dict[str, Any]] = []
         for row in running_rows:
@@ -8629,6 +8683,8 @@ class CortexStore:
             "oldest_queued_age_seconds": _age_seconds(oldest_queued_at, now=now),
             "stale_after_seconds": stale_after,
             "stale_running": stale_running,
+            "active": active,
+            "active_total": counts["queued"] + counts["running"],
             "recent_failures": recent_failures,
             "latency_seconds": latency_seconds,
             "queue_age_seconds": queue_age_seconds,
@@ -13483,6 +13539,7 @@ class CortexStore:
             "occurred_at": item.get("occurred_at"),
             "valid_from": item.get("valid_from"),
             "valid_to": item.get("valid_to"),
+            "occurrences": _memory_occurrences(item.get("occurrences")),
             "topics": item.get("topics") or [],
             "entity_ids": item.get("entity_ids") or [],
         }
@@ -14665,8 +14722,8 @@ class CortexStore:
             rows = conn.execute(
                 "SELECT id, capture_id, user_id, kind, layer, content, summary, source, source_url, "
                 "confidence, importance, status, sector, source_type, provenance_json, topics_json, "
-                "entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, captured_at, "
-                "updated_at, raw_excerpt FROM memories WHERE user_id = ?",
+                "entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, occurrences, "
+                "captured_at, updated_at, raw_excerpt FROM memories WHERE user_id = ?",
                 (user_id,),
             ).fetchall()
         all_written = True
@@ -14993,8 +15050,8 @@ class CortexStore:
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO memories
-                    (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, captured_at, updated_at, raw_excerpt)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, occurrences, captured_at, updated_at, raw_excerpt)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         memory["id"],
@@ -15018,6 +15075,10 @@ class CortexStore:
                         _normalize_validity_bound(memory.get("valid_from"), end_of_day=False),
                         _normalize_validity_bound(memory.get("valid_to"), end_of_day=True),
                         memory.get("superseded_by"),
+                        # Restore, never accrue: a rebuild re-inserts every vault memory exactly
+                        # once, so the persisted count round-trips intact and rebuilds stay
+                        # idempotent. Records that predate occurrences default to 1.
+                        _memory_occurrences(memory.get("occurrences")),
                         captured_at,
                         memory.get("updated_at") or captured_at,
                         memory.get("raw_excerpt"),
@@ -16836,12 +16897,27 @@ class CortexStore:
                     valid_to=valid_to,
                     superseded_by=superseded_by,
                 )
-            return self._memory_from_row(duplicate)
+            return self._bump_duplicate_memory_occurrences(
+                conn, duplicate, user_id=user_id, capture_id=capture_id, captured_at=captured_at
+            )
+        # Repetition support: memory ids are content-derived, so saving the exact same
+        # statement again lands on an EXISTING id. A genuinely new save (different capture)
+        # accrues an occurrence instead of silently collapsing; a re-extraction of the same
+        # capture (worker retry, vault rebuild materialization) stays idempotent.
+        existing_memory = conn.execute(
+            "SELECT capture_id, occurrences FROM memories WHERE user_id = ? AND id = ?",
+            (user_id, memory_id),
+        ).fetchone()
+        occurrences = 1
+        if existing_memory:
+            occurrences = _memory_occurrences(existing_memory["occurrences"])
+            if (existing_memory["capture_id"] or "") != capture_id:
+                occurrences += 1
         conn.execute(
             """
             INSERT OR REPLACE INTO memories
-            (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, captured_at, updated_at, raw_excerpt)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, occurrences, captured_at, updated_at, raw_excerpt)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 memory_id,
@@ -16864,6 +16940,7 @@ class CortexStore:
                 valid_from,
                 valid_to,
                 superseded_by,
+                occurrences,
                 captured_at,
                 captured_at,
                 raw_excerpt,
@@ -16920,10 +16997,37 @@ class CortexStore:
             "valid_from": valid_from,
             "valid_to": valid_to,
             "superseded_by": superseded_by,
+            "occurrences": occurrences,
             "captured_at": captured_at,
             "updated_at": captured_at,
             "raw_excerpt": raw_excerpt,
         }
+
+    def _bump_duplicate_memory_occurrences(
+        self,
+        conn,
+        duplicate,
+        *,
+        user_id: str,
+        capture_id: str,
+        captured_at: str,
+    ) -> dict[str, Any]:
+        """A new save whose content collapses onto an existing memory (near-duplicate with a
+        different id) accrues repetition support: increment occurrences and refresh the
+        captured_at recency marker retrieval ranks by. Re-extracting the SAME capture stays a
+        no-op so worker retries and rebuild materialization never inflate counts."""
+        memory = self._memory_from_row(duplicate)
+        if (memory.get("capture_id") or "") == capture_id:
+            return memory
+        occurrences = _memory_occurrences(memory.get("occurrences")) + 1
+        conn.execute(
+            "UPDATE memories SET occurrences = ?, captured_at = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+            (occurrences, captured_at, captured_at, user_id, memory["id"]),
+        )
+        memory["occurrences"] = occurrences
+        memory["captured_at"] = captured_at
+        memory["updated_at"] = captured_at
+        return memory
 
     def _refresh_duplicate_source_memory(
         self,
@@ -19739,6 +19843,7 @@ class CortexStore:
             "valid_from": row["valid_from"] if "valid_from" in keys else None,
             "valid_to": row["valid_to"] if "valid_to" in keys else None,
             "superseded_by": row["superseded_by"] if "superseded_by" in keys else None,
+            "occurrences": _memory_occurrences(row["occurrences"]) if "occurrences" in keys else 1,
             "captured_at": row["captured_at"],
             "updated_at": row["updated_at"] if "updated_at" in keys else row["captured_at"],
             "raw_excerpt": row["raw_excerpt"],

@@ -31,6 +31,7 @@ from backend.app.database import (
     SCHEMA,
     init_db,
 )
+from backend.app.storage import CortexStore
 
 
 _ALTER_ADD_COLUMN = re.compile(
@@ -185,6 +186,70 @@ class DatabaseUpgradePathTests(unittest.TestCase):
         finally:
             fresh.close()
             upgraded.close()
+
+
+class StoreOwnedColumnUpgradeTests(unittest.TestCase):
+    """Same upgrade-path guard for the store-owned lightweight migration: the memories
+    `occurrences` column is added by CortexStore (which owns the dedup/occurrence
+    semantics), not by database.MIGRATIONS, so the generic test above cannot see it.
+    Every production path opens a store right after init_db, so 'init_db + store open'
+    is the real upgrade unit."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._tmp.name) / "cortex-store-owned.db"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _columns(self) -> set[str]:
+        conn = sqlite3.connect(self.db_path)
+        try:
+            return _table_columns(conn, "memories")
+        finally:
+            conn.close()
+
+    def test_store_open_adds_memories_occurrences_column(self) -> None:
+        # The column's canonical home is database.py (SCHEMA + MIGRATIONS), so init_db alone
+        # already provides it; the store-side ensure stays as a harmless no-op safety net for
+        # DBs created by older init_db versions.
+        init_db(self.db_path)
+        self.assertIn("occurrences", self._columns())
+
+        CortexStore(self.db_path, vault_path=Path(self._tmp.name) / "vault")
+        self.assertIn("occurrences", self._columns())
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            # Legacy rows (inserted without the column) read back the default of 1.
+            conn.execute(
+                "INSERT INTO memories (id, user_id, kind, content, source, layer, sector, "
+                "provenance_json, captured_at) "
+                "VALUES ('m1', 'u1', 'semantic', 'hi', 'test', 'semantic', 'work', '{}', "
+                "'2026-01-01T00:00:00Z')"
+            )
+            conn.commit()
+            row = conn.execute("SELECT occurrences FROM memories WHERE id='m1'").fetchone()
+            self.assertEqual(row[0], 1)
+        finally:
+            conn.close()
+
+    def test_store_open_upgrade_is_idempotent(self) -> None:
+        # The common real path: an already-current DB re-opened at every launch.
+        init_db(self.db_path)
+        for _ in range(3):
+            CortexStore(self.db_path, vault_path=Path(self._tmp.name) / "vault")
+        self.assertIn("occurrences", self._columns())
+
+    def test_store_open_upgrades_pre_migration_database(self) -> None:
+        # Oldest supported shape: a pre-MIGRATIONS database, upgraded by init_db and
+        # then opened by the store — both migration layers must apply cleanly.
+        _build_pre_migration_db(self.db_path)
+        init_db(self.db_path)
+        CortexStore(self.db_path, vault_path=Path(self._tmp.name) / "vault")
+        columns = self._columns()
+        self.assertIn("occurrences", columns)
+        self.assertIn("layer", columns)
 
 
 if __name__ == "__main__":

@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS memories (
   captured_at TEXT NOT NULL,
   updated_at TEXT,
   raw_excerpt TEXT,
+  occurrences INTEGER NOT NULL DEFAULT 1,
   FOREIGN KEY(capture_id) REFERENCES captures(id) ON DELETE CASCADE
 );
 
@@ -389,6 +390,7 @@ MIGRATIONS = [
     "ALTER TABLE memories ADD COLUMN valid_from TEXT",
     "ALTER TABLE memories ADD COLUMN valid_to TEXT",
     "ALTER TABLE memories ADD COLUMN superseded_by TEXT",
+    "ALTER TABLE memories ADD COLUMN occurrences INTEGER NOT NULL DEFAULT 1",
     "ALTER TABLE import_sessions ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0",
 ]
 

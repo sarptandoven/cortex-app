@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import parse_qs
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -30,7 +31,7 @@ from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
 from .mcp_tools import CORE_TOOL_NAMES, TOOLS, call_tool, tool_call_result, tools_for_scopes
 from .observability import metrics, route_label
-from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CalendarSyncRequest, CalendarSyncResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GitHubRepositoryDiscoveryRequest, GitHubRepositoryDiscoveryResponse, GitHubSyncRequest, GitHubSyncResponse, GmailSyncRequest, GmailSyncResponse, GoogleDriveSyncRequest, GoogleDriveSyncResponse, GoogleOAuthCompleteRequest, GoogleOAuthCompleteResponse, GoogleOAuthStartRequest, GoogleOAuthStartResponse, GraphResponse, JiraSyncRequest, JiraSyncResponse, JobRunResponse, LinearSyncRequest, LinearSyncResponse, ListResponse, MaintenanceResponse, ManagedOAuthCompleteRequest, ManagedOAuthCompleteResponse, ManagedOAuthStartRequest, ManagedOAuthStartResponse, MCPRequest, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, NotionSyncRequest, NotionSyncResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, OutlookSyncRequest, OutlookSyncResponse, ProductLoopResponse, QueuedCaptureResponse, RaindropSyncRequest, RaindropSyncResponse, ReadwiseSyncRequest, ReadwiseSyncResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SlackChannelDiscoveryRequest, SlackChannelDiscoveryResponse, SlackSyncRequest, SlackSyncResponse, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse, ZoteroSyncRequest, ZoteroSyncResponse
+from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CalendarSyncRequest, CalendarSyncResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GitHubRepositoryDiscoveryRequest, GitHubRepositoryDiscoveryResponse, GitHubSyncRequest, GitHubSyncResponse, GmailSyncRequest, GmailSyncResponse, GoogleDriveSyncRequest, GoogleDriveSyncResponse, GoogleOAuthCompleteRequest, GoogleOAuthCompleteResponse, GoogleOAuthStartRequest, GoogleOAuthStartResponse, GraphResponse, JiraSyncRequest, JiraSyncResponse, JobRunResponse, LinearSyncRequest, LinearSyncResponse, ListResponse, MaintenanceResponse, ManagedOAuthCompleteRequest, ManagedOAuthCompleteResponse, ManagedOAuthStartRequest, ManagedOAuthStartResponse, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, NotionSyncRequest, NotionSyncResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, OutlookSyncRequest, OutlookSyncResponse, ProductLoopResponse, QueuedCaptureResponse, RaindropSyncRequest, RaindropSyncResponse, ReadwiseSyncRequest, ReadwiseSyncResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SlackChannelDiscoveryRequest, SlackChannelDiscoveryResponse, SlackSyncRequest, SlackSyncResponse, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse, ZoteroSyncRequest, ZoteroSyncResponse
 from .models import UserListResponse, UserProvisionRequest, UserProvisionResponse, UserStatusResponse
 from .oidc_registry import OidcError, OidcProviderRegistry
 from .ratelimit import TokenBucketRateLimiter
@@ -3089,21 +3090,48 @@ register_web_account_routes(
 )
 
 
+# MCP protocol revisions /mcp can serve, newest first. The JSON-RPC shapes Cortex uses
+# (initialize, tools/list, tools/call, ping) are identical across these revisions, so
+# initialize echoes whichever revision the client requested and offers the newest otherwise.
+MCP_PROTOCOL_VERSIONS = ("2025-03-26", "2024-11-05")
+
+
 @app.post("/mcp")
-def mcp(request: MCPRequest, context: dict[str, Any] = Depends(mcp_auth)) -> dict[str, Any]:
+async def mcp(request: Request, context: dict[str, Any] = Depends(mcp_auth)) -> Response:
     user_id = context["user_id"]
     token_scopes = None if context.get("admin") else list(context.get("scopes") or [])
+    raw = await request.body()
     try:
-        if request.method == "initialize":
+        message = json.loads(raw.decode("utf-8")) if raw else {}
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Request body must be valid JSON"}})
+    if isinstance(message, list):
+        # JSON-RPC batch arrays are not part of MCP; reject cleanly instead of tracebacking.
+        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "batch not supported"}})
+    if not isinstance(message, dict):
+        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "request must be a JSON-RPC object"}})
+    method = message.get("method")
+    if message.get("id") is None or (isinstance(method, str) and method.startswith("notifications/")):
+        # JSON-RPC notification (no id, e.g. notifications/initialized): remote clients POST
+        # these directly; per the MCP streamable HTTP spec, accept with 202 and no body.
+        return Response(status_code=202)
+    try:
+        if method == "initialize":
+            params = message.get("params") if isinstance(message.get("params"), dict) else {}
+            requested_version = params.get("protocolVersion")
             result = {
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": requested_version if requested_version in MCP_PROTOCOL_VERSIONS else MCP_PROTOCOL_VERSIONS[0],
                 "serverInfo": {"name": "cortex", "version": BACKEND_VERSION},
                 "capabilities": {"tools": {}},
             }
-        elif request.method == "tools/list":
+        elif method == "ping":
+            result = {}
+        elif method == "tools/list":
+            # Spec params such as cursor are tolerated (ignored): the full list is one page,
+            # so no nextCursor is ever returned.
             result = {"tools": tools_for_scopes(token_scopes, surface=settings.mcp_tool_surface)}
-        elif request.method == "tools/call":
-            params = request.params or {}
+        elif method == "tools/call":
+            params = message.get("params") or {}
             tool_name = params.get("name", "")
             arguments = params.get("arguments", {}) or {}
             try:
@@ -3114,7 +3142,7 @@ def mcp(request: MCPRequest, context: dict[str, Any] = Depends(mcp_auth)) -> dic
                 raise
             result = tool_call_result(value)
         else:
-            raise ValueError(f"Unsupported MCP method: {request.method}")
-        return {"jsonrpc": "2.0", "id": request.id, "result": result}
+            return JSONResponse({"jsonrpc": "2.0", "id": message.get("id"), "error": {"code": -32601, "message": f"Method not found: {method}"}})
+        return JSONResponse({"jsonrpc": "2.0", "id": message.get("id"), "result": jsonable_encoder(result)})
     except Exception as exc:
-        return {"jsonrpc": "2.0", "id": request.id, "error": {"code": -32000, "message": str(exc)}}
+        return JSONResponse({"jsonrpc": "2.0", "id": message.get("id"), "error": {"code": -32000, "message": str(exc)}})

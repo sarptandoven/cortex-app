@@ -321,7 +321,10 @@ def _cluster_to_element(cluster: list[dict]) -> Optional[dict]:
     return {
         "text": text,
         "source": source,
-        "count": len(cluster),
+        # Repetition-weighted support: a memory saved N times carries occurrences=N (the
+        # store collapses identical statements into one row), so honest repetition of the
+        # same sentence counts as N, not 1. distinct_sources stays a plain member count.
+        "count": _cluster_support(cluster),
         "memory_ids": memory_ids,
         "source_url": source_url,
     }
@@ -388,7 +391,7 @@ def _build_timeline_section(layer_items: dict[str, list[dict]]) -> Optional[dict
                 "element": {
                     "text": f"{date} — {text}" if date else text,
                     "source": source,
-                    "count": 1,
+                    "count": _item_occurrences(item),
                     "memory_ids": [item_id],
                     "source_url": source_url,
                 },
@@ -400,7 +403,9 @@ def _build_timeline_section(layer_items: dict[str, list[dict]]) -> Optional[dict
 
     if not entries:
         return None
-    if len(entries) < _MIN_ELEMENT_SUPPORT and max(e["importance"] for e in entries) < _IMPORTANT_FLOOR:
+    # Support is repetition-weighted (occurrences), matching the behavioral sections.
+    total_support = sum(e["element"]["count"] for e in entries)
+    if total_support < _MIN_ELEMENT_SUPPORT and max(e["importance"] for e in entries) < _IMPORTANT_FLOOR:
         return None
 
     # Most recent first; unknown timestamps sort last; id breaks ties.
@@ -409,7 +414,7 @@ def _build_timeline_section(layer_items: dict[str, list[dict]]) -> Optional[dict
 
     # Single-event elements never clear the behavioral high band; the timeline is
     # descriptive, so its confidence is capped at medium.
-    confidence = "medium" if len(entries) >= _MEDIUM_SUPPORT else "low"
+    confidence = "medium" if total_support >= _MEDIUM_SUPPORT else "low"
     return {
         "id": _TIMELINE_SECTION_ID,
         "title": _TIMELINE_SECTION_TITLE,
@@ -926,6 +931,18 @@ def _example_view(item: dict) -> dict:
 
 def _item_text(item: dict) -> str:
     return _text(item.get("summary")) or _text(item.get("content"))
+
+
+def _item_occurrences(item: dict) -> int:
+    """How many times this memory was saved (>= 1). Items that predate the store's
+    occurrences field count once, exactly as before."""
+    count = _as_int(item.get("occurrences"), default=1)
+    return count if count > 0 else 1
+
+
+def _cluster_support(cluster: list[dict]) -> int:
+    """Cluster support weighted by repetition: the sum of member occurrences."""
+    return sum(_item_occurrences(item) for item in cluster)
 
 
 def _clean_source_url(value: Any) -> Optional[str]:

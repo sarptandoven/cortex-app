@@ -105,10 +105,18 @@ struct ModelTab: View {
 struct SyncProgressCard: View {
     let progress: SyncProgress
 
+    /// "Syncing Notes…" when the queue names what it is working on; the generic label otherwise.
+    private var title: String {
+        if let detail = progress.detail, !detail.isEmpty {
+            return "Syncing \(detail)…"
+        }
+        return "Syncing your memory…"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: CortexDesign.Space.sm) {
-                Text("Syncing your memory…")
+                Text(title)
                     .font(.callout)
                     .fontWeight(.semibold)
                     .foregroundColor(CortexDesign.ink)
@@ -129,8 +137,8 @@ struct SyncProgressCard: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
             progress.total > 0
-                ? "Syncing your memory, \(progress.done) of \(progress.total)"
-                : "Syncing your memory"
+                ? "\(title.replacingOccurrences(of: "…", with: "")), \(progress.done) of \(progress.total)"
+                : title.replacingOccurrences(of: "…", with: "")
         )
     }
 }

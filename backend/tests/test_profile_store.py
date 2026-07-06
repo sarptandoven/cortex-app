@@ -81,7 +81,13 @@ class BuildProfileStoreTests(unittest.TestCase):
         for i in range(5):
             self._seed(f"pref_{i}", layer="preference",
                        content="You prefer async written updates over meetings.", source="slack")
-        self.assertEqual(self.store.build_profile(self.user_id), self.store.build_profile(self.user_id))
+        # generated_at is a second-precision wall-clock stamp; two builds can legitimately
+        # straddle a second boundary. Content determinism is the contract.
+        first = self.store.build_profile(self.user_id)
+        second = self.store.build_profile(self.user_id)
+        first.pop("generated_at", None)
+        second.pop("generated_at", None)
+        self.assertEqual(first, second)
 
 
 if __name__ == "__main__":

@@ -4320,6 +4320,87 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertIn("sync_connected_sources", admin_tool_names)
         self.assertIn("approve_memory_capture", admin_tool_names)
 
+    def post_mcp(self, message):
+        # POST a raw JSON-RPC payload to /mcp without raising on 4xx/5xx: returns (status, body).
+        data = json.dumps(message).encode("utf-8")
+        req = request.Request(
+            self.base_url + "/mcp",
+            data=data,
+            headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with request.urlopen(req, timeout=5) as response:
+                return response.status, response.read().decode("utf-8")
+        except error.HTTPError as exc:
+            body = exc.read().decode("utf-8")
+            exc.close()
+            return exc.code, body
+
+    def test_mcp_initialize_echoes_supported_protocol_version(self) -> None:
+        # Remote clients (ChatGPT web, Claude web) negotiate the protocol revision on initialize:
+        # echo theirs when we can serve it, otherwise offer our newest.
+        for requested in standalone_server.MCP_PROTOCOL_VERSIONS:
+            status, body = self.post_mcp({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": requested, "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}},
+            })
+            payload = json.loads(body)
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["result"]["protocolVersion"], requested)
+            self.assertEqual(payload["result"]["serverInfo"]["name"], "cortex")
+            self.assertEqual(payload["result"]["serverInfo"]["version"], standalone_server.BACKEND_VERSION)
+            self.assertEqual(payload["result"]["capabilities"], {"tools": {}})
+
+        for params in ({"protocolVersion": "1999-01-01"}, {}, None):
+            status, body = self.post_mcp({"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": params})
+            payload = json.loads(body)
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["result"]["protocolVersion"], standalone_server.MCP_PROTOCOL_VERSIONS[0])
+
+    def test_mcp_notifications_are_accepted_without_response_body(self) -> None:
+        # Id-less JSON-RPC messages are notifications: never an error, no response body (202).
+        for message in (
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 9}},
+        ):
+            status, body = self.post_mcp(message)
+            self.assertEqual(status, 202)
+            self.assertEqual(body, "")
+
+    def test_mcp_tools_list_tolerates_cursor_param(self) -> None:
+        status, body = self.post_mcp({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {"cursor": "opaque-cursor"}})
+        payload = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertNotIn("error", payload)
+        self.assertTrue(payload["result"]["tools"])
+        self.assertNotIn("nextCursor", payload["result"])
+
+    def test_mcp_ping_returns_empty_result(self) -> None:
+        status, body = self.post_mcp({"jsonrpc": "2.0", "id": "ping-1", "method": "ping"})
+        payload = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["result"], {})
+        self.assertEqual(payload["id"], "ping-1")
+
+    def test_mcp_batch_requests_rejected_with_clean_jsonrpc_error(self) -> None:
+        status, body = self.post_mcp([
+            {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        ])
+        payload = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["error"]["code"], -32600)
+        self.assertIn("batch not supported", payload["error"]["message"])
+
+    def test_mcp_unknown_method_returns_method_not_found(self) -> None:
+        status, body = self.post_mcp({"jsonrpc": "2.0", "id": 4, "method": "resources/list", "params": {}})
+        payload = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertNotIn("result", payload)
+        self.assertEqual(payload["error"]["code"], -32601)
+        self.assertIn("resources/list", payload["error"]["message"])
+
     def test_integration_tokens_can_be_listed_and_revoked(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "alice"}
         with request.urlopen(request.Request(self.base_url + "/v1/integrations/tokens?audience=api", headers=headers), timeout=5) as response:

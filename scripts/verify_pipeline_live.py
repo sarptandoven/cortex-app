@@ -211,8 +211,10 @@ def main() -> int:
         pack_text = json.dumps(pack)
         identity_layers = [layer for layer in pack.get("layers", []) if layer.get("layer") == "identity"]
         check("get_context identity layer present", bool(identity_layers) and not identity_layers[0].get("omitted"), pack_text[:300])
-        for layer, _, marker in SEEDS[:4]:  # preference/style/negative/decision fit this task
+        for layer, _, marker in SEEDS[:3]:  # preference/style/negative fit this drafting task
             check(f"get_context reaches {layer}", marker.lower() in pack_text.lower(), f"marker {marker!r} missing")
+        decision_pack_text = json.dumps(agent.tool("get_context", {"task": "which database does the main memory store use?"}))
+        check("get_context reaches decision", "postgresql" in decision_pack_text.lower(), decision_pack_text[:300])
         release_pack_text = json.dumps(agent.tool("get_context", {"task": "ship the next Cortex release"}))
         check("get_context reaches procedural", "bump the version" in release_pack_text.lower(), release_pack_text[:300])
 

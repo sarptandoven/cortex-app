@@ -329,6 +329,11 @@ def _bool_value(value, default: bool = False) -> bool:
 # front of it). 16 MiB comfortably exceeds any legitimate capture/import page.
 MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024
 
+# MCP protocol revisions /mcp can serve, newest first. The JSON-RPC shapes Cortex uses
+# (initialize, tools/list, tools/call, ping) are identical across these revisions, so
+# initialize echoes whichever revision the client requested and offers the newest otherwise.
+MCP_PROTOCOL_VERSIONS = ("2025-03-26", "2024-11-05")
+
 
 class _RequestTooLarge(Exception):
     """Raised when a request body exceeds MAX_REQUEST_BODY_BYTES (-> 413)."""
@@ -2055,15 +2060,33 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
         user_id = context["user_id"]
         token_scopes = None if context.get("admin") else list(context.get("scopes") or [])
         request = self._json_body()
+        if isinstance(request, list):
+            # JSON-RPC batch arrays are not part of MCP; reject cleanly instead of tracebacking.
+            self._send_json({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "batch not supported"}})
+            return
+        if not isinstance(request, dict):
+            self._send_json({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "request must be a JSON-RPC object"}})
+            return
+        method = request.get("method")
+        if request.get("id") is None or (isinstance(method, str) and method.startswith("notifications/")):
+            # JSON-RPC notification (no id, e.g. notifications/initialized): remote clients POST
+            # these directly; per the MCP streamable HTTP spec, accept with 202 and no body.
+            self._send_bytes(b"", status=HTTPStatus.ACCEPTED, media_type="application/json")
+            return
         try:
-            method = request.get("method")
             if method == "initialize":
+                params = request.get("params") if isinstance(request.get("params"), dict) else {}
+                requested_version = params.get("protocolVersion")
                 result = {
-                    "protocolVersion": "2024-11-05",
+                    "protocolVersion": requested_version if requested_version in MCP_PROTOCOL_VERSIONS else MCP_PROTOCOL_VERSIONS[0],
                     "serverInfo": {"name": "cortex", "version": BACKEND_VERSION},
                     "capabilities": {"tools": {}},
                 }
+            elif method == "ping":
+                result = {}
             elif method == "tools/list":
+                # Spec params such as cursor are tolerated (ignored): the full list is one page,
+                # so no nextCursor is ever returned.
                 result = {"tools": tools_for_scopes(token_scopes, surface=settings.mcp_tool_surface)}
             elif method == "tools/call":
                 params = request.get("params") or {}
@@ -2077,7 +2100,8 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     raise
                 result = tool_call_result(value)
             else:
-                raise ValueError(f"Unsupported MCP method: {method}")
+                self._send_json({"jsonrpc": "2.0", "id": request.get("id"), "error": {"code": -32601, "message": f"Method not found: {method}"}})
+                return
             self._send_json({"jsonrpc": "2.0", "id": request.get("id"), "result": result})
         except Exception as exc:
             self._send_json({"jsonrpc": "2.0", "id": request.get("id"), "error": {"code": -32000, "message": self._safe_error_message(exc)}})

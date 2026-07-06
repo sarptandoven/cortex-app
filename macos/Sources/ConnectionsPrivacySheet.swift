@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
@@ -674,6 +675,127 @@ private func connectorLibraryIcon(_ id: String) -> String {
     }
 }
 
+/// One numbered walkthrough row: a serif numeral in a small circle, full ink while current,
+/// faint otherwise. Clicking selects the step. The highlight is purely visual — it never
+/// moves keyboard or VoiceOver focus.
+private struct GuidedStepRow: View {
+    let number: Int
+    let text: String
+    let font: Font
+    let isCurrent: Bool
+    let select: () -> Void
+
+    var body: some View {
+        Button(action: select) {
+            HStack(alignment: .top, spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(isCurrent ? CortexDesign.accent : Color.clear)
+                    Circle()
+                        .stroke(isCurrent ? CortexDesign.accent : CortexDesign.inkFaint, lineWidth: 1)
+                    Text("\(number)")
+                        .font(.system(size: 10, weight: .semibold, design: .serif))
+                        .foregroundColor(isCurrent ? CortexDesign.panelBackground : CortexDesign.inkFaint)
+                }
+                .frame(width: 18, height: 18)
+                .padding(.top, 1)
+                Text(text)
+                    .font(font)
+                    .foregroundColor(isCurrent ? CortexDesign.ink : CortexDesign.inkFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Step \(number): \(text)")
+    }
+}
+
+/// Shared guided walkthrough for external-step instructions (chat exports, token setup).
+/// The current-step highlight auto-advances on a gentle ~2.5s loop while `isActive` and the
+/// view is on screen; clicking any row jumps the highlight there. Every step renders — some
+/// connectors (Slack) send more than three.
+private struct GuidedStepWalkthrough<StepFootnote: View>: View {
+    let steps: [String]
+    let isActive: Bool
+    let textFont: Font
+    private let stepFootnote: (Int) -> StepFootnote
+
+    @State private var currentStep = 0
+    @State private var ticker = makeGuidedStepTicker()
+
+    init(
+        steps: [String],
+        isActive: Bool = true,
+        textFont: Font = .callout,
+        @ViewBuilder stepFootnote: @escaping (Int) -> StepFootnote
+    ) {
+        self.steps = steps
+        self.isActive = isActive
+        self.textFont = textFont
+        self.stepFootnote = stepFootnote
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                VStack(alignment: .leading, spacing: 5) {
+                    GuidedStepRow(
+                        number: index + 1,
+                        text: step,
+                        font: textFont,
+                        isCurrent: index == currentStep
+                    ) {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            currentStep = index
+                        }
+                        restartTicker()
+                    }
+                    stepFootnote(index)
+                        .padding(.leading, 28)
+                }
+            }
+        }
+        .onReceive(ticker) { _ in
+            guard isActive, steps.count > 1 else { return }
+            withAnimation(.easeInOut(duration: 0.35)) {
+                currentStep = (currentStep + 1) % steps.count
+            }
+        }
+        .onChange(of: isActive) { active in
+            if active {
+                restartTicker()
+            } else {
+                stopTicker()
+            }
+        }
+        .onAppear {
+            if isActive {
+                restartTicker()
+            }
+        }
+        .onDisappear {
+            stopTicker()
+        }
+    }
+
+    private func restartTicker() {
+        stopTicker()
+        ticker = makeGuidedStepTicker()
+    }
+
+    private func stopTicker() {
+        ticker.upstream.connect().cancel()
+    }
+}
+
+/// ~2.5s per step: slow enough to read, quick enough to feel alive.
+private func makeGuidedStepTicker() -> Publishers.Autoconnect<Timer.TimerPublisher> {
+    Timer.publish(every: 2.5, on: .main, in: .common).autoconnect()
+}
+
 /// Import your ChatGPT / Claude history. There's no live sign-in for these (the providers don't
 /// offer one), so this card guides the export, auto-detects it in Downloads, and takes a
 /// drag-drop or file pick. Imported content is trusted and usable immediately.
@@ -758,18 +880,16 @@ private struct AIChatsImportCard: View {
                 }
 
             DisclosureGroup(isExpanded: $guideExpanded) {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
-                        HStack(alignment: .top, spacing: 8) {
-                            Text("\(index + 1).").font(.caption).fontWeight(.semibold).foregroundColor(CortexDesign.accent).monospacedDigit()
-                            Text(step).font(.caption).foregroundColor(CortexDesign.inkSecondary).fixedSize(horizontal: false, vertical: true)
+                // Guided walkthrough: the highlight strolls through the steps on a loop while
+                // the disclosure is open, and clicking a step jumps it there. The one-click
+                // export links sit with step 1 so the first action is obvious.
+                GuidedStepWalkthrough(steps: steps, isActive: guideExpanded, textFont: .caption) { index in
+                    if index == 0 {
+                        HStack(spacing: 16) {
+                            exportSettingsLink("Open ChatGPT export settings", urlString: "https://chatgpt.com/#settings/DataControls")
+                            exportSettingsLink("Open Claude export settings", urlString: "https://claude.ai/settings/data-privacy-controls")
                         }
                     }
-                    HStack(spacing: 16) {
-                        exportSettingsLink("Open ChatGPT export settings", urlString: "https://chatgpt.com/#settings/DataControls")
-                        exportSettingsLink("Open Claude export settings", urlString: "https://claude.ai/settings/data-privacy-controls")
-                    }
-                    .padding(.top, 4)
                 }
                 .padding(.top, 6)
             } label: {
@@ -1292,28 +1412,19 @@ private struct ConnectorTokenSetupSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if let setup, !setup.setupSteps.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 10) {
                             Text("How to connect")
                                 .font(.caption)
                                 .fontWeight(.semibold)
                                 .foregroundColor(CortexDesign.inkSecondary)
-                            ForEach(Array(setup.setupSteps.enumerated()), id: \.offset) { index, step in
-                                HStack(alignment: .top, spacing: 8) {
-                                    Text("\(index + 1).")
-                                        .font(.callout)
-                                        .fontWeight(.semibold)
-                                        .foregroundColor(CortexDesign.accent)
-                                        .monospacedDigit()
-                                    Text(step)
-                                        .font(.callout)
-                                        .foregroundColor(CortexDesign.ink)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                            }
-                            if let url = setup.helpURL {
-                                Link(destination: url) {
-                                    Label("Open setup help", systemImage: "arrow.up.right.square")
-                                        .font(.caption)
+                            // Every backend step renders (Slack sends more than three), and the
+                            // help link sits with step 1 so the first action is obvious.
+                            GuidedStepWalkthrough(steps: setup.setupSteps) { index in
+                                if index == 0, let url = setup.helpURL {
+                                    Link(destination: url) {
+                                        Label("Open setup help", systemImage: "arrow.up.right.square")
+                                            .font(.caption)
+                                    }
                                 }
                             }
                         }

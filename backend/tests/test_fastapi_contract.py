@@ -3016,6 +3016,95 @@ END:VCALENDAR
         self.assertEqual(bob.json()["user_id"], "mcp-token-bob")
         self.assertNotEqual(alice.json()["token_id"], bob.json()["token_id"])
 
+    def test_mcp_initialize_negotiates_protocol_version(self) -> None:
+        # Remote clients (ChatGPT web, Claude web) negotiate the protocol revision on initialize:
+        # echo theirs when we can serve it, otherwise offer our newest.
+        headers = {"Authorization": "Bearer test-token"}
+        for requested in main_module.MCP_PROTOCOL_VERSIONS:
+            response = self.client.post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {"protocolVersion": requested, "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}},
+                },
+                headers=headers,
+            )
+            self.assertEqual(response.status_code, 200)
+            result = response.json()["result"]
+            self.assertEqual(result["protocolVersion"], requested)
+            self.assertEqual(result["serverInfo"]["name"], "cortex")
+            self.assertEqual(result["serverInfo"]["version"], main_module.BACKEND_VERSION)
+            self.assertEqual(result["capabilities"], {"tools": {}})
+
+        for params in ({"protocolVersion": "1999-01-01"}, {}, None):
+            response = self.client.post(
+                "/mcp",
+                json={"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": params},
+                headers=headers,
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["result"]["protocolVersion"], main_module.MCP_PROTOCOL_VERSIONS[0])
+
+    def test_mcp_notifications_are_accepted_without_response_body(self) -> None:
+        # Id-less JSON-RPC messages are notifications: never an error, no response body (202).
+        headers = {"Authorization": "Bearer test-token"}
+        for message in (
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 9}},
+        ):
+            response = self.client.post("/mcp", json=message, headers=headers)
+            self.assertEqual(response.status_code, 202)
+            self.assertEqual(response.content, b"")
+
+    def test_mcp_tools_list_tolerates_cursor_param(self) -> None:
+        response = self.client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {"cursor": "opaque-cursor"}},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertNotIn("error", payload)
+        self.assertTrue(payload["result"]["tools"])
+        self.assertNotIn("nextCursor", payload["result"])
+
+    def test_mcp_ping_returns_empty_result(self) -> None:
+        response = self.client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": "ping-1", "method": "ping"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["result"], {})
+        self.assertEqual(payload["id"], "ping-1")
+
+    def test_mcp_batch_requests_rejected_with_clean_jsonrpc_error(self) -> None:
+        response = self.client.post(
+            "/mcp",
+            json=[
+                {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            ],
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["error"]["code"], -32600)
+        self.assertIn("batch not supported", payload["error"]["message"])
+
+    def test_mcp_unknown_method_returns_method_not_found(self) -> None:
+        response = self.client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 4, "method": "resources/list", "params": {}},
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertNotIn("result", payload)
+        self.assertEqual(payload["error"]["code"], -32601)
+        self.assertIn("resources/list", payload["error"]["message"])
+
     def test_mcp_tool_calls_return_structured_content_for_retrieval_and_catalog(self) -> None:
         user = "mcp-structured-content-contract"
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}

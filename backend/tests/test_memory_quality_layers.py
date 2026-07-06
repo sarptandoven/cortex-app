@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.app.database import init_db
+from backend.app.database import connect, init_db
 from backend.app.mcp_tools import TOOLS, call_tool
 from backend.app.storage import CortexStore
 
@@ -820,6 +820,78 @@ class MemoryQualityLayerTests(unittest.TestCase):
         )
         thin = self.store.build_profile(self.user_id, include_pending=True)
         self.assertEqual(thin["sections"], [])
+
+    def _save_repeated_statement(self, times: int) -> None:
+        """Save the exact same statement `times` times as genuinely separate captures
+        (distinct timestamps -> distinct capture ids), the honest-repetition path."""
+        for index in range(times):
+            self.store.save_capture(
+                user_id=self.user_id,
+                content="I prefer dark mode in every editor and terminal.",
+                source="unit-test",
+                source_url="unit-test://repetition",
+                title="Repetition fixture",
+                extracted={
+                    "_timestamp": f"2026-07-{index + 1:02d}T10:00:00+00:00",
+                    "summary": "Repetition fixture",
+                    "records": [
+                        {
+                            "id": "mem_repeat_dark_mode",
+                            "kind": "preference",
+                            "layer": "preference",
+                            "content": "I prefer dark mode in every editor and terminal.",
+                            # Below _IMPORTANT_FLOOR on purpose: only repetition-derived
+                            # support can surface/raise this element.
+                            "importance": 3,
+                        }
+                    ],
+                    "tasks": [],
+                    "entities": [],
+                },
+            )
+
+    def test_repeated_statement_accrues_occurrences_and_profile_support(self) -> None:
+        self._save_repeated_statement(3)
+
+        # Content-derived ids collapse to ONE memory row, but honest repetition accrues.
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT id, occurrences FROM memories WHERE user_id = ?", (self.user_id,)
+            ).fetchall()
+        self.assertEqual([(row["id"], int(row["occurrences"])) for row in rows], [("mem_repeat_dark_mode", 3)])
+
+        # The memory payload contract carries occurrences (additive).
+        found = self.store.search(self.user_id, "dark mode editor terminal", limit=5)
+        self.assertEqual([item["id"] for item in found], ["mem_repeat_dark_mode"])
+        self.assertEqual(found[0]["occurrences"], 3)
+
+        # Profile support is repetition-weighted: 3 saves of one sentence = support 3,
+        # which clears the medium confidence band (support >= 3).
+        profile = self.store.build_profile(self.user_id, include_pending=True)
+        sections_by_id = {section["id"]: section for section in profile["sections"]}
+        self.assertIn("preferences", sections_by_id)
+        preferences = sections_by_id["preferences"]
+        element = next(
+            element
+            for element in preferences["elements"]
+            if "mem_repeat_dark_mode" in element["memory_ids"]
+        )
+        self.assertGreaterEqual(element["count"], 3)
+        self.assertEqual(preferences["confidence"], "medium")
+
+    def test_vault_rebuild_preserves_occurrences(self) -> None:
+        self._save_repeated_statement(3)
+
+        # A rebuild re-inserts every vault memory once; it must restore the accrued
+        # count, never reset or inflate it — and stay idempotent across rebuilds.
+        for _ in range(2):
+            self.store.rebuild_index_from_vault(self.user_id)
+            with connect(self.db_path) as conn:
+                rows = conn.execute(
+                    "SELECT occurrences FROM memories WHERE user_id = ? AND id = ?",
+                    (self.user_id, "mem_repeat_dark_mode"),
+                ).fetchall()
+            self.assertEqual([int(row["occurrences"]) for row in rows], [3])
 
     def test_get_style_profile_prefers_current_trusted_style_over_stale_generated(self) -> None:
         # Conflicting style guidance with similar lexical overlap: a current,

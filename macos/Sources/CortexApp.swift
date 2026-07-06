@@ -899,19 +899,27 @@ struct ScheduledSourceSyncSkip: Codable {
 /// GET /v1/jobs/health — the queue snapshot that drives a real (changing) sync progress bar.
 struct JobHealthResponse: Codable {
     let counts: JobCounts?
+    let active: [ActiveJob]?
     struct JobCounts: Codable {
         let queued: Int?
         let running: Int?
         let succeeded: Int?
         let failed: Int?
     }
+    struct ActiveJob: Codable {
+        let job_type: String?
+        let source: String?
+        let created_at: String?
+    }
 }
 
 /// A determinate sync-progress value derived from the job queue: `done` finished of `total`
-/// in-flight+finished. `active` while there is still queued/running work.
+/// in-flight+finished. `active` while there is still queued/running work. `detail` names what
+/// is being worked on right now (the front job's source, else a readable job type).
 struct SyncProgress: Equatable {
     let done: Int
     let total: Int
+    var detail: String? = nil
     var active: Bool { total > 0 && done < total }
     var fraction: Double { total > 0 ? min(1.0, max(0.0, Double(done) / Double(total))) : 0 }
 }
@@ -2884,6 +2892,30 @@ final class AppState: ObservableObject {
         generateSecret(prefix: "cxm_")
     }
 
+    // Per-app MCP tokens: each installed AI host gets its own credential, so a leaked
+    // config from one app exposes only that app and can be revoked without breaking the
+    // rest. The shared mcpAPIKey stays as the legacy/manual-copy fallback.
+    private static func mcpTokenDefaultsKey(for integrationID: String) -> String {
+        "mcp-token-\(integrationID)"
+    }
+
+    private static func existingMCPToken(for integrationID: String) -> String? {
+        guard let existing = CortexCredentialStore.loadSecret(forKey: mcpTokenDefaultsKey(for: integrationID)),
+              existing.hasPrefix("cxm_") else {
+            return nil
+        }
+        return existing
+    }
+
+    private static func loadOrCreateMCPToken(for integrationID: String) -> String {
+        if let existing = existingMCPToken(for: integrationID) {
+            return existing
+        }
+        let generated = generateMCPAPIKey()
+        CortexCredentialStore.saveSecret(generated, forKey: mcpTokenDefaultsKey(for: integrationID))
+        return generated
+    }
+
     private static func loadOrCreateObsidianPluginAPIKey() -> String {
         if let existing = CortexCredentialStore.loadSecret(forKey: obsidianPluginAPIKeyDefaultsKey),
            existing.hasPrefix("cx_") {
@@ -3414,6 +3446,11 @@ final class AppState: ObservableObject {
         backendStatus = message
         status = message
         _ = await registerMCPToken()
+        // Re-register existing per-app tokens so connected hosts keep working after an
+        // engine reset. The backend upserts by token, so this is idempotent.
+        for integration in integrations where AppState.existingMCPToken(for: integration.id) != nil {
+            _ = await registerMCPToken(for: integration)
+        }
     }
 
     /// User-triggered retry when the memory engine failed or stalled during first run.
@@ -3441,16 +3478,34 @@ final class AppState: ObservableObject {
     }
 
     private func registerMCPToken() async -> Bool {
+        // Legacy shared token: still used by manual copy flows and by configs written
+        // before per-app tokens existed.
+        await registerMCPToken(mcpAPIKey, label: "Connected AI tools")
+    }
+
+    private func registerMCPToken(for integration: AIIntegration) async -> Bool {
+        await registerMCPToken(AppState.loadOrCreateMCPToken(for: integration.id), label: integration.name)
+    }
+
+    /// Fire-and-forget registration for install paths that must stay synchronous.
+    /// The backend upserts by token, so repeat registrations are harmless.
+    private func registerMCPTokenInBackground(for integration: AIIntegration) {
+        Task { [weak self] in
+            _ = await self?.registerMCPToken(for: integration)
+        }
+    }
+
+    private func registerMCPToken(_ token: String, label: String) async -> Bool {
         do {
             _ = try await performRequest(
                 path: "/v1/integrations/mcp-token",
                 method: "POST",
                 body: [
-                    "token": mcpAPIKey,
-                    "label": "Connected AI tools",
+                    "token": token,
+                    "label": label,
                     // Least privilege: read covers the whole distilled picture (profile, person
                     // map, context) and write covers remember_this + source syncs. Raw exports,
-                    // maintenance, and review approvals stay off this shared agent token — the
+                    // maintenance, and review approvals stay off these agent tokens — the
                     // review gate is a human surface, and a leaked host config must not be able
                     // to bulk-dump the corpus.
                     "scopes": ["read", "write"]
@@ -3776,7 +3831,9 @@ final class AppState: ObservableObject {
             let succeeded = health.counts?.succeeded ?? 0
             let inFlight = queued + running
             if inFlight > 0 {
-                let progress = SyncProgress(done: succeeded, total: inFlight + succeeded)
+                let front = health.active?.first
+                let detail = Self.syncDetailLabel(source: front?.source, jobType: front?.job_type)
+                let progress = SyncProgress(done: succeeded, total: inFlight + succeeded, detail: detail)
                 if syncProgress != progress { syncProgress = progress }
                 await loadProfile()
                 await loadMirrorInsight()
@@ -3785,6 +3842,24 @@ final class AppState: ObservableObject {
             }
         } catch {
             // best-effort; leave any existing progress as-is
+        }
+    }
+
+    /// A human label for what the queue is working on right now: prefer the front job's source
+    /// ("Notes", "ChatGPT"); fall back to a readable job type; nil keeps the generic bar label.
+    static func syncDetailLabel(source: String?, jobType: String?) -> String? {
+        let trimmedSource = (source ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = trimmedSource.isEmpty ? (jobType ?? "") : trimmedSource
+        let cleaned = raw.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: "-", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return nil }
+        // Source labels users know by name keep their casing quirks fixed up.
+        switch cleaned.lowercased() {
+        case "obsidian", "local", "file", "notes": return "Notes"
+        case "chatgpt": return "ChatGPT"
+        case "claude": return "Claude"
+        case "github": return "GitHub"
+        default: return cleaned.prefix(1).uppercased() + cleaned.dropFirst()
         }
     }
 
@@ -5316,13 +5391,43 @@ final class AppState: ObservableObject {
     }
 
     func resetMCPIntegrationToken() async {
+        // Rotate the legacy shared token (manual copy flows and configs written before
+        // per-app tokens existed).
         mcpAPIKey = AppState.generateMCPAPIKey()
         CortexCredentialStore.saveSecret(mcpAPIKey, forKey: Self.mcpAPIKeyDefaultsKey)
-        let registered = await registerMCPToken()
+        var registered = await registerMCPToken()
+        // Rotate every per-app token and rewrite the configs of currently-installed
+        // hosts so they pick up their fresh credential without a manual reinstall.
+        var rewriteFailures: [String] = []
+        for integration in integrations {
+            let installedTargets = DistributionMode.isAppStore
+                ? []
+                : integration.configTargets.filter { configContainsCortex(at: $0.url) }
+            guard AppState.existingMCPToken(for: integration.id) != nil || !installedTargets.isEmpty else {
+                continue
+            }
+            CortexCredentialStore.saveSecret(
+                AppState.generateMCPAPIKey(),
+                forKey: Self.mcpTokenDefaultsKey(for: integration.id)
+            )
+            if !(await registerMCPToken(for: integration)) {
+                registered = false
+            }
+            for target in installedTargets {
+                do {
+                    try mergeMCPConfig(at: target.url, integration: integration)
+                } catch {
+                    rewriteFailures.append(integration.name)
+                    break
+                }
+            }
+        }
         await loadIntegrationTokens()
         refreshIntegrationStates()
-        if registered {
-            status = "Tool access reset. Reconnect detected AI tools or use fallback connection details if an app asks."
+        if !rewriteFailures.isEmpty {
+            status = "Tool access reset, but rewriting \(rewriteFailures.joined(separator: ", ")) failed. Reconnect those apps from Connections."
+        } else if registered {
+            status = "Tool access reset. Connected apps received fresh tokens; use fallback connection details if an app asks."
         } else {
             status = "Tool access token reset locally, but re-registering it with the memory engine failed. Reconnect your AI tools once the engine is reachable."
         }
@@ -5334,7 +5439,10 @@ final class AppState: ObservableObject {
 
     func copyMCPConfig(for integration: AIIntegration?) {
         ensureUsableMCPAPIKey()
-        let text = mcpConfigJSON()
+        if let integration = integration {
+            registerMCPTokenInBackground(for: integration)
+        }
+        let text = mcpConfigJSON(for: integration)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
         status = integration.map { "\($0.name) connection details copied" } ?? "Connection details copied"
@@ -5357,8 +5465,9 @@ final class AppState: ObservableObject {
             return
         }
         do {
+            registerMCPTokenInBackground(for: integration)
             for target in integration.configTargets {
-                try mergeMCPConfig(at: target.url)
+                try mergeMCPConfig(at: target.url, integration: integration)
             }
             refreshIntegrationStates()
             status = "\(integration.name) connected"
@@ -5383,8 +5492,9 @@ final class AppState: ObservableObject {
         var failures: [String] = []
         for integration in detected {
             do {
+                registerMCPTokenInBackground(for: integration)
                 for target in integration.configTargets {
-                    try mergeMCPConfig(at: target.url)
+                    try mergeMCPConfig(at: target.url, integration: integration)
                 }
                 installed += 1
             } catch {
@@ -5412,7 +5522,7 @@ final class AppState: ObservableObject {
                 continue
             }
             let verified = integration.configTargets.filter { target in
-                configHasVerifiedCortexServer(at: target.url)
+                configHasVerifiedCortexServer(at: target.url, for: integration)
             }
             let cortexPresent = integration.configTargets.filter { target in
                 configContainsCortex(at: target.url)
@@ -5443,7 +5553,7 @@ final class AppState: ObservableObject {
                 availablePaths: integration.configTargets.map { $0.url.path }
             )
         }
-        let verified = integration.configTargets.filter { configHasVerifiedCortexServer(at: $0.url) }
+        let verified = integration.configTargets.filter { configHasVerifiedCortexServer(at: $0.url, for: integration) }
         let cortexPresent = integration.configTargets.filter { configContainsCortex(at: $0.url) }
         return integrationStates[integration.id] ?? AIIntegrationState(
             appInstalled: integrationAppearsInstalled(integration),
@@ -5485,11 +5595,21 @@ final class AppState: ObservableObject {
         status = "Opened \(integration.name) config folder"
     }
 
-    private func mcpServerDefinition(redactToken: Bool = false) -> [String: Any] {
+    private func mcpServerDefinition(for integration: AIIntegration? = nil, redactToken: Bool = false) -> [String: Any] {
         ensureUsableMCPAPIKey()
+        // Least privilege: each host config embeds that host's own token. Flows with no
+        // integration context (manual copy) fall back to the shared legacy token.
+        let token: String
+        if redactToken {
+            token = "<copy-secret-connection-details>"
+        } else if let integration = integration {
+            token = AppState.loadOrCreateMCPToken(for: integration.id)
+        } else {
+            token = mcpAPIKey
+        }
         let env = [
             "CORTEX_BASE_URL": endpoint,
-            "CORTEX_API_KEY": redactToken ? "<copy-secret-connection-details>" : mcpAPIKey
+            "CORTEX_API_KEY": token
         ]
         // Host configs must never point inside the .app bundle — moves, updates, and Gatekeeper
         // translocation would silently break every connected AI app. The supervisor maintains a
@@ -5514,10 +5634,10 @@ final class AppState: ObservableObject {
         ]
     }
 
-    private func mcpConfigJSON(redactToken: Bool = false) -> String {
+    private func mcpConfigJSON(for integration: AIIntegration? = nil, redactToken: Bool = false) -> String {
         let config: [String: Any] = [
             "mcpServers": [
-                "cortex": mcpServerDefinition(redactToken: redactToken)
+                "cortex": mcpServerDefinition(for: integration, redactToken: redactToken)
             ]
         ]
         let data = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
@@ -5555,7 +5675,7 @@ final class AppState: ObservableObject {
         """
     }
 
-    private func mergeMCPConfig(at url: URL) throws {
+    private func mergeMCPConfig(at url: URL, integration: AIIntegration? = nil) throws {
         let manager = FileManager.default
         try manager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
 
@@ -5572,7 +5692,7 @@ final class AppState: ObservableObject {
         }
 
         var servers = root["mcpServers"] as? [String: Any] ?? [:]
-        servers["cortex"] = mcpServerDefinition()
+        servers["cortex"] = mcpServerDefinition(for: integration)
         root["mcpServers"] = servers
 
         let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
@@ -5597,7 +5717,7 @@ final class AppState: ObservableObject {
         return servers["cortex"] != nil
     }
 
-    private func configHasVerifiedCortexServer(at url: URL) -> Bool {
+    private func configHasVerifiedCortexServer(at url: URL, for integration: AIIntegration? = nil) -> Bool {
         guard let data = try? Data(contentsOf: url),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let servers = root["mcpServers"] as? [String: Any],
@@ -5623,7 +5743,16 @@ final class AppState: ObservableObject {
         let configuredBaseURL = (env["CORTEX_BASE_URL"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let expectedBaseURL = endpoint.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let configuredToken = (env["CORTEX_API_KEY"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return configuredBaseURL == expectedBaseURL && !configuredToken.isEmpty && configuredToken == mcpAPIKey
+        guard configuredBaseURL == expectedBaseURL, !configuredToken.isEmpty else {
+            return false
+        }
+        // Legacy shared-token configs stay verified; reinstalling upgrades them to a
+        // per-app token, which is the other accepted credential for this host.
+        if configuredToken == mcpAPIKey {
+            return true
+        }
+        guard let integration = integration else { return false }
+        return configuredToken == AppState.existingMCPToken(for: integration.id)
     }
 
     func copyLocalAPISettings() {
