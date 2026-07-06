@@ -24,7 +24,10 @@ from __future__ import annotations
 
 import logging
 import smtplib
-import ssl
+try:
+    import ssl
+except ModuleNotFoundError:  # App Store build ships without _ssl (TLS/HTTPS not used offline)
+    ssl = None  # type: ignore[assignment]
 from collections import deque
 from email.message import EmailMessage
 from typing import Protocol
@@ -211,6 +214,8 @@ class SmtpEmailSender:
         return message
 
     def send(self, to_addr: str, subject: str, body: str) -> None:
+        if ssl is None:
+            raise EmailSendError("TLS is unavailable in this build; SMTP email cannot be sent.")
         message = self._build_message(to_addr, subject, body)
         context = ssl.create_default_context()
         try:

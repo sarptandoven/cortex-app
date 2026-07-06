@@ -106,6 +106,34 @@ if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON"
     --exclude "turtledemo" \
     --exclude "ensurepip" \
     "$PYTHON_FRAMEWORK_SOURCE/lib/python3.12/" "$PY_STDLIB/"
+
+  # --- Strip non-public / deprecated-API C extensions Apple's App Store scanner rejects. ---
+  # The bundled headless backend never uses these, and they link Tcl/Tk + OpenSSL symbols
+  # (_tkinter: Tcl_*/TclBN_*; _ssl: SSL_CTX_set_options/SSL_CTX_clear_options/SSL_session_reused)
+  # that App Review flags as non-public. _tkinter is removed in EVERY build (the backend imports
+  # it zero times and it links absolute build-machine paths that don't resolve on user Macs).
+  # _ssl + ssl.py are removed for the app-store build only: the local pipeline (loopback HTTP,
+  # model2vec, sqlite-vec, MCP) needs no TLS, and urllib/http.client guard `import ssl` so they
+  # degrade to http-only cleanly. Direct-download/notarized builds keep _ssl (notarization does
+  # not reject on these symbols) so outbound HTTPS connectors remain available.
+  DYNLOAD="$PY_STDLIB/lib-dynload"
+  strip_ext() { # $1 = glob under lib-dynload
+    for f in "$DYNLOAD"/$1; do [[ -e "$f" ]] && rm -f "$f" && echo "  pruned $(basename "$f")"; done
+  }
+  echo "Pruning non-public-API C extensions (_tkinter always; _ssl in app-store mode)..."
+  strip_ext "_tkinter*.so"
+  rm -rf "$PY_STDLIB/tkinter" "$PY_STDLIB/turtledemo" "$PY_STDLIB/turtle.py" "$PY_STDLIB/idlelib" 2>/dev/null || true
+  if [[ "$DISTRIBUTION_MODE" == "app-store" ]]; then
+    strip_ext "_ssl*.so"
+    rm -f "$PY_STDLIB/ssl.py"
+    echo "  app-store: removed _ssl + ssl.py (backend degrades to http/loopback-only; outbound HTTPS connectors disabled)"
+  fi
+  # Fail loudly if a flagged extension survived — never ship a build that will bounce off review.
+  if [[ -e "$DYNLOAD"/_tkinter*.so ]] || { [[ "$DISTRIBUTION_MODE" == "app-store" ]] && ls "$DYNLOAD"/_ssl*.so >/dev/null 2>&1; }; then
+    echo "ERROR: a flagged C extension survived pruning in $DYNLOAD" >&2
+    exit 3
+  fi
+
   ln -sfn python3.12 "$PY_VERSION/bin/python3"
   ln -sfn 3.12 "$PY_FRAMEWORK/Versions/Current"
   ln -sfn Versions/Current/Python "$PY_FRAMEWORK/Python"
