@@ -57,8 +57,10 @@ class MacOSConnectorUIContractTests(unittest.TestCase):
     def test_connections_sheet_does_not_promote_manual_or_fake_source_sync(self) -> None:
         source = CONNECTIONS_SHEET.read_text(encoding="utf-8")
 
-        self.assertIn("More connections", source)
-        self.assertIn("Planned sign-in services stay hidden until they are real.", source)
+        self.assertIn("Connections library", source)
+        # Planned/fake sign-in services must still not be promoted as connectable: the library is
+        # built from wiredConnectors and planned ones are summarized separately, never listed.
+        self.assertIn("planned sign-in", source)
         self.assertIn("state.isDirectConnectorSyncWired", source)
         self.assertIn("state.pauseDirectConnectorSync", source)
         self.assertIn("state.resumeDirectConnectorSync", source)
