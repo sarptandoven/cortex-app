@@ -1,0 +1,3 @@
+a729436ee202357f23c85ec0ace136959ae1b1f7bee88aeb3e1dcae05fd66127  Cortex-0.2.0-2.dmg
+3c0fbf01b1d0b05fa5ace6ccddad966e35fb046a294c3002662dafc71cdb6be2  Cortex-0.2.0-2.app.zip
+d46a8c7d556b476ffd2e921f93816e1e4db635be617be4ae2ff89dae4e35a0fa  cortex-memory-0.1.0.zip

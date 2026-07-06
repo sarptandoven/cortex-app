@@ -2,24 +2,31 @@
   "app": "Cortex",
   "artifacts": [
     {
-      "filename": "Cortex-0.1.0-1.dmg",
+      "filename": "Cortex-0.2.0-2.dmg",
       "kind": "dmg",
-      "sha256": "9bb76af9fbcc909d862701a73e607b545e6e0f2d6b1289e7091027da246cee65",
-      "size_bytes": 84157422,
-      "url": "file:///Users/sarptandoven/conductor/workspaces/cortex-by-doppl/taipei/outputs/Cortex-0.1.0-1/Cortex-0.1.0-1.dmg"
+      "sha256": "a729436ee202357f23c85ec0ace136959ae1b1f7bee88aeb3e1dcae05fd66127",
+      "size_bytes": 84739884,
+      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-2.dmg"
     },
     {
-      "filename": "Cortex-0.1.0-1.app.zip",
+      "filename": "Cortex-0.2.0-2.app.zip",
       "kind": "zip",
-      "sha256": "7f2982f06585e58171917fb6616453ca72fda2828f8cc4665b4cf382bd508156",
-      "size_bytes": 65365595,
-      "url": "file:///Users/sarptandoven/conductor/workspaces/cortex-by-doppl/taipei/outputs/Cortex-0.1.0-1/Cortex-0.1.0-1.app.zip"
+      "sha256": "3c0fbf01b1d0b05fa5ace6ccddad966e35fb046a294c3002662dafc71cdb6be2",
+      "size_bytes": 66133004,
+      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-2.app.zip"
+    },
+    {
+      "filename": "cortex-memory-0.1.0.zip",
+      "kind": "obsidian-plugin",
+      "sha256": "d46a8c7d556b476ffd2e921f93816e1e4db635be617be4ae2ff89dae4e35a0fa",
+      "size_bytes": 3423,
+      "url": "https://trydoppl.com/downloads/cortex-memory-0.1.0.zip"
     }
   ],
   "beta_readiness": {
     "audience": "first-100 local beta",
     "generated_artifact_verification": [
-      "shasum -a 256 -c Cortex-0.1.0-1.checksums.txt",
+      "shasum -a 256 -c Cortex-0.2.0-2.checksums.txt",
       "python3 scripts/validate_update_manifest.py <release-dir>/latest.json",
       "python3 scripts/check_vector_runtime.py --app macos/build/Cortex.app",
       "python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir <release-dir>"
@@ -63,20 +70,20 @@
       "Relaunch, confirm backend health, and run the reliability report."
     ]
   },
-  "build": "1",
+  "build": "2",
   "bundle_id": "com.cortex.doppl",
   "channel": "local-beta",
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "Local-first Cortex beta with bundled local service, source connections, Review, cited Ask, backup, and Connections & Privacy controls."
+    "Holistic profile across all memory layers; per-app MCP tokens; occurrence-based confidence; guided setup walkthroughs; remote-MCP readiness; rate limiting"
   ],
-  "released_at": "2026-07-05T09:26:28Z",
+  "released_at": "2026-07-06T18:22:29Z",
   "source_provenance": {
-    "built_at": "2026-07-05T09:26:28Z",
+    "built_at": "2026-07-06T18:22:29Z",
     "git_branch": "mass-scale-app-redesign",
-    "git_commit": "9e817f623001ccf3dccd9ebae9260dcfa616ff75",
-    "git_dirty": true
+    "git_commit": "f27815eb0e06f9763b949f5bfcee6238b159d618",
+    "git_dirty": false
   },
-  "version": "0.1.0"
+  "version": "0.2.0"
 }
