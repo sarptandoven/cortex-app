@@ -2433,10 +2433,16 @@ final class BackendSupervisor {
         }
         writeLog("Python executable: \(pythonURL.path)")
         launched.executableURL = pythonURL
+        // Interpreter isolation: `-S` skips site.py (no site-packages injection) and `-s` skips the
+        // per-user site directory. We deliberately do NOT use `-I` or `-E`: both cause Python to
+        // ignore ALL PYTHON* environment variables — including PYTHONPATH, which is exactly how we
+        // point the bundled interpreter at the backend module + bundled wheels below. Adding `-I`/`-E`
+        // would break `-m app.standalone_server` (module not found). `-S -s` gives us the strongest
+        // isolation that is still compatible with the required PYTHONPATH.
         if pythonURL.lastPathComponent == "env" {
-            launched.arguments = ["python3", "-S", "-m", "app.standalone_server", "--host", "127.0.0.1", "--port", "8766"]
+            launched.arguments = ["python3", "-S", "-s", "-m", "app.standalone_server", "--host", "127.0.0.1", "--port", "8766"]
         } else {
-            launched.arguments = ["-S", "-m", "app.standalone_server", "--host", "127.0.0.1", "--port", "8766"]
+            launched.arguments = ["-S", "-s", "-m", "app.standalone_server", "--host", "127.0.0.1", "--port", "8766"]
         }
         launched.currentDirectoryURL = backendURL
         var environment = ProcessInfo.processInfo.environment
@@ -3052,6 +3058,49 @@ final class AppState: ObservableObject {
     @Published var connectorLastMessages: [String: String] = [:]
     @Published var configuredDirectConnectorIDs: Set<String> = []
 
+    // MARK: Settings surface + quick capture + "learned" signals
+    //
+    // presentSettings is a one-shot request flag: the App-menu "Settings…" item sets it true, the
+    // window content observes it and opens the Connections & Privacy surface, then resets it.
+    @Published var presentSettings: Bool = false
+
+    // Quick capture (highlight/screenshot → memory) preference + keybind. Both persisted. All
+    // capture actions are no-ops in App Store (sandboxed) builds — see QuickCapture.setEnabled.
+    static let quickCaptureEnabledDefaultsKey = "quickCaptureEnabled.v1"
+    static let quickCaptureKeybindDefaultsKey = "quickCaptureKeybind.v1"
+    @Published var quickCaptureEnabled: Bool = UserDefaults.standard.bool(forKey: AppState.quickCaptureEnabledDefaultsKey) {
+        didSet {
+            guard quickCaptureEnabled != oldValue else { return }
+            UserDefaults.standard.set(quickCaptureEnabled, forKey: AppState.quickCaptureEnabledDefaultsKey)
+            refreshQuickCaptureWiring()
+        }
+    }
+    @Published var quickCaptureKeybind: KeyCombo? = AppState.loadQuickCaptureKeybind() {
+        didSet {
+            AppState.persistQuickCaptureKeybind(quickCaptureKeybind)
+            refreshQuickCaptureWiring()
+        }
+    }
+
+    // Deterministic "learned/captured" timestamps the menu-bar animator (agent 4) observes via
+    // MenuBarSnapshot.learnedAt / .capturedAt. A NEW stamp fires the moss sparkle flourish; a level
+    // signal can't be missed by the animator's sampling loop the way an edge-triggered event could.
+    @Published private(set) var lastLearnedAt: Date?
+    @Published private(set) var lastCapturedAt: Date?
+
+    private static func loadQuickCaptureKeybind() -> KeyCombo? {
+        guard let data = UserDefaults.standard.data(forKey: quickCaptureKeybindDefaultsKey) else { return nil }
+        return try? JSONDecoder().decode(KeyCombo.self, from: data)
+    }
+
+    private static func persistQuickCaptureKeybind(_ combo: KeyCombo?) {
+        if let combo, let data = try? JSONEncoder().encode(combo) {
+            UserDefaults.standard.set(data, forKey: quickCaptureKeybindDefaultsKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: quickCaptureKeybindDefaultsKey)
+        }
+    }
+
     private let backend = BackendSupervisor.shared
     private var obsidianAutoSyncTask: Task<Void, Never>?
     private var directConnectorAutoSyncTask: Task<Void, Never>?
@@ -3445,6 +3494,7 @@ final class AppState: ObservableObject {
         refreshIntegrationStates()
         startConnectedSourceAutoSync()
         startSyncProgressPolling()
+        activateQuickCaptureIfEnabled()
         presentOnboardingIfNeeded()
     }
 
@@ -3784,6 +3834,61 @@ final class AppState: ObservableObject {
         menuBarWorkCount = max(0, menuBarWorkCount - 1)
         if completedSync {
             menuBarSyncCompletedAt = Date()
+        }
+    }
+
+    // MARK: Quick capture + "learned" flourish
+
+    /// Cortex just learned `count` new memories. Announces it two ways: the top-center notch pill,
+    /// and a NEW `lastLearnedAt` stamp the menu-bar animator turns into its moss sparkle flourish.
+    /// No-op for count <= 0 so a sync that added nothing stays quiet.
+    func announceLearned(count: Int) {
+        guard count > 0 else { return }
+        lastLearnedAt = Date()
+        let subtitle = "\(count) new " + (count == 1 ? "memory" : "memories")
+        NotchNotifier.shared.show(title: "Learned something new", subtitle: subtitle, style: .learned)
+    }
+
+    /// Wire (or unwire) global quick-capture based on the current pref + keybind. Capture is only
+    /// ever active on the direct/DMG build — the sandboxed App Store build can't run the
+    /// highlight/screenshot capture path, so QuickCapture.setEnabled is a documented no-op there.
+    private func refreshQuickCaptureWiring() {
+        guard !DistributionMode.isAppStore else { return }
+        QuickCapture.shared.onCapturedText = { [weak self] text, source in
+            Task { @MainActor in
+                await self?.saveQuickCapture(text, source)
+            }
+        }
+        QuickCapture.shared.setEnabled(quickCaptureEnabled, keybind: quickCaptureKeybind)
+    }
+
+    /// Called once at launch (from bootstrap) so a persisted quick-capture pref is honored without
+    /// waiting for the user to toggle it. Safe/no-op under the App Store sandbox.
+    func activateQuickCaptureIfEnabled() {
+        guard !DistributionMode.isAppStore else { return }
+        refreshQuickCaptureWiring()
+    }
+
+    /// Persist a quick-captured snippet as a memory, then fire the "learned" flourish. Kept off the
+    /// shared `isBusy`/status buffers (like captureFromPanel) so a fast capture doesn't spin the
+    /// icon or overwrite the visible status line. The notch "captured" pill is raised by
+    /// QuickCapture on the capture event itself; here we stamp lastCapturedAt and announce learning.
+    func saveQuickCapture(_ text: String, _ source: String) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        lastCapturedAt = Date()
+        do {
+            let title = String(trimmed.prefix(60))
+            let body: [String: Any] = ["content": trimmed, "source": source, "title": title]
+            _ = try await request(path: "/v1/captures", method: "POST", body: body)
+            await loadInbox()
+            await loadReview()
+            await loadStats()
+            announceLearned(count: 1)
+        } catch {
+            // Quick capture is a background convenience; surface the failure in the notch rather
+            // than clobbering the main status line.
+            NotchNotifier.shared.show(title: "Couldn't save capture", subtitle: "Try again in a moment", style: .info)
         }
     }
 
@@ -4448,6 +4553,7 @@ final class AppState: ObservableObject {
             await loadTrust()
             await refreshAfterCapture()
 
+            announceLearned(count: synced.saved + synced.queued)
             status = "Loaded sample notes — building your memory…"
         } catch {
             status = CortexRecoveryText.failureStatus("Sample notes", error: error)
@@ -4540,6 +4646,7 @@ final class AppState: ObservableObject {
             detectedExportSummary = nil
             if added > 0 {
                 importSucceeded = true
+                announceLearned(count: added)
                 status = "Imported \(added) conversation\(added == 1 ? "" : "s") into your memory."
             } else if result.skipped > 0 {
                 status = "Already imported — nothing new to add."
@@ -5526,6 +5633,7 @@ final class AppState: ObservableObject {
             await loadTrust()
             await refreshAfterCapture()
 
+            announceLearned(count: synced.saved + synced.queued)
             if synced.scan.truncated == true {
                 status = "\(connector.name) synced \(synced.scan.records_returned) of \(synced.scan.records_found) notes. Larger libraries sync partially."
             } else if synced.saved > 0 || synced.queued > 0 {
@@ -6873,6 +6981,14 @@ struct CortexView: View {
                 .preferredColorScheme(.light)
                 .accentColor(CortexDesign.accent)
                 .frame(width: 840, height: 720)
+        }
+        // App-menu "Settings…" (⌘,) requests the settings surface by flipping presentSettings; the
+        // window content owns the actual presentation. Reuse the Connections & Privacy sheet — that
+        // is Cortex's settings surface — then reset the one-shot flag.
+        .onChange(of: state.presentSettings) { present in
+            guard present else { return }
+            state.presentSettings = false
+            state.openConnectionsPrivacy()
         }
     }
 
@@ -9546,6 +9662,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let appName = ProcessInfo.processInfo.processName
         appMenu.addItem(withTitle: "About \(appName)", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
+        // Standard macOS Settings item (⌘,) — HIG/Guideline 4 expect it in the App menu. Opens the
+        // Connections & Privacy surface (Cortex's settings) via the window content's observer.
+        let settingsItem = appMenu.addItem(withTitle: "Settings…", action: #selector(menuOpenSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide \(appName)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         let hideOthers = appMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
         hideOthers.keyEquivalentModifierMask = [.command, .option]
@@ -9577,8 +9698,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         windowMenu.addItem(.separator())
         windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
 
+        // Help menu — reviewers (HIG/Guideline 4) expect a Help menu with a usable entry. Opens the
+        // bundled help/README if present, otherwise the product site.
+        let helpMenuItem = NSMenuItem()
+        mainMenu.addItem(helpMenuItem)
+        let helpMenu = NSMenu(title: "Help")
+        helpMenuItem.submenu = helpMenu
+        let helpItem = helpMenu.addItem(withTitle: "Cortex Help", action: #selector(menuOpenHelp), keyEquivalent: "?")
+        helpItem.target = self
+
         NSApp.mainMenu = mainMenu
         NSApp.windowsMenu = windowMenu
+        NSApp.helpMenu = helpMenu
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -9603,7 +9734,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         // A live menu-bar icon: spins while Cortex syncs, shows the review count when memory is
         // waiting, flashes a checkmark when a sync completes, and rests as a calm brain otherwise.
         let animator = MenuBarAnimator(statusItem: statusItem) { [weak self] in
-            self?.currentMenuBarSnapshot() ?? MenuBarSnapshot(syncing: false, syncCompletedAt: nil, pendingCount: 0)
+            self?.currentMenuBarSnapshot() ?? MenuBarSnapshot(syncing: false, syncCompletedAt: nil, learnedAt: nil, capturedAt: nil, pendingCount: 0)
         }
         menuBarAnimator = animator
         animator.start()
@@ -9623,6 +9754,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         return MenuBarSnapshot(
             syncing: working,
             syncCompletedAt: state.menuBarSyncCompletedAt,
+            learnedAt: state.lastLearnedAt,
+            capturedAt: state.lastCapturedAt,
             pendingCount: max(0, pending)
         )
     }
@@ -9796,6 +9929,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     @objc private func menuOpenConnections() {
         showMainWindow()
         state.openConnectionsPrivacy()
+    }
+
+    /// App-menu "Settings…" (⌘,). Brings the window forward and requests the Connections & Privacy
+    /// surface via the observed `presentSettings` flag (CortexView resets it once it acts).
+    @objc private func menuOpenSettings() {
+        showMainWindow()
+        state.presentSettings = true
+    }
+
+    /// Help menu → open bundled help/README if present, else the product site.
+    @objc private func menuOpenHelp() {
+        let candidates = ["help", "README", "README.md"]
+        for name in candidates {
+            let base = (name as NSString).deletingPathExtension
+            let ext = (name as NSString).pathExtension
+            if let url = Bundle.main.url(forResource: base, withExtension: ext.isEmpty ? nil : ext) {
+                NSWorkspace.shared.open(url)
+                return
+            }
+        }
+        if let site = URL(string: "https://trydoppl.com") {
+            NSWorkspace.shared.open(site)
+        }
     }
 
     @objc private func menuQuit() {

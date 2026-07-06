@@ -2,6 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <!--
+    Mac App Store (sandboxed) entitlements for Cortex.
+
+    Quick Capture (screen recording / accessibility / global hotkeys) is a
+    Developer ID / DMG-only feature and is gated OFF here via
+    DistributionMode.isAppStore. This build therefore deliberately does NOT
+    declare screen-recording, accessibility, or global-hotkey entitlements:
+    the sandboxed build must not request capabilities it never uses at runtime.
+  -->
   <key>com.apple.application-identifier</key>
   <string>P4H96J3VXY.com.cortex.doppl</string>
   <key>com.apple.developer.team-identifier</key>
@@ -12,6 +21,14 @@
   </array>
   <key>com.apple.security.app-sandbox</key>
   <true/>
+  <!--
+    KEEP THIS. Cortex runs a local Python backend on the loopback interface
+    (127.0.0.1:8766) and the SwiftUI app connects to it as an HTTP client. In
+    the App Sandbox, even a connection to localhost is an outgoing network
+    connection and is blocked without network.client. Removing this entitlement
+    breaks the app entirely (the UI can never reach its own backend), so it must
+    stay despite all "real" networking being loopback-only.
+  -->
   <key>com.apple.security.network.client</key>
   <true/>
   <key>com.apple.security.network.server</key>

@@ -46,5 +46,23 @@
 	<string>13.0</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright 2026 Cortex</string>
+	<!--
+	  Quick Capture (screenshot + highlight OCR) is a Developer ID / DMG-only
+	  feature. It is gated OFF in the Mac App Store build via
+	  DistributionMode.isAppStore, so the MAS build never exercises the
+	  screen-capture code path and never requests the permission at runtime.
+
+	  NSScreenCaptureUsageDescription supplies the purpose string macOS shows
+	  when the DMG build first captures the screen for OCR-based capture. It is
+	  harmless in the MAS build (no capture APIs are invoked there).
+
+	  There is intentionally NO Accessibility Info.plist key: macOS gates
+	  Accessibility (for the global hotkey / synthetic events used by highlight
+	  capture) through the standard AXIsProcessTrusted TCC prompt, not an
+	  Info.plist usage string. That permission is requested only at runtime in
+	  the DMG build and never in the MAS build.
+	-->
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Cortex captures a region of your screen to read highlighted text so you can save it to your memory. This feature is optional and only runs when you trigger a capture.</string>
 </dict>
 </plist>

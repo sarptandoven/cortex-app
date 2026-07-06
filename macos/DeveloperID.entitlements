@@ -15,6 +15,17 @@
 
     Every entitlement below exists because a bundled interpreter under the
     hardened runtime requires it to launch reliably and pass notarization.
+
+    Quick Capture note: screenshot + highlight OCR capture runs ONLY in this
+    Developer ID / DMG build (it is gated off in the MAS build via
+    DistributionMode.isAppStore). It needs NO additional entitlements here:
+      - Screen Recording and Accessibility are TCC runtime permissions, granted
+        via the standard system prompts (NSScreenCaptureUsageDescription /
+        AXIsProcessTrusted), not code-signing entitlements.
+      - Global hotkeys / synthetic events via CGEvent + Carbon are not blocked
+        by the hardened runtime and require no cs.* entitlement.
+    So the cs.* keys below stay exactly as-is; nothing here impedes CGEvent or
+    global hotkey registration.
   -->
 
   <!-- CPython's interpreter loop / regex / some C extensions map executable

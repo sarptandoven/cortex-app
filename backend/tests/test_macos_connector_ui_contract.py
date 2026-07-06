@@ -211,10 +211,13 @@ class MacOSConnectorUIContractTests(unittest.TestCase):
         self.assertIn('"needs_review", "synced", "imported", "connected", "syncing"', app_source)
         self.assertIn("return !onboardingHealthyMemorySources.isEmpty", app_source)
 
-        self.assertIn("sourceCardDetail", onboarding_source)
-        self.assertIn("Source not ready yet", onboarding_source)
-        self.assertIn("Check source health", onboarding_source)
-        self.assertIn("onboardingSourceHealthMessage", onboarding_source)
+        # The guided onboarding gates on the HEALTH-derived AppState signals (onboardingHasSource
+        # is computed from source health above, and notesNeedContent flags an empty/needs-content
+        # source) rather than mere connection — so the walkthrough never advances on a source that
+        # is connected-but-empty. (The old view-local sourceCardDetail/onboardingSourceHealthMessage
+        # helpers were removed in the animated-onboarding overhaul; the gate now lives in AppState.)
+        self.assertIn("onboardingHasSource", onboarding_source)
+        self.assertIn("notesNeedContent", onboarding_source)
 
     def test_obsidian_plugin_is_installed_and_configured_by_mac_app(self) -> None:
         app_source = CORTEX_APP.read_text(encoding="utf-8")
