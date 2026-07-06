@@ -2388,8 +2388,12 @@ final class BackendSupervisor {
             throw NSError(domain: "Cortex", code: 1, userInfo: [NSLocalizedDescriptionKey: "App resources are unavailable"])
         }
         let backendURL = resources.appendingPathComponent("backend", isDirectory: true)
-        let moduleURL = backendURL.appendingPathComponent("app/standalone_server.py")
-        guard FileManager.default.fileExists(atPath: moduleURL.path) else {
+        // The App Store build ships the backend as .pyc only (source stripped for IP protection),
+        // so accept either the .py source (direct/DMG build) or the compiled .pyc (app-store build).
+        let moduleBase = backendURL.appendingPathComponent("app/standalone_server")
+        let hasModule = FileManager.default.fileExists(atPath: moduleBase.appendingPathExtension("py").path)
+            || FileManager.default.fileExists(atPath: moduleBase.appendingPathExtension("pyc").path)
+        guard hasModule else {
             throw NSError(domain: "Cortex", code: 2, userInfo: [NSLocalizedDescriptionKey: "Bundled local memory engine is missing"])
         }
 
@@ -2421,6 +2425,12 @@ final class BackendSupervisor {
 
         let launched = Process()
         let pythonURL = pythonExecutableURL()
+        // App Store builds are bundled-only. If the sandboxed interpreter isn't present the
+        // launch would be silently killed by the sandbox, so fail with an explicit,
+        // user-actionable error instead.
+        if DistributionMode.isAppStore && !FileManager.default.isExecutableFile(atPath: pythonURL.path) {
+            throw NSError(domain: "Cortex", code: 6, userInfo: [NSLocalizedDescriptionKey: "The bundled memory engine runtime is missing from this build. Reinstall Cortex from the App Store."])
+        }
         writeLog("Python executable: \(pythonURL.path)")
         launched.executableURL = pythonURL
         if pythonURL.lastPathComponent == "env" {
@@ -2483,7 +2493,17 @@ final class BackendSupervisor {
                 environment["CORTEX_OUTLOOK_OAUTH_CLIENT_SECRET"] = trimmedMicrosoftClientSecret
             }
         }
-        environment["PATH"] = "/Library/Frameworks/Python.framework/Versions/3.12/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        if DistributionMode.isAppStore {
+            // Sandboxed builds can only reach the bundled interpreter; advertising system
+            // paths is misleading and any lookup there would be denied. Point PATH only at
+            // the bundle's Python bin directory.
+            let bundledBin = Bundle.main.privateFrameworksURL?
+                .appendingPathComponent("Python.framework/Versions/3.12/bin")
+                .path
+            environment["PATH"] = bundledBin ?? ""
+        } else {
+            environment["PATH"] = "/Library/Frameworks/Python.framework/Versions/3.12/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        }
         launched.environment = environment
         launched.standardOutput = handle
         launched.standardError = handle
@@ -2572,6 +2592,17 @@ final class BackendSupervisor {
         let bundledPython = Bundle.main.privateFrameworksURL?
             .appendingPathComponent("Python.framework/Versions/3.12/bin/python3")
             .path
+        // App Store (sandboxed) builds are bundled-only: the sandbox cannot reach any
+        // system/Homebrew interpreter, so we never fall through to those paths. If the
+        // bundled interpreter is missing we still return its expected path so the launch
+        // fails loudly with a clear bundle-integrity error instead of silently invoking a
+        // forbidden system binary that the sandbox would kill.
+        if DistributionMode.isAppStore {
+            guard let bundledPython else {
+                return URL(fileURLWithPath: "/nonexistent/Cortex/bundled-python-missing")
+            }
+            return URL(fileURLWithPath: bundledPython)
+        }
         let candidates = [
             bundledPython,
             "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",
@@ -4370,10 +4401,25 @@ final class AppState: ObservableObject {
             status = "Importing your chats…"
             let started = URL(fileURLWithPath: trimmed).startAccessingSecurityScopedResource()
             defer { if started { URL(fileURLWithPath: trimmed).stopAccessingSecurityScopedResource() } }
+            // Under the App Store sandbox the backend child cannot read a user-picked path:
+            // the dynamic security-scoped grant on `trimmed` lives only in this (parent)
+            // process. Copy the picked file/folder into the app container — which the child
+            // can always read — and hand the child that container path instead. Direct
+            // (DeveloperID/DMG) builds keep passing the original path unchanged.
+            var backendPath = trimmed
+            var inboxToClean: URL?
+            if DistributionMode.isAppStore {
+                let staged = try stageImportIntoContainer(originalPath: trimmed)
+                backendPath = staged.stagedPath
+                inboxToClean = staged.inboxDir
+            }
+            defer {
+                if let inboxToClean { try? FileManager.default.removeItem(at: inboxToClean) }
+            }
             let data = try await request(
                 path: "/v1/imports",
                 method: "POST",
-                body: ["paths": [trimmed], "source_hint": sourceHint, "processing": "sync", "max_records": 5000]
+                body: ["paths": [backendPath], "source_hint": sourceHint, "processing": "sync", "max_records": 5000]
             )
             let result = try JSONDecoder().decode(SourceImportResultLite.self, from: data)
             let added = result.saved + result.queued
@@ -4402,9 +4448,38 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// App Store (sandboxed) helper: copy a user-picked import file/folder into the app
+    /// container so the sandboxed backend child — which does not inherit this process's
+    /// dynamic security-scoped grant — can read it. Returns the staged path to hand the
+    /// backend plus the per-import inbox directory to delete after the import completes.
+    /// The picked URL's security scope must already be active when this is called.
+    private func stageImportIntoContainer(originalPath: String) throws -> (stagedPath: String, inboxDir: URL) {
+        let manager = FileManager.default
+        let base = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? manager.temporaryDirectory
+        let inboxDir = base
+            .appendingPathComponent("Cortex", isDirectory: true)
+            .appendingPathComponent("imports-inbox", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try manager.createDirectory(at: inboxDir, withIntermediateDirectories: true)
+        let source = URL(fileURLWithPath: originalPath)
+        let destination = inboxDir.appendingPathComponent(source.lastPathComponent)
+        // copyItem handles both a single file and a directory (recursive copy).
+        try manager.copyItem(at: source, to: destination)
+        return (destination.standardizedFileURL.path, inboxDir)
+    }
+
     /// Scan Downloads / Desktop / ~/CortexImports for AI-chat exports so the app can offer a
     /// one-tap "found your ChatGPT export" import. Best-effort; silent on failure.
     func detectAvailableExports() async {
+        // The detector scans Downloads/Desktop/~/CortexImports and returns raw external
+        // paths the sandboxed child cannot read. Disable this whole flow in App Store mode;
+        // users import via the explicit file picker (which stages into the container).
+        if DistributionMode.isAppStore {
+            detectedExportPaths = []
+            detectedExportSummary = nil
+            return
+        }
         do {
             let data = try await request(path: "/v1/imports/detect", method: "GET")
             let result = try JSONDecoder().decode(ExportDetectResponse.self, from: data)
@@ -4423,6 +4498,10 @@ final class AppState: ObservableObject {
 
     /// Import every export the detector found (the "Import found export" one-tap action).
     func importDetectedExports() {
+        // Detected paths live outside the sandbox container; the child cannot read them and
+        // there is no live security scope to stage them from. App Store users import via the
+        // explicit picker instead.
+        if DistributionMode.isAppStore { return }
         let paths = detectedExportPaths
         guard !paths.isEmpty else { return }
         Task {
@@ -5285,14 +5364,37 @@ final class AppState: ObservableObject {
                 }
             }
             let pluginInstalled = await installObsidianPluginIfPossible(vaultURL: folderURL)
+            // App Store sandbox: the backend child cannot read the picked notes folder from the
+            // raw path (this process's dynamic grant doesn't cross to the child, and the
+            // stdlib-only Python child cannot resolve a macOS security-scoped bookmark). Copy the
+            // folder into the app container — which the child CAN read — and sync that snapshot.
+            // Under sandbox this is a one-time/refresh import rather than live two-way sync.
+            // Direct (DeveloperID/DMG) builds sync the folder in place, unchanged.
+            var vaultPathForSync = folderURL.standardizedFileURL.path
+            var stagedNotesInbox: URL? = nil
+            if DistributionMode.isAppStore {
+                do {
+                    let staged = try stageImportIntoContainer(originalPath: folderURL.standardizedFileURL.path)
+                    vaultPathForSync = staged.stagedPath
+                    stagedNotesInbox = staged.inboxDir
+                } catch {
+                    NSLog("Cortex notes folder staging failed: \(error.localizedDescription)")
+                }
+            }
+            defer {
+                if let inbox = stagedNotesInbox {
+                    try? FileManager.default.removeItem(at: inbox)
+                }
+            }
+            let syncBody: [String: Any] = [
+                "vault_path": vaultPathForSync,
+                "max_records": 5000,
+                "processing": "sync"
+            ]
             let syncData = try await request(
                 path: "/v1/connectors/obsidian/sync",
                 method: "POST",
-                body: [
-                    "vault_path": folderURL.standardizedFileURL.path,
-                    "max_records": 5000,
-                    "processing": "sync"
-                ]
+                body: syncBody
             )
             let synced = try JSONDecoder().decode(ObsidianConnectorSyncResponse.self, from: syncData)
             guard synced.scan.records_found > 0, synced.scan.records_returned > 0 else {

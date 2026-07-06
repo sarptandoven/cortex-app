@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Privacy manifest for the Mac App Store (local-first, sandboxed) build of Doppl.
+
+    The App Store build is LOCAL-FIRST ONLY: no cloud account, no outbound HTTPS
+    connectors (the _ssl / ssl.py stdlib modules are stripped in app-store mode),
+    and no automatic MCP config installation. All memory lives in the app's
+    sandbox container. Nothing is collected from the user and nothing is sent off
+    the device, so no data-collection categories are declared.
+  -->
+  <key>NSPrivacyTracking</key>
+  <false/>
+  <key>NSPrivacyTrackingDomains</key>
+  <array/>
+  <key>NSPrivacyCollectedDataTypes</key>
+  <array/>
+  <key>NSPrivacyAccessedAPITypes</key>
+  <array>
+    <!--
+      File-timestamp APIs (stat/lstat/getattrlist/DIR* modification dates) are used
+      to read and manage files the user explicitly selects. Reason C617.1: the
+      timestamp is used only inside the app's own container / on user-selected files.
+    -->
+    <dict>
+      <key>NSPrivacyAccessedAPIType</key>
+      <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+      <key>NSPrivacyAccessedAPITypeReasons</key>
+      <array>
+        <string>C617.1</string>
+      </array>
+    </dict>
+    <!--
+      UserDefaults is used to store this app's own settings. Reason CA92.1:
+      access info from the app itself only.
+    -->
+    <dict>
+      <key>NSPrivacyAccessedAPIType</key>
+      <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+      <key>NSPrivacyAccessedAPITypeReasons</key>
+      <array>
+        <string>CA92.1</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>

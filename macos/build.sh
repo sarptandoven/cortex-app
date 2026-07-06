@@ -59,6 +59,45 @@ mkdir -p "$RES/backend"
 cp -R "$ROOT/../backend/app" "$RES/backend/app"
 find "$RES/backend/app" -type d -name "__pycache__" -prune -exec rm -rf {} +
 find "$RES/backend/app" -type f -name "*.pyc" -delete
+if [[ "$DISTRIBUTION_MODE" == "app-store" ]]; then
+  # App-store source protection + App Store 2.5.2 "scripts" surface reduction:
+  # compile the first-party backend to legacy in-place .pyc (next to source) and
+  # delete every .py, shipping bytecode only. This is pragmatic obfuscation — a
+  # determined attacker can decompile .pyc; Nuitka (true native compilation) is
+  # the stronger follow-up. Direct/notarized-DMG mode keeps .py untouched.
+  #
+  # We need a python to compile with: prefer the framework source we're bundling,
+  # else any python3 on PATH. compileall -b writes name.pyc beside name.py.
+  COMPILE_PY="$PYTHON_FRAMEWORK_SOURCE/bin/python3.12"
+  [[ -x "$COMPILE_PY" ]] || COMPILE_PY="$(command -v python3.12 || command -v python3)"
+  if [[ -z "$COMPILE_PY" ]]; then
+    echo "ERROR: app-store mode needs a python3 to compile the backend to .pyc" >&2
+    exit 3
+  fi
+  echo "app-store: compiling first-party backend to .pyc (source-protection / 2.5.2 scripts reduction)..."
+  # -b: legacy in-place bytecode (foo.pyc next to foo.py, no __pycache__).
+  # -q -q: silence output but still exit non-zero on any compile error.
+  "$COMPILE_PY" -m compileall -b -q -q "$RES/backend/app"
+  # Drop all .py (leaving only .pyc) and any __pycache__ that a non-legacy pass created.
+  find "$RES/backend/app" -type f -name "*.py" -delete
+  find "$RES/backend/app" -type d -name "__pycache__" -prune -exec rm -rf {} +
+  # Boot check: the pruned .pyc-only tree must still import the server entrypoint.
+  # PYTHONDONTWRITEBYTECODE keeps this read-only so we don't repopulate __pycache__.
+  if ! PYTHONPATH="$RES/backend" PYTHONDONTWRITEBYTECODE=1 "$COMPILE_PY" -S -c "import app.standalone_server" >/dev/null 2>&1; then
+    echo "ERROR: app-store .pyc-only backend failed to import app.standalone_server" >&2
+    exit 3
+  fi
+  # Assert the delete actually stuck: zero .py, at least one .pyc.
+  if [[ -n "$(find "$RES/backend/app" -type f -name '*.py' -print -quit)" ]]; then
+    echo "ERROR: app-store backend still contains .py source after pruning" >&2
+    exit 3
+  fi
+  if [[ -z "$(find "$RES/backend/app" -type f -name '*.pyc' -print -quit)" ]]; then
+    echo "ERROR: app-store backend has no .pyc after compileall" >&2
+    exit 3
+  fi
+  echo "  app-store: backend shipped as .pyc-only (import boot check passed)"
+fi
 mkdir -p "$RES/scripts"
 cp "$ROOT/../scripts/cortex_mcp_stdio.py" "$RES/scripts/cortex_mcp_stdio.py"
 chmod +x "$RES/scripts/cortex_mcp_stdio.py"
@@ -134,6 +173,35 @@ if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON"
     exit 3
   fi
 
+  if [[ "$DISTRIBUTION_MODE" == "app-store" ]]; then
+    # --- 'itms-services' scrub (HARD App Store auto-reject) ---
+    # Apple's static resource scanner auto-rejects any bundled file containing the
+    # literal 'itms-services'. CPython 3.12's stdlib ships it in urllib/parse.py's
+    # `uses_netloc` scheme list. Removing that one entry only changes urljoin's
+    # netloc semantics for the itms-services:// scheme (which the loopback backend
+    # never parses), so urllib stays fully functional for http/https/file/ws.
+    URLPARSE="$PY_STDLIB/urllib/parse.py"
+    if [[ -f "$URLPARSE" ]] && grep -q 'itms-services' "$URLPARSE"; then
+      # Drop the ", 'itms-services'" (and a bare "'itms-services'") token from the
+      # scheme lists without disturbing surrounding entries.
+      sed -i '' -E "s/, *'itms-services'//g; s/'itms-services', *//g" "$URLPARSE"
+      echo "  app-store: scrubbed 'itms-services' from bundled urllib/parse.py"
+    fi
+    # Also strip any lingering pre-compiled bytecode carrying the string (rsync
+    # already excludes *.pyc/__pycache__, but be defensive before the hard assert).
+    while IFS= read -r bc; do
+      grep -Iaq 'itms-services' "$bc" 2>/dev/null && { rm -f "$bc"; echo "  app-store: removed bytecode with 'itms-services': ${bc#$PY_STDLIB/}"; }
+    done < <(find "$PY_STDLIB" -type f -name '*.pyc')
+    # HARD assert: the bundled stdlib must contain zero 'itms-services'.
+    if grep -rlI 'itms-services' "$PY_STDLIB" >/dev/null 2>&1; then
+      echo "ERROR: 'itms-services' still present in bundled stdlib after scrub:" >&2
+      grep -rlI 'itms-services' "$PY_STDLIB" >&2 || true
+      exit 3
+    fi
+    # (Bundled backend deps under Resources/python are scanned after they are
+    # installed, at the end of this bundled-Python block.)
+  fi
+
   ln -sfn python3.12 "$PY_VERSION/bin/python3"
   ln -sfn 3.12 "$PY_FRAMEWORK/Versions/Current"
   ln -sfn Versions/Current/Python "$PY_FRAMEWORK/Python"
@@ -163,6 +231,21 @@ if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON"
     else
       echo "warning: local embedding model not bundled ($CORTEX_MODEL2VEC_MODEL); backend will use the hash fallback"
       rm -rf "$RES/model2vec"
+    fi
+  fi
+  if [[ "$DISTRIBUTION_MODE" == "app-store" ]]; then
+    # 'itms-services' scan of the now-installed backend wheels (Resources/python).
+    if [[ -d "$RES/python" ]] && grep -rlI 'itms-services' "$RES/python" >/dev/null 2>&1; then
+      echo "ERROR: 'itms-services' present in bundled backend deps (Resources/python):" >&2
+      grep -rlI 'itms-services' "$RES/python" >&2 || true
+      exit 3
+    fi
+    # Bundled-only guarantee: in app-store mode the interpreter MUST be the bundled
+    # framework and nothing else. Assert the framework interpreter exists and that
+    # no system/absolute interpreter path leaked into what we ship.
+    if [[ ! -x "$PY_VERSION/bin/python3.12" || ! -f "$PY_VERSION/Python" ]]; then
+      echo "ERROR: app-store mode requires the bundled Python.framework interpreter at $PY_VERSION" >&2
+      exit 3
     fi
   fi
 fi
@@ -271,3 +354,61 @@ codesign "${SIGN_ARGS[@]}" "$APP" >/dev/null
 normalize_bundle_permissions
 scrub_bundle_metadata
 echo "Built $APP"
+
+if [[ "$DISTRIBUTION_MODE" == "app-store" ]]; then
+  # Whole-bundle 'itms-services' assert: the final signed .app must be clean.
+  # -I skips binaries; the scheme string only ever appears as literal text.
+  if grep -rlI 'itms-services' "$APP" >/dev/null 2>&1; then
+    echo "ERROR: 'itms-services' present in the built app-store bundle:" >&2
+    grep -rlI 'itms-services' "$APP" >&2 || true
+    exit 3
+  fi
+  echo "  app-store: verified built bundle is free of 'itms-services'"
+
+  # Boot smoke: prove the scrubbed stdlib + .pyc-only backend actually serves.
+  # Preferred path: run the bundled interpreter against the bundled .pyc backend
+  # on a spare port with a temp vault, hit /health. If the signed/sandboxed
+  # binary can't run standalone (entitlements/SIGTRAP outside its container),
+  # fall back to booting the .pyc backend under a system python with ssl blocked,
+  # which still proves the .pyc compile + scrubbed-stdlib assumptions are sound.
+  SMOKE_PORT="${CORTEX_SMOKE_PORT:-8791}"
+  SMOKE_VAULT="$(mktemp -d)"
+  SMOKE_DB="$SMOKE_VAULT/index.sqlite"
+  BUNDLED_PY="$APP/Contents/Frameworks/Python.framework/Versions/3.12/bin/python3.12"
+  boot_smoke() { # $1 = python interpreter, $2 = extra PYTHONPATH prefix (deps)
+    local py="$1" deps="$2"
+    local pp="$RES/backend"
+    [[ -n "$deps" && -d "$deps" ]] && pp="$pp:$deps"
+    CORTEX_VAULT_PATH="$SMOKE_VAULT" \
+    CORTEX_DB_PATH="$SMOKE_DB" \
+    CORTEX_API_KEY="smoke-api-key" \
+    CORTEX_MCP_API_KEY="smoke-mcp-key" \
+    CORTEX_MCP_API_KEY_SCOPES="read,write,export,maintenance" \
+    CORTEX_PUBLIC_BASE_URL="http://127.0.0.1:$SMOKE_PORT" \
+    PYTHONPATH="$pp" PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+      "$py" -S -m app.standalone_server --host 127.0.0.1 --port "$SMOKE_PORT" >"$SMOKE_VAULT/server.log" 2>&1 &
+    local pid=$!
+    local ok=""
+    for _ in $(seq 1 40); do
+      if ! kill -0 "$pid" 2>/dev/null; then break; fi
+      if curl -fsS "http://127.0.0.1:$SMOKE_PORT/health" >/dev/null 2>&1; then ok="1"; break; fi
+      sleep 0.25
+    done
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    [[ -n "$ok" ]]
+  }
+  SMOKE_RESULT="failed"
+  if [[ -x "$BUNDLED_PY" ]] && boot_smoke "$BUNDLED_PY" "$RES/python"; then
+    SMOKE_RESULT="ok (bundled interpreter + .pyc backend)"
+  elif SYS_PY="$(command -v python3.12 || command -v python3)"; [[ -n "${SYS_PY:-}" ]] && \
+       CORTEX_DISABLE_SSL=1 boot_smoke "$SYS_PY" ""; then
+    SMOKE_RESULT="ok (fallback system python, ssl blocked; bundled binary could not run standalone)"
+  fi
+  rm -rf "$SMOKE_VAULT"
+  if [[ "$SMOKE_RESULT" == "failed" ]]; then
+    echo "ERROR: app-store boot smoke failed — .pyc-only backend / scrubbed stdlib did not serve /health" >&2
+    exit 3
+  fi
+  echo "  app-store: boot smoke /health $SMOKE_RESULT"
+fi

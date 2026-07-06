@@ -324,8 +324,13 @@ private struct ConnectionsPrivacyOverview: View {
                     Group {
                         TrustSyncManifestSection(state: state)
                         Divider()
-                        SettingsUpdatesSection(state: state)
-                        Divider()
+                        // App Store builds ship updates through the Mac App Store; in-app
+                        // self-update / external executable download is forbidden
+                        // (Guideline 2.4.5/2.5.2), so the updates section is direct-mode only.
+                        if !DistributionMode.isAppStore {
+                            SettingsUpdatesSection(state: state)
+                            Divider()
+                        }
                         CortexCloudSection(state: state)
                         Divider()
                         SettingsBackendSection(state: state)
@@ -443,12 +448,23 @@ private struct ConnectionsDirectSourcesSection: View {
     private var wiredConnectors: [SourceConnectorCatalogItem] {
         state.sourceConnectorCatalog
             .filter { state.isDirectConnectorSyncWired($0) }
+            // App Store builds are local-first: outbound HTTPS is stripped, so token- and
+            // OAuth-based connectors (Gmail, Slack, Notion, GitHub, …) can't sync and must not
+            // show a connect button that can't work. Only local-file / local-API sources remain.
+            .filter { !DistributionMode.isAppStore || isLocalFirstConnector($0) }
             .sorted {
                 let leftRank = state.directConnectorSortRank($0.id)
                 let rightRank = state.directConnectorSortRank($1.id)
                 if leftRank != rightRank { return leftRank < rightRank }
                 return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
+    }
+
+    /// A connector that reads from the local machine only (a chosen file/export or a
+    /// loopback desktop API) and never opens an outbound network connection. In App Store
+    /// (local-first) builds these are the only sources that can work.
+    private func isLocalFirstConnector(_ connector: SourceConnectorCatalogItem) -> Bool {
+        connector.connectionSetup?.mode == "native-local-connector"
     }
 
     /// Managed-OAuth connectors without provider credentials in this build can't be connected,
@@ -2033,6 +2049,13 @@ private struct ConnectionsAIToolsSection: View {
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
+            if DistributionMode.isAppStore {
+                // Local-first App Store builds can't write into other apps' config files
+                // (sandbox) and don't auto-install. Instead of a dead end, guide the exact
+                // manual paste: the connection JSON in a copyable block plus numbered steps.
+                ConnectionsGuidedMCPSetup(state: state)
+            }
+
             if !connectedIntegrations.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(connectedIntegrations.prefix(3)) { integration in
@@ -2092,6 +2115,101 @@ private struct ConnectionsAIToolsSection: View {
             return "Enable this only when you want reviewed memory available outside Cortex."
         }
         return "Cortex works without another app. Ask uses reviewed memory with citations."
+    }
+}
+
+/// Guided manual MCP setup for local-first (App Store) builds. The sandbox blocks writing into
+/// other apps' config files, so instead of automating the connection we hand the user the exact
+/// server JSON in a copyable block plus numbered steps. The visible block shows the shape with a
+/// redacted token; the Copy button puts the real, tokened configuration on the clipboard.
+private struct ConnectionsGuidedMCPSetup: View {
+    @ObservedObject var state: AppState
+    @State private var setupExpanded = false
+
+    private let steps = [
+        "Open your AI app's MCP settings (Claude Desktop: Settings → Developer → Edit Config).",
+        "Paste the configuration below into the mcpServers block, then save.",
+        "Quit and reopen the app — Cortex memory tools appear once it restarts."
+    ]
+
+    /// Redacted preview of the connection JSON — the real token is copied, never shown. Kept
+    /// deliberately close to the canonical shape so what the user sees matches what they paste.
+    private var previewConfig: String {
+        """
+        {
+          "mcpServers" : {
+            "cortex" : {
+              "env" : {
+                "CORTEX_API_KEY" : "<copied with the button below>",
+                "CORTEX_BASE_URL" : "\(state.endpoint)"
+              }
+            }
+          }
+        }
+        """
+    }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $setupExpanded) {
+            VStack(alignment: .leading, spacing: 12) {
+                GuidedStepWalkthrough(steps: steps, isActive: setupExpanded, textFont: .callout) { _ in
+                    EmptyView()
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Connection")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        Text(previewConfig)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(CortexDesign.ink)
+                            .textSelection(.enabled)
+                            .padding(12)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(CortexDesign.quietBackground))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
+
+                    HStack(spacing: 10) {
+                        Button {
+                            state.copyMCPConfig()
+                        } label: {
+                            Label("Copy configuration", systemImage: "doc.on.doc")
+                                .frame(minHeight: 42)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .help("Copies the full configuration, including this Mac's local connection token, to paste into your AI app.")
+                        Spacer(minLength: 0)
+                    }
+
+                    // The moss mark — the archive's private-by-default signature.
+                    HStack(alignment: .top, spacing: 7) {
+                        Circle()
+                            .fill(CortexDesign.sealMoss)
+                            .frame(width: 7, height: 7)
+                            .padding(.top, 3)
+                        Text("The token stays on this Mac and only reaches the AI app you paste it into. Memory stays local.")
+                            .font(.caption)
+                            .foregroundColor(CortexDesign.inkSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .padding(.top, 10)
+        } label: {
+            ConnectionsDisclosureLabel(
+                systemImage: "text.and.command.macwindow",
+                title: "Connect an AI tool manually",
+                detail: "Copy the connection and paste it into Claude, Cursor & other AI apps"
+            )
+        }
+        .padding(14)
+        .background(connectionsPanelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 

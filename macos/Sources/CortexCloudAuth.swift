@@ -72,6 +72,25 @@ enum CortexCloudAuthError: LocalizedError {
 
 extension AppState {
 
+    /// Whether the hosted Cortex Cloud sign-in / sign-up surface is available at all.
+    ///
+    /// In the Mac App Store build (`DistributionMode.isAppStore`) the app is LOCAL-FIRST
+    /// ONLY: there is no in-app account creation or cloud sign-in, so this is false and
+    /// every cloud-auth entry point below becomes a no-op that reports a clear
+    /// "not available in this version" state instead of reaching /v1/auth/*.
+    ///
+    /// The direct / notarized-DMG build (`DistributionMode.isAppStore == false`) keeps
+    /// full cloud auth and behaves exactly as before.
+    ///
+    /// The rest of the app (e.g. `CortexCloudSection` / `ConnectionsPrivacySheet`) should
+    /// read this flag to decide whether to show or hide the cloud sign-in controls.
+    var isCloudAuthAvailable: Bool {
+        !DistributionMode.isAppStore
+    }
+
+    /// Message shown when a cloud-auth action is attempted in a build where it is disabled.
+    static let cloudAuthUnavailableMessage = "Cortex Cloud is not available in this version."
+
     /// The one and only gate for every new cloud code path.
     ///
     /// True only when the endpoint host is NOT localhost AND a cxr_ refresh token
@@ -113,6 +132,10 @@ extension AppState {
     // MARK: Public entry points
 
     func signInToCloud(hostedURL: String, email: String, password: String) {
+        guard isCloudAuthAvailable else {
+            cloudAuthMessage = AppState.cloudAuthUnavailableMessage
+            return
+        }
         Task { await performCloudSignIn(hostedURL: hostedURL, email: email, password: password) }
     }
 
@@ -120,10 +143,18 @@ extension AppState {
     /// autoverify the account is active immediately; if the deployment requires email
     /// verification, the follow-up login surfaces a clear "verify your email" message.
     func signUpToCloud(hostedURL: String, email: String, password: String, displayName: String = "") {
+        guard isCloudAuthAvailable else {
+            cloudAuthMessage = AppState.cloudAuthUnavailableMessage
+            return
+        }
         Task { await performCloudSignUp(hostedURL: hostedURL, email: email, password: password, displayName: displayName) }
     }
 
     func signInToCloudWithBrowser(hostedURL: String) {
+        guard isCloudAuthAvailable else {
+            cloudAuthMessage = AppState.cloudAuthUnavailableMessage
+            return
+        }
         Task { await performCloudBrowserSignIn(hostedURL: hostedURL) }
     }
 
@@ -132,6 +163,10 @@ extension AppState {
     }
 
     func openCloudSignup(hostedURL: String) {
+        guard isCloudAuthAvailable else {
+            cloudAuthMessage = AppState.cloudAuthUnavailableMessage
+            return
+        }
         guard let base = AppState.normalizedHostedBase(hostedURL),
               let url = URL(string: base + "/account/signup") else {
             cloudAuthMessage = CortexCloudAuthError.invalidHostedURL.localizedDescription
@@ -410,22 +445,34 @@ struct CortexCloudSection: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Cortex Cloud")
                 .font(.headline)
-            Text("Sign in to a hosted Cortex account instead of pasting a raw token.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
 
-            if isSignedIn {
-                signedInView
-            } else {
-                signInForm
-            }
-
-            if !state.cloudAuthMessage.isEmpty {
-                Text(state.cloudAuthMessage)
+            // In the Mac App Store build the app is local-first only: there is no in-app
+            // cloud sign-in or account creation, so the whole sign-in surface is hidden and
+            // replaced with a short explanation. The direct / notarized-DMG build keeps the
+            // full sign-in form below unchanged.
+            if !state.isCloudAuthAvailable {
+                Text("This version of Cortex is local-first only. Your memory stays on this Mac; there is no cloud account to sign in to.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Sign in to a hosted Cortex account instead of pasting a raw token.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if isSignedIn {
+                    signedInView
+                } else {
+                    signInForm
+                }
+
+                if !state.cloudAuthMessage.isEmpty {
+                    Text(state.cloudAuthMessage)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .onAppear {
