@@ -6208,18 +6208,18 @@ struct CortexView: View {
             footer
         }
         .background(CortexDesign.appBackground)
-        .preferredColorScheme(nil)
+        .preferredColorScheme(.light)
         .accentColor(CortexDesign.accent)
         .frame(minWidth: 560, minHeight: 640)
         .sheet(isPresented: $state.showOnboarding, onDismiss: { state.onboardingSheetDismissed() }) {
             OnboardingView(state: state)
-                .preferredColorScheme(nil)
+                .preferredColorScheme(.light)
                 .accentColor(CortexDesign.accent)
-                .frame(width: 760, height: 660)
+                .frame(width: 820, height: 720)
         }
         .sheet(isPresented: $state.showConnectionsPrivacy, onDismiss: { state.connectionsSheetDismissed() }) {
             ConnectionsPrivacySheet(state: state)
-                .preferredColorScheme(nil)
+                .preferredColorScheme(.light)
                 .accentColor(CortexDesign.accent)
                 .frame(width: 840, height: 720)
         }
@@ -8547,7 +8547,7 @@ struct SettingsDataRecoverySection: View {
         }
         .sheet(isPresented: $confirmDeleteAllData, onDismiss: { deleteAllConfirmationText = "" }) {
             deleteAllDataConfirmationSheet
-                .preferredColorScheme(nil)
+                .preferredColorScheme(.light)
                 .accentColor(CortexDesign.accent)
                 .frame(width: 460)
         }
@@ -8859,12 +8859,17 @@ struct GraphCanvas: View {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let state = AppState()
     private var statusItem: NSStatusItem!
+    private var menuBarAnimator: MenuBarAnimator?
     private var mainWindow: NSWindow!
     private var mainWindowController: NSWindowController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         logApp("applicationDidFinishLaunching")
         NSApp.setActivationPolicy(.regular)
+        // Cortex ships a single, deliberately light/white look. Pin the whole app (native controls,
+        // sheets, and the palette's dynamic colors) to Aqua so it stays light regardless of the
+        // system's Dark Mode setting.
+        NSApp.appearance = NSAppearance(named: .aqua)
         setupStatusItem()
         setupMainWindow()
         NotificationCenter.default.addObserver(self, selector: #selector(onboardingCompleted), name: .cortexOnboardingCompleted, object: nil)
@@ -8900,10 +8905,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "Cortex"
         statusItem.button?.toolTip = "Cortex"
         statusItem.button?.action = #selector(toggleMainWindow)
         statusItem.button?.target = self
+        // A live menu-bar icon: spins while Cortex syncs, breathes when memory is waiting for
+        // review, and rests as a calm brain glyph otherwise.
+        let animator = MenuBarAnimator(statusItem: statusItem) { [weak self] in
+            self?.currentMenuBarMode() ?? .idle
+        }
+        menuBarAnimator = animator
+        animator.start()
+    }
+
+    /// Translates the app's live state into the menu-bar's visual mode. A running sync (or any
+    /// in-flight work) spins the icon; otherwise pending review items make it breathe.
+    private func currentMenuBarMode() -> MenuBarMode {
+        if state.syncProgress?.active == true || state.isBusy {
+            return .syncing
+        }
+        let pending = state.review?.stats.pending_captures ?? state.inbox.count
+        if pending > 0 {
+            return .attention
+        }
+        return .idle
     }
 
     // A comfortable, desktop-app-sized default derived from the current screen: large on big
@@ -8911,8 +8935,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // open roomy rather than as a compact utility window.
     private static func preferredDefaultWindowSize() -> NSSize {
         let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let width = min(1320, max(1040, visible.width * 0.72))
-        let height = min(920, max(720, visible.height * 0.84))
+        // Cortex is a full knowledge workspace, so it should open large — taking up most of the
+        // screen — rather than as a compact utility window. Caps keep it sensible on huge displays.
+        let width = min(1680, max(1200, visible.width * 0.88))
+        let height = min(1080, max(820, visible.height * 0.90))
         return NSSize(width: width, height: height)
     }
 
@@ -8935,7 +8961,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.contentViewController = NSHostingController(rootView: CortexView(state: state))
         // Bumped autosave name so the new larger default replaces any previously-saved small
         // frame once; subsequent user resizes persist under this name.
-        window.setFrameAutosaveName("CortexMainWindowV2")
+        window.setFrameAutosaveName("CortexMainWindowV3")
         // If no frame was restored from the (new) autosave name, open at the roomy default.
         if window.frame.width < defaultSize.width || window.frame.height < defaultSize.height {
             window.setContentSize(defaultSize)

@@ -20,20 +20,22 @@ enum CortexDesign {
         light: NSColor(srgbRed: 0.13, green: 0.32, blue: 0.72, alpha: 0.10),
         dark: NSColor(srgbRed: 0.46, green: 0.63, blue: 0.99, alpha: 0.22)
     )
+    // A clean, bright near-white surface with a whisper of cool tint (not warm cream), so the app
+    // reads as a crisp light theme.
     static let appBackground = cortexAdaptiveColor(
-        light: NSColor(srgbRed: 0.985, green: 0.980, blue: 0.955, alpha: 1),
+        light: NSColor(srgbRed: 0.968, green: 0.972, blue: 0.980, alpha: 1),
         dark: NSColor(srgbRed: 0.11, green: 0.11, blue: 0.12, alpha: 1)
     )
     static let panelBackground = cortexAdaptiveColor(
-        light: NSColor(white: 1.0, alpha: 0.92),
+        light: NSColor(white: 1.0, alpha: 0.96),
         dark: NSColor(srgbRed: 0.20, green: 0.20, blue: 0.22, alpha: 0.92)
     )
     static let cardBackground = cortexAdaptiveColor(
-        light: NSColor(white: 1.0, alpha: 0.86),
+        light: NSColor(white: 1.0, alpha: 0.90),
         dark: NSColor(srgbRed: 0.23, green: 0.23, blue: 0.25, alpha: 0.90)
     )
     static let quietBackground = cortexAdaptiveColor(
-        light: NSColor(srgbRed: 0.950, green: 0.955, blue: 0.940, alpha: 1),
+        light: NSColor(srgbRed: 0.941, green: 0.947, blue: 0.957, alpha: 1),
         dark: NSColor(srgbRed: 0.15, green: 0.15, blue: 0.16, alpha: 1)
     )
     static let softBorder = cortexAdaptiveColor(

@@ -11,35 +11,44 @@ struct OnboardingView: View {
             ScrollView {
                 stepContent
                     .padding(24)
-                    .frame(maxWidth: 620, alignment: .leading)
+                    .frame(maxWidth: 640, alignment: .leading)
                     .frame(maxWidth: .infinity)
+                    .id(state.onboardingStep)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .trailing).combined(with: .opacity),
+                        removal: .move(edge: .leading).combined(with: .opacity)
+                    ))
             }
+            .animation(.easeInOut(duration: 0.32), value: state.onboardingStep)
             Divider()
             footer
         }
         .background(CortexDesign.appBackground)
     }
 
+    private var stepNumber: Int {
+        (steps.firstIndex(of: state.onboardingStep) ?? 0) + 1
+    }
+
+    private var heroTint: Color {
+        state.onboardingStepIsComplete(state.onboardingStep) ? .green : .accentColor
+    }
+
     private var header: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 7) {
-                        Image(systemName: "brain.head.profile")
-                            .foregroundColor(.accentColor)
-                        Text("Getting started")
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                            .foregroundColor(.secondary)
-                    }
-                    Text(state.onboardingStep.title)
-                        .font(.title2)
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                HStack(spacing: 7) {
+                    Image(systemName: "sparkles")
+                        .foregroundColor(.accentColor)
+                    Text("Welcome to Cortex")
+                        .font(.caption)
                         .fontWeight(.semibold)
-                    Text(state.onboardingStep.subtitle)
                         .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
+                Text("Step \(stepNumber) of \(steps.count)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                 Button {
                     state.dismissOnboardingForSession()
                 } label: {
@@ -50,15 +59,35 @@ struct OnboardingView: View {
                 .accessibilityLabel("Finish setup later")
             }
 
+            HStack(alignment: .center, spacing: 18) {
+                OnboardingHeroMark(systemImage: state.onboardingStep.systemImage, tint: heroTint)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(state.onboardingStep.headline)
+                        .font(.system(size: 25, weight: .bold))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .id("title-\(state.onboardingStep.rawValue)")
+                        .transition(.opacity.combined(with: .move(edge: .trailing)))
+                    Text(state.onboardingStep.subtitle)
+                        .font(.title3)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .id("sub-\(state.onboardingStep.rawValue)")
+                        .transition(.opacity)
+                }
+                Spacer(minLength: 0)
+            }
+
             HStack(spacing: 6) {
                 ForEach(steps) { step in
                     Capsule()
                         .fill(progressColor(for: step))
-                        .frame(height: 4)
+                        .frame(height: state.onboardingStep == step ? 6 : 4)
                 }
             }
+            .animation(.spring(response: 0.4, dampingFraction: 0.72), value: state.onboardingStep)
         }
-        .padding(22)
+        .padding(24)
+        .animation(.easeInOut(duration: 0.32), value: state.onboardingStep)
     }
 
     private func progressColor(for step: OnboardingStep) -> Color {
@@ -195,6 +224,11 @@ struct OnboardingVaultStep: View {
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            OnboardingHowTo(
+                title: OnboardingStep.privateVault.howToTitle,
+                steps: OnboardingStep.privateVault.howToSteps
+            )
+
             if state.isLocalServiceReady {
                 OnboardingCheckRow(title: "Private memory ready", detail: "Next, connect a source so Cortex can start finding useful memory.", systemImage: "checkmark.seal.fill", color: .green)
             } else if state.backendNeedsRecovery {
@@ -257,6 +291,11 @@ struct OnboardingFirstSourceStep: View {
             Text("Connect one memory source first. Cortex syncs it privately, sends useful memory to Review, and makes approved memory available to Ask with citations.")
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            OnboardingHowTo(
+                title: OnboardingStep.firstSource.howToTitle,
+                steps: OnboardingStep.firstSource.howToSteps
+            )
 
             OnboardingConnectionCard(
                 title: sourceCardTitle,
@@ -488,6 +527,11 @@ struct OnboardingReviewMemoryStep: View {
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            OnboardingHowTo(
+                title: OnboardingStep.reviewMemory.howToTitle,
+                steps: OnboardingStep.reviewMemory.howToSteps
+            )
+
             if state.inbox.isEmpty {
                 QuietState(title: "No pending memory", detail: emptyReviewDetail)
             } else {
@@ -615,6 +659,11 @@ struct OnboardingAskUseStep: View {
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            OnboardingHowTo(
+                title: OnboardingStep.askUse.howToTitle,
+                steps: OnboardingStep.askUse.howToSteps
+            )
+
             VStack(alignment: .leading, spacing: 10) {
                 TextField("Ask about your reviewed notes", text: $state.searchQuery)
                     .textFieldStyle(.roundedBorder)
@@ -732,6 +781,11 @@ struct OnboardingBackupStep: View {
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            OnboardingHowTo(
+                title: OnboardingStep.trustBackup.howToTitle,
+                steps: OnboardingStep.trustBackup.howToSteps
+            )
+
             HStack(alignment: .center, spacing: 12) {
                 Button {
                     state.createBackup()
@@ -815,6 +869,140 @@ struct OnboardingCheckRow: View {
                     .textSelection(.enabled)
             }
             Spacer()
+        }
+    }
+}
+
+// MARK: - Animated intro components
+
+/// An animated hero glyph for the onboarding header: a symbol resting inside softly-expanding
+/// concentric rings, breathing gently. macOS 13 compatible (pure `withAnimation`/`repeatForever`,
+/// no `symbolEffect`).
+struct OnboardingHeroMark: View {
+    let systemImage: String
+    let tint: Color
+    @State private var animate = false
+
+    var body: some View {
+        ZStack {
+            ForEach(0..<3, id: \.self) { index in
+                Circle()
+                    .stroke(tint.opacity(0.35), lineWidth: 1.5)
+                    .frame(width: 66, height: 66)
+                    .scaleEffect(animate ? 1.55 : 0.85)
+                    .opacity(animate ? 0 : 0.6)
+                    .animation(
+                        .easeOut(duration: 2.6)
+                            .repeatForever(autoreverses: false)
+                            .delay(Double(index) * 0.85),
+                        value: animate
+                    )
+            }
+            Circle()
+                .fill(tint.opacity(0.14))
+                .frame(width: 66, height: 66)
+            Image(systemName: systemImage)
+                .font(.system(size: 27, weight: .semibold))
+                .foregroundColor(tint)
+                .scaleEffect(animate ? 1.05 : 0.95)
+                .animation(.easeInOut(duration: 2).repeatForever(autoreverses: true), value: animate)
+        }
+        .frame(width: 96, height: 96)
+        .onAppear { animate = true }
+        .accessibilityHidden(true)
+    }
+}
+
+/// A compact, numbered "here's exactly how" panel. Used in every onboarding step so users always
+/// see the concrete actions to take, not just a description.
+struct OnboardingHowTo: View {
+    let title: String
+    let steps: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(title, systemImage: "list.number")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+            ForEach(Array(steps.enumerated()), id: \.offset) { index, text in
+                HStack(alignment: .top, spacing: 10) {
+                    Text("\(index + 1)")
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
+                        .frame(width: 20, height: 20)
+                        .background(Circle().fill(Color.accentColor))
+                    Text(text)
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(CortexDesign.panelBackground)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(CortexDesign.softBorder, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+extension OnboardingStep {
+    /// A friendly, full-sentence headline for the animated intro (the `title` stays a one-word chip).
+    var headline: String {
+        switch self {
+        case .privateVault: return "Your memory, private on this Mac"
+        case .firstSource: return "Connect your first source"
+        case .reviewMemory: return "Review what Cortex saved"
+        case .askUse: return "Ask, and get cited answers"
+        case .trustBackup: return "Keep a safe backup"
+        }
+    }
+
+    /// A short "here's exactly how" title + numbered steps shown in each onboarding step.
+    var howToTitle: String {
+        switch self {
+        case .privateVault: return "How Cortex works"
+        case .firstSource: return "How to connect a source"
+        case .reviewMemory: return "How review works"
+        case .askUse: return "How to ask"
+        case .trustBackup: return "How backups work"
+        }
+    }
+
+    var howToSteps: [String] {
+        switch self {
+        case .privateVault:
+            return [
+                "Cortex keeps a private memory index on this Mac — nothing is uploaded.",
+                "It watches the sources you connect and saves useful memory for you.",
+                "Approved memory becomes searchable, and agents like Claude can cite it.",
+            ]
+        case .firstSource:
+            return [
+                "Click the button below, then pick a notes folder — or drag in a ChatGPT / Claude export.",
+                "For more services, open Connections and choose one; Cortex shows exactly how to connect it.",
+                "Cortex keeps it synced privately and sends new memory to Review with citations.",
+            ]
+        case .reviewMemory:
+            return [
+                "Open an item Cortex saved from your connected source.",
+                "Approve it if it's useful and clearly cited — otherwise archive it.",
+                "Approved memory becomes available to Ask and to your agents.",
+            ]
+        case .askUse:
+            return [
+                "Type a question about your reviewed notes.",
+                "Cortex answers using only memory you approved.",
+                "Every answer shows citations you can click to open the source.",
+            ]
+        case .trustBackup:
+            return [
+                "Create a local backup so you can recover memory on this Mac.",
+                "Back up or restore anytime from Advanced settings.",
+                "Backups stay on your Mac — they are never uploaded.",
+            ]
         }
     }
 }
