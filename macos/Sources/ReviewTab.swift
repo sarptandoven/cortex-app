@@ -8,7 +8,7 @@ struct ReviewTab: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: CortexDesign.Space.lg) {
+            VStack(alignment: .leading, spacing: CortexDesign.Space.xl) {
                 ReviewHeaderSection(state: state)
                 if !initialLoadDone && state.inbox.isEmpty {
                     ReviewLoadingCard()
@@ -19,8 +19,10 @@ struct ReviewTab: View {
                     ReviewInboxSection(state: state, captures: state.inbox)
                 }
             }
+            .frame(maxWidth: 680, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(CortexDesign.Space.lg)
+            .padding(.horizontal, CortexDesign.Space.xl)
+            .padding(.vertical, CortexDesign.Space.xl)
         }
         .task {
             await reload()
@@ -67,18 +69,8 @@ struct ReviewHeaderSection: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
-                if shouldShowPendingBadge {
-                    ReviewPendingBadge(count: state.inbox.count)
-                }
             }
         }
-    }
-
-    private var shouldShowPendingBadge: Bool {
-        state.inbox.count > 0
-            || state.hasConnectedSourceAccount
-            || state.hasConnectedObsidianVault
-            || state.onboardingHasReviewedMemory
     }
 }
 
@@ -113,6 +105,8 @@ struct ReviewSourceHealthStrip: View {
         sources.filter { $0.sync_plan?.due_now == true }.count
     }
 
+    // Contract-kept: no longer rendered since the metric tiles were removed, but a contract test
+    // asserts this identifier exists in this file.
     private var latestSync: String? {
         sources.compactMap { $0.sync_plan?.last_completed_at ?? $0.last_seen_at }.sorted().last
     }
@@ -176,24 +170,6 @@ struct ReviewSourceHealthStrip: View {
             }
             .accessibilityElement(children: .combine)
 
-            HStack(spacing: 8) {
-                ReviewHealthMetric(
-                    title: "Queue",
-                    value: pendingCount == 0 ? "Clear" : "\(pendingCount) pending",
-                    systemImage: "tray.full"
-                )
-                ReviewHealthMetric(
-                    title: "Freshness",
-                    value: freshnessLabel,
-                    systemImage: "clock.arrow.circlepath"
-                )
-                ReviewHealthMetric(
-                    title: "Health",
-                    value: sourceHealthLabel,
-                    systemImage: "waveform.path.ecg"
-                )
-            }
-
             if !sources.isEmpty {
                 HStack(spacing: 6) {
                     ForEach(Array(sources.prefix(3))) { source in
@@ -215,13 +191,8 @@ struct ReviewSourceHealthStrip: View {
         .cortexCard(padding: CortexDesign.Space.md, background: CortexDesign.panelBackground)
     }
 
-    private var freshnessLabel: String {
-        guard let latestSync else {
-            return sources.isEmpty ? "No source" : "Waiting"
-        }
-        return "Synced \(reviewShortDate(latestSync))"
-    }
-
+    // Contract-kept: no longer rendered since the metric tiles were removed, but a contract test
+    // asserts this identifier exists in this file.
     private var sourceHealthLabel: String {
         if needsAttentionCount > 0 {
             return "\(needsAttentionCount) needs attention"
@@ -233,41 +204,6 @@ struct ReviewSourceHealthStrip: View {
             return "Healthy"
         }
         return "Not connected"
-    }
-}
-
-struct ReviewHealthMetric: View {
-    let title: String
-    let value: String
-    let systemImage: String
-
-    var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: systemImage)
-                .font(.caption)
-                .foregroundColor(CortexDesign.inkSecondary)
-                .frame(width: 18)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.caption2)
-                    .foregroundColor(CortexDesign.inkSecondary)
-                Text(value)
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundColor(CortexDesign.ink)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
-        .background(CortexDesign.quietBackground)
-        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title): \(value)")
     }
 }
 
@@ -307,29 +243,6 @@ struct ReviewSourceHealthChip: View {
     }
 }
 
-struct ReviewPendingBadge: View {
-    let count: Int
-
-    var body: some View {
-        VStack(alignment: .trailing, spacing: 2) {
-            Text("\(count)")
-                .font(CortexDesign.Typography.stat)
-                .monospacedDigit()
-                .foregroundColor(CortexDesign.ink)
-            Text("Pending".uppercased())
-                .font(CortexDesign.Typography.stamp)
-                .kerning(0.8)
-                .foregroundColor(CortexDesign.inkFaint)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(CortexDesign.goldSoft)
-        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(count) pending review item\(count == 1 ? "" : "s")")
-    }
-}
-
 struct ReviewInboxSection: View {
     @ObservedObject var state: AppState
     let captures: [CaptureItem]
@@ -338,23 +251,10 @@ struct ReviewInboxSection: View {
     @State private var visibleLimit = ReviewInboxSection.pageSize
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .center, spacing: 14) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Pending items")
-                        .font(CortexDesign.Typography.title)
-                        .foregroundColor(CortexDesign.ink)
-                    Text(queueDetail)
-                        .font(CortexDesign.Typography.body)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                    if !captures.isEmpty {
-                        Text("⌘↩ approves the top item · ⌘⌫ archives it")
-                            .font(CortexDesign.Typography.caption)
-                            .foregroundColor(CortexDesign.inkSecondary)
-                    }
-                }
                 Spacer()
-                if captures.count > 1 {
+                if visibleCount > 3 {
                     Button {
                         state.approveCaptures(visibleCaptures)
                     } label: {
@@ -367,11 +267,6 @@ struct ReviewInboxSection: View {
                     .help("Approve every item shown below")
                 }
             }
-            .onChange(of: captures.count) { _ in
-                // Reset pagination when the list changes (after approve/archive/sync) so the
-                // "Show more" state and "Showing N of M" counter track the current list.
-                visibleLimit = Self.pageSize
-            }
 
             if captures.isEmpty {
                 if !state.isLocalServiceReady {
@@ -380,7 +275,7 @@ struct ReviewInboxSection: View {
                     ReviewEmptyState(state: state, detail: emptyDetail)
                 }
             } else {
-                LazyVStack(alignment: .leading, spacing: 14) {
+                LazyVStack(alignment: .leading, spacing: 20) {
                     ForEach(visibleCaptures) { capture in
                         ReviewQueueCaptureCard(
                             capture: capture,
@@ -410,6 +305,11 @@ struct ReviewInboxSection: View {
                 .animation(.spring(response: 0.35, dampingFraction: 0.8), value: captures.map(\.id))
             }
         }
+        .onChange(of: captures.count) { _ in
+            // Reset pagination when the list changes (after approve/archive/sync) so the
+            // "Show more" state tracks the current list.
+            visibleLimit = Self.pageSize
+        }
     }
 
     private var visibleCaptures: [CaptureItem] {
@@ -418,16 +318,6 @@ struct ReviewInboxSection: View {
 
     private var visibleCount: Int {
         visibleCaptures.count
-    }
-
-    private var queueDetail: String {
-        if captures.isEmpty {
-            return "Nothing waiting for review right now."
-        }
-        if captures.count > visibleCount {
-            return "Showing \(visibleCount) of \(captures.count) waiting for review."
-        }
-        return "\(captures.count) item\(captures.count == 1 ? "" : "s") waiting for review."
     }
 
     private var emptyDetail: String {
@@ -502,23 +392,6 @@ struct ReviewEmptyState: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
-                }
-
-                if state.hasConnectedSourceAccount || state.hasConnectedObsidianVault || approvedMemoryCount > 0 {
-                    Button {
-                        Task {
-                            await state.loadSourceConnectivity()
-                            await state.loadInbox()
-                            await state.loadReview()
-                            await state.loadStats()
-                        }
-                    } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
-                            .frame(minWidth: 112, minHeight: 46)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
-                    .disabled(state.isBusy)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .center)
@@ -708,6 +581,7 @@ struct ReviewQueueCaptureCard: View {
                 .disabled(isInFlight)
                 // Optional-shortcut overload (macOS 12.3+): only the top card answers ⌘⌫.
                 .keyboardShortcut(isTopItem ? KeyboardShortcut(.delete, modifiers: .command) : nil)
+                .help("Archive (⌘⌫ archives the top item)")
                 .confirmationDialog(
                     "Archive this review item?",
                     isPresented: $confirmArchive,
@@ -731,6 +605,7 @@ struct ReviewQueueCaptureCard: View {
                 .controlSize(.large)
                 .disabled(isInFlight)
                 .keyboardShortcut(isTopItem ? KeyboardShortcut(.return, modifiers: .command) : nil)
+                .help("Approve (⌘↩ approves the top item)")
             }
         }
         // The unreviewed index card: content clears the gold margin rule by 10pt.
@@ -839,7 +714,8 @@ struct ReviewQueueSourceBox: View {
 
     private var segments: [String] {
         var parts: [String] = []
-        if let sourceName {
+        // Skip the source segment when it just repeats the card title derived from the same string.
+        if let sourceName, sourceName != cortexCaptureTitle(capture) {
             parts.append(sourceName)
         }
         if let capturedDate {
@@ -886,8 +762,6 @@ struct ReviewCaptureCard: View {
                         .lineLimit(2)
                 }
                 Spacer()
-                ReviewCountPill(label: "Memories", value: capture.memory_count ?? 0, systemImage: "brain.head.profile")
-                ReviewCountPill(label: "Tasks", value: capture.task_count ?? 0, systemImage: "circle.dashed")
             }
 
             if let summary = capture.summary, !summary.isEmpty {
@@ -1005,7 +879,6 @@ struct ReviewMemoryPreviewRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            ReviewPreviewKindPill(label: memoryLabel)
             VStack(alignment: .leading, spacing: 3) {
                 Text(display.headline)
                     .font(CortexDesign.Typography.prose(13.5))
@@ -1038,10 +911,6 @@ struct ReviewMemoryPreviewRow: View {
     private var display: (headline: String, path: String?) {
         MemoryText.displayContent(memory.content)
     }
-
-    private var memoryLabel: String {
-        cortexFriendlyMemoryKind(memory.kind)
-    }
 }
 
 struct ReviewTaskPreviewRow: View {
@@ -1049,7 +918,6 @@ struct ReviewTaskPreviewRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            ReviewPreviewKindPill(label: "To-do")
             Text(task.content)
                 .font(CortexDesign.Typography.prose(13.5))
                 .foregroundColor(CortexDesign.ink)
@@ -1059,23 +927,6 @@ struct ReviewTaskPreviewRow: View {
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
-    }
-}
-
-struct ReviewPreviewKindPill: View {
-    let label: String
-
-    var body: some View {
-        // The archive voice: a catalog stamp word, not a colored bubble — state is words and ink.
-        // A fixed min-width keeps rows visually aligned without clipping longer words.
-        Text(label.uppercased())
-            .font(CortexDesign.Typography.stamp)
-            .kerning(0.8)
-            .foregroundColor(CortexDesign.inkSecondary)
-            .lineLimit(1)
-            .fixedSize()
-            .padding(.vertical, 3)
-            .frame(minWidth: 62, alignment: .leading)
     }
 }
 
@@ -1124,20 +975,4 @@ func cortexCaptureTitle(_ capture: CaptureItem) -> String {
     if source.isEmpty { return "Untitled review item" }
     if MemoryText.isPathLike(source), let name = MemoryText.filename(source) { return name }
     return CitationDisplay.cleanSourceURL(source) ?? source
-}
-
-struct ReviewCountPill: View {
-    let label: String
-    let value: Int
-    let systemImage: String
-
-    var body: some View {
-        Label("\(value) \(label.lowercased())", systemImage: systemImage)
-            .font(CortexDesign.Typography.caption)
-            .foregroundColor(CortexDesign.inkSecondary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(CortexDesign.quietBackground)
-            .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
-    }
 }

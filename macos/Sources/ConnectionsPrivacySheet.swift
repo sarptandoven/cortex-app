@@ -70,7 +70,6 @@ private struct ConnectionsPrivacyOverview: View {
     @State private var connectedExpanded = false
     @State private var advancedExpanded = false
     @State private var advancedSourcesExpanded = false
-    @State private var aiToolsExpanded = false
     @State private var sourceAuditExpanded = false
     @State private var recoveryToolsExpanded = false
     @State private var developerDetailsExpanded = false
@@ -115,9 +114,7 @@ private struct ConnectionsPrivacyOverview: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: CortexDesign.Space.lg) {
-                ConnectionsOverviewHero(state: state)
-
+            VStack(alignment: .leading, spacing: CortexDesign.Space.xl) {
                 ConnectionsObsidianSection(state: state)
                 // The two easy paths in (notes folder, chat import) stay visible at top level, even
                 // on first run — a user who doesn't want the local notes folder needs a way to
@@ -126,15 +123,15 @@ private struct ConnectionsPrivacyOverview: View {
                 AIChatsImportCard(state: state)
                 otherSourceConnections
                 if !state.firstRunNeedsSource {
-                    if state.connectedAIIntegrationCount > 0 {
-                        ConnectionsAIToolsSection(state: state)
-                    }
-
                     if let summary = state.trustSummary {
                         ConnectionsPrivacyDefaultsSection(state: state, summary: summary)
                         privacySettings(summary: summary)
-                        connectedNow
+                        if notesHealth.isNeedsAttention
+                            || state.sourceAccounts.contains(where: { $0.disconnected_at == nil && $0.needsAttention }) {
+                            connectedNow
+                        }
                         advancedControls(summary: summary)
+                            .padding(.top, CortexDesign.Space.md)
                     } else {
                         ConnectionsRetryState(
                             state: state,
@@ -149,7 +146,8 @@ private struct ConnectionsPrivacyOverview: View {
                     }
                 }
             }
-            .padding(CortexDesign.Space.lg)
+            .padding(.horizontal, 40)
+            .padding(.vertical, CortexDesign.Space.xl)
         }
         .background(connectionsSheetBackground)
         .task {
@@ -183,39 +181,7 @@ private struct ConnectionsPrivacyOverview: View {
         if extraSources > 0 {
             return "\(extraSources) extra source\(extraSources == 1 ? "" : "s") connected"
         }
-        let wired = state.sourceConnectorCatalog.filter {
-            state.isDirectConnectorSyncWired($0) && $0.id != "obsidian"
-        }
-        let names = wired.prefix(3).map(\.name)
-        guard !names.isEmpty else { return "Optional extras — connect any time" }
-        let more = wired.count - names.count
-        return more > 0
-            ? "\(names.joined(separator: ", ")) + \(more) more — optional"
-            : "\(names.joined(separator: ", ")) — optional"
-    }
-
-    private var optionalAITools: some View {
-        DisclosureGroup(isExpanded: $aiToolsExpanded) {
-            ConnectionsAIToolsSection(state: state)
-                .padding(.top, 10)
-        } label: {
-            ConnectionsDisclosureLabel(
-                systemImage: "wand.and.stars",
-                title: "Use memory elsewhere",
-                detail: aiToolsDisclosureDetail
-            )
-        }
-        .padding(14)
-        .background(connectionsPanelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    private var aiToolsDisclosureDetail: String {
-        if detectedAIToolCount > 0 {
-            return "\(detectedAIToolCount) app\(detectedAIToolCount == 1 ? "" : "s") detected, optional after Ask works"
-        }
-        return "Optional after Ask is useful"
+        return "Optional extras — connect any time"
     }
 
     private func privacySettings(summary: TrustSummaryResponse) -> some View {
@@ -258,25 +224,25 @@ private struct ConnectionsPrivacyOverview: View {
     /// clearly-named cards so users can find backups without wading through developer diagnostics.
     private func advancedControls(summary: TrustSummaryResponse) -> some View {
         VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
-            DisclosureGroup(isExpanded: $advancedExpanded) {
-                VStack(alignment: .leading, spacing: 16) {
-                    if state.connectedAIIntegrationCount == 0 {
-                        optionalAITools
+            if detectedAIToolCount > 0 || state.connectedAIIntegrationCount > 0 {
+                DisclosureGroup(isExpanded: $advancedExpanded) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        ConnectionsAIToolsSection(state: state)
+                        ConnectionsMCPAccessSection(state: state)
                     }
-                    ConnectionsMCPAccessSection(state: state)
+                    .padding(.top, 10)
+                } label: {
+                    ConnectionsDisclosureLabel(
+                        systemImage: "wand.and.stars",
+                        title: "AI tools & permissions",
+                        detail: "Use your memory in Claude, Cursor & other AI apps"
+                    )
                 }
-                .padding(.top, 10)
-            } label: {
-                ConnectionsDisclosureLabel(
-                    systemImage: "wand.and.stars",
-                    title: "AI tools & permissions",
-                    detail: "Use your memory in Claude, Cursor & other AI apps"
-                )
+                .padding(14)
+                .background(connectionsPanelBackground)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
             }
-            .padding(14)
-            .background(connectionsPanelBackground)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
 
             DisclosureGroup(isExpanded: $recoveryToolsExpanded) {
                 VStack(alignment: .leading, spacing: 14) {
@@ -371,211 +337,6 @@ private struct ConnectionsPrivacyOverview: View {
                         await state.loadReliability()
                     }
                 }
-            }
-        }
-    }
-}
-
-private struct ConnectionsOverviewHero: View {
-    @ObservedObject var state: AppState
-
-    private var notesHealth: NotesConnectionHealth {
-        NotesConnectionHealth(state: state)
-    }
-
-    private var notesConnected: Bool {
-        notesHealth == .healthy
-    }
-
-    private var notesNeedContent: Bool {
-        notesHealth == .empty
-    }
-
-    private var notesNeedAttention: Bool {
-        notesHealth.isNeedsAttention
-    }
-
-    private var obsidianConnector: SourceConnectorCatalogItem? {
-        state.sourceConnectorCatalog.first { $0.id == "obsidian" && $0.showInPrimaryUI }
-    }
-
-    var body: some View {
-        // Once notes are healthy the big hero has done its job — collapse it to a slim
-        // one-line confirmation so the next actions (import chats, add sources) rise into view.
-        if notesConnected {
-            connectedBar
-        } else {
-            fullHero
-        }
-    }
-
-    private var connectedBar: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "checkmark.seal.fill")
-                .foregroundColor(CortexDesign.sealMoss)
-                .font(.title3)
-            Text("Notes connected")
-                .font(.headline)
-                .foregroundColor(CortexDesign.ink)
-            Text("New memory goes to Review first.")
-                .font(.callout)
-                .foregroundColor(CortexDesign.inkSecondary)
-            Spacer(minLength: 8)
-            Button {
-                runPrimaryAction()
-            } label: {
-                Label(state.hasConnectedObsidianVault ? "Sync now" : "Reconnect",
-                      systemImage: "arrow.triangle.2.circlepath")
-                    .frame(minHeight: 36)
-            }
-            .buttonStyle(.bordered)
-            .disabled(primaryActionDisabled)
-        }
-        .padding(.leading, 26)
-        .padding(.trailing, 16)
-        .padding(.vertical, 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(connectionsPanelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .archiveSpine(CortexDesign.accent)
-    }
-
-    private var fullHero: some View {
-        HStack(alignment: .center, spacing: 18) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(statusColor.opacity(0.12))
-                Image(systemName: statusIcon)
-                    .font(.system(size: 34, weight: .semibold))
-                    .foregroundColor(statusColor)
-            }
-            .frame(width: 72, height: 72)
-
-            VStack(alignment: .leading, spacing: 7) {
-                Text(title)
-                    .font(CortexDesign.Typography.display(28))
-                    .foregroundColor(CortexDesign.ink)
-                Text(detail)
-                    .font(.title3)
-                    .foregroundColor(CortexDesign.inkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 8)
-
-            primaryButton
-        }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(connectionsPanelBackground)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    @ViewBuilder
-    private var primaryButton: some View {
-        if notesConnected {
-            Button {
-                runPrimaryAction()
-            } label: {
-                Label(primaryActionTitle, systemImage: primaryActionIcon)
-                    .frame(minWidth: 158, minHeight: 50)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-            .disabled(primaryActionDisabled)
-        } else {
-            Button {
-                runPrimaryAction()
-            } label: {
-                Label(primaryActionTitle, systemImage: primaryActionIcon)
-                    .frame(minWidth: 158, minHeight: 50)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(primaryActionDisabled)
-        }
-    }
-
-    private var primaryActionDisabled: Bool {
-        state.isBusy || (!state.hasConnectedObsidianVault && obsidianConnector == nil && state.sourceConnectorCatalog.isEmpty)
-    }
-
-    private var primaryActionTitle: String {
-        if notesConnected {
-            return state.hasConnectedObsidianVault ? "Sync notes" : "Reconnect notes"
-        }
-        if !notesConnected, let _ = obsidianConnector {
-            if notesNeedAttention { return "Fix notes" }
-            return notesNeedContent ? "Choose notes" : "Connect notes"
-        }
-        if !notesConnected {
-            return "Check status"
-        }
-        return "Sync notes"
-    }
-
-    private var primaryActionIcon: String {
-        if notesConnected {
-            return state.hasConnectedObsidianVault ? "arrow.triangle.2.circlepath" : "folder.badge.plus"
-        }
-        if !notesConnected, obsidianConnector != nil {
-            if notesNeedAttention { return "exclamationmark.triangle.fill" }
-            return notesNeedContent ? "folder.badge.questionmark" : "folder.badge.plus"
-        }
-        return "arrow.clockwise"
-    }
-
-    private var title: String {
-        if notesConnected {
-            return "Notes connected"
-        }
-        if notesNeedAttention {
-            return "Notes need attention"
-        }
-        if notesNeedContent {
-            return "Choose notes with content"
-        }
-        return "Connect notes once"
-    }
-
-    private var detail: String {
-        if notesConnected {
-            return "New memory goes to Review first. Ask uses reviewed memory with citations."
-        }
-        if notesNeedAttention {
-            return notesHealth.detail ?? "Cortex needs attention before notes can keep syncing."
-        }
-        if notesNeedContent {
-            return "Cortex could not find usable content there. Choose a notes library with real content."
-        }
-        return "Choose the notes Cortex should sync. New memory goes to Review before Ask uses it."
-    }
-
-    private var statusIcon: String {
-        if notesConnected { return "checkmark.seal.fill" }
-        if notesNeedAttention { return "exclamationmark.triangle.fill" }
-        if notesNeedContent { return "folder.badge.questionmark" }
-        return "link.circle.fill"
-    }
-
-    private var statusColor: Color {
-        if notesConnected { return CortexDesign.sealMoss }
-        if notesNeedAttention { return CortexDesign.accent }
-        // Waiting on content is a pending state — marginalia gold, used here only as a
-        // large glyph over its own soft fill (never small text).
-        if notesNeedContent { return CortexDesign.gold }
-        return CortexDesign.accent
-    }
-
-    private func runPrimaryAction() {
-        if let connector = obsidianConnector {
-            state.connectLocalNotesFolder(connector, chooseNew: notesNeedContent)
-        } else {
-            Task {
-                await state.loadTrust()
-                state.refreshIntegrationStates()
             }
         }
     }
@@ -701,6 +462,9 @@ private struct ConnectionsDirectSourcesSection: View {
             .sorted()
     }
 
+    // Single summarizer for planned sign-in connectors. No longer rendered as a roadmap
+    // footer — each unavailable tile already says "Coming soon" — but kept as the one
+    // place that names the planned sign-in set.
     private var plannedConnectorSummary: String? {
         let names = plannedConnectorNames
         guard !names.isEmpty else { return nil }
@@ -718,15 +482,6 @@ private struct ConnectionsDirectSourcesSection: View {
                 title: "Connections library",
                 detail: "All optional."
             )
-            // The moss mark — the archive's private-by-default signature.
-            HStack(spacing: 7) {
-                Circle()
-                    .fill(CortexDesign.sealMoss)
-                    .frame(width: 7, height: 7)
-                Text("Everything you connect stays on this Mac.")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(CortexDesign.sealMoss)
-            }
 
             if state.sourceConnectorCatalog.isEmpty {
                 ConnectionsRetryState(
@@ -791,13 +546,6 @@ private struct ConnectionsDirectSourcesSection: View {
                         }
                     }
                 }
-            }
-
-            if let plannedConnectorSummary {
-                Text(plannedConnectorSummary)
-                    .font(.caption)
-                    .foregroundColor(CortexDesign.inkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .sheet(item: $selectedTokenConnector) { connector in
@@ -1248,31 +996,31 @@ private struct ConnectionsDirectSourceRow: View {
 
     private var detail: String {
         if isPaused {
-            return "\(connector.name) sync is paused. Already synced local memory stays available; resume when you want fresh items."
+            return "Paused. Already synced local memory stays available."
         }
         if activeAccount?.needsAttention == true {
             return activeAccount?.last_error ?? "This connector needs attention before it can sync again."
         }
         if hasManagedOAuth {
-            if connected { return "\(connector.name) is connected. Cortex keeps new memory local and sends useful items to Review first." }
+            if connected { return "New items go to Review first." }
             if !managedOAuthConfigured {
                 return state.managedOAuthConfigurationMessage(connector) ?? "\(connector.name) sign-in is not configured for this build yet."
             }
-            return "Sign in with \(managedOAuthProviderName). Cortex stores tokens locally, syncs read-only data, and cites every useful memory."
+            return "Sign in with \(managedOAuthProviderName) — read-only."
         }
         switch connector.id {
         case "calendar":
             if connected { return "Calendar events are available for Review and cited Ask." }
-            if hasStoredConfig { return "Calendar sync is configured. Run it again when you want fresh events." }
-            return "Connect a read-only calendar export or feed. Cortex keeps synced events available for Review and cited Ask."
+            if hasStoredConfig { return "Configured. Sync again for fresh events." }
+            return "Connect a read-only calendar export or feed."
         case "zotero":
             return connected ? "Zotero research is available for Review and cited Ask." : "Sync from the Zotero desktop local API when Zotero is running."
         default:
-            if connected { return "\(connector.name) is connected. Run sync again when you want fresh memory." }
-            if hasStoredConfig { return "\(connector.name) sync is configured. Run it again when you want fresh memory." }
+            if connected { return "Run sync again for fresh items." }
+            if hasStoredConfig { return "Configured. Run sync again for fresh items." }
             return connector.connectionSetup?.mode == "native-token-connector"
-                ? "Connect with a read-only token. Cortex sends useful items to Review with citations."
-                : "Connect this source. Cortex keeps synced items local and sends useful memory to Review first."
+                ? "Connect with a read-only token."
+                : "Synced items go to Review first."
         }
     }
 
@@ -1288,7 +1036,7 @@ private struct ConnectionsDirectSourceRow: View {
             return "\(readiness.pending) item\(readiness.pending == 1 ? "" : "s") waiting in Review · \(autosyncLabel)"
         }
         if readiness.active_memories > 0 {
-            return "\(autosyncLabel) · \(readiness.active_memories) reviewed memor\(readiness.active_memories == 1 ? "y" : "ies") with \(Int((readiness.citation_coverage * 100).rounded()))% citation coverage"
+            return autosyncLabel
         }
         if let lastSeen = readiness.last_seen_at {
             return "\(autosyncLabel) · Last sync \(shortTimestamp(lastSeen))"
@@ -2166,10 +1914,6 @@ private struct ConnectionsPrivacyDefaultsSection: View {
     @ObservedObject var state: AppState
     let summary: TrustSummaryResponse
 
-    private var settings: AppSettingsResponse {
-        summary.settings
-    }
-
     private var backupCount: Int {
         state.dataLifecycleReport?.backups.count ?? 0
     }
@@ -2202,43 +1946,17 @@ private struct ConnectionsPrivacyDefaultsSection: View {
                 .buttonStyle(.bordered)
                 .controlSize(.large)
             }
-
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 10)], spacing: 10) {
-                ConnectionsTrustTile(
-                    title: settings.review_new_captures ? "Review first" : "Auto-approve",
-                    detail: settings.review_new_captures ? "new memory waits for approval" : "new memory can activate",
-                    systemImage: settings.review_new_captures ? "checklist" : "bolt.fill",
-                    color: settings.review_new_captures ? CortexDesign.sealMoss : CortexDesign.accent
-                )
-                ConnectionsTrustTile(
-                    title: settings.allow_agent_reads ? "AI access on" : "AI access off",
-                    detail: aiAccessDetail(settings),
-                    systemImage: settings.allow_agent_reads ? "eye.fill" : "eye.slash.fill",
-                    color: settings.allow_agent_reads ? CortexDesign.accent : CortexDesign.inkSecondary
-                )
-                ConnectionsTrustTile(
-                    title: backupCount > 0 ? "Backup ready" : "No backup yet",
-                    detail: backupCount > 0 ? "\(backupCount) local archive\(backupCount == 1 ? "" : "s")" : "create one before big changes",
-                    systemImage: backupCount > 0 ? "externaldrive.fill" : "externaldrive.badge.exclamationmark",
-                    color: backupCount > 0 ? CortexDesign.sealMoss : CortexDesign.accent
-                )
-            }
         }
         .padding(16)
         .background(connectionsPanelBackground)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
-
-    private func aiAccessDetail(_ settings: AppSettingsResponse) -> String {
-        guard settings.allow_agent_reads else { return "tools cannot read memory" }
-        let readText = settings.allow_pending_in_context ? "pending reads allowed" : "reviewed memory reads"
-        return settings.allow_agent_writes ? "\(readText), saves to Review" : readText
-    }
 }
 
 private struct ConnectionsMCPAccessSection: View {
     @ObservedObject var state: AppState
+    @State private var recentActivityExpanded = false
 
     private var settings: AppSettingsResponse {
         state.appSettings
@@ -2296,15 +2014,6 @@ private struct ConnectionsMCPAccessSection: View {
                     }
                 }
                 Spacer(minLength: 12)
-                Button {
-                    Task {
-                        await state.loadTrust()
-                        await state.loadIntegrationTokens()
-                    }
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-                .controlSize(.large)
             }
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], spacing: 10) {
@@ -2361,34 +2070,38 @@ private struct ConnectionsMCPAccessSection: View {
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline, lineWidth: 1))
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
-            VStack(alignment: .leading, spacing: 8) {
+            DisclosureGroup(isExpanded: $recentActivityExpanded) {
+                VStack(alignment: .leading, spacing: 8) {
+                    if recentToolEvents.isEmpty {
+                        Text("No AI tool activity recorded yet.")
+                            .font(.callout)
+                            .foregroundColor(CortexDesign.inkSecondary)
+                    } else {
+                        ForEach(recentToolEvents) { event in
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Image(systemName: "wand.and.stars")
+                                    .foregroundColor(CortexDesign.accent)
+                                    .frame(width: 20)
+                                Text(event.event_type.replacingOccurrences(of: "_", with: " ").capitalized)
+                                    .font(.callout)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(CortexDesign.ink)
+                                Spacer(minLength: 0)
+                                // Dates speak in the catalog-stamp voice.
+                                Text(shortDate(event.created_at).uppercased())
+                                    .font(CortexDesign.Typography.stamp)
+                                    .kerning(0.8)
+                                    .foregroundColor(CortexDesign.inkFaint)
+                            }
+                        }
+                    }
+                }
+                .padding(.top, 8)
+            } label: {
                 Text("Recent tool activity")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(CortexDesign.inkSecondary)
-                if recentToolEvents.isEmpty {
-                    Text("No AI tool activity recorded yet.")
-                        .font(.callout)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                } else {
-                    ForEach(recentToolEvents) { event in
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Image(systemName: "wand.and.stars")
-                                .foregroundColor(CortexDesign.accent)
-                                .frame(width: 20)
-                            Text(event.event_type.replacingOccurrences(of: "_", with: " ").capitalized)
-                                .font(.callout)
-                                .fontWeight(.medium)
-                                .foregroundColor(CortexDesign.ink)
-                            Spacer(minLength: 0)
-                            // Dates speak in the catalog-stamp voice.
-                            Text(shortDate(event.created_at).uppercased())
-                                .font(CortexDesign.Typography.stamp)
-                                .kerning(0.8)
-                                .foregroundColor(CortexDesign.inkFaint)
-                        }
-                    }
-                }
             }
             .padding(12)
             .background(CortexDesign.cardBackground)

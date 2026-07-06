@@ -6348,9 +6348,9 @@ final class AppState: ObservableObject {
 }
 
 /// The primary navigation, in the archive's voice: serif Home / Review / Ask labels with a
-/// wax-red pen-stroke underline that slides between tabs (the "ink tick"), plus quiet monospaced
-/// ⌘-hints. Reads and writes the same `state.selectedTab` every other setter uses, so navigation
-/// stays consistent everywhere.
+/// wax-red pen-stroke underline that slides between tabs (the "ink tick"). ⌘1/2/3 shortcuts
+/// stay registered and are taught on hover. Reads and writes the same `state.selectedTab`
+/// every other setter uses, so navigation stays consistent everywhere.
 struct CortexTabBar: View {
     @ObservedObject var state: AppState
     @Namespace private var inkTick
@@ -6383,9 +6383,6 @@ struct CortexTabBar: View {
                                             .fill(CortexDesign.gold.opacity(0.85))
                                     )
                             }
-                            Text("⌘\(index + 1)")
-                                .font(CortexDesign.Typography.hint)
-                                .foregroundColor(CortexDesign.inkFaint)
                         }
                         ZStack {
                             Color.clear.frame(height: 2.5)
@@ -6408,7 +6405,7 @@ struct CortexTabBar: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, CortexDesign.Space.lg)
-        .padding(.top, CortexDesign.Space.sm)
+        .padding(.top, CortexDesign.Space.md)
         .background(CortexDesign.appBackground)
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: state.selectedTab)
     }
@@ -6477,10 +6474,9 @@ struct CortexView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
-                CortexLayerStatusPill(state: state)
             }
             .padding(.horizontal, CortexDesign.Space.lg)
-            .padding(.vertical, CortexDesign.Space.sm)
+            .padding(.vertical, CortexDesign.Space.md)
         }
         .background(CortexDesign.appBackground)
     }
@@ -6530,61 +6526,6 @@ struct CortexView: View {
 
     private var footerNeedsAttention: Bool {
         CortexRecoveryText.needsAttention(state.displayStatus)
-    }
-}
-
-struct CortexLayerStatusPill: View {
-    @ObservedObject var state: AppState
-
-    private var activeAccounts: Int {
-        state.sourceAccounts.filter { account in
-            account.disconnected_at == nil && !account.needsContent
-        }.count
-    }
-
-    private var pending: Int {
-        state.review?.stats.pending_captures ?? state.inbox.count
-    }
-
-    private var label: String {
-        if pending > 0 {
-            return "\(pending) to review"
-        }
-        if (state.stats?.memories ?? 0) > 0 {
-            return "Memory ready"
-        }
-        if activeAccounts > 0 {
-            return activeAccounts == 1 ? "1 connection syncing" : "\(activeAccounts) connections syncing"
-        }
-        return "No sources"
-    }
-
-    private var icon: String {
-        if pending > 0 { return "tray.full.fill" }
-        if (state.stats?.memories ?? 0) > 0 { return "sparkle.magnifyingglass" }
-        if activeAccounts > 0 { return "arrow.triangle.2.circlepath" }
-        return "circle.dashed"
-    }
-
-    private var color: Color {
-        if pending > 0 { return .orange }
-        if (state.stats?.memories ?? 0) > 0 { return .accentColor }
-        if activeAccounts > 0 { return .green }
-        return .secondary
-    }
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon)
-                .foregroundColor(color)
-            Text(label)
-                .font(.caption)
-                .fontWeight(.medium)
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(CortexDesign.panelBackground)
-        .clipShape(Capsule())
     }
 }
 
@@ -9238,8 +9179,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             state: state,
             onOpenApp: { [weak self] in self?.quickPanelOpenApp() },
             onOpenReview: { [weak self] in self?.quickPanelOpenReview() },
-            onSync: { [weak self] in self?.state.syncNowFromMenu() },
-            onConnections: { [weak self] in self?.quickPanelOpenConnections() },
             onClose: { [weak self] in self?.quickPanelPopover?.performClose(nil) }
         )
         let hosting = NSHostingController(rootView: panel)

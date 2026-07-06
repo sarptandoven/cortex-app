@@ -6,7 +6,7 @@ struct ModelTab: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 28) {
                 if let progress = state.syncProgress, progress.active {
                     SyncProgressCard(progress: progress)
                         .transition(.opacity.combined(with: .move(edge: .top)))
@@ -19,15 +19,16 @@ struct ModelTab: View {
                 if let profile = state.profile, !profile.sections.isEmpty {
                     SectionHeader(
                         title: "What Cortex has learned",
-                        detail: "From your notes — every line can show where it came from."
+                        detail: ""
                     )
-                    .padding(.top, CortexDesign.Space.sm)
+                    .padding(.top, CortexDesign.Space.xl)
                     ForEach(profile.sections) { section in
                         ProfileCard(section: section)
                     }
                 }
             }
-            .padding(16)
+            .padding(.horizontal, 32)
+            .padding(.vertical, 28)
             .animation(.easeInOut(duration: 0.25), value: state.mirrorInsight)
             .animation(.easeInOut(duration: 0.25), value: state.syncProgress)
         }
@@ -43,26 +44,13 @@ struct SyncProgressCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                ProgressView().scaleEffect(0.7)
-                Text("Syncing your memory…")
-                    .font(.callout)
-                    .fontWeight(.semibold)
-                    .foregroundColor(CortexDesign.ink)
-                Spacer()
-                Text("\(progress.done) OF \(progress.total)")
-                    .font(CortexDesign.Typography.stamp)
-                    .kerning(0.8)
-                    .monospacedDigit()
-                    .foregroundColor(CortexDesign.inkFaint)
-            }
+            Text("Syncing your memory…")
+                .font(.callout)
+                .fontWeight(.semibold)
+                .foregroundColor(CortexDesign.ink)
             ProgressView(value: progress.fraction)
                 .progressViewStyle(.linear)
                 .tint(CortexDesign.gold)
-            Text("Cortex is turning new content into cited memory — what it learns appears below as it goes.")
-                .font(.caption)
-                .foregroundColor(CortexDesign.inkSecondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .cortexCard(padding: 14, background: CortexDesign.goldSoft)
     }
@@ -148,8 +136,8 @@ struct MirrorMomentCard: View {
 
 /// One card in the "What Cortex knows about you" Personal Profile stack. Each card is a
 /// single section (how you work, preferences, ...): a confident one-line statement plus a
-/// few quiet grounding rows. Confidence is signalled with a small pill — green "Confident"
-/// for a settled fact, a secondary "Emerging" for a pattern still taking shape. Rows whose
+/// few quiet grounding rows. Settled facts carry no chip; only a pattern still taking shape
+/// is flagged with a secondary "Emerging" pill. Rows whose
 /// element carries a source_url can be opened. This view assumes the caller only renders it
 /// for non-empty profiles; a section with no statement and no elements shows just its title.
 struct ProfileCard: View {
@@ -164,9 +152,9 @@ struct ProfileCard: View {
 
     private var confidencePill: some View {
         CortexStatusPill(
-            label: section.isConfident ? "Confident" : "Emerging",
-            systemImage: section.isConfident ? "checkmark.seal" : "sparkles",
-            color: section.isConfident ? CortexDesign.sealMoss : CortexDesign.inkSecondary
+            label: "Emerging",
+            systemImage: "sparkles",
+            color: CortexDesign.inkSecondary
         )
     }
 
@@ -178,8 +166,10 @@ struct ProfileCard: View {
                     .kerning(0.8)
                     .foregroundColor(CortexDesign.accent)
                 Spacer(minLength: 0)
-                confidencePill
-                    .accessibilityHidden(true)
+                if !section.isConfident {
+                    confidencePill
+                        .accessibilityHidden(true)
+                }
             }
 
             if let statement = section.statement, !statement.isEmpty {
@@ -199,7 +189,7 @@ struct ProfileCard: View {
                         Image(systemName: "chevron.right")
                             .font(.caption2.weight(.semibold))
                             .rotationEffect(.degrees(showSources ? 90 : 0))
-                        Text(showSources ? "Hide sources" : "Where this comes from (\(visibleElements.count))")
+                        Text(showSources ? "Hide sources" : "Where this comes from")
                     }
                     .font(.caption)
                     .fontWeight(.medium)
@@ -207,7 +197,7 @@ struct ProfileCard: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(showSources ? "Hide sources" : "Show \(visibleElements.count) sources")
+                .accessibilityLabel(showSources ? "Hide sources" : "Show sources")
 
                 if showSources {
                     VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
@@ -228,11 +218,11 @@ struct ProfileCard: View {
     }
 
     private var accessibilityLabel: String {
-        let confidence = section.isConfident ? "Confident" : "Emerging"
+        let prefix = section.isConfident ? section.title : "\(section.title), Emerging"
         if let statement = section.statement, !statement.isEmpty {
-            return "\(section.title), \(confidence): \(statement)"
+            return "\(prefix): \(statement)"
         }
-        return "\(section.title), \(confidence)"
+        return prefix
     }
 }
 
@@ -388,40 +378,6 @@ struct HomeHeroSection: View {
         state.hasConnectedObsidianVault && obsidianConnector != nil
     }
 
-    private var statusSummary: (label: String, systemImage: String, color: Color) {
-        if !state.isLocalServiceReady {
-            if CortexRecoveryText.needsAttention(state.displayStatus) {
-                return ("Needs attention", "exclamationmark.triangle.fill", CortexDesign.accent)
-            }
-            return ("Starting", "power", CortexDesign.accent)
-        }
-        if needsAttentionSources > 0 {
-            return ("Source needs attention", "exclamationmark.triangle.fill", CortexDesign.accent)
-        }
-        if pendingCount > 0 {
-            return ("Ready for Review", "tray.full.fill", CortexDesign.gold)
-        }
-        if dueSyncSources > 0 {
-            return ("Sync due", "arrow.triangle.2.circlepath.circle.fill", CortexDesign.gold)
-        }
-        if hasMemory {
-            return ("Ready to ask", "checkmark.seal.fill", CortexDesign.sealMoss)
-        }
-        if syncingSources > 0 {
-            return ("Syncing source", "arrow.triangle.2.circlepath", CortexDesign.gold)
-        }
-        if activeSources > 0 {
-            return ("Source connected", "link.circle.fill", CortexDesign.sealMoss)
-        }
-        if hasEmptySource {
-            return ("No source content", "folder.badge.questionmark", CortexDesign.accent)
-        }
-        if state.connectedAIIntegrationCount > 0 {
-            return ("Connect a source", "link.badge.plus", CortexDesign.accent)
-        }
-        return ("Private on this Mac", "lock.shield", CortexDesign.sealMoss)
-    }
-
     private var title: String {
         if !state.isLocalServiceReady {
             return "Cortex is starting"
@@ -453,7 +409,9 @@ struct HomeHeroSection: View {
         return "Connect your notes"
     }
 
-    private var detail: String {
+    // Only problem and first-run states carry an explanation line; healthy states
+    // let the display title speak alone.
+    private var detail: String? {
         if !state.isLocalServiceReady {
             if CortexRecoveryText.needsAttention(state.displayStatus) {
                 return state.displayStatus
@@ -464,19 +422,19 @@ struct HomeHeroSection: View {
             return "Cortex keeps already synced memory local, but one or more sources need attention before fresh items arrive."
         }
         if pendingCount > 0 {
-            return "Choose what Cortex should remember before it appears in Ask."
+            return nil
         }
         if dueSyncSources > 0 {
-            return "A connected source is ready to sync. Cortex will keep new memory local and bring useful items to Review."
+            return nil
         }
         if hasMemory {
-            return "Cortex answers from saved memory and shows which source each answer came from."
+            return nil
         }
         if syncingSources > 0 {
-            return "New items will appear in Review when sync finishes."
+            return nil
         }
         if activeSources > 0 {
-            return "Cortex will bring new items to Review after the first sync completes."
+            return nil
         }
         if hasEmptySource {
             return "Cortex could not find usable content there. Pick a source with real notes or records."
@@ -497,32 +455,6 @@ struct HomeHeroSection: View {
         return canSyncSource ? "Sync notes" : "View notes"
     }
 
-    private var actionDetail: String {
-        if !state.isLocalServiceReady { return "Start Cortex on this Mac." }
-        if needsAttentionSources > 0 {
-            return "\(needsAttentionSources) source\(needsAttentionSources == 1 ? "" : "s") need attention"
-        }
-        if dueSyncSources > 0 {
-            return "\(dueSyncSources) source\(dueSyncSources == 1 ? "" : "s") ready"
-        }
-        if activeSources == 0 {
-            if hasEmptySource {
-                return "Pick a folder with useful notes."
-            }
-            if state.connectedAIIntegrationCount > 0 {
-                return "Synced notes give Ask something to cite."
-            }
-            return "Cortex syncs automatically after notes are selected."
-        }
-        if pendingCount > 0 {
-            return "\(pendingCount) item\(pendingCount == 1 ? "" : "s") waiting"
-        }
-        if hasMemory {
-            return "\(memoryCount) saved memor\(memoryCount == 1 ? "y" : "ies") ready"
-        }
-        return canSyncSource ? "Check the connected source now." : "Cortex checks sources in the background."
-    }
-
     private var actionIcon: String {
         if !state.isLocalServiceReady { return "power" }
         if needsAttentionSources > 0 { return "exclamationmark.circle" }
@@ -535,21 +467,17 @@ struct HomeHeroSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: CortexDesign.Space.lg) {
-            CortexStatusPill(
-                label: statusSummary.label,
-                systemImage: statusSummary.systemImage,
-                color: statusSummary.color
-            )
-
             VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
                 Text(title)
                     .font(CortexDesign.Typography.display(30))
                     .foregroundColor(CortexDesign.ink)
-                Text(detail)
-                    .font(CortexDesign.Typography.body)
-                    .foregroundColor(CortexDesign.inkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 680, alignment: .leading)
+                if let detail {
+                    Text(detail)
+                        .font(CortexDesign.Typography.body)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 680, alignment: .leading)
+                }
             }
 
             HStack(alignment: .center, spacing: CortexDesign.Space.md) {
@@ -562,12 +490,6 @@ struct HomeHeroSection: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .disabled(state.isBusy)
-
-                Text(actionDetail)
-                    .font(.callout)
-                    .foregroundColor(CortexDesign.inkSecondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
 
                 Spacer(minLength: 0)
             }
@@ -583,23 +505,12 @@ struct HomeHeroSection: View {
                 .cortexCard(padding: CortexDesign.Space.md)
                 .frame(maxWidth: 620, alignment: .leading)
             } else {
-                VStack(alignment: .leading, spacing: CortexDesign.Space.xs) {
-                    HomeStatusRow(
-                        title: "Source",
-                        detail: sourceStatus.detail,
-                        dotColor: sourceStatus.color,
-                        action: { state.openConnectionsPrivacy(statusMessage: "Source status") }
-                    )
-                    Divider().overlay(CortexDesign.hairline)
-                    HomeStatusRow(
-                        title: "Memory",
-                        detail: memoryStatus.detail,
-                        dotColor: memoryStatus.color,
-                        action: (pendingCount > 0 || memoryCount > 0)
-                            ? { state.selectedTab = pendingCount > 0 ? .review : .ask }
-                            : nil
-                    )
-                }
+                HomeStatusRow(
+                    title: "Source",
+                    detail: sourceStatus.detail,
+                    dotColor: sourceStatus.color,
+                    action: { state.openConnectionsPrivacy(statusMessage: "Source status") }
+                )
                 .cortexCard()
                 .frame(maxWidth: 620, alignment: .leading)
             }
@@ -613,10 +524,10 @@ struct HomeHeroSection: View {
     // gold = pending/due, wax = needs attention, secondary ink = neutral.
     private var sourceStatus: (detail: String, color: Color) {
         if needsAttentionSources > 0 {
-            return ("\(needsAttentionSources) source\(needsAttentionSources == 1 ? "" : "s") need attention", CortexDesign.accent)
+            return (needsAttentionSources == 1 ? "Source needs attention" : "\(needsAttentionSources) sources need attention", CortexDesign.accent)
         }
         if dueSyncSources > 0 {
-            return ("\(dueSyncSources) connected source\(dueSyncSources == 1 ? "" : "s") ready to sync", CortexDesign.gold)
+            return (dueSyncSources == 1 ? "Sync due" : "Sync due for \(dueSyncSources) sources", CortexDesign.gold)
         }
         if syncingSources > 0 {
             return ("\(activeSources) connected, sync in progress", CortexDesign.gold)
@@ -628,16 +539,6 @@ struct HomeHeroSection: View {
             return ("No usable content found", CortexDesign.accent)
         }
         return ("Notes not connected", CortexDesign.accent)
-    }
-
-    private var memoryStatus: (detail: String, color: Color) {
-        if pendingCount > 0 {
-            return ("\(pendingCount) waiting for Review", CortexDesign.gold)
-        }
-        if memoryCount > 0 {
-            return ("\(memoryCount) saved for Ask", CortexDesign.sealMoss)
-        }
-        return ("No saved memory yet", CortexDesign.inkSecondary)
     }
 
     private func runNextAction() {

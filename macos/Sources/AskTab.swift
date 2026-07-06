@@ -9,14 +9,13 @@ struct AskTab: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
-                AskHeaderSection()
+            VStack(alignment: .leading, spacing: CortexDesign.Space.xl) {
                 if hasReviewedMemory {
                     AskQuerySection(state: state)
                     AskMemoryContextStrip(state: state)
 
                     if state.isBusy {
-                        AskLoadingCard(query: state.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines))
+                        AskLoadingCard()
                     } else if let askError = state.askError {
                         AskErrorCard(state: state, message: askError)
                     } else if state.hasSearched,
@@ -46,8 +45,10 @@ struct AskTab: View {
                     )
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-            .padding(CortexDesign.Space.md)
+            .frame(maxWidth: 680, alignment: .topLeading)
+            .padding(CortexDesign.Space.xl)
+            .padding(.top, CortexDesign.Space.xl)
+            .frame(maxWidth: .infinity)
         }
         .task {
             await reload()
@@ -96,20 +97,6 @@ struct AskTab: View {
             return "Cortex needs reviewed memory before Ask can answer. Sync your source, then approve one useful item."
         }
         return "Choose notes or a connected source. Cortex will sync locally, send useful memory to Review, and only then answer with sources."
-    }
-}
-
-struct AskHeaderSection: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Ask Cortex")
-                .font(CortexDesign.Typography.display(20))
-                .foregroundColor(CortexDesign.ink)
-            Text("Every answer shows its sources.")
-                .font(CortexDesign.Typography.body)
-                .foregroundColor(CortexDesign.inkSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
     }
 }
 
@@ -289,36 +276,12 @@ struct AskMemoryContextStrip: View {
     }
 
     var body: some View {
-        // Healthy = one quiet caption line under the search box, so the pre-search screen stays
-        // calm and the question field is the star. The full diagnostic card only appears when
-        // something actually needs the user (a source needs attention or items wait in Review).
+        // Healthy = nothing at all — the question field is the star. The diagnostic card only
+        // appears when something actually needs the user (a source needs attention or items
+        // wait in Review).
         if needsAttentionCount > 0 || (memoryCount == 0 && pendingCount > 0) {
             fullDiagnosticCard
-        } else {
-            HStack(spacing: 6) {
-                Image(systemName: statusIcon)
-                    .font(.caption)
-                    .foregroundColor(statusColor)
-                Text(quietSummary)
-                    .font(CortexDesign.Typography.caption)
-                    .foregroundColor(CortexDesign.inkSecondary)
-                    .lineLimit(1)
-                    .help(detail + " " + sourceHealthLabel)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 6)
         }
-    }
-
-    private var quietSummary: String {
-        if memoryCount > 0 {
-            var line = "Answering from \(memoryCount) reviewed memor\(memoryCount == 1 ? "y" : "ies") across \(sourceCount) source\(sourceCount == 1 ? "" : "s")"
-            if let latestSync {
-                line += " · synced \(shortDate(latestSync))"
-            }
-            return line
-        }
-        return detail
     }
 
     private var fullDiagnosticCard: some View {
@@ -488,25 +451,13 @@ private func shortDate(_ value: String) -> String {
 }
 
 struct AskLoadingCard: View {
-    var query: String = ""
-
     var body: some View {
         HStack(spacing: 12) {
             ProgressView()
                 .controlSize(.small)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Finding a cited answer…")
-                    .font(CortexDesign.Typography.body)
-                    .foregroundColor(CortexDesign.ink)
-                if !query.isEmpty {
-                    Text("\u{201C}\(query)\u{201D}")
-                        .font(.system(size: 13, design: .serif))
-                        .italic()
-                        .foregroundColor(CortexDesign.inkSecondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-            }
+            Text("Finding a cited answer…")
+                .font(CortexDesign.Typography.body)
+                .foregroundColor(CortexDesign.ink)
             Spacer(minLength: 0)
         }
         .cortexCard(padding: 18, background: CortexDesign.panelBackground)
@@ -570,8 +521,7 @@ struct AskResponseSection: View {
             if !state.askAnswer.isEmpty {
                 AskAnswerPanel(
                     answer: state.askAnswer,
-                    citations: state.askCitations,
-                    question: state.searchQuery
+                    citations: state.askCitations
                 )
             } else if state.searchResults.isEmpty {
                 AskEmptyGuidance(
@@ -587,7 +537,9 @@ struct AskResponseSection: View {
                 )
             }
 
-            if !state.searchResults.isEmpty {
+            // Only when the answer lacks its own citation ledger — beneath a cited answer this
+            // list merely duplicates the footnotes, so the page ends at them instead.
+            if !state.searchResults.isEmpty && (state.askAnswer.isEmpty || state.askCitations.isEmpty) {
                 // Quiet secondary label on the toggle only — the rows inside keep full contrast.
                 DisclosureGroup(isExpanded: $citedMemoriesExpanded) {
                     AskResultsSection(state: state)
@@ -670,15 +622,6 @@ struct AskEmptyGuidance: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.large)
-
-                        Button {
-                            startNotesSync()
-                        } label: {
-                            Label("Sync notes", systemImage: "folder.badge.plus")
-                                .frame(minWidth: 168, minHeight: 46)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.large)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -747,7 +690,7 @@ struct AskSuggestedQuestions: View {
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(CortexDesign.inkSecondary)
-                ForEach(suggestions, id: \.self) { suggestion in
+                ForEach(suggestions.prefix(2), id: \.self) { suggestion in
                     AskSuggestionChip(text: suggestion) {
                         state.searchQuery = suggestion
                         state.runSearch()
@@ -830,17 +773,11 @@ struct AskSourceDetailRow: View {
                     .frame(width: 28, height: 28)
                     .background(CortexDesign.accentSoft)
                     .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(sourceTitle)
-                        .font(.callout)
-                        .fontWeight(.semibold)
-                        .foregroundColor(CortexDesign.ink)
-                        .lineLimit(1)
-                    Text(detailLine)
-                        .font(CortexDesign.Typography.caption)
-                        .foregroundColor(CortexDesign.inkSecondary)
-                        .lineLimit(1)
-                }
+                Text(sourceTitle)
+                    .font(.callout)
+                    .fontWeight(.semibold)
+                    .foregroundColor(CortexDesign.ink)
+                    .lineLimit(1)
                 Spacer(minLength: 0)
             }
             let display = MemoryText.displayContent(item.content)
@@ -883,15 +820,6 @@ struct AskSourceDetailRow: View {
         item.source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Cited source" : item.source
     }
 
-    private var detailLine: String {
-        let layer = (item.layer ?? item.kind).trimmingCharacters(in: .whitespacesAndNewlines)
-        let kind = item.kind.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !layer.isEmpty, layer != kind {
-            return "\(layer.capitalized) memory"
-        }
-        return kind.isEmpty ? "Reviewed memory" : "\(kind.capitalized) memory"
-    }
-
     private var citationLabel: String? {
         CitationDisplay.label(sourceURL: item.source_url)
     }
@@ -906,6 +834,7 @@ struct AskAnswerPanel: View {
 
     @State private var showAllCitations = false
     @State private var justCopied = false
+    @State private var hovering = false
 
     private static let collapsedCitationCount = 3
 
@@ -920,13 +849,15 @@ struct AskAnswerPanel: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .firstTextBaseline) {
                 Text(verbatim: "ANSWER")
                     .font(CortexDesign.Typography.stamp)
                     .kerning(0.8)
                     .foregroundColor(CortexDesign.inkFaint)
                 Spacer()
+                // Copy is a post-reading action — revealed only while the pointer is over the
+                // panel, so the answer opens as prose instead of chrome.
                 Button {
                     copyAnswerWithSources()
                 } label: {
@@ -938,6 +869,8 @@ struct AskAnswerPanel: View {
                 .controlSize(.small)
                 .disabled(justCopied)
                 .help("Copy the answer with its sources")
+                .opacity(hovering || justCopied ? 1 : 0)
+                .animation(.easeOut(duration: 0.12), value: hovering)
             }
             if let echoedQuestion {
                 Text(echoedQuestion)
@@ -979,13 +912,14 @@ struct AskAnswerPanel: View {
                 }
             }
         }
-        .padding(12)
+        .padding(CortexDesign.Space.lg)
         .background(CortexDesign.panelBackground)
         .overlay(
             RoundedRectangle(cornerRadius: CortexDesign.Radius.md)
                 .stroke(CortexDesign.hairline, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md))
+        .onHover { hovering = $0 }
         .onChange(of: answer) { _ in
             showAllCitations = false
             justCopied = false

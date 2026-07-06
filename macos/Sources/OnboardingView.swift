@@ -12,8 +12,9 @@ struct OnboardingView: View {
                 Divider()
                 ScrollView {
                     stepContent
-                        .padding(24)
-                        .frame(maxWidth: 640, alignment: .leading)
+                        .padding(.horizontal, 40)
+                        .padding(.vertical, 32)
+                        .frame(maxWidth: 560, alignment: .leading)
                         .frame(maxWidth: .infinity)
                         .id(state.onboardingStep)
                         .transition(.asymmetric(
@@ -67,10 +68,6 @@ struct OnboardingView: View {
         }
     }
 
-    private var stepNumber: Int {
-        (steps.firstIndex(of: state.onboardingStep) ?? 0) + 1
-    }
-
     private var heroTint: Color {
         state.onboardingStepIsComplete(state.onboardingStep) ? CortexDesign.sealMoss : .accentColor
     }
@@ -85,19 +82,7 @@ struct OnboardingView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
-                HStack(spacing: 7) {
-                    Image(systemName: "sparkles")
-                        .foregroundColor(.accentColor)
-                    Text("WELCOME TO CORTEX")
-                        .font(CortexDesign.Typography.stamp)
-                        .kerning(0.8)
-                        .foregroundColor(CortexDesign.inkFaint)
-                }
                 Spacer()
-                Text("STEP \(stepNumber) OF \(steps.count)")
-                    .font(CortexDesign.Typography.stamp)
-                    .kerning(0.8)
-                    .foregroundColor(CortexDesign.inkFaint)
                 if currentStepIsOptional {
                     // Label the skippable steps up front so "Skip for now" reads as legitimate,
                     // not like giving up — only three of the five steps are actually required.
@@ -148,7 +133,9 @@ struct OnboardingView: View {
             }
             .animation(.spring(response: 0.4, dampingFraction: 0.72), value: state.onboardingStep)
         }
-        .padding(24)
+        .padding(.horizontal, 40)
+        .padding(.top, 28)
+        .padding(.bottom, 20)
         .animation(.easeInOut(duration: 0.32), value: state.onboardingStep)
     }
 
@@ -171,14 +158,6 @@ struct OnboardingView: View {
             }
             .disabled(state.onboardingStep == .privateVault)
             .controlSize(.large)
-
-            Spacer()
-
-            Text(state.displayStatus)
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-                .frame(maxWidth: 260)
 
             Spacer()
 
@@ -274,37 +253,11 @@ struct OnboardingView: View {
     }
 }
 
-struct OnboardingStepRow: View {
-    let step: OnboardingStep
-    let selected: Bool
-    let completed: Bool
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Image(systemName: completed ? "checkmark.circle.fill" : step.systemImage)
-                .frame(width: 18)
-            Text(step.title)
-            Spacer()
-        }
-        .font(.caption)
-        .fontWeight(selected ? .semibold : .regular)
-        .foregroundColor(selected || completed ? .accentColor : .secondary)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-        .background((selected ? Color.accentColor.opacity(0.12) : CortexDesign.panelBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-}
-
 struct OnboardingVaultStep: View {
     @ObservedObject var state: AppState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Your memory stays on this Mac. Cortex keeps a private index, sends useful items to Review, and only uses memory after you approve it.")
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
+        VStack(alignment: .leading, spacing: 20) {
             OnboardingHowTo(
                 title: OnboardingStep.privateVault.howToTitle,
                 steps: OnboardingStep.privateVault.howToSteps,
@@ -369,11 +322,7 @@ struct OnboardingFirstSourceStep: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Connect one memory source first. Cortex syncs it privately, sends useful memory to Review, and makes approved memory available to Ask with citations.")
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
+        VStack(alignment: .leading, spacing: 20) {
             OnboardingHowTo(
                 title: OnboardingStep.firstSource.howToTitle,
                 steps: OnboardingStep.firstSource.howToSteps
@@ -390,25 +339,6 @@ struct OnboardingFirstSourceStep: View {
             ) {
                 runFirstSourceAction()
             }
-
-            if !state.onboardingFirstSourceNames.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Synced source")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text(state.onboardingFirstSourceNames.joined(separator: ", "))
-                        .font(.caption)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                }
-            }
-
-            OnboardingCheckRow(
-                title: connectionCheckTitle,
-                detail: connectionCheckDetail,
-                systemImage: state.onboardingHasSource ? "checkmark.seal.fill" : "link.circle",
-                color: sourceCheckColor
-            )
         }
         .task {
             await state.loadTrust()
@@ -423,7 +353,7 @@ struct OnboardingFirstSourceStep: View {
             return "Source ready"
         }
         if state.onboardingHasConnectedMemoryLayer {
-            return "Source connected"
+            return "Source not ready yet"
         }
         return "Connect notes"
     }
@@ -462,39 +392,6 @@ struct OnboardingFirstSourceStep: View {
             return "Waiting"
         }
         return "Local"
-    }
-
-    private var sourceCheckColor: Color {
-        if state.onboardingHasSource {
-            return CortexDesign.sealMoss
-        }
-        if state.onboardingHasConnectedMemoryLayer {
-            return .orange
-        }
-        return .secondary
-    }
-
-    private var connectionCheckTitle: String {
-        if state.onboardingHasSource {
-            return "Source synced"
-        }
-        if state.onboardingHasConnectedMemoryLayer {
-            return "Source not ready yet"
-        }
-        return "Connect a source"
-    }
-
-    private var connectionCheckDetail: String {
-        if state.onboardingHasSource {
-            return "Review has fresh, citable memory from your source."
-        }
-        if let message = state.onboardingSourceHealthMessage {
-            return message
-        }
-        if state.onboardingHasConnectedMemoryLayer {
-            return "Cortex is checking source health so useful memory appears in Review."
-        }
-        return "Choose notes when ready. Reviewed memory becomes available to Ask with citations."
     }
 
     private var firstSourceButtonTitle: String {
@@ -605,11 +502,7 @@ struct OnboardingReviewMemoryStep: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Review one synced item before Cortex can use it. Approve only memory with a clear citation.")
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
+        VStack(alignment: .leading, spacing: 20) {
             OnboardingHowTo(
                 title: OnboardingStep.reviewMemory.howToTitle,
                 steps: OnboardingStep.reviewMemory.howToSteps
@@ -678,19 +571,23 @@ struct OnboardingReviewMemoryStep: View {
                 .controlSize(.large)
             }
 
-            Button {
-                Task {
-                    await state.loadSourceConnectivity()
-                    await state.loadInbox()
-                    await state.loadReview()
-                    await state.loadStats()
+            if state.inbox.isEmpty && state.onboardingHasSource {
+                // Re-polling only helps while the inbox is empty and the first sync is grinding —
+                // once cards are visible (or no source exists), the other buttons are the answer.
+                Button {
+                    Task {
+                        await state.loadSourceConnectivity()
+                        await state.loadInbox()
+                        await state.loadReview()
+                        await state.loadStats()
+                    }
+                } label: {
+                    Label("Check again", systemImage: "arrow.clockwise")
+                        .frame(minWidth: 124, minHeight: 42)
                 }
-            } label: {
-                Label("Check again", systemImage: "arrow.clockwise")
-                    .frame(minWidth: 124, minHeight: 42)
+                .controlSize(.large)
+                .disabled(state.isBusy)
             }
-            .controlSize(.large)
-            .disabled(state.isBusy)
             Spacer()
         }
     }
@@ -737,11 +634,7 @@ struct OnboardingAskUseStep: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Cortex can now answer from reviewed notes with citations. Try a question now, or continue setup.")
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
+        VStack(alignment: .leading, spacing: 20) {
             OnboardingHowTo(
                 title: OnboardingStep.askUse.howToTitle,
                 steps: OnboardingStep.askUse.howToSteps
@@ -879,11 +772,7 @@ struct OnboardingBackupStep: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Local backups let you recover Cortex memory on this Mac. Create one now, or skip and do it later from Advanced settings.")
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
+        VStack(alignment: .leading, spacing: 20) {
             OnboardingHowTo(
                 title: OnboardingStep.trustBackup.howToTitle,
                 steps: OnboardingStep.trustBackup.howToSteps

@@ -14,8 +14,6 @@ struct MenuBarQuickPanel: View {
     @ObservedObject var state: AppState
     var onOpenApp: () -> Void
     var onOpenReview: () -> Void
-    var onSync: () -> Void
-    var onConnections: () -> Void
     var onClose: () -> Void
 
     private enum Mode: Hashable { case ask, capture }
@@ -35,7 +33,6 @@ struct MenuBarQuickPanel: View {
     private var pendingCount: Int {
         state.review?.stats.pending_captures ?? state.inbox.count
     }
-    private var memoryCount: Int { state.stats?.memories ?? 0 }
     private var isSyncing: Bool { state.syncProgress?.active == true }
 
     var body: some View {
@@ -43,12 +40,12 @@ struct MenuBarQuickPanel: View {
             header
             Divider().overlay(CortexDesign.hairline)
             modeSwitcher
-                .padding(.horizontal, 14)
+                .padding(.horizontal, 18)
                 .padding(.top, 12)
             content
-                .padding(.horizontal, 14)
-                .padding(.top, 10)
-                .padding(.bottom, 14)
+                .padding(.horizontal, 18)
+                .padding(.top, 16)
+                .padding(.bottom, 18)
             Divider().overlay(CortexDesign.hairline)
             footer
         }
@@ -71,26 +68,9 @@ struct MenuBarQuickPanel: View {
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundColor(CortexDesign.accent)
             }
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Cortex")
-                    .font(.system(size: 15, weight: .semibold, design: .serif))
-                    .foregroundColor(CortexDesign.ink)
-                Group {
-                    if statusIsTelemetry {
-                        // Counts speak in the catalog-stamp voice; sentences stay in the working voice.
-                        Text(statusLine.uppercased())
-                            .font(CortexDesign.Typography.stamp)
-                            .kerning(0.8)
-                            .foregroundColor(CortexDesign.inkFaint)
-                    } else {
-                        Text(statusLine)
-                            .font(.caption)
-                            .foregroundColor(CortexDesign.inkSecondary)
-                    }
-                }
-                .id(statusLine)
-                .transition(.opacity)
-            }
+            Text("Cortex")
+                .font(.system(size: 15, weight: .semibold, design: .serif))
+                .foregroundColor(CortexDesign.ink)
             Spacer()
             if isSyncing {
                 ProgressView().controlSize(.small)
@@ -98,24 +78,6 @@ struct MenuBarQuickPanel: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
-        .animation(.easeInOut(duration: 0.25), value: statusLine)
-    }
-
-    /// Telemetry-shaped states (counts) take the mono stamp voice; sentence states stay SF.
-    private var statusIsTelemetry: Bool {
-        !isSyncing && (pendingCount > 0 || memoryCount > 0)
-    }
-
-    private var statusLine: String {
-        if isSyncing { return "Syncing your memory…" }
-        if pendingCount > 0 {
-            return "\(pendingCount) item\(pendingCount == 1 ? "" : "s") waiting for review"
-        }
-        if memoryCount > 0 {
-            let shown = memoryCount > 999 ? "999+" : String(memoryCount)
-            return "\(shown) memor\(memoryCount == 1 ? "y" : "ies") ready"
-        }
-        return "Connect a source to begin"
     }
 
     // MARK: Mode switcher (animated segmented control)
@@ -354,8 +316,8 @@ struct MenuBarQuickPanel: View {
             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
 
             HStack(spacing: 10) {
-                // Honest states: a keyboard hint before anything happens, green only after a
-                // verified save, and a visible (retry-able) failure instead of a silent swallow.
+                // Honest states: green only after a verified save, and a visible (retry-able)
+                // failure instead of a silent swallow.
                 if captureSaved {
                     Label("Saved — Ask can use it now", systemImage: "checkmark.seal.fill")
                         .font(.caption).fontWeight(.semibold)
@@ -366,9 +328,6 @@ struct MenuBarQuickPanel: View {
                         .font(.caption)
                         .foregroundColor(CortexDesign.accent)
                         .transition(.opacity)
-                } else {
-                    Text("Press ⌘↩ to save to your memory")
-                        .font(.caption).foregroundColor(CortexDesign.inkSecondary)
                 }
                 Spacer()
                 Button(action: saveCapture) {
@@ -407,14 +366,10 @@ struct MenuBarQuickPanel: View {
             footerBadgeAction(
                 "Review", icon: "checklist", badge: pendingCount, action: onOpenReview
             )
-            footerAction(isSyncing ? "Syncing" : "Sync", icon: "arrow.triangle.2.circlepath",
-                         action: onSync, disabled: isSyncing)
-            footerAction("Connections", icon: "lock.shield", action: onConnections)
             Spacer(minLength: 0)
-            QuickFooterQuitButton()
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.vertical, 10)
         .background(CortexDesign.appBackground)
     }
 
@@ -521,7 +476,7 @@ private struct QuickSuggestionChip: View {
 }
 
 /// A footer action with a hover affordance: soft rounded highlight + accent icon on hover, so the
-/// row reads as clickable at a glance instead of five identical gray stacks.
+/// row reads as clickable at a glance instead of identical gray stacks.
 private struct QuickFooterButton: View {
     let title: String
     let icon: String
@@ -590,30 +545,6 @@ private struct QuickFooterBadgeButton: View {
         .buttonStyle(.plain)
         .help(badge > 0 ? "\(badge) waiting for review" : title)
         .animation(.spring(response: 0.35, dampingFraction: 0.7), value: badge)
-        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovering = h } }
-    }
-}
-
-/// Quit, demoted: icon-only, smaller, and quieter than the primary footer actions — the most
-/// destructive action shouldn't carry the same visual weight as "Open Cortex".
-private struct QuickFooterQuitButton: View {
-    @State private var hovering = false
-
-    var body: some View {
-        Button { NSApp.terminate(nil) } label: {
-            Image(systemName: "power")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(hovering ? .secondary : .secondary.opacity(0.6))
-                .frame(width: 28, height: 40)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(hovering ? CortexDesign.quietBackground : Color.clear)
-                )
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("Quit Cortex")
-        .accessibilityLabel("Quit Cortex")
         .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovering = h } }
     }
 }
