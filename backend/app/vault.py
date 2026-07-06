@@ -102,7 +102,7 @@ class CortexVault:
         # the cipher via StoreRegistry.store_for_user in hosted mode.
         self.enforce_encryption = bool(enforce_encryption)
         # Phase 1: also mirror each memory as a human-readable Markdown note (frontmatter+body)
-        # so the vault opens in Obsidian and is owned/portable. Additive — the JSON records
+        # so the vault opens in any Markdown editor and is owned/portable. Additive — the JSON records
         # remain the source of truth for now; a Markdown write never breaks the JSON write.
         self.markdown_mirror = True
         # Serializes read-modify-write of the shared root-level JSON files (see _vault_lock_for).
@@ -187,7 +187,7 @@ class CortexVault:
         self._ensure_sync_scaffolding()
 
     def _ensure_sync_scaffolding(self) -> None:
-        """Make the vault safe + pleasant to sync (git/iCloud/Syncthing) and to open in Obsidian.
+        """Make the vault safe + pleasant to sync (git/iCloud/Syncthing) and to open in any Markdown editor.
 
         Writes a .gitignore that syncs the durable, user-owned records (Markdown notes + JSON)
         while excluding the rebuildable SQLite index, local backups, temp files, and — critically
@@ -220,7 +220,7 @@ class CortexVault:
                 "# Your Cortex Vault\n\n"
                 "This folder is your Cortex memory, stored as plain files you own.\n\n"
                 "- `memories/` — your memories as Markdown notes (YAML frontmatter + text). Open\n"
-                "  this folder in Obsidian or any editor. Edit a note and Cortex picks up the\n"
+                "  this folder in any Markdown editor. Edit a note and Cortex picks up the\n"
                 "  change; add a note and it becomes a memory; delete one to remove it.\n"
                 "- `captures/`, `entities/`, `tasks/`, ... — supporting records.\n"
                 "- The SQLite index and `credentials.json` are Cortex's private working files —\n"
@@ -465,7 +465,7 @@ class CortexVault:
 
     def memory_markdown_path(self, record: dict[str, Any]) -> Path:
         """Human-readable note path: memories/<layer>/<id>.md (layer reads better than kind
-        for a person browsing their vault in Obsidian; id keeps it stable across edits)."""
+        for a person browsing their vault in a Markdown editor; id keeps it stable across edits)."""
         layer = safe_segment(record.get("layer") or record.get("kind"), "memory")
         memory_id = safe_segment(record.get("id"), "memory")
         return self.root / "memories" / layer / f"{memory_id}.md"

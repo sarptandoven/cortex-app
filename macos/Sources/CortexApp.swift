@@ -4357,6 +4357,103 @@ final class AppState: ObservableObject {
         await syncLocalNotesFolder(connector, folderURL: folderURL, rememberPath: false, automatic: automatic)
     }
 
+    /// One-tap onboarding path: distill the sample notes we ship inside the app bundle so a
+    /// brand-new user can watch memory build without having to connect anything first.
+    ///
+    /// This is a pure bundle -> container copy (NO file picker / NSOpenPanel), so it works
+    /// identically in App Store (sandboxed) and Developer-ID/DMG builds: the bundled notes are
+    /// copied into a stable folder inside the app container that the sandboxed backend child can
+    /// read, then synced through the existing local-notes distill path.
+    func loadSampleNotes() async {
+        guard !obsidianSyncInFlight else {
+            status = "A sync is already running — one moment…"
+            return
+        }
+
+        // 1. Locate the bundled sample notes (shipped by the build at
+        //    Contents/Resources/sample-notes/*.md). If they aren't present, say so plainly.
+        guard let bundledSampleNotes = Bundle.main.resourceURL?
+            .appendingPathComponent("sample-notes", isDirectory: true),
+              FileManager.default.fileExists(atPath: bundledSampleNotes.path) else {
+            status = "Sample notes aren't available in this build. Connect a notes folder to get started."
+            return
+        }
+
+        obsidianSyncInFlight = true
+        isBusy = true
+        beginMenuBarWork()
+        var syncedSomething = false
+        defer {
+            obsidianSyncInFlight = false
+            isBusy = false
+            endMenuBarWork(completedSync: syncedSomething)
+        }
+
+        do {
+            status = "Loading sample notes…"
+
+            // 2. Copy the bundled notes into a stable, container-safe folder the backend child
+            //    can read. This lives alongside the other Cortex support data and is refreshed
+            //    on each run so edits to the shipped samples always win.
+            let manager = FileManager.default
+            // Container-safe support dir (matches BackendSupervisor.appSupportURL: <App Support>/Cortex);
+            // under the App Store sandbox this resolves inside the app container, readable by the child.
+            let cortexSupport = (manager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? manager.temporaryDirectory).appendingPathComponent("Cortex", isDirectory: true)
+            let sampleNotesDir = cortexSupport.appendingPathComponent("sample-notes", isDirectory: true)
+            if manager.fileExists(atPath: sampleNotesDir.path) {
+                try? manager.removeItem(at: sampleNotesDir)
+            }
+            try manager.createDirectory(
+                at: sampleNotesDir.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try manager.copyItem(at: bundledSampleNotes, to: sampleNotesDir)
+
+            // 3. Distill them through the existing local-notes sync path. We drive the connector
+            //    endpoint directly (rather than syncLocalNotesFolder) so every user-facing string
+            //    here stays under our control and reads as "sample notes", and because the copied
+            //    folder already lives in the container (no security scope / staging needed).
+            let syncBody: [String: Any] = [
+                "vault_path": sampleNotesDir.standardizedFileURL.path,
+                "max_records": 5000,
+                "processing": "sync"
+            ]
+            let syncData = try await request(
+                path: "/v1/connectors/obsidian/sync",
+                method: "POST",
+                body: syncBody
+            )
+            let synced = try JSONDecoder().decode(ObsidianConnectorSyncResponse.self, from: syncData)
+            guard synced.scan.records_found > 0, synced.scan.records_returned > 0 else {
+                await loadSourceConnectivity()
+                await loadTrust()
+                status = "No sample notes found to load."
+                return
+            }
+            syncedSomething = true
+
+            // 4. Mark the sample notes as a connected local notes source so onboarding advances
+            //    and the "first source" bookkeeping matches the folder-pick path.
+            firstSourceAdded = true
+            let sampleSourceLabel = "Sample notes"
+            onboardingFirstSourceNames = Array(Set(onboardingFirstSourceNames + [sampleSourceLabel])).sorted()
+            UserDefaults.standard.set(true, forKey: "onboardingFirstSourceImported.v1")
+            UserDefaults.standard.set(onboardingFirstSourceNames, forKey: "onboardingFirstSourceNames.v1")
+
+            // 5. Drain queued memory jobs and refresh every layer (profile + graph + mirror +
+            //    connectivity) so the memory the samples produced shows up right away.
+            await drainQueuedMemoryJobs(automatic: true)
+            await loadSourceConnectivity()
+            await loadTrust()
+            await refreshAfterCapture()
+
+            status = "Loaded sample notes — building your memory…"
+        } catch {
+            status = CortexRecoveryText.failureStatus("Sample notes", error: error)
+        }
+    }
+
     private func syncConfiguredDirectConnectorsIfAvailable(automatic: Bool) async {
         let configuredIDs = configuredDirectConnectorIDs.sorted()
         guard !configuredIDs.isEmpty else { return }

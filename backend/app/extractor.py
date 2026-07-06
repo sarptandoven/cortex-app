@@ -1222,7 +1222,6 @@ def _entities(text: str) -> list[dict[str, Any]]:
         "Jira",
         "Linear",
         "Zotero",
-        "Obsidian",
         "Figma",
         "Sketch",
         "Zoom",

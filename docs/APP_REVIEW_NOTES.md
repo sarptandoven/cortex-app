@@ -17,21 +17,23 @@ Nothing is sent to, and nothing needs to be fetched from, any remote server.
 - The loopback server (`127.0.0.1:8766`) is an internal implementation detail; it is not
   reachable off-device and there is no hosted endpoint.
 
-**How to review every feature (no server, no login, no download required):**
+**How to review every feature (no server, no login, no download, no files needed):**
 1. Launch Cortex. It opens straight into the app — no login wall, no network needed.
-2. Create a folder anywhere (e.g. on the Desktop) with two small text files, for example
-   `note1.md` containing "I prefer concise, direct writing." and `note2.md` containing
-   "We decided to use PostgreSQL for the main store." (Any `.md`/`.txt` files work.)
-3. In Cortex click **Connect notes** and choose that folder. Cortex reads the files **locally**
-   and builds your memory; a progress bar shows the import.
-4. Open **Home** to see the distilled profile, **Review** to approve captured memories, and
-   **Ask** to query your memory (e.g. "how do I like to write?") — all fully offline.
+2. On the first screen click **Explore with sample notes**. Cortex loads a small bundled set of
+   example notes and distills them **entirely on-device** — a progress bar shows it building.
+3. Open **Home**: you'll see the distilled profile ("What Cortex has learned") across every
+   memory type, and **Your Constellation** — an interactive map of the people, projects, and
+   topics with connections you can click and select.
+4. Open **Ask** and type e.g. "how do I like to write?" or "what did we decide about the
+   database?" — you get a cited answer sourced from the sample notes. Open **Review** to see and
+   approve captured memories.
 5. **Connect an AI tool** (in Connections) shows guided, copy‑paste instructions only; the app
-   does not install or launch any external code.
+   does not install, write, or launch any external code.
+6. To test your own data, use **Connect notes** and pick any folder of `.md`/`.txt` notes —
+   Cortex reads and distills it locally.
 
-No hosted backend or sample credentials are needed — the two text files above exercise the
-entire pipeline. If a hosted sample export file is nonetheless required, we will host one at a
-public `https://trydoppl.com/…` URL on request (the app itself never fetches it; import is local).
+No hosted backend, demo account, or credentials are needed — the built-in **Explore with sample
+notes** path exercises the entire pipeline with zero setup.
 
 ## 2.5.2 — "The app installed or launched executable code (3rd party MCP tools installation)"
 

@@ -101,6 +101,16 @@ fi
 mkdir -p "$RES/scripts"
 cp "$ROOT/../scripts/cortex_mcp_stdio.py" "$RES/scripts/cortex_mcp_stdio.py"
 chmod +x "$RES/scripts/cortex_mcp_stdio.py"
+# Bundled sample corpus (BOTH distribution modes): a small set of synthetic maker's notes
+# the onboarding "Try sample notes" path copies into the vault and distills. They exercise
+# all seven memory layers and produce a connected people/projects entity graph. Shipped as
+# plain Markdown under Resources/sample-notes/ so AppState.loadSampleNotes() can read them.
+if [[ -d "$ROOT/SampleNotes" ]]; then
+  SAMPLE_NOTES_RES="$RES/sample-notes"
+  rm -rf "$SAMPLE_NOTES_RES"
+  mkdir -p "$SAMPLE_NOTES_RES"
+  cp "$ROOT/SampleNotes"/*.md "$SAMPLE_NOTES_RES/"
+fi
 if [[ -f "$ROOT/update-feed.example.json" ]]; then
   cp "$ROOT/update-feed.example.json" "$RES/update-feed.example.json"
 fi

@@ -316,6 +316,7 @@ struct OnboardingBackendRecoveryCard: View {
 
 struct OnboardingFirstSourceStep: View {
     @ObservedObject var state: AppState
+    @State private var loadingSamples = false
 
     private var obsidianConnector: SourceConnectorCatalogItem? {
         state.sourceConnectorCatalog.first { $0.id == "obsidian" }
@@ -339,12 +340,56 @@ struct OnboardingFirstSourceStep: View {
             ) {
                 runFirstSourceAction()
             }
+
+            sampleNotesOption
         }
         .task {
             await state.loadTrust()
             if state.sourceConnectorCatalog.isEmpty {
                 await state.loadSourceConnectivity()
             }
+        }
+    }
+
+    /// A lighter, link-style path beneath the primary connect action: load bundled sample notes so a
+    /// brand-new user (or an App Reviewer with no files of their own) can see the full memory picture
+    /// instantly, then move straight into Review.
+    @ViewBuilder
+    private var sampleNotesOption: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                exploreWithSampleNotes()
+            } label: {
+                HStack(spacing: 7) {
+                    if loadingSamples {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "sparkles")
+                    }
+                    Text("Explore with sample notes")
+                }
+            }
+            .buttonStyle(.link)
+            .disabled(loadingSamples || state.isBusy)
+
+            Text("No files of your own yet? Try Cortex on a small set of example notes.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 2)
+    }
+
+    private func exploreWithSampleNotes() {
+        guard !loadingSamples else { return }
+        loadingSamples = true
+        Task {
+            await state.loadSampleNotes()
+            loadingSamples = false
+            // Move into Review so the freshly distilled sample memory is visible immediately.
+            state.nextOnboardingStep()
         }
     }
 
@@ -368,7 +413,7 @@ struct OnboardingFirstSourceStep: View {
         if state.hasConnectedObsidianVault {
             return "Cortex checks connected notes on launch and every 30 minutes, then sends new memory to Review with citations."
         }
-        return "Choose a local notes folder to start. Cortex will keep it synced and send useful memory to Review."
+        return "Choose a local notes folder to start. Everything stays on your Mac — Cortex keeps it synced and sends useful memory to Review."
     }
 
     private var sourceCardIcon: String {

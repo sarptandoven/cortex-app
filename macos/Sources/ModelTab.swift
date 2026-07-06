@@ -16,6 +16,17 @@ struct ModelTab: View {
                     MirrorMomentCard(state: state)
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
+                if !state.graphNodes.isEmpty {
+                    VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
+                        SectionHeader(
+                            title: "Your Constellation",
+                            detail: "The people, projects, and topics Cortex has learned about — and how they connect."
+                        )
+                        MemoryMapView(state: state)
+                    }
+                    .frame(maxWidth: 620, alignment: .leading)
+                    .transition(.opacity)
+                }
                 if let profile = state.profile, !profile.sections.isEmpty {
                     VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
                         SectionHeader(
