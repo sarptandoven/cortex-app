@@ -1,18 +1,18 @@
 (function () {
   const fallbackRelease = {
     version: "0.2.0",
-    build: "3",
+    build: "4",
     channel: "local-beta",
     artifacts: [
       {
         kind: "dmg",
-        filename: "Cortex-0.2.0-3.dmg",
-        url: "downloads/Cortex-0.2.0-3.dmg"
+        filename: "Cortex-0.2.0-4.dmg",
+        url: "downloads/Cortex-0.2.0-4.dmg"
       },
       {
         kind: "zip",
-        filename: "Cortex-0.2.0-3.app.zip",
-        url: "downloads/Cortex-0.2.0-3.app.zip"
+        filename: "Cortex-0.2.0-4.app.zip",
+        url: "downloads/Cortex-0.2.0-4.app.zip"
       }
     ]
   };

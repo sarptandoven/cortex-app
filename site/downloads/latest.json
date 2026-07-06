@@ -2,23 +2,23 @@
   "app": "Cortex",
   "artifacts": [
     {
-      "filename": "Cortex-0.2.0-3.dmg",
+      "filename": "Cortex-0.2.0-4.dmg",
       "kind": "dmg",
-      "sha256": "449eba66c2f40990350da84e42d89f9eff85579888fc8bf9a61235430ea223c4",
-      "size_bytes": 83430180,
-      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-3.dmg"
+      "sha256": "aa2d3895cd70043be4023d834c1f3b8824fc6d944d48f53841e8b08f34f09a24",
+      "size_bytes": 85031800,
+      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-4.dmg"
     },
     {
-      "filename": "Cortex-0.2.0-3.app.zip",
+      "filename": "Cortex-0.2.0-4.app.zip",
       "kind": "zip",
-      "sha256": "287c9fdd18c0ad642841bdea7b9f954b25db8dabcab694b2d2d6109716968d61",
-      "size_bytes": 66629887,
-      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-3.app.zip"
+      "sha256": "edaa48422bcca5e49f4a154c88a05c26cb3aa1e2edc7d6878151c421adae8caa",
+      "size_bytes": 66821600,
+      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-4.app.zip"
     },
     {
       "filename": "cortex-memory-0.1.0.zip",
       "kind": "obsidian-plugin",
-      "sha256": "4555f4afdcfe567fc14815bf53f62f9e69d8df7ec4e0a99486acf303c07e8472",
+      "sha256": "5d888263b1d734487dfe689ae3fa495d5e6bf2f93835f56ba88d45299e0c9fee",
       "size_bytes": 3423,
       "url": "https://trydoppl.com/downloads/cortex-memory-0.1.0.zip"
     }
@@ -26,7 +26,7 @@
   "beta_readiness": {
     "audience": "first-100 local beta",
     "generated_artifact_verification": [
-      "shasum -a 256 -c Cortex-0.2.0-3.checksums.txt",
+      "shasum -a 256 -c Cortex-0.2.0-4.checksums.txt",
       "python3 scripts/validate_update_manifest.py <release-dir>/latest.json",
       "python3 scripts/check_vector_runtime.py --app macos/build/Cortex.app",
       "python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir <release-dir>"
@@ -70,19 +70,19 @@
       "Relaunch, confirm backend health, and run the reliability report."
     ]
   },
-  "build": "3",
+  "build": "4",
   "bundle_id": "com.cortex.doppl",
   "channel": "local-beta",
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "App Review fixes: Quit menu, MCP auto-install removed from App Store build, backend source protected (.pyc, no plaintext), review notes; local-first hybrid"
+    "Guided animated onboarding; notch + menu-bar 'learned' animation; App menu Settings/Help; interpreter isolation; quick-capture (screenshot OCR + highlight-to-save via custom keybind) with notch confirmation; source-protected .pyc backend"
   ],
-  "released_at": "2026-07-06T21:17:58Z",
+  "released_at": "2026-07-06T23:38:45Z",
   "source_provenance": {
-    "built_at": "2026-07-06T21:17:58Z",
+    "built_at": "2026-07-06T23:38:45Z",
     "git_branch": "mass-scale-app-redesign",
-    "git_commit": "8e645c8b02dc00148d70fc63f8ce74ac1ce0363b",
+    "git_commit": "6a4d4db420c2e8be55afa0d06ca3f980781adda3",
     "git_dirty": false
   },
   "version": "0.2.0"
