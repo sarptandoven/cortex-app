@@ -3996,6 +3996,13 @@ final class AppState: ObservableObject {
                 let detail = Self.syncDetailLabel(source: front?.source, jobType: front?.job_type)
                 let progress = SyncProgress(done: succeeded, total: inFlight + succeeded, detail: detail)
                 if syncProgress != progress { syncProgress = progress }
+                // Actually DRAIN the queue on this poll. The bar was frozen because the 4s poll only
+                // READ /v1/jobs/health while the queue was only drained on the 30-minute auto-sync
+                // loop — so `succeeded` never moved between ticks and the "X of Y" sat still. Running
+                // up to 100 embed jobs per tick makes the next poll read a higher `succeeded`, so the
+                // bar advances live and disappears (syncProgress=nil) when queued+running hits 0. The
+                // internal jobDrainInFlight guard makes this safe to call from the loop.
+                _ = await drainQueuedMemoryJobs(limit: 100, automatic: true)
                 await loadProfile()
                 await loadMirrorInsight()
             } else if syncProgress != nil {
@@ -4006,22 +4013,15 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// A human label for what the queue is working on right now: prefer the front job's source
-    /// ("Notes", "ChatGPT"); fall back to a readable job type; nil keeps the generic bar label.
+    /// A human label for what the queue is working on right now — ONLY from the front job's source
+    /// ("Notes", "ChatGPT"). Internal engine job types (embed_memory, extract_capture, …) must never
+    /// surface: showing "Syncing Embed memory…" is engine jargon. When there's no real source we
+    /// return nil so the bar falls back to the clean generic "Syncing your memory…". `jobType` is
+    /// intentionally ignored for display (kept in the signature for callers/telemetry).
     static func syncDetailLabel(source: String?, jobType: String?) -> String? {
         let trimmedSource = (source ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let raw = trimmedSource.isEmpty ? (jobType ?? "") : trimmedSource
-        let cleaned = raw.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: "-", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleaned.isEmpty else { return nil }
-        // Source labels users know by name keep their casing quirks fixed up.
-        switch cleaned.lowercased() {
-        case "obsidian", "local", "file", "notes": return "Notes"
-        case "chatgpt": return "ChatGPT"
-        case "claude": return "Claude"
-        case "github": return "GitHub"
-        default: return cleaned.prefix(1).uppercased() + cleaned.dropFirst()
-        }
+        guard !trimmedSource.isEmpty else { return nil }
+        return SourceDisplayName.label(trimmedSource)
     }
 
     /// A lightweight repeating poll started at bootstrap. job_health is a cheap local query, and
@@ -9838,8 +9838,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             onClose: { [weak self] in self?.quickPanelPopover?.performClose(nil) }
         )
         let hosting = NSHostingController(rootView: panel)
-        hosting.sizingOptions = [.preferredContentSize]   // popover sizes to the SwiftUI content
+        // FIXED size — do NOT use sizingOptions=[.preferredContentSize]. AppState publishes
+        // constantly while the panel is open (the 4s job-progress poll rewrites syncProgress and
+        // refreshes profile/mirror), and with content-driven sizing every such re-render resized the
+        // transient popover under the cursor — that was the real "flicker + can't click" bug, not the
+        // menu-bar animator. A constant size decouples popover geometry from panel re-renders. The
+        // panel pins itself to this same height (MenuBarQuickPanel .frame height) so its content
+        // rearranges WITHIN the fixed box instead of trying to grow it.
         popover.contentViewController = hosting
+        popover.contentSize = NSSize(width: 384, height: 520)
         popover.delegate = self
         quickPanelPopover = popover
         return popover
@@ -9865,21 +9872,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private func showPopover() {
         guard let button = statusItem.button else { return }
         let popover = ensurePopover()
-        // Freeze the menu-bar animation while the popover is anchored to the button — otherwise the
-        // per-frame button mutation repositions the popover (flicker) and eats clicks.
+        // Freeze the menu-bar animation while the popover is anchored to the button. (Now that the
+        // .attention badge is static and the popover has a fixed size this is no longer load-bearing
+        // for the flicker fix, but it's harmless and keeps the anchor button perfectly still.)
         menuBarAnimator?.paused = true
-        // Bring the app forward so the popover can take keyboard focus even when invoked by the
-        // global hotkey while another app is frontmost.
-        NSApp.activate(ignoringOtherApps: true)
+        // Do NOT call NSApp.activate(ignoringOtherApps: true) here. Activating the whole app to show a
+        // menu-bar panel, combined with .transient + a delayed makeKey, raced the popover's own
+        // transient dismissal and stole first-mouse (part of the "can't click" symptom). We make the
+        // popover's own window key in popoverDidShow instead — no global activation.
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        // Belt-and-suspenders focus: NSPopover often fails to give a TextField first responder on
-        // open, so make the hosting window key and tell the panel to focus its field. Gated on the
-        // popover still being open, so a racing transient dismissal doesn't refocus a dead window.
-        DispatchQueue.main.async { [weak self] in
-            guard let popover = self?.quickPanelPopover, popover.isShown else { return }
-            popover.contentViewController?.view.window?.makeKey()
-            NotificationCenter.default.post(name: .cortexFocusQuickPanel, object: nil)
-        }
+    }
+
+    /// Give the popover's window key focus once it is actually on screen, WITHOUT activating the whole
+    /// app — so the Ask field can take first responder while the transient popover stays stable.
+    func popoverDidShow(_ notification: Notification) {
+        guard let popover = quickPanelPopover, popover.isShown else { return }
+        popover.contentViewController?.view.window?.makeKeyAndOrderFront(nil)
+        NotificationCenter.default.post(name: .cortexFocusQuickPanel, object: nil)
     }
 
     func popoverDidClose(_ notification: Notification) {

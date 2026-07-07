@@ -94,6 +94,40 @@ _CONTEXT_INSTRUCTIONS = (
 )
 
 
+_SOURCE_DISPLAY_LABELS: dict[str, str] = {
+    "obsidian": "Notes",
+    "local": "Notes",
+    "file": "Notes",
+    "notes": "Notes",
+    "markdown": "Notes",
+    "calendar": "Calendar",
+    "gmail": "Email",
+    "email": "Email",
+    "outlook": "Email",
+    "imessage": "Messages",
+    "messages": "Messages",
+    "slack": "Slack",
+    "github": "GitHub",
+    "notion": "Notion",
+    "linear": "Linear",
+    "jira": "Jira",
+    "apple-notes": "Apple Notes",
+    "chatgpt": "ChatGPT",
+    "claude": "Claude",
+}
+
+
+def _source_display_label(source: str | None) -> str:
+    """User-facing name for an internal source id. NEVER return a raw connector id (e.g. "obsidian")
+    — that must not surface in the graph/Constellation or any UI. Unknown ids are cleaned + titled."""
+    raw = (source or "").strip()
+    mapped = _SOURCE_DISPLAY_LABELS.get(raw.lower())
+    if mapped:
+        return mapped
+    cleaned = raw.replace("_", " ").replace("-", " ").strip()
+    return cleaned.title() if cleaned else "Notes"
+
+
 def _estimate_context_tokens(text: str) -> int:
     return max(1, (len(str(text)) + 3) // 4)
 
@@ -9542,7 +9576,9 @@ class CortexStore:
                 continue  # a genuine connection needs more than a single co-mention
             return {
                 "headline": f"You connect {src_label} and {tgt_label} — they keep showing up together in your notes.",
-                "evidence": {"source": "your notes", "count": len(shared), "memory_ids": shared, "example": ""},
+                # Bare noun: the client renders "From your <source>", so "your notes" here would
+                # become "From your your notes". "notes" keeps it correct and obsidian-free.
+                "evidence": {"source": "notes", "count": len(shared), "memory_ids": shared, "example": ""},
                 "layer": "relationship",
                 "confidence": "medium" if len(shared) >= 3 else "low",
             }
@@ -13633,7 +13669,9 @@ class CortexStore:
                 nodes[row["id"]] = {
                     "id": row["id"],
                     "type": "source",
-                    "label": row["title"] or row["source"],
+                    # Never fall back to the raw source id ("obsidian") as a node label — map it to a
+                    # user-facing name so the Constellation stays obsidian-free.
+                    "label": row["title"] or _source_display_label(row["source"]),
                     "detail": row["summary"] or "",
                     "status": row["review_status"],
                     "created_at": row["captured_at"],

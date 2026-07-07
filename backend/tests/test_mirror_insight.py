@@ -170,7 +170,9 @@ class MirrorInsightTests(unittest.TestCase):
 
         self.assertIsNotNone(insight)
         assert insight is not None
-        self.assertEqual(insight["evidence"]["source"], "github")
+        # evidence.source is now a user-facing display name (never a raw connector id) — "github"
+        # surfaces as "GitHub" so the card reads "From your GitHub".
+        self.assertEqual(insight["evidence"]["source"], "GitHub")
         self.assertEqual(insight["evidence"]["count"], 4)
         self.assertNotIn("cal_pref_lonely", insight["evidence"]["memory_ids"])
 
@@ -193,7 +195,8 @@ class MirrorInsightTests(unittest.TestCase):
 
         self.assertIsNotNone(insight)
         assert insight is not None
-        self.assertEqual(insight["evidence"]["source"], "obsidian")
+        # "obsidian" must never surface to a user; evidence.source maps to the display noun "notes".
+        self.assertEqual(insight["evidence"]["source"], "notes")
         self.assertEqual(insight["evidence"]["count"], 5)
         self.assertIn("distributed systems", insight["headline"].lower())
 

@@ -729,7 +729,7 @@ struct ReviewQueueSourceBox: View {
         if let citation = CitationDisplay.cleanSourceURL(trimmed) {
             return citation
         }
-        return trimmed.isEmpty ? nil : trimmed
+        return trimmed.isEmpty ? nil : SourceDisplayName.label(trimmed)
     }
 
     private var capturedDate: String? {
@@ -816,7 +816,7 @@ struct ReviewCaptureCard: View {
         var parts: [String] = []
         let source = capture.source.trimmingCharacters(in: .whitespacesAndNewlines)
         if !source.isEmpty {
-            parts.append(source)
+            parts.append(SourceDisplayName.label(source))
         }
         if let date = capture.captured_at?.trimmingCharacters(in: .whitespacesAndNewlines), !date.isEmpty {
             parts.append(String(date.prefix(10)))

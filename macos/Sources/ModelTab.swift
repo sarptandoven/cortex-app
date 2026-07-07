@@ -170,7 +170,7 @@ struct MirrorMomentCard: View {
         guard let evidence = insight?.evidence else { return nil }
         var parts: [String] = []
         if let source = evidence.source, !source.isEmpty {
-            parts.append("From your \(source)")
+            parts.append("From your \(SourceDisplayName.bareNoun(source))")
         }
         if let count = evidence.count, count > 0 {
             parts.append("seen \(count) time\(count == 1 ? "" : "s")")
@@ -347,7 +347,7 @@ private struct ProfileElementRow: View {
     private var sourceCaption: String? {
         var parts: [String] = []
         if let source = element.source, !source.isEmpty {
-            parts.append("From your \(source)")
+            parts.append("From your \(SourceDisplayName.bareNoun(source))")
         }
         if let count = element.count, count > 0 {
             parts.append("seen \(count) time\(count == 1 ? "" : "s")")

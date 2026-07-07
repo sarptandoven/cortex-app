@@ -65,6 +65,52 @@ class MirrorInsightStoreTests(unittest.TestCase):
         self._seed_preference(6)
         self.assertEqual(self.store.mirror_insight(self.user_id), self.store.mirror_insight(self.user_id))
 
+    def test_excludes_unreviewed_until_approved(self) -> None:
+        """Under product DEFAULTS (review_new_captures=True, allow_pending_in_context=False), a
+        repeated pattern that lives only in PENDING (unreviewed) captures must NOT drive a
+        'CORTEX NOTICED' insight — Cortex should only claim things about you that you've reviewed.
+        Once the captures are approved, the insight surfaces with a reviewed-only count. This locks
+        the review gate in mirror._load_active_memories; the other tests here auto-approve and would
+        pass with or without it."""
+        # Restore defaults (setUp auto-approves; we want the review gate active).
+        self.store.update_settings(
+            self.user_id,
+            {"review_new_captures": True, "allow_pending_in_context": False},
+        )
+        capture_ids: list[str] = []
+        for i in range(6):
+            result = self.store.save_capture(
+                user_id=self.user_id,
+                content=f"You prefer to decline meetings before 10am (instance {i}).",
+                source="calendar",
+                source_url=f"calendar://event/{i}",
+                title=f"pref-{i}",
+                extracted={
+                    "_timestamp": now_iso(),
+                    "summary": "prefers no early meetings",
+                    "records": [
+                        {"id": f"mem_pref_{i}", "kind": "preference", "layer": "preference",
+                         "content": "prefers to decline meetings before 10am",
+                         "confidence": "confirmed", "importance": 4, "topics": ["meetings"], "entity_ids": []}
+                    ],
+                    "tasks": [],
+                    "entities": [],
+                },
+            )
+            capture_ids.append(result["capture_id"])
+
+        # Unreviewed → the mirror must abstain (without the gate, 6 active memories would surface it).
+        self.assertIsNone(self.store.mirror_insight(self.user_id))
+
+        # Approve every capture → now reviewed, so the insight is allowed to surface.
+        for cid in capture_ids:
+            self.assertTrue(self.store.approve_capture(self.user_id, cid))
+
+        insight = self.store.mirror_insight(self.user_id)
+        self.assertIsNotNone(insight)
+        self.assertIn("meetings before 10am", insight["headline"])
+        self.assertEqual(insight["evidence"]["count"], 6)
+
 
 if __name__ == "__main__":
     unittest.main()

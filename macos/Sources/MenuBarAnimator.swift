@@ -207,9 +207,11 @@ final class MenuBarAnimator {
         if visual != currentVisual {
             render(visual)
         } else {
+            // Only genuinely-in-motion states advance per frame. .attention (pending review count)
+            // is a STATIC badge — it must not pulse, or the icon "moves all the time" whenever there
+            // are items waiting. The count is drawn once in render(.attention) at full opacity.
             switch visual {
             case .syncing: advanceSpinner()
-            case .attention: advancePulse()
             case .learned, .captured: advanceFlourish()
             default: break
             }
@@ -217,8 +219,9 @@ final class MenuBarAnimator {
 
         switch visual {
         case .syncing, .success, .learned, .captured: return frameInterval
-        case .attention: return pulseInterval
-        case .idle: return idleInterval
+        // A static attention badge only needs to wake at the calm idle heartbeat to notice a
+        // pendingCount change — not the old ~12fps pulse cadence.
+        case .idle, .attention: return idleInterval
         }
     }
 

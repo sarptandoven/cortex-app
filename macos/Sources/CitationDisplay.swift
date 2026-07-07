@@ -1,5 +1,64 @@
 import Foundation
 
+/// The single source of truth for turning an internal source id (e.g. "obsidian", "chatgpt") into a
+/// user-facing name. Product rule: a raw connector id must NEVER be shown to a user. Two forms exist
+/// because grammar differs — `bareNoun` reads correctly right after "From your …" (a lowercase noun,
+/// or a proper noun where appropriate), while `label` is the standalone, capitalized chip form.
+/// Unknown ids are titleized (never returned as a raw lowercase id) so a new connector can't leak.
+enum SourceDisplayName {
+    static func bareNoun(_ id: String) -> String {
+        switch canonical(id) {
+        case "obsidian", "local", "file", "files", "notes", "vault", "markdown": return "notes"
+        case "calendar", "gcal", "google-calendar", "google_calendar": return "calendar"
+        case "gmail", "email", "mail", "outlook": return "email"
+        case "imessage", "messages", "sms": return "messages"
+        case "slack": return "Slack"
+        case "github": return "GitHub"
+        case "notion": return "Notion"
+        case "linear": return "Linear"
+        case "jira": return "Jira"
+        case "apple-notes", "apple_notes": return "Apple Notes"
+        case "chatgpt", "openai": return "ChatGPT"
+        case "claude", "anthropic": return "Claude"
+        default: return titleized(id)
+        }
+    }
+
+    static func label(_ id: String) -> String {
+        switch canonical(id) {
+        case "obsidian", "local", "file", "files", "notes", "vault", "markdown": return "Notes"
+        case "calendar", "gcal", "google-calendar", "google_calendar": return "Calendar"
+        case "gmail", "email", "mail", "outlook": return "Email"
+        case "imessage", "messages", "sms": return "Messages"
+        case "slack": return "Slack"
+        case "github": return "GitHub"
+        case "notion": return "Notion"
+        case "linear": return "Linear"
+        case "jira": return "Jira"
+        case "apple-notes", "apple_notes": return "Apple Notes"
+        case "chatgpt", "openai": return "ChatGPT"
+        case "claude", "anthropic": return "Claude"
+        default: return titleized(id)
+        }
+    }
+
+    private static func canonical(_ id: String) -> String {
+        id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func titleized(_ id: String) -> String {
+        let cleaned = id
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .trimmingCharacters(in: .whitespaces)
+        guard !cleaned.isEmpty else { return "notes" }
+        return cleaned
+            .split(separator: " ")
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: " ")
+    }
+}
+
 enum CitationDisplay {
     static func label(
         path: String? = nil,

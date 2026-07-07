@@ -46,10 +46,17 @@ struct MenuBarQuickPanel: View {
                 .padding(.horizontal, 18)
                 .padding(.top, 16)
                 .padding(.bottom, 18)
+            // Absorbs the height difference between the idle / skeleton / answer content branches so
+            // the footer stays pinned to the bottom and the overall panel keeps a constant height.
+            Spacer(minLength: 0)
             Divider().overlay(CortexDesign.hairline)
             footer
         }
-        .frame(width: 384)
+        // FIXED height — must equal the popover.contentSize height set in AppDelegate.ensurePopover
+        // (520). A constant frame means content-branch swaps and the 4s poll's @Published churn
+        // rearrange WITHIN the box instead of resizing the transient popover (the flicker/eaten-click
+        // bug). The Spacer above keeps the footer at the bottom despite the fixed height.
+        .frame(width: 384, height: 520)
         .background(CortexDesign.appBackground)
         .onAppear { focusFieldSoon() }
         .onReceive(NotificationCenter.default.publisher(for: .cortexFocusQuickPanel)) { _ in

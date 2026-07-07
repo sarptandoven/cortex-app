@@ -88,14 +88,27 @@ _SOURCE_DISPLAY: dict[str, str] = {
     "claude": "your Claude history",
 }
 
-# For evidence.source we want the bare, machine-friendly source id/name (e.g.
-# "calendar"), matching the connector catalog, not the "your ..." framing.
+# For evidence.source we want a bare noun that reads correctly after the client's "From your …"
+# framing (e.g. "From your notes"). Never the raw connector id — "obsidian" must not reach a user.
+# The macOS client re-maps these defensively too, but keeping the backend clean avoids any leak in
+# other consumers (MCP, web) and keeps the JSON honest.
 _SOURCE_NAME: dict[str, str] = {
     "calendar": "calendar",
-    "obsidian": "obsidian",
-    "github": "github",
+    "obsidian": "notes",
+    "local": "notes",
+    "file": "notes",
+    "notes": "notes",
+    "github": "GitHub",
     "email": "email",
     "gmail": "email",
+    "messages": "messages",
+    "imessage": "messages",
+    "slack": "Slack",
+    "notion": "Notion",
+    "linear": "Linear",
+    "jira": "Jira",
+    "chatgpt": "ChatGPT",
+    "claude": "Claude",
 }
 
 
@@ -334,12 +347,35 @@ _LAYER_LEAD: dict[str, str] = {
 
 
 def _load_active_memories(conn, user_id: str) -> list[dict]:
+    # Ground the "CORTEX NOTICED" insight in REVIEWED memory only. A memory is written status='active'
+    # at ingest regardless of its capture's review state, so an ungated read could surface patterns
+    # (and their "seen N times" counts) from unreviewed/pending captures. Apply the same gate the rest
+    # of the app uses (see storage._memory_filters): include a memory when it has no capture, its
+    # capture is approved, or its source account is trusted (review_required=0 — e.g. the notes vault,
+    # which is intentionally surfaced without manual approval). This is deliberately the conservative
+    # "reviewed-only" gate even if a user enabled allow_pending_in_context, so a claim Cortex makes
+    # about the user is always backed by data they've actually reviewed.
     cur = conn.execute(
         """
-        SELECT id, layer, kind, content, summary, source, importance
-        FROM memories
-        WHERE user_id = ? AND status = 'active'
-        ORDER BY id
+        SELECT m.id, m.layer, m.kind, m.content, m.summary, m.source, m.importance
+        FROM memories m
+        WHERE m.user_id = ? AND m.status = 'active'
+          AND (
+            m.capture_id IS NULL
+            OR EXISTS (
+                SELECT 1 FROM captures c
+                WHERE c.id = m.capture_id AND c.user_id = m.user_id
+                  AND c.review_status = 'approved'
+            )
+            OR EXISTS (
+                SELECT 1 FROM captures c2
+                JOIN source_accounts sa
+                  ON sa.id = c2.source_account_id AND sa.user_id = c2.user_id
+                WHERE c2.id = m.capture_id AND c2.user_id = m.user_id
+                  AND COALESCE(json_extract(sa.policy_json, '$.review_required'), 1) = 0
+            )
+          )
+        ORDER BY m.id
         """,
         (user_id,),
     )
@@ -409,7 +445,13 @@ def _dominant_layer(members: list[dict]) -> str:
 
 
 def _evidence_source(source: str) -> str:
-    return _SOURCE_NAME.get(source, source)
+    mapped = _SOURCE_NAME.get(source)
+    if mapped:
+        return mapped
+    # Unknown id: never surface a raw internal id verbatim — clean it into a readable bare noun so a
+    # new connector can't leak (e.g. "apple_notes" -> "apple notes").
+    cleaned = (source or "").replace("_", " ").replace("-", " ").strip()
+    return cleaned or "notes"
 
 
 def _clean_topic(topic: str) -> str:
