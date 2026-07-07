@@ -10244,9 +10244,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     /// Mirrors the menu-bar snapshot's "working"/"pending" derivation so the two stay in lockstep,
     /// and adds the sync progress counts + display-safe detail label the Learning HUD needs.
     private func currentLiveActivitySnapshot() -> LiveActivitySnapshot {
+        // The bottom Learning HUD is a prominent "building your memory" surface, so it reflects REAL
+        // memory work only: an active sync/import/backup (menuBarWorkCount) or the job queue draining
+        // (syncProgress). It deliberately does NOT key off the generic `isBusy` flag — that also covers
+        // trivial UI work (search, saves, stats/profile loads) and would pop the HUD "just for fun".
+        // (The small menu-bar icon keeps the broader signal below.)
         let working = state.menuBarWorkCount > 0
             || state.syncProgress?.active == true
-            || state.isBusy
         let pending = max(state.review?.stats.pending_captures ?? 0, state.inbox.count)
         let progress = state.syncProgress
         return LiveActivitySnapshot(

@@ -199,6 +199,18 @@ final class BottomLearningHUD {
     private var mode: Mode = .idle
     private var dismissWork: DispatchWorkItem?
 
+    // Self-limiting so the bar can NEVER become a permanent fixture: an indeterminate bar (no known
+    // total) shows only a few seconds, and a determinate bar that stops advancing (stalled/stuck sync)
+    // also auto-dismisses — regardless of how long the upstream "working" signal stays raised. Once
+    // capped we stay hidden for the rest of the episode, until progress genuinely advances again or
+    // work stops (clearProgress resets the trackers for the next episode).
+    private var progressStartedAt: Date?
+    private var lastAdvanceAt: Date?
+    private var lastSeenDone: Int = -1
+    private var progressCapped = false
+    private static let indeterminateMaxSeconds: TimeInterval = 5
+    private static let stallMaxSeconds: TimeInterval = 12
+
     private static let width: CGFloat = 460
     private static let height: CGFloat = 96
     private static let gap: CGFloat = 18
@@ -206,12 +218,46 @@ final class BottomLearningHUD {
     /// True while anything is on screen — keeps the coordinator sampling fast for a smooth bar.
     var isPresenting: Bool { mode != .idle }
 
-    /// Live progress while a sync/import runs. Called every working tick; cancels any pending dismiss.
+    /// Live progress while a sync/import runs. Called every working tick. Self-limits: keeps showing
+    /// while progress genuinely advances, but auto-dismisses an indeterminate bar after a few seconds
+    /// and a stalled determinate bar after the stall window — so it can never become a permanent bar.
     func updateProgress(done: Int, total: Int, detail: String?) {
+        // Never hijack an in-flight celebration; it schedules its own dismiss.
+        guard mode != .celebration else { return }
+
+        let now = Date()
+        // Real advancement resets the stall timer and lifts any cap (work genuinely resumed).
+        if done > lastSeenDone {
+            lastSeenDone = done
+            lastAdvanceAt = now
+            progressCapped = false
+        }
+        // Capped for this episode → stay hidden until progress advances (handled above) or work stops.
+        guard !progressCapped else { return }
+
+        // Begin a fresh episode when we weren't already showing progress.
+        if mode != .progress {
+            mode = .progress
+            progressStartedAt = now
+            if lastAdvanceAt == nil { lastAdvanceAt = now }
+        }
+
+        // Self-limit: an indeterminate bar may only show a few seconds; a determinate bar that stops
+        // advancing is treated as stalled. Either way, dismiss and suppress re-showing this episode.
+        let shownFor = now.timeIntervalSince(progressStartedAt ?? now)
+        let sinceAdvance = now.timeIntervalSince(lastAdvanceAt ?? now)
+        let stale = (total <= 0 && shownFor > Self.indeterminateMaxSeconds)
+                 || (total > 0 && sinceAdvance > Self.stallMaxSeconds)
+        if stale {
+            progressCapped = true
+            mode = .dismissing
+            scheduleDismiss(after: 0.2)
+            return
+        }
+
         let panel = ensurePanel()
         position(panel)
         dismissWork?.cancel()
-        mode = .progress
         let title: String
         if let detail, !detail.isEmpty {
             title = "Learning from \(detail)"
@@ -219,8 +265,7 @@ final class BottomLearningHUD {
             title = "Building your memory"
         }
         let count = total > 0 ? "\(done.formatted()) / \(total.formatted())" : ""
-        // Always show a bar while working: a determinate fill when we know the total, an animated
-        // indeterminate sweep while the count is still unknown (early sync / count-less work).
+        // Determinate fill when we know the total; animated indeterminate sweep until a count arrives.
         model.apply(title: title, subtitle: count, fraction: total > 0 ? Double(done) / Double(total) : 0,
                     showBar: true, indeterminate: total <= 0, celebration: false)
         present(panel)
@@ -229,6 +274,8 @@ final class BottomLearningHUD {
     /// Work stopped without a celebration → dismiss the progress HUD. Guarded so the coordinator can
     /// call it every idle tick harmlessly, and so it never interrupts a celebration in flight.
     func clearProgress() {
+        // Work stopped → reset the episode trackers so the next real work shows fresh.
+        resetProgressTracking()
         guard mode == .progress else { return }
         mode = .dismissing
         scheduleDismiss(after: 0.35)
@@ -236,9 +283,17 @@ final class BottomLearningHUD {
 
     /// Immediately dismiss regardless of mode (used when the user turns live activity off).
     func forceHide() {
+        resetProgressTracking()
         guard mode != .idle else { return }
         mode = .dismissing
         scheduleDismiss(after: 0)
+    }
+
+    private func resetProgressTracking() {
+        lastSeenDone = -1
+        lastAdvanceAt = nil
+        progressStartedAt = nil
+        progressCapped = false
     }
 
     /// A sync just finished and added memories → morph to a check + "Learned N new memories", hold,
@@ -248,6 +303,7 @@ final class BottomLearningHUD {
         position(panel)
         dismissWork?.cancel()
         mode = .celebration
+        resetProgressTracking()   // the episode ended; a post-celebration working tick starts clean
         let noun = learnedCount == 1 ? "memory" : "memories"
         // No side-by-side subtitle here: it shares the title's fixed-width row and would truncate
         // the headline for large counts ("Learned 1284 new me…"). The check-seal icon already says
@@ -456,6 +512,11 @@ private struct HUDProgressBar: View {
                         .clipShape(Capsule())   // keep both fill and gloss inside the capsule
                 }
             }
+            // Clip the WHOLE bar (track + determinate fill + the indeterminate sweep) to the track
+            // shape. The indeterminate segment is offset beyond both ends to "enter left / exit
+            // right", and GeometryReader does not clip its children — without this, the moving
+            // segment spills past the pill's rounded end (the reported "progress goes beyond the bar").
+            .clipShape(Capsule())
         }
         .frame(height: 5)
         .onAppear { restart() }
