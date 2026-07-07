@@ -89,6 +89,9 @@ jobs:
       - name: Run lightweight ops readiness
         run: python scripts/ops_readiness_check.py --skip-tests --skip-build --output-root "$RUNNER_TEMP/cortex-empty-outputs"
 
+      - name: App Store compliance gate (guidelines 2.5.1 / 2.5.2 / 4.8 + privacy/entitlements)
+        run: python scripts/appstore_compliance_lint.py
+
   security-scan:
     name: Security scan (bandit + pip-audit)
     runs-on: ubuntu-latest
