@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "Cortex Memory",
+  "version": "0.2.0",
+  "description": "Local-first bridge that injects your cited Cortex memory context into web apps (ChatGPT, Claude.ai, Notion). Talks only to your local Cortex server on loopback.",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "https://chat.openai.com/*",
+    "https://chatgpt.com/*",
+    "https://claude.ai/*",
+    "https://www.notion.so/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "action": {
+    "default_title": "Cortex Memory",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chat.openai.com/*",
+        "https://chatgpt.com/*",
+        "https://claude.ai/*",
+        "https://www.notion.so/*"
+      ],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "cortex-memory@doppl.tech",
+      "strict_min_version": "115.0"
+    }
+  }
+}
