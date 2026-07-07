@@ -6341,6 +6341,18 @@ final class AppState: ObservableObject {
             "CORTEX_BASE_URL": endpoint,
             "CORTEX_API_KEY": token
         ]
+        // App Store build (Guideline 2.5.2): the sandboxed, local-first build never ships or
+        // references a runnable bridge script and installs/launches no executable code. It
+        // presents the loopback HTTP tool API instead — any function-calling client points at
+        // this URL with the token; the user wires it up themselves. (The stdio bridge + one-click
+        // setup live only in the Developer-ID/DMG build, below.)
+        if DistributionMode.isAppStore {
+            return [
+                "type": "http",
+                "url": "\(endpoint)/v1/tools",
+                "headers": ["Authorization": "Bearer \(token)"]
+            ]
+        }
         // Host configs must never point inside the .app bundle — moves, updates, and Gatekeeper
         // translocation would silently break every connected AI app. The supervisor maintains a
         // stable bridge launcher in Application Support that also resolves a working interpreter
@@ -10103,6 +10115,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         BackendSupervisor.shared.terminate()
     }
 
+    /// The user-facing app name for menu items. Uses the bundle's display name
+    /// (CFBundleDisplayName, else CFBundleName) so the App-menu items read the same
+    /// brand the menu-bar title shows — "Doppl" in the Mac App Store build, "Cortex" in
+    /// the Developer-ID/DMG build — rather than the executable name (always "Cortex").
+    private var appDisplayName: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String)
+            ?? ProcessInfo.processInfo.processName
+    }
+
     /// A standard macOS main menu. Cortex runs with .regular activation policy (Dock icon +
     /// menu bar), so App Review requires a proper App menu with a Quit item (Guideline 4) — the
     /// status-bar menu is not the App menu. We also add Edit (so text fields get Cut/Copy/Paste/
@@ -10110,12 +10132,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private func setupApplicationMenu() {
         let mainMenu = NSMenu()
 
-        // App menu (first submenu; title is replaced by the app name at runtime).
+        // App menu (first submenu; the menu-bar title is set by AppKit from the bundle name).
         let appMenuItem = NSMenuItem()
         mainMenu.addItem(appMenuItem)
         let appMenu = NSMenu()
         appMenuItem.submenu = appMenu
-        let appName = ProcessInfo.processInfo.processName
+        let appName = appDisplayName
         appMenu.addItem(withTitle: "About \(appName)", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
         // Standard macOS Settings item (⌘,) — HIG/Guideline 4 expect it in the App menu. Opens the
@@ -10160,7 +10182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         mainMenu.addItem(helpMenuItem)
         let helpMenu = NSMenu(title: "Help")
         helpMenuItem.submenu = helpMenu
-        let helpItem = helpMenu.addItem(withTitle: "Cortex Help", action: #selector(menuOpenHelp), keyEquivalent: "?")
+        let helpItem = helpMenu.addItem(withTitle: "\(appName) Help", action: #selector(menuOpenHelp), keyEquivalent: "?")
         helpItem.target = self
 
         NSApp.mainMenu = mainMenu
@@ -10406,7 +10428,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         addMenuItem(to: menu, title: "Copy API connection info…", action: #selector(menuCopyAPIConnectionInfo), key: "")
 
         menu.addItem(.separator())
-        addMenuItem(to: menu, title: "Quit Cortex", action: #selector(menuQuit), key: "q")
+        addMenuItem(to: menu, title: "Quit \(appDisplayName)", action: #selector(menuQuit), key: "q")
         return menu
     }
 

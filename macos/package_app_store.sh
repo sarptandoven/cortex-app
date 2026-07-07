@@ -236,15 +236,15 @@ else
     </dict>
     <dict>
       <key>NSPrivacyAccessedAPIType</key>
-      <string>NSPrivacyAccessedAPICategoryDiskSpace</string>
-      <key>NSPrivacyAccessedAPITypeReasons</key>
-      <array><string>E174.1</string></array>
-    </dict>
-    <dict>
-      <key>NSPrivacyAccessedAPIType</key>
       <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
       <key>NSPrivacyAccessedAPITypeReasons</key>
       <array><string>CA92.1</string></array>
+    </dict>
+    <dict>
+      <key>NSPrivacyAccessedAPIType</key>
+      <string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+      <key>NSPrivacyAccessedAPITypeReasons</key>
+      <array><string>35F9.1</string></array>
     </dict>
   </array>
 </dict>

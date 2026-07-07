@@ -1,7 +1,11 @@
-# Cortex — App Review Notes (Mac App Store)
+# Doppl — App Review Notes (Mac App Store)
 
 Paste the relevant parts of this into **App Store Connect → App Review Information → Notes**.
 It answers the four issues raised in review.
+
+> The Mac App Store build is named **Doppl** (the engine/product is "Cortex" internally, so
+> "Cortex" and "Doppl" refer to the same app in the notes below). The **Doppl** app menu shows
+> **Quit Doppl (⌘Q)**.
 
 ## 2.1(a) — "We need a sample backend server address"
 

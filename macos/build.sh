@@ -98,9 +98,15 @@ if [[ "${CORTEX_SKIP_PYC:-0}" != "1" ]]; then
   fi
   echo "  app-store: backend shipped as .pyc-only (import boot check passed)"
 fi
-mkdir -p "$RES/scripts"
-cp "$ROOT/../scripts/cortex_mcp_stdio.py" "$RES/scripts/cortex_mcp_stdio.py"
-chmod +x "$RES/scripts/cortex_mcp_stdio.py"
+# The MCP stdio bridge is a RUNNABLE helper used only by the Developer-ID/DMG build's
+# one-click AI-tool setup. The App Store (sandbox) build is local-first, exposes the loopback
+# HTTP tool API instead, and must NOT ship or reference an executable-code install method
+# (Guideline 2.5.2). So bundle the bridge script only in non-app-store mode.
+if [[ "$DISTRIBUTION_MODE" != "app-store" ]]; then
+  mkdir -p "$RES/scripts"
+  cp "$ROOT/../scripts/cortex_mcp_stdio.py" "$RES/scripts/cortex_mcp_stdio.py"
+  chmod +x "$RES/scripts/cortex_mcp_stdio.py"
+fi
 # Bundled sample corpus (BOTH distribution modes): a small set of synthetic maker's notes
 # the onboarding "Try sample notes" path copies into the vault and distills. They exercise
 # all seven memory layers and produce a connected people/projects entity graph. Shipped as
@@ -257,6 +263,22 @@ if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON"
       echo "ERROR: app-store mode requires the bundled Python.framework interpreter at $PY_VERSION" >&2
       exit 3
     fi
+    # Guideline 2.5.2: the app-store bundle must ship NO runnable helper scripts. Strip stray
+    # shell scripts that ride along inside dependency wheels (e.g. tqdm/completion.sh) and assert
+    # the MCP stdio bridge is absent (it is Developer-ID-only). Bytecode (.pyc) of the backend is
+    # fine — it is the app's own engine, run only by the app, never installed into other apps.
+    find "$RES" -type f -name '*.sh' -delete 2>/dev/null || true
+    if [[ -e "$RES/scripts/cortex_mcp_stdio.py" ]]; then
+      echo "ERROR: app-store bundle must not ship the runnable MCP stdio bridge (Guideline 2.5.2)" >&2
+      exit 3
+    fi
+    LEFTOVER_SH="$(find "$RES" -type f -name '*.sh' 2>/dev/null | head -n 5)"
+    if [[ -n "$LEFTOVER_SH" ]]; then
+      echo "ERROR: app-store bundle still contains shell scripts:" >&2
+      echo "$LEFTOVER_SH" >&2
+      exit 3
+    fi
+    echo "  app-store: no runnable helper scripts in bundle (2.5.2)"
   fi
 fi
 

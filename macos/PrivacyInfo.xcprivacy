@@ -44,6 +44,23 @@
         <string>CA92.1</string>
       </array>
     </dict>
+    <!--
+      System boot time. The bundled CPython framework maps time.monotonic()
+      (used for rate-limit timers, request timing, and uptime measurement in the
+      local backend) to mach_absolute_time(), which Apple's static scanner
+      detects in the Python.framework binary. Reason 35F9.1: measure elapsed
+      time between events within the app / drive timers. Declared to satisfy the
+      required-reason API rule (prevents ITMS-91053 on upload); no data leaves
+      the device.
+    -->
+    <dict>
+      <key>NSPrivacyAccessedAPIType</key>
+      <string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+      <key>NSPrivacyAccessedAPITypeReasons</key>
+      <array>
+        <string>35F9.1</string>
+      </array>
+    </dict>
   </array>
 </dict>
 </plist>
