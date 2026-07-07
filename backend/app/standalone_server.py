@@ -123,6 +123,12 @@ def _required_api_scope(method: str, path: str) -> str:
     # adaptation / context pack are reads — the holistic picture Cortex exists to hand an agent.
     if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/support/bundle"}:
         return "export"
+    # Delivery: previewing the cited brief is a read; SENDING it out of Cortex is egress of
+    # personal memory, gated like a bulk export (export scope + allow_agent_exports trust toggle).
+    if normalized_path == "/v1/delivery/preview":
+        return "read"
+    if normalized_path == "/v1/delivery/send":
+        return "export"
     if normalized_path in {"/v1/context", "/v1/context-pack", "/v1/personal-profile", "/v1/profile", "/v1/person-map", "/v1/agent-adaptation"}:
         return "read"
     if normalized_path == "/v1/settings" and normalized_method in {"PUT", "PATCH"}:
@@ -883,6 +889,56 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
 
             user_id = self._auth_user(method, path)
             if not user_id:
+                return
+
+            if method == "POST" and path == "/v1/delivery/preview":
+                # Show exactly what would be delivered (cited, sector-scoped, identity-omitted) —
+                # a read of the user's own memory; nothing leaves Cortex.
+                from .delivery import build_delivery_payload
+
+                body = self._json_body()
+                try:
+                    payload = build_delivery_payload(
+                        store,
+                        user_id,
+                        task=str(body.get("task") or ""),
+                        sector=str(body.get("sector") or "") or None,
+                        token_budget=int(body.get("token_budget") or 1500),
+                        kind=str(body.get("kind") or "brief"),
+                    )
+                    self._send_json({"preview": payload})
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path == "/v1/delivery/send":
+                # Egress: deliver the cited brief to a user-provided webhook. Auth already required
+                # export scope + the allow_agent_exports trust toggle (_auth_user). SSRF-guarded,
+                # audited. Nothing here bypasses the cited-only/sector-isolated pack guarantees.
+                from .delivery import build_delivery_payload, deliver_webhook, is_safe_webhook_url
+
+                body = self._json_body()
+                url = str(body.get("url") or "").strip()
+                safe, reason = is_safe_webhook_url(url)
+                if not safe:
+                    self._send_json({"detail": f"Refusing to deliver: {reason}"}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                    return
+                try:
+                    payload = build_delivery_payload(
+                        store,
+                        user_id,
+                        task=str(body.get("task") or ""),
+                        sector=str(body.get("sector") or "") or None,
+                        token_budget=int(body.get("token_budget") or 1500),
+                        kind=str(body.get("kind") or "brief"),
+                    )
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                    return
+                result = deliver_webhook(url, payload)
+                item_count = sum(len(layer.get("items") or []) for layer in ((payload.get("pack", {}) or {}).get("layers") or []) if isinstance(layer, dict))
+                audit_meta = {"target_host": urlparse(url).hostname or "", "sector": payload.get("sector"), "items": item_count}
+                store.record_agent_event(user_id, "delivery:webhook", audit_meta, success=bool(result.get("ok")), error=None if result.get("ok") else str(result.get("reason")), token=None)
+                self._send_json({"delivered": bool(result.get("ok")), "status": result.get("status"), "reason": result.get("reason")}, status=HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_GATEWAY)
                 return
 
             if method == "POST" and path == "/v1/captures/queue":

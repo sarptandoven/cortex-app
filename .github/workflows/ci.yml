@@ -68,6 +68,9 @@ jobs:
       - name: Run agent-task end-to-end gate
         run: python scripts/agent_task_eval.py --deterministic
 
+      - name: Run delivery/push safety gate
+        run: python scripts/delivery_eval.py
+
       - name: Run adaptation quality evaluation
         run: python scripts/adaptation_eval.py
 
