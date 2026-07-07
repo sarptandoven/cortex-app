@@ -79,7 +79,12 @@ final class NotchNotifier {
     private func ensurePanel() -> NotchPanel {
         if let panel { return panel }
         let hosting = NSHostingView(rootView: NotchPillView(model: model))
-        hosting.translatesAutoresizingMaskIntoConstraints = false
+        // Fill the panel with an explicit frame + autoresizing. (Setting
+        // translatesAutoresizingMaskIntoConstraints=false with NO constraints left the hosting
+        // view at a zero-size frame, so the panel appeared but rendered nothing — the notch pill
+        // was invisible.)
+        hosting.frame = NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.panelHeight)
+        hosting.autoresizingMask = [.width, .height]
 
         let panel = NotchPanel(
             contentRect: NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.panelHeight),

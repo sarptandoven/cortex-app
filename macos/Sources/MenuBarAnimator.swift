@@ -52,6 +52,12 @@ final class MenuBarAnimator {
     private weak var statusItem: NSStatusItem?
     private let snapshotProvider: @MainActor () -> MenuBarSnapshot
 
+    /// While the Cortex Spotlight popover is open it is anchored to the status-item BUTTON. Mutating
+    /// that button (image, title/size, alpha) every frame repositions and destabilizes the transient
+    /// popover — it flickers and swallows clicks. So the AppDelegate pauses the animator for the whole
+    /// time the popover is shown; the icon simply holds its current frame until the popover closes.
+    var paused: Bool = false
+
     private var loopTask: Task<Void, Never>?
     private var currentVisual: MenuBarVisual = .idle
     private var frameIndex = 0
@@ -125,6 +131,8 @@ final class MenuBarAnimator {
 
     /// Advance one animation step and return how long to sleep before the next one.
     private func tick() -> TimeInterval {
+        // Frozen while the popover is open so the anchored popover stays stable (no button mutation).
+        if paused { return idleInterval }
         let snap = snapshotProvider()
 
         // A NEW (and recent) completion stamp → queue the checkmark (played after any spin hold).

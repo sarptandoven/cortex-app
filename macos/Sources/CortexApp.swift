@@ -9812,6 +9812,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private func showPopover() {
         guard let button = statusItem.button else { return }
         let popover = ensurePopover()
+        // Freeze the menu-bar animation while the popover is anchored to the button — otherwise the
+        // per-frame button mutation repositions the popover (flicker) and eats clicks.
+        menuBarAnimator?.paused = true
         // Bring the app forward so the popover can take keyboard focus even when invoked by the
         // global hotkey while another app is frontmost.
         NSApp.activate(ignoringOtherApps: true)
@@ -9828,6 +9831,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     func popoverDidClose(_ notification: Notification) {
         popoverClosedAt = Date()
+        // Resume the live menu-bar icon now that the popover is no longer anchored to the button.
+        menuBarAnimator?.paused = false
     }
 
     private func quickPanelOpenApp() {
