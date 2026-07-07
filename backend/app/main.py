@@ -33,6 +33,7 @@ from .mcp_tools import CORE_TOOL_NAMES, TOOLS, call_tool, tool_call_result, tool
 from .observability import metrics, route_label
 from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CalendarSyncRequest, CalendarSyncResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GitHubRepositoryDiscoveryRequest, GitHubRepositoryDiscoveryResponse, GitHubSyncRequest, GitHubSyncResponse, GmailSyncRequest, GmailSyncResponse, GoogleDriveSyncRequest, GoogleDriveSyncResponse, GoogleOAuthCompleteRequest, GoogleOAuthCompleteResponse, GoogleOAuthStartRequest, GoogleOAuthStartResponse, GraphResponse, JiraSyncRequest, JiraSyncResponse, JobRunResponse, LinearSyncRequest, LinearSyncResponse, ListResponse, MaintenanceResponse, ManagedOAuthCompleteRequest, ManagedOAuthCompleteResponse, ManagedOAuthStartRequest, ManagedOAuthStartResponse, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, NotionSyncRequest, NotionSyncResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, OutlookSyncRequest, OutlookSyncResponse, ProductLoopResponse, QueuedCaptureResponse, RaindropSyncRequest, RaindropSyncResponse, ReadwiseSyncRequest, ReadwiseSyncResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SlackChannelDiscoveryRequest, SlackChannelDiscoveryResponse, SlackSyncRequest, SlackSyncResponse, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse, ZoteroSyncRequest, ZoteroSyncResponse
 from .models import UserListResponse, UserProvisionRequest, UserProvisionResponse, UserStatusResponse
+from .oauth_broker import register_oauth_broker_routes
 from .oidc_registry import OidcError, OidcProviderRegistry
 from .ratelimit import TokenBucketRateLimiter
 from .sharding import StoreRegistry
@@ -3088,6 +3089,10 @@ register_web_account_routes(
     # signup page is byte-identical to today.
     turnstile_site_key=lambda: settings.turnstile_site_key if settings.turnstile_enabled else "",
 )
+
+# OAuth token-exchange broker for confidential-client connectors (Notion, GitHub) — hosted-only.
+# No-op surface until CORTEX_BROKER_<PROVIDER>_CLIENT_ID/_CLIENT_SECRET are set + this app is deployed.
+register_oauth_broker_routes(app)
 
 
 # MCP protocol revisions /mcp can serve, newest first. The JSON-RPC shapes Cortex uses
