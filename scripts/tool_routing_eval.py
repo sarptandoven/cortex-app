@@ -49,6 +49,7 @@ EXPECTED_CORE_READ_TOOLS: tuple[str, ...] = (
     "get_person_map",
     "list_capabilities",
     "search_memory",
+    "use_cortex",
 )
 
 

@@ -98,5 +98,48 @@ class SchemaExporterTests(unittest.TestCase):
         self.assertEqual(exported, TOOL_NAMES)
 
 
+class UseCortexRouterTests(unittest.TestCase):
+    def test_router_classifies_task(self):
+        route = lambda task, intent=None: mcp_tools._route_use_cortex(task, intent, {})[0]
+        self.assertEqual(route("What did I decide about Go?"), "ask_memory")
+        self.assertEqual(route("who owns the billing service?"), "ask_memory")
+        self.assertEqual(route("tell me about Alice"), "get_entity_context")
+        self.assertEqual(route("brief me on Project Atlas"), "get_entity_context")
+        self.assertEqual(route("search embeddings config"), "search_memory")
+        self.assertEqual(route("draft a reply to the team", "draft"), "get_context")
+
+    def test_router_carries_intent_into_context(self):
+        target, args, _ = mcp_tools._route_use_cortex("plan the launch", "plan", {})
+        self.assertEqual(target, "get_context")
+        self.assertEqual(args.get("intent"), "plan")
+
+    def test_use_cortex_is_core_read_tool(self):
+        self.assertIn("use_cortex", mcp_tools.CORE_TOOL_NAMES)
+        self.assertIn("use_cortex", mcp_tools.READ_TOOLS)
+        self.assertTrue(mcp_tools._tool_annotations("use_cortex")["readOnlyHint"])
+        self.assertIn("read", mcp_tools.tool_required_capabilities("use_cortex", scoped=True))
+
+
+class SurfacePresetTests(unittest.TestCase):
+    def _names(self, surface, scopes=("read",)):
+        return {t["name"] for t in mcp_tools.tools_for_scopes(list(scopes), surface=surface)}
+
+    def test_coding_and_chat_presets(self):
+        coding = self._names("coding")
+        self.assertIn("use_cortex", coding)
+        self.assertIn("get_procedure", coding)
+        self.assertNotIn("ask_memory", coding)  # coding preset omits the Q&A tool
+        chat = self._names("chat")
+        self.assertIn("ask_memory", chat)
+        self.assertIn("get_person_map", chat)
+
+    def test_unknown_surface_falls_back_to_core(self):
+        self.assertEqual(self._names("does-not-exist"), self._names("core"))
+
+    def test_presets_stay_under_client_caps(self):
+        for surface in ("core", "coding", "chat"):
+            self.assertLessEqual(len(self._names(surface, scopes=("read", "write"))), 40, surface)  # Cursor cap
+
+
 if __name__ == "__main__":
     unittest.main()

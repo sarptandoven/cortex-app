@@ -736,6 +736,24 @@ TOOLS = [
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "use_cortex",
+        "description": (
+            "One entry point for the user's memory. Describe the task in natural language and Cortex "
+            "routes it to the right retrieval — a cited answer, a working context pack, an entity/"
+            "person briefing, or a keyword search — and returns cited results. Call this when unsure "
+            "which specific tool to use."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string", "description": "What you need from the user's memory, in natural language."},
+                "intent": {"type": "string", "enum": ["answer", "act", "draft", "plan", "recall"], "description": "Optional hint about what you're doing."},
+                "token_budget": {"type": "integer", "default": 2000, "minimum": 300, "maximum": 6000},
+            },
+            "required": ["task"],
+        },
+    },
 ]
 
 # The curated CORE surface an agent sees by default: one tool per job (working context,
@@ -743,6 +761,7 @@ TOOLS = [
 # Everything else stays callable — collapsing is advertisement-only, never authorization.
 CORE_TOOL_NAMES = frozenset(
     {
+        "use_cortex",
         "get_context",
         "ask_memory",
         "search_memory",
@@ -754,7 +773,42 @@ CORE_TOOL_NAMES = frozenset(
 )
 
 
+# Named tool surfaces (advertisement presets). A token is minted with a surface so each client sees
+# a stable, cap-appropriate list (Cursor caps at 40, ChatGPT at 128) that never churns mid-session —
+# task-awareness happens inside use_cortex, not by swapping the advertised list. "full" is handled
+# specially in tools_for_scopes (every scope-visible tool). Unknown names fall back to "core".
+MCP_TOOL_SURFACES: dict[str, frozenset[str]] = {
+    "core": CORE_TOOL_NAMES,
+    "coding": frozenset(
+        {
+            "use_cortex",
+            "get_context",
+            "search_memory",
+            "get_entity_context",
+            "get_project_context",
+            "get_procedure",
+            "get_decisions",
+            "remember_this",
+            "list_capabilities",
+        }
+    ),
+    "chat": frozenset(
+        {
+            "use_cortex",
+            "ask_memory",
+            "get_context",
+            "search_memory",
+            "get_person_map",
+            "get_entity_context",
+            "remember_this",
+            "list_capabilities",
+        }
+    ),
+}
+
+
 READ_TOOLS = {
+    "use_cortex",
     "get_context",
     "ask_memory",
     "get_entity_context",
@@ -981,7 +1035,7 @@ def tools_for_scopes(token_scopes: list[str] | None = None, *, surface: str = "c
     ]
     if surface == "full":
         return scope_visible
-    visible_names = set(CORE_TOOL_NAMES)
+    visible_names = set(MCP_TOOL_SURFACES.get(surface, CORE_TOOL_NAMES))
     if "maintenance" in scope_set:
         visible_names |= MAINTENANCE_TOOLS
     if "destructive" in scope_set:
@@ -1572,6 +1626,47 @@ def _procedure_markdown(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+_ROUTER_QUESTION_PREFIXES = (
+    "who ", "what ", "when ", "where ", "why ", "how ", "which ", "whose ",
+    "is ", "are ", "was ", "were ", "does ", "did ", "do ", "can ", "should ", "could ", "will ",
+)
+_ROUTER_ENTITY_MARKERS = (
+    "brief me on ", "tell me about ", "everything about ", "everything on ",
+    "context on ", "context about ", "about ", "who is ", "who's ",
+)
+_ROUTER_SEARCH_MARKERS = ("search ", "find ", "look up ", "search:", "grep ")
+
+
+def _route_use_cortex(task: str, intent: str | None, args: dict[str, Any]) -> tuple[str, dict[str, Any], list[str]]:
+    """Deterministic task router for the use_cortex tool: pick the retrieval tool that best fits the
+    request. Entity briefings, direct questions, and explicit searches route to their specialist
+    tools; everything else gets a working context pack. All targets are read-only, so the router
+    can never escalate scope."""
+    text = (task or "").strip()
+    lowered = text.lower()
+    budget = _bounded_int_arg(args, "token_budget", 2000, minimum=300, maximum=6000)
+    alternatives = ["get_context", "ask_memory", "search_memory", "get_entity_context"]
+
+    def others(chosen: str) -> list[str]:
+        return [tool for tool in alternatives if tool != chosen]
+
+    for marker in _ROUTER_ENTITY_MARKERS:
+        if lowered.startswith(marker):
+            entity = text[len(marker):].strip(" ?.\t").strip()
+            if entity:
+                return "get_entity_context", {"name": entity[:MCP_NAME_MAX_CHARS], "limit": 8}, others("get_entity_context")
+    if lowered.endswith("?") or lowered.startswith(_ROUTER_QUESTION_PREFIXES):
+        return "ask_memory", {"query": text, "top_k": 8}, others("ask_memory")
+    for marker in _ROUTER_SEARCH_MARKERS:
+        if lowered.startswith(marker):
+            query = text[len(marker):].strip() or text
+            return "search_memory", {"query": query, "top_k": 8}, others("search_memory")
+    context_args: dict[str, Any] = {"task": text, "token_budget": budget}
+    if intent:
+        context_args["intent"] = intent
+    return "get_context", context_args, others("get_context")
+
+
 def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any], token_scopes: list[str] | None = None) -> Any:
     _require_tool_access(store, user_id, name, token_scopes)
     if name in DIRECT_CONNECTOR_SYNC_TOOLS and _bool_arg(args, "complete_snapshot"):
@@ -1600,6 +1695,14 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             cite_capture_provenance=True,
             auto_approve=load_settings().auto_approve_captures,
         ))
+    if name == "use_cortex":
+        task = _text_arg(args, "task")
+        intent = _text_arg(args, "intent", max_chars=16) or None
+        target, target_args, alternatives = _route_use_cortex(task, intent, args)
+        # Dispatch through call_tool so the target tool's own scope enforcement + payload shaping
+        # run unchanged (all targets are read-only, so a read token suffices).
+        result = call_tool(store, user_id, target, target_args, token_scopes)
+        return {"routed_to": target, "task": task, "alternatives": alternatives, "result": result}
     if name == "get_context":
         # The identity/persona layer is distilled, cited context about the user — a read, like the
         # rest of the picture. Any read-scoped agent gets it; a token with neither read nor export
