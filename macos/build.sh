@@ -123,8 +123,12 @@ fi
 if [[ -f "$ROOT/Assets/AppIcon.icns" ]]; then
   cp "$ROOT/Assets/AppIcon.icns" "$RES/AppIcon.icns"
 fi
+# The bundled Obsidian plugin (main.js) is the notes-bridge that the app auto-installs into the
+# user's vault — a Developer-ID/DMG-only convenience. It must NOT ship in the App Store build:
+# installing/enabling third-party executable code in another app is a Guideline 2.5.2 violation, so
+# the MAS build syncs notes CONTENT only and never carries the plugin payload.
 PLUGIN_DIR="$ROOT/../packages/obsidian-cortex-plugin"
-if [[ -d "$PLUGIN_DIR" ]]; then
+if [[ "$DISTRIBUTION_MODE" != "app-store" && -d "$PLUGIN_DIR" ]]; then
   for plugin_file in manifest.json main.js versions.json; do
     if [[ ! -f "$PLUGIN_DIR/$plugin_file" ]]; then
       echo "Obsidian plugin package is missing $plugin_file. Run scripts/check_obsidian_plugin.sh before building Cortex." >&2
@@ -181,11 +185,19 @@ if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON"
   if [[ "$DISTRIBUTION_MODE" == "app-store" ]]; then
     strip_ext "_ssl*.so"
     rm -f "$PY_STDLIB/ssl.py"
-    echo "  app-store: removed _ssl + ssl.py (backend degrades to http/loopback-only; outbound HTTPS connectors disabled)"
+    # _hashlib is the ONLY other OpenSSL-linked stdlib extension: it dynamically links libcrypto at
+    # an ABSOLUTE path outside the bundle (dangling on a reviewer's Mac) and carries OpenSSL symbols.
+    # Remove it too so the app-store bundle references zero OpenSSL. hashlib.py falls back to the
+    # self-contained _md5/_sha1/_sha2/_sha3/_blake2 built-ins for the algorithms the local backend
+    # uses (sha256); hashlib.scrypt is only used by the hosted account password-hasher (authn.py),
+    # which is dead in the local-first MAS build. The boot smoke below fails the build if this breaks
+    # `import app.standalone_server`.
+    strip_ext "_hashlib*.so"
+    echo "  app-store: removed _ssl + ssl.py + _hashlib (bundle references no OpenSSL)"
   fi
-  # Fail loudly if a flagged extension survived — never ship a build that will bounce off review.
-  if [[ -e "$DYNLOAD"/_tkinter*.so ]] || { [[ "$DISTRIBUTION_MODE" == "app-store" ]] && ls "$DYNLOAD"/_ssl*.so >/dev/null 2>&1; }; then
-    echo "ERROR: a flagged C extension survived pruning in $DYNLOAD" >&2
+  # Fail loudly if a flagged/OpenSSL extension survived — never ship a build that will bounce off review.
+  if [[ -e "$DYNLOAD"/_tkinter*.so ]] || { [[ "$DISTRIBUTION_MODE" == "app-store" ]] && ls "$DYNLOAD"/_ssl*.so "$DYNLOAD"/_hashlib*.so >/dev/null 2>&1; }; then
+    echo "ERROR: a flagged/OpenSSL C extension survived pruning in $DYNLOAD" >&2
     exit 3
   fi
 
@@ -278,7 +290,15 @@ if [[ "$BUNDLE_PYTHON" != "0" && "$BUNDLE_PYTHON" != "false" && "$BUNDLE_PYTHON"
       echo "$LEFTOVER_SH" >&2
       exit 3
     fi
-    echo "  app-store: no runnable helper scripts in bundle (2.5.2)"
+    # Guideline 2.5.2: the app-store bundle must not carry the Obsidian notes-bridge plugin payload
+    # (installing/enabling third-party executable JS in another app is forbidden; the installer is
+    # also gated off in-app via DistributionMode.isAppStore).
+    if [[ -e "$RES/obsidian-cortex-plugin" ]] || find "$RES" -type f -name 'main.js' 2>/dev/null | grep -q .; then
+      echo "ERROR: app-store bundle must not ship the Obsidian plugin payload / main.js (Guideline 2.5.2)" >&2
+      find "$RES" \( -name 'obsidian-cortex-plugin' -o -name 'main.js' \) 2>/dev/null >&2
+      exit 3
+    fi
+    echo "  app-store: no runnable helper scripts or plugin payload in bundle (2.5.2)"
   fi
 fi
 

@@ -5883,6 +5883,13 @@ final class AppState: ObservableObject {
     }
 
     private func installObsidianPluginIfPossible(vaultURL: URL) async -> Bool {
+        // App Store (sandbox / Guideline 2.5.2): NEVER install or enable a third-party plugin inside
+        // the user's Obsidian vault. Copying main.js into .obsidian/plugins and enabling it in
+        // community-plugins.json is installing + launching executable code that changes another app —
+        // the same class of behavior Apple rejected for the MCP installer. The MAS build syncs the
+        // notes CONTENT only; auto-installing the notes-bridge plugin is a Developer-ID/DMG-only
+        // convenience. (The plugin payload is also excluded from the MAS bundle by build.sh.)
+        guard !DistributionMode.isAppStore else { return false }
         let obsidianConfigURL = vaultURL.appendingPathComponent(".obsidian", isDirectory: true)
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: obsidianConfigURL.path, isDirectory: &isDirectory),
