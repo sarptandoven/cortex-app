@@ -2543,6 +2543,12 @@ final class BackendSupervisor {
             environment["CORTEX_EMBEDDING_PROVIDER"] = "model2vec"
             environment["CORTEX_MODEL2VEC_PATH"] = model2vecURL.path
         }
+        // Task-aware retrieval, enabled for the shipped app: query planning (semantic intent +
+        // compound-question decomposition, additive to recall) and per-layer temporal decay
+        // (capped tie-breaking). Both verified no-regression under model2vec by scripts/rerank_eval.py.
+        // The reorder-heavy reranker (CORTEX_RERANK) stays off pending a larger graded eval.
+        environment["CORTEX_QUERY_PLAN"] = "1"
+        environment["CORTEX_TEMPORAL_DECAY"] = "1"
         if let googleClientID = Bundle.main.object(forInfoDictionaryKey: "CortexGoogleOAuthClientID") as? String {
             let trimmedGoogleClientID = googleClientID.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmedGoogleClientID.isEmpty {

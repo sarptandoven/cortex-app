@@ -71,6 +71,9 @@ jobs:
       - name: Run delivery/push safety gate
         run: python scripts/delivery_eval.py
 
+      - name: Run model2vec retrieval-lift gate (skips if model unavailable)
+        run: python scripts/rerank_eval.py
+
       - name: Run adaptation quality evaluation
         run: python scripts/adaptation_eval.py
 
