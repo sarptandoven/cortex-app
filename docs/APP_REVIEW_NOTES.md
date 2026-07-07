@@ -64,5 +64,26 @@ addition to the existing status-bar menu.
 ### Architecture summary for the reviewer
 - SwiftUI + AppKit front end.
 - A bundled, code-signed local memory engine (started on `127.0.0.1`, loopback only).
-- No third-party/social login and no account creation in the App Store build.
-- No tracking, no data collected off device (see `PrivacyInfo.xcprivacy`).
+- No tracking; the only data collected is the account email/name a signed-in user provides
+  (see `PrivacyInfo.xcprivacy`), used to operate their account.
+
+---
+
+## Accounts build (when CortexRequireAccount = true)
+
+This applies only once the build **requires** an account (`Info.plist CortexRequireAccount=true`,
+enabled after the hosted backend is live). Until then the app is usable locally without an account
+and the notes above stand.
+
+- **Sign-in options.** The app offers **Sign in with Apple** (native), plus Google, GitHub, and
+  email/password. Sign in with Apple is presented first and prominently, satisfying Guideline 4.8.
+- **What the account provides (Guideline 5.1.1(v)).** Signing in enables cross-device sync and
+  cloud backup of the user's memory — real account-based functionality, which is why an account is
+  required. Sign-in runs over HTTPS to `https://api.trydoppl.com` (Swift URLSession).
+- **Demo account for review.** Username: `<APP REVIEW DEMO EMAIL>` · Password:
+  `<APP REVIEW DEMO PASSWORD>`. (Fill these in from an active account before submitting; or use
+  Sign in with Apple with your own Apple ID.) The demo account has sample memory pre-loaded so the
+  reviewer can exercise Home / Review / Ask immediately after signing in.
+- **Privacy.** Email and name are collected to operate the account (Linked to identity, **not**
+  used for tracking, purpose App Functionality) — matching `PrivacyInfo.xcprivacy` and the App
+  Store Connect privacy questionnaire. No data is shared with third parties for advertising.
