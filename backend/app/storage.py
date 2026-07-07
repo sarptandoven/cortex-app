@@ -19,6 +19,7 @@ from urllib.request import Request, urlopen
 from .connectors._redaction import redact_error_message
 from .database import connect, sqlite_vec_status
 from .embeddings import VECTOR_DIMENSIONS, configured_embedding_model, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status
+from .query_plan import build_query_plan, query_plan_enabled
 from .mirror import compute_mirror_insight
 from .profile import build_profile_sections
 from .condense import condense_section
@@ -9816,6 +9817,31 @@ class CortexStore:
             include_related=True,
             as_of=as_of,
         )
+        # Query planning (Phase 4, flag-gated): a compound question ("what did X decide AND when")
+        # only recalls one fact from a single search. Decompose it and union the extra candidates
+        # BEFORE the citation gate — purely additive to recall; single-query behavior is unchanged.
+        if query_plan_enabled():
+            plan = build_query_plan(query)
+            if plan.sub_queries:
+                seen_candidate_ids = {str(item.get("id")) for item in candidates if isinstance(item, dict)}
+                for sub_query in plan.sub_queries:
+                    if sub_query.strip().lower() == query.strip().lower():
+                        continue
+                    for extra in self.search(
+                        user_id,
+                        sub_query,
+                        limit=search_limit,
+                        sector=sector,
+                        source=source,
+                        source_account_id=source_account_id,
+                        metadata_filters=metadata_filters,
+                        include_related=True,
+                        as_of=as_of,
+                    ):
+                        extra_id = str(extra.get("id")) if isinstance(extra, dict) else ""
+                        if extra_id and extra_id not in seen_candidate_ids:
+                            seen_candidate_ids.add(extra_id)
+                            candidates.append(extra)
         person_injected_ids: set[str] = set()
         person_entity = self._query_person_entity(user_id, query)
         if person_entity:
@@ -12746,7 +12772,13 @@ class CortexStore:
             token_budget = 2000
         token_budget = min(max(token_budget, CONTEXT_MIN_TOKEN_BUDGET), CONTEXT_MAX_TOKEN_BUDGET)
         sector = _normalize_sector_filter(sector) or None
-        resolved_intent = _derive_context_intent(task, intent)
+        # Query planning (Phase 4, flag-gated) upgrades intent from keyword rules to a semantic
+        # classifier (model2vec nearest-prototype) when a real embedder is active; falls back to
+        # the keyword result under the hash provider, so default behavior is unchanged.
+        if query_plan_enabled() and task:
+            resolved_intent = build_query_plan(task, intent).intent
+        else:
+            resolved_intent = _derive_context_intent(task, intent)
         output_format = str(format or "json").strip().lower()
         user_settings = self.settings(user_id)
         redact_sensitive = bool(user_settings["redact_sensitive_context"])
