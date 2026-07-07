@@ -2619,6 +2619,59 @@ def auth_oauth_callback(
     return {"action": result["action"], **_session_pair_payload(session)}
 
 
+@app.post("/v1/auth/oauth/{provider}/native")
+def auth_oauth_native(provider: str, payload: dict[str, Any], request: Request) -> Any:
+    """Native-client sign-in (e.g. Sign in with Apple on macOS/iOS): the app performs the provider
+    flow with the OS and posts the resulting id_token here. We verify it (full OIDC), then take the
+    same find-or-create-identity + mint-session path as the browser callback. No token ever rides a
+    redirect; the app receives the session pair directly in this response."""
+    runtime = _auth_runtime_or_404()
+    _auth_rate_limit(runtime, "oauth_native", request)
+    try:
+        identity = runtime.oidc.verify_native_id_token(
+            provider,
+            str(payload.get("id_token") or ""),
+            nonce=str(payload.get("nonce") or "") or None,
+        )
+    except OidcError as exc:
+        _auth_logger.info("native oauth rejected for %s: %s", provider, exc)
+        raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE) from exc
+    try:
+        result = runtime.service.find_or_challenge_identity(
+            provider,
+            str(identity["subject"]),
+            email=identity.get("email"),
+            email_verified=bool(identity.get("email_verified")),
+            # Apple only returns the name on the FIRST authorization (never in the id_token), so the
+            # app forwards it in the payload; fall back to any name the token carried.
+            display_name=str(payload.get("display_name") or identity.get("display_name") or "")[:160],
+            profile={"provider": provider},
+        )
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    if result["action"] == "link_required":
+        # Never silent-auto-link: the user must authenticate with the existing method first.
+        return JSONResponse(
+            status_code=409,
+            content={
+                "action": "link_required",
+                "flow_id": result["flow_id"],
+                "challenge": result["challenge"],
+                "detail": "Sign in with your existing method, then link this provider.",
+            },
+        )
+    account = result["account"]
+    if str(account.get("status") or "") == "active":
+        _ensure_account_provisioned(account)
+    session = runtime.service.mint_session(
+        account,
+        client=str(payload.get("client") or "macos")[:20],
+        ip=_client_ip(request),
+        user_agent=(request.headers.get("user-agent") or "")[:200] or None,
+    )
+    return {"action": result["action"], **_session_pair_payload(session)}
+
+
 @app.post("/v1/auth/oauth/{provider}/link")
 def auth_oauth_link(
     provider: str, payload: dict[str, Any], session: dict[str, Any] = Depends(session_auth)

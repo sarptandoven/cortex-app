@@ -73,6 +73,11 @@ class Settings:
     oidc_google_client_secret: str = ""
     oidc_github_client_id: str = ""
     oidc_github_client_secret: str = ""
+    # Sign in with Apple. For NATIVE macOS/iOS (ASAuthorization) the id_token's audience is the
+    # app's bundle id (e.g. com.cortex.doppl); set this to that value. Native verification needs
+    # only the client id (audience) — no ES256 client-secret JWT (that is the web code-flow only).
+    oidc_apple_client_id: str = ""
+    oidc_apple_client_secret: str = ""
     # Public URL browsers hit for OAuth redirects / app-login pages (defaults to
     # public_base_url when unset).
     public_app_url: str = ""
@@ -191,11 +196,13 @@ def load_settings() -> Settings:
     require_scoped_api_tokens = os.environ.get("CORTEX_REQUIRE_SCOPED_API_TOKENS", "").strip().lower() in {"1", "true", "yes", "on"}
     oidc_google_client_id = os.environ.get("CORTEX_OIDC_GOOGLE_CLIENT_ID", "").strip()
     oidc_github_client_id = os.environ.get("CORTEX_OIDC_GITHUB_CLIENT_ID", "").strip()
+    oidc_apple_client_id = os.environ.get("CORTEX_OIDC_APPLE_CLIENT_ID", "").strip()
     accounts_db_env = os.environ.get("CORTEX_ACCOUNTS_DB_PATH", "").strip()
     auth_enabled = (
         _truthy_env("CORTEX_AUTH_ENABLED")
         or bool(oidc_google_client_id)
         or bool(oidc_github_client_id)
+        or bool(oidc_apple_client_id)
         or bool(accounts_db_env)
     )
     public_base_url = os.environ.get("CORTEX_PUBLIC_BASE_URL", "http://127.0.0.1:8766")
@@ -251,6 +258,8 @@ def load_settings() -> Settings:
         oidc_google_client_secret=os.environ.get("CORTEX_OIDC_GOOGLE_CLIENT_SECRET", "").strip(),
         oidc_github_client_id=oidc_github_client_id,
         oidc_github_client_secret=os.environ.get("CORTEX_OIDC_GITHUB_CLIENT_SECRET", "").strip(),
+        oidc_apple_client_id=oidc_apple_client_id,
+        oidc_apple_client_secret=os.environ.get("CORTEX_OIDC_APPLE_CLIENT_SECRET", "").strip(),
         public_app_url=(os.environ.get("CORTEX_PUBLIC_APP_URL", "").strip() or public_base_url),
         billing_provider=os.environ.get("CORTEX_BILLING_PROVIDER", "").strip().lower(),
         paddle_webhook_secret=os.environ.get("CORTEX_PADDLE_WEBHOOK_SECRET", "").strip(),

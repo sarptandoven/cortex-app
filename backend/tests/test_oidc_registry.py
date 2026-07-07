@@ -126,6 +126,64 @@ class OidcRegistryTestBase(unittest.TestCase):
         )
 
 
+APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
+
+
+class AppleNativeOidcTests(OidcRegistryTestBase):
+    """Sign in with Apple, NATIVE flow: the app posts the ASAuthorization id_token to
+    verify_native_id_token (no code exchange). Full OIDC verify against Apple's issuer + JWKS
+    with the app's bundle id as audience."""
+
+    AUDIENCE = "com.cortex.doppl"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        numbers = self.private_key.public_key().public_numbers()
+        self.jwks = {"keys": [jwk_from_rsa_public_numbers(numbers.n, numbers.e, kid="kid-1")]}
+        self.registry = self._registry(_settings(oidc_apple_client_id=self.AUDIENCE))
+        self.transport.routes[APPLE_JWKS_URL] = lambda request: _json_response(self.jwks)
+
+    def _apple_token(self, key: rsa.RSAPrivateKey | None = None, **overrides: Any) -> str:
+        claims = {
+            "iss": "https://appleid.apple.com",
+            "aud": self.AUDIENCE,
+            "sub": "apple-sub-001",
+            "email": "person@icloud.com",
+            "email_verified": True,
+            "exp": int(self.now.timestamp()) + 600,
+            "iat": int(self.now.timestamp()),
+        }
+        claims.update(overrides)
+        return make_jwt(claims, key or self.private_key)
+
+    def test_native_happy_path_verifies_identity(self) -> None:
+        identity = self.registry.verify_native_id_token("apple", self._apple_token())
+        self.assertEqual(identity["subject"], "apple-sub-001")
+        self.assertEqual(identity["email"], "person@icloud.com")
+        self.assertTrue(identity["email_verified"])
+        self.assertEqual(identity["provider"], "apple")
+        self.assertIsNone(identity["app_flow_id"])
+
+    def test_wrong_audience_rejected(self) -> None:
+        with self.assertRaises(OidcError):
+            self.registry.verify_native_id_token("apple", self._apple_token(aud="com.someone.else"))
+
+    def test_wrong_issuer_rejected(self) -> None:
+        with self.assertRaises(OidcError):
+            self.registry.verify_native_id_token("apple", self._apple_token(iss="https://evil.example"))
+
+    def test_bad_signature_rejected(self) -> None:
+        other_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        with self.assertRaises(OidcError):
+            self.registry.verify_native_id_token("apple", self._apple_token(key=other_key))
+
+    def test_disabled_when_unconfigured(self) -> None:
+        registry = self._registry(_settings())  # no oidc_apple_client_id → apple disabled
+        with self.assertRaises(OidcError):
+            registry.verify_native_id_token("apple", self._apple_token())
+
+
 class GoogleOidcTests(OidcRegistryTestBase):
     CLIENT_ID = "google-client-id"
 

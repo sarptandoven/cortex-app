@@ -90,6 +90,8 @@ def definitions_from_settings(settings: Any) -> dict[str, ProviderDefinition]:
     google_secret = str(getattr(settings, "oidc_google_client_secret", "") or "")
     github_id = str(getattr(settings, "oidc_github_client_id", "") or "")
     github_secret = str(getattr(settings, "oidc_github_client_secret", "") or "")
+    apple_id = str(getattr(settings, "oidc_apple_client_id", "") or "")
+    apple_secret = str(getattr(settings, "oidc_apple_client_secret", "") or "")
     return {
         "google": ProviderDefinition(
             name="google",
@@ -117,6 +119,24 @@ def definitions_from_settings(settings: Any) -> dict[str, ProviderDefinition]:
             client_secret=github_secret,
             enabled=bool(github_id and github_secret),
             button_order=20,
+        ),
+        # Sign in with Apple. NATIVE macOS/iOS (ASAuthorization) returns an id_token directly, which
+        # is verified against `client_id` as the audience (the app's bundle id) via the same OIDC
+        # path as Google — so native needs only the client id, not the ES256 client-secret JWT that
+        # Apple's WEB code-exchange flow requires. Verified via verify_native_id_token().
+        "apple": ProviderDefinition(
+            name="apple",
+            kind="oidc",
+            display_name="Apple",
+            issuer="https://appleid.apple.com",
+            authorize_endpoint="https://appleid.apple.com/auth/authorize",
+            token_endpoint="https://appleid.apple.com/auth/token",
+            jwks_uri="https://appleid.apple.com/auth/keys",
+            scopes="openid email name",
+            client_id=apple_id,
+            client_secret=apple_secret,
+            enabled=bool(apple_id),
+            button_order=5,
         ),
         # Reserved AI-vendor slot (design doc section 1): shipped disabled, no
         # endpoints, no credentials. Never enabled by default — activation is a
@@ -393,6 +413,27 @@ class OidcProviderRegistry:
             identity = self._oidc_identity(definition, token_response, nonce=str(payload.get("nonce") or ""))
         identity["provider"] = definition.name
         identity["app_flow_id"] = payload.get("app_flow_id") or None
+        return identity
+
+    def verify_native_id_token(
+        self, provider: str, id_token: str, *, nonce: Optional[str] = None
+    ) -> dict[str, Any]:
+        """Verify an id_token obtained by a NATIVE client flow (e.g. Sign in with Apple via
+        ASAuthorization), where the app already holds the id_token and there is no server-side
+        code exchange. Full OIDC verification (RS256 + JWKS + iss/aud/exp, with one forced JWKS
+        refetch on key rotation) — the same path as the browser flow — and returns the identity
+        dict (subject/email/email_verified/display_name). Requires only the provider's client id
+        (the audience), not a client secret."""
+        definition = self.providers.get(str(provider or "").strip().lower())
+        if definition is None or not definition.enabled or definition.kind != "oidc":
+            raise OidcError(f"provider {provider!r} is unknown or does not support native id_token sign-in")
+        if not definition.client_id:
+            raise OidcError(f"provider {provider!r} is not configured (no client id / audience)")
+        if not str(id_token or "").strip():
+            raise OidcError("id_token is required")
+        identity = self._oidc_identity(definition, {"id_token": id_token}, nonce=nonce or "")
+        identity["provider"] = definition.name
+        identity["app_flow_id"] = None
         return identity
 
     # -------------------------------------------------------------- internals
