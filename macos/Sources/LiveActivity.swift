@@ -8,6 +8,8 @@ import AppKit
 /// AppState directly and stays trivially testable. All strings are already display-safe (source
 /// names run through SourceDisplayName before they get here).
 struct LiveActivitySnapshot: Equatable {
+    /// User master switch. When false the coordinator shows nothing (and hides anything up).
+    var enabled: Bool
     /// Something is in flight (sync/import/backup/launch/busy). LEVEL signal — true for the whole
     /// operation, so the sampling loop can't miss it.
     var working: Bool
@@ -32,7 +34,8 @@ struct LiveActivitySnapshot: Equatable {
 /// directly. Keeps the ambient surfaces (which never take focus) decoupled from the interactive one.
 @MainActor
 protocol LiveActivityPillControlling: AnyObject {
-    func showPill(pendingCount: Int)
+    /// Non-pinning: flashes a reminder when the review backlog grows, then auto-dismisses.
+    func updatePending(_ count: Int)
     func hidePill()
 }
 
@@ -136,6 +139,15 @@ final class LiveActivityCenter {
     private func tick() -> TimeInterval {
         let snap = snapshotProvider()
 
+        // Master switch: user turned live activity off → hide everything and do no work. Old event
+        // stamps go stale (>6s), so nothing replays when re-enabled.
+        guard snap.enabled else {
+            hud.forceHide()
+            glow.setActive(false)
+            pill?.hidePill()
+            return idleInterval
+        }
+
         // --- Event-driven punctuation (each fires at most once per new stamp) ---
         if let completed = snap.syncCompletedAt, completed != lastSeenCompletion {
             lastSeenCompletion = completed
@@ -160,12 +172,12 @@ final class LiveActivityCenter {
             pill?.hidePill()
         } else {
             hud.clearProgress()  // no-op unless a progress HUD is currently up (celebration is left alone)
-            // The pill and the HUD share bottom-center, so the pill may ONLY appear once the HUD is
-            // fully idle — never while a completion celebration (or a dismiss) is still on screen.
-            // `hud.isPresenting` stays true through the celebration, and the loop keeps sampling fast
-            // (busy) until it returns to .idle, so the pill hands in promptly right after.
-            if !hud.isPresenting, snap.pendingCount > 0 {
-                pill?.showPill(pendingCount: snap.pendingCount)
+            // The pill and the HUD share bottom-center, so the pill may only be driven once the HUD
+            // is fully idle — never while a completion celebration (or a dismiss) is still on screen.
+            // `updatePending` is non-pinning: it flashes a reminder when the backlog GROWS and
+            // auto-dismisses, so it never becomes a permanent bar the user can't get rid of.
+            if !hud.isPresenting {
+                pill?.updatePending(snap.pendingCount)
             } else {
                 pill?.hidePill()
             }
@@ -218,6 +230,13 @@ final class BottomLearningHUD {
         guard mode == .progress else { return }
         mode = .dismissing
         scheduleDismiss(after: 0.35)
+    }
+
+    /// Immediately dismiss regardless of mode (used when the user turns live activity off).
+    func forceHide() {
+        guard mode != .idle else { return }
+        mode = .dismissing
+        scheduleDismiss(after: 0)
     }
 
     /// A sync just finished and added memories → morph to a check + "Learned N new memories", hold,

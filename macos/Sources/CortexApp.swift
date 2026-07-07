@@ -924,12 +924,15 @@ struct SyncProgress: Equatable {
     var fraction: Double { total > 0 ? min(1.0, max(0.0, Double(done) / Double(total))) : 0 }
 }
 
-/// POST /v1/imports result (subset we render after importing an export).
+/// POST /v1/imports result (subset we render after importing an export). `has_more`/`next_offset`
+/// drive the client-side pagination loop so a huge export imports fully across calls.
 struct SourceImportResultLite: Codable {
     let saved: Int
     let queued: Int
     let skipped: Int
     let records_found: Int?
+    let has_more: Bool?
+    let next_offset: Int?
 }
 
 /// GET /v1/imports/detect — AI-chat / app exports auto-found in Downloads/CortexImports.
@@ -3067,6 +3070,17 @@ final class AppState: ObservableObject {
     // window content observes it and opens the Connections & Privacy surface, then resets it.
     @Published var presentSettings: Bool = false
 
+    /// Whether the bottom-of-screen live-activity surfaces (Learning HUD, edge glow, memory ripple,
+    /// "N to review" pill) are shown at all. Persisted; default ON. Turn off from the menu-bar
+    /// right-click menu or Settings when they're distracting — the coordinator then hides everything.
+    static let liveActivityEnabledDefaultsKey = "liveActivityEnabled.v1"
+    @Published var liveActivityEnabled: Bool = (UserDefaults.standard.object(forKey: AppState.liveActivityEnabledDefaultsKey) as? Bool) ?? true {
+        didSet {
+            guard liveActivityEnabled != oldValue else { return }
+            UserDefaults.standard.set(liveActivityEnabled, forKey: AppState.liveActivityEnabledDefaultsKey)
+        }
+    }
+
     // Quick capture (highlight/screenshot → memory) preference + keybind. Both persisted. All
     // capture actions are no-ops in App Store (sandboxed) builds — see QuickCapture.setEnabled.
     static let quickCaptureEnabledDefaultsKey = "quickCaptureEnabled.v1"
@@ -4660,13 +4674,33 @@ final class AppState: ObservableObject {
             defer {
                 if let inboxToClean { try? FileManager.default.removeItem(at: inboxToClean) }
             }
-            let data = try await request(
-                path: "/v1/imports",
-                method: "POST",
-                body: ["paths": [backendPath], "source_hint": sourceHint, "processing": "sync", "max_records": 5000]
-            )
-            let result = try JSONDecoder().decode(SourceImportResultLite.self, from: data)
-            let added = result.saved + result.queued
+            // Import ASYNC, not sync. Sync fully extracts+embeds every conversation INLINE in the
+            // HTTP request — for a large Claude/ChatGPT export (thousands of conversations) that
+            // blocks for minutes and reads as "never finishes." Async parses + enqueues each
+            // conversation as a background job and returns fast; the queued jobs then drain via the
+            // job poll with the bottom Learning HUD showing live progress. We paginate (the backend
+            // caps each call at max_records) so the FULL export imports across calls, and cap the
+            // loop so a pathological file can't loop forever.
+            var added = 0
+            var skipped = 0
+            var offset = 0
+            var pages = 0
+            let maxPages = 40   // 40 × 2000 = up to 80k conversations, then stop (safety bound)
+            while pages < maxPages {
+                pages += 1
+                let data = try await request(
+                    path: "/v1/imports",
+                    method: "POST",
+                    body: ["paths": [backendPath], "source_hint": sourceHint, "processing": "async",
+                           "max_records": 2000, "offset": offset]
+                )
+                let result = try JSONDecoder().decode(SourceImportResultLite.self, from: data)
+                added += result.saved + result.queued
+                skipped += result.skipped
+                status = added > 0 ? "Importing your chats… \(added) so far" : "Importing your chats…"
+                guard result.has_more == true, let next = result.next_offset, next > offset else { break }
+                offset = next
+            }
             if added > 0 {
                 firstSourceAdded = true
                 UserDefaults.standard.set(true, forKey: "onboardingFirstSourceImported.v1")
@@ -4674,7 +4708,9 @@ final class AppState: ObservableObject {
                 onboardingFirstSourceNames = Array(Set(onboardingFirstSourceNames + [label])).sorted()
                 UserDefaults.standard.set(onboardingFirstSourceNames, forKey: "onboardingFirstSourceNames.v1")
             }
-            await drainQueuedMemoryJobs(automatic: true)
+            // Flip syncProgress.active on immediately (and start draining) so the bottom HUD appears
+            // right away instead of after the next idle poll tick.
+            await loadJobProgress()
             await refreshAfterCapture()
             await loadStats()
             await loadImportHistory()
@@ -4682,8 +4718,10 @@ final class AppState: ObservableObject {
             if added > 0 {
                 importSucceeded = true
                 announceLearned(count: added)
-                status = "Imported \(added) conversation\(added == 1 ? "" : "s") into your memory."
-            } else if result.skipped > 0 {
+                // The conversations are captured and queued; the bottom HUD now shows the background
+                // extraction/embedding draining to completion (driven by the job-progress poll).
+                status = "Imported \(added) conversation\(added == 1 ? "" : "s"). Building your memory in the background…"
+            } else if skipped > 0 {
                 status = "Already imported — nothing new to add."
             } else {
                 status = "No conversations found in that file. Choose the export .zip or its conversations.json."
@@ -9826,7 +9864,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         ))
         let center = LiveActivityCenter { [weak self] in
             self?.currentLiveActivitySnapshot() ?? LiveActivitySnapshot(
-                working: false, done: 0, total: 0, detail: nil, pendingCount: 0,
+                enabled: false, working: false, done: 0, total: 0, detail: nil, pendingCount: 0,
                 learnedAt: nil, capturedAt: nil, learnedCount: 0, syncCompletedAt: nil
             )
         }
@@ -9846,6 +9884,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let pending = max(state.review?.stats.pending_captures ?? 0, state.inbox.count)
         let progress = state.syncProgress
         return LiveActivitySnapshot(
+            enabled: state.liveActivityEnabled,
             working: working,
             done: progress?.done ?? 0,
             total: progress?.total ?? 0,
@@ -10012,6 +10051,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         constellationItem.isEnabled = !state.graphNodes.isEmpty
 
         menu.addItem(.separator())
+        // The user's direct "turn this off" control for the bottom-of-screen live-activity surfaces.
+        let liveItem = addMenuItem(to: menu, title: "Show live activity", action: #selector(toggleLiveActivity), key: "")
+        liveItem.state = state.liveActivityEnabled ? .on : .off
+
+        menu.addItem(.separator())
         addMenuItem(to: menu, title: "Quit Cortex", action: #selector(menuQuit), key: "q")
         return menu
     }
@@ -10064,6 +10108,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     @objc private func menuOpenConnections() {
         showMainWindow()
         state.openConnectionsPrivacy()
+    }
+
+    /// Toggle the bottom-of-screen live-activity surfaces. The coordinator reads this each tick and
+    /// hides everything when off.
+    @objc private func toggleLiveActivity() {
+        state.liveActivityEnabled.toggle()
     }
 
     /// Summon the full-screen Constellation overlay (P2). Wired to a Home button (via the

@@ -19,19 +19,42 @@ final class LiveActivityPill: LiveActivityPillControlling {
     private let model = PillModel()
     private var visible = false
     private var orderOutWork: DispatchWorkItem?
+    private var autoDismissWork: DispatchWorkItem?
+    /// The highest pending count we've already surfaced. The pill only re-appears when the backlog
+    /// GROWS beyond this, so it's a gentle reminder rather than a bar that pins forever.
+    private var lastSurfacedCount = 0
 
     private static let width: CGFloat = 320
     private static let height: CGFloat = 92
     private static let gap: CGFloat = 18
+    private static let autoDismissAfter: TimeInterval = 8
 
     init(actions: Actions) {
         self.actions = actions
     }
 
-    func showPill(pendingCount: Int) {
+    /// Non-pinning update. Shows a reminder ONLY when the pending backlog grows beyond what we last
+    /// surfaced, then auto-dismisses after a few seconds. A steady backlog never re-pins the pill;
+    /// when the backlog drops (user reviewed items) we lower the watermark so a later increase can
+    /// remind again.
+    func updatePending(_ count: Int) {
+        if count <= 0 {
+            lastSurfacedCount = 0
+            hidePill()
+            return
+        }
+        if count < lastSurfacedCount {
+            lastSurfacedCount = count  // backlog shrank; re-arm for the next growth
+        }
+        guard count > lastSurfacedCount else { return }  // no NEW items since we last reminded
+        lastSurfacedCount = count
+        present(count: count)
+    }
+
+    private func present(count: Int) {
         let panel = ensurePanel()
         position(panel)
-        model.pendingCount = pendingCount
+        model.pendingCount = count
         orderOutWork?.cancel()
         if !visible {
             visible = true
@@ -39,9 +62,18 @@ final class LiveActivityPill: LiveActivityPillControlling {
             panel.orderFrontRegardless()
             withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { model.visible = true }
         }
+        // Auto-dismiss so it never becomes a permanent fixture; hovering keeps it (see PillView).
+        autoDismissWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.model.hovering else { return }
+            self.hidePill()
+        }
+        autoDismissWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.autoDismissAfter, execute: work)
     }
 
     func hidePill() {
+        autoDismissWork?.cancel()
         guard visible else { return }
         visible = false
         withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) { model.visible = false }
@@ -117,6 +149,9 @@ final class FirstMouseHostingView<V: View>: NSHostingView<V> {
 private final class PillModel: ObservableObject {
     @Published var visible = false
     @Published var pendingCount = 0
+    /// True while the pointer is over the pill — suppresses the auto-dismiss so it doesn't vanish
+    /// out from under the user mid-interaction.
+    @Published var hovering = false
 }
 
 private struct PillView: View {
@@ -187,6 +222,7 @@ private struct PillView: View {
                 .shadow(color: Color.black.opacity(0.18), radius: 16, x: 0, y: 6)
         )
         .onHover { hovering in
+            model.hovering = hovering
             withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) { expanded = hovering }
         }
         .padding(.bottom, 4)
