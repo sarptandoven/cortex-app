@@ -5222,7 +5222,14 @@ final class AppState: ObservableObject {
                 let data = try await request(path: "/v1/pair", method: "POST", body: ["label": label, "surface": "chat"])
                 let pairing = try JSONDecoder().decode(BrowserExtensionPairing.self, from: data)
                 browserExtensionPairing = pairing
-                status = "Browser extension paired — paste the token into the extension's options."
+                status = "Browser extension paired — token copied to clipboard."
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(pairing.token, forType: .string)
+                let alert = NSAlert()
+                alert.messageText = "Browser extension paired"
+                alert.informativeText = "A read-only access token has been copied to your clipboard.\n\nIn the Cortex extension's Options:\n  • Base URL: \(pairing.base_url)\n  • Token: paste from clipboard\n\nThen click ◆ Cortex on a supported site to inject your cited context."
+                alert.addButton(withTitle: "Done")
+                alert.runModal()
             } catch {
                 status = CortexRecoveryText.failureStatus("Browser extension pairing", error: error)
             }
@@ -10351,8 +10358,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         liveItem.state = state.liveActivityEnabled ? .on : .off
 
         menu.addItem(.separator())
+        let pairItem = addMenuItem(to: menu, title: "Connect browser extension…", action: #selector(menuPairBrowserExtension), key: "")
+        pairItem.isEnabled = !state.browserExtensionPairingInFlight
+
+        menu.addItem(.separator())
         addMenuItem(to: menu, title: "Quit Cortex", action: #selector(menuQuit), key: "q")
         return menu
+    }
+
+    @objc private func menuPairBrowserExtension() {
+        state.pairBrowserExtension()
     }
 
     @discardableResult
