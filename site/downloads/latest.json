@@ -2,23 +2,23 @@
   "app": "Cortex",
   "artifacts": [
     {
-      "filename": "Cortex-0.2.0-11.dmg",
+      "filename": "Cortex-0.2.0-12.dmg",
       "kind": "dmg",
-      "sha256": "819896deb6a4ee1a53061fa65a6ecd4c05589a6edfe052303a9eac3572297fc1",
-      "size_bytes": 84494819,
-      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-11.dmg"
+      "sha256": "ed7cd8c3f6a131e5a345ac418f3264900305c7414d3fb8c2dfeba0f1b5847489",
+      "size_bytes": 86036688,
+      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-12.dmg"
     },
     {
-      "filename": "Cortex-0.2.0-11.app.zip",
+      "filename": "Cortex-0.2.0-12.app.zip",
       "kind": "zip",
-      "sha256": "b534736e6dfb97abc31c7eb6813167d56821d5812b3bb4b51c139e5117d039d3",
-      "size_bytes": 66987293,
-      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-11.app.zip"
+      "sha256": "e6fd92ce3146989411d4e0998b94574d3721ae173ceb87c962b8928dd1dd604a",
+      "size_bytes": 67090258,
+      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-12.app.zip"
     },
     {
       "filename": "cortex-memory-0.1.0.zip",
       "kind": "obsidian-plugin",
-      "sha256": "f2ffa0a218336074ae95a15b04005f24333217d0c67dcbe0e7701ec75e73a44b",
+      "sha256": "86347732b259b6b3cd7ff3a4a7a3c79a8d2be49d2658814151b54d2958e17c37",
       "size_bytes": 3423,
       "url": "https://trydoppl.com/downloads/cortex-memory-0.1.0.zip"
     }
@@ -26,7 +26,7 @@
   "beta_readiness": {
     "audience": "first-100 local beta",
     "generated_artifact_verification": [
-      "shasum -a 256 -c Cortex-0.2.0-11.checksums.txt",
+      "shasum -a 256 -c Cortex-0.2.0-12.checksums.txt",
       "python3 scripts/validate_update_manifest.py <release-dir>/latest.json",
       "python3 scripts/check_vector_runtime.py --app macos/build/Cortex.app",
       "python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir <release-dir>"
@@ -40,7 +40,7 @@
     ],
     "known_limitations": [
       "Manual app replacement is the only update path for this local beta.",
-      "Google, Notion, and Outlook managed OAuth sign-in require configured OAuth app credentials in the app build.",
+      "GitHub connects with browser sign-in (Sign in with GitHub); Google, Notion, and Outlook managed OAuth sign-in still require configured OAuth app credentials in the app build.",
       "Hosted accounts, cloud backup, and remote MCP/OAuth are not enabled.",
       "Support starts from the sanitized support bundle, not raw memory folder data.",
       "Developer ID signing, notarization, hosted HTTPS downloads, and a support process are required before broad public distribution."
@@ -70,21 +70,20 @@
       "Relaunch, confirm backend health, and run the reliability report."
     ]
   },
-  "build": "11",
+  "build": "12",
   "bundle_id": "com.cortex.doppl",
   "channel": "local-beta",
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "Fix: importing a large Claude/ChatGPT export no longer hangs \u2014 it now imports in the background so the app stays responsive, with the bottom bar showing live progress that finishes and disappears.",
-    "The bottom \"live activity\" can now be turned off: right-click the menu-bar icon \u2192 \"Show live activity\".",
-    "The \"N to review\" pill no longer pins to the bottom of the screen \u2014 it flashes briefly when new items arrive, then auto-hides."
+    "New: Sign in with GitHub — connect GitHub by authorizing in your browser instead of pasting a personal access token. Cortex reads your GitHub activity (read-only) and imports it into your memory.",
+    "Connections library shows a live progress sheet during sign-in (waiting → importing → done) and lets you cancel."
   ],
-  "released_at": "2026-07-07T06:58:04Z",
+  "released_at": "2026-07-07T09:22:41Z",
   "source_provenance": {
-    "built_at": "2026-07-07T06:58:04Z",
+    "built_at": "2026-07-07T09:22:41Z",
     "git_branch": "mass-scale-app-redesign",
-    "git_commit": "a707a5e321d21bd541b3f71d7d066ac6e9719327",
+    "git_commit": "ca1cc586f7223081a98f87724a0229d7e327c32a",
     "git_dirty": false
   },
   "version": "0.2.0"
