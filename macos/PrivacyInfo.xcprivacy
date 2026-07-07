@@ -3,20 +3,49 @@
 <plist version="1.0">
 <dict>
   <!--
-    Privacy manifest for the Mac App Store (local-first, sandboxed) build of Doppl.
+    Privacy manifest for the Mac App Store (sandboxed) build of Doppl.
 
-    The App Store build is LOCAL-FIRST ONLY: no cloud account, no outbound HTTPS
-    connectors (the _ssl / ssl.py stdlib modules are stripped in app-store mode),
-    and no automatic MCP config installation. All memory lives in the app's
-    sandbox container. Nothing is collected from the user and nothing is sent off
-    the device, so no data-collection categories are declared.
+    Memory lives in the app's sandbox container and the local engine runs on the loopback
+    interface only (the _ssl/ssl.py Python modules are stripped in app-store mode; account
+    sign-in uses Swift's native URLSession/HTTPS, not the Python backend). The app offers a
+    Cortex account (Sign in with Apple / Google / GitHub / email) to sync memory across the
+    user's devices and AI tools. When a user signs in, their email and name are collected to
+    operate that account, and memory they choose to sync is sent to their account. None of it
+    is used for tracking or shared with third parties for advertising.
   -->
   <key>NSPrivacyTracking</key>
   <false/>
   <key>NSPrivacyTrackingDomains</key>
   <array/>
   <key>NSPrivacyCollectedDataTypes</key>
-  <array/>
+  <array>
+    <!-- Account email — used to operate the user's account; linked to identity; not tracking. -->
+    <dict>
+      <key>NSPrivacyCollectedDataType</key>
+      <string>NSPrivacyCollectedDataTypeEmailAddress</string>
+      <key>NSPrivacyCollectedDataTypeLinked</key>
+      <true/>
+      <key>NSPrivacyCollectedDataTypeTracking</key>
+      <false/>
+      <key>NSPrivacyCollectedDataTypePurposes</key>
+      <array>
+        <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+      </array>
+    </dict>
+    <!-- Name — from the account / Sign in with Apple; linked to identity; not tracking. -->
+    <dict>
+      <key>NSPrivacyCollectedDataType</key>
+      <string>NSPrivacyCollectedDataTypeName</string>
+      <key>NSPrivacyCollectedDataTypeLinked</key>
+      <true/>
+      <key>NSPrivacyCollectedDataTypeTracking</key>
+      <false/>
+      <key>NSPrivacyCollectedDataTypePurposes</key>
+      <array>
+        <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+      </array>
+    </dict>
+  </array>
   <key>NSPrivacyAccessedAPITypes</key>
   <array>
     <!--
