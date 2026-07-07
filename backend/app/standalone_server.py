@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import html
 import hmac
+import secrets
 import json
 import os
 import threading
@@ -61,6 +62,21 @@ def _cors_origins() -> set[str]:
 
 
 ALLOWED_CORS_ORIGINS = _cors_origins()
+
+# Browser-extension origins are dynamic per install (chrome-extension://<id>, moz-extension://<id>,
+# safari-web-extension://<id>). The Cortex extension the user installed presents a paired Bearer
+# token, so the token — not CORS — is the auth boundary; echoing the extension's origin is safe.
+_EXTENSION_ORIGIN_SCHEMES = ("chrome-extension://", "moz-extension://", "safari-web-extension://")
+
+
+def _cors_origin_allowed(origin: str) -> bool:
+    if not origin:
+        return False
+    if origin in ALLOWED_CORS_ORIGINS:
+        return True
+    if os.environ.get("CORTEX_ALLOW_EXTENSION_CORS", "1").strip().lower() in {"1", "true", "on", "yes"}:
+        return origin.startswith(_EXTENSION_ORIGIN_SCHEMES)
+    return False
 
 
 def _env_int(name: str, default: int, low: int, high: int) -> int:
@@ -137,7 +153,7 @@ def _required_api_scope(method: str, path: str) -> str:
         return "maintenance"
     if normalized_path.startswith("/v1/maintenance/") or normalized_path in {"/v1/jobs/run", "/v1/maintenance/jobs/run", "/v1/sources/sync-due"}:
         return "maintenance"
-    if normalized_path in {"/v1/integrations/api-token", "/v1/integrations/mcp-token", "/v1/integrations/tokens"}:
+    if normalized_path in {"/v1/integrations/api-token", "/v1/integrations/mcp-token", "/v1/integrations/tokens", "/v1/pair"}:
         return "maintenance"
     if normalized_path.startswith("/v1/integrations/tokens/"):
         return "maintenance"
@@ -2123,6 +2139,29 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     scopes=body.get("scopes"),
                 ))
                 return
+            if method == "POST" and path == "/v1/pair":
+                # Pair a browser extension (or any local client): generate a fresh read-scoped MCP
+                # token and return the connection details. Auth already required maintenance scope,
+                # so only the app (or a maintenance token) can pair — the extension receives the
+                # minted token out-of-band. Read-only by default; the user can widen scope later.
+                body = self._json_body()
+                label = str(body.get("label") or "Browser extension")[:120]
+                surface = str(body.get("surface") or "chat")[:40]
+                new_token = "cxm_" + secrets.token_urlsafe(24)
+                registered = store.ensure_mcp_token(user_id, new_token, label=label, scopes=["read"])
+                base = settings.public_base_url.rstrip("/")
+                self._send_json({
+                    "token": new_token,
+                    "base_url": base,
+                    "mcp_endpoint": f"{base}/mcp",
+                    "tools_schema_endpoint": f"{base}/v1/tools/schema",
+                    "tools_call_endpoint": f"{base}/v1/tools/call",
+                    "context_endpoint": f"{base}/v1/context",
+                    "surface": surface,
+                    "scopes": ["read"],
+                    "token_id": registered.get("token_id") if isinstance(registered, dict) else None,
+                })
+                return
             if method == "POST" and path == "/v1/integrations/api-token":
                 body = self._json_body()
                 self._send_json(store.ensure_api_token(
@@ -2465,7 +2504,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Retry-After", str(retry_after))
         self.send_header("Content-Length", str(len(data)))
         origin = (self.headers.get("Origin") or "").rstrip("/")
-        if origin and origin in ALLOWED_CORS_ORIGINS:
+        if origin and _cors_origin_allowed(origin):
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Cortex-User")
