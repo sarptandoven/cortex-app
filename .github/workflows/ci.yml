@@ -62,6 +62,12 @@ jobs:
       - name: Run universal adapter contract gate
         run: python scripts/adapter_contract_eval.py
 
+      - name: Run context-pack quality gate
+        run: python scripts/context_pack_eval.py
+
+      - name: Run agent-task end-to-end gate
+        run: python scripts/agent_task_eval.py --deterministic
+
       - name: Run adaptation quality evaluation
         run: python scripts/adaptation_eval.py
 

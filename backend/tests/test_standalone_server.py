@@ -4350,7 +4350,10 @@ class StandaloneServerTests(unittest.TestCase):
             self.assertEqual(payload["result"]["protocolVersion"], requested)
             self.assertEqual(payload["result"]["serverInfo"]["name"], "cortex")
             self.assertEqual(payload["result"]["serverInfo"]["version"], standalone_server.BACKEND_VERSION)
-            self.assertEqual(payload["result"]["capabilities"], {"tools": {}})
+            self.assertEqual(
+                payload["result"]["capabilities"],
+                {"tools": {"listChanged": False}, "resources": {"listChanged": False, "subscribe": False}, "prompts": {"listChanged": False}},
+            )
 
         for params in ({"protocolVersion": "1999-01-01"}, {}, None):
             status, body = self.post_mcp({"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": params})
@@ -4394,12 +4397,48 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertIn("batch not supported", payload["error"]["message"])
 
     def test_mcp_unknown_method_returns_method_not_found(self) -> None:
-        status, body = self.post_mcp({"jsonrpc": "2.0", "id": 4, "method": "resources/list", "params": {}})
+        # resources/list, prompts/list, etc. are implemented now; use a genuinely unknown method.
+        status, body = self.post_mcp({"jsonrpc": "2.0", "id": 4, "method": "sampling/createMessage", "params": {}})
         payload = json.loads(body)
         self.assertEqual(status, 200)
         self.assertNotIn("result", payload)
         self.assertEqual(payload["error"]["code"], -32601)
-        self.assertIn("resources/list", payload["error"]["message"])
+        self.assertIn("sampling/createMessage", payload["error"]["message"])
+
+    def test_mcp_resources_and_prompts_are_served(self) -> None:
+        # Routing-level checks against the FakeStore (which stubs only stats/agent_payload). Deep
+        # resource/prompt behavior against a real CortexStore lives in test_mcp_resources_prompts.py.
+        status, body = self.post_mcp({"jsonrpc": "2.0", "id": 40, "method": "resources/list"})
+        payload = json.loads(body)
+        self.assertEqual(status, 200)
+        uris = {r["uri"] for r in payload["result"]["resources"]}
+        self.assertIn("cortex://profile/person-map", uris)
+        self.assertIn("cortex://schema/capabilities", uris)
+        self.assertTrue(payload["result"]["resourceTemplates"])
+
+        # schema/capabilities resolves from stats (which FakeStore provides) -> valid JSON contents.
+        status, body = self.post_mcp({
+            "jsonrpc": "2.0", "id": 41, "method": "resources/read",
+            "params": {"uri": "cortex://schema/capabilities"},
+        })
+        payload = json.loads(body)
+        self.assertEqual(status, 200)
+        content = payload["result"]["contents"][0]
+        self.assertEqual(content["mimeType"], "application/json")
+        self.assertIn("stats", json.loads(content["text"]))
+
+        # An unknown resource routes to a clean JSON-RPC error (not a crash).
+        status, body = self.post_mcp({
+            "jsonrpc": "2.0", "id": 44, "method": "resources/read", "params": {"uri": "cortex://nope/x"},
+        })
+        payload = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertIn("error", payload)
+
+        status, body = self.post_mcp({"jsonrpc": "2.0", "id": 42, "method": "prompts/list"})
+        payload = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertIn("brief_me_on", {p["name"] for p in payload["result"]["prompts"]})
 
     def test_integration_tokens_can_be_listed_and_revoked(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "alice"}

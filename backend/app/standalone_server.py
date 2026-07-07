@@ -16,7 +16,19 @@ from urllib.parse import parse_qs, unquote, urlparse
 from .config import load_settings
 from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
-from .mcp_tools import CORE_TOOL_NAMES, TOOLS, call_tool, export_tool_schema, tool_call_result, tools_for_scopes
+from .mcp_tools import (
+    CORE_TOOL_NAMES,
+    TOOLS,
+    call_tool,
+    export_tool_schema,
+    get_prompt,
+    list_prompts,
+    list_resource_templates,
+    list_resources,
+    read_resource,
+    tool_call_result,
+    tools_for_scopes,
+)
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
 
@@ -332,7 +344,7 @@ MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024
 # MCP protocol revisions /mcp can serve, newest first. The JSON-RPC shapes Cortex uses
 # (initialize, tools/list, tools/call, ping) are identical across these revisions, so
 # initialize echoes whichever revision the client requested and offers the newest otherwise.
-MCP_PROTOCOL_VERSIONS = ("2025-03-26", "2024-11-05")
+MCP_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
 
 class _RequestTooLarge(Exception):
@@ -2181,7 +2193,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 result = {
                     "protocolVersion": requested_version if requested_version in MCP_PROTOCOL_VERSIONS else MCP_PROTOCOL_VERSIONS[0],
                     "serverInfo": {"name": "cortex", "version": BACKEND_VERSION},
-                    "capabilities": {"tools": {}},
+                    "capabilities": {"tools": {"listChanged": False}, "resources": {"listChanged": False, "subscribe": False}, "prompts": {"listChanged": False}},
                 }
             elif method == "ping":
                 result = {}
@@ -2200,6 +2212,29 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     store.record_agent_event(user_id, tool_name, arguments, success=False, error=str(exc), token=context)
                     raise
                 result = tool_call_result(value)
+            elif method == "resources/list":
+                result = {"resources": list_resources(), "resourceTemplates": list_resource_templates()}
+            elif method == "resources/read":
+                params = request.get("params") or {}
+                uri = str(params.get("uri") or "")
+                try:
+                    result = read_resource(store, user_id, uri, token_scopes=token_scopes)
+                    store.record_agent_event(user_id, f"resource:{uri}", {}, success=True, token=context)
+                except Exception as exc:
+                    store.record_agent_event(user_id, f"resource:{uri}", {}, success=False, error=str(exc), token=context)
+                    raise
+            elif method == "prompts/list":
+                result = {"prompts": list_prompts()}
+            elif method == "prompts/get":
+                params = request.get("params") or {}
+                prompt_name = str(params.get("name") or "")
+                prompt_args = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+                try:
+                    result = get_prompt(store, user_id, prompt_name, prompt_args, token_scopes=token_scopes)
+                    store.record_agent_event(user_id, f"prompt:{prompt_name}", {}, success=True, token=context)
+                except Exception as exc:
+                    store.record_agent_event(user_id, f"prompt:{prompt_name}", {}, success=False, error=str(exc), token=context)
+                    raise
             else:
                 self._send_json({"jsonrpc": "2.0", "id": request.get("id"), "error": {"code": -32601, "message": f"Method not found: {method}"}})
                 return

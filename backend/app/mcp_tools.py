@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from urllib.parse import unquote
 
 from .config import load_settings
 from .extractor import extract_context
@@ -1156,6 +1157,124 @@ def export_tool_schema(fmt: str, token_scopes: list[str] | None = None, *, surfa
     if normalized in {"mcp", "", "raw"}:
         return tools_for_scopes(token_scopes, surface=surface)
     raise ValueError(f"Unknown tool-schema format: {fmt!r}")
+
+
+# --- MCP resources + prompts (Phase 5) -----------------------------------------------------
+# Resources are app-driven, cacheable snapshots of the user's distilled memory, addressed by
+# cortex:// URIs. Prompts are user-driven templates that embed cited context so downstream
+# generations stay grounded. Both are READ-scoped and run the same trust gate + redaction path as
+# the read tools — a resource read is never a scope bypass.
+
+CORTEX_RESOURCES: list[dict[str, Any]] = [
+    {"uri": "cortex://profile/person-map", "name": "Whole-person map", "description": "Cited profile + knowledge-graph picture of the user.", "mimeType": "application/json"},
+    {"uri": "cortex://profile/personal", "name": "Personal profile", "description": "Distilled, cited profile grouped by memory layer.", "mimeType": "application/json"},
+    {"uri": "cortex://profile/adaptation", "name": "Agent adaptation guide", "description": "Cited operating instructions for an AI assistant acting for the user.", "mimeType": "application/json"},
+    {"uri": "cortex://schema/capabilities", "name": "Cortex capabilities", "description": "Memory counts + the tool catalog.", "mimeType": "application/json"},
+    {"uri": "cortex://review/daily", "name": "Daily review", "description": "Today's pending captures, open loops, decisions, and topics.", "mimeType": "application/json"},
+]
+CORTEX_RESOURCE_TEMPLATES: list[dict[str, Any]] = [
+    {"uriTemplate": "cortex://entity/{name}", "name": "Entity context", "description": "Cited memory + graph neighborhood for one person/project/org/topic.", "mimeType": "application/json"},
+]
+CORTEX_PROMPTS: list[dict[str, Any]] = [
+    {"name": "summarize_recent_decisions", "description": "Summarize the user's recent decisions from cited memory.", "arguments": [{"name": "since", "description": "Optional ISO date to summarize from.", "required": False}]},
+    {"name": "extract_action_items", "description": "Extract open action items / commitments from the user's memory.", "arguments": [{"name": "topic", "description": "Optional topic to focus on.", "required": False}]},
+    {"name": "brief_me_on", "description": "Produce a cited briefing on a person, project, or topic.", "arguments": [{"name": "subject", "description": "Person/project/topic to brief on.", "required": True}]},
+]
+
+
+def _read_gate(store: CortexStore, user_id: str, token_scopes: list[str] | None) -> None:
+    """Read scope + trust gate shared by resources and prompts (same discipline as read tools)."""
+    if token_scopes is not None and "read" not in token_scopes:
+        raise PermissionError("MCP token is not scoped for read actions.")
+    store.require_agent_access(user_id, "read")
+
+
+def list_resources() -> list[dict[str, Any]]:
+    return [dict(resource) for resource in CORTEX_RESOURCES]
+
+
+def list_resource_templates() -> list[dict[str, Any]]:
+    return [dict(template) for template in CORTEX_RESOURCE_TEMPLATES]
+
+
+def read_resource(store: CortexStore, user_id: str, uri: str, token_scopes: list[str] | None = None) -> dict[str, Any]:
+    _read_gate(store, user_id, token_scopes)
+    target = str(uri or "").strip()
+    if target == "cortex://profile/person-map":
+        payload: Any = store.person_map(user_id)
+    elif target == "cortex://profile/personal":
+        payload = store.personal_profile(user_id)
+    elif target == "cortex://profile/adaptation":
+        payload = store.agent_adaptation(user_id)
+    elif target == "cortex://schema/capabilities":
+        payload = {
+            "stats": store.stats(user_id),
+            "tools": [
+                {"name": str(tool.get("name") or ""), "purpose": str(tool.get("description") or "")[:160]}
+                for tool in TOOLS
+            ],
+        }
+    elif target == "cortex://review/daily":
+        payload = store.daily_review(user_id)
+    elif target.startswith("cortex://entity/"):
+        name = unquote(target[len("cortex://entity/"):]).strip()
+        if not name:
+            raise ValueError("entity name is required in the resource URI")
+        payload = {
+            "entity": name,
+            "context": store.person_context(user_id, name),
+            "neighborhood": store.entity_neighborhood(user_id, name),
+        }
+    else:
+        raise ValueError(f"Unknown Cortex resource: {uri}")
+    payload = store.agent_payload(user_id, payload)
+    return {"contents": [{"uri": target, "mimeType": "application/json", "text": json.dumps(payload, ensure_ascii=False)}]}
+
+
+def list_prompts() -> list[dict[str, Any]]:
+    return [dict(prompt) for prompt in CORTEX_PROMPTS]
+
+
+def get_prompt(store: CortexStore, user_id: str, name: str, args: dict[str, Any] | None = None, token_scopes: list[str] | None = None) -> dict[str, Any]:
+    _read_gate(store, user_id, token_scopes)
+    args = args or {}
+
+    def _message(text: str) -> dict[str, Any]:
+        return {"messages": [{"role": "user", "content": {"type": "text", "text": text}}]}
+
+    def _cited(payload: Any) -> str:
+        return json.dumps(store.agent_payload(user_id, payload), ensure_ascii=False, indent=2)
+
+    if name == "summarize_recent_decisions":
+        history = store.decision_history(user_id, "", limit=12, include_superseded=False)
+        return _message(
+            "Summarize the user's recent decisions using ONLY the cited memory below. Keep each "
+            "memory_id/source attached to every claim, and note any superseded or conflicting "
+            "decisions. Do not invent decisions that are not present.\n\n" + _cited(history)
+        )
+    if name == "extract_action_items":
+        topic = _text_arg(args, "topic")
+        tasks = store.open_tasks(user_id, limit=20, sector=None)
+        header = f"Extract the open action items / commitments{f' about {topic}' if topic else ''} from the cited memory below. "
+        return _message(
+            header + "Return a checklist; keep the memory_id/source for each. Only include items "
+            "actually present.\n\n" + _cited(tasks)
+        )
+    if name == "brief_me_on":
+        subject = _text_arg(args, "subject", max_chars=MCP_NAME_MAX_CHARS)
+        if not subject:
+            raise ValueError("the 'subject' argument is required")
+        payload = {
+            "subject": subject,
+            "context": store.person_context(user_id, subject),
+            "neighborhood": store.entity_neighborhood(user_id, subject),
+        }
+        return _message(
+            f"Brief me on {subject} using ONLY the cited memory below — who/what it is, key "
+            "decisions, commitments, and open loops. Keep memory_id/source on every point; if "
+            "coverage is thin, say so.\n\n" + _cited(payload)
+        )
+    raise ValueError(f"Unknown Cortex prompt: {name}")
 
 
 def _bool_arg(args: dict[str, Any], key: str, default: bool = False) -> bool:
