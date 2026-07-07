@@ -2,23 +2,23 @@
   "app": "Cortex",
   "artifacts": [
     {
-      "filename": "Cortex-0.2.0-9.dmg",
+      "filename": "Cortex-0.2.0-10.dmg",
       "kind": "dmg",
-      "sha256": "30e862c17abd3c637b352e1ed991c953bafcde1c40dd161d617453e105921fe9",
-      "size_bytes": 85436156,
-      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-9.dmg"
+      "sha256": "b04941fcd9b21f5fab4f60754698ca731a3e74da2d99fb5f31b59bd38469e79e",
+      "size_bytes": 84194225,
+      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-10.dmg"
     },
     {
-      "filename": "Cortex-0.2.0-9.app.zip",
+      "filename": "Cortex-0.2.0-10.app.zip",
       "kind": "zip",
-      "sha256": "56c07829e8ca37e16bc8f3fc6e0e842bcf18fb42c320f745ead6f2e649087c2c",
-      "size_bytes": 66832619,
-      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-9.app.zip"
+      "sha256": "bad4d7e0e0721a65fd9c8e8e092888abfc1a42172a711a623b4b6066edf38a87",
+      "size_bytes": 66979638,
+      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-10.app.zip"
     },
     {
       "filename": "cortex-memory-0.1.0.zip",
       "kind": "obsidian-plugin",
-      "sha256": "2876b58e9df49e4534b26662c19e188f0093dbdc1bc3ed4ce4675428770edddc",
+      "sha256": "0f004c6b540c5af7db03c2638e318ebb62f75b8aa3f9bf04fe62e6bde6c173ab",
       "size_bytes": 3423,
       "url": "https://trydoppl.com/downloads/cortex-memory-0.1.0.zip"
     }
@@ -26,7 +26,7 @@
   "beta_readiness": {
     "audience": "first-100 local beta",
     "generated_artifact_verification": [
-      "shasum -a 256 -c Cortex-0.2.0-9.checksums.txt",
+      "shasum -a 256 -c Cortex-0.2.0-10.checksums.txt",
       "python3 scripts/validate_update_manifest.py <release-dir>/latest.json",
       "python3 scripts/check_vector_runtime.py --app macos/build/Cortex.app",
       "python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir <release-dir>"
@@ -70,22 +70,22 @@
       "Relaunch, confirm backend health, and run the reliability report."
     ]
   },
-  "build": "9",
+  "build": "10",
   "bundle_id": "com.cortex.doppl",
   "channel": "local-beta",
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "Removed the last user-facing mentions of the old backend name everywhere (Home insight, profile, Review, and the Constellation now say \"your notes\").",
-    "The \"Cortex noticed\" insight is now grounded only in memory you've actually reviewed.",
-    "Fixed the \"Syncing…\" progress bar so it advances live and finishes instead of sitting frozen.",
-    "Menu-bar fixes: the dropdown no longer flickers and is clickable, and the icon stays calm — it only animates while Cortex is actually working."
+    "New: a live \"Learning\" bar at the bottom of the screen shows Cortex building your memory in real time, then celebrates what it learned.",
+    "New: an ambient bottom glow while Cortex is working, and a gentle ripple each time a new memory forms.",
+    "New: an interactive full-screen \"Constellation\" \u2014 open it from Home (Open full view) and click any node to explore it in Ask.",
+    "New: an idle \"N to review\" pill at the bottom of the screen with quick Review / Open buttons."
   ],
-  "released_at": "2026-07-07T01:52:20Z",
+  "released_at": "2026-07-07T03:58:08Z",
   "source_provenance": {
-    "built_at": "2026-07-07T01:52:20Z",
+    "built_at": "2026-07-07T03:58:08Z",
     "git_branch": "mass-scale-app-redesign",
-    "git_commit": "d00f5d593d5da1299ddc4676b57f00a364ce33ce",
+    "git_commit": "c5f2b24625db42c7a717f22ef394328b27d73cc9",
     "git_dirty": false
   },
   "version": "0.2.0"
