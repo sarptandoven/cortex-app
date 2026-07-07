@@ -2956,7 +2956,7 @@ END:VCALENDAR
         tool_names = {tool["name"] for tool in mcp.json()["result"]["tools"]}
         self.assertEqual(
             tool_names,
-            {"get_context", "ask_memory", "search_memory", "get_entity_context", "get_person_map", "list_capabilities"},
+            {"get_context", "ask_memory", "search_memory", "get_entity_context", "get_person_map", "list_capabilities", "use_cortex"},
         )
         self.assertNotIn("connect_source_account", tool_names)
         self.assertNotIn("sync_source_records", tool_names)
@@ -3561,7 +3561,7 @@ END:VCALENDAR
         tool_names = {tool["name"] for tool in tools.json()["result"]["tools"]}
         self.assertEqual(
             tool_names,
-            {"get_context", "ask_memory", "search_memory", "get_entity_context", "get_person_map", "list_capabilities"},
+            {"get_context", "ask_memory", "search_memory", "get_entity_context", "get_person_map", "list_capabilities", "use_cortex"},
         )
         self.assertNotIn("connect_source_account", tool_names)
         self.assertNotIn("sync_source_records", tool_names)
@@ -3602,7 +3602,7 @@ END:VCALENDAR
         write_tool_names = {tool["name"] for tool in write_tools.json()["result"]["tools"]}
         self.assertEqual(
             write_tool_names,
-            {"get_context", "ask_memory", "search_memory", "get_entity_context", "get_person_map", "list_capabilities", "remember_this"},
+            {"get_context", "ask_memory", "search_memory", "get_entity_context", "get_person_map", "list_capabilities", "remember_this", "use_cortex"},
         )
         self.assertNotIn("sync_connected_sources", write_tool_names)
         self.assertNotIn("approve_memory_capture", write_tool_names)

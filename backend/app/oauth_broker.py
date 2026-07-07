@@ -30,8 +30,19 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request as URLLibRequest, urlopen
 from urllib.error import HTTPError, URLError
+
+# The route handlers below annotate `request: "Request"`. Because `from __future__ import
+# annotations` makes every annotation a STRING, FastAPI resolves "Request" against THIS module's
+# globals when it builds the routes — so module-global "Request" MUST be FastAPI's Request, not
+# urllib's (imported above as URLLibRequest for the token exchange). Without this, FastAPI tried to
+# build a Pydantic body field from urllib.request.Request and the entire hosted app failed to
+# import at startup. Guarded so the broker's own fastapi-free logic still imports without fastapi.
+try:  # pragma: no cover - fastapi is a hosted-plane dependency
+    from fastapi import Request
+except ImportError:  # pragma: no cover
+    Request = Any  # type: ignore[assignment,misc]
 
 
 # --- Provider blueprints ----------------------------------------------------
@@ -250,7 +261,7 @@ def _normalize_token_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _http_token_request(token_url: str, form: dict[str, str], headers: dict[str, str]) -> dict[str, Any]:
     data = urlencode(form).encode("utf-8")
     req_headers = {"Content-Type": "application/x-www-form-urlencoded", **headers}
-    request = Request(token_url, data=data, headers=req_headers, method="POST")
+    request = URLLibRequest(token_url, data=data, headers=req_headers, method="POST")
     try:
         with urlopen(request, timeout=30) as response:  # noqa: S310 — provider token endpoints only
             raw = response.read().decode("utf-8")

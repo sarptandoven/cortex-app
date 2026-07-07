@@ -2696,34 +2696,26 @@ def auth_oauth_link(
 
 # ----------------------------------------------------------- admin / user metrics
 
-def require_admin(x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")) -> None:
-    """Gate the admin surface behind CORTEX_ADMIN_API_KEY (constant-time compare). When the key is
-    unset the whole surface 404s so a disabled admin API is never advertised."""
-    configured = os.environ.get("CORTEX_ADMIN_API_KEY", "").strip()
-    if not configured:
-        raise HTTPException(status_code=404, detail="Not Found")
-    provided = (x_admin_key or "").strip()
-    if not provided or not hmac.compare_digest(provided, configured):
-        raise HTTPException(status_code=401, detail="admin authentication required")
-
-
 @app.get("/v1/admin/metrics")
-def admin_metrics_endpoint(_: None = Depends(require_admin)) -> dict[str, Any]:
+def admin_metrics_endpoint(_admin: bool = Depends(admin_auth)) -> dict[str, Any]:
     """Aggregate user metrics: total/active/pending/verified accounts, sign-in provider breakdown,
-    accounts with an active session, and a daily signup series."""
+    accounts with an active session, and a daily signup series. Auth: `Authorization: Bearer
+    <CORTEX_API_KEY>` (the same control-plane admin token as every other /v1/admin operation)."""
     runtime = _auth_runtime_or_404()
     return runtime.control_store.admin_metrics()
 
 
-@app.get("/v1/admin/users")
-def admin_users_endpoint(
-    _: None = Depends(require_admin),
+@app.get("/v1/admin/accounts")
+def admin_accounts_endpoint(
+    _admin: bool = Depends(admin_auth),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     status: str = Query(default="", max_length=40),
     q: str = Query(default="", max_length=200),
 ) -> dict[str, Any]:
-    """Paginated account listing (newest first), each row with its linked sign-in providers."""
+    """Paginated listing of AUTH accounts (email / name / status / linked sign-in providers /
+    signup date), newest first, searchable by email or name. This is the sign-up/identity view —
+    distinct from the memory-tier provisioning list at GET /v1/admin/users."""
     runtime = _auth_runtime_or_404()
     return runtime.control_store.list_accounts(
         limit=limit, offset=offset, status=status or None, query=q or None
@@ -2767,7 +2759,7 @@ _ADMIN_DASHBOARD_HTML = """<!doctype html>
 <div id="gate" class="gate">
   <h2 style="margin-top:0">Doppl Admin</h2>
   <p style="color:var(--muted)">Enter your admin key to view users and metrics.</p>
-  <input id="key" type="password" placeholder="Admin key" autocomplete="off"/>
+  <input id="key" type="password" placeholder="Operator API key (CORTEX_API_KEY)" autocomplete="off"/>
   <div style="margin-top:12px"><button onclick="enter()">Sign in</button></div>
   <div id="gateErr" class="err"></div>
 </div>
@@ -2790,8 +2782,8 @@ _ADMIN_DASHBOARD_HTML = """<!doctype html>
 const K="doppl_admin_key";
 function key(){return sessionStorage.getItem(K)||""}
 async function api(path){
-  const r=await fetch(path,{headers:{"X-Admin-Key":key()}});
-  if(r.status===401){logout();throw new Error("Unauthorized - check your admin key")}
+  const r=await fetch(path,{headers:{"Authorization":"Bearer "+key()}});
+  if(r.status===401||r.status===403){logout();throw new Error("Unauthorized - check your operator API key")}
   if(!r.ok)throw new Error("HTTP "+r.status);
   return r.json();
 }
@@ -2818,7 +2810,7 @@ function renderMetrics(m){
 async function loadUsers(){
   try{
     const q=encodeURIComponent(document.getElementById("q").value.trim());
-    const u=await api("/v1/admin/users?limit=100&q="+q);
+    const u=await api("/v1/admin/accounts?limit=100&q="+q);
     document.getElementById("rows").innerHTML=(u.accounts||[]).map(a=>
       '<tr><td>'+esc(a.primary_email||"-")+'</td><td>'+esc(a.display_name||"-")+'</td>'+
       '<td class="status-'+esc(a.status)+'">'+esc(a.status)+'</td>'+
