@@ -245,7 +245,10 @@ final class MenuBarAnimator {
         let frames = (currentVisual == .captured) ? capturedFrames : learnedFrames
         guard !frames.isEmpty else { return }
         flourishFrame &+= 1
-        button.image = frames[flourishFrame % frames.count]
+        // Play the pop envelope ONCE, then hold the settled last frame. A modulo loop would replay
+        // the 8-frame pop ~3.75× across the 30 flourish frames, so the glyph would strobe/re-pop
+        // instead of popping and resting.
+        button.image = frames[min(flourishFrame, frames.count - 1)]
         // Gentle fade over the last third of the flourish.
         let tailStart = flourishFrames / 3
         if flourishFramesRemaining < tailStart, tailStart > 0 {
@@ -357,8 +360,12 @@ final class MenuBarAnimator {
         let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .semibold)
         let symbol = base.withSymbolConfiguration(config) ?? base
         let natural = symbol.size
-        // Canvas holds the largest frame with headroom so nothing clips at any scale.
-        let side = ceil(max(natural.width, natural.height) * canvasScale * 1.2)
+        // Match bakeSymbol's 1.5 canvas factor so the SETTLED (scale 1.0) tinted glyph has the same
+        // on-screen footprint as the idle/template glyphs — otherwise the menu-bar icon visibly jumps
+        // ~10% larger when a sparkle plays and shrinks back when it ends. 1.5 still comfortably holds
+        // the pop's peak (canvasScale ≈ 1.14) without clipping.
+        _ = canvasScale
+        let side = ceil(max(natural.width, natural.height) * 1.5)
         let canvas = NSSize(width: side, height: side)
         let drawSize = NSSize(width: natural.width * scale, height: natural.height * scale)
         let image = NSImage(size: canvas, flipped: false) { rect in

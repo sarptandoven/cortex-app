@@ -906,10 +906,10 @@ struct OnboardingConnectionCard: View {
                     Text(status)
                         .font(.caption)
                         .fontWeight(.semibold)
-                        .foregroundColor(.accentColor)
+                        .foregroundColor(CortexDesign.accent)
                         .padding(.horizontal, 9)
                         .padding(.vertical, 5)
-                        .background(Color.accentColor.opacity(0.10))
+                        .background(CortexDesign.accent.opacity(0.10))
                         .clipShape(Capsule())
                 }
             }

@@ -249,7 +249,10 @@ final class BottomLearningHUD {
         dismissWork?.cancel()
         mode = .celebration
         let noun = learnedCount == 1 ? "memory" : "memories"
-        model.apply(title: "Learned \(learnedCount) new \(noun)", subtitle: "Added to your memory",
+        // No side-by-side subtitle here: it shares the title's fixed-width row and would truncate
+        // the headline for large counts ("Learned 1284 new me…"). The check-seal icon already says
+        // "added to memory".
+        model.apply(title: "Learned \(learnedCount) new \(noun)", subtitle: "",
                     fraction: 1, showBar: false, indeterminate: false, celebration: true)
         present(panel)
         scheduleDismiss(after: 2.6)
@@ -390,8 +393,13 @@ private struct LearningHUDView: View {
             }
             .frame(width: 300, alignment: .leading)
         }
-        .padding(.leading, CortexDesign.Space.sm)
-        .padding(.trailing, CortexDesign.Space.md)
+        // The pill is a Capsule, so its rounded ends occupy ~half its height (~26pt) on each side.
+        // Inset the content past that radius — otherwise the full-width progress track and the
+        // right-aligned subtitle spill into the curved ends (the track appears to run past the
+        // pill). Leading clears the icon off the left curve; trailing (≥ the corner radius) keeps
+        // the track/subtitle inside the flat middle.
+        .padding(.leading, CortexDesign.Space.md)
+        .padding(.trailing, CortexDesign.Space.xl)
         .padding(.vertical, 10)
         .background(
             Capsule(style: .continuous)
@@ -431,7 +439,9 @@ private struct HUDProgressBar: View {
                         .frame(width: segW)
                         .offset(x: -segW + sweep * (w + segW))    // enter left, exit right
                 } else {
-                    let fillW = max(3, w * fraction)
+                    // Clamp defensively: GeometryReader does not clip, so a fraction > 1 (stale
+                    // done/total) would let the fill escape the track. The model clamps too.
+                    let fillW = min(w, max(3, w * min(1, max(0, fraction))))
                     Capsule()
                         .fill(accent)
                         .frame(width: fillW)
@@ -555,9 +565,13 @@ private struct EdgeGlowView: View {
                     breathe = true
                 }
             } else {
-                withAnimation(.easeInOut(duration: 0.4)) {
-                    breathe = false
-                }
+                // Deterministically terminate the repeatForever. A finite animation does not
+                // dependably replace a repeating one on the AppKit hosting path (see
+                // HUDProgressBar.hardStop); snap with animations disabled instead. The glow's own
+                // panel-alpha fade-out masks the instant opacity change when work stops.
+                var t = Transaction()
+                t.disablesAnimations = true
+                withTransaction(t) { breathe = false }
             }
         }
     }
@@ -615,7 +629,9 @@ final class MemoryFormedRipple {
         guard let screen = liveActivityActiveScreen() else { return }
         // Centered horizontally, sitting low so the ring blooms from behind/around the HUD anchor.
         let x = screen.frame.midX - Self.side / 2
-        let y = screen.visibleFrame.minY - Self.side * 0.35
+        // Clamp so the panel never drops below the screen — otherwise the ring's lower third is
+        // hidden behind the Dock (or off the physical bottom when the Dock is hidden).
+        let y = max(screen.frame.minY, screen.visibleFrame.minY - Self.side * 0.35)
         panel.setFrame(NSRect(x: x, y: y, width: Self.side, height: Self.side), display: false)
     }
 }
@@ -636,7 +652,9 @@ private struct RippleView: View {
                 let p = max(0, min(1, model.progress - delay))
                 Circle()
                     .stroke(model.tint.opacity((1 - p) * 0.5), lineWidth: 2)
-                    .scaleEffect(0.2 + p * 0.9)
+                    // Peak scale 0.9 (< 1.0) keeps the fully-expanded ring inside the panel; at 1.1
+                    // the outermost, most-visible frames were clipped by the hosting view bounds.
+                    .scaleEffect(0.2 + p * 0.7)
                     .opacity(model.animating ? 1 : 0)
             }
         }

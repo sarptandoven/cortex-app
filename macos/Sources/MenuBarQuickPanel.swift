@@ -303,8 +303,10 @@ struct MenuBarQuickPanel: View {
                     Text("Jot a thought to remember…")
                         .font(.system(size: 14))
                         .foregroundColor(.secondary.opacity(0.7))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
+                        // Match the TextField's insets exactly (11/9) so the placeholder sits on the
+                        // same baseline/column as typed text — otherwise it jumps 1pt when typing starts.
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 9)
                         .allowsHitTesting(false)
                 }
                 TextField("", text: $draft, axis: .vertical)

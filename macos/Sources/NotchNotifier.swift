@@ -234,8 +234,10 @@ private struct NotchPillView: View {
             }
             .fixedSize(horizontal: true, vertical: false)
         }
-        .padding(.leading, CortexDesign.Space.sm)
-        .padding(.trailing, CortexDesign.Space.md)
+        // Inset content past the Capsule's end radius (~23pt for this ~46pt-tall pill) so the icon
+        // and title never spill into the rounded ends (same class of fix as the bottom Learning HUD).
+        .padding(.leading, CortexDesign.Space.md)
+        .padding(.trailing, CortexDesign.Space.lg)
         .padding(.vertical, 8)
         .background(
             Capsule(style: .continuous)
