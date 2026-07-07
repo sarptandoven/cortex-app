@@ -1709,6 +1709,9 @@ struct RepairAction: Codable, Identifiable, Hashable {
 
 extension Notification.Name {
     static let cortexOnboardingCompleted = Notification.Name("CortexOnboardingCompleted")
+    /// Posted from SwiftUI (Home "Open full view" button) to ask the AppDelegate to summon the
+    /// full-screen Constellation overlay (P2), which lives at the AppKit layer.
+    static let cortexPresentConstellation = Notification.Name("CortexPresentConstellation")
 }
 
 enum IntegrationCategory: String, CaseIterable, Hashable {
@@ -3087,6 +3090,10 @@ final class AppState: ObservableObject {
     // signal can't be missed by the animator's sampling loop the way an edge-triggered event could.
     @Published private(set) var lastLearnedAt: Date?
     @Published private(set) var lastCapturedAt: Date?
+    /// How many memories the most recent `announceLearned` reported. Drives the bottom Learning
+    /// HUD's completion line ("Learned N new memories") — approximate (last event, not a sum), which
+    /// is fine for a flourish.
+    @Published private(set) var lastLearnedCount: Int = 0
 
     private static func loadQuickCaptureKeybind() -> KeyCombo? {
         guard let data = UserDefaults.standard.data(forKey: quickCaptureKeybindDefaultsKey) else { return nil }
@@ -3844,6 +3851,11 @@ final class AppState: ObservableObject {
 
     /// Mark the start of user-visible work (sync/import/backup/launch) for the menu-bar icon.
     func beginMenuBarWork() {
+        // Reset the learned-count at the START of the OUTERMOST work unit (0→1). Otherwise a sync
+        // that learns nothing never calls announceLearned, the stale count from a prior productive
+        // sync lingers, and the bottom HUD would falsely celebrate "Learned N new memories" on the
+        // next completion. Nested work units (count>0) must not reset a count set by an inner unit.
+        if menuBarWorkCount == 0 { lastLearnedCount = 0 }
         menuBarWorkCount += 1
     }
 
@@ -3863,6 +3875,7 @@ final class AppState: ObservableObject {
     /// No-op for count <= 0 so a sync that added nothing stays quiet.
     func announceLearned(count: Int) {
         guard count > 0 else { return }
+        lastLearnedCount = count
         lastLearnedAt = Date()
         let subtitle = "\(count) new " + (count == 1 ? "memory" : "memories")
         NotchNotifier.shared.show(title: "Learned something new", subtitle: subtitle, style: .learned)
@@ -4031,7 +4044,10 @@ final class AppState: ObservableObject {
         syncProgressPollTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 await self?.loadJobProgress()
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                // Poll fast (~1.2s) while a sync is active so the bottom Learning HUD's bar advances
+                // live; fall back to a calm 4s cadence when idle to keep energy near zero.
+                let active = self?.syncProgress?.active == true
+                try? await Task.sleep(nanoseconds: active ? 1_200_000_000 : 4_000_000_000)
             }
         }
     }
@@ -9658,6 +9674,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private let state = AppState()
     private var statusItem: NSStatusItem!
     private var menuBarAnimator: MenuBarAnimator?
+    /// Owns the bottom-of-screen live-activity surfaces (Learning HUD, edge glow, ripple, pill).
+    private var liveActivity: LiveActivityCenter?
+    /// The interactive bottom "N to review" pill (P5), injected into the coordinator.
+    private var liveActivityPill: LiveActivityPill?
     private var quickPanelPopover: NSPopover?
     // When a transient popover auto-dismisses on the mouse-DOWN that lands on the status button, the
     // button's action still fires on mouse-UP; without this we'd immediately re-open it. We record
@@ -9679,6 +9699,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         registerGlobalHotKey()
         setupMainWindow()
         NotificationCenter.default.addObserver(self, selector: #selector(onboardingCompleted), name: .cortexOnboardingCompleted, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(presentConstellationOverlay), name: .cortexPresentConstellation, object: nil)
         showMainWindow()
         DispatchQueue.main.async { [weak self] in
             self?.showMainWindow()
@@ -9791,6 +9812,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
         menuBarAnimator = animator
         animator.start()
+
+        // Bottom-of-screen live activity: a Learning HUD + ambient glow + "memory formed" ripple
+        // while Cortex works, and an idle "N to review" pill. One coordinator owns the bottom region
+        // so these never collide. It samples the same state the menu-bar icon does.
+        let pill = LiveActivityPill(actions: LiveActivityPill.Actions(
+            openReview: { [weak self] in
+                guard let self else { return }
+                self.state.selectedTab = .review
+                self.showMainWindow()
+            },
+            openApp: { [weak self] in self?.showMainWindow() }
+        ))
+        let center = LiveActivityCenter { [weak self] in
+            self?.currentLiveActivitySnapshot() ?? LiveActivitySnapshot(
+                working: false, done: 0, total: 0, detail: nil, pendingCount: 0,
+                learnedAt: nil, capturedAt: nil, learnedCount: 0, syncCompletedAt: nil
+            )
+        }
+        center.pill = pill
+        liveActivityPill = pill
+        liveActivity = center
+        center.start()
+    }
+
+    /// Translates the app's live state into the snapshot the bottom live-activity surfaces render.
+    /// Mirrors the menu-bar snapshot's "working"/"pending" derivation so the two stay in lockstep,
+    /// and adds the sync progress counts + display-safe detail label the Learning HUD needs.
+    private func currentLiveActivitySnapshot() -> LiveActivitySnapshot {
+        let working = state.menuBarWorkCount > 0
+            || state.syncProgress?.active == true
+            || state.isBusy
+        let pending = max(state.review?.stats.pending_captures ?? 0, state.inbox.count)
+        let progress = state.syncProgress
+        return LiveActivitySnapshot(
+            working: working,
+            done: progress?.done ?? 0,
+            total: progress?.total ?? 0,
+            detail: progress?.detail,  // already display-safe (syncDetailLabel → SourceDisplayName)
+            pendingCount: max(0, pending),
+            learnedAt: state.lastLearnedAt,
+            capturedAt: state.lastCapturedAt,
+            learnedCount: state.lastLearnedCount,
+            syncCompletedAt: state.menuBarSyncCompletedAt
+        )
     }
 
     /// Translates the app's live state into the snapshot the menu-bar icon renders.
@@ -9943,6 +10008,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
         addMenuItem(to: menu, title: "Connections…", action: #selector(menuOpenConnections), key: "")
 
+        let constellationItem = addMenuItem(to: menu, title: "Your Constellation", action: #selector(presentConstellationOverlay), key: "")
+        constellationItem.isEnabled = !state.graphNodes.isEmpty
+
         menu.addItem(.separator())
         addMenuItem(to: menu, title: "Quit Cortex", action: #selector(menuQuit), key: "q")
         return menu
@@ -9996,6 +10064,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     @objc private func menuOpenConnections() {
         showMainWindow()
         state.openConnectionsPrivacy()
+    }
+
+    /// Summon the full-screen Constellation overlay (P2). Wired to a Home button (via the
+    /// .cortexPresentConstellation notification) and the right-click menu. The node "Explore in Ask"
+    /// action runs a real Ask for that node and brings the main window forward.
+    @objc private func presentConstellationOverlay() {
+        guard !state.graphNodes.isEmpty else {
+            // Nothing to show yet — take the user to Home so they see the "learning" empty state.
+            showMainWindow()
+            state.selectedTab = .model
+            return
+        }
+        ConstellationOverlay.shared.present(state: state) { [weak self] node in
+            guard let self else { return }
+            self.state.searchQuery = node.label
+            self.state.selectedTab = .ask
+            self.state.runSearch()
+            self.showMainWindow()
+        }
     }
 
     /// App-menu "Settings…" (⌘,). Brings the window forward and requests the Connections & Privacy

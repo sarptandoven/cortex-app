@@ -18,10 +18,22 @@ struct ModelTab: View {
                 }
                 if !state.graphNodes.isEmpty {
                     VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
-                        SectionHeader(
-                            title: "Your Constellation",
-                            detail: "The people, projects, and topics Cortex has learned about — and how they connect."
-                        )
+                        HStack(alignment: .firstTextBaseline) {
+                            SectionHeader(
+                                title: "Your Constellation",
+                                detail: "The people, projects, and topics Cortex has learned about — and how they connect."
+                            )
+                            Spacer(minLength: CortexDesign.Space.md)
+                            Button {
+                                NotificationCenter.default.post(name: .cortexPresentConstellation, object: nil)
+                            } label: {
+                                Label("Open full view", systemImage: "arrow.up.left.and.arrow.down.right")
+                                    .font(CortexDesign.Typography.caption.weight(.semibold))
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(CortexDesign.accent)
+                            .help("Open the Constellation full-screen")
+                        }
                         MemoryMapView(state: state)
                     }
                     .frame(maxWidth: 620, alignment: .leading)

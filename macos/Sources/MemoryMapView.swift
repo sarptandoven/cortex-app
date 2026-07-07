@@ -11,6 +11,15 @@ import AppKit
 struct MemoryMapView: View {
     @ObservedObject var state: AppState
 
+    /// Canvas height. Defaults to the compact Home embed; the full-screen Constellation overlay
+    /// passes a larger value so the same interactive map fills the summoned card.
+    var canvasHeight: CGFloat = 320
+
+    /// Optional "drill into this node" action. When set, the node detail panel shows an
+    /// "Explore in Ask" button. Home leaves it nil (read-only map); the Constellation overlay wires
+    /// it to run an Ask for the node and dismiss.
+    var onExplore: ((GraphNode) -> Void)? = nil
+
     /// The node the user tapped (by id); nil shows no detail panel.
     @State private var selectedNodeID: String?
     /// The node under the cursor, for a quiet hover highlight.
@@ -27,7 +36,7 @@ struct MemoryMapView: View {
             } else {
                 mapCanvas
                 if let node = selectedNode {
-                    NodeDetailPanel(node: node)
+                    NodeDetailPanel(node: node, onExplore: onExplore)
                         .transition(.opacity)
                 }
                 legend
@@ -79,7 +88,7 @@ struct MemoryMapView: View {
                 }
             }
         }
-        .frame(height: 320)
+        .frame(height: canvasHeight)
         .background(CortexDesign.panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
         .overlay(
@@ -205,6 +214,7 @@ struct MemoryMapView: View {
 /// backend's detail text if present.
 private struct NodeDetailPanel: View {
     let node: GraphNode
+    var onExplore: ((GraphNode) -> Void)? = nil
 
     private var typeWord: String {
         switch node.type.lowercased() {
@@ -238,6 +248,16 @@ private struct NodeDetailPanel: View {
                     .foregroundColor(CortexDesign.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if let onExplore {
+                Button {
+                    onExplore(node)
+                } label: {
+                    Label("Explore in Ask", systemImage: "sparkle.magnifyingglass")
+                        .font(CortexDesign.Typography.caption.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .tint(CortexDesign.accent)
             }
         }
         .cortexCard(padding: CortexDesign.Space.md)
