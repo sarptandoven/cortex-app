@@ -2,23 +2,23 @@
   "app": "Cortex",
   "artifacts": [
     {
-      "filename": "Cortex-0.2.0-8.dmg",
+      "filename": "Cortex-0.2.0-9.dmg",
       "kind": "dmg",
-      "sha256": "2cf0bc3501b4b57cc87149a714e15235a59a98da74a835179aaf84817b5b9c6f",
-      "size_bytes": 84143452,
-      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-8.dmg"
+      "sha256": "30e862c17abd3c637b352e1ed991c953bafcde1c40dd161d617453e105921fe9",
+      "size_bytes": 85436156,
+      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-9.dmg"
     },
     {
-      "filename": "Cortex-0.2.0-8.app.zip",
+      "filename": "Cortex-0.2.0-9.app.zip",
       "kind": "zip",
-      "sha256": "c8ffd23fb9dce9f7e67d6c680fec0e1956e4697b9d68207d88dcd5b099a69303",
-      "size_bytes": 66827487,
-      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-8.app.zip"
+      "sha256": "56c07829e8ca37e16bc8f3fc6e0e842bcf18fb42c320f745ead6f2e649087c2c",
+      "size_bytes": 66832619,
+      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-9.app.zip"
     },
     {
       "filename": "cortex-memory-0.1.0.zip",
       "kind": "obsidian-plugin",
-      "sha256": "b42f5b48584de32a4b2f96c6b9fd77cf9939d5fd23f273ab55ec4ff3f1e9e25e",
+      "sha256": "2876b58e9df49e4534b26662c19e188f0093dbdc1bc3ed4ce4675428770edddc",
       "size_bytes": 3423,
       "url": "https://trydoppl.com/downloads/cortex-memory-0.1.0.zip"
     }
@@ -26,7 +26,7 @@
   "beta_readiness": {
     "audience": "first-100 local beta",
     "generated_artifact_verification": [
-      "shasum -a 256 -c Cortex-0.2.0-8.checksums.txt",
+      "shasum -a 256 -c Cortex-0.2.0-9.checksums.txt",
       "python3 scripts/validate_update_manifest.py <release-dir>/latest.json",
       "python3 scripts/check_vector_runtime.py --app macos/build/Cortex.app",
       "python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir <release-dir>"
@@ -70,20 +70,22 @@
       "Relaunch, confirm backend health, and run the reliability report."
     ]
   },
-  "build": "8",
+  "build": "9",
   "bundle_id": "com.cortex.doppl",
   "channel": "local-beta",
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "Fix: \"Open Connections\" on the final onboarding step now opens Connections & Privacy instead of bouncing back to the first onboarding step. (A build-7 window-focus retry was re-opening onboarding during the sheet handoff.)",
-    "Onboarding still appears instantly on first launch, with the one-time welcome notch and the Quick Capture notch preview from build 7."
+    "Removed the last user-facing mentions of the old backend name everywhere (Home insight, profile, Review, and the Constellation now say \"your notes\").",
+    "The \"Cortex noticed\" insight is now grounded only in memory you've actually reviewed.",
+    "Fixed the \"Syncing…\" progress bar so it advances live and finishes instead of sitting frozen.",
+    "Menu-bar fixes: the dropdown no longer flickers and is clickable, and the icon stays calm — it only animates while Cortex is actually working."
   ],
-  "released_at": "2026-07-07T01:16:00Z",
+  "released_at": "2026-07-07T01:52:20Z",
   "source_provenance": {
-    "built_at": "2026-07-07T01:16:00Z",
+    "built_at": "2026-07-07T01:52:20Z",
     "git_branch": "mass-scale-app-redesign",
-    "git_commit": "f3aadf77091598b9a2ad188c90ba914883834abe",
+    "git_commit": "d00f5d593d5da1299ddc4676b57f00a364ce33ce",
     "git_dirty": false
   },
   "version": "0.2.0"
