@@ -5236,6 +5236,48 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Copy universal-API connection details for developers: mints a read-only token and puts the
+    /// base URL, tool-schema endpoint, a runnable curl example, and the MCP endpoint on the
+    /// clipboard so any function-calling app or the Cortex SDK can connect. Phase 9 connection UX.
+    func copyUniversalAPIConnectionInfo() {
+        Task {
+            do {
+                status = "Preparing API connection info..."
+                let data = try await request(path: "/v1/pair", method: "POST", body: ["label": "Universal API client", "surface": "full"])
+                let pairing = try JSONDecoder().decode(BrowserExtensionPairing.self, from: data)
+                let base = pairing.base_url
+                let info = """
+                Cortex universal API — connect any app to your memory (read-only):
+
+                Base URL: \(base)
+                Token:    \(pairing.token)
+
+                Tool schemas (OpenAI / Anthropic / OpenAPI):
+                  GET \(base)/v1/tools/schema?format=openai
+
+                Call a tool:
+                  curl -s \(base)/v1/tools/call \\
+                    -H "Authorization: Bearer \(pairing.token)" \\
+                    -H "Content-Type: application/json" \\
+                    -d '{"name":"ask_memory","arguments":{"query":"what did I decide about X?"}}'
+
+                MCP endpoint: \(base)/mcp
+                Python SDK:   CortexClient(base_url="\(base)", token="…")
+                """
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(info, forType: .string)
+                let alert = NSAlert()
+                alert.messageText = "API connection info copied"
+                alert.informativeText = "A read-only token plus connection details (base URL, tool-schema endpoint, a curl example, and the MCP endpoint) were copied to your clipboard. Paste them into your app, the Cortex SDK, or an MCP client."
+                alert.addButton(withTitle: "Done")
+                alert.runModal()
+                status = "API connection info copied to clipboard."
+            } catch {
+                status = CortexRecoveryText.failureStatus("API connection info", error: error)
+            }
+        }
+    }
+
     func cancelGitHubDeviceFlow() {
         // Clearing the prompt changes the tracked id, which the poll loop checks each tick to exit.
         if let connectorID = githubDeviceFlow?.connectorID {
@@ -10358,8 +10400,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         liveItem.state = state.liveActivityEnabled ? .on : .off
 
         menu.addItem(.separator())
+        // "Use Cortex from other apps": connection actions for the outbound surface.
         let pairItem = addMenuItem(to: menu, title: "Connect browser extension…", action: #selector(menuPairBrowserExtension), key: "")
         pairItem.isEnabled = !state.browserExtensionPairingInFlight
+        addMenuItem(to: menu, title: "Copy API connection info…", action: #selector(menuCopyAPIConnectionInfo), key: "")
 
         menu.addItem(.separator())
         addMenuItem(to: menu, title: "Quit Cortex", action: #selector(menuQuit), key: "q")
@@ -10368,6 +10412,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     @objc private func menuPairBrowserExtension() {
         state.pairBrowserExtension()
+    }
+
+    @objc private func menuCopyAPIConnectionInfo() {
+        state.copyUniversalAPIConnectionInfo()
     }
 
     @discardableResult
