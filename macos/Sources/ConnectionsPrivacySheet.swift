@@ -1072,8 +1072,10 @@ private struct ConnectionsDirectSourceRow: View {
             Spacer(minLength: 12)
 
             if hasManagedOAuth && !managedOAuthConfigured {
-                // Unconfigured connector: show a status badge, not a dead button.
-                Label("Setup required", systemImage: "key.slash")
+                // Sign-in for this service isn't enabled in this build yet (Cortex hasn't shipped the
+                // OAuth client for it). This is a Cortex rollout gap, NOT something the user can fix —
+                // so say "Coming soon," never "Setup required" (which wrongly implies user action).
+                Label("Coming soon", systemImage: "clock")
                     .font(.callout)
                     .fontWeight(.medium)
                     .foregroundColor(CortexDesign.inkSecondary)
@@ -1081,8 +1083,8 @@ private struct ConnectionsDirectSourceRow: View {
                     .padding(.horizontal, 12)
                     .background(CortexDesign.quietBackground)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .help(state.managedOAuthConfigurationMessage(connector) ?? "\(connector.name) sign-in is not configured for this build yet.")
-                    .accessibilityLabel("\(connector.name): setup required, not available in this build")
+                    .help("One-tap sign-in for \(connector.name) is coming soon.")
+                    .accessibilityLabel("\(connector.name): one-tap sign-in coming soon")
             } else {
                 Button {
                     runAction()
@@ -1169,7 +1171,7 @@ private struct ConnectionsDirectSourceRow: View {
         if let readiness { return readiness.syncPlanModeTitle }
         if connected { return "Connected" }
         if hasStoredConfig { return "Configured" }
-        if hasManagedOAuth && !managedOAuthConfigured { return "Not configured" }
+        if hasManagedOAuth && !managedOAuthConfigured { return "Coming soon" }
         if let setupModeTitle { return setupModeTitle }
         return "Ready"
     }
@@ -1292,7 +1294,7 @@ private struct ConnectionsDirectSourceRow: View {
         if connected || hasStoredConfig {
             return connector.id == "calendar" ? "Sync" : "Sync again"
         }
-        if hasManagedOAuth && !managedOAuthConfigured { return "Not configured" }
+        if hasManagedOAuth && !managedOAuthConfigured { return "Coming soon" }
         if hasManagedOAuth { return "Sign in" }
         switch connector.id {
         case "calendar": return "Connect"
