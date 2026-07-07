@@ -199,6 +199,33 @@ LAYER_DECAY_PARAMS: dict[str, tuple[float, float]] = {
     "negative": (0.003, 1460.0),
 }
 _DEFAULT_LAYER_DECAY = (0.004, 90.0)
+
+# Reranker feature weights (Phase 3 default; Phase 8 makes them learnable offline). Loaded once
+# from CORTEX_RERANK_WEIGHTS_PATH (a JSON {"sem","rank","ent"}) if set — scripts/learn_rerank_weights.py
+# emits that file and only ships weights that beat this baseline on the eval — else the tuned
+# defaults. Kept out of the request path except for this one cached read.
+_DEFAULT_RERANK_WEIGHTS: dict[str, float] = {"sem": 0.6, "rank": 0.25, "ent": 0.15}
+_RERANK_WEIGHTS_CACHE: dict[str, float] | None = None
+
+
+def _configured_rerank_weights() -> dict[str, float]:
+    global _RERANK_WEIGHTS_CACHE
+    if _RERANK_WEIGHTS_CACHE is not None:
+        return _RERANK_WEIGHTS_CACHE
+    weights = dict(_DEFAULT_RERANK_WEIGHTS)
+    path = os.environ.get("CORTEX_RERANK_WEIGHTS_PATH", "").strip()
+    if path:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                loaded = json.load(handle)
+            for key in ("sem", "rank", "ent"):
+                value = loaded.get(key)
+                if isinstance(value, (int, float)):
+                    weights[key] = float(value)
+        except Exception:
+            pass  # malformed/absent weights file -> keep the tuned defaults
+    _RERANK_WEIGHTS_CACHE = weights
+    return weights
 IMPORTANCE_RETRIEVAL_BOOST_STEP = 0.0008
 IMPORTANCE_RETRIEVAL_BOOST_MAX = 0.0024
 # Confidence tie-breaker for retrieval ranking. Most memories are "confirmed" (the extractor
@@ -18455,9 +18482,10 @@ class CortexStore:
         if not query_norm:
             return rows
 
-        w_sem = 0.6
-        w_rank = 0.25
-        w_ent = 0.15
+        weights = _configured_rerank_weights()
+        w_sem = weights["sem"]
+        w_rank = weights["rank"]
+        w_ent = weights["ent"]
         mmr_lambda = 0.3  # diversity weight; relevance weight = 1 - mmr_lambda = 0.7
 
         # Entity-aware ranking (Phase 6): boost candidates that mention the query's entities. Cheap
