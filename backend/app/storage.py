@@ -9832,6 +9832,55 @@ class CortexStore:
                     item.setdefault("importance", signal[str(item["id"])]["importance"])
                     item.setdefault("confidence", signal[str(item["id"])]["confidence"])
 
+    def _feedback_features(self, query_vector: list[float] | None, query_norm: float, plan_entities: set[str], item: dict[str, Any], index: int) -> dict[str, float]:
+        """The same {sem,rank,ent} features the reranker scores, computed for a retrieved item —
+        so learn_rerank_weights.py can fit weights from real usage. sem is 0 under the hash embedder."""
+        cosine = 0.0
+        if query_vector is not None and query_norm:
+            text = embedding_source_text(item.get("content"), item.get("summary"))
+            if text:
+                try:
+                    vector = embed_text(text)
+                    norm = math.sqrt(sum(v * v for v in vector))
+                    if norm:
+                        cosine = sum(a * b for a, b in zip(query_vector, vector)) / (query_norm * norm)
+                except Exception:
+                    cosine = 0.0
+        haystack = " ".join(str(item.get(f) or "") for f in ("content", "summary", "topics")).lower()
+        overlap = (sum(1 for e in plan_entities if e in haystack) / len(plan_entities)) if plan_entities else 0.0
+        return {"sem": round(max(0.0, cosine), 4), "rank": round(1.0 / (1.0 + index), 4), "ent": round(overlap, 4)}
+
+    def _log_retrieval_feedback(self, user_id: str, query: str, cited_results: list[dict[str, Any]], skipped_results: list[dict[str, Any]]) -> None:
+        """Log retrieval_feedback events (cited=used vs retrieved-but-not-cited=skipped) so the
+        offline learner has real ranking pairs. Flag-gated (CORTEX_RETRIEVAL_FEEDBACK, default on),
+        bounded, and content-free (feature vectors + memory ids only). Best-effort — never raises
+        into the answer path."""
+        if os.environ.get("CORTEX_RETRIEVAL_FEEDBACK", "1").strip().lower() in {"0", "false", "off", "no"}:
+            return
+        if not cited_results or not skipped_results:
+            return
+        try:
+            provider = str(embedding_status().get("provider") or "hash")
+            query_vector: list[float] | None = None
+            query_norm = 0.0
+            if provider != "hash":
+                query_vector = embed_text(query)
+                query_norm = math.sqrt(sum(v * v for v in query_vector))
+            plan_entities = {e.lower() for e in build_query_plan(query).entities}
+            skipped_features = [
+                self._feedback_features(query_vector, query_norm, plan_entities, item, len(cited_results) + index)
+                for index, item in enumerate(skipped_results[:5])
+            ]
+            with connect(self.db_path) as conn:
+                for index, item in enumerate(cited_results[:3]):
+                    used = self._feedback_features(query_vector, query_norm, plan_entities, item, index)
+                    self._event(
+                        conn, user_id, str(item.get("id") or "retrieval"), "retrieval", "retrieval_feedback",
+                        {"used_features": used, "skipped_features": skipped_features, "provider": provider},
+                    )
+        except Exception:
+            pass  # feedback logging must never break retrieval
+
     def answer_query(
         self,
         user_id: str,
@@ -9983,6 +10032,9 @@ class CortexStore:
             )
         conflicts = self._answer_conflicts(query, cited_results, citations)
         evidence = self._answer_evidence_quality(query, cited_results)
+        # Feedback signal for the offline reranker learner: cited (relevant) vs retrieved-but-not-cited.
+        _cited_ids = {str(item.get("id")) for item in cited_results}
+        self._log_retrieval_feedback(user_id, query, cited_results, [item for item in candidates if str(item.get("id")) not in _cited_ids])
         if citations:
             lines = [f"Cortex found {len(citations)} cited item{'s' if len(citations) != 1 else ''} for this question:"]
             for citation in citations[:5]:
