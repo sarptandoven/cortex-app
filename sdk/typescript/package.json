@@ -30,6 +30,10 @@
     "context"
   ],
   "license": "MIT",
+  "homepage": "https://trydoppl.com",
+  "repository": { "type": "git", "url": "https://github.com/doppl-tech/cortex-app.git", "directory": "sdk/typescript" },
+  "bugs": { "url": "https://github.com/doppl-tech/cortex-app/issues" },
+  "publishConfig": { "access": "public" },
   "engines": {
     "node": ">=18"
   },
