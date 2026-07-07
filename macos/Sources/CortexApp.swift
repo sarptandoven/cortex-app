@@ -1652,6 +1652,20 @@ struct IntegrationTokenRegistrationResponse: Codable {
     let updated_at: String
 }
 
+/// Result of pairing a browser extension (or any local client) via POST /v1/pair — a fresh,
+/// read-only token plus the loopback endpoints the client uses. The token is shown once so the
+/// user can paste it into the extension's options.
+struct BrowserExtensionPairing: Codable, Equatable {
+    let token: String
+    let base_url: String
+    let mcp_endpoint: String
+    let tools_schema_endpoint: String?
+    let tools_call_endpoint: String?
+    let context_endpoint: String?
+    let surface: String?
+    let scopes: [String]
+}
+
 struct IntegrationTokenItem: Codable, Identifiable {
     var id: String { token_id }
     let token_id: String
@@ -3130,6 +3144,9 @@ final class AppState: ObservableObject {
     // Drives the "Sign in with GitHub" device-code sheet. Non-nil while a device flow is live; the
     // sheet reads it, and cancelling (or completing) clears it, which also stops the poll loop.
     @Published var githubDeviceFlow: GitHubDeviceFlowPrompt?
+    // Last browser-extension pairing (read-only token + connection info) to display for copy.
+    @Published var browserExtensionPairing: BrowserExtensionPairing?
+    @Published var browserExtensionPairingInFlight: Bool = false
 
     // MARK: Settings surface + quick capture + "learned" signals
     //
@@ -5184,6 +5201,26 @@ final class AppState: ObservableObject {
             return
         }
         Task { await runGitHubDeviceFlow(connector, setup: setup) }
+    }
+
+    /// Pair a browser extension: mint a fresh read-only token via /v1/pair and surface the
+    /// connection info for the user to paste into the extension. Read-only by default; the user
+    /// can widen scope later. Phase 9 of the outbound plan.
+    func pairBrowserExtension(label: String = "Browser extension") {
+        guard !browserExtensionPairingInFlight else { return }
+        Task {
+            browserExtensionPairingInFlight = true
+            defer { browserExtensionPairingInFlight = false }
+            do {
+                status = "Pairing browser extension..."
+                let data = try await request(path: "/v1/pair", method: "POST", body: ["label": label, "surface": "chat"])
+                let pairing = try JSONDecoder().decode(BrowserExtensionPairing.self, from: data)
+                browserExtensionPairing = pairing
+                status = "Browser extension paired — paste the token into the extension's options."
+            } catch {
+                status = CortexRecoveryText.failureStatus("Browser extension pairing", error: error)
+            }
+        }
     }
 
     func cancelGitHubDeviceFlow() {
