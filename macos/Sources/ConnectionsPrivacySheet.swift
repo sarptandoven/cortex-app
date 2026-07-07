@@ -1054,6 +1054,7 @@ private struct ConnectionsDirectSourceRow: View {
                     Text(connector.name)
                         .font(.headline)
                         .foregroundColor(CortexDesign.ink)
+                        .lineLimit(1)   // truncate a long name rather than pushing the trailing action buttons
                     // Quiet catalog stamp instead of a colored capsule: state is words and ink.
                     Text(statusTitle.uppercased())
                         .font(CortexDesign.Typography.stamp)
