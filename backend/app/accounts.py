@@ -418,6 +418,97 @@ class SQLiteControlStore(ControlStore):
     def get_account_by_user_id(self, user_id: str) -> dict[str, Any] | None:
         return self._one("SELECT * FROM accounts WHERE user_id = ?", (user_id,))
 
+    # -------------------------------------------------------------- admin / metrics
+
+    def count_accounts(self, *, status: Optional[str] = None) -> int:
+        if status is not None:
+            row = self._one("SELECT COUNT(*) AS n FROM accounts WHERE status = ?", (status,))
+        else:
+            row = self._one("SELECT COUNT(*) AS n FROM accounts", ())
+        return int((row or {}).get("n", 0))
+
+    def admin_metrics(self) -> dict[str, Any]:
+        """Aggregate account metrics for the admin dashboard: totals, status + provider
+        breakdowns, verified count, active sessions, and a daily signup series."""
+        total = self.count_accounts()
+        by_status = {
+            row["status"]: int(row["n"])
+            for row in self._all("SELECT status, COUNT(*) AS n FROM accounts GROUP BY status", ())
+        }
+        by_provider = {
+            row["provider"]: int(row["n"])
+            for row in self._all(
+                "SELECT provider, COUNT(DISTINCT account_id) AS n "
+                "FROM account_identities GROUP BY provider",
+                (),
+            )
+        }
+        verified = int(
+            (self._one("SELECT COUNT(*) AS n FROM accounts WHERE email_verified_at IS NOT NULL", ()) or {}).get("n", 0)
+        )
+        # created_at is ISO-8601; substr(1,10) is the calendar day. Newest 30 days, ascending.
+        signups_by_day = [
+            {"day": row["day"], "count": int(row["n"])}
+            for row in self._all(
+                "SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n "
+                "FROM accounts GROUP BY day ORDER BY day DESC LIMIT 30",
+                (),
+            )
+        ]
+        accounts_with_session = int(
+            (self._one("SELECT COUNT(DISTINCT account_id) AS n FROM auth_sessions WHERE revoked_at IS NULL", ()) or {}).get("n", 0)
+        )
+        return {
+            "total_accounts": total,
+            "active": by_status.get("active", 0),
+            "pending": by_status.get("pending_verification", 0),
+            "suspended": by_status.get("suspended", 0),
+            "email_verified": verified,
+            "accounts_with_active_session": accounts_with_session,
+            "by_status": by_status,
+            "by_provider": by_provider,
+            "signups_by_day": list(reversed(signups_by_day)),
+        }
+
+    def list_accounts(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        status: Optional[str] = None,
+        query: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Paginated account listing for the admin dashboard (newest first). `query` matches
+        email or display name; each row carries its linked sign-in providers."""
+        limit = max(1, min(int(limit), 500))
+        offset = max(0, int(offset))
+        where: list[str] = []
+        params: list[Any] = []
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        if query:
+            where.append("(primary_email LIKE ? OR display_name LIKE ?)")
+            like = f"%{query}%"
+            params.extend([like, like])
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        total = int(
+            (self._one(f"SELECT COUNT(*) AS n FROM accounts{clause}", tuple(params)) or {}).get("n", 0)
+        )
+        rows = self._all(
+            "SELECT account_id, user_id, primary_email, display_name, status, "
+            "email_verified_at, created_at, updated_at "
+            f"FROM accounts{clause} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            tuple(params) + (limit, offset),
+        )
+        for row in rows:
+            idents = self._all(
+                "SELECT provider FROM account_identities WHERE account_id = ? ORDER BY provider",
+                (row["account_id"],),
+            )
+            row["providers"] = [item["provider"] for item in idents]
+        return {"total": total, "limit": limit, "offset": offset, "accounts": rows}
+
     _ACCOUNT_MUTABLE_FIELDS = ("status", "primary_email", "email_verified_at", "display_name")
 
     def update_account_fields(

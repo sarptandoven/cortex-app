@@ -2694,6 +2694,145 @@ def auth_oauth_link(
     }
 
 
+# ----------------------------------------------------------- admin / user metrics
+
+def require_admin(x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")) -> None:
+    """Gate the admin surface behind CORTEX_ADMIN_API_KEY (constant-time compare). When the key is
+    unset the whole surface 404s so a disabled admin API is never advertised."""
+    configured = os.environ.get("CORTEX_ADMIN_API_KEY", "").strip()
+    if not configured:
+        raise HTTPException(status_code=404, detail="Not Found")
+    provided = (x_admin_key or "").strip()
+    if not provided or not hmac.compare_digest(provided, configured):
+        raise HTTPException(status_code=401, detail="admin authentication required")
+
+
+@app.get("/v1/admin/metrics")
+def admin_metrics_endpoint(_: None = Depends(require_admin)) -> dict[str, Any]:
+    """Aggregate user metrics: total/active/pending/verified accounts, sign-in provider breakdown,
+    accounts with an active session, and a daily signup series."""
+    runtime = _auth_runtime_or_404()
+    return runtime.control_store.admin_metrics()
+
+
+@app.get("/v1/admin/users")
+def admin_users_endpoint(
+    _: None = Depends(require_admin),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    status: str = Query(default="", max_length=40),
+    q: str = Query(default="", max_length=200),
+) -> dict[str, Any]:
+    """Paginated account listing (newest first), each row with its linked sign-in providers."""
+    runtime = _auth_runtime_or_404()
+    return runtime.control_store.list_accounts(
+        limit=limit, offset=offset, status=status or None, query=q or None
+    )
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_dashboard() -> HTMLResponse:
+    """Self-contained admin dashboard. It prompts for the admin key (kept only in this browser's
+    sessionStorage) and calls the authed /v1/admin/* JSON endpoints — no key is embedded here."""
+    return HTMLResponse(content=_ADMIN_DASHBOARD_HTML)
+
+
+_ADMIN_DASHBOARD_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Doppl - Admin</title>
+<style>
+  :root{--ink:#2b2622;--muted:#8a817a;--line:#e7e1da;--accent:#7c3b2e;--bg:#f6f3ee;--card:#fff;--moss:#5f6f52}
+  *{box-sizing:border-box} body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink)}
+  header{padding:18px 28px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;background:var(--card)}
+  header h1{font-size:18px;margin:0}
+  main{padding:24px 28px;max-width:1100px;margin:0 auto}
+  .gate{max-width:380px;margin:12vh auto;background:var(--card);padding:28px;border:1px solid var(--line);border-radius:14px}
+  input,button{font:inherit} input{padding:9px 11px;border:1px solid var(--line);border-radius:8px;width:100%}
+  button{padding:9px 14px;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:8px;cursor:pointer}
+  button.ghost{background:transparent;color:var(--accent)}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin:8px 0 22px}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .kpi .n{font-size:28px;font-weight:700} .kpi .l{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.4px}
+  .row{display:flex;gap:24px;flex-wrap:wrap;margin-bottom:22px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;flex:1;min-width:280px}
+  .card h3{margin:0 0 12px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+  .bars{display:flex;align-items:flex-end;gap:4px;height:120px}
+  .bars .b{flex:1;background:var(--moss);border-radius:3px 3px 0 0;min-height:2px}
+  table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);font-size:13px} th{color:var(--muted);font-weight:600}
+  .pill{display:inline-block;padding:1px 8px;border-radius:20px;background:#efe9e2;font-size:11px;margin-right:4px}
+  .status-active{color:var(--moss)} .status-pending_verification{color:#b8860b} .toolbar{display:flex;gap:10px;align-items:center}
+  .err{color:#b23b2e;margin-top:10px}
+</style></head><body>
+<div id="gate" class="gate">
+  <h2 style="margin-top:0">Doppl Admin</h2>
+  <p style="color:var(--muted)">Enter your admin key to view users and metrics.</p>
+  <input id="key" type="password" placeholder="Admin key" autocomplete="off"/>
+  <div style="margin-top:12px"><button onclick="enter()">Sign in</button></div>
+  <div id="gateErr" class="err"></div>
+</div>
+<div id="app" style="display:none">
+  <header><h1>Doppl - Admin</h1><div style="flex:1"></div>
+    <div class="toolbar"><input id="q" placeholder="Search email/name" style="width:220px" oninput="debouncedUsers()"/>
+    <button class="ghost" onclick="refresh()">Refresh</button><button class="ghost" onclick="logout()">Lock</button></div>
+  </header>
+  <main>
+    <div id="kpis" class="kpis"></div>
+    <div class="row">
+      <div class="card"><h3>Signups (last 30 days)</h3><div id="chart" class="bars"></div></div>
+      <div class="card"><h3>By sign-in provider</h3><div id="providers"></div></div>
+    </div>
+    <div class="card" style="padding:0"><table><thead><tr><th>Email</th><th>Name</th><th>Status</th><th>Providers</th><th>Signed up</th></tr></thead><tbody id="rows"></tbody></table></div>
+    <div id="err" class="err"></div>
+  </main>
+</div>
+<script>
+const K="doppl_admin_key";
+function key(){return sessionStorage.getItem(K)||""}
+async function api(path){
+  const r=await fetch(path,{headers:{"X-Admin-Key":key()}});
+  if(r.status===401){logout();throw new Error("Unauthorized - check your admin key")}
+  if(!r.ok)throw new Error("HTTP "+r.status);
+  return r.json();
+}
+function enter(){const v=document.getElementById("key").value.trim();if(!v)return;sessionStorage.setItem(K,v);show()}
+function logout(){sessionStorage.removeItem(K);document.getElementById("app").style.display="none";document.getElementById("gate").style.display="block"}
+function esc(s){return (s==null?"":String(s)).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}
+async function show(){
+  try{
+    const m=await api("/v1/admin/metrics");
+    document.getElementById("gate").style.display="none";document.getElementById("app").style.display="block";
+    renderMetrics(m);await loadUsers();
+  }catch(e){document.getElementById("gateErr").textContent=e.message}
+}
+function kpi(n,l){return '<div class="kpi"><div class="n">'+n+'</div><div class="l">'+l+'</div></div>'}
+function renderMetrics(m){
+  document.getElementById("kpis").innerHTML=
+    kpi(m.total_accounts,"Total users")+kpi(m.active,"Active")+kpi(m.pending,"Pending")+
+    kpi(m.email_verified,"Email verified")+kpi(m.accounts_with_active_session,"Signed-in now");
+  const days=m.signups_by_day||[];const max=Math.max(1,...days.map(d=>d.count));
+  document.getElementById("chart").innerHTML=days.map(d=>'<div class="b" style="height:'+(6+94*d.count/max)+'%" title="'+d.day+': '+d.count+'"></div>').join("")||'<span style="color:var(--muted)">No signups yet</span>';
+  const p=m.by_provider||{};const keys=Object.keys(p);
+  document.getElementById("providers").innerHTML=keys.length?keys.map(k=>'<div style="display:flex;justify-content:space-between;padding:4px 0"><span>'+esc(k)+'</span><b>'+p[k]+'</b></div>').join(""):'<span style="color:var(--muted)">Email / password only so far</span>';
+}
+async function loadUsers(){
+  try{
+    const q=encodeURIComponent(document.getElementById("q").value.trim());
+    const u=await api("/v1/admin/users?limit=100&q="+q);
+    document.getElementById("rows").innerHTML=(u.accounts||[]).map(a=>
+      '<tr><td>'+esc(a.primary_email||"-")+'</td><td>'+esc(a.display_name||"-")+'</td>'+
+      '<td class="status-'+esc(a.status)+'">'+esc(a.status)+'</td>'+
+      '<td>'+((a.providers||[]).map(x=>'<span class="pill">'+esc(x)+'</span>').join("")||'<span class="pill">email</span>')+'</td>'+
+      '<td>'+esc((a.created_at||"").slice(0,10))+'</td></tr>').join("")||'<tr><td colspan="5" style="color:var(--muted)">No users yet</td></tr>';
+    document.getElementById("err").textContent="";
+  }catch(e){document.getElementById("err").textContent=e.message}
+}
+let t;function debouncedUsers(){clearTimeout(t);t=setTimeout(loadUsers,300)}
+function refresh(){show()}
+if(key())show();
+</script></body></html>"""
+
+
 @app.delete("/v1/auth/oauth/{provider}/unlink")
 def auth_oauth_unlink(provider: str, session: dict[str, Any] = Depends(session_auth)) -> dict[str, Any]:
     runtime = _auth_runtime_or_404()
