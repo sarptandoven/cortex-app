@@ -2,23 +2,23 @@
   "app": "Cortex",
   "artifacts": [
     {
-      "filename": "Cortex-0.2.0-6.dmg",
+      "filename": "Cortex-0.2.0-7.dmg",
       "kind": "dmg",
-      "sha256": "47301548d541c44dff5f823b06e9ae986e487a23d907c73937cfd8f53a5e1dcb",
-      "size_bytes": 85343069,
-      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-6.dmg"
+      "sha256": "4cf529e687d0581f87da189a6e0b56883de5c22aa227d2f7bb5a44c181d2f08d",
+      "size_bytes": 85812996,
+      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-7.dmg"
     },
     {
-      "filename": "Cortex-0.2.0-6.app.zip",
+      "filename": "Cortex-0.2.0-7.app.zip",
       "kind": "zip",
-      "sha256": "e14f380fa6db2d8f1902c45bf69efe7d6e37a2e4b5e1c332b26b87ce0fc1c710",
-      "size_bytes": 66825137,
-      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-6.app.zip"
+      "sha256": "7a90494569de3a78373d7a0a50f0fab13b74248786fb1352fec9f934715e17fe",
+      "size_bytes": 66827396,
+      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-7.app.zip"
     },
     {
       "filename": "cortex-memory-0.1.0.zip",
       "kind": "obsidian-plugin",
-      "sha256": "2bc099b4e9c37a6665e4f9db32dcbc400e9362ee904ee74f1ce472f025428298",
+      "sha256": "e039daeff137bb9ef0b7a9d714a5d51b5b25aca977128ec52ce828dbd76353b5",
       "size_bytes": 3423,
       "url": "https://trydoppl.com/downloads/cortex-memory-0.1.0.zip"
     }
@@ -26,7 +26,7 @@
   "beta_readiness": {
     "audience": "first-100 local beta",
     "generated_artifact_verification": [
-      "shasum -a 256 -c Cortex-0.2.0-6.checksums.txt",
+      "shasum -a 256 -c Cortex-0.2.0-7.checksums.txt",
       "python3 scripts/validate_update_manifest.py <release-dir>/latest.json",
       "python3 scripts/check_vector_runtime.py --app macos/build/Cortex.app",
       "python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir <release-dir>"
@@ -70,20 +70,21 @@
       "Relaunch, confirm backend health, and run the reliability report."
     ]
   },
-  "build": "6",
+  "build": "7",
   "bundle_id": "com.cortex.doppl",
   "channel": "local-beta",
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "Fix: the menu-bar dropdown no longer flickers or swallows clicks (the activity animator was thrashing the anchor button while the popover was open).",
-    "Fix: the notch / menu-bar \"learned something new\" pill now actually appears (the notification view was rendering at zero size)."
+    "Fix: on a fresh launch the first-run walkthrough now appears instantly, instead of waiting for the memory engine to finish booting (it was the last step of startup, so a slow cold start left the window blank with no guidance).",
+    "Fix: the onboarding sheet no longer silently fails to present when the window isn't key yet — it is re-driven when the window becomes active.",
+    "New: a one-time \"Welcome to Cortex\" notch pill on first launch so you can see the notch channel works, plus a \"Show me the notch\" preview in the Quick Capture step."
   ],
-  "released_at": "2026-07-07T00:15:12Z",
+  "released_at": "2026-07-07T00:48:53Z",
   "source_provenance": {
-    "built_at": "2026-07-07T00:15:12Z",
+    "built_at": "2026-07-07T00:48:53Z",
     "git_branch": "mass-scale-app-redesign",
-    "git_commit": "ad3c993f5d7aa4b6c0f152ea1419db13dfe13a2e",
+    "git_commit": "0613d44e8deb79a0102109d40a3ad709245d2077",
     "git_dirty": false
   },
   "version": "0.2.0"

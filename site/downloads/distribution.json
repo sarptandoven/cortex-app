@@ -1,21 +1,21 @@
 {
  "artifacts": [
   {
-   "filename": "Cortex-0.2.0-6.dmg",
+   "filename": "Cortex-0.2.0-7.dmg",
    "kind": "dmg",
-   "sha256": "47301548d541c44dff5f823b06e9ae986e487a23d907c73937cfd8f53a5e1dcb",
-   "size_bytes": 85343069,
-   "url": "https://trydoppl.com/downloads/Cortex-0.2.0-6.dmg"
+   "sha256": "4cf529e687d0581f87da189a6e0b56883de5c22aa227d2f7bb5a44c181d2f08d",
+   "size_bytes": 85812996,
+   "url": "https://trydoppl.com/downloads/Cortex-0.2.0-7.dmg"
   },
   {
-   "filename": "Cortex-0.2.0-6.app.zip",
+   "filename": "Cortex-0.2.0-7.app.zip",
    "kind": "zip",
-   "sha256": "e14f380fa6db2d8f1902c45bf69efe7d6e37a2e4b5e1c332b26b87ce0fc1c710",
-   "size_bytes": 66825137,
-   "url": "https://trydoppl.com/downloads/Cortex-0.2.0-6.app.zip"
+   "sha256": "7a90494569de3a78373d7a0a50f0fab13b74248786fb1352fec9f934715e17fe",
+   "size_bytes": 66827396,
+   "url": "https://trydoppl.com/downloads/Cortex-0.2.0-7.app.zip"
   }
  ],
- "build": "6",
+ "build": "7",
  "channel": "local-beta",
  "prepared_at": null,
  "version": "0.2.0"
