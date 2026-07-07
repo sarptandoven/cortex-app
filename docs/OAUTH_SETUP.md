@@ -130,6 +130,44 @@ build the broker (it unlocks Notion + GitHub cleanly and is a small, well-contai
 Meanwhile, the zero-friction sources that need **no** OAuth stay the primary path for most users:
 **ChatGPT/Claude/Gemini exports** and the **local notes folder**.
 
-## What I do once you register an app
-Give me the **client ID** (and tell me the broker decision for Notion/GitHub). I add it to the build,
-flip the connector to "Sign in," and verify the round-trip. The UI and backend are already wired.
+## The token-exchange broker (option A) — built; here's how to turn it on
+
+For the confidential providers (**Notion**, **GitHub**) the app can't hold a secret, so the exchange
+runs on Cortex Cloud. The broker is **built, secured, and unit-tested** (`backend/app/oauth_broker.py`,
+routes registered on the hosted FastAPI app; 10/10 tests). It's a **no-op 503 surface until you set
+its env vars and deploy** — no secret ever ships in the app.
+
+**Endpoints (hosted):** `POST /oauth/broker/{start,exchange,refresh}`, `GET /oauth/broker/providers`.
+It owns each provider's `client_id` + `client_secret`, builds authorize URLs, exchanges codes, and
+returns tokens **without storing them**. `redirect_uri` is allowlisted to the app's loopback callback
+so it can't be abused as an open token oracle.
+
+### What YOU do (per confidential provider)
+1. **Register the OAuth app** (per the per-provider sections above) and note its **client ID + secret**.
+2. **Set the broker env vars** on the hosted Cortex Cloud host (see `deploy/cortex.env.example`):
+   ```
+   CORTEX_BROKER_NOTION_CLIENT_ID=...
+   CORTEX_BROKER_NOTION_CLIENT_SECRET=...
+   # optional overrides: CORTEX_BROKER_NOTION_AUTHORIZE_URL / _TOKEN_URL / _SCOPES
+   CORTEX_BROKER_GITHUB_CLIENT_ID=...
+   CORTEX_BROKER_GITHUB_CLIENT_SECRET=...
+   ```
+3. **Register the redirect URI** with each provider: `http://127.0.0.1:8766/v1/connectors/oauth/callback`
+   (if Notion rejects a loopback `http://127.0.0.1` redirect and demands HTTPS, tell me — I'll switch
+   that provider to the broker-hosted relay callback instead; the broker already centralizes this).
+4. **Deploy** the hosted backend (`deploy/` — Caddy + systemd on the Mac Mini) so `/oauth/broker/*`
+   is reachable over HTTPS at your Cortex Cloud domain.
+5. **Tell me the broker's public base URL** (e.g. `https://trydoppl.com`). I set the app's
+   `CORTEX_OAUTH_BROKER_URL` to it.
+
+### What I do next (fast, once the broker is live)
+- Wire the local backend's `start_managed_oauth` / `complete_managed_oauth` to route Notion (and
+  GitHub) through `/oauth/broker/start` + `/oauth/broker/exchange` when `CORTEX_OAUTH_BROKER_URL` is
+  set (the seam is already there — `request_token` is injectable, authorize URL is centralized).
+- Mark Notion as a managed-OAuth "Sign in" connector in the catalog.
+- Flip the Connections setup sheet to **sign-in-first** (token entry demoted to "Advanced").
+- Verify the real end-to-end round-trip against the live broker, then ship the DMG.
+
+For **Google** (Calendar/Docs/Drive) and **Microsoft/Slack** there's **no broker** — those are
+public-client PKCE loopback flows. You register the app, give me the **client ID**, I add it to the
+build's Info.plist, and the tile flips to "Sign in." (Google also needs its verification submitted.)
