@@ -219,8 +219,10 @@ final class BottomLearningHUD {
             title = "Building your memory"
         }
         let count = total > 0 ? "\(done.formatted()) / \(total.formatted())" : ""
+        // Always show a bar while working: a determinate fill when we know the total, an animated
+        // indeterminate sweep while the count is still unknown (early sync / count-less work).
         model.apply(title: title, subtitle: count, fraction: total > 0 ? Double(done) / Double(total) : 0,
-                    showBar: total > 0, celebration: false)
+                    showBar: true, indeterminate: total <= 0, celebration: false)
         present(panel)
     }
 
@@ -248,7 +250,7 @@ final class BottomLearningHUD {
         mode = .celebration
         let noun = learnedCount == 1 ? "memory" : "memories"
         model.apply(title: "Learned \(learnedCount) new \(noun)", subtitle: "Added to your memory",
-                    fraction: 1, showBar: false, celebration: true)
+                    fraction: 1, showBar: false, indeterminate: false, celebration: true)
         present(panel)
         scheduleDismiss(after: 2.6)
     }
@@ -256,6 +258,10 @@ final class BottomLearningHUD {
     // MARK: internals
 
     private func present(_ panel: BottomAmbientPanel) {
+        // A fresh appearance (HUD content was hidden) → bump the epoch so the progress bar gets a new
+        // identity and its sweep/shimmer animation restarts cleanly, even though the hosting view is
+        // reused across presents.
+        if !model.visible { model.barEpoch &+= 1 }
         if !panel.isVisible {
             panel.alphaValue = 1
             panel.orderFrontRegardless()
@@ -307,14 +313,23 @@ private final class LearningHUDModel: ObservableObject {
     @Published var subtitle = ""
     @Published var fraction: Double = 0
     @Published var showBar = true
+    /// No known total yet (early sync / count-less work) → the bar sweeps indeterminately instead of
+    /// showing a fixed fill, so it still reads as actively working.
+    @Published var indeterminate = false
     @Published var celebration = false
+    /// Bumped on every fresh HUD appearance. The progress bar is `.id`'d on this so each present gets
+    /// a brand-new view identity (fresh @State + onAppear) — the hosting view is reused across
+    /// presents, so without this a re-present in the same mode would not restart the sweep animation.
+    @Published var barEpoch: Int = 0
 
-    func apply(title: String, subtitle: String, fraction: Double, showBar: Bool, celebration: Bool) {
+    func apply(title: String, subtitle: String, fraction: Double, showBar: Bool, indeterminate: Bool, celebration: Bool) {
         self.title = title
         self.subtitle = subtitle
         self.showBar = showBar
+        self.indeterminate = indeterminate
         self.celebration = celebration
-        // Ease the bar toward its new value so 4s→~1s poll samples read as a live fill, not steps.
+        // Ease the determinate fill toward its new value so 4s→~1s poll samples read as a live,
+        // growing fill rather than discrete steps.
         withAnimation(.easeInOut(duration: 0.5)) {
             self.fraction = min(1, max(0, fraction))
         }
@@ -369,14 +384,8 @@ private struct LearningHUDView: View {
                     }
                 }
                 if model.showBar {
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(CortexDesign.ink.opacity(0.10))
-                            Capsule().fill(accent)
-                                .frame(width: max(3, geo.size.width * model.fraction))
-                        }
-                    }
-                    .frame(height: 5)
+                    HUDProgressBar(fraction: model.fraction, indeterminate: model.indeterminate, accent: accent)
+                        .id(model.barEpoch)   // fresh identity per present → animation restarts cleanly
                 }
             }
             .frame(width: 300, alignment: .leading)
@@ -391,6 +400,78 @@ private struct LearningHUDView: View {
                 .shadow(color: Color.black.opacity(0.18), radius: 16, x: 0, y: 6)
         )
         .padding(.bottom, 4)
+    }
+}
+
+/// The Learning HUD's animated progress bar. Two modes:
+///  • determinate (total known) — a moss fill (eased by the model) with a soft gloss sweeping across
+///    it so it reads as actively working even between the ~1.2s poll samples;
+///  • indeterminate (total unknown) — a short segment sweeping left→right on a repeat.
+/// The repeating animations are safe to leave as `repeatForever`: this view only exists inside the
+/// HUD's `if model.visible { pill }`, so it (and its animations) are torn down the moment the HUD
+/// dismisses — unlike the edge-glow, which lives for the app's lifetime and had to gate on state.
+private struct HUDProgressBar: View {
+    var fraction: Double
+    var indeterminate: Bool
+    var accent: Color
+
+    @State private var sweep: CGFloat = 0     // indeterminate segment position (0…1)
+    @State private var shimmer: CGFloat = 0   // determinate gloss position (0…1)
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            ZStack(alignment: .leading) {
+                Capsule().fill(CortexDesign.ink.opacity(0.10))   // track
+
+                if indeterminate {
+                    let segW = max(24, w * 0.34)
+                    Capsule()
+                        .fill(accent.opacity(0.85))
+                        .frame(width: segW)
+                        .offset(x: -segW + sweep * (w + segW))    // enter left, exit right
+                } else {
+                    let fillW = max(3, w * fraction)
+                    Capsule()
+                        .fill(accent)
+                        .frame(width: fillW)
+                        .overlay(
+                            LinearGradient(
+                                colors: [.white.opacity(0), .white.opacity(0.35), .white.opacity(0)],
+                                startPoint: .leading, endPoint: .trailing
+                            )
+                            .frame(width: max(20, fillW * 0.45))
+                            .offset(x: -fillW * 0.45 + shimmer * (fillW + fillW * 0.45))
+                        )
+                        .clipShape(Capsule())   // keep both fill and gloss inside the capsule
+                }
+            }
+        }
+        .frame(height: 5)
+        .onAppear { restart() }
+        .onChange(of: indeterminate) { _ in restart() }
+        .onDisappear { hardStop() }
+    }
+
+    /// Snap both phases to 0 with animations DISABLED — this reliably terminates any in-flight
+    /// `repeatForever` (re-animating a property with a finite animation does not dependably replace a
+    /// repeating one on the AppKit hosting path).
+    private func hardStop() {
+        var t = Transaction()
+        t.disablesAnimations = true
+        withTransaction(t) {
+            sweep = 0
+            shimmer = 0
+        }
+    }
+
+    private func restart() {
+        hardStop()   // kill any prior loop before starting the new one
+        if indeterminate {
+            withAnimation(.linear(duration: 1.15).repeatForever(autoreverses: false)) { sweep = 1 }
+        } else {
+            withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: false)) { shimmer = 1 }
+        }
     }
 }
 
