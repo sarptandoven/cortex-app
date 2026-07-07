@@ -1,4 +1,5 @@
 import AppKit
+import AuthenticationServices
 import Foundation
 import SwiftUI
 
@@ -84,12 +85,27 @@ extension AppState {
     ///
     /// The rest of the app (e.g. `CortexCloudSection` / `ConnectionsPrivacySheet`) should
     /// read this flag to decide whether to show or hide the cloud sign-in controls.
+    /// Cortex accounts are available in EVERY build (Option B: required accounts). Sign-in runs over
+    /// Swift's native URLSession/HTTPS to the hosted API, independent of the Python backend's TLS, so
+    /// it works in the sandboxed App Store build too. (Whether an account is *required* to use the app
+    /// is a separate gate — see `accountRequired`.)
     var isCloudAuthAvailable: Bool {
-        !DistributionMode.isAppStore
+        true
+    }
+
+    /// Whether the app REQUIRES a signed-in account before it can be used. Driven by the Info.plist
+    /// `CortexRequireAccount` flag so the enforcement can be turned on once the hosted backend is live
+    /// and the OAuth providers are registered (until then the sign-in surface is available but the app
+    /// still works locally, so a build can never brick itself before the backend exists).
+    var accountRequired: Bool {
+        (Bundle.main.object(forInfoDictionaryKey: "CortexRequireAccount") as? String)?.lowercased() == "true"
     }
 
     /// Message shown when a cloud-auth action is attempted in a build where it is disabled.
     static let cloudAuthUnavailableMessage = "Cortex Cloud is not available in this version."
+
+    /// The default hosted API the sign-in surface targets when the user hasn't entered another.
+    static let defaultHostedURL = "https://api.trydoppl.com"
 
     /// The one and only gate for every new cloud code path.
     ///
@@ -156,6 +172,42 @@ extension AppState {
             return
         }
         Task { await performCloudBrowserSignIn(hostedURL: hostedURL) }
+    }
+
+    /// Native Sign in with Apple. The ASAuthorization credential carries an id_token that we POST to
+    /// /v1/auth/oauth/apple/native; Apple returns the full name ONLY on the first authorization, so we
+    /// forward it for the display name. No token ever rides a browser redirect — the OS does the flow.
+    func signInWithApple(hostedURL: String, idToken: Data?, fullName: PersonNameComponents?, email: String?) {
+        guard isCloudAuthAvailable else {
+            cloudAuthMessage = AppState.cloudAuthUnavailableMessage
+            return
+        }
+        guard let idToken, let token = String(data: idToken, encoding: .utf8), !token.isEmpty else {
+            cloudAuthMessage = "Apple did not return a sign-in token. Please try again."
+            return
+        }
+        let name = [fullName?.givenName, fullName?.familyName].compactMap { $0 }.joined(separator: " ")
+        Task { await performAppleNativeSignIn(hostedURL: hostedURL, idToken: token, displayName: name, email: email ?? "") }
+    }
+
+    private func performAppleNativeSignIn(hostedURL: String, idToken: String, displayName: String, email: String) async {
+        guard let base = AppState.normalizedHostedBase(hostedURL) ?? AppState.normalizedHostedBase(AppState.defaultHostedURL) else {
+            cloudAuthMessage = CortexCloudAuthError.invalidHostedURL.localizedDescription
+            return
+        }
+        cloudAuthBusy = true
+        cloudAuthMessage = "Signing in with Apple…"
+        defer { cloudAuthBusy = false }
+        do {
+            var body: [String: Any] = ["id_token": idToken, "client": "macos"]
+            if !displayName.isEmpty { body["display_name"] = displayName }
+            let data = try await cloudPost(base: base, path: "/v1/auth/oauth/apple/native", body: body)
+            let tokens = try JSONDecoder().decode(CortexCloudTokenResponse.self, from: data)
+            applySignedInSession(base: base, tokens: tokens, fallbackEmail: tokens.account?.email ?? email)
+            cloudAuthMessage = "Signed in with Apple."
+        } catch {
+            cloudAuthMessage = CortexCloudAuth.describe(error)
+        }
     }
 
     func signOutOfCloud() {
@@ -508,10 +560,48 @@ struct CortexCloudSection: View {
     }
 
     private var signInForm: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            TextField("Hosted URL", text: $hostedURL)
-                .textFieldStyle(.roundedBorder)
-                .disableAutocorrection(true)
+        VStack(alignment: .leading, spacing: 12) {
+            // Sign in with Apple — native (ASAuthorization). Required by App Store Guideline 4.8
+            // whenever other social sign-ins are offered, and the best macOS experience.
+            SignInWithAppleButton(.signIn) { request in
+                request.requestedScopes = [.fullName, .email]
+            } onCompletion: { result in
+                switch result {
+                case .success(let auth):
+                    if let cred = auth.credential as? ASAuthorizationAppleIDCredential {
+                        state.signInWithApple(
+                            hostedURL: resolvedHostedURL,
+                            idToken: cred.identityToken,
+                            fullName: cred.fullName,
+                            email: cred.email
+                        )
+                    }
+                case .failure(let error):
+                    // A user-initiated cancel is not an error worth surfacing.
+                    if (error as? ASAuthorizationError)?.code != .canceled {
+                        state.cloudAuthMessage = "Apple sign-in failed. \(error.localizedDescription)"
+                    }
+                }
+            }
+            .signInWithAppleButtonStyle(.black)
+            .frame(height: 40)
+            .disabled(state.cloudAuthBusy)
+
+            Button {
+                state.signInToCloudWithBrowser(hostedURL: resolvedHostedURL)
+            } label: {
+                Label("Continue with Google or GitHub", systemImage: "globe")
+                    .frame(maxWidth: .infinity)
+            }
+            .controlSize(.large)
+            .disabled(state.cloudAuthBusy)
+
+            HStack(spacing: 8) {
+                VStack { Divider() }
+                Text("or").font(.caption).foregroundColor(.secondary)
+                VStack { Divider() }
+            }
+
             TextField("Email", text: $email)
                 .textFieldStyle(.roundedBorder)
                 .textContentType(.username)
@@ -521,48 +611,48 @@ struct CortexCloudSection: View {
                 .textContentType(.password)
             HStack {
                 Button {
-                    state.signInToCloud(hostedURL: hostedURL, email: email, password: password)
+                    state.signInToCloud(hostedURL: resolvedHostedURL, email: email, password: password)
                 } label: {
                     Label("Sign in", systemImage: "person.crop.circle.badge.checkmark")
                 }
                 .disabled(credentialsIncomplete)
                 Button {
-                    state.signUpToCloud(hostedURL: hostedURL, email: email, password: password)
+                    state.signUpToCloud(hostedURL: resolvedHostedURL, email: email, password: password)
                 } label: {
                     Label("Create account", systemImage: "person.crop.circle.badge.plus")
                 }
                 .disabled(credentialsIncomplete)
-                Button {
-                    state.signInToCloudWithBrowser(hostedURL: hostedURL)
-                } label: {
-                    Label("Browser (Google/GitHub)", systemImage: "globe")
-                }
-                .disabled(state.cloudAuthBusy || hostedURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 if state.cloudAuthBusy {
                     ProgressView().scaleEffect(0.6)
                 }
                 Spacer()
             }
-            Text("Create an account or sign in to sync your memory to Cortex Cloud and reach it across devices and AI tools. Using Cortex locally needs no account.")
+
+            DisclosureGroup("Advanced") {
+                TextField("Hosted URL", text: $hostedURL)
+                    .textFieldStyle(.roundedBorder)
+                    .disableAutocorrection(true)
+            }
+            .font(.caption)
+
+            Text("Sign in to sync your memory to your account and reach it across your devices and AI tools.")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Button {
-                state.openCloudSignup(hostedURL: hostedURL)
-            } label: {
-                Text("Prefer the browser? Open the signup page")
-                    .font(.caption)
-            }
-            .buttonStyle(.link)
         }
     }
 
-    /// Sign in / Create account both need a hosted URL, an email, and a password. The password
-    /// is intentionally not trimmed (it may contain spaces); the URL/email are.
+    /// The hosted API the sign-in targets: the user's entry if present, else the default.
+    private var resolvedHostedURL: String {
+        let trimmed = hostedURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? Self.defaultHostedURL : trimmed
+    }
+
+    /// Email sign-in / create-account need an email + password (the hosted URL now defaults).
+    /// The password is intentionally not trimmed (it may contain spaces).
     private var credentialsIncomplete: Bool {
         state.cloudAuthBusy
             || email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || password.isEmpty
-            || hostedURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }

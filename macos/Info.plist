@@ -24,6 +24,8 @@
 	<string>18</string>
 	<key>CortexDistributionMode</key>
 	<string>direct</string>
+	<key>CortexRequireAccount</key>
+	<string>false</string>
 	<key>CortexGitHubOAuthClientID</key>
 	<string>Ov23liwB0zkC2Qac88ig</string>
 	<key>CortexGoogleOAuthClientID</key>

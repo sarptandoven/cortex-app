@@ -7412,6 +7412,21 @@ struct CortexView: View {
     @ObservedObject var state: AppState
 
     var body: some View {
+        ZStack {
+            mainContent
+            // Required-account gate (Option B): when the build requires an account
+            // (Info.plist CortexRequireAccount) and the user is not signed in, a full-window
+            // sign-in wall covers everything. Off by default so the app never bricks before the
+            // hosted backend is live; the founder flips CortexRequireAccount=true once it is.
+            if state.accountRequired && !state.isCloudMode {
+                CortexSignInWall(state: state)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: state.cloudAccountEmail)
+    }
+
+    private var mainContent: some View {
         VStack(spacing: 0) {
             header
             CortexTabBar(state: state)
@@ -7531,6 +7546,45 @@ struct CortexView: View {
 
     private var footerNeedsAttention: Bool {
         CortexRecoveryText.needsAttention(state.displayStatus)
+    }
+}
+
+/// Full-window required-account sign-in wall (Option B). Shown by CortexView when the build
+/// requires an account and the user is not signed in. Offers every provider: Sign in with Apple
+/// (native), Google/GitHub (browser), and email — reusing CortexCloudSection's sign-in form.
+struct CortexSignInWall: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        ZStack {
+            CortexDesign.appBackground.ignoresSafeArea()
+            VStack(spacing: 18) {
+                Spacer(minLength: 0)
+                Image(systemName: "brain.head.profile")
+                    .font(.system(size: 42, weight: .semibold))
+                    .foregroundColor(CortexDesign.accent)
+                Text("Sign in to Doppl")
+                    .font(.system(size: 26, weight: .bold, design: .serif))
+                    .foregroundColor(CortexDesign.ink)
+                Text("Create your account or sign in to build your memory and reach it across your devices and AI tools.")
+                    .font(.callout)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 440)
+                    .fixedSize(horizontal: false, vertical: true)
+                CortexCloudSection(state: state)
+                    .frame(maxWidth: 440)
+                    .padding(22)
+                    .background(CortexDesign.cardBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(CortexDesign.hairline))
+                Spacer(minLength: 0)
+            }
+            .padding(40)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .preferredColorScheme(.light)
+        .accentColor(CortexDesign.accent)
     }
 }
 

@@ -313,6 +313,7 @@ swiftc \
   -framework Carbon \
   -framework UserNotifications \
   -framework Security \
+  -framework AuthenticationServices \
   "$ROOT"/Sources/*.swift \
   -o "$MACOS/Cortex"
 

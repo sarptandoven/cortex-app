@@ -37,5 +37,10 @@
   <true/>
   <key>com.apple.security.files.bookmarks.app-scope</key>
   <true/>
+  <!-- Sign in with Apple (Guideline 4.8 — required alongside Google/GitHub sign-in). -->
+  <key>com.apple.developer.applesignin</key>
+  <array>
+    <string>Default</string>
+  </array>
 </dict>
 </plist>

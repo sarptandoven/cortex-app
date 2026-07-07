@@ -52,5 +52,11 @@
        hardened runtime strips DYLD_/PYTHON* style variables unless this is set. -->
   <key>com.apple.security.cs.allow-dyld-environment-variables</key>
   <true/>
+
+  <!-- Sign in with Apple (Guideline 4.8 — required alongside Google/GitHub sign-in). -->
+  <key>com.apple.developer.applesignin</key>
+  <array>
+    <string>Default</string>
+  </array>
 </dict>
 </plist>
