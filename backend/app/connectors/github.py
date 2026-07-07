@@ -15,8 +15,92 @@ CONNECTOR_VERSION = "2026-07-01"
 DEFAULT_API_BASE_URL = "https://api.github.com"
 MAX_REPOSITORIES = 25
 
+# OAuth Device Authorization Flow (RFC 8628). GitHub's device flow needs ONLY the public client ID —
+# no client secret — so it's the secretless, broker-free "Sign in with GitHub" path for a distributed
+# desktop app. Default read scopes cover the user's profile + their repos' issues/PRs (Cortex only
+# ever reads). Override the scope via CORTEX_GITHUB_OAUTH_SCOPE if you want to narrow it.
+GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code"
+GITHUB_DEVICE_TOKEN_URL = "https://github.com/login/oauth/access_token"
+GITHUB_DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
+DEFAULT_DEVICE_SCOPE = "read:user repo"
+
+# Poll statuses the caller (app) drives its polling loop on.
+DEVICE_POLL_PENDING = "authorization_pending"
+DEVICE_POLL_SLOW_DOWN = "slow_down"
+DEVICE_POLL_EXPIRED = "expired_token"
+DEVICE_POLL_DENIED = "access_denied"
+DEVICE_POLL_OK = "ok"
+
 
 RequestJSON = Callable[[str, dict[str, str]], Any]
+
+
+def _github_form_post(url: str, form: dict[str, str]) -> dict[str, Any]:
+    """POST an x-www-form-urlencoded body and parse the JSON response (GitHub returns form-encoded
+    unless Accept: application/json is set). Stdlib-only."""
+    data = urlencode(form).encode("utf-8")
+    request = Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+        method="POST",
+    )
+    with urlopen(request, timeout=30) as response:  # noqa: S310 — fixed GitHub OAuth endpoints only
+        return json.loads(response.read().decode("utf-8"))
+
+
+def github_device_start(
+    client_id: str,
+    scope: str = DEFAULT_DEVICE_SCOPE,
+    *,
+    request: Callable[[str, dict[str, str]], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Begin the GitHub device flow. Returns the user-facing code + verification URL + poll interval.
+    Client ID only — no secret."""
+    cleaned = str(client_id or "").strip()
+    if not cleaned:
+        raise ValueError("GitHub OAuth client ID is not configured")
+    requester = request or _github_form_post
+    payload = requester(GITHUB_DEVICE_CODE_URL, {"client_id": cleaned, "scope": scope})
+    if not isinstance(payload, dict) or not payload.get("device_code") or not payload.get("user_code"):
+        detail = payload.get("error_description") if isinstance(payload, dict) else ""
+        raise ValueError(f"GitHub did not start the device flow. {detail or ''}".strip())
+    return {
+        "device_code": payload["device_code"],
+        "user_code": payload["user_code"],
+        "verification_uri": payload.get("verification_uri") or "https://github.com/login/device",
+        "expires_in": int(payload.get("expires_in") or 900),
+        "interval": max(1, int(payload.get("interval") or 5)),
+    }
+
+
+def github_device_poll(
+    client_id: str,
+    device_code: str,
+    *,
+    request: Callable[[str, dict[str, str]], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Poll once for the token. Returns {"status": ...} — one of ok/authorization_pending/slow_down/
+    expired_token/access_denied — with "access_token"/"scope" on ok. Client ID only, no secret."""
+    cleaned_id = str(client_id or "").strip()
+    cleaned_code = str(device_code or "").strip()
+    if not cleaned_id or not cleaned_code:
+        raise ValueError("GitHub client ID and device code are required")
+    requester = request or _github_form_post
+    payload = requester(GITHUB_DEVICE_TOKEN_URL, {
+        "client_id": cleaned_id,
+        "device_code": cleaned_code,
+        "grant_type": GITHUB_DEVICE_GRANT_TYPE,
+    })
+    if not isinstance(payload, dict):
+        return {"status": "error", "detail": "Unexpected GitHub response"}
+    access_token = str(payload.get("access_token") or "").strip()
+    if access_token:
+        return {"status": DEVICE_POLL_OK, "access_token": access_token, "scope": payload.get("scope") or ""}
+    error = str(payload.get("error") or "").strip()
+    if error in {DEVICE_POLL_PENDING, DEVICE_POLL_SLOW_DOWN, DEVICE_POLL_EXPIRED, DEVICE_POLL_DENIED}:
+        return {"status": error}
+    return {"status": "error", "detail": str(payload.get("error_description") or error or "Token exchange failed")}
 
 
 @dataclass(frozen=True)

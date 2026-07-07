@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import SwiftUI
@@ -575,7 +576,10 @@ private struct ConnectionsDirectSourcesSection: View {
                             if !availableConnectors.isEmpty {
                                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 10)], spacing: 10) {
                                     ForEach(availableConnectors) { connector in
-                                        ConnectorLibraryTile(connector: connector) {
+                                        ConnectorLibraryTile(
+                                            connector: connector,
+                                            cta: connector.connectionSetup?.supportsDeviceFlow == true ? "Sign in" : "Set up"
+                                        ) {
                                             libraryAction(connector)
                                         }
                                     }
@@ -595,6 +599,10 @@ private struct ConnectionsDirectSourcesSection: View {
         .sheet(item: $selectedTokenConnector) { connector in
             ConnectorTokenSetupSheet(state: state, connector: connector)
                 .frame(width: 640, height: 680)
+        }
+        .sheet(item: Binding(get: { state.githubDeviceFlow }, set: { state.githubDeviceFlow = $0 })) { prompt in
+            GitHubDeviceCodeView(state: state, prompt: prompt)
+                .frame(width: 460, height: 440)
         }
     }
 
@@ -619,6 +627,12 @@ private struct ConnectionsDirectSourcesSection: View {
     }
 
     private func libraryAction(_ connector: SourceConnectorCatalogItem) {
+        // Secretless "Sign in with GitHub" (device flow) is the primary path when advertised; the
+        // pasted-token setup remains reachable from the connected row as an advanced fallback.
+        if connector.connectionSetup?.supportsDeviceFlow == true {
+            state.startGitHubDeviceFlow(connector)
+            return
+        }
         if connector.connectionSetup?.supportsManagedOAuth == true {
             if state.managedOAuthIsConfigured(connector) {
                 state.startManagedOAuthConnector(connector)
@@ -641,6 +655,7 @@ private struct ConnectionsDirectSourcesSection: View {
 /// Management chrome (Sync / Pause / Remove) only appears once a connector is connected.
 private struct ConnectorLibraryTile: View {
     let connector: SourceConnectorCatalogItem
+    var cta: String = "Set up"
     let action: () -> Void
     @State private var hovering = false
 
@@ -657,7 +672,7 @@ private struct ConnectorLibraryTile: View {
                     .font(.caption)
                     .foregroundColor(CortexDesign.inkSecondary)
                 Spacer(minLength: 0)
-                Text("Set up")
+                Text(cta)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(CortexDesign.accent)
             }
@@ -2588,6 +2603,113 @@ private struct ConnectionsRetryState: View {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 900_000_000)
             isRetrying = false
+        }
+    }
+}
+
+/// "Sign in with GitHub" device-code sheet. Shows the short code the user types on
+/// github.com/login/device, reflects live progress (waiting → syncing → done/failed) by observing
+/// AppState, and lets the user cancel — which stops the poll loop.
+struct GitHubDeviceCodeView: View {
+    @ObservedObject var state: AppState
+    /// Stable code + verification URL captured when the sheet was presented. Live phase/message are
+    /// read from `state.githubDeviceFlow` so the same sheet animates through the flow.
+    let prompt: GitHubDeviceFlowPrompt
+    @State private var copied = false
+
+    private var phase: GitHubDeviceFlowPrompt.Phase { state.githubDeviceFlow?.phase ?? prompt.phase }
+    private var statusMessage: String { state.githubDeviceFlow?.message ?? prompt.message }
+    private var isFinished: Bool { phase == .done || phase == .failed }
+
+    var body: some View {
+        VStack(spacing: 18) {
+            VStack(spacing: 6) {
+                Image(systemName: "chevron.left.forwardslash.chevron.right")
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundColor(CortexDesign.accent)
+                Text("Sign in with GitHub")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundColor(CortexDesign.ink)
+                Text("Cortex reads your GitHub activity so your memory can cite it. Read-only — Cortex never writes to your repositories.")
+                    .font(.system(size: 12))
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(spacing: 8) {
+                Text("Enter this code on the GitHub page")
+                    .font(.caption)
+                    .foregroundColor(CortexDesign.inkFaint)
+                Text(prompt.userCode)
+                    .font(.system(size: 30, weight: .bold, design: .monospaced))
+                    .kerning(4)
+                    .foregroundColor(CortexDesign.ink)
+                    .textSelection(.enabled)
+                Button {
+                    copyCode()
+                } label: {
+                    Label(copied ? "Copied" : "Copy code", systemImage: copied ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(CortexDesign.accent)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+            .background(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).fill(CortexDesign.accentSoft))
+
+            statusRow
+
+            Spacer(minLength: 0)
+
+            HStack(spacing: 10) {
+                if isFinished {
+                    Button("Done") { state.githubDeviceFlow = nil }
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Cancel") { state.cancelGitHubDeviceFlow() }
+                    Spacer(minLength: 0)
+                    if let url = prompt.verificationURL {
+                        Button("Open GitHub") { NSWorkspace.shared.open(url) }
+                            .keyboardShortcut(.defaultAction)
+                    }
+                }
+            }
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(CortexDesign.panelBackground)
+    }
+
+    @ViewBuilder
+    private var statusRow: some View {
+        HStack(spacing: 8) {
+            switch phase {
+            case .waiting, .syncing:
+                ProgressView().controlSize(.small)
+            case .done:
+                Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
+            case .failed:
+                Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
+            }
+            Text(statusMessage)
+                .font(.system(size: 12))
+                .foregroundColor(CortexDesign.inkSecondary)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func copyCode() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(prompt.userCode, forType: .string)
+        copied = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            copied = false
         }
     }
 }

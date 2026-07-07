@@ -1133,6 +1133,52 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError) as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
+            if method == "POST" and path == "/v1/connectors/github/device/start":
+                # Begin the GitHub OAuth Device Flow (RFC 8628). Secretless: the app only needs the
+                # public client ID, provisioned via CORTEX_GITHUB_OAUTH_CLIENT_ID. The app shows the
+                # returned user_code, opens verification_uri, then polls /device/poll.
+                body = self._json_body()
+                client_id = (str(body.get("client_id") or "").strip()
+                             or os.environ.get("CORTEX_GITHUB_OAUTH_CLIENT_ID", "").strip())
+                if not client_id:
+                    self._send_json(
+                        {"detail": "GitHub sign-in is not configured on this device."},
+                        status=HTTPStatus.SERVICE_UNAVAILABLE,
+                    )
+                    return
+                try:
+                    from .connectors.github import DEFAULT_DEVICE_SCOPE, github_device_start
+
+                    scope = (str(body.get("scope") or "").strip()
+                             or os.environ.get("CORTEX_GITHUB_OAUTH_SCOPE", "").strip()
+                             or DEFAULT_DEVICE_SCOPE)
+                    self._send_json(github_device_start(client_id, scope))
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                except OSError as exc:
+                    self._send_json({"detail": f"Could not reach GitHub: {exc}"}, status=HTTPStatus.BAD_GATEWAY)
+                return
+            if method == "POST" and path == "/v1/connectors/github/device/poll":
+                # Poll once for the device-flow token. Stateless: the app holds device_code and drives
+                # the loop, honoring the interval/slow_down/expired statuses we surface verbatim.
+                body = self._json_body()
+                client_id = (str(body.get("client_id") or "").strip()
+                             or os.environ.get("CORTEX_GITHUB_OAUTH_CLIENT_ID", "").strip())
+                if not client_id:
+                    self._send_json(
+                        {"detail": "GitHub sign-in is not configured on this device."},
+                        status=HTTPStatus.SERVICE_UNAVAILABLE,
+                    )
+                    return
+                try:
+                    from .connectors.github import github_device_poll
+
+                    self._send_json(github_device_poll(client_id, str(body.get("device_code") or "")))
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                except OSError as exc:
+                    self._send_json({"detail": f"Could not reach GitHub: {exc}"}, status=HTTPStatus.BAD_GATEWAY)
+                return
             if method == "POST" and path == "/v1/connectors/gmail/sync":
                 body = self._json_body()
                 try:

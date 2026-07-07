@@ -190,6 +190,11 @@ struct SourceConnectorConnectionSetup: Codable, Hashable {
     let oauth_provider: String?
     let oauth_start_endpoint: String?
     let oauth_complete_endpoint: String?
+    // Device Flow (RFC 8628): secretless browser sign-in. GitHub uses this — the app shows a code,
+    // opens the verification URL, then polls the poll endpoint until a token comes back.
+    let device_flow_provider: String?
+    let device_flow_start_endpoint: String?
+    let device_flow_poll_endpoint: String?
     let credential_storage: String?
     let credential_retained_on_disconnect: Bool?
     let disconnect_behavior: String?
@@ -237,6 +242,57 @@ struct SourceConnectorConnectionSetup: Codable, Hashable {
         }
         return !endpoint.isEmpty
     }
+
+    var deviceFlowProvider: String {
+        device_flow_provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    }
+
+    var deviceFlowStartEndpoint: String {
+        device_flow_start_endpoint?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    var deviceFlowPollEndpoint: String {
+        device_flow_poll_endpoint?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    // Secretless "Sign in with GitHub" is available when the backend advertised a device-flow
+    // provider + start endpoint (the poll endpoint is required to complete it).
+    var supportsDeviceFlow: Bool {
+        !deviceFlowProvider.isEmpty && !deviceFlowStartEndpoint.isEmpty && !deviceFlowPollEndpoint.isEmpty
+    }
+}
+
+/// Backend response for `POST .../device/start` — the RFC 8628 device authorization payload.
+struct GitHubDeviceStartResponse: Codable {
+    let device_code: String
+    let user_code: String
+    let verification_uri: String
+    let expires_in: Int
+    let interval: Int
+}
+
+/// Backend response for `POST .../device/poll`. `status` is one of ok / authorization_pending /
+/// slow_down / expired_token / access_denied / error.
+struct GitHubDevicePollResponse: Codable {
+    let status: String
+    let access_token: String?
+    let scope: String?
+    let detail: String?
+}
+
+/// Drives the "Sign in with GitHub" device-code sheet. Identifiable so cancelling (which sets the
+/// AppState property to nil, changing `id`) cleanly stops the poll loop tied to a given `id`.
+struct GitHubDeviceFlowPrompt: Identifiable, Equatable {
+    enum Phase: Equatable { case waiting, syncing, done, failed }
+    let id = UUID()
+    let connectorID: String
+    let connectorName: String
+    let userCode: String
+    let verificationURI: String
+    var phase: Phase = .waiting
+    var message: String
+
+    var verificationURL: URL? { URL(string: verificationURI) }
 }
 
 struct SourceConnectorSetupField: Codable, Hashable, Identifiable {
@@ -2505,6 +2561,14 @@ final class BackendSupervisor {
                 environment["CORTEX_OUTLOOK_OAUTH_CLIENT_SECRET"] = trimmedMicrosoftClientSecret
             }
         }
+        // GitHub uses the OAuth Device Flow (RFC 8628): the public client ID alone is enough — no
+        // secret, no broker — so this is safe to embed and ship directly.
+        if let githubClientID = Bundle.main.object(forInfoDictionaryKey: "CortexGitHubOAuthClientID") as? String {
+            let trimmedGitHubClientID = githubClientID.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedGitHubClientID.isEmpty {
+                environment["CORTEX_GITHUB_OAUTH_CLIENT_ID"] = trimmedGitHubClientID
+            }
+        }
         if DistributionMode.isAppStore {
             // Sandboxed builds can only reach the bundled interpreter; advertising system
             // paths is misleading and any lookup there would be denied. Point PATH only at
@@ -3063,6 +3127,9 @@ final class AppState: ObservableObject {
     @Published var connectorOAuthStartingIDs: Set<String> = []
     @Published var connectorLastMessages: [String: String] = [:]
     @Published var configuredDirectConnectorIDs: Set<String> = []
+    // Drives the "Sign in with GitHub" device-code sheet. Non-nil while a device flow is live; the
+    // sheet reads it, and cancelling (or completing) clears it, which also stops the poll loop.
+    @Published var githubDeviceFlow: GitHubDeviceFlowPrompt?
 
     // MARK: Settings surface + quick capture + "learned" signals
     //
@@ -5095,6 +5162,191 @@ final class AppState: ObservableObject {
         }
         connectorLastMessages[connector.id] = "Sign-in hasn't completed yet. Finish in the browser - Cortex connects automatically once it does. You can also click Connect again to re-check."
         status = "\(connector.name) sign-in not finished yet"
+    }
+
+    // MARK: - GitHub device-flow sign-in (RFC 8628)
+    //
+    // Secretless "Sign in with GitHub": the app shows a short user code, opens github.com/login/device
+    // in the browser, then polls the backend until GitHub returns a token. The token then feeds the
+    // exact same discover→sync path the pasted-token flow uses, so nothing downstream is special-cased.
+
+    func startGitHubDeviceFlow(_ connector: SourceConnectorCatalogItem) {
+        guard let setup = connector.connectionSetup, setup.supportsDeviceFlow else {
+            status = "\(connector.name) sign-in is not available in this build"
+            return
+        }
+        guard githubDeviceFlow == nil else {
+            status = "\(connector.name) sign-in is already open"
+            return
+        }
+        guard !connectorOAuthStartingIDs.contains(connector.id) else {
+            status = "\(connector.name) sign-in is already starting"
+            return
+        }
+        Task { await runGitHubDeviceFlow(connector, setup: setup) }
+    }
+
+    func cancelGitHubDeviceFlow() {
+        // Clearing the prompt changes the tracked id, which the poll loop checks each tick to exit.
+        if let connectorID = githubDeviceFlow?.connectorID {
+            connectorLastMessages[connectorID] = "Sign-in cancelled. Click Sign in with GitHub to try again."
+        }
+        githubDeviceFlow = nil
+    }
+
+    private func runGitHubDeviceFlow(_ connector: SourceConnectorCatalogItem, setup: SourceConnectorConnectionSetup) async {
+        connectorOAuthStartingIDs.insert(connector.id)
+        defer { connectorOAuthStartingIDs.remove(connector.id) }
+
+        let started: GitHubDeviceStartResponse
+        do {
+            status = "Starting \(connector.name) sign-in..."
+            let startData = try await request(
+                path: setup.deviceFlowStartEndpoint,
+                method: "POST",
+                body: ["source": connector.id]
+            )
+            started = try JSONDecoder().decode(GitHubDeviceStartResponse.self, from: startData)
+        } catch {
+            let message = CortexRecoveryText.failureStatus("\(connector.name) sign-in", error: error)
+            connectorLastMessages[connector.id] = message
+            status = message
+            return
+        }
+
+        let prompt = GitHubDeviceFlowPrompt(
+            connectorID: connector.id,
+            connectorName: connector.name,
+            userCode: started.user_code,
+            verificationURI: started.verification_uri,
+            message: "Enter this code on the GitHub page that just opened."
+        )
+        githubDeviceFlow = prompt
+        let promptID = prompt.id
+        if let url = prompt.verificationURL {
+            NSWorkspace.shared.open(url)
+        }
+        connectorLastMessages[connector.id] = "Finish sign-in in your browser. Cortex starts the first sync automatically."
+        status = "Finish \(connector.name) sign-in in your browser"
+
+        var interval = max(started.interval, 1)
+        var elapsed = 0
+        let expiresIn = max(started.expires_in, interval)
+
+        while githubDeviceFlow?.id == promptID {
+            do {
+                try await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
+            } catch {
+                return
+            }
+            // Cancelled (or superseded) while we slept.
+            guard githubDeviceFlow?.id == promptID else { return }
+            elapsed += interval
+            if elapsed >= expiresIn {
+                failGitHubDeviceFlow(connector, promptID: promptID, message: "The sign-in code expired. Click Sign in with GitHub to get a new one.")
+                return
+            }
+
+            let poll: GitHubDevicePollResponse
+            do {
+                let pollData = try await request(
+                    path: setup.deviceFlowPollEndpoint,
+                    method: "POST",
+                    body: ["source": connector.id, "device_code": started.device_code]
+                )
+                poll = try JSONDecoder().decode(GitHubDevicePollResponse.self, from: pollData)
+            } catch {
+                // A transient network hiccup shouldn't kill the flow — keep polling until expiry.
+                continue
+            }
+            guard githubDeviceFlow?.id == promptID else { return }
+
+            switch poll.status {
+            case "ok":
+                let token = (poll.access_token ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !token.isEmpty else {
+                    failGitHubDeviceFlow(connector, promptID: promptID, message: "GitHub sign-in did not return a token. Please try again.")
+                    return
+                }
+                await completeGitHubDeviceFlow(connector, token: token, promptID: promptID)
+                return
+            case "authorization_pending":
+                continue
+            case "slow_down":
+                interval += 5
+                continue
+            case "expired_token":
+                failGitHubDeviceFlow(connector, promptID: promptID, message: "The sign-in code expired. Click Sign in with GitHub to get a new one.")
+                return
+            case "access_denied":
+                failGitHubDeviceFlow(connector, promptID: promptID, message: "GitHub sign-in was cancelled.")
+                return
+            default:
+                failGitHubDeviceFlow(connector, promptID: promptID, message: poll.detail ?? "GitHub sign-in failed. Please try again.")
+                return
+            }
+        }
+    }
+
+    private func failGitHubDeviceFlow(_ connector: SourceConnectorCatalogItem, promptID: UUID, message: String) {
+        connectorLastMessages[connector.id] = message
+        status = message
+        if githubDeviceFlow?.id == promptID {
+            githubDeviceFlow?.phase = .failed
+            githubDeviceFlow?.message = message
+        }
+    }
+
+    private func completeGitHubDeviceFlow(_ connector: SourceConnectorCatalogItem, token: String, promptID: UUID) async {
+        if githubDeviceFlow?.id == promptID {
+            githubDeviceFlow?.phase = .syncing
+            githubDeviceFlow?.message = "Signed in. Importing your GitHub activity..."
+        }
+        status = "\(connector.name) signed in - importing your activity..."
+
+        // Discover the account's repositories so the first sync has concrete targets. If discovery
+        // fails or the account has none, we still attempt the sync (the backend handles an empty list).
+        var repositories: [String] = []
+        if let discoverEndpoint = connector.connectionSetup?.discovery_endpoint?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !discoverEndpoint.isEmpty {
+            do {
+                let data = try await request(path: discoverEndpoint, method: "POST", body: ["token": token, "limit": 100])
+                if let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let rows = root["repositories"] as? [[String: Any]] {
+                    repositories = rows.compactMap { row in
+                        remoteOptionString(row["sync_value"]) ?? remoteOptionString(row["full_name"]) ?? remoteOptionString(row["name"])
+                    }
+                    if repositories.count > 25 {
+                        repositories = Array(repositories.prefix(25))
+                    }
+                }
+            } catch {
+                // Non-fatal: fall through to a token-only sync.
+            }
+        }
+
+        var payload: [String: Any] = ["token": token]
+        if !repositories.isEmpty {
+            payload["repositories"] = repositories
+        }
+        await syncDirectConnector(connector, payload: payload, rememberPayload: true)
+
+        if githubDeviceFlow?.id == promptID {
+            githubDeviceFlow?.phase = .done
+            githubDeviceFlow?.message = repositories.isEmpty
+                ? "Signed in. Cortex is building your memory."
+                : "Signed in. Importing \(repositories.count) repositor\(repositories.count == 1 ? "y" : "ies")."
+            // Let the success state show briefly, then dismiss the sheet if it's still ours.
+            let doneID = promptID
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 2_600_000_000)
+                await MainActor.run {
+                    if self?.githubDeviceFlow?.id == doneID {
+                        self?.githubDeviceFlow = nil
+                    }
+                }
+            }
+        }
     }
 
     func syncStoredDirectConnector(_ connector: SourceConnectorCatalogItem) {

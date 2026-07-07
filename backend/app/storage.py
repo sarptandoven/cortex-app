@@ -733,6 +733,11 @@ CONNECTOR_SETUP_BLUEPRINTS: dict[str, dict[str, Any]] = {
         "endpoint": "/v1/connectors/github/sync",
         "discovery_endpoint": "/v1/connectors/github/discover",
         "discovery_target_field": "repositories",
+        # Secretless "Sign in with GitHub" via the OAuth Device Flow. The pasted-token credential
+        # field below stays as an advanced fallback.
+        "device_flow_provider": "github",
+        "device_flow_start_endpoint": "/v1/connectors/github/device/start",
+        "device_flow_poll_endpoint": "/v1/connectors/github/device/poll",
         "default_cursor_name": "issues",
         "default_max_records": 100,
         "max_records_limit": 500,
@@ -1401,6 +1406,11 @@ def _connector_connection_setup(item: dict[str, Any], service_baseline: dict[str
         "oauth_provider": blueprint.get("oauth_provider") if managed_oauth_shipped else None,
         "oauth_start_endpoint": blueprint.get("oauth_start_endpoint") if managed_oauth_shipped else None,
         "oauth_complete_endpoint": blueprint.get("oauth_complete_endpoint") if managed_oauth_shipped else None,
+        # Device Flow (RFC 8628) is a secretless browser sign-in — the app shows a code, opens the
+        # verification URL, and polls. GitHub uses this instead of a redirect/broker.
+        "device_flow_provider": blueprint.get("device_flow_provider"),
+        "device_flow_start_endpoint": blueprint.get("device_flow_start_endpoint"),
+        "device_flow_poll_endpoint": blueprint.get("device_flow_poll_endpoint"),
         "credential_storage": "local_vault_credentials" if service_baseline.get("live_sync") else "none",
         "credential_retained_on_disconnect": bool(service_baseline.get("live_sync")),
         "disconnect_behavior": "pause_sync_keep_local_data_and_credentials" if service_baseline.get("live_sync") else "no_live_sync_configuration",
