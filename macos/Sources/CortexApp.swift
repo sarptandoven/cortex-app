@@ -6230,8 +6230,11 @@ final class AppState: ObservableObject {
     /// returning user. The self-heal still runs at the late `presentOnboardingIfNeeded()` call,
     /// after `loadTrust()` has populated sources.
     ///
-    /// Idempotent and safe to call repeatedly (e.g. again from `windowDidBecomeKey`): the guards —
-    /// re-checked inside the async closure — make a second call a no-op once the sheet is shown.
+    /// Called once at the top of bootstrap. Idempotent: the guards — re-checked inside the async
+    /// closure — make a repeat call a no-op once the sheet is shown. Deliberately NOT re-driven from
+    /// windowDidBecomeKey: doing so re-opened onboarding at step 1 during the deliberate
+    /// onboarding→Connections handoff (openConnectionsPrivacy sets showOnboarding=false to let the
+    /// Connections sheet present), which broke "Open Connections" on the final step.
     func presentOnboardingForFirstRunIfNeeded() {
         guard !onboardingComplete, !onboardingDismissedForSession, !showOnboarding else { return }
         setOnboardingStep(firstIncompleteOnboardingStep())
@@ -10117,16 +10120,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         mainWindow?.level = .normal
         mainWindow?.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         showMainWindow()
-    }
-
-    /// When the main window becomes key, re-attempt first-run onboarding presentation. Setting the
-    /// SwiftUI `.sheet` binding from bootstrap's async task can silently no-op if the hosting view's
-    /// window wasn't key yet; this is the guarded retry. Idempotent — the guards inside
-    /// presentOnboardingForFirstRunIfNeeded() make it a no-op once onboarding is complete, dismissed
-    /// for the session, or already showing.
-    func windowDidBecomeKey(_ notification: Notification) {
-        guard (notification.object as? NSWindow) === mainWindow else { return }
-        state.presentOnboardingForFirstRunIfNeeded()
     }
 
     private func showMainWindow() {
