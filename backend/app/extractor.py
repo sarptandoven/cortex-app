@@ -1177,14 +1177,32 @@ def _is_sentence_initial(text: str, index: int) -> bool:
     return cursor < 0 or text[cursor] in _SENTENCE_TERMINATORS
 
 
+_ENTITY_TOKEN_MAX = 2000  # a non-space run longer than this is a blob (base64/minified/hash), never an entity
+_INTERIOR_DOT_RE = re.compile(r"[\w-]\.\w")
+
+
 def _strip_path_and_url_fragments(text: str) -> str:
     """Filesystem paths, URLs, and filenames must never seed entities ("/Users/me/data"
     reads as person "Users"). Tokens containing / \\ ~ or an interior dot (index.sqlite,
     example.com) are replaced with a sentence break before candidate matching; a
     sentence-ending dot is followed by whitespace, not a word character, so prose survives
-    untouched."""
-    without_paths = re.sub(r"\S*[/\\~]\S*", " . ", text)
-    return re.sub(r"[\w-]+\.\w[\w.-]*", " . ", without_paths)
+    untouched. Also collapses absurdly long unbroken runs (base64 blobs, minified code) to a
+    sentence break — they are never entities.
+
+    Implemented per whitespace-delimited token (a single linear `\\S+` scan) rather than the
+    earlier `\\S*[/\\\\~]\\S*` / `[\\w-]+\\.\\w[\\w.-]*` patterns, which backtracked
+    catastrophically (O(n^2)) on a long token with no path char — a real Claude/ChatGPT export
+    message (a base64 attachment, minified code, a long URL) could hang extraction for minutes."""
+    def _clean(match: "re.Match[str]") -> str:
+        token = match.group(0)
+        if len(token) > _ENTITY_TOKEN_MAX:
+            return " . "
+        if "/" in token or "\\" in token or "~" in token:
+            return " . "
+        if _INTERIOR_DOT_RE.search(token):
+            return " . "
+        return token
+    return re.sub(r"\S+", _clean, text)
 
 
 def _entity_candidate(name: str, text: str, start: int) -> str:
@@ -1198,7 +1216,10 @@ def _entity_candidate(name: str, text: str, start: int) -> str:
 
 
 def _entities(text: str) -> list[dict[str, Any]]:
-    searchable = _strip_path_and_url_fragments(text)
+    # Entity extraction only needs prose; cap the scanned span so a pathologically large
+    # single capture (a giant pasted document) can't dominate import time. Real entities
+    # appear well within this window; blobs are already collapsed by the path/URL strip.
+    searchable = _strip_path_and_url_fragments(text[:300_000])
     candidates: set[str] = set()
     for match in re.finditer(r"\b[A-Z][a-zA-Z0-9]+(?:\s+[A-Z][a-zA-Z0-9]+){0,3}\b", searchable):
         candidate = _entity_candidate(match.group(0), searchable, match.start())

@@ -30,6 +30,27 @@ def extract_local(raw_text: str, source: str = "unit-test", author_aliases: list
 
 
 class ExtractorQualityTests(unittest.TestCase):
+    def test_pathological_unbroken_blob_does_not_hang(self) -> None:
+        # A real Claude/ChatGPT export message can be a huge unbroken run (base64 attachment,
+        # minified code, a long URL). The old path/URL strip regexes backtracked O(n^2) on these
+        # and hung extraction for minutes -> the app's import spinner never finished. Extraction
+        # must complete quickly and not crash.
+        import time as _time
+        for blob in ("X" * 500_000,
+                     "https://example.com/" + "a" * 400_000,
+                     ("QUJDREVG" * 60_000)):
+            start = _time.monotonic()
+            data = extract_local(blob, "claude")
+            self.assertLess(_time.monotonic() - start, 10.0, "extraction hung on an unbroken blob")
+            self.assertIsInstance(data.get("records"), list)
+        # A path/URL blob must not seed junk entities, and real names still survive.
+        ents = [e["name"] for e in extract_local(
+            "Met Marcus Feld about Project Atlas. DB at /Users/me/index.sqlite; see example.com.",
+            "docs")["entities"]]
+        self.assertIn("Marcus Feld", ents)
+        self.assertNotIn("Users", ents)
+
+
     def test_self_authored_keeps_personal_memory_on_conversation_sources(self) -> None:
         # remember_this is an explicit "save this about me": personal memories must survive even
         # when the calling agent labels the source claude/chatgpt/slack (conversation sources that
