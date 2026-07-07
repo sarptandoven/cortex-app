@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cortex-client"
+version = "0.1.0"
+description = "Dependency-light (stdlib-only) client for the Cortex local memory server."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["cortex", "memory", "mcp", "llm", "agent", "context"]
+authors = [{ name = "Cortex" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "License :: OSI Approved :: MIT License",
+  "Intended Audience :: Developers",
+]
+# No runtime dependencies: the client uses only the Python standard library
+# (urllib, json, typing). This matches Cortex's stdlib-only server ethos.
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+
+[project.urls]
+Homepage = "https://github.com/doppl-tech/cortex"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cortex_client*"]
