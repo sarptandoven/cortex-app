@@ -183,6 +183,22 @@ RECENCY_RETRIEVAL_BOOST_STEPS: tuple[tuple[float, float], ...] = (
     (90.0, 0.001),
     (365.0, 0.0005),
 )
+# Per-layer exponential temporal decay (Phase 6, behind CORTEX_TEMPORAL_DECAY): a smoother
+# interpolation of the coarse steps above, tuned per layer — episodic/recent facts age fast,
+# semantic/decisions age slowly, and identity-ish layers (style/preference/procedural) are nearly
+# timeless. Amplitude is capped at RECENCY's max (0.004) so decay only breaks ties, never overrides
+# relevance. (amplitude, half_life_days).
+RECENCY_RETRIEVAL_BOOST_MAX = 0.004
+LAYER_DECAY_PARAMS: dict[str, tuple[float, float]] = {
+    "episodic": (0.004, 14.0),
+    "semantic": (0.004, 365.0),
+    "decision": (0.004, 365.0),
+    "style": (0.003, 1460.0),
+    "preference": (0.003, 1460.0),
+    "procedural": (0.003, 1460.0),
+    "negative": (0.003, 1460.0),
+}
+_DEFAULT_LAYER_DECAY = (0.004, 90.0)
 IMPORTANCE_RETRIEVAL_BOOST_STEP = 0.0008
 IMPORTANCE_RETRIEVAL_BOOST_MAX = 0.0024
 # Confidence tie-breaker for retrieval ranking. Most memories are "confirmed" (the extractor
@@ -18393,6 +18409,18 @@ class CortexStore:
         ]
         return [item["row"] for item in sorted(ranked, key=lambda item: item["score"], reverse=True)[:limit]]
 
+    def _contextualized_text(self, row: Any) -> str:
+        """Situate a memory's raw text with its layer/source/date before embedding (Phase 6
+        contextual retrieval), so a bare fragment embeds with the context that disambiguates it."""
+        base = embedding_source_text(self._row_value(row, "content"), self._row_value(row, "summary"))
+        if not base:
+            return base
+        layer = str(self._row_value(row, "layer") or "").strip()
+        source = str(self._row_value(row, "source") or "").strip()
+        when = str(self._row_value(row, "occurred_at") or self._row_value(row, "captured_at") or "")[:10]
+        parts = [segment for segment in (f"layer={layer}" if layer else "", f"source={source}" if source else "", f"date={when}" if when else "") if segment]
+        return (f"[{' '.join(parts)}] " + base) if parts else base
+
     def _rerank_rows(
         self,
         query: str,
@@ -18427,13 +18455,20 @@ class CortexStore:
         if not query_norm:
             return rows
 
-        w_sem = 0.7
-        w_rank = 0.3
+        w_sem = 0.6
+        w_rank = 0.25
+        w_ent = 0.15
         mmr_lambda = 0.3  # diversity weight; relevance weight = 1 - mmr_lambda = 0.7
+
+        # Entity-aware ranking (Phase 6): boost candidates that mention the query's entities. Cheap
+        # heuristic overlap on the row's text/topics; no-op when the query names no entities.
+        plan_entities = {entity.lower() for entity in build_query_plan(query).entities}
 
         features: list[dict[str, Any]] = []
         for index, row in enumerate(rows):
-            text = embedding_source_text(self._row_value(row, "content"), self._row_value(row, "summary"))
+            # Contextual embedding (Phase 6): situate the bare text with its layer/source/date so a
+            # fragment embeds with context, closing the "isolated chunk" gap.
+            text = self._contextualized_text(row)
             vector: list[float] | None = None
             vec_norm = 0.0
             cosine = 0.0
@@ -18446,8 +18481,15 @@ class CortexStore:
                 except Exception:
                     vector = None
                     vec_norm = 0.0
+            entity_overlap = 0.0
+            if plan_entities:
+                haystack = " ".join(
+                    str(self._row_value(row, field) or "")
+                    for field in ("content", "summary", "topics", "entity_ids_json")
+                ).lower()
+                entity_overlap = sum(1 for entity in plan_entities if entity in haystack) / len(plan_entities)
             rank_prior = 1.0 / (1.0 + index)  # rows arrive best-first from fusion
-            base = w_sem * max(0.0, cosine) + w_rank * rank_prior
+            base = w_sem * max(0.0, cosine) + w_rank * rank_prior + w_ent * entity_overlap
             features.append({"row": row, "index": index, "vector": vector, "vec_norm": vec_norm, "base": base})
 
         cap = limit if limit and limit > 0 else len(features)
@@ -18685,7 +18727,13 @@ class CortexStore:
         age_seconds = _age_seconds(str(self._row_value(row, "captured_at") or ""), now=now)
         if age_seconds is None:
             return 0.0
-        age_days = age_seconds / 86400.0
+        age_days = max(0.0, age_seconds / 86400.0)
+        if os.environ.get("CORTEX_TEMPORAL_DECAY", "").strip().lower() in {"1", "true", "on", "yes"}:
+            layer = str(self._row_value(row, "layer") or "")
+            amplitude, half_life = LAYER_DECAY_PARAMS.get(layer, _DEFAULT_LAYER_DECAY)
+            # exp(-age/half_life * ln2) halves the boost every half_life days.
+            decayed = amplitude * math.exp(-age_days * math.log(2) / max(half_life, 1e-6))
+            return min(RECENCY_RETRIEVAL_BOOST_MAX, decayed)
         for max_days, boost in RECENCY_RETRIEVAL_BOOST_STEPS:
             if age_days <= max_days:
                 return boost
