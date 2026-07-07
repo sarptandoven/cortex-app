@@ -2,23 +2,23 @@
   "app": "Cortex",
   "artifacts": [
     {
-      "filename": "Cortex-0.2.0-12.dmg",
+      "filename": "Cortex-0.2.0-13.dmg",
       "kind": "dmg",
-      "sha256": "ed7cd8c3f6a131e5a345ac418f3264900305c7414d3fb8c2dfeba0f1b5847489",
-      "size_bytes": 86036688,
-      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-12.dmg"
+      "sha256": "40d4262839a44e78f591da0b1c9da4dd8585b221df5cf357be7c598438c56eaa",
+      "size_bytes": 85988251,
+      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-13.dmg"
     },
     {
-      "filename": "Cortex-0.2.0-12.app.zip",
+      "filename": "Cortex-0.2.0-13.app.zip",
       "kind": "zip",
-      "sha256": "e6fd92ce3146989411d4e0998b94574d3721ae173ceb87c962b8928dd1dd604a",
-      "size_bytes": 67090258,
-      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-12.app.zip"
+      "sha256": "3d1aad57fa37eb8aca0e997f8dca9a59c407b4fe65cee88fcdd855f965d050ea",
+      "size_bytes": 67728235,
+      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-13.app.zip"
     },
     {
       "filename": "cortex-memory-0.1.0.zip",
       "kind": "obsidian-plugin",
-      "sha256": "86347732b259b6b3cd7ff3a4a7a3c79a8d2be49d2658814151b54d2958e17c37",
+      "sha256": "b4e439b018dc9b0bc8d162e20c1c801fdfcfe98dcd98e337c22d0f048b66615b",
       "size_bytes": 3423,
       "url": "https://trydoppl.com/downloads/cortex-memory-0.1.0.zip"
     }
@@ -26,7 +26,7 @@
   "beta_readiness": {
     "audience": "first-100 local beta",
     "generated_artifact_verification": [
-      "shasum -a 256 -c Cortex-0.2.0-12.checksums.txt",
+      "shasum -a 256 -c Cortex-0.2.0-13.checksums.txt",
       "python3 scripts/validate_update_manifest.py <release-dir>/latest.json",
       "python3 scripts/check_vector_runtime.py --app macos/build/Cortex.app",
       "python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir <release-dir>"
@@ -40,21 +40,19 @@
     ],
     "known_limitations": [
       "Manual app replacement is the only update path for this local beta.",
-      "GitHub connects with browser sign-in (Sign in with GitHub); Google, Notion, and Outlook managed OAuth sign-in still require configured OAuth app credentials in the app build.",
-      "Hosted accounts, cloud backup, and remote MCP/OAuth are not enabled.",
-      "Support starts from the sanitized support bundle, not raw memory folder data.",
+      "External agents connect over the local MCP server (Claude Desktop/Code, Cursor, VS Code) or the universal HTTP tool API; ChatGPT/web apps connect via the Cortex browser extension (local bridge). Hosted remote MCP + OAuth is not enabled.",
+      "GitHub connects with browser sign-in; Google, Notion, and Outlook managed OAuth still require configured OAuth app credentials in the app build.",
+      "Hosted accounts and cloud backup are not enabled.",
       "Developer ID signing, notarization, hosted HTTPS downloads, and a support process are required before broad public distribution."
     ],
     "manual_qa_checklist": [
       "Install from the DMG on a clean macOS 13 or newer user profile.",
       "Launch from Applications and complete first-run setup.",
-      "Connect a memory source in Connections & Privacy.",
-      "Approve at least one useful memory and archive obvious noise in Review.",
-      "Ask a question that returns cited memory from the approved connected source.",
-      "Verify Connections & Privacy shows memory folder path, backend health, backup, export, support bundle, and update feed controls.",
-      "Create a backup and confirm the support bundle contains no raw memory content.",
-      "Replace the app with this build over a previous build and confirm the memory folder remains intact.",
-      "Roll back to the previous build and confirm the memory folder remains intact."
+      "Connect a memory source in Connections & Privacy and approve at least one memory.",
+      "Point Claude Desktop or Cursor at the local MCP server and ask a question that returns cited memory.",
+      "From an OpenAI/Anthropic function-calling app, fetch /v1/tools/schema and call a tool.",
+      "Connect the browser extension (menu-bar action) and inject cited context into ChatGPT/Claude.ai.",
+      "Replace the app over a previous build and confirm the memory folder remains intact."
     ],
     "manual_qa_required": true,
     "rollback_steps": [
@@ -70,20 +68,21 @@
       "Relaunch, confirm backend health, and run the reliability report."
     ]
   },
-  "build": "12",
+  "build": "13",
   "bundle_id": "com.cortex.doppl",
   "channel": "local-beta",
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "New: Sign in with GitHub — connect GitHub by authorizing in your browser instead of pasting a personal access token. Cortex reads your GitHub activity (read-only) and imports it into your memory.",
-    "Connections library shows a live progress sheet during sign-in (waiting → importing → done) and lets you cancel."
+    "External connections: any AI app can now use your Cortex memory as context — MCP (Claude Desktop/Code, Cursor, VS Code), a universal HTTP tool API with OpenAI/Anthropic/OpenAPI schemas, a Python/TypeScript SDK, and a browser extension that injects cited context into ChatGPT/Claude.ai/Notion.",
+    "Smarter retrieval, on by default: task-aware query planning (understands your intent and splits compound questions) plus per-layer temporal decay, so agents get the right cited context for the task.",
+    "New 'Connect browser extension' menu-bar action, MCP resources & prompts, a use_cortex router tool, and a consented, safety-guarded way to deliver cited briefs to a webhook."
   ],
-  "released_at": "2026-07-07T09:22:41Z",
+  "released_at": "2026-07-07T11:30:00Z",
   "source_provenance": {
-    "built_at": "2026-07-07T09:22:41Z",
+    "built_at": "2026-07-07T11:30:00Z",
     "git_branch": "mass-scale-app-redesign",
-    "git_commit": "ca1cc586f7223081a98f87724a0229d7e327c32a",
+    "git_commit": "pending",
     "git_dirty": false
   },
   "version": "0.2.0"
