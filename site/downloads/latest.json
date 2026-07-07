@@ -2,23 +2,23 @@
   "app": "Cortex",
   "artifacts": [
     {
-      "filename": "Cortex-0.2.0-13.dmg",
+      "filename": "Cortex-0.2.0-14.dmg",
       "kind": "dmg",
-      "sha256": "40d4262839a44e78f591da0b1c9da4dd8585b221df5cf357be7c598438c56eaa",
-      "size_bytes": 85988251,
-      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-13.dmg"
+      "sha256": "f8d0d8d5dff6c5363db3afd97873641647465179a263a25a438e1827c7dcfc02",
+      "size_bytes": 84899666,
+      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-14.dmg"
     },
     {
-      "filename": "Cortex-0.2.0-13.app.zip",
+      "filename": "Cortex-0.2.0-14.app.zip",
       "kind": "zip",
-      "sha256": "3d1aad57fa37eb8aca0e997f8dca9a59c407b4fe65cee88fcdd855f965d050ea",
-      "size_bytes": 67728235,
-      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-13.app.zip"
+      "sha256": "c6a4d763fd47b44a2125837173122ec8f127c9fdfd726e3cefb3c2bf01d27fa7",
+      "size_bytes": 67732064,
+      "url": "https://trydoppl.com/downloads/Cortex-0.2.0-14.app.zip"
     },
     {
       "filename": "cortex-memory-0.1.0.zip",
       "kind": "obsidian-plugin",
-      "sha256": "b4e439b018dc9b0bc8d162e20c1c801fdfcfe98dcd98e337c22d0f048b66615b",
+      "sha256": "832d9c89cd5cb1c62e5d357883abb7218fe92d347b78ad50874512a2e7b952ec",
       "size_bytes": 3423,
       "url": "https://trydoppl.com/downloads/cortex-memory-0.1.0.zip"
     }
@@ -26,7 +26,7 @@
   "beta_readiness": {
     "audience": "first-100 local beta",
     "generated_artifact_verification": [
-      "shasum -a 256 -c Cortex-0.2.0-13.checksums.txt",
+      "shasum -a 256 -c Cortex-0.2.0-14.checksums.txt",
       "python3 scripts/validate_update_manifest.py <release-dir>/latest.json",
       "python3 scripts/check_vector_runtime.py --app macos/build/Cortex.app",
       "python3 scripts/ops_readiness_check.py --skip-tests --skip-build --require-package-artifacts --release-dir <release-dir>"
@@ -51,7 +51,7 @@
       "Connect a memory source in Connections & Privacy and approve at least one memory.",
       "Point Claude Desktop or Cursor at the local MCP server and ask a question that returns cited memory.",
       "From an OpenAI/Anthropic function-calling app, fetch /v1/tools/schema and call a tool.",
-      "Connect the browser extension (menu-bar action) and inject cited context into ChatGPT/Claude.ai.",
+      "Menu bar → 'Connect browser extension' + 'Copy API connection info', then inject cited context into ChatGPT/Claude.ai.",
       "Replace the app over a previous build and confirm the memory folder remains intact."
     ],
     "manual_qa_required": true,
@@ -68,19 +68,19 @@
       "Relaunch, confirm backend health, and run the reliability report."
     ]
   },
-  "build": "13",
+  "build": "14",
   "bundle_id": "com.cortex.doppl",
   "channel": "local-beta",
   "mandatory": false,
   "minimum_macos": "13.0",
   "release_notes": [
-    "External connections: any AI app can now use your Cortex memory as context — MCP (Claude Desktop/Code, Cursor, VS Code), a universal HTTP tool API with OpenAI/Anthropic/OpenAPI schemas, a Python/TypeScript SDK, and a browser extension that injects cited context into ChatGPT/Claude.ai/Notion.",
-    "Smarter retrieval, on by default: task-aware query planning (understands your intent and splits compound questions) plus per-layer temporal decay, so agents get the right cited context for the task.",
-    "New 'Connect browser extension' menu-bar action, MCP resources & prompts, a use_cortex router tool, and a consented, safety-guarded way to deliver cited briefs to a webhook."
+    "Connect Cortex to your other apps from the menu bar: 'Connect browser extension' pairs the extension, and 'Copy API connection info' hands you a read-only token + endpoints + a ready-to-run example for any function-calling app or the Cortex SDK.",
+    "Cortex now learns from use: it records which cited memories agents actually rely on (locally, feature-vectors only) to improve future ranking.",
+    "Carries the full external-connection stack from build 13 (MCP + universal HTTP tool API + SDK + browser extension + delivery) with task-aware retrieval on by default."
   ],
-  "released_at": "2026-07-07T11:30:00Z",
+  "released_at": "2026-07-07T12:30:00Z",
   "source_provenance": {
-    "built_at": "2026-07-07T11:30:00Z",
+    "built_at": "2026-07-07T12:30:00Z",
     "git_branch": "mass-scale-app-redesign",
     "git_commit": "pending",
     "git_dirty": false
