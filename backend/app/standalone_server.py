@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from .config import load_settings
 from .extractor import extract_context
 from .hosted_readiness import hosted_readiness_contract
-from .mcp_tools import CORE_TOOL_NAMES, TOOLS, call_tool, tool_call_result, tools_for_scopes
+from .mcp_tools import CORE_TOOL_NAMES, TOOLS, call_tool, export_tool_schema, tool_call_result, tools_for_scopes
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
 
@@ -812,6 +812,61 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 if not context:
                     return
                 self._handle_mcp(context)
+                return
+
+            # Universal adapter surface: the same tool catalog, reachable by any function-calling
+            # app over plain HTTP. Authed like /mcp (Bearer → scoped context) and enforced per-tool
+            # by call_tool, so a read-only token gets a read-only surface. GET /v1/tools/schema
+            # projects the catalog to openai/anthropic/openapi/mcp; POST /v1/tools/call (generic)
+            # and POST /v1/tools/{name} (per-tool, matches the OpenAPI operationIds) dispatch tools.
+            if path == "/v1/tools/schema" and method == "GET":
+                context = self._auth_mcp()
+                if not context:
+                    return
+                token_scopes = None if context.get("admin") else list(context.get("scopes") or [])
+                fmt = (params.get("format") or ["openai"])[0]
+                host = self.headers.get("Host") or "127.0.0.1:8766"
+                base_url = f"http://{host}"
+                try:
+                    self._send_json({"schema": export_tool_schema(fmt, token_scopes, surface="full", base_url=base_url)})
+                except ValueError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if path.startswith("/v1/tools/") and method == "POST":
+                context = self._auth_mcp()
+                if not context:
+                    return
+                tool_user = context["user_id"]
+                token_scopes = None if context.get("admin") else list(context.get("scopes") or [])
+                body = self._json_body()
+                if path == "/v1/tools/call":
+                    tool_name = str(body.get("name") or "")
+                    arguments = body.get("arguments") if isinstance(body.get("arguments"), dict) else {}
+                    wrap = True
+                else:
+                    # /v1/tools/{name}: the URL names the tool; the whole body is the arguments.
+                    tool_name = path[len("/v1/tools/"):]
+                    arguments = body if isinstance(body, dict) else {}
+                    wrap = False
+                if not tool_name:
+                    self._send_json({"detail": "tool name is required"}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                    return
+                try:
+                    value = call_tool(store, tool_user, tool_name, arguments, token_scopes=token_scopes)
+                    store.record_agent_event(tool_user, tool_name, arguments, success=True, token=context)
+                except PermissionError as exc:
+                    store.record_agent_event(tool_user, tool_name, arguments, success=False, error=str(exc), token=context)
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.FORBIDDEN)
+                    return
+                except (ValueError, KeyError) as exc:
+                    store.record_agent_event(tool_user, tool_name, arguments, success=False, error=str(exc), token=context)
+                    self._send_json({"detail": self._safe_error_message(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                    return
+                except Exception as exc:
+                    store.record_agent_event(tool_user, tool_name, arguments, success=False, error=str(exc), token=context)
+                    self._send_json({"detail": self._safe_error_message(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                    return
+                self._send_json({"tool": tool_name, "result": value} if wrap else value)
                 return
 
             user_id = self._auth_user(method, path)

@@ -862,6 +862,106 @@ def tool_required_capabilities(name: str, *, scoped: bool = False) -> list[str]:
     return list(dict.fromkeys(capabilities))
 
 
+# --- Tool metadata: MCP annotations + titles + output schemas -------------------------------
+# Single-sourced from the scope sets above so a hint can never drift from a tool's real behavior.
+# Annotations are advisory hints (a client may auto-approve readOnly tools, confirm destructive
+# ones) — never authorization; call_tool still enforces every scope.
+
+# Tools that reach OUTSIDE the local memory store (network / external services) → open world.
+_OPEN_WORLD_TOOLS = DIRECT_CONNECTOR_SYNC_TOOLS | {
+    "connect_source_account",
+    "sync_source_records",
+    "sync_connected_sources",
+}
+
+_TOOL_TITLE_OVERRIDES: dict[str, str] = {
+    "get_context": "Get Working Context",
+    "ask_memory": "Ask Memory (cited)",
+    "search_memory": "Search Memory",
+    "get_entity_context": "Get Entity Context",
+    "get_person_map": "Whole-Person Map",
+    "remember_this": "Remember This",
+    "list_capabilities": "List Cortex Capabilities",
+}
+
+
+def _tool_title(name: str) -> str:
+    override = _TOOL_TITLE_OVERRIDES.get(name)
+    if override:
+        return override
+    return name.replace("_", " ").title()
+
+
+def _tool_annotations(name: str) -> dict[str, Any]:
+    is_read = name in READ_TOOLS
+    is_export = name in EXPORT_TOOLS
+    is_write = name in WRITE_TOOLS
+    is_maintenance = name in MAINTENANCE_TOOLS
+    is_destructive = name in DESTRUCTIVE_TOOLS
+    read_only = (is_read or is_export) and not (is_write or is_maintenance or is_destructive)
+    idempotent = (is_read or is_export) and not is_destructive
+    return {
+        "title": _tool_title(name),
+        "readOnlyHint": read_only,
+        "destructiveHint": is_destructive,
+        "idempotentHint": idempotent,
+        "openWorldHint": name in _OPEN_WORLD_TOOLS,
+    }
+
+
+# Permissive output schemas for the high-value tools an external agent leans on. Kept
+# additionalProperties-open so structuredContent always validates against the declared schema
+# (a strict client rejects a mismatch) while still documenting the shape for parsers.
+_OUTPUT_OBJECT = {"type": "object", "additionalProperties": True}
+OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
+    "search_memory": {
+        "type": "object",
+        "properties": {
+            "results": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+            "diagnostics": {"type": "object", "additionalProperties": True},
+        },
+        "additionalProperties": True,
+    },
+    "ask_memory": {
+        "type": "object",
+        "properties": {
+            "status": {"type": "string"},
+            "answer": {"type": "string"},
+            "citations": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+        },
+        "additionalProperties": True,
+    },
+    "get_context": {
+        "type": "object",
+        "properties": {
+            "task": {"type": "string"},
+            "intent": {"type": "string"},
+            "layers": {"type": "object", "additionalProperties": True},
+            "total_tokens_estimated": {"type": "integer"},
+        },
+        "additionalProperties": True,
+    },
+    "get_entity_context": dict(_OUTPUT_OBJECT),
+    "get_person_map": dict(_OUTPUT_OBJECT),
+    "remember_this": dict(_OUTPUT_OBJECT),
+    "list_capabilities": dict(_OUTPUT_OBJECT),
+}
+
+
+def _apply_tool_metadata() -> None:
+    """Attach title + annotations (+ outputSchema where declared) to every tool, once at import."""
+    for tool in TOOLS:
+        name = str(tool.get("name") or "")
+        tool.setdefault("title", _tool_title(name))
+        tool["annotations"] = _tool_annotations(name)
+        schema = OUTPUT_SCHEMAS.get(name)
+        if schema is not None:
+            tool["outputSchema"] = schema
+
+
+_apply_tool_metadata()
+
+
 def tools_for_scopes(token_scopes: list[str] | None = None, *, surface: str = "core") -> list[dict[str, Any]]:
     """Which tools a caller is SHOWN. Admin auth (token_scopes is None — the app's own path)
     always sees everything. Scoped tokens default to the curated core surface so agents face a
@@ -905,6 +1005,103 @@ def _connector_detail_capability(token_scopes: list[str] | None) -> str | None:
     if "export" in scope_set:
         return "export"
     return None
+
+
+# --- Universal schema exporters ------------------------------------------------------------
+# The SAME TOOLS list projects to MCP, OpenAI/Anthropic function-calling, and OpenAPI, so any
+# function-calling app can drive Cortex from one definition. Scope filtering reuses
+# tools_for_scopes, so a read-only token's exported surface is exactly its allowed tools.
+
+def _tool_input_schema(tool: dict[str, Any]) -> dict[str, Any]:
+    schema = tool.get("inputSchema")
+    if isinstance(schema, dict):
+        return schema
+    return {"type": "object", "properties": {}}
+
+
+def export_openai_tools(token_scopes: list[str] | None = None, *, surface: str = "full") -> list[dict[str, Any]]:
+    """OpenAI Chat Completions / Responses `tools` array (function-calling)."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": str(tool.get("name") or ""),
+                "description": str(tool.get("description") or ""),
+                "parameters": _tool_input_schema(tool),
+            },
+        }
+        for tool in tools_for_scopes(token_scopes, surface=surface)
+    ]
+
+
+def export_anthropic_tools(token_scopes: list[str] | None = None, *, surface: str = "full") -> list[dict[str, Any]]:
+    """Anthropic Messages API `tools` array."""
+    return [
+        {
+            "name": str(tool.get("name") or ""),
+            "description": str(tool.get("description") or ""),
+            "input_schema": _tool_input_schema(tool),
+        }
+        for tool in tools_for_scopes(token_scopes, surface=surface)
+    ]
+
+
+def export_openapi(
+    base_url: str = "http://127.0.0.1:8766",
+    token_scopes: list[str] | None = None,
+    *,
+    surface: str = "full",
+    version: str = "0.2.0",
+) -> dict[str, Any]:
+    """OpenAPI 3.1 document exposing one POST path per tool (operationId == tool name), suitable
+    for custom-GPT actions / Zapier-style connectors once a reachable endpoint is enabled."""
+    paths: dict[str, Any] = {}
+    for tool in tools_for_scopes(token_scopes, surface=surface):
+        name = str(tool.get("name") or "")
+        if not name:
+            continue
+        input_schema = _tool_input_schema(tool)
+        paths[f"/v1/tools/{name}"] = {
+            "post": {
+                "operationId": name,
+                "summary": str(tool.get("title") or name),
+                "description": str(tool.get("description") or ""),
+                "requestBody": {
+                    "required": bool(input_schema.get("required")),
+                    "content": {"application/json": {"schema": input_schema}},
+                },
+                "responses": {
+                    "200": {
+                        "description": "Tool result",
+                        "content": {
+                            "application/json": {
+                                "schema": tool.get("outputSchema") or {"type": "object", "additionalProperties": True}
+                            }
+                        },
+                    }
+                },
+            }
+        }
+    return {
+        "openapi": "3.1.0",
+        "info": {"title": "Cortex Memory", "version": version, "description": "Cited personal-memory context for AI agents."},
+        "servers": [{"url": base_url.rstrip("/")}],
+        "paths": paths,
+    }
+
+
+def export_tool_schema(fmt: str, token_scopes: list[str] | None = None, *, surface: str = "full", base_url: str = "http://127.0.0.1:8766") -> Any:
+    """Dispatch a `format` string to the right exporter. Used by the /v1/tools/schema endpoint."""
+    normalized = str(fmt or "").strip().lower()
+    if normalized in {"openai", "openai-tools", "functions"}:
+        return export_openai_tools(token_scopes, surface=surface)
+    if normalized in {"anthropic", "claude"}:
+        return export_anthropic_tools(token_scopes, surface=surface)
+    if normalized in {"openapi", "openapi-3.1", "actions"}:
+        return export_openapi(base_url, token_scopes, surface=surface)
+    if normalized in {"mcp", "", "raw"}:
+        return tools_for_scopes(token_scopes, surface=surface)
+    raise ValueError(f"Unknown tool-schema format: {fmt!r}")
 
 
 def _bool_arg(args: dict[str, Any], key: str, default: bool = False) -> bool:
