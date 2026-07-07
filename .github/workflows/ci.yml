@@ -56,6 +56,12 @@ jobs:
       - name: Run retrieval quality regression gate
         run: python scripts/retrieval_eval.py
 
+      - name: Run MCP tool-routing gate
+        run: python scripts/tool_routing_eval.py
+
+      - name: Run universal adapter contract gate
+        run: python scripts/adapter_contract_eval.py
+
       - name: Run adaptation quality evaluation
         run: python scripts/adaptation_eval.py
 

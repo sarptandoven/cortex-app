@@ -9318,6 +9318,9 @@ class CortexStore:
                 ranked_limit,
                 user_settings=user_settings,
             )
+            # Optional reranking (flag-gated, no-op by default) reorders the fused candidates
+            # before provenance diversification narrows to `limit`.
+            rows = self._rerank_rows(query, rows, len(rows), user_settings=user_settings)
             scoped_to_memory = bool(source or source_account_id or _normalize_retrieval_metadata_filters(metadata_filters))
             if rows:
                 rows = self._diversify_memory_rows(rows, limit, scoped_to_source=scoped_to_memory)
@@ -9334,6 +9337,7 @@ class CortexStore:
                 ).fetchall()
                 mode_counts["fallback_like"] = len(fallback_rows)
                 rows = self._rank_rows_with_layer_boosts(query, fallback_rows, ranked_limit, user_settings=user_settings)
+                rows = self._rerank_rows(query, rows, len(rows), user_settings=user_settings)
                 rows = self._diversify_memory_rows(rows, limit, scoped_to_source=scoped_to_memory)
             if not rows:
                 existing_ids = {row["id"] for row in rows}
@@ -18356,6 +18360,99 @@ class CortexStore:
             for index, row in enumerate(rows)
         ]
         return [item["row"] for item in sorted(ranked, key=lambda item: item["score"], reverse=True)[:limit]]
+
+    def _rerank_rows(
+        self,
+        query: str,
+        rows: list[Any],
+        limit: int,
+        *,
+        user_settings: dict[str, Any] | None = None,
+    ) -> list[Any]:
+        """Optional reranking stage between fusion and diversification (Phase 2/3 of the outbound
+        retrieval plan). Reorders the fused candidate set with a stronger signal than RRF+boosts:
+        model2vec query↔candidate cosine (semantic relevance) blended with the fused-rank prior,
+        and — in mmr mode — Maximal Marginal Relevance to suppress near-duplicate neighbours before
+        provenance diversification. Stdlib/CPU only (reuses the bundled embedder).
+
+        No-ops (returns rows unchanged) when reranking is disabled (CORTEX_RERANK unset/"off"), the
+        embedder is the hash fallback (no real semantics), the query is empty, there are <2 rows, or
+        the query fails to embed. Only reorders — never changes which rows are eligible — so the
+        citation/review gates downstream are untouched. Modes: off | linear | mmr | linear+mmr."""
+        mode = os.environ.get("CORTEX_RERANK", "off").strip().lower()
+        if mode in {"", "off", "0", "false", "none"} or not rows or len(rows) <= 1:
+            return rows
+        if embedding_status().get("provider") == "hash":
+            return rows
+        query = (query or "").strip()
+        if not query:
+            return rows
+        try:
+            query_vector = embed_text(query)
+        except Exception:
+            return rows
+        query_norm = math.sqrt(sum(value * value for value in query_vector))
+        if not query_norm:
+            return rows
+
+        w_sem = 0.7
+        w_rank = 0.3
+        mmr_lambda = 0.3  # diversity weight; relevance weight = 1 - mmr_lambda = 0.7
+
+        features: list[dict[str, Any]] = []
+        for index, row in enumerate(rows):
+            text = embedding_source_text(self._row_value(row, "content"), self._row_value(row, "summary"))
+            vector: list[float] | None = None
+            vec_norm = 0.0
+            cosine = 0.0
+            if text:
+                try:
+                    vector = embed_text(text)
+                    vec_norm = math.sqrt(sum(value * value for value in vector))
+                    if vec_norm:
+                        cosine = sum(a * b for a, b in zip(query_vector, vector)) / (query_norm * vec_norm)
+                except Exception:
+                    vector = None
+                    vec_norm = 0.0
+            rank_prior = 1.0 / (1.0 + index)  # rows arrive best-first from fusion
+            base = w_sem * max(0.0, cosine) + w_rank * rank_prior
+            features.append({"row": row, "index": index, "vector": vector, "vec_norm": vec_norm, "base": base})
+
+        cap = limit if limit and limit > 0 else len(features)
+        if "mmr" not in mode:
+            ordered = sorted(features, key=lambda f: (f["base"], -f["index"]), reverse=True)
+            return [f["row"] for f in ordered[:cap]]
+
+        # Maximal Marginal Relevance: greedily pick the candidate maximizing
+        # (1-λ)·relevance − λ·max_similarity_to_already_selected. Deterministic tie-break on rank.
+        selected: list[dict[str, Any]] = []
+        remaining = list(features)
+        while remaining and len(selected) < cap:
+            best: dict[str, Any] | None = None
+            best_score: float | None = None
+            for feature in remaining:
+                if selected and feature["vector"] is not None and feature["vec_norm"]:
+                    redundancy = 0.0
+                    for chosen in selected:
+                        if chosen["vector"] is not None and chosen["vec_norm"]:
+                            sim = sum(a * b for a, b in zip(feature["vector"], chosen["vector"])) / (feature["vec_norm"] * chosen["vec_norm"])
+                            if sim > redundancy:
+                                redundancy = sim
+                    score = (1.0 - mmr_lambda) * feature["base"] - mmr_lambda * redundancy
+                else:
+                    score = feature["base"]
+                if (
+                    best_score is None
+                    or score > best_score
+                    or (score == best_score and best is not None and feature["index"] < best["index"])
+                ):
+                    best_score = score
+                    best = feature
+            if best is None:
+                break
+            selected.append(best)
+            remaining.remove(best)
+        return [f["row"] for f in selected]
 
     def _diversify_memory_rows(self, rows: list[Any], limit: int, *, scoped_to_source: bool) -> list[Any]:
         if limit <= 0 or len(rows) <= 1:
