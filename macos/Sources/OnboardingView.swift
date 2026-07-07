@@ -620,6 +620,20 @@ private struct OnboardingQuickCaptureStep: View {
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
+
+            // Pure-visual preview of the capture pill so the user experiences the notch during
+            // onboarding (no backend needed). Uses the same .captured style that a real quick
+            // capture surfaces. Direct-download only — deliberately absent from masCard.
+            Button {
+                NotchNotifier.shared.show(
+                    title: "Saved to Cortex",
+                    subtitle: "This is what a quick capture looks like.",
+                    style: .captured
+                )
+            } label: {
+                Label("Show me the notch", systemImage: "bell.badge")
+            }
+            .buttonStyle(.bordered)
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -3468,6 +3468,11 @@ final class AppState: ObservableObject {
         // (Also serves as a visible on-launch proof that the icon animates at all.)
         beginMenuBarWork()
         defer { endMenuBarWork() }
+        // First-run guidance must appear INSTANTLY — before the backend cold-starts and the
+        // load*() chain runs below — otherwise a slow/cold engine leaves a genuine new user
+        // staring at a blank window with no instructions. This is self-heal-free and gated purely
+        // on the persisted onboardingComplete flag, so returning users are never affected.
+        presentOnboardingForFirstRunIfNeeded()
         // Cortex Cloud only: the cxs_ access token lives in memory, so on launch (and any
         // full bootstrap) it must be re-minted from the stored refresh token before any
         // authenticated call fires. Local mode never enters this branch.
@@ -3496,6 +3501,20 @@ final class AppState: ObservableObject {
         startSyncProgressPolling()
         activateQuickCaptureIfEnabled()
         presentOnboardingIfNeeded()
+        // Fire a one-time "proof of life" notch so a new user actually sees the notch channel work
+        // even before any learn/capture event happens. Gated on its OWN key (not onboardingComplete,
+        // which may already be true on a machine that ran earlier builds) so it shows exactly once
+        // per machine, and delayed so it lands after the window/sheet are on screen.
+        if !UserDefaults.standard.bool(forKey: "welcomeNotchShown.v1") {
+            UserDefaults.standard.set(true, forKey: "welcomeNotchShown.v1")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                NotchNotifier.shared.show(
+                    title: "Welcome to Cortex",
+                    subtitle: "This is your notch — Cortex speaks here.",
+                    style: .info
+                )
+            }
+        }
     }
 
     func ensureBackend() async {
@@ -6196,6 +6215,37 @@ final class AppState: ObservableObject {
             "onboardingTrustDefaultsApplied.v1",
         ] {
             UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+
+    /// First-run only: present the onboarding walkthrough immediately at the very start of
+    /// bootstrap — before ensureBackend()/the load*() chain — so a genuine new user sees the guided
+    /// setup instantly instead of a blank window while the engine cold-starts.
+    ///
+    /// Gated PURELY on the persisted `onboardingComplete` flag (initialized from UserDefaults at
+    /// init): a returning finished user has `onboardingComplete == true`, so the guard returns and
+    /// nothing is shown or mutated. Deliberately does NOT run the self-heal that
+    /// `presentOnboardingIfNeeded()` does, because that reads `hasAtLeastOneConnectedSource`, and
+    /// `sourceAccounts` isn't loaded this early — evaluating it here could wrongly re-onboard a
+    /// returning user. The self-heal still runs at the late `presentOnboardingIfNeeded()` call,
+    /// after `loadTrust()` has populated sources.
+    ///
+    /// Idempotent and safe to call repeatedly (e.g. again from `windowDidBecomeKey`): the guards —
+    /// re-checked inside the async closure — make a second call a no-op once the sheet is shown.
+    func presentOnboardingForFirstRunIfNeeded() {
+        guard !onboardingComplete, !onboardingDismissedForSession, !showOnboarding else { return }
+        setOnboardingStep(firstIncompleteOnboardingStep())
+        // Flip on the next runloop tick so the `.sheet` is driven AFTER the NSHostingController's
+        // window is on screen. Setting an `isPresented` binding before the hosting view is attached
+        // to a visible/key window can silently no-op with no retry; this mirrors the proven pattern
+        // in showOnboardingAgain().
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  !self.onboardingComplete,
+                  !self.onboardingDismissedForSession,
+                  !self.showOnboarding else { return }
+            self.showOnboarding = true
+            self.status = "Connect a source to finish setting up Cortex."
         }
     }
 
@@ -10067,6 +10117,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         mainWindow?.level = .normal
         mainWindow?.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         showMainWindow()
+    }
+
+    /// When the main window becomes key, re-attempt first-run onboarding presentation. Setting the
+    /// SwiftUI `.sheet` binding from bootstrap's async task can silently no-op if the hosting view's
+    /// window wasn't key yet; this is the guarded retry. Idempotent — the guards inside
+    /// presentOnboardingForFirstRunIfNeeded() make it a no-op once onboarding is complete, dismissed
+    /// for the session, or already showing.
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === mainWindow else { return }
+        state.presentOnboardingForFirstRunIfNeeded()
     }
 
     private func showMainWindow() {
