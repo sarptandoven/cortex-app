@@ -19,7 +19,15 @@ from urllib.request import Request, urlopen
 from .connectors._redaction import redact_error_message
 from .database import connect, sqlite_vec_status
 from .embeddings import VECTOR_DIMENSIONS, configured_embedding_model, embed_text, embed_text_result, embedding_hash, embedding_json, embedding_source_text, embedding_status
-from .query_plan import build_query_plan, context_hop_deadline_ms, context_hop_enabled, query_plan_enabled
+from .query_plan import (
+    build_query_plan,
+    context_hop_deadline_ms,
+    context_hop_enabled,
+    entity_boost_enabled,
+    query_plan_enabled,
+    second_hop_deadline_ms,
+    second_hop_enabled,
+)
 from .mirror import compute_mirror_insight
 from .profile import build_profile_sections
 from .condense import condense_section
@@ -228,6 +236,10 @@ def _configured_rerank_weights() -> dict[str, float]:
     return weights
 IMPORTANCE_RETRIEVAL_BOOST_STEP = 0.0008
 IMPORTANCE_RETRIEVAL_BOOST_MAX = 0.0024
+# Capped entity-overlap boost applied in fusion (behind CORTEX_ENTITY_BOOST). Amplitude sits at the
+# recency/importance tier so it only refines a near-tie toward a memory that names the query's
+# entities — it can never override lexical/vector relevance (RRF terms are ~0.6/(60+i) ≈ 0.01/rank).
+ENTITY_OVERLAP_RETRIEVAL_BOOST_MAX = 0.003
 # Confidence tie-breaker for retrieval ranking. Most memories are "confirmed" (the extractor
 # default), so this is uniform and inert for them; it only moves the ranking when extraction
 # assigns weaker confidence (e.g. inferred/low), so a shaky memory loses a near-tie to a
@@ -10023,7 +10035,11 @@ class CortexStore:
         so learn_rerank_weights.py can fit weights from real usage. sem is 0 under the hash embedder."""
         cosine = 0.0
         if query_vector is not None and query_norm:
-            text = embedding_source_text(item.get("content"), item.get("summary"))
+            # Train/serve parity: the reranker scores `sem` from the CONTEXTUALIZED text
+            # (layer/source/date prefix, _rerank_rows -> _contextualized_text), so the logged feature
+            # that learn_rerank_weights.py fits on must use the same text — otherwise the learned
+            # weights are trained on a different `sem` distribution than serving uses.
+            text = self._contextualized_text(item)
             if text:
                 try:
                     vector = embed_text(text)
@@ -10220,37 +10236,41 @@ class CortexStore:
                         candidates.append(extra)
                         hop_added = True
             if hop_added:
-                # Re-run the SAME gate over the widened candidate set (mirrors the first pass exactly).
-                primary_candidates = [item for item in candidates if not self._is_related_result(item)]
-                primary_by_id = {str(item.get("id") or ""): item for item in primary_candidates}
-                semantic_relevant_ids = self._semantically_relevant_ids(query, primary_candidates)
-                primary_source_backed = [
-                    item
-                    for item in primary_candidates
-                    if self._has_source_citation(item)
-                    and self._primary_citation_is_relevant(
-                        item,
-                        query_terms,
-                        exempt=(
-                            query_has_layer_intent
-                            or str(item.get("id") or "") in person_injected_ids
-                            or str(item.get("id") or "") in semantic_relevant_ids
-                        ),
-                    )
-                ]
-                related_source_backed = [
-                    item
-                    for item in candidates
-                    if self._is_related_result(item)
-                    and self._has_source_citation(item)
-                    and self._should_include_related_citation(query, item, primary_by_id)
-                ]
-                source_backed = [*primary_source_backed, *related_source_backed]
-                uncited = [item for item in candidates if not self._has_source_citation(item)]
-                results = [*source_backed, *uncited][:limit]
-                cited_results = source_backed[:limit]
-                citations, conflicts, evidence = self._build_answer_citations(query, cited_results, redact_sensitive=redact_sensitive)
+                # Re-run the SAME gate over the widened candidate set (single-sourced in
+                # _regate_after_hop so hop 1 and hop 2 are byte-for-byte the same gate as the first pass).
+                results, cited_results, citations, conflicts, evidence = self._regate_after_hop(
+                    query, candidates, query_terms=query_terms, query_has_layer_intent=query_has_layer_intent,
+                    person_injected_ids=person_injected_ids, limit=limit, redact_sensitive=redact_sensitive,
+                )
                 evidence["recovered_by_hop"] = True
+
+                # Bounded SECOND hop (flag-gated, default OFF; requires hop 1 to have run and the
+                # answer to STILL be low_confidence). Follows the entities the FIRST hop surfaced —
+                # deep relational chains ("who owns the vendor Project X migrated billing to"). Same
+                # cite-or-abstain gate, stricter deadline. Byte-identical when CORTEX_CONTEXT_HOP2 off.
+                if second_hop_enabled() and citations and evidence.get("status") == "low_confidence":
+                    hop2_deadline = time.monotonic() + (second_hop_deadline_ms() / 1000.0)
+                    hop2_added = False
+                    for hop_query in self._second_hop_seed(query, citations, evidence.get("missing_fields") or []):
+                        if time.monotonic() >= hop2_deadline:
+                            break
+                        for extra in self.search(
+                            user_id, hop_query, limit=search_limit, sector=sector, source=source,
+                            source_account_id=source_account_id, metadata_filters=metadata_filters,
+                            include_related=True, as_of=as_of,
+                        ):
+                            extra_id = str(extra.get("id") or "") if isinstance(extra, dict) else ""
+                            if extra_id and extra_id not in existing_ids:
+                                existing_ids.add(extra_id)
+                                candidates.append(extra)
+                                hop2_added = True
+                    if hop2_added:
+                        results, cited_results, citations, conflicts, evidence = self._regate_after_hop(
+                            query, candidates, query_terms=query_terms, query_has_layer_intent=query_has_layer_intent,
+                            person_injected_ids=person_injected_ids, limit=limit, redact_sensitive=redact_sensitive,
+                        )
+                        evidence["recovered_by_hop"] = True
+                        evidence["recovered_by_second_hop"] = True
 
         # Feedback signal for the offline reranker learner: cited (relevant) vs retrieved-but-not-cited.
         _cited_ids = {str(item.get("id")) for item in cited_results}
@@ -10388,6 +10408,69 @@ class CortexStore:
             for entity in entities[:3]:
                 _add(entity)
         return queries[:3]
+
+    def _regate_after_hop(
+        self, query: str, candidates: list[dict[str, Any]], *, query_terms, query_has_layer_intent: bool,
+        person_injected_ids: set[str], limit: int, redact_sensitive: bool,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+        """Re-run the EXACT first-pass cite gate over a widened candidate set. Single-sourced so hop 1
+        and hop 2 (and the first pass) apply identical cite-or-abstain semantics. Returns
+        (results, cited_results, citations, conflicts, evidence)."""
+        primary_candidates = [item for item in candidates if not self._is_related_result(item)]
+        primary_by_id = {str(item.get("id") or ""): item for item in primary_candidates}
+        semantic_relevant_ids = self._semantically_relevant_ids(query, primary_candidates)
+        primary_source_backed = [
+            item
+            for item in primary_candidates
+            if self._has_source_citation(item)
+            and self._primary_citation_is_relevant(
+                item,
+                query_terms,
+                exempt=(
+                    query_has_layer_intent
+                    or str(item.get("id") or "") in person_injected_ids
+                    or str(item.get("id") or "") in semantic_relevant_ids
+                ),
+            )
+        ]
+        related_source_backed = [
+            item
+            for item in candidates
+            if self._is_related_result(item)
+            and self._has_source_citation(item)
+            and self._should_include_related_citation(query, item, primary_by_id)
+        ]
+        source_backed = [*primary_source_backed, *related_source_backed]
+        uncited = [item for item in candidates if not self._has_source_citation(item)]
+        results = [*source_backed, *uncited][:limit]
+        cited_results = source_backed[:limit]
+        citations, conflicts, evidence = self._build_answer_citations(query, cited_results, redact_sensitive=redact_sensitive)
+        return results, cited_results, citations, conflicts, evidence
+
+    def _second_hop_seed(self, query: str, citations: list[dict[str, Any]], missing_fields: list[str]) -> list[str]:
+        """Queries for the SECOND hop: follow the entities the FIRST hop surfaced (from the current
+        citations' text) crossed with the still-missing-field evidence terms — that is the value of a
+        second hop (chase the intermediate entity), distinct from _context_hop_queries which keys off
+        the ORIGINAL query. Deterministic, deduped, capped at 2."""
+        text = " ".join(str(c.get("excerpt") or "") for c in citations)[:600]
+        try:
+            entities = [e for e in build_query_plan(text).entities if e.lower() not in query.lower()]
+        except Exception:
+            entities = []
+        by_field = {field: sorted(terms) for field, _req, terms in ANSWER_FIELD_REQUIREMENTS}
+        field_terms: list[str] = []
+        for field in missing_fields:
+            for term in by_field.get(field, []):
+                if term and term not in field_terms:
+                    field_terms.append(term)
+        queries: list[str] = []
+        seen: set[str] = set()
+        for entity in entities[:2]:
+            text_q = (f"{entity} " + " ".join(field_terms[:4])).strip() if field_terms else entity.strip()
+            if text_q and text_q.lower() not in seen:
+                seen.add(text_q.lower())
+                queries.append(text_q)
+        return queries[:2]
 
     def _answer_evidence_quality(self, query: str, items: list[dict[str, Any]]) -> dict[str, Any]:
         if not items:
@@ -19306,6 +19389,10 @@ class CortexStore:
         temporal_prefixes = query_temporal_prefixes(query)
         source_policies = _normalize_source_policies((user_settings or {}).get("source_policies"))
         now = datetime.now(timezone.utc)
+        # Entity-overlap boost (behind CORTEX_ENTITY_BOOST): with the flag off, build_query_plan is
+        # never called and plan_entities stays empty, so _entity_overlap_boost returns 0.0 and every
+        # fused score is bit-for-bit unchanged (retrieval_eval stays byte-identical).
+        plan_entities = {e.lower() for e in build_query_plan(query).entities} if entity_boost_enabled() else set()
         for entry in ranked.values():
             entry["score"] += self._layer_boost(entry["row"], layer_boosts)
             entry["score"] += self._temporal_boost(entry["row"], temporal_prefixes)
@@ -19313,6 +19400,7 @@ class CortexStore:
             entry["score"] += self._recency_boost(entry["row"], now=now)
             entry["score"] += self._importance_boost(entry["row"])
             entry["score"] += self._confidence_boost(entry["row"])
+            entry["score"] += self._entity_overlap_boost(entry["row"], plan_entities)
         return [item["row"] for item in sorted(ranked.values(), key=lambda item: item["score"], reverse=True)[:limit]]
 
     def _rank_rows_with_layer_boosts(
@@ -19327,6 +19415,7 @@ class CortexStore:
         temporal_prefixes = query_temporal_prefixes(query)
         source_policies = _normalize_source_policies((user_settings or {}).get("source_policies"))
         now = datetime.now(timezone.utc)
+        plan_entities = {e.lower() for e in build_query_plan(query).entities} if entity_boost_enabled() else set()
         ranked = [
             {
                 "row": row,
@@ -19336,7 +19425,8 @@ class CortexStore:
                 + self._source_quality_boost(row, source_policies)
                 + self._recency_boost(row, now=now)
                 + self._importance_boost(row)
-                + self._confidence_boost(row),
+                + self._confidence_boost(row)
+                + self._entity_overlap_boost(row, plan_entities),
             }
             for index, row in enumerate(rows)
         ]
@@ -19683,6 +19773,20 @@ class CortexStore:
     def _confidence_boost(self, row: Any) -> float:
         confidence = str(self._row_value(row, "confidence") or "").strip().lower()
         return CONFIDENCE_RETRIEVAL_BOOSTS.get(confidence, 0.0)
+
+    def _entity_overlap_boost(self, row: Any, plan_entities: set[str]) -> float:
+        """Capped fusion boost for a row that names the query's entities. Lexical (works under any
+        embedder). Returns exactly 0.0 when there are no plan entities — so with CORTEX_ENTITY_BOOST
+        off (callers pass an empty set) the fused score is bit-for-bit unchanged. Mirrors the exact
+        fields the reranker's entity-overlap uses so serve-time semantics match."""
+        if not plan_entities:
+            return 0.0
+        haystack = " ".join(
+            str(self._row_value(row, field) or "")
+            for field in ("content", "summary", "topics", "entity_ids_json")
+        ).lower()
+        overlap = sum(1 for entity in plan_entities if entity in haystack) / len(plan_entities)
+        return min(ENTITY_OVERLAP_RETRIEVAL_BOOST_MAX, overlap * ENTITY_OVERLAP_RETRIEVAL_BOOST_MAX)
 
     def _citation_quality_boost(self, row: Any) -> float:
         source_url = str(self._row_value(row, "source_url") or "").strip()

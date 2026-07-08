@@ -193,3 +193,33 @@ def context_hop_deadline_ms() -> int:
     except ValueError:
         value = 400
     return max(50, min(2000, value))
+
+
+def entity_boost_enabled() -> bool:
+    """Whether the fusion stage applies a capped entity-overlap boost (CORTEX_ENTITY_BOOST truthy).
+    Default OFF — parity with today. Works under ANY embedder (lexical overlap), so unlike the
+    reranker it also refines ranking on the hash path."""
+    import os
+
+    return os.environ.get("CORTEX_ENTITY_BOOST", "").strip().lower() in {"1", "true", "on", "yes"}
+
+
+def second_hop_enabled() -> bool:
+    """Whether a SECOND bounded recovery hop fires when the first hop still leaves the answer
+    low-confidence (CORTEX_CONTEXT_HOP2 truthy). Requires CORTEX_CONTEXT_HOP. Default OFF."""
+    import os
+
+    return os.environ.get("CORTEX_CONTEXT_HOP2", "").strip().lower() in {"1", "true", "on", "yes"}
+
+
+def second_hop_deadline_ms() -> int:
+    """Latency ceiling (ms) for the SECOND hop; stricter than the first. Default 250ms, clamped to
+    [50, 1000]. Reads CORTEX_CONTEXT_HOP2_MS."""
+    import os
+
+    raw = os.environ.get("CORTEX_CONTEXT_HOP2_MS", "").strip()
+    try:
+        value = int(raw) if raw else 250
+    except ValueError:
+        value = 250
+    return max(50, min(1000, value))

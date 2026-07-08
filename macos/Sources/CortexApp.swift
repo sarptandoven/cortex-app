@@ -2593,6 +2593,12 @@ final class BackendSupervisor {
         // scripts/rerank_eval.py (ON never regresses OFF under real model2vec; CI-gated) and it
         // no-ops under the hash embedder, so it only activates with the bundled model2vec.
         environment["CORTEX_RERANK"] = "linear+mmr"
+        // Entity-overlap boost in the fusion stage: a capped tie-breaker toward a memory that names
+        // the query's entities. Unlike the reranker it works under any embedder, and it is proven
+        // no-regression on scripts/retrieval_eval.py (status ok with the flag both off and on). The
+        // bounded recovery hops (CORTEX_CONTEXT_HOP / _HOP2) stay opt-in — they add latency and only
+        // help relational questions, so they are left off by default.
+        environment["CORTEX_ENTITY_BOOST"] = "1"
         // Entity Map-of-Content pages: browsable People/Projects/Orgs/Topics notes in the vault,
         // one per canonical entity, cross-linked by [[wikilinks]]. A LOCAL desktop feature only —
         // the backend keeps this OFF by default so the shared hosted/bucket vault never generates
