@@ -9,7 +9,13 @@ __API_DOMAIN__ {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
-		Content-Security-Policy "default-src 'none'; form-action 'self'"
+		# `?` = set-default: apply this strict CSP ONLY when the upstream did not send its
+		# own. JSON API routes send none, so they get locked down here. The HTML account
+		# front-door (/account/*) sends its own route-scoped CSP (style-src 'unsafe-inline'
+		# for the one inline <style>, script-src 'self' for /account/app.js) — Caddy must
+		# defer to it, or the pages render unstyled with no JS. A plain `Content-Security-Policy`
+		# here REPLACES the upstream header and was doing exactly that.
+		?Content-Security-Policy "default-src 'none'; form-action 'self'"
 		-Server
 	}
 	reverse_proxy 127.0.0.1:8766

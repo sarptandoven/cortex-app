@@ -261,6 +261,38 @@ class WebAccountAuthEnabledTests(unittest.TestCase):
         for path in ACCOUNT_PAGES + ("/account/app.js",):
             self.assertLess(self.client.get(path).status_code, 500, path)
 
+    # ---- visual identity: match the macOS app ("The Archive") + Doppl brand ----
+
+    def test_pages_carry_route_scoped_csp_that_permits_style_and_script(self) -> None:
+        # The whole reason the pages rendered unstyled in prod: a blanket upstream CSP. The APP's
+        # response must always carry the relaxed route-scoped CSP so Caddy's set-default defers to it.
+        for path in ACCOUNT_PAGES:
+            csp = self.client.get(path).headers.get("content-security-policy", "")
+            self.assertIn("style-src 'self' 'unsafe-inline'", csp, path)  # inline <style> allowed
+            self.assertIn("script-src 'self'", csp, path)                 # /account/app.js allowed
+            self.assertNotEqual(csp, "default-src 'none'; form-action 'self'", path)  # not the strict one
+
+    def test_brand_is_doppl_not_cortex(self) -> None:
+        # The app + admin dashboard are "Doppl"; the web front-door must match (no stale "Cortex").
+        for path in ("/account/login", "/account/oauth/complete"):
+            html = self.client.get(path).text
+            self.assertIn(">Doppl</span>", html, path)
+            self.assertNotIn(">Cortex</span>", html, path)
+
+    def test_shared_css_uses_the_app_archive_palette(self) -> None:
+        # The decisive sealing-wax-red accent + warm paper from CortexDesign.swift, so the web reads
+        # as the same product as the native app.
+        css = self.client.get("/account/login").text
+        self.assertIn("#8c3a2b", css.lower())  # wax-red accent
+        self.assertIn("#f7f4ed", css.lower())  # warm paper background
+
+    def test_oauth_complete_is_a_centered_moment_with_a_spinner(self) -> None:
+        html = self.client.get("/account/oauth/complete").text
+        self.assertIn('<main class="oauth"', html)          # centered layout hook
+        self.assertIn('class="spinner"', html)              # loading ring
+        self.assertIn("main.oauth", html)                   # its centering CSS is present
+        self.assertIn("@keyframes cortex-spin", html)       # animation defined (no external asset)
+
     # ---- browser OAuth content-negotiation (the "I can't sign in" fix) ----
 
     def test_oauth_start_redirects_a_browser_to_the_provider(self) -> None:

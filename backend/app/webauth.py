@@ -85,16 +85,22 @@ _SIGNUP_CSP_TURNSTILE = (
 _SHARED_CSS = """
 :root {
   color-scheme: light;
-  --ink: #18211f;
-  --muted: #5c6965;
-  --line: #d8ded9;
-  --paper: #f8f7f1;
-  --paper-strong: #ffffff;
-  --green: #1f7a5c;
-  --blue: #365d8c;
-  --coral: #bd5d45;
-  --gold: #a77722;
-  --shadow: 0 18px 50px rgba(24, 33, 31, 0.14);
+  /* "The Archive" palette — matched to the macOS app (CortexDesign.swift): iron-gall ink on
+     warm paper, one decisive sealing-wax-red accent, banker's-lamp moss for the local/success
+     mark. Keeps the web front-door visually identical to the app users already know. */
+  --ink: #2b2620;          /* iron-gall ink — warm near-black */
+  --muted: #5c554b;        /* secondary ink */
+  --faint: #7a7166;        /* faint ink — mono/disabled */
+  --line: #e3dcce;         /* warm hairline */
+  --paper: #f7f4ed;        /* warm paper — the desk blotter */
+  --paper-strong: #fefdfa; /* index-card white */
+  --quiet: #f1ede3;        /* quiet fill — notes, token boxes */
+  --accent: #8c3a2b;       /* sealing-wax red — the decisive accent */
+  --accent-soft: #f1e2dc;  /* wax red at rest — soft rose fill */
+  --moss: #4f6043;         /* banker's-lamp moss — local / success mark */
+  --coral: #a8412f;        /* destructive red */
+  --gold: #b58121;         /* index-tab gold */
+  --shadow: 0 18px 50px rgba(43, 38, 32, 0.13);
 }
 * { box-sizing: border-box; }
 body {
@@ -104,11 +110,11 @@ body {
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   min-height: 100vh;
 }
-a { color: var(--green); }
+a { color: var(--accent); }
 .account-header {
   align-items: center;
-  background: rgba(248, 247, 241, 0.92);
-  border-bottom: 1px solid rgba(24, 33, 31, 0.08);
+  background: rgba(247, 244, 237, 0.92);
+  border-bottom: 1px solid rgba(43, 38, 32, 0.08);
   display: flex;
   gap: 12px;
   height: 64px;
@@ -116,7 +122,7 @@ a { color: var(--green); }
 }
 .brand { align-items: center; display: flex; font-weight: 760; gap: 9px; text-decoration: none; }
 .brand-mark {
-  background: var(--green);
+  background: var(--accent);
   border-radius: 8px;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
   display: inline-block;
@@ -144,7 +150,7 @@ input[type=email], input[type=password], input[type=text] {
   padding: 11px 12px;
   width: 100%;
 }
-input:focus { border-color: var(--green); outline: none; }
+input:focus { border-color: var(--accent); outline: none; }
 .checkbox-row { align-items: flex-start; display: flex; gap: 9px; margin: 16px 0 4px; }
 .checkbox-row input { margin-top: 3px; }
 .checkbox-row label { margin: 0; font-weight: 500; color: var(--muted); }
@@ -161,7 +167,7 @@ input:focus { border-color: var(--green); outline: none; }
   text-decoration: none;
   width: 100%;
 }
-.button.primary { background: var(--ink); color: #fffdf6; }
+.button.primary { background: var(--accent); color: #fffdf6; }
 .button.secondary { background: rgba(255, 255, 255, 0.72); border: 1px solid var(--line); color: var(--ink); }
 .button.danger { background: var(--coral); color: #fffdf6; }
 .button + .button { margin-top: 10px; }
@@ -173,7 +179,7 @@ input:focus { border-color: var(--green); outline: none; }
 .meta-links { font-size: 14px; margin-top: 20px; }
 .meta-links a { font-weight: 650; }
 .note {
-  background: #eef4ed;
+  background: var(--quiet);
   border: 1px solid var(--line);
   border-radius: 8px;
   color: var(--ink);
@@ -182,14 +188,14 @@ input:focus { border-color: var(--green); outline: none; }
   margin-top: 16px;
   padding: 12px 14px;
 }
-.note.warn { background: #fdf0ec; border-color: #eac8bd; }
+.note.warn { background: var(--accent-soft); border-color: #e6ccc1; }
 .status-msg { font-size: 14px; font-weight: 650; margin-top: 16px; min-height: 1px; }
 .status-msg.error { color: var(--coral); }
-.status-msg.ok { color: var(--green); }
+.status-msg.ok { color: var(--moss); }
 .field-row { display: flex; gap: 8px; }
 .field-row input { flex: 1; }
 .token-out {
-  background: #f4f3ec;
+  background: var(--quiet);
   border: 1px solid var(--line);
   border-radius: 8px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -224,7 +230,28 @@ input:focus { border-color: var(--green); outline: none; }
 }
 .token-list small { color: var(--muted); display: block; }
 .row-between { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
-.pill { background: #eef4ed; border-radius: 999px; color: var(--green); font-size: 12px; font-weight: 700; padding: 4px 10px; }
+.pill { background: var(--quiet); border-radius: 999px; color: var(--moss); font-size: 12px; font-weight: 700; padding: 4px 10px; }
+/* OAuth "finishing sign in" moment — a centered card with a wax-red loading ring, matching the
+   app's calm, centered activity states rather than a top-aligned form. */
+main.oauth { align-items: center; display: flex; justify-content: center; min-height: calc(100vh - 64px); padding-top: 24px; padding-bottom: 24px; }
+main.oauth .card { text-align: center; width: 100%; }
+main.oauth h1 { font-size: 26px; }
+.spinner {
+  animation: cortex-spin 0.85s linear infinite;
+  border: 3px solid var(--line);
+  border-radius: 50%;
+  border-top-color: var(--accent);
+  height: 34px;
+  margin: 2px auto 18px;
+  width: 34px;
+}
+/* Only the WEIGHT here — no color — so .status-msg.ok / .status-msg.error keep their state color
+   (a descendant `color` here would out-specify the single-class state rules and mute them). */
+main.oauth .status-msg { font-weight: 600; }
+main.oauth .note { text-align: left; }
+main.oauth .actions { margin-top: 20px; }
+@keyframes cortex-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 0s; } }
 """.strip()
 
 
@@ -248,7 +275,7 @@ def _page(title: str, body: str, script: str, *, head_extra: str = "") -> str:
         "</head>\n"
         "<body>\n"
         '  <header class="account-header">\n'
-        '    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>Cortex</span></a>\n'
+        '    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>Doppl</span></a>\n'
         "  </header>\n"
         f"  <main{body}\n"
         f'  <script src="/account/{safe_script}"></script>\n'
@@ -280,7 +307,7 @@ def _login_body(provider_buttons_html: str) -> str:
         ' class="login">\n'
         '    <div class="card">\n'
         "      <h1>Sign in</h1>\n"
-        "      <p>Access your Cortex account, tokens, and downloads.</p>\n"
+        "      <p>Access your Doppl account, tokens, and downloads.</p>\n"
         '      <form id="login-form" method="post" action="/v1/auth/login" autocomplete="on">\n'
         '        <label for="email">Email</label>\n'
         '        <input id="email" name="email" type="email" autocomplete="email" required>\n'
@@ -293,7 +320,7 @@ def _login_body(provider_buttons_html: str) -> str:
         "      </form>\n"
         f"{divider}"
         '      <p class="meta-links"><a href="/account/reset">Forgot your password?</a></p>\n'
-        '      <p class="meta-links">New to Cortex? <a href="/account/signup">Create an account</a></p>\n'
+        '      <p class="meta-links">New to Doppl? <a href="/account/signup">Create an account</a></p>\n'
         "    </div>\n"
         "  </main>"
     )
@@ -381,6 +408,7 @@ _RESET_BODY = (
 _OAUTH_COMPLETE_BODY = (
     ' class="oauth">\n'
     '    <div class="card">\n'
+    '      <div class="spinner" id="spinner" aria-hidden="true"></div>\n'
     "      <h1>Finishing sign in</h1>\n"
     '      <div id="status" class="status-msg" role="status" aria-live="polite">One moment…</div>\n'
     '      <div id="link-note" class="note warn hidden">An account with this email already exists. '
@@ -582,7 +610,7 @@ _APP_JS = r"""
           }
           setStatus(status,
             'Account created. Check your email to verify your address. ' +
-            '(If your operator runs Cortex without email, verification is handled by your operator.)',
+            '(If your operator runs Doppl without email, verification is handled by your operator.)',
             'ok');
         }).catch(function () {
           setStatus(status, 'Account created. Check your email to verify your address.', 'ok');
@@ -669,6 +697,9 @@ _APP_JS = r"""
   function initOauthComplete() {
     if (document.body.className.indexOf('oauth') === -1) return;
     var status = document.getElementById('status');
+    // The loading ring spins only while we're mid-handoff; hide it once we reach a terminal state
+    // (link needed / failed). On the success path we keep it spinning through the redirect.
+    function stopSpinner() { var sp = document.getElementById('spinner'); if (sp) sp.classList.add('hidden'); }
     var query = new URLSearchParams(window.location.search);
     // Tokens ride the URL FRAGMENT (never the query) so they never reach the server access log or
     // a Referer header; the link_required marker is a plain query flag (no secret).
@@ -676,18 +707,21 @@ _APP_JS = r"""
     var access = hash.get('access_token');
     var refresh = hash.get('refresh_token');
     if (query.get('action') === 'link_required' || query.get('link_required')) {
-      setStatus(status, '', '');
+      stopSpinner();
+      setStatus(status, 'Almost there', 'ok');
       document.getElementById('link-note').classList.remove('hidden');
       document.getElementById('login-link').classList.remove('hidden');
       return;
     }
     if (access && refresh) {
+      setStatus(status, 'Signed in — taking you to your account…', 'ok');
       store({ access_token: access, refresh_token: refresh });
       // Scrub the tokens out of the address bar / history before navigating on.
       try { history.replaceState(null, '', window.location.pathname); } catch (e) {}
       window.location.href = '/account/home';
       return;
     }
+    stopSpinner();
     setStatus(status, 'Could not complete sign in. Please try again.', 'error');
     document.getElementById('login-link').classList.remove('hidden');
   }
@@ -885,7 +919,7 @@ def register_web_account_routes(
         raw_flow = (request.query_params.get("app_flow") or "")[:120]
         app_flow = raw_flow if raw_flow and raw_flow.replace("_", "").isalnum() else ""
         buttons = _provider_buttons_html(providers, app_flow=app_flow)
-        resp = _html_response(_page("Sign in · Cortex", _login_body(buttons), "app.js"))
+        resp = _html_response(_page("Sign in · Doppl", _login_body(buttons), "app.js"))
         # Bind THIS browser to the desktop app-login poll flow: set a signed cookie that the OAuth
         # start requires before it will attach an authenticated account to app_flow (main.py
         # _app_flow_cookie / auth_oauth_start). Prevents a login-CSRF / flow-fixation takeover where a
@@ -905,33 +939,33 @@ def register_web_account_routes(
         if site_key:
             head_extra = f'  <script src="{_TURNSTILE_API_JS}" async defer></script>\n'
             document = _page(
-                "Create your account · Cortex",
+                "Create your account · Doppl",
                 _signup_body(site_key),
                 "app.js",
                 head_extra=head_extra,
             )
             return _html_response(document, csp=_SIGNUP_CSP_TURNSTILE)
-        return _html_response(_page("Create your account · Cortex", _signup_body(), "app.js"))
+        return _html_response(_page("Create your account · Doppl", _signup_body(), "app.js"))
 
     @app.get("/account/verify", response_class=HTMLResponse)
     def account_verify() -> Response:
         runtime_or_404()
-        return _html_response(_page("Verify email · Cortex", _VERIFY_BODY, "app.js"))
+        return _html_response(_page("Verify email · Doppl", _VERIFY_BODY, "app.js"))
 
     @app.get("/account/reset", response_class=HTMLResponse)
     def account_reset() -> Response:
         runtime_or_404()
-        return _html_response(_page("Reset password · Cortex", _RESET_BODY, "app.js"))
+        return _html_response(_page("Reset password · Doppl", _RESET_BODY, "app.js"))
 
     @app.get("/account/home", response_class=HTMLResponse)
     def account_home() -> Response:
         runtime_or_404()
-        return _html_response(_page("Your account · Cortex", _HOME_BODY, "app.js"))
+        return _html_response(_page("Your account · Doppl", _HOME_BODY, "app.js"))
 
     @app.get("/account/oauth/complete", response_class=HTMLResponse)
     def account_oauth_complete() -> Response:
         runtime_or_404()
-        return _html_response(_page("Finishing sign in · Cortex", _OAUTH_COMPLETE_BODY, "app.js"))
+        return _html_response(_page("Finishing sign in · Doppl", _OAUTH_COMPLETE_BODY, "app.js"))
 
     @app.get("/account/app.js")
     def account_app_js(request: Request) -> Response:
