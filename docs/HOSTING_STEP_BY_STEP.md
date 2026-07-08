@@ -51,8 +51,11 @@ password; they may ask for a card to prevent abuse — the CX22 is €3.79/mo).
 **2.3** Click the red **Add Server** button. Set these, ignore everything else:
 - **Location:** pick the one nearest your users (e.g. Ashburn/US or Nuremberg/EU).
 - **Image:** **Ubuntu 24.04**.
-- **Type:** click the **Shared vCPU** tab → choose **CX22** (2 vCPU / 4 GB, cheapest, fine for
-  beta). (CX32 if you expect a lot of users.)
+- **Type:** click the **Shared vCPU** tab, then pick the cheapest with **at least 2 GB RAM**:
+  - In a **European** location you'll see the **"CX" line** → pick **CX22** (2 vCPU / 4 GB, ~€3.79/mo).
+  - In a **US** location you'll see the AMD **"CPX" line** instead → pick **CPX11** (2 vCPU / 2 GB,
+    ~$20.49/mo). (Want the €3.79 option in the US? Change **Location** to Germany/Finland first.)
+  - Either one is plenty for a beta; you can resize up later in one click.
 - **Networking:** leave "Public IPv4" checked.
 - **SSH keys:** click **+ Add SSH key** → **paste** (Cmd+V — this is the key from step 1.4) →
   Name it `my-mac` → Add SSH key. Make sure its checkbox is ticked.
