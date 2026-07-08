@@ -2546,9 +2546,13 @@ final class BackendSupervisor {
         // Task-aware retrieval, enabled for the shipped app: query planning (semantic intent +
         // compound-question decomposition, additive to recall) and per-layer temporal decay
         // (capped tie-breaking). Both verified no-regression under model2vec by scripts/rerank_eval.py.
-        // The reorder-heavy reranker (CORTEX_RERANK) stays off pending a larger graded eval.
         environment["CORTEX_QUERY_PLAN"] = "1"
         environment["CORTEX_TEMPORAL_DECAY"] = "1"
+        // Reranker ON: model2vec query↔candidate cosine + entity overlap + rank-prior blend, then MMR
+        // dedup, reordering the fused candidates before diversification. Proven by
+        // scripts/rerank_eval.py (ON never regresses OFF under real model2vec; CI-gated) and it
+        // no-ops under the hash embedder, so it only activates with the bundled model2vec.
+        environment["CORTEX_RERANK"] = "linear+mmr"
         if let googleClientID = Bundle.main.object(forInfoDictionaryKey: "CortexGoogleOAuthClientID") as? String {
             let trimmedGoogleClientID = googleClientID.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmedGoogleClientID.isEmpty {
