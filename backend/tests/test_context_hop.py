@@ -131,6 +131,24 @@ class ContextHopTests(unittest.TestCase):
         self.assertEqual(empty["status"], "no_cited_evidence")
         self.assertEqual(empty["entities"], [])
 
+    def test_expand_context_never_lists_uncited_edge_memory_as_cited(self) -> None:
+        # An UNCITED note (no source_url) that co-mentions two entities creates a graph edge whose
+        # shared_memory_ids include that uncited memory. It must appear in related_memory_ids, NEVER
+        # in cited_memory_ids (cite-or-abstain). Adversarial-review HIGH finding.
+        marcus = {"id": "person_marcus", "kind": "person", "name": "Marcus", "aliases": []}
+        atlas = {"id": "project_atlas", "kind": "project", "name": "Project Atlas", "aliases": []}
+        self._seed("mem_uncited", "Marcus and Project Atlas disagreed on scope.",
+                   entities=[marcus, atlas], cited=False)
+        result = self.store.expand_context(USER, ["Marcus"])
+        for entity in result["entities"]:
+            self.assertNotIn("mem_uncited", entity.get("cited_memory_ids") or [])
+        # If it surfaced at all, it must be as a (clearly non-cited) related id.
+        related = [mid for e in result["entities"] for mid in (e.get("related_memory_ids") or [])]
+        cited = [mid for e in result["entities"] for mid in (e.get("cited_memory_ids") or [])]
+        self.assertNotIn("mem_uncited", cited)
+        if related:
+            self.assertIn("mem_uncited", related)
+
     def test_expand_context_mcp_wiring_and_scope_gate(self) -> None:
         self.assertIn("expand_context", READ_TOOLS)
         self.assertEqual(tool_required_capabilities("expand_context", scoped=True), ["read"])

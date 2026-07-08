@@ -192,6 +192,41 @@ class MarkdownCodecTests(unittest.TestCase):
         self.assertEqual(_wikilink(""), "")
         self.assertEqual(_wikilink("  spaced  name  "), "[[spaced name]]")
 
+    # Regression: a memory whose OWN content contains the generated-block marker must NOT be
+    # truncated or grown on the round-trip (adversarial-review CRITICAL finding).
+    def test_content_containing_marker_line_is_not_truncated(self) -> None:
+        marker = "<!-- cortex:generated-links -->"
+        rec = dict(SAMPLE_MEMORY)
+        rec["content"] = f"keep this\n{marker}\nand keep this too"
+        rec["entity_ids"] = []
+        rec["topics"] = []
+        parsed = parse_memory_markdown(render_memory_markdown(rec))
+        self.assertEqual(parsed["content"], rec["content"])  # lone marker, no block -> untouched
+
+    def test_content_with_marker_and_real_block_round_trips(self) -> None:
+        marker = "<!-- cortex:generated-links -->"
+        rec = dict(SAMPLE_MEMORY)
+        rec["content"] = f"Before\n{marker}\nAfter user text"
+        rec["_link_names"] = {"ent_cortex": "Cortex"}
+        t1 = render_memory_markdown(rec)
+        parsed = parse_memory_markdown(t1)
+        self.assertEqual(parsed["content"], rec["content"])  # user marker + text preserved
+        # Idempotent: re-render from the parsed content (with the same link inputs) does not grow.
+        reparsed = dict(parsed)
+        reparsed["_link_names"] = {"ent_cortex": "Cortex"}
+        reparsed["entity_ids"] = SAMPLE_MEMORY["entity_ids"]
+        t2 = render_memory_markdown(reparsed)
+        self.assertEqual(t2.count("## Links"), 1)
+        self.assertEqual(parse_memory_markdown(t2)["content"], rec["content"])
+
+    def test_content_ending_in_marker_survives(self) -> None:
+        marker = "<!-- cortex:generated-links -->"
+        rec = dict(SAMPLE_MEMORY)
+        rec["content"] = f"Here is how cortex marks generated links:\n{marker}"
+        rec["_link_names"] = {"ent_cortex": "Cortex"}
+        parsed = parse_memory_markdown(render_memory_markdown(rec))
+        self.assertEqual(parsed["content"], rec["content"])
+
 
 class VaultMemoryMirrorTests(unittest.TestCase):
     def setUp(self) -> None:

@@ -11345,7 +11345,7 @@ class CortexStore:
             entity_id = str(page.get("entity_id") or "")
             if not entity_id:
                 continue
-            keep.add(hashlib.sha1(entity_id.encode("utf-8")).hexdigest()[:8])
+            keep.add(self.vault.entity_moc_short_id(entity_id))
             if self.vault.write_entity_markdown(page) is not None:
                 written += 1
         try:
@@ -11503,21 +11503,29 @@ class CortexStore:
                     section_items.extend(context.get(key) or [])
             cited_here = [item for item in section_items if isinstance(item, dict) and self._has_source_citation(item)]
             cited_total += len(cited_here)
-            edge_ids = {
+            # cited_memory_ids must ONLY hold source-verified memories (cite-or-abstain). Graph
+            # co-mention evidence (edge shared_memory_ids) passes the current-truth filters but NOT
+            # the source-citation check, so it goes in a separate, honestly-labelled field — never
+            # presented as "cited".
+            cited_ids = sorted({
+                str(item.get("id") or item.get("memory_id") or "")
+                for item in cited_here
+                if item.get("id") or item.get("memory_id")
+            })
+            related_ids = sorted({
                 str(mid)
                 for conn_item in ((neighborhood or {}).get("connections") or [])
                 for mid in (conn_item.get("shared_memory_ids") or [])
-            }
+                if str(mid) not in cited_ids
+            })
             if neighborhood or cited_here:
                 entities.append(
                     {
                         "name": name,
                         "neighborhood": neighborhood,
                         "context": context,
-                        "cited_memory_ids": sorted(
-                            {str(item.get("id") or item.get("memory_id") or "") for item in cited_here if item.get("id") or item.get("memory_id")}
-                            | edge_ids
-                        ),
+                        "cited_memory_ids": cited_ids,
+                        "related_memory_ids": related_ids,
                         "treat_as_data": True,
                     }
                 )

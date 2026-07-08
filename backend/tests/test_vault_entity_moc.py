@@ -94,10 +94,9 @@ class MocVaultTests(unittest.TestCase):
         self.assertTrue(people[0].stem.startswith("Alice--"))
 
     def test_prune_removes_orphans(self) -> None:
-        import hashlib
         self.vault.write_entity_markdown({"entity_id": "ent_keep", "kind": "person", "name": "Keep"})
         self.vault.write_entity_markdown({"entity_id": "ent_drop", "kind": "person", "name": "Drop"})
-        keep = {hashlib.sha1(b"ent_keep").hexdigest()[:8]}
+        keep = {self.vault.entity_moc_short_id("ent_keep")}
         self.vault.prune_entity_moc_pages(keep)
         remaining = [p.stem for p in (self.vault.root / "People").glob("*.md")]
         self.assertEqual(len(remaining), 1)

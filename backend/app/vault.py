@@ -525,14 +525,19 @@ class CortexVault:
     def entity_moc_dir_for_kind(self, kind: str | None) -> str:
         return ENTITY_KIND_TO_MOC_DIR.get(str(kind or "").strip().lower(), "Topics")
 
+    def entity_moc_short_id(self, entity_id: str) -> str:
+        """A stable, collision-resistant fingerprint of an entity id, used both as the MOC filename
+        disambiguator and by the stale-page sweep. 16 hex = 64 bits: birthday-collision-safe well
+        past any realistic entity count (an 8-hex/32-bit id collides around tens of thousands of
+        entities and would clobber another entity's page)."""
+        return hashlib.sha1(str(entity_id or "").encode("utf-8")).hexdigest()[:16]
+
     def entity_moc_stem(self, entity_id: str, label: str | None = None) -> str:
         """The MOC note filename stem — the SINGLE source of the entity->entity wikilink target and
-        the on-disk filename, so links always resolve. `<slug>--<hash8>`: slug is human-browsable
-        (from the label), hash8 disambiguates + stays stable across label edits."""
+        the on-disk filename, so links always resolve. `<slug>--<short>`: slug is human-browsable
+        (from the label), short disambiguates + stays stable across label edits."""
         eid = str(entity_id or "")
-        slug = safe_segment(label or eid, "entity")
-        short = hashlib.sha1(eid.encode("utf-8")).hexdigest()[:8]
-        return f"{slug}--{short}"
+        return f"{safe_segment(label or eid, 'entity')}--{self.entity_moc_short_id(eid)}"
 
     def entity_moc_path(self, page: dict[str, Any]) -> Path:
         folder = self.entity_moc_dir_for_kind(page.get("kind"))
@@ -549,7 +554,7 @@ class CortexVault:
             return None
         try:
             target = self.entity_moc_path(page)
-            short = hashlib.sha1(entity_id.encode("utf-8")).hexdigest()[:8]
+            short = self.entity_moc_short_id(entity_id)
             for folder in ENTITY_MOC_DIRECTORIES:
                 base = self.root / folder
                 if not base.exists():

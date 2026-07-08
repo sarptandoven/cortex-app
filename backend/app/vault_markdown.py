@@ -199,22 +199,33 @@ def _render_generated_sections(record: dict[str, Any]) -> str:
 
 
 def _strip_generated_sections(body_lines: list[str]) -> list[str]:
-    """Inverse of _render_generated_sections: remove the cortex-generated block (the region fenced
-    by _GENERATED_MARKER at both ends) so `content` never absorbs generated wikilinks — which would
-    compound on every re-render and corrupt the rebuild source of truth. Text before AND after the
-    fence is preserved (a user may hand-edit anywhere). A stray opening marker with no closing
-    marker drops to end-of-note (the block is always emitted last, so this only fires on corruption)."""
-    open_idx = None
-    for index, raw in enumerate(body_lines):
-        if raw.strip() == _GENERATED_MARKER:
-            open_idx = index
-            break
-    if open_idx is None:
+    """Inverse of _render_generated_sections. Removes ONLY the cortex-generated block so `content`
+    never absorbs generated wikilinks (which would compound on every re-render and corrupt the
+    rebuild source of truth).
+
+    Correctness hinges on identifying the block STRUCTURALLY, never by the first marker occurrence:
+    the block is `_GENERATED_MARKER` / `_LINKS_HEADING` / … / `_GENERATED_MARKER`, so its OPENING
+    marker is the only marker whose next non-blank line is the Links heading. We find that opener +
+    its matching closer and strip exactly that fenced region, preserving everything before AND after
+    (so a user may hand-edit above OR below the block). A lone marker, a marker mid-content, or a
+    note that merely mentions the marker string is never treated as the opener, so a user's own
+    content is never truncated. (A note whose content verbatim reproduces `<marker>` immediately
+    followed by a `## Links` heading is the only residual, and is self-inflicted.)"""
+    for open_idx, raw in enumerate(body_lines):
+        if raw.strip() != _GENERATED_MARKER:
+            continue
+        nxt = open_idx + 1
+        while nxt < len(body_lines) and body_lines[nxt].strip() == "":
+            nxt += 1
+        if nxt >= len(body_lines) or body_lines[nxt].strip() != _LINKS_HEADING:
+            continue  # a marker inside the user's own content, not the generated opener
+        for close_idx in range(nxt + 1, len(body_lines)):
+            if body_lines[close_idx].strip() == _GENERATED_MARKER:
+                return body_lines[:open_idx] + body_lines[close_idx + 1:]
+        # Opener + heading but no closer (a note whose closing marker was hand-deleted): leave it
+        # untouched rather than truncate to end-of-note, so no user text below is ever lost.
         return body_lines
-    for index in range(open_idx + 1, len(body_lines)):
-        if body_lines[index].strip() == _GENERATED_MARKER:
-            return body_lines[:open_idx] + body_lines[index + 1:]
-    return body_lines[:open_idx]
+    return body_lines
 
 
 def parse_memory_markdown(text: str) -> dict[str, Any]:
