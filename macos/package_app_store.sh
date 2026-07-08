@@ -8,10 +8,13 @@ set -euo pipefail
 # (CORTEX_DISTRIBUTION_MODE=app-store). It never touches the Developer-ID /
 # notarized-DMG path (package_release.sh) — that stays byte-identical.
 #
-# Hybrid strategy:
-#   - Mac App Store build  = local-first only. No cloud account, no outbound
-#     HTTPS connectors (_ssl/ssl.py stripped by build.sh in app-store mode),
-#     no automatic MCP config install (guided manual only). Fully sandboxed.
+# Strategy:
+#   - Mac App Store build  = sandboxed; REQUIRES a signed-in account (Info.plist
+#     CortexRequireAccount=true). Sign-in + memory sync run over HTTPS via the
+#     system URLSession (Swift), NOT the bundled Python (whose _ssl/ssl.py are
+#     still stripped by build.sh in app-store mode — that path is loopback-only).
+#     MCP setup is guided-manual only (no automatic config install). Data: email +
+#     name + user content, Linked, not tracking (PrivacyInfo.xcprivacy).
 #   - Direct/notarized DMG = the full-featured power-user path (package_release.sh).
 #
 # The script ALWAYS produces the closest local package possible. Without an
@@ -407,14 +410,18 @@ Only the Apple Developer account owner can do these. Do them in order.
      pre-answered by step 5: no non-exempt encryption).
 
   9. Attach the build to the app version, complete metadata / screenshots /
-     privacy nutrition label (this build collects no data), then Submit for
-     Review.
+     privacy nutrition label, then Submit for Review. This build DOES collect
+     data (see docs/APP_REVIEW_NOTES.md): Email + Name + User Content, all
+     Linked to the account, NOT used for tracking, purpose App Functionality.
 
-PRODUCT LIMITATION TO NOTE IN REVIEW (intentional, sandbox-driven):
-  - The App Store build is LOCAL-FIRST ONLY. No cloud account, no outbound
-    HTTPS connectors (TLS stack removed), and MCP is set up via guided MANUAL
-    steps (no automatic writes into other apps' config files). The full/auto
-    experience is the notarized Developer-ID DMG (package_release.sh).
+NOTES FOR REVIEW (paste docs/APP_REVIEW_NOTES.md into App Review > Notes):
+  - This build REQUIRES a signed-in account (Sign in with Apple / Google /
+    GitHub / email). Sign-in + memory sync run over HTTPS via the system
+    URLSession to https://api.signindoppl.com; the bundled Python's OpenSSL is
+    still stripped (it is not used for that path, so 2.5.1 stays clean). Put the
+    demo account from APP_REVIEW_NOTES.md in App Store Connect > Sign-In Information.
+  - Connecting an external AI tool (MCP) is a guided MANUAL copy/paste step; the
+    app never writes into other apps' config files or runs downloaded code.
 ================================================================================
 EOF
 }
