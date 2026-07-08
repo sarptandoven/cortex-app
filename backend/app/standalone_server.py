@@ -2080,6 +2080,14 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/v1/graph":
                 self._send_json(store.graph(user_id, _int_param(params, "limit", 150, 10, 500)))
                 return
+            if method == "GET" and path.startswith("/v1/entity/") and path.endswith("/neighborhood"):
+                entity_id = unquote(path[len("/v1/entity/"):-len("/neighborhood")])
+                neighborhood = store.entity_neighborhood(user_id, entity_id, limit=_int_param(params, "limit", 8, 1, 24))
+                if neighborhood is None:
+                    self._send_json({"detail": "Entity not in graph"}, status=HTTPStatus.NOT_FOUND)
+                else:
+                    self._send_json(neighborhood)
+                return
             if method == "GET" and path == "/v1/stats":
                 self._send_json(store.stats(user_id))
                 return

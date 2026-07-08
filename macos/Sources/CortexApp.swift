@@ -1086,6 +1086,39 @@ struct TaskResponse: Codable {
 struct GraphResponse: Codable {
     let nodes: [GraphNode]
     let edges: [GraphEdge]
+    let analysis: GraphAnalysis?
+}
+
+struct GraphAnalysis: Codable, Hashable {
+    let community_count: Int?
+    let hub_ids: [String]?
+    let bridge_count: Int?
+    let community_labels: [String: String?]?
+}
+
+struct EntityNeighborhood: Codable, Hashable {
+    struct Focal: Codable, Hashable {
+        let entity_id: String
+        let label: String?
+        let kind: String?
+        let centrality: Double?
+        let community: Int?
+        let supporting_memories: Int?
+    }
+    struct Connection: Codable, Hashable, Identifiable {
+        var id: String { entity_id }
+        let entity_id: String
+        let label: String?
+        let kind: String?
+        let weight: Double?
+        let relation: String?
+        let centrality: Double?
+        let shared_memory_ids: [String]?
+        let example: String?
+    }
+    let focal: Focal
+    let connections: [Connection]
+    let community_peers: [String]
 }
 
 struct MemoryItem: Codable, Identifiable, Hashable {
@@ -2132,6 +2165,12 @@ struct GraphNode: Codable, Identifiable, Hashable {
     let label: String
     let detail: String?
     let importance: Int?
+    // Graph-analysis fields, present only for entity nodes (all optional so older/partial payloads
+    // still decode). centrality drives size + centre-pull; community drives color; is_hub marks a
+    // "god node".
+    let centrality: Double?
+    let community: Int?
+    let is_hub: Bool?
 }
 
 struct GraphEdge: Codable, Identifiable, Hashable {
@@ -2140,6 +2179,7 @@ struct GraphEdge: Codable, Identifiable, Hashable {
     let target_id: String
     let kind: String
     let weight: Double?
+    let is_bridge: Bool?  // cross-community "surprising connection"
 }
 
 enum DistributionMode {
@@ -3114,6 +3154,7 @@ final class AppState: ObservableObject {
     @Published var hasSearched: Bool = false
     @Published var graphNodes: [GraphNode] = []
     @Published var graphEdges: [GraphEdge] = []
+    @Published var graphAnalysis: GraphAnalysis?
     @Published var stats: StatsResponse?
     @Published var syncProgress: SyncProgress?
     @Published var detectedExportSummary: String?
@@ -4117,8 +4158,22 @@ final class AppState: ObservableObject {
             let graph = try JSONDecoder().decode(GraphResponse.self, from: data)
             graphNodes = graph.nodes
             graphEdges = graph.edges
+            graphAnalysis = graph.analysis
         } catch {
             status = CortexRecoveryText.failureStatus("Graph", error: error)
+        }
+    }
+
+    /// Drill into one entity node: the cited connected subgraph (people/projects it links to and the
+    /// shared evidence). Returns nil for non-entity nodes / entities not in the graph (silent — the
+    /// UI just shows no drill-down panel).
+    func loadNeighborhood(_ entityID: String) async -> EntityNeighborhood? {
+        guard let encoded = entityID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { return nil }
+        do {
+            let data = try await request(path: "/v1/entity/\(encoded)/neighborhood?limit=12", method: "GET")
+            return try JSONDecoder().decode(EntityNeighborhood.self, from: data)
+        } catch {
+            return nil
         }
     }
 

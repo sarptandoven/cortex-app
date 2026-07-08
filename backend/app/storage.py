@@ -14330,8 +14330,57 @@ class CortexStore:
                 evidence_id = row["evidence_id"]
                 if row["source_id"] in nodes and row["target_id"] in nodes and (not evidence_id or evidence_id in nodes):
                     edges.append(dict(row))
+
+        # Fold in the deterministic entity-graph analysis the backend already computes (centrality /
+        # community / bridges) so the Constellation UI can color by community, size by centrality, and
+        # highlight bridge edges instead of guessing from importance alone. entity_graph_analysis is
+        # entities-only; its node ids are the SAME entity-table ids used for entity nodes above, so we
+        # join by id. Non-entity nodes (captures / memories / tasks) carry no community/centrality and
+        # render in their type color as before. Runs AFTER the connect() block above closes (it opens
+        # its own read connection), so there is no nested-connection hazard.
+        try:
+            analysis = self.entity_graph_analysis(user_id)
+        except Exception:
+            analysis = {}
+        centrality = analysis.get("centrality") or {}
+        community = analysis.get("community") or {}
+        ranked = list(analysis.get("ranked") or [])
+        hub_ids = set(ranked[:8])
+        analysis_nodes = analysis.get("nodes") or {}
+        bridge_pairs = {
+            frozenset((str(bridge.get("source")), str(bridge.get("target"))))
+            for bridge in (analysis.get("bridges") or [])
+        }
+        for node in nodes.values():
+            nid = node["id"]
+            if nid in centrality:
+                node["centrality"] = round(float(centrality[nid]), 6)
+                node["community"] = community.get(nid)
+                node["is_hub"] = nid in hub_ids
+        for edge in edges:
+            source_target = frozenset((str(edge.get("source_id") or ""), str(edge.get("target_id") or "")))
+            edge["is_bridge"] = source_target in bridge_pairs
+        community_labels: dict[str, Any] = {}
+        for community_id, members in (analysis.get("communities") or {}).items():
+            if not members:
+                community_labels[str(community_id)] = None
+                continue
+            # Name each cluster by its most-central member so the UI legend/filter reads like life
+            # areas ("Work", "Family") rather than opaque numbers.
+            best = max(members, key=lambda member: float(centrality.get(member, 0.0)))
+            community_labels[str(community_id)] = (analysis_nodes.get(best) or {}).get("label")
+        payload = {
+            "nodes": list(nodes.values()),
+            "edges": edges,
+            "analysis": {
+                "community_count": len(set(community.values())) if community else 0,
+                "hub_ids": ranked[:8],
+                "bridge_count": len(bridge_pairs),
+                "community_labels": community_labels,
+            },
+        }
         return self._shared_payload(
-            {"nodes": list(nodes.values()), "edges": edges},
+            payload,
             redact_sensitive=bool(user_settings["redact_sensitive_context"]),
         )
 

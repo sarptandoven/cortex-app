@@ -778,6 +778,7 @@ class ListResponse(BaseModel):
 class GraphResponse(BaseModel):
     nodes: list[dict[str, Any]]
     edges: list[dict[str, Any]]
+    analysis: dict[str, Any] | None = None
 
 
 class StatsResponse(BaseModel):

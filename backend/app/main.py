@@ -1797,6 +1797,18 @@ def graph(limit: int = Query(default=150, ge=10, le=500), user_id: str = Depends
     return store.graph(user_id, limit)
 
 
+@app.get("/v1/entity/{entity_id}/neighborhood", response_model=None)
+def entity_neighborhood(
+    entity_id: str,
+    limit: int = Query(default=8, ge=1, le=24),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    result = store.entity_neighborhood(user_id, entity_id, limit=limit)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Entity not in graph")
+    return result
+
+
 @app.get("/v1/stats", response_model=StatsResponse)
 def stats(user_id: str = Depends(auth)) -> dict[str, Any]:
     return store.stats(user_id)

@@ -24,6 +24,19 @@ struct MemoryMapView: View {
     @State private var selectedNodeID: String?
     /// The node under the cursor, for a quiet hover highlight.
     @State private var hoveredNodeID: String?
+    /// Free-text filter; matching nodes stay bright, the rest dim (layout is unchanged so the map
+    /// doesn't jump around while typing).
+    @State private var searchText: String = ""
+    /// The cited neighborhood of the selected entity node, fetched on tap (nil for non-entity nodes).
+    @State private var neighborhood: EntityNeighborhood?
+    @State private var loadingNeighborhood = false
+
+    /// nil = no filter (everything bright). Otherwise the set of node ids whose label matches.
+    private var matchedNodeIDs: Set<String>? {
+        let query = searchText.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !query.isEmpty else { return nil }
+        return Set(state.graphNodes.filter { $0.label.lowercased().contains(query) }.map(\.id))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: CortexDesign.Space.md) {
@@ -34,10 +47,19 @@ struct MemoryMapView: View {
                     message: "Your memory map appears as Cortex learns about you."
                 )
             } else {
+                if state.graphNodes.count > 8 {
+                    searchField
+                }
                 mapCanvas
                 if let node = selectedNode {
-                    NodeDetailPanel(node: node, onExplore: onExplore)
-                        .transition(.opacity)
+                    NodeDetailPanel(
+                        node: node,
+                        neighborhood: neighborhood,
+                        loading: loadingNeighborhood,
+                        onExplore: onExplore,
+                        onSelectConnection: { entityID in selectNode(entityID) }
+                    )
+                    .transition(.opacity)
                 }
                 legend
             }
@@ -50,8 +72,51 @@ struct MemoryMapView: View {
         .onChange(of: state.graphNodes) { _ in
             if let id = selectedNodeID, !state.graphNodes.contains(where: { $0.id == id }) {
                 selectedNodeID = nil
+                neighborhood = nil
             }
             hoveredNodeID = nil
+        }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: CortexDesign.Space.xs) {
+            Image(systemName: "magnifyingglass")
+                .font(CortexDesign.Typography.caption)
+                .foregroundColor(CortexDesign.inkFaint)
+            TextField("Find a person, project, or topic", text: $searchText)
+                .textFieldStyle(.plain)
+                .font(CortexDesign.Typography.caption)
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundColor(CortexDesign.inkFaint)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, CortexDesign.Space.sm)
+        .padding(.vertical, 6)
+        .background(CortexDesign.panelBackground)
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CortexDesign.Radius.sm, style: .continuous)
+                .stroke(CortexDesign.hairline, lineWidth: 1)
+        )
+    }
+
+    /// Select a node by id and, for an entity node, fetch its cited neighborhood for the drill panel.
+    private func selectNode(_ id: String) {
+        selectedNodeID = id
+        neighborhood = nil
+        guard let node = state.graphNodes.first(where: { $0.id == id }), node.centrality != nil else { return }
+        loadingNeighborhood = true
+        Task {
+            let result = await state.loadNeighborhood(id)
+            await MainActor.run {
+                if selectedNodeID == id { neighborhood = result }
+                loadingNeighborhood = false
+            }
         }
     }
 
@@ -67,16 +132,23 @@ struct MemoryMapView: View {
                 edges: state.graphEdges,
                 size: geo.size
             )
+            let matched = matchedNodeIDs
             Canvas { context, size in
-                drawEdges(in: &context, layout: layout)
-                drawNodes(in: &context, size: size, layout: layout)
+                drawEdges(in: &context, layout: layout, matched: matched)
+                drawNodes(in: &context, size: size, layout: layout, matched: matched)
             }
             .contentShape(Rectangle())
             .onTapGesture { location in
                 if let hit = layout.nearestNode(to: location) {
-                    selectedNodeID = (selectedNodeID == hit.id) ? nil : hit.id
+                    if selectedNodeID == hit.id {
+                        selectedNodeID = nil
+                        neighborhood = nil
+                    } else {
+                        selectNode(hit.id)
+                    }
                 } else {
                     selectedNodeID = nil
+                    neighborhood = nil
                 }
             }
             .onContinuousHover { phase in
@@ -99,29 +171,40 @@ struct MemoryMapView: View {
         .accessibilityLabel("Memory map with \(state.graphNodes.count) points and \(state.graphEdges.count) connections")
     }
 
-    private func drawEdges(in context: inout GraphicsContext, layout: MemoryMapLayout) {
-        for edge in state.graphEdges {
+    private func drawEdges(in context: inout GraphicsContext, layout: MemoryMapLayout, matched: Set<String>?) {
+        // Draw ordinary ties first, bridges (cross-community "surprising connections") last so they
+        // sit on top: dashed gold, a little heavier.
+        let ordered = state.graphEdges.sorted { ($0.is_bridge == true ? 1 : 0) < ($1.is_bridge == true ? 1 : 0) }
+        for edge in ordered {
             guard let a = layout.position(of: edge.source_id),
                   let b = layout.position(of: edge.target_id) else { continue }
             var path = Path()
             path.move(to: a)
             path.addLine(to: b)
-            let weight = edge.weight ?? 0.5
-            let lineWidth = 0.6 + CGFloat(max(0, min(1, weight))) * 1.4
-            // Heavier ties lean gold, light ties are faint ink — both stay hairline-quiet.
-            let color = weight >= 0.66 ? CortexDesign.gold : CortexDesign.ink
-            let opacity = 0.14 + min(0.34, weight * 0.34)
-            context.stroke(path, with: .color(color.opacity(opacity)), lineWidth: lineWidth)
+            // Dim an edge only when BOTH endpoints are filtered out, so a match keeps its context.
+            let dimmed = matched != nil && !(matched!.contains(edge.source_id) || matched!.contains(edge.target_id))
+            let dim: CGFloat = dimmed ? 0.28 : 1.0
+            if edge.is_bridge == true {
+                let style = StrokeStyle(lineWidth: 1.6, dash: [4, 3])
+                context.stroke(path, with: .color(CortexDesign.gold.opacity(0.85 * dim)), style: style)
+            } else {
+                let weight = edge.weight ?? 0.5
+                let lineWidth = 0.6 + CGFloat(max(0, min(1, weight))) * 1.4
+                let color = weight >= 0.66 ? CortexDesign.gold : CortexDesign.ink
+                let opacity = (0.14 + min(0.34, weight * 0.34)) * dim
+                context.stroke(path, with: .color(color.opacity(opacity)), lineWidth: lineWidth)
+            }
         }
     }
 
-    private func drawNodes(in context: inout GraphicsContext, size: CGSize, layout: MemoryMapLayout) {
+    private func drawNodes(in context: inout GraphicsContext, size: CGSize, layout: MemoryMapLayout, matched: Set<String>?) {
         for node in state.graphNodes {
             guard let point = layout.position(of: node.id) else { continue }
             let radius = layout.radius(of: node)
             let isSelected = node.id == selectedNodeID
             let isHovered = node.id == hoveredNodeID
-            let fill = MemoryMapView.color(for: node.type)
+            let isDimmed = matched != nil && !matched!.contains(node.id)
+            let fill = MemoryMapView.color(for: node)
 
             let rect = CGRect(
                 x: point.x - radius,
@@ -142,11 +225,13 @@ struct MemoryMapView: View {
                 context.fill(Path(ellipseIn: haloRect), with: .color(fill.opacity(isSelected ? 0.22 : 0.14)))
             }
 
-            context.fill(circle, with: .color(fill.opacity(isSelected ? 1.0 : 0.85)))
+            let baseOpacity: Double = isSelected ? 1.0 : (isDimmed ? 0.18 : 0.85)
+            context.fill(circle, with: .color(fill.opacity(baseOpacity)))
             context.stroke(circle, with: .color(CortexDesign.panelBackground), lineWidth: 1)
 
-            // Label the larger / selected / hovered nodes so the map stays uncluttered.
-            if radius >= 7 || isSelected || isHovered {
+            // Label the larger / selected / hovered nodes so the map stays uncluttered. A dimmed
+            // (filtered-out) node drops its label so the matches read clearly.
+            if (radius >= 7 || isSelected || isHovered) && !isDimmed {
                 let text = Text(node.label)
                     .font(CortexDesign.Typography.caption)
                     .foregroundColor(isSelected ? CortexDesign.ink : CortexDesign.inkSecondary)
@@ -202,6 +287,26 @@ struct MemoryMapView: View {
         }
     }
 
+    /// A fixed, deterministic palette so each community (life/work area) keeps its color across
+    /// renders, cycled by community id. Nodes with no community (captures/memories/tasks, or an
+    /// empty analysis) fall back to the type color, so the map degrades gracefully.
+    static let communityPalette: [Color] = [
+        CortexDesign.accent,
+        CortexDesign.gold,
+        CortexDesign.sealMoss,
+        Color(red: 0.42, green: 0.35, blue: 0.62),
+        Color(red: 0.70, green: 0.44, blue: 0.30),
+        Color(red: 0.28, green: 0.52, blue: 0.55),
+    ]
+
+    static func color(for node: GraphNode) -> Color {
+        if let community = node.community {
+            let count = communityPalette.count
+            return communityPalette[((community % count) + count) % count]
+        }
+        return color(for: node.type)
+    }
+
     static let legendEntries: [(label: String, color: Color)] = [
         ("People", CortexDesign.accent),
         ("Projects", CortexDesign.gold),
@@ -214,7 +319,11 @@ struct MemoryMapView: View {
 /// backend's detail text if present.
 private struct NodeDetailPanel: View {
     let node: GraphNode
+    var neighborhood: EntityNeighborhood? = nil
+    var loading: Bool = false
     var onExplore: ((GraphNode) -> Void)? = nil
+    /// Tapping a connection re-centers the drill on that entity.
+    var onSelectConnection: ((String) -> Void)? = nil
 
     private var typeWord: String {
         switch node.type.lowercased() {
@@ -230,12 +339,18 @@ private struct NodeDetailPanel: View {
         VStack(alignment: .leading, spacing: CortexDesign.Space.xs) {
             HStack(alignment: .firstTextBaseline, spacing: CortexDesign.Space.sm) {
                 Circle()
-                    .fill(MemoryMapView.color(for: node.type))
+                    .fill(MemoryMapView.color(for: node))
                     .frame(width: 8, height: 8)
                 Text(node.label)
                     .font(CortexDesign.Typography.title)
                     .foregroundColor(CortexDesign.ink)
                 Spacer(minLength: 0)
+                if node.is_hub == true {
+                    Text("HUB")
+                        .font(CortexDesign.Typography.stamp)
+                        .kerning(0.8)
+                        .foregroundColor(CortexDesign.gold)
+                }
                 Text(typeWord.uppercased())
                     .font(CortexDesign.Typography.stamp)
                     .kerning(0.8)
@@ -249,6 +364,7 @@ private struct NodeDetailPanel: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            connectionsSection
             if let onExplore {
                 Button {
                     onExplore(node)
@@ -263,6 +379,45 @@ private struct NodeDetailPanel: View {
         .cortexCard(padding: CortexDesign.Space.md)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(node.label), \(typeWord)\(node.detail.map { ". \($0)" } ?? "")")
+    }
+
+    @ViewBuilder
+    private var connectionsSection: some View {
+        if loading {
+            Text("Loading connections…")
+                .font(CortexDesign.Typography.caption)
+                .foregroundColor(CortexDesign.inkFaint)
+        } else if let connections = neighborhood?.connections, !connections.isEmpty {
+            Divider().overlay(CortexDesign.hairline)
+            Text("CONNECTED")
+                .font(CortexDesign.Typography.stamp)
+                .kerning(0.8)
+                .foregroundColor(CortexDesign.inkFaint)
+            ForEach(connections.prefix(6)) { connection in
+                Button {
+                    onSelectConnection?(connection.entity_id)
+                } label: {
+                    HStack(spacing: CortexDesign.Space.xs) {
+                        Text(connection.label ?? connection.entity_id)
+                            .font(CortexDesign.Typography.caption.weight(.medium))
+                            .foregroundColor(CortexDesign.ink)
+                        if let relation = connection.relation, !relation.isEmpty {
+                            Text(relation.replacingOccurrences(of: "_", with: " "))
+                                .font(CortexDesign.Typography.stamp)
+                                .foregroundColor(CortexDesign.inkFaint)
+                        }
+                        Spacer(minLength: 0)
+                        if let example = connection.example, !example.isEmpty {
+                            Image(systemName: "quote.opening")
+                                .font(.system(size: 8))
+                                .foregroundColor(CortexDesign.inkFaint)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
     }
 }
 
@@ -287,6 +442,13 @@ private struct MemoryMapLayout {
         let importances = nodes.map { CGFloat($0.importance ?? 1) }
         let maxImportance = max(1, importances.max() ?? 1)
 
+        // Prefer graph centrality (the "god node" signal) for size + centre-pull; fall back to
+        // importance (damped, so real hubs still dominate) for non-entity nodes that carry none.
+        func prominence(_ node: GraphNode) -> CGFloat {
+            if let c = node.centrality { return max(0, min(1, CGFloat(c))) }
+            return max(0, min(1, (CGFloat(node.importance ?? 1) / maxImportance) * 0.6))
+        }
+
         // Order matters for stable angular placement: sort by id so the sequence is deterministic
         // regardless of the order the backend returned nodes.
         let ordered = nodes.sorted { $0.id < $1.id }
@@ -294,7 +456,7 @@ private struct MemoryMapLayout {
 
         for (index, node) in ordered.enumerated() {
             let seed = MemoryMapLayout.stableHash(node.id)
-            let importance = CGFloat(node.importance ?? 1) / maxImportance // 0...1
+            let importance = prominence(node) // 0...1, centrality-first
 
             // Angle: evenly spread by index, jittered deterministically by the id hash so ties
             // don't overlap and the layout feels organic rather than perfectly wheel-like.
@@ -302,8 +464,8 @@ private struct MemoryMapLayout {
             let jitter = (CGFloat(seed % 1000) / 1000.0 - 0.5) * (2 * .pi / CGFloat(count))
             let angle = baseAngle + jitter
 
-            // Distance: important nodes sit closer to the center; a deterministic radial jitter
-            // keeps equal-importance nodes off a single ring.
+            // Distance: prominent nodes sit closer to the center; a deterministic radial jitter
+            // keeps equal-prominence nodes off a single ring.
             let ringJitter = CGFloat((seed / 1000) % 1000) / 1000.0 // 0...1
             let normalizedDistance = (1 - importance) * 0.72 + ringJitter * 0.28
             let distance = maxRadius * (0.18 + normalizedDistance * 0.82)
@@ -314,6 +476,27 @@ private struct MemoryMapLayout {
             )
             positions[node.id] = point
             radii[node.id] = 5 + importance * 9
+            if node.is_hub == true { radii[node.id] = max(radii[node.id] ?? 5, 13) }
+        }
+
+        // One deterministic clustering pass: nudge each node toward its community centroid so
+        // clusters read as clusters. A single averaged step (not a physics sim) stays cheap and
+        // stable across renders. Positions are clamped to the canvas so a pull can't push a node off.
+        var centroids: [Int: (x: CGFloat, y: CGFloat, n: CGFloat)] = [:]
+        for node in ordered {
+            guard let community = node.community, let p = positions[node.id] else { continue }
+            var acc = centroids[community] ?? (0, 0, 0)
+            acc.x += p.x; acc.y += p.y; acc.n += 1
+            centroids[community] = acc
+        }
+        for node in ordered {
+            guard let community = node.community, let p = positions[node.id],
+                  let acc = centroids[community], acc.n > 1 else { continue }
+            let centroid = CGPoint(x: acc.x / acc.n, y: acc.y / acc.n)
+            let pull: CGFloat = node.is_hub == true ? 0.15 : 0.35 // hubs anchor, satellites gather
+            let nx = min(max(p.x + (centroid.x - p.x) * pull, 12), max(12, size.width - 12))
+            let ny = min(max(p.y + (centroid.y - p.y) * pull, 12), max(12, size.height - 12))
+            positions[node.id] = CGPoint(x: nx, y: ny)
         }
     }
 

@@ -158,6 +158,47 @@ class EntityGraphStoreTests(unittest.TestCase):
         self.assertIn("connect", insight["headline"].lower())
         self.assertGreaterEqual(len(insight["evidence"]["memory_ids"]), 2)
 
+    # ---- Objective 9: /v1/graph carries the analysis for the Constellation UI ----
+
+    def test_graph_response_carries_centrality_community_and_hub_flags(self) -> None:
+        self._seed_graph()
+        graph = self.store.graph(self.user_id, limit=200)
+        by_id = {n["id"]: n for n in graph["nodes"]}
+        alice = by_id["ent_alice"]
+        self.assertIn("centrality", alice)
+        self.assertIn("community", alice)
+        self.assertTrue(alice["is_hub"])
+        self.assertEqual(alice["centrality"], 1.0)  # normalized max
+        self.assertGreaterEqual(alice["centrality"], by_id["ent_bob"]["centrality"])
+
+    def test_graph_analysis_block_present_and_deterministic(self) -> None:
+        self._seed_graph()
+        g1 = self.store.graph(self.user_id, limit=200)
+        g2 = self.store.graph(self.user_id, limit=200)
+        self.assertIn("analysis", g1)
+        self.assertEqual(g1["analysis"]["hub_ids"][0], "ent_alice")
+        self.assertGreaterEqual(g1["analysis"]["community_count"], 1)
+        self.assertEqual(g1["analysis"], g2["analysis"])  # deterministic -> no git-sync churn
+
+    def test_graph_edges_flag_bridges(self) -> None:
+        self._seed_graph()
+        graph = self.store.graph(self.user_id, limit=200)
+        self.assertTrue(all("is_bridge" in e for e in graph["edges"]))
+        self.assertTrue(all(isinstance(e["is_bridge"], bool) for e in graph["edges"]))
+
+    def test_non_entity_nodes_have_no_community(self) -> None:
+        self._seed_graph()
+        graph = self.store.graph(self.user_id, limit=200)
+        non_entity = [n for n in graph["nodes"] if n["id"] not in self.ENTITIES]
+        self.assertTrue(non_entity)  # memory / capture nodes are seeded
+        self.assertTrue(all("community" not in n for n in non_entity))
+
+    def test_empty_graph_analysis_block_is_safe(self) -> None:
+        graph = self.store.graph("empty-user", limit=50)
+        self.assertEqual(graph["analysis"]["community_count"], 0)
+        self.assertEqual(graph["analysis"]["hub_ids"], [])
+        self.assertEqual(graph["nodes"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
