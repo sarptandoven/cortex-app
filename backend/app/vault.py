@@ -15,7 +15,9 @@ from typing import Any, Iterable
 from .vault_markdown import (
     atomic_write_text,
     parse_memory_markdown,
+    render_daily_markdown,
     render_entity_moc_markdown,
+    render_home_markdown,
     render_memory_markdown,
 )
 
@@ -72,6 +74,12 @@ RESTORE_DIRECTORIES = {"imports", "source_accounts", "sync_cursors", "sync_devic
 # (that is the whole point — a browsable People/Projects/Topics graph in the vault).
 ENTITY_MOC_DIRECTORIES = ("People", "Projects", "Orgs", "Topics")
 ENTITY_KIND_TO_MOC_DIR = {"person": "People", "project": "Projects", "org": "Orgs", "topic": "Topics"}
+# Machine-owned vault pages (N3/N4/N5). Like the MOC folders, these are DELIBERATELY not in
+# VAULT_DIRECTORIES / RESTORE_DIRECTORIES, so reconcile (globs memories/** only) and backup ignore
+# them; they still sync via git/iCloud (that is the point — a browsable vault). Fully regenerable.
+HOME_PAGE_FILENAME = "Cortex — Start Here.md"
+DAILY_DIRECTORY = "Journal"
+CONSTELLATION_CANVAS_FILENAME = "Constellation.canvas"
 BACKUP_DENY_FILENAMES = {
     ".env",
     ".netrc",
@@ -660,6 +668,78 @@ class CortexVault:
                     except OSError:
                         pass
         return removed
+
+    # ---- N3 Home page / N4 Journal / N5 Canvas: machine-owned vault pages (outside memories/) ----
+
+    def write_home_markdown(self, page: dict[str, Any]) -> Path | None:
+        """Write/refresh the vault Home root page. Additive & best-effort (a failure never breaks a
+        capture); lives at the vault root, invisible to reconcile + backup."""
+        if not self.markdown_mirror:
+            return None
+        try:
+            target = self.root / HOME_PAGE_FILENAME
+            atomic_write_text(target, render_home_markdown(page))
+            return target
+        except Exception:
+            return None
+
+    def daily_markdown_path(self, date: str) -> Path:
+        return self.root / DAILY_DIRECTORY / f"{safe_segment(date, 'undated')}.md"
+
+    def write_daily_markdown(self, page: dict[str, Any]) -> Path | None:
+        """Write/refresh one Journal/<date>.md page. Best-effort; outside memories/."""
+        if not self.markdown_mirror:
+            return None
+        date = str(page.get("date") or "").strip()
+        if not date:
+            return None
+        try:
+            target = self.daily_markdown_path(date)
+            atomic_write_text(target, render_daily_markdown(page))
+            return target
+        except Exception:
+            return None
+
+    def list_daily_dates(self) -> set[str]:
+        """The set of dates (file stems) that currently have a Journal page on disk."""
+        base = self.root / DAILY_DIRECTORY
+        if not base.exists():
+            return set()
+        return {path.stem for path in base.glob("*.md")}
+
+    def prune_daily_pages(self, keep_dates: set[str]) -> int:
+        """Delete Journal pages whose date is not in keep_dates (a day that fell empty within the
+        regenerated window). Only touches dates IN the caller's window — callers pass the full set of
+        dates they considered, so a day outside the window is never pruned."""
+        removed = 0
+        base = self.root / DAILY_DIRECTORY
+        if not base.exists():
+            return 0
+        for path in base.glob("*.md"):
+            if path.stem not in keep_dates:
+                try:
+                    path.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+        return removed
+
+    def canvas_path(self, name: str = CONSTELLATION_CANVAS_FILENAME) -> Path:
+        stem = safe_segment(name[:-7] if name.endswith(".canvas") else name, "Constellation")
+        return self.root / f"{stem}.canvas"
+
+    def write_canvas(self, doc: dict[str, Any], name: str = CONSTELLATION_CANVAS_FILENAME) -> Path | None:
+        """Write/refresh the machine-owned Obsidian Canvas export (JSON). Best-effort; atomic (a
+        crash mid-write can't leave a half-written .canvas). Deterministic serialization (we control
+        key order) so an unchanged graph yields a byte-identical file — no git/iCloud churn."""
+        if not self.markdown_mirror:
+            return None
+        try:
+            target = self.canvas_path(name)
+            atomic_write_text(target, json.dumps(doc, ensure_ascii=False, indent=2) + "\n")
+            return target
+        except Exception:
+            return None
 
     def write_tombstone(
         self,

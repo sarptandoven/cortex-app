@@ -2874,10 +2874,11 @@ class CortexStore:
             self.vault.migrate_memory_note_filenames(user_id)
         except Exception:
             pass
-        # One-time-per-startup: give an existing vault its browsable entity MOC pages without waiting
-        # for the next capture/rebuild. No-op unless CORTEX_ENTITY_MOC is on (desktop). Best-effort.
+        # One-time-per-startup: give an existing vault its browsable machine-owned pages (MOC + Home
+        # + Journal window + Canvas) without waiting for the next capture. No-op unless
+        # CORTEX_ENTITY_MOC is on (desktop). Best-effort.
         try:
-            self.regenerate_entity_moc(user_id)
+            self.regenerate_vault_pages(user_id)
         except Exception:
             pass
         vault_diagnostics = self.vault.diagnostics()
@@ -9237,13 +9238,14 @@ class CortexStore:
                 memory.pop("_link_names", None)
                 memory.pop("_backlinks", None)
 
-        # Refresh the browsable entity MOC pages (People/Projects/Topics) for interactive captures.
-        # Skipped during bulk imports (import_id set) — the post-import rebuild regenerates them
-        # once — and a no-op unless CORTEX_ENTITY_MOC is on (desktop only). Best-effort; the graph
-        # analysis opens its own connections, so this runs AFTER the capture transaction closes.
+        # Refresh the browsable machine-owned vault pages (entity MOC + Home + Journal + Canvas) for
+        # interactive captures. Skipped during bulk imports (import_id set) — the post-import rebuild
+        # regenerates them once — and a no-op unless CORTEX_ENTITY_MOC is on (desktop only).
+        # Best-effort; runs AFTER the capture transaction closes. The Journal only rebuilds the day
+        # this capture touched, so the ingest path stays cheap.
         if import_id is None:
             try:
-                self.regenerate_entity_moc(user_id)
+                self.regenerate_vault_pages(user_id, days=[str(captured_at)[:10]] if captured_at else None)
             except Exception:
                 pass
 
@@ -11382,6 +11384,317 @@ class CortexStore:
         except Exception:
             pruned = 0
         return {"written": written, "pruned": pruned}
+
+    # ---- N3 Home page / N4 Journal / N5 Canvas: builders + regen (share the MOC flag + hooks) ----
+
+    _MOC_KIND_TO_FOLDER = {"person": "People", "project": "Projects", "org": "Orgs", "topic": "Topics"}
+
+    def build_home_page(self, user_id: str) -> dict[str, Any]:
+        """Compose the vault Home / Start-Here page from the current graph analysis (hubs +
+        communities), recent memories, and open loops. Deterministic ordering; all wikilinks resolve
+        to entity MOC pages / memory notes."""
+        try:
+            analysis = self.entity_graph_analysis(user_id, include_pending=False)
+        except Exception:
+            analysis = {}
+        nodes = analysis.get("nodes") or {}
+        centrality = analysis.get("centrality") or {}
+        community = analysis.get("community") or {}
+        communities = analysis.get("communities") or {}
+        ranked = list(analysis.get("ranked") or [])
+
+        def _stem(nid: str) -> str:
+            return self.vault.entity_moc_stem(nid, (nodes.get(nid) or {}).get("label") or nid)
+
+        folder_counts = {"People": 0, "Projects": 0, "Orgs": 0, "Topics": 0}
+        for node in nodes.values():
+            folder_counts[self._MOC_KIND_TO_FOLDER.get(str(node.get("kind") or "topic"), "Topics")] += 1
+        folders = [{"name": name, "count": folder_counts[name]} for name in ("People", "Projects", "Orgs", "Topics")]
+
+        hubs = [
+            {"wikilink": _stem(nid), "name": (nodes.get(nid) or {}).get("label") or nid, "kind": (nodes.get(nid) or {}).get("kind")}
+            for nid in ranked[:8]
+        ]
+
+        areas: list[dict[str, Any]] = []
+        for community_id, members in sorted((communities or {}).items(), key=lambda kv: str(kv[0])):
+            members = [m for m in members if m in nodes]
+            if not members:
+                continue
+            best = max(members, key=lambda m: (round(float(centrality.get(m, 0.0)), 6), m))
+            ranked_members = sorted(members, key=lambda m: (-round(float(centrality.get(m, 0.0)), 6), m))[:6]
+            areas.append({
+                "label": (nodes.get(best) or {}).get("label") or str(community_id),
+                "wikilink": _stem(best),
+                "members": [
+                    {"wikilink": _stem(m), "name": (nodes.get(m) or {}).get("label") or m}
+                    for m in ranked_members if m != best
+                ],
+            })
+
+        recent: list[dict[str, Any]] = []
+        try:
+            for item in self.recent(user_id, limit=10):
+                mid = str(item.get("id") or "")
+                if not mid:
+                    continue
+                recent.append({
+                    "wikilink": self.vault.memory_note_stem({"id": mid, "summary": item.get("summary"), "content": item.get("content")}),
+                    "note": str(item.get("summary") or item.get("content") or "").strip().replace("\n", " ")[:120],
+                })
+        except Exception:
+            recent = []
+
+        open_loops: list[dict[str, Any]] = []
+        try:
+            for task in self.open_tasks(user_id, limit=8):
+                text = str(task.get("content") or task.get("title") or "").strip().replace("\n", " ")
+                if text:
+                    open_loops.append({"text": text[:160]})
+        except Exception:
+            open_loops = []
+
+        return {
+            "cortex_generated": True,
+            "title": "Cortex — Start Here",
+            "entity_count": len(nodes),
+            "community_count": len({c for c in community.values()}) if community else 0,
+            "folders": folders,
+            "hubs": hubs,
+            "areas": areas,
+            "recent": recent,
+            "open_loops": open_loops,
+        }
+
+    def regenerate_home_page(self, user_id: str) -> bool:
+        if not self._entity_moc_enabled() or not getattr(self.vault, "markdown_mirror", True):
+            return False
+        try:
+            return self.vault.write_home_markdown(self.build_home_page(user_id)) is not None
+        except Exception:
+            return False
+
+    def build_daily_pages(self, user_id: str, *, days: list[str] | None = None, window: int = 30) -> list[dict[str, Any]]:
+        """One page dict per active day (or per requested day). Groups current-truth memories by
+        captured_at[:10]; each page lists that day's learned memory notes + touched entities. Bounded:
+        when `days` is None only the most-recent `window` active days are built (never the whole
+        history), so a large vault doesn't regenerate thousands of files."""
+        day_filter = {str(d) for d in days} if days is not None else None
+        try:
+            with connect(self.db_path) as conn:
+                user_settings = {**self._settings(conn, user_id), "allow_pending_in_context": False}
+                filters, params = self._memory_filters(user_id, user_settings, alias="m")
+                rows = conn.execute(
+                    f"""
+                    SELECT m.id AS id, substr(m.captured_at, 1, 10) AS day,
+                           m.summary AS summary, m.content AS content, m.entity_ids_json AS entity_ids_json
+                    FROM memories m
+                    WHERE {' AND '.join(filters)} AND m.captured_at IS NOT NULL AND m.captured_at != ''
+                    ORDER BY m.captured_at
+                    """,
+                    params,
+                ).fetchall()
+                entity_rows = conn.execute("SELECT id, name FROM entities WHERE user_id = ?", (user_id,)).fetchall()
+        except Exception:
+            return []
+        entity_name = {str(r["id"]): str(r["name"] or "") for r in entity_rows}
+
+        by_day: dict[str, list] = {}
+        for row in rows:
+            day = str(row["day"] or "")
+            if not day:
+                continue
+            by_day.setdefault(day, []).append(row)
+        if day_filter is not None:
+            target_days = [d for d in sorted(by_day.keys()) if d in day_filter]
+        else:
+            target_days = sorted(by_day.keys(), reverse=True)[:max(1, window)]
+
+        pages: list[dict[str, Any]] = []
+        for day in sorted(target_days):
+            day_rows = by_day.get(day) or []
+            if not day_rows:
+                continue
+            memory_items = []
+            entity_ids_seen: list[str] = []
+            entity_seen: set[str] = set()
+            for row in day_rows:
+                mid = str(row["id"])
+                note = str(row["summary"] or row["content"] or "").strip().replace("\n", " ")[:120]
+                memory_items.append({
+                    "wikilink": self.vault.memory_note_stem({"id": mid, "summary": row["summary"], "content": row["content"]}),
+                    "note": note,
+                })
+                try:
+                    for eid in json.loads(row["entity_ids_json"] or "[]"):
+                        seid = str(eid)
+                        if seid and seid not in entity_seen:
+                            entity_seen.add(seid)
+                            entity_ids_seen.append(seid)
+                except Exception:
+                    pass
+            entity_items = [
+                {"wikilink": self.vault.entity_moc_stem(eid, entity_name.get(eid) or eid), "name": entity_name.get(eid) or eid}
+                for eid in entity_ids_seen
+            ]
+            pages.append({
+                "cortex_generated": True,
+                "date": day,
+                "memories": len(memory_items),
+                "entities": len(entity_items),
+                "memory_items": memory_items,
+                "entity_items": entity_items,
+            })
+        return pages
+
+    def regenerate_daily_pages(self, user_id: str, *, days: list[str] | None = None) -> dict[str, int]:
+        if not self._entity_moc_enabled() or not getattr(self.vault, "markdown_mirror", True):
+            return {"written": 0, "pruned": 0}
+        try:
+            pages = self.build_daily_pages(user_id, days=days)
+        except Exception:
+            return {"written": 0, "pruned": 0}
+        written = 0
+        produced: set[str] = set()
+        for page in pages:
+            day = str(page.get("date") or "")
+            if not day:
+                continue
+            produced.add(day)
+            if self.vault.write_daily_markdown(page) is not None:
+                written += 1
+        pruned = 0
+        try:
+            existing = self.vault.list_daily_dates()
+            if days is not None:
+                # Targeted: only the requested days that produced no page are removed.
+                empty_requested = {str(d) for d in days} - produced
+                keep = existing - empty_requested
+            elif produced:
+                # Full window: prune only files within the produced range that went empty; older days
+                # (outside the window) are left untouched.
+                floor = min(produced)
+                keep = produced | {d for d in existing if d < floor}
+            else:
+                keep = existing  # produced nothing -> don't prune anything
+            pruned = self.vault.prune_daily_pages(keep)
+        except Exception:
+            pruned = 0
+        return {"written": written, "pruned": pruned}
+
+    def build_constellation_canvas(self, user_id: str) -> dict[str, Any] | None:
+        """Map the entity graph to an Obsidian .canvas doc: one file-node per entity (linking to its
+        MOC page), community-clustered deterministic layout, centrality-sized, community-colored;
+        edges from graph co-mentions. Deterministic (sorted ids, integer coords, no timestamps)."""
+        try:
+            analysis = self.entity_graph_analysis(user_id, include_pending=False)
+        except Exception:
+            return None
+        nodes = analysis.get("nodes") or {}
+        if not nodes:
+            return {"nodes": [], "edges": []}
+        centrality = analysis.get("centrality") or {}
+        community = analysis.get("community") or {}
+        node_ids = sorted(nodes.keys())
+
+        # Deterministic community-clustered radial layout. Each community gets a cluster centre on a
+        # ring; members orbit it, pulled inward by centrality, with a stable per-id angular jitter.
+        width, height, pad = 2400.0, 1600.0, 140.0
+        cx, cy = width / 2.0, height / 2.0
+        comm_ids = sorted({community.get(n) for n in node_ids if community.get(n) is not None}, key=lambda c: str(c))
+        comm_index = {c: i for i, c in enumerate(comm_ids)}
+        ring = max(1.0, min(width, height) / 2.0 - pad - 260.0)
+        members_by_comm: dict[Any, list[str]] = {}
+        for nid in node_ids:
+            members_by_comm.setdefault(community.get(nid), []).append(nid)
+
+        def _fnv(text: str) -> int:
+            h = 0xcbf29ce484222325
+            for byte in text.encode("utf-8"):
+                h = ((h ^ byte) * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+            return h
+
+        positions: dict[str, tuple[float, float]] = {}
+        n_comm = max(1, len(comm_ids))
+        for comm, members in members_by_comm.items():
+            idx = comm_index.get(comm, 0)
+            angle = (idx / n_comm) * 2 * math.pi
+            centre_x = cx + math.cos(angle) * ring
+            centre_y = cy + math.sin(angle) * ring
+            ordered = sorted(members)
+            count = max(1, len(ordered))
+            for member_index, nid in enumerate(ordered):
+                seed = _fnv(nid)
+                local_angle = (member_index / count) * 2 * math.pi + (seed % 1000) / 1000.0
+                spread = 220.0 * (1.0 - max(0.0, min(1.0, float(centrality.get(nid, 0.0)))))
+                spread += (seed // 1000 % 100) / 100.0 * 60.0
+                positions[nid] = (centre_x + math.cos(local_angle) * spread, centre_y + math.sin(local_angle) * spread)
+
+        canvas_nodes = []
+        for nid in node_ids:
+            node = nodes[nid]
+            label = str(node.get("label") or nid)
+            size = int(60 + max(0.0, min(1.0, float(centrality.get(nid, 0.0)))) * 140)
+            pos_x, pos_y = positions.get(nid, (cx, cy))
+            folder = self._MOC_KIND_TO_FOLDER.get(str(node.get("kind") or "topic"), "Topics")
+            stem = self.vault.entity_moc_stem(nid, label)
+            comm = community.get(nid)
+            color = str((int(comm) % 6) + 1) if isinstance(comm, int) else "6"
+            canvas_nodes.append({
+                "id": self.vault.entity_moc_short_id(nid),
+                "type": "file",
+                "file": f"{folder}/{stem}.md",
+                "x": int(pos_x),
+                "y": int(pos_y),
+                "width": size,
+                "height": max(60, size // 2),
+                "color": color,
+            })
+
+        canvas_edges = []
+        seen_edges: set[tuple[str, str]] = set()
+        for edge in (analysis.get("edges") or []):
+            src, tgt = str(edge.get("source") or ""), str(edge.get("target") or "")
+            if not src or not tgt or src == tgt or src not in nodes or tgt not in nodes:
+                continue
+            key = tuple(sorted((src, tgt)))
+            if key in seen_edges:
+                continue
+            seen_edges.add(key)
+            canvas_edges.append({
+                "id": hashlib.sha1(("|".join(key)).encode("utf-8")).hexdigest()[:16],
+                "fromNode": self.vault.entity_moc_short_id(key[0]),
+                "toNode": self.vault.entity_moc_short_id(key[1]),
+            })
+        return {"nodes": canvas_nodes, "edges": canvas_edges}
+
+    def regenerate_constellation_canvas(self, user_id: str) -> bool:
+        if not self._entity_moc_enabled() or not getattr(self.vault, "markdown_mirror", True):
+            return False
+        try:
+            doc = self.build_constellation_canvas(user_id)
+            if doc is None:
+                return False
+            return self.vault.write_canvas(doc) is not None
+        except Exception:
+            return False
+
+    def regenerate_vault_pages(self, user_id: str, *, days: list[str] | None = None) -> dict[str, Any]:
+        """Refresh ALL machine-owned vault pages (entity MOC + Home + Journal + Canvas) in one call.
+        Each step is independently best-effort + flag-gated (CORTEX_ENTITY_MOC), so the hosted/bucket
+        backend — where the vault root is shared across users — generates none of them."""
+        result: dict[str, Any] = {}
+        for label, fn in (
+            ("moc", lambda: self.regenerate_entity_moc(user_id)),
+            ("home", lambda: self.regenerate_home_page(user_id)),
+            ("daily", lambda: self.regenerate_daily_pages(user_id, days=days)),
+            ("canvas", lambda: self.regenerate_constellation_canvas(user_id)),
+        ):
+            try:
+                result[label] = fn()
+            except Exception:
+                result[label] = None
+        return result
 
     def about_person(self, user_id: str, name: str, limit: int = 12) -> list[dict[str, Any]]:
         slug = "person_" + "".join(ch.lower() if ch.isalnum() else "-" for ch in name).strip("-")
@@ -15910,10 +16223,11 @@ class CortexStore:
                 },
             )
 
-        # Regenerate the browsable entity MOC pages from the freshly-rebuilt graph (covers reconcile
-        # and post-import rebuilds). No-op unless CORTEX_ENTITY_MOC is on (desktop). Best-effort.
+        # Regenerate all machine-owned vault pages (MOC + Home + Journal window + Canvas) from the
+        # freshly-rebuilt graph (covers reconcile and post-import rebuilds). No-op unless
+        # CORTEX_ENTITY_MOC is on (desktop). Best-effort.
         try:
-            self.regenerate_entity_moc(user_id)
+            self.regenerate_vault_pages(user_id)
         except Exception:
             pass
 
