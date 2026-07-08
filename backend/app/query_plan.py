@@ -172,3 +172,24 @@ def query_plan_enabled() -> bool:
     import os
 
     return os.environ.get("CORTEX_QUERY_PLAN", "").strip().lower() in {"1", "true", "on", "yes"}
+
+
+def context_hop_enabled() -> bool:
+    """Whether answer_query fires ONE bounded recovery hop on a low-confidence result before
+    abstaining (CORTEX_CONTEXT_HOP truthy). Default OFF — parity with today's abstain behavior."""
+    import os
+
+    return os.environ.get("CORTEX_CONTEXT_HOP", "").strip().lower() in {"1", "true", "on", "yes"}
+
+
+def context_hop_deadline_ms() -> int:
+    """Latency ceiling (ms) for the single recovery hop; past it the hop is skipped and the answer
+    abstains as today. Default 400ms, clamped to [50, 2000]. Reads CORTEX_CONTEXT_HOP_MS."""
+    import os
+
+    raw = os.environ.get("CORTEX_CONTEXT_HOP_MS", "").strip()
+    try:
+        value = int(raw) if raw else 400
+    except ValueError:
+        value = 400
+    return max(50, min(2000, value))

@@ -730,6 +730,27 @@ TOOLS = [
         },
     },
     {
+        "name": "expand_context",
+        "description": (
+            "Expand ONE cited hop around one or more entities: the graph neighborhood plus the cited "
+            "commitments, decisions, and recent context for each. Use to recover relational context "
+            "when a direct ask abstained or returned low confidence. Cited-or-abstain: returns "
+            "nothing for entities with no cited memory."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Entity names or ids (people, projects, orgs, topics).",
+                },
+                "name": {"type": "string", "description": "Single entity name (alternative to names)."},
+                "limit": {"type": "integer", "default": 8},
+            },
+        },
+    },
+    {
         "name": "list_capabilities",
         "description": (
             "Discover this Cortex: memory counts, the scopes your token holds, which tool surface "
@@ -801,6 +822,7 @@ MCP_TOOL_SURFACES: dict[str, frozenset[str]] = {
             "search_memory",
             "get_person_map",
             "get_entity_context",
+            "expand_context",
             "remember_this",
             "list_capabilities",
         }
@@ -813,6 +835,7 @@ READ_TOOLS = {
     "get_context",
     "ask_memory",
     "get_entity_context",
+    "expand_context",
     "list_capabilities",
     "search_memory",
     "get_recent_context",
@@ -934,6 +957,7 @@ _TOOL_TITLE_OVERRIDES: dict[str, str] = {
     "ask_memory": "Ask Memory (cited)",
     "search_memory": "Search Memory",
     "get_entity_context": "Get Entity Context",
+    "expand_context": "Expand Cited Context",
     "get_person_map": "Whole-Person Map",
     "remember_this": "Remember This",
     "list_capabilities": "List Cortex Capabilities",
@@ -1859,6 +1883,14 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         neighborhood = store.entity_neighborhood(user_id, entity_name, limit=limit)
         context = store.person_context(user_id, entity_name, limit=limit)
         return store.agent_payload(user_id, {"entity": entity_name, "context": context, "neighborhood": neighborhood})
+    if name == "expand_context":
+        names_arg = args.get("names")
+        names_list = [str(n) for n in names_arg if str(n or "").strip()] if isinstance(names_arg, list) else []
+        single = _text_arg(args, "name", max_chars=MCP_NAME_MAX_CHARS)
+        if single and single not in names_list:
+            names_list.append(single)
+        limit = _bounded_int_arg(args, "limit", 8)
+        return store.agent_payload(user_id, store.expand_context(user_id, names_list, limit=limit))
     if name == "list_capabilities":
         scope_list = sorted(set(token_scopes)) if token_scopes is not None else ["admin"]
         catalog = [
