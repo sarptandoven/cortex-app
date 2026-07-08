@@ -14,7 +14,12 @@ GITHUB_ENV = {
     "CORTEX_BROKER_GITHUB_CLIENT_ID": "gh-client-123",
     "CORTEX_BROKER_GITHUB_CLIENT_SECRET": "gh-secret-456",
 }
+GOOGLE_ENV = {
+    "CORTEX_BROKER_GOOGLE_CLIENT_ID": "goog-client-789",
+    "CORTEX_BROKER_GOOGLE_CLIENT_SECRET": "goog-secret-012",
+}
 LOOPBACK = "http://127.0.0.1:8766/v1/connectors/oauth/callback"
+GOOGLE_LOOPBACK = "http://127.0.0.1:8766/v1/connectors/google/oauth/callback"
 
 
 class _Capture:
@@ -125,6 +130,56 @@ class OAuthBrokerTests(unittest.TestCase):
         broker = OAuthBrokerRegistry(env={"CORTEX_BROKER_NOTION_CLIENT_ID": "id-only"})
         with self.assertRaises(BrokerError) as ctx:
             broker.exchange("notion", "code", LOOPBACK)
+        self.assertEqual(ctx.exception.status, 503)
+
+    # --- Google (centralized one-click; top-priority import source) ---
+
+    def test_google_is_configured_when_env_present(self):
+        self.assertIn("google", OAuthBrokerRegistry(env=GOOGLE_ENV).configured_providers())
+        self.assertFalse(OAuthBrokerRegistry(env={}).is_configured("google"))
+
+    def test_google_authorization_url_requests_offline_scoped_consent_with_pkce(self):
+        broker = OAuthBrokerRegistry(env=GOOGLE_ENV)
+        url = broker.authorization_url("google", GOOGLE_LOOPBACK, "st-1", code_challenge="chal-1")
+        self.assertTrue(url.startswith("https://accounts.google.com/o/oauth2/v2/auth?"))
+        self.assertIn("client_id=goog-client-789", url)
+        self.assertIn("response_type=code", url)
+        self.assertIn("access_type=offline", url)   # so a refresh_token is issued
+        self.assertIn("prompt=consent", url)
+        self.assertIn("drive.readonly", url)         # Drive + Gmail read in one consent
+        self.assertIn("gmail.readonly", url)
+        self.assertIn("code_challenge=chal-1", url)  # Google supports PKCE
+        self.assertIn("code_challenge_method=S256", url)
+
+    def test_google_exchange_posts_credentials_and_normalizes_refresh(self):
+        cap = _Capture({
+            "access_token": "ya29.tok",
+            "refresh_token": "1//refresh",
+            "expires_in": 3599,
+            "scope": "https://www.googleapis.com/auth/drive.readonly",
+            "token_type": "Bearer",
+        })
+        broker = OAuthBrokerRegistry(env=GOOGLE_ENV, token_request=cap)
+        out = broker.exchange("google", "auth-code-g", GOOGLE_LOOPBACK, code_verifier="ver-g")
+        self.assertEqual(cap.form.get("client_id"), "goog-client-789")   # creds in body (post style)
+        self.assertEqual(cap.form.get("client_secret"), "goog-secret-012")
+        self.assertEqual(cap.form.get("code"), "auth-code-g")
+        self.assertEqual(cap.form.get("code_verifier"), "ver-g")
+        self.assertNotIn("Authorization", cap.headers)                   # not basic auth
+        self.assertEqual(out["access_token"], "ya29.tok")
+        self.assertEqual(out["refresh_token"], "1//refresh")
+        self.assertIn("access_token_expires_at", out)
+
+    def test_google_refresh_roundtrip(self):
+        cap = _Capture({"access_token": "ya29.fresh", "expires_in": 3600, "token_type": "Bearer"})
+        broker = OAuthBrokerRegistry(env=GOOGLE_ENV, token_request=cap)
+        out = broker.refresh("google", "1//refresh")
+        self.assertEqual(cap.form.get("grant_type"), "refresh_token")
+        self.assertEqual(out["access_token"], "ya29.fresh")
+
+    def test_google_unconfigured_is_503(self):
+        with self.assertRaises(BrokerError) as ctx:
+            OAuthBrokerRegistry(env={}).authorization_url("google", GOOGLE_LOOPBACK, "s")
         self.assertEqual(ctx.exception.status, 503)
 
 

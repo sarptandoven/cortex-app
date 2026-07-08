@@ -84,6 +84,26 @@ _PROVIDER_SPECS: dict[str, BrokerProviderSpec] = {
         token_accept_json=True,
         supports_pkce=True,
     ),
+    # One "Connect Google" grants read-only Drive + Gmail in a single consent (a user rarely wants
+    # one without the other). access_type=offline + prompt=consent guarantee a refresh_token so the
+    # local sync keeps working after the access token expires. Google is a confidential web client,
+    # so the secret lives here in the broker — the founder registers ONE Google OAuth client and
+    # every user gets one-click, no per-user credential paste. Override scopes per deployment with
+    # CORTEX_BROKER_GOOGLE_SCOPES.
+    "google": BrokerProviderSpec(
+        key="google",
+        authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
+        token_url="https://oauth2.googleapis.com/token",
+        default_scopes=(
+            "openid email "
+            "https://www.googleapis.com/auth/drive.readonly "
+            "https://www.googleapis.com/auth/gmail.readonly"
+        ),
+        token_auth_style="post",
+        authorize_extra={"response_type": "code", "access_type": "offline", "prompt": "consent"},
+        token_accept_json=True,
+        supports_pkce=True,
+    ),
 }
 
 
