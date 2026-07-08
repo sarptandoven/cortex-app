@@ -231,6 +231,7 @@ input:focus { border-color: var(--accent); outline: none; }
 .token-list small { color: var(--muted); display: block; }
 .row-between { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
 .pill { background: var(--quiet); border-radius: 999px; color: var(--moss); font-size: 12px; font-weight: 700; padding: 4px 10px; }
+.pill.pill-warn { background: var(--accent-soft); color: var(--accent); }  /* non-active status (e.g. email not verified) */
 /* OAuth "finishing sign in" moment — a centered card with a wax-red loading ring, matching the
    app's calm, centered activity states rather than a top-aligned form. */
 main.oauth { align-items: center; display: flex; justify-content: center; min-height: calc(100vh - 64px); padding-top: 24px; padding-bottom: 24px; }
@@ -536,6 +537,13 @@ _APP_JS = r"""
     var t = loadTokens();
     return t && t.access_token ? { 'Authorization': 'Bearer ' + t.access_token } : {};
   }
+  // Which page are we on? _page() puts the page class on <main> (the CSS keys off main.oauth /
+  // main.wide), so dispatch reads it there — NOT document.body (which carries no class, which would
+  // silently skip every page's init, e.g. leaving the OAuth spinner spinning forever).
+  function pageClass() {
+    var el = document.querySelector('main');
+    return (el && el.className) || document.body.className || '';
+  }
 
   // ------------------------------------------------------------- login
   function initLogin() {
@@ -624,7 +632,7 @@ _APP_JS = r"""
   // ------------------------------------------------------------ verify
   function initVerify() {
     var status = document.getElementById('status');
-    if (!status || document.body.className.indexOf('verify') === -1) return;
+    if (!status || pageClass().indexOf('verify') === -1) return;
     var token = new URLSearchParams(window.location.search).get('token') || '';
     if (!token) {
       setStatus(status, 'Missing verification token.', 'error');
@@ -643,7 +651,7 @@ _APP_JS = r"""
 
   // ------------------------------------------------------------- reset
   function initReset() {
-    if (document.body.className.indexOf('reset') === -1) return;
+    if (pageClass().indexOf('reset') === -1) return;
     var token = new URLSearchParams(window.location.search).get('token') || '';
     var requestCard = document.getElementById('request-card');
     var confirmCard = document.getElementById('confirm-card');
@@ -695,7 +703,7 @@ _APP_JS = r"""
 
   // ---------------------------------------------------- oauth complete
   function initOauthComplete() {
-    if (document.body.className.indexOf('oauth') === -1) return;
+    if (pageClass().indexOf('oauth') === -1) return;
     var status = document.getElementById('status');
     // The loading ring spins only while we're mid-handoff; hide it once we reach a terminal state
     // (link needed / failed). On the success path we keep it spinning through the redirect.
@@ -778,8 +786,11 @@ _APP_JS = r"""
     setStatus(status, 'Minting…', '');
     postJSON('/v1/auth/tokens', { audience: audience, label: label }, authHeaders()).then(function (r) {
       if (!r.ok) {
-        setStatus(status, 'Could not mint the token.', 'error');
-        return;
+        // Surface the server's reason (e.g. "verify your email before minting tokens" on a
+        // pending account) instead of a generic failure the user can't act on.
+        return r.json().then(function (data) {
+          setStatus(status, (data && data.detail) ? data.detail : 'Could not mint the token.', 'error');
+        }, function () { setStatus(status, 'Could not mint the token.', 'error'); });
       }
       return r.json().then(function (data) {
         setStatus(status, '', '');
@@ -793,7 +804,7 @@ _APP_JS = r"""
     });
   }
   function initHome() {
-    if (document.body.className.indexOf('home') === -1) return;
+    if (pageClass().indexOf('home') === -1) return;
     function gotoLogin() { window.location.href = '/account/login'; }
 
     function boot(session) {
@@ -801,7 +812,18 @@ _APP_JS = r"""
       document.getElementById('dashboard').classList.remove('hidden');
       var acct = (session && session.account) || {};
       document.getElementById('account-email').textContent = acct.email || '';
-      document.getElementById('account-status').textContent = acct.status || 'active';
+      // Humanize the status and only paint the "success" pill when the account is actually active —
+      // a raw green "pending_verification" reads as if everything's fine when the email isn't verified.
+      var statusEl = document.getElementById('account-status');
+      var rawStatus = acct.status || 'active';
+      var STATUS_LABELS = {
+        active: 'Active',
+        pending_verification: 'Email not verified',
+        suspended: 'Suspended',
+        deleted: 'Deleted'
+      };
+      statusEl.textContent = STATUS_LABELS[rawStatus] || rawStatus.replace(/_/g, ' ');
+      statusEl.className = 'pill' + (rawStatus === 'active' ? '' : ' pill-warn');
       renderTokens();
 
       document.getElementById('mint-api').addEventListener('click', function () { mintToken('api'); });
@@ -862,7 +884,7 @@ _APP_JS = r"""
     }).catch(gotoLogin);
   }
 
-  var cls = document.body.className || '';
+  var cls = pageClass();
   if (cls.indexOf('login') !== -1) initLogin();
   if (cls.indexOf('signup') !== -1) initSignup();
   if (cls.indexOf('verify') !== -1) initVerify();

@@ -293,6 +293,36 @@ class WebAccountAuthEnabledTests(unittest.TestCase):
         self.assertIn("main.oauth", html)                   # its centering CSS is present
         self.assertIn("@keyframes cortex-spin", html)       # animation defined (no external asset)
 
+    def test_home_humanizes_account_status_and_flags_non_active(self) -> None:
+        # A pending_verification user CAN log in (verification gates token minting, not basic use),
+        # so they reach /account/home. Show a readable label + a warning pill, not raw green success.
+        js = self.client.get("/account/app.js").text
+        self.assertIn("Email not verified", js)         # humanized pending label
+        self.assertIn("pill-warn", js)                  # non-active pill variant applied
+        css = self.client.get("/account/home").text
+        self.assertIn(".pill.pill-warn", css)           # the variant is styled
+
+    def test_home_mint_error_surfaces_server_detail(self) -> None:
+        # A pending user clicking "Mint" gets a 403 "verify your email before minting tokens"; the UI
+        # must show that reason, not a generic failure.
+        js = self.client.get("/account/app.js").text
+        self.assertIn("data.detail", js)
+
+    def test_page_init_js_dispatches_on_main_class_not_empty_body(self) -> None:
+        # REGRESSION (frozen OAuth spinner): _page() puts the page class on <main>, but <body> has
+        # none. The JS must read the class off <main> (pageClass -> querySelector('main')), or every
+        # page's init silently no-ops (spinner never stops, home never loads).
+        js = self.client.get("/account/app.js").text
+        self.assertIn("querySelector('main')", js)
+        self.assertIn("pageClass()", js)
+        # And the pages actually carry the class on <main> for pageClass to read.
+        for path, klass in (
+            ("/account/login", "login"),
+            ("/account/oauth/complete", "oauth"),
+            ("/account/home", "home"),
+        ):
+            self.assertRegex(self.client.get(path).text, rf'<main class="{klass}[" ]')
+
     # ---- browser OAuth content-negotiation (the "I can't sign in" fix) ----
 
     def test_oauth_start_redirects_a_browser_to_the_provider(self) -> None:
