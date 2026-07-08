@@ -148,6 +148,33 @@ class WebAccountAuthEnabledTests(unittest.TestCase):
         # OpenAI is a disabled registry row -> never rendered.
         self.assertNotIn("/v1/auth/oauth/openai/start", html)
 
+    def test_app_login_handoff_opens_account_login_and_threads_app_flow(self) -> None:
+        # Regression (was broken in prod): the desktop "Continue with <provider>" handoff must open
+        # the REAL web login page (/account/login) — /login 404s — and thread app_flow into each
+        # OAuth start URL so the callback completes the flow server-side (else the app never gets
+        # signed in and GitHub/Google sign-in silently fails).
+        start = self.client.post("/v1/auth/app/start", json={})
+        self.assertEqual(start.status_code, 200, start.text)
+        body = start.json()
+        flow_id = body["flow_id"]
+        burl = body["browser_url"]
+        self.assertTrue(burl.endswith(f"/account/login?app_flow={flow_id}"), burl)
+        self.assertNotIn("8766/login?", burl)  # never the bare /login (404)
+        # The login page rendered WITH that app_flow threads it into every provider start URL.
+        page = self.client.get(f"/account/login?app_flow={flow_id}").text
+        self.assertIn(f"/v1/auth/oauth/github/start?app_flow={flow_id}", page)
+        self.assertIn(f"/v1/auth/oauth/google/start?app_flow={flow_id}", page)
+        # Normal web sign-in (no app_flow) leaves the buttons unadorned.
+        plain = self.client.get("/account/login").text
+        self.assertIn('/v1/auth/oauth/github/start"', plain)
+        self.assertNotIn("start?app_flow=", plain)
+
+    def test_app_login_ignores_malformed_app_flow(self) -> None:
+        # A non-[A-Za-z0-9_] app_flow (e.g. an injection attempt) is dropped, not interpolated.
+        page = self.client.get("/account/login?app_flow=abc%22%3E%3Cscript%3E").text
+        self.assertNotIn("<script>", page.lower().split("</head>", 1)[-1])
+        self.assertNotIn("start?app_flow=abc", page)
+
     def test_login_omits_button_for_unconfigured_provider(self) -> None:
         # Reboot with Google unconfigured: its button must disappear while
         # GitHub's remains.

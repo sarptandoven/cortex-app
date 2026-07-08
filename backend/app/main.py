@@ -2559,6 +2559,22 @@ def auth_oauth_start(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+# Shown in the browser after a successful desktop app-login OAuth handoff. Tokens are delivered to
+# the app via its poll (never in a URL), so this page only tells the user they can return to the app.
+_APP_LOGIN_DONE_HTML = (
+    '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+    '<meta name="viewport" content="width=device-width, initial-scale=1">'
+    "<title>Signed in · Doppl</title>"
+    "<style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+    "background:#faf9f7;color:#1a1a1a;display:flex;min-height:100vh;margin:0;"
+    "align-items:center;justify-content:center;text-align:center}"
+    ".card{max-width:420px;padding:40px}h1{font-size:22px;margin:0 0 10px}"
+    "p{color:#666;line-height:1.5}</style></head><body><div class=\"card\">"
+    "<h1>You’re signed in ✓</h1><p>You can close this tab and return to Doppl — "
+    "your account is ready.</p></div></body></html>"
+)
+
+
 @app.get("/v1/auth/oauth/{provider}/callback")
 def auth_oauth_callback(
     provider: str,
@@ -2866,7 +2882,10 @@ def auth_app_start(request: Request) -> dict[str, Any]:
     return {
         "flow_id": flow_id,
         "poll_secret": poll_secret,
-        "browser_url": f"{base}/login?app_flow={flow_id}",
+        # The web sign-in front door is served at /account/login (webauth.py); it renders the
+        # "Continue with <provider>" buttons and threads app_flow into the OAuth start so the
+        # callback completes this flow server-side. (Was /login, which 404s.)
+        "browser_url": f"{base}/account/login?app_flow={flow_id}",
         "expires_at": expires_at,
     }
 

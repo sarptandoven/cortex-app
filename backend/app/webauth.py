@@ -446,9 +446,14 @@ _HOME_BODY = (
 )
 
 
-def _provider_buttons_html(providers: list[dict[str, Any]]) -> str:
+def _provider_buttons_html(providers: list[dict[str, Any]], app_flow: str = "") -> str:
     """Render a 'Continue with X' button per configured provider. Only the
-    provider name/display_name are interpolated, both escaped."""
+    provider name/display_name are interpolated, both escaped. When an app-login
+    flow id is present (the desktop 'Continue with <provider>' handoff opened
+    /account/login?app_flow=...), it is threaded into each OAuth start URL so the
+    callback can complete that flow server-side and the app polls the tokens out.
+    ``app_flow`` is pre-sanitized by the caller to [A-Za-z0-9_] so it is URL-safe."""
+    suffix = f"?app_flow={app_flow}" if app_flow else ""
     parts: list[str] = []
     for row in providers:
         name = str(row.get("provider") or "")
@@ -458,7 +463,7 @@ def _provider_buttons_html(providers: list[dict[str, Any]]) -> str:
         safe_name = html.escape(name, quote=True)
         safe_display = html.escape(display)
         parts.append(
-            f'<a class="button secondary" href="/v1/auth/oauth/{safe_name}/start">'
+            f'<a class="button secondary" href="/v1/auth/oauth/{safe_name}/start{suffix}">'
             f"Continue with {safe_display}</a>"
         )
     return "".join(parts)
@@ -862,13 +867,18 @@ def register_web_account_routes(
 
     @app.get("/account", response_class=HTMLResponse)
     @app.get("/account/login", response_class=HTMLResponse)
-    def account_login() -> Response:
+    def account_login(request: Request) -> Response:
         runtime_or_404()
         try:
             providers = list_providers()
         except Exception:
             providers = []
-        buttons = _provider_buttons_html(providers)
+        # Desktop app-login handoff: /account/login?app_flow=flw_... The id must ride the OAuth
+        # start URL so the callback completes the flow. Sanitize to [A-Za-z0-9_] (the flow-id
+        # alphabet) before interpolating into the href.
+        raw_flow = (request.query_params.get("app_flow") or "")[:120]
+        app_flow = raw_flow if raw_flow and raw_flow.replace("_", "").isalnum() else ""
+        buttons = _provider_buttons_html(providers, app_flow=app_flow)
         return _html_response(_page("Sign in · Cortex", _login_body(buttons), "app.js"))
 
     @app.get("/account/signup", response_class=HTMLResponse)
