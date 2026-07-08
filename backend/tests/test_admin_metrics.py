@@ -63,6 +63,21 @@ class AdminMetricsTests(unittest.TestCase):
         self.assertEqual(days, {"2026-07-01": 2, "2026-07-02": 2})
         self.assertEqual([d["day"] for d in m["signups_by_day"]], ["2026-07-01", "2026-07-02"])
 
+    def test_metrics_and_list_expose_activity_fields(self) -> None:
+        # The admin viewer needs tenure + activity signals: active_last_7d in metrics, and per-account
+        # last_active_at + session_count in the listing. With no sessions these are 0 / None, but the
+        # keys must always be present so the dashboard can render "Active (7d)" and "Last active".
+        self._account(1, status="active", day="2026-07-01", verified=True, provider="github")
+        m = self.store.admin_metrics()
+        self.assertIn("active_last_7d", m)
+        self.assertEqual(m["active_last_7d"], 0)  # no sessions -> nobody counted active
+        rows = self.store.list_accounts()["accounts"]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("last_active_at", rows[0])
+        self.assertIn("session_count", rows[0])
+        self.assertIsNone(rows[0]["last_active_at"])
+        self.assertEqual(rows[0]["session_count"], 0)
+
     def test_count_accounts_by_status(self) -> None:
         self._account(1, status="active", day="2026-07-01", verified=True, provider=None)
         self._account(2, status="pending_verification", day="2026-07-01", verified=False, provider=None)

@@ -458,6 +458,16 @@ class SQLiteControlStore(ControlStore):
         accounts_with_session = int(
             (self._one("SELECT COUNT(DISTINCT account_id) AS n FROM auth_sessions WHERE revoked_at IS NULL", ()) or {}).get("n", 0)
         )
+        # Accounts active in the last 7 days = any session touched (last_seen_at, else created_at)
+        # within the window. datetime() normalizes the ISO-8601 strings (with 'T' + tz) to UTC so
+        # the comparison against datetime('now','-7 days') is correct, not lexical.
+        active_last_7d = int(
+            (self._one(
+                "SELECT COUNT(DISTINCT account_id) AS n FROM auth_sessions "
+                "WHERE datetime(COALESCE(last_seen_at, created_at)) >= datetime('now', '-7 days')",
+                (),
+            ) or {}).get("n", 0)
+        )
         return {
             "total_accounts": total,
             "active": by_status.get("active", 0),
@@ -465,6 +475,7 @@ class SQLiteControlStore(ControlStore):
             "suspended": by_status.get("suspended", 0),
             "email_verified": verified,
             "accounts_with_active_session": accounts_with_session,
+            "active_last_7d": active_last_7d,
             "by_status": by_status,
             "by_provider": by_provider,
             "signups_by_day": list(reversed(signups_by_day)),
@@ -497,7 +508,11 @@ class SQLiteControlStore(ControlStore):
         )
         rows = self._all(
             "SELECT account_id, user_id, primary_email, display_name, status, "
-            "email_verified_at, created_at, updated_at "
+            "email_verified_at, created_at, updated_at, "
+            # last_active_at = most recent session touch (drives the 'Last active' column); the
+            # session count is a light activity signal ('how many times they've signed in').
+            "(SELECT MAX(last_seen_at) FROM auth_sessions s WHERE s.account_id = accounts.account_id) AS last_active_at, "
+            "(SELECT COUNT(*) FROM auth_sessions s WHERE s.account_id = accounts.account_id) AS session_count "
             f"FROM accounts{clause} ORDER BY created_at DESC LIMIT ? OFFSET ?",
             tuple(params) + (limit, offset),
         )

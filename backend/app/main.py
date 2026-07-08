@@ -2790,7 +2790,7 @@ _ADMIN_DASHBOARD_HTML = """<!doctype html>
       <div class="card"><h3>Signups (last 30 days)</h3><div id="chart" class="bars"></div></div>
       <div class="card"><h3>By sign-in provider</h3><div id="providers"></div></div>
     </div>
-    <div class="card" style="padding:0"><table><thead><tr><th>Email</th><th>Name</th><th>Status</th><th>Providers</th><th>Signed up</th></tr></thead><tbody id="rows"></tbody></table></div>
+    <div class="card" style="padding:0"><table><thead><tr><th>Email</th><th>Name</th><th>Status</th><th>Providers</th><th>Signed up</th><th>Member for</th><th>Last active</th></tr></thead><tbody id="rows"></tbody></table></div>
     <div id="err" class="err"></div>
   </main>
 </div>
@@ -2806,6 +2806,9 @@ async function api(path){
 function enter(){const v=document.getElementById("key").value.trim();if(!v)return;sessionStorage.setItem(K,v);show()}
 function logout(){sessionStorage.removeItem(K);document.getElementById("app").style.display="none";document.getElementById("gate").style.display="block"}
 function esc(s){return (s==null?"":String(s)).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}
+function since(iso){if(!iso)return null;const s=(Date.now()-new Date(iso).getTime())/1000;return isNaN(s)?null:s}
+function ago(iso){const s=since(iso);if(s==null)return '<span style="color:var(--muted)">never</span>';if(s<60)return 'just now';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';if(s<604800)return Math.floor(s/86400)+'d ago';return Math.floor(s/604800)+'w ago'}
+function forlen(iso){const s=since(iso);if(s==null)return '-';if(s<86400)return 'today';if(s<2592000)return Math.floor(s/86400)+'d';if(s<31536000)return Math.floor(s/2592000)+'mo';return (s/31536000).toFixed(1)+'y'}
 async function show(){
   try{
     const m=await api("/v1/admin/metrics");
@@ -2816,8 +2819,8 @@ async function show(){
 function kpi(n,l){return '<div class="kpi"><div class="n">'+n+'</div><div class="l">'+l+'</div></div>'}
 function renderMetrics(m){
   document.getElementById("kpis").innerHTML=
-    kpi(m.total_accounts,"Total users")+kpi(m.active,"Active")+kpi(m.pending,"Pending")+
-    kpi(m.email_verified,"Email verified")+kpi(m.accounts_with_active_session,"Signed-in now");
+    kpi(m.total_accounts,"Total users")+kpi(m.active,"Active")+kpi(m.active_last_7d!=null?m.active_last_7d:"-","Active (7d)")+
+    kpi(m.pending,"Pending")+kpi(m.email_verified,"Email verified")+kpi(m.accounts_with_active_session,"Signed-in now");
   const days=m.signups_by_day||[];const max=Math.max(1,...days.map(d=>d.count));
   document.getElementById("chart").innerHTML=days.map(d=>'<div class="b" style="height:'+(6+94*d.count/max)+'%" title="'+d.day+': '+d.count+'"></div>').join("")||'<span style="color:var(--muted)">No signups yet</span>';
   const p=m.by_provider||{};const keys=Object.keys(p);
@@ -2831,7 +2834,9 @@ async function loadUsers(){
       '<tr><td>'+esc(a.primary_email||"-")+'</td><td>'+esc(a.display_name||"-")+'</td>'+
       '<td class="status-'+esc(a.status)+'">'+esc(a.status)+'</td>'+
       '<td>'+((a.providers||[]).map(x=>'<span class="pill">'+esc(x)+'</span>').join("")||'<span class="pill">email</span>')+'</td>'+
-      '<td>'+esc((a.created_at||"").slice(0,10))+'</td></tr>').join("")||'<tr><td colspan="5" style="color:var(--muted)">No users yet</td></tr>';
+      '<td>'+esc((a.created_at||"").slice(0,10))+'</td>'+
+      '<td title="'+esc(a.created_at||"")+'">'+forlen(a.created_at)+'</td>'+
+      '<td title="sessions: '+(a.session_count!=null?a.session_count:0)+'">'+ago(a.last_active_at)+'</td></tr>').join("")||'<tr><td colspan="7" style="color:var(--muted)">No users yet</td></tr>';
     document.getElementById("err").textContent="";
   }catch(e){document.getElementById("err").textContent=e.message}
 }
