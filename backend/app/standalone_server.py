@@ -2205,6 +2205,15 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 )
                 self._send_json(payload)
                 return
+            if method == "GET" and path == "/v1/sync/captures":
+                # Phase-2 local outbound feed: captures newer than a monotonic rowid cursor, WITH
+                # content, for the desktop app to push to the signed-in user's hosted account.
+                self._send_json(store.capture_change_page(
+                    user_id,
+                    _int_param(params, "after_seq", 0, 0, 2**63 - 1),
+                    _int_param(params, "limit", 100, 1, 500),
+                ))
+                return
             if method == "GET" and path == "/v1/diagnostics":
                 self._send_json(store.diagnostics(user_id))
                 return

@@ -2979,6 +2979,8 @@ final class AppState: ObservableObject {
     static let cloudRefreshTokenKey = "cortexCloudRefreshToken.v1"
     static let cloudAccountEmailDefaultsKey = "cortexCloudAccountEmail.v1"
     static let cloudSyncBaseDefaultsKey = "cortexCloudSyncBase.v1"
+    static let pushCursorDefaultsKey = "cortexPushCursor.v1"
+    static let pushDeviceIDDefaultsKey = "cortexPushDeviceID.v1"
     static let localEndpointDefault = "http://127.0.0.1:8766"
     private static let obsidianVaultPathDefaultsKey = "connectedObsidianVaultPath.v1"
     private static let obsidianVaultBookmarkDefaultsKey = "connectedObsidianVaultBookmark.v1"
@@ -3081,6 +3083,11 @@ final class AppState: ObservableObject {
     /// Short-lived cxs_ access token used for CLOUD SYNC requests only (in-memory; it must never
     /// overwrite the local machine `apiKey` the local engine uses).
     var cloudAccessToken: String = ""
+    // Phase-2 background push-sync (local memory -> the signed-in account). See CortexPushSync.swift.
+    @Published var pushSyncState: PushSyncState = .idle
+    @Published var pushPendingCount: Int = 0
+    var pushSyncTask: Task<Void, Never>?
+    var pushSyncInFlight = false
     @Published var cloudAuthBusy: Bool = false
     @Published var cloudAuthMessage: String = ""
     @Published var importHistory: [SourceImportHistoryItem] = []
@@ -3623,6 +3630,7 @@ final class AppState: ObservableObject {
         refreshStoredConnectorConfigState()
         refreshIntegrationStates()
         startConnectedSourceAutoSync()
+        startPushSync()
         startSyncProgressPolling()
         activateQuickCaptureIfEnabled()
         presentOnboardingIfNeeded()
@@ -3997,6 +4005,9 @@ final class AppState: ObservableObject {
         lastLearnedAt = Date()
         let subtitle = "\(count) new " + (count == 1 ? "memory" : "memories")
         NotchNotifier.shared.show(title: "Learned something new", subtitle: subtitle, style: .learned)
+        // New memory just landed locally — nudge the background push-sync so it reaches the account
+        // promptly instead of waiting for the next 5-minute tick (debounced by pushSyncInFlight).
+        Task { await pushSyncNudge() }
     }
 
     /// Wire (or unwire) global quick-capture based on the current pref + keybind. Capture is only
@@ -7290,7 +7301,7 @@ final class AppState: ObservableObject {
         return lhs > rhs ? 1 : -1
     }
 
-    private func request(path: String, method: String, body: [String: Any]? = nil) async throws -> Data {
+    func request(path: String, method: String, body: [String: Any]? = nil) async throws -> Data {
         do {
             return try await performRequest(path: path, method: method, body: body)
         } catch {

@@ -469,6 +469,8 @@ extension AppState {
     }
 
     private func resetToLocalDefaults() {
+        stopPushSync()          // cancel the background push loop before its creds/target disappear
+        clearPushSyncState()    // drop the push cursor + device id so a different account resyncs from 0
         clearCloudRefreshToken()
         cloudAccountEmail = ""
         cloudAccessToken = ""
@@ -535,6 +537,25 @@ extension AppState {
         }
         return data
     }
+
+    /// POST to the hosted CLOUD sync backend (`cloudSyncBaseURL`) with the cloud access token,
+    /// refreshing the token once on a 401 and retrying. Used by the push-sync engine
+    /// (CortexPushSync.swift) — the memory data plane stays local, so ONLY sync calls take this path.
+    func cloudRequest(path: String, body: [String: Any]) async throws -> Data {
+        let base = cloudSyncBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !base.isEmpty else { throw CortexCloudAuthError.invalidHostedURL }
+        do {
+            return try await cloudPost(base: base, path: path, body: body, bearer: cloudAccessToken)
+        } catch let error as CortexCloudAuthError {
+            if case .httpStatus(let code, _) = error, code == 401 {
+                if await refreshCloudAccessToken() {
+                    return try await cloudPost(base: base, path: path, body: body, bearer: cloudAccessToken)
+                }
+                handleCloudSessionExpired()
+            }
+            throw error
+        }
+    }
 }
 
 enum CortexCloudAuth {
@@ -577,6 +598,31 @@ struct CortexCloudSection: View {
     private static var defaultHostedURL: String { AppState.defaultHostedURL }
 
     private var isSignedIn: Bool { state.isSignedIn }
+
+    /// Live background-sync status (Phase 2): the memory is on this Mac and syncs to the account.
+    @ViewBuilder private var pushSyncStatusView: some View {
+        switch state.pushSyncState {
+        case .idle:
+            Label("Your memory stays on this Mac and syncs to your account.", systemImage: "icloud")
+                .font(.caption).foregroundColor(.secondary)
+        case .syncing:
+            Label(state.pushPendingCount > 0 ? "Syncing… \(state.pushPendingCount) pending" : "Syncing…",
+                  systemImage: "arrow.triangle.2.circlepath")
+                .font(.caption).foregroundColor(.secondary)
+        case .synced(let date):
+            Label("Synced ✓ · \(CortexCloudSection.relativeShort(date))", systemImage: "checkmark.icloud")
+                .font(.caption).foregroundColor(.secondary)
+        case .error(let message):
+            Label(message, systemImage: "exclamationmark.icloud")
+                .font(.caption).foregroundColor(.orange)
+        }
+    }
+
+    private static func relativeShort(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -630,9 +676,7 @@ struct CortexCloudSection: View {
                 Text("Signed in as \(state.cloudAccountEmail.isEmpty ? "your Cortex Cloud account" : state.cloudAccountEmail)")
                     .font(.subheadline)
             }
-            Text("Your memory stays on this Mac and syncs to your account.")
-                .font(.caption)
-                .foregroundColor(.secondary)
+            pushSyncStatusView
                 .fixedSize(horizontal: false, vertical: true)
             Button {
                 state.signOutOfCloud()

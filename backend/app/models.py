@@ -14,6 +14,10 @@ class CaptureRequest(BaseModel):
     source_url: str | None = Field(default=None, max_length=500)
     title: str | None = Field(default=None, max_length=200)
     user_id: str = "local"
+    # Phase-2 sync: a client-supplied stable capture id (idempotency key) + pinned timestamp so a
+    # re-pushed capture upserts (ON CONFLICT DO UPDATE) instead of duplicating.
+    capture_id_override: str | None = Field(default=None, max_length=80)
+    captured_at: str | None = Field(default=None, max_length=40)
 
 
 class CaptureResponse(BaseModel):
@@ -23,6 +27,52 @@ class CaptureResponse(BaseModel):
     tasks: list[dict[str, Any]]
     entities: list[dict[str, Any]]
     graph: dict[str, Any]
+
+
+# --- Phase-2 local→hosted push sync ---------------------------------------------------------------
+
+class CaptureChangeItem(BaseModel):
+    seq: int
+    client_capture_id: str
+    content: str
+    source: str
+    source_url: str | None = None
+    title: str | None = None
+    captured_at: str
+
+
+class CaptureChangePage(BaseModel):
+    """Local outbound feed: captures newer than a monotonic rowid cursor, WITH content."""
+    items: list[CaptureChangeItem]
+    next_seq: int
+    has_more: bool
+
+
+class SyncIngestItem(BaseModel):
+    client_capture_id: str = Field(..., min_length=1, max_length=80)
+    content: str = Field(..., min_length=1, max_length=200_000)
+    source: str = Field(default="macos", max_length=80)
+    source_url: str | None = Field(default=None, max_length=500)
+    title: str | None = Field(default=None, max_length=200)
+    captured_at: str | None = Field(default=None, max_length=40)
+
+
+class SyncIngestRequest(BaseModel):
+    device_id: str = Field(default="", max_length=80)
+    cursor: str = Field(default="", max_length=160)
+    items: list[SyncIngestItem] = Field(default_factory=list, max_length=500)
+
+
+class SyncIngestItemResult(BaseModel):
+    client_capture_id: str
+    capture_id: str
+    status: str
+
+
+class SyncIngestResponse(BaseModel):
+    applied: int
+    cursor: str
+    results: list[SyncIngestItemResult]
 
 
 class SourceImportRequest(BaseModel):

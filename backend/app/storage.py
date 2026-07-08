@@ -8059,6 +8059,36 @@ class CortexStore:
         self.vault.write_sync_device(self._sync_device_record_from_row(row))
         return device
 
+    def capture_change_page(self, user_id: str, after_seq: int, limit: int) -> dict[str, Any]:
+        """Local outbound push feed (Phase 2): captures with rowid > after_seq, oldest first, WITH
+        content, so the desktop app can push them to the user's hosted account. `rowid` is a
+        monotonic integer, so the cursor never ties or resets (unlike the event-hash /v1/sync/changes
+        audit feed). Returns {items, next_seq, has_more}."""
+        limit = max(1, min(int(limit), 500))
+        after = max(0, int(after_seq))
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT rowid AS seq, id, source, source_url, title, raw_text, captured_at "
+                "FROM captures WHERE user_id = ? AND rowid > ? ORDER BY rowid ASC LIMIT ?",
+                (user_id, after, limit + 1),
+            ).fetchall()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        items = [
+            {
+                "seq": int(row["seq"]),
+                "client_capture_id": row["id"],
+                "content": row["raw_text"],
+                "source": row["source"],
+                "source_url": row["source_url"],
+                "title": row["title"],
+                "captured_at": row["captured_at"],
+            }
+            for row in rows
+        ]
+        next_seq = items[-1]["seq"] if items else after
+        return {"items": items, "next_seq": next_seq, "has_more": has_more}
+
     def record_sync_receipt(
         self,
         user_id: str,

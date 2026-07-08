@@ -34,6 +34,7 @@ from .mcp_tools import CORE_TOOL_NAMES, TOOLS, call_tool, tool_call_result, tool
 from .observability import metrics, route_label
 from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CalendarSyncRequest, CalendarSyncResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GitHubRepositoryDiscoveryRequest, GitHubRepositoryDiscoveryResponse, GitHubSyncRequest, GitHubSyncResponse, GmailSyncRequest, GmailSyncResponse, GoogleDriveSyncRequest, GoogleDriveSyncResponse, GoogleOAuthCompleteRequest, GoogleOAuthCompleteResponse, GoogleOAuthStartRequest, GoogleOAuthStartResponse, GraphResponse, JiraSyncRequest, JiraSyncResponse, JobRunResponse, LinearSyncRequest, LinearSyncResponse, ListResponse, MaintenanceResponse, ManagedOAuthCompleteRequest, ManagedOAuthCompleteResponse, ManagedOAuthStartRequest, ManagedOAuthStartResponse, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, NotionSyncRequest, NotionSyncResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, OutlookSyncRequest, OutlookSyncResponse, ProductLoopResponse, QueuedCaptureResponse, RaindropSyncRequest, RaindropSyncResponse, ReadwiseSyncRequest, ReadwiseSyncResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SlackChannelDiscoveryRequest, SlackChannelDiscoveryResponse, SlackSyncRequest, SlackSyncResponse, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse, ZoteroSyncRequest, ZoteroSyncResponse
 from .models import UserListResponse, UserProvisionRequest, UserProvisionResponse, UserStatusResponse
+from .models import CaptureChangePage, SyncIngestRequest, SyncIngestResponse
 from .oauth_broker import register_oauth_broker_routes
 from .oidc_registry import OidcError, OidcProviderRegistry
 from .ratelimit import TokenBucketRateLimiter
@@ -642,6 +643,8 @@ def create_capture(
         request.source,
         author_aliases=store.settings(resolved_user_id).get("identity_aliases"),
     )
+    if request.captured_at:
+        extracted["_timestamp"] = request.captured_at  # pin timestamp so re-push stays idempotent
     return store.save_capture(
         user_id=resolved_user_id,
         content=request.content,
@@ -649,6 +652,7 @@ def create_capture(
         source_url=request.source_url,
         title=request.title,
         extracted=extracted,
+        capture_id_override=request.capture_id_override,
         cite_capture_provenance=True,
         auto_approve=settings.auto_approve_captures,
     )
@@ -1978,6 +1982,57 @@ def sync_changes(
         signing_key=settings.sync_signing_key,
         shard=shard,
     )
+
+
+@app.get("/v1/sync/captures", response_model=CaptureChangePage)
+def sync_captures(
+    after_seq: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    """Phase-2 LOCAL outbound feed: captures created after `after_seq` (monotonic rowid), WITH
+    content, so the desktop app can push them to the signed-in user's hosted account. Oldest first."""
+    return store.capture_change_page(user_id, after_seq, limit)
+
+
+@app.post("/v1/sync/ingest", response_model=SyncIngestResponse)
+def sync_ingest(request: SyncIngestRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    """Phase-2 HOSTED inbound: apply a batch of pushed captures into the signed-in user's store.
+    Idempotent — each item carries the client's stable capture id (capture_id_override ->
+    ON CONFLICT(id) DO UPDATE), so re-pushing a batch is a safe no-op upsert. Re-uses the mature
+    extract + save path, and records a device high-watermark receipt (best-effort)."""
+    _enforce_memory_quota(user_id)
+    aliases = store.settings(user_id).get("identity_aliases")
+    results: list[dict[str, Any]] = []
+    for item in request.items:
+        extracted = extract_context(item.content, item.source, author_aliases=aliases)
+        if item.captured_at:
+            extracted["_timestamp"] = item.captured_at
+        saved = store.save_capture(
+            user_id=user_id,
+            content=item.content,
+            source=item.source,
+            source_url=item.source_url,
+            title=item.title,
+            extracted=extracted,
+            capture_id_override=item.client_capture_id,
+            cite_capture_provenance=True,
+            auto_approve=settings.auto_approve_captures,
+        )
+        results.append({
+            "client_capture_id": item.client_capture_id,
+            "capture_id": saved.get("capture_id", ""),
+            "status": "accepted",
+        })
+    if request.device_id and request.cursor:
+        try:
+            store.record_sync_receipt(
+                user_id, request.device_id, cursor=request.cursor,
+                status="accepted", stats={"count": len(results)},
+            )
+        except Exception:
+            pass  # best-effort high-watermark; a missing/revoked device must not fail ingest
+    return {"applied": len(results), "cursor": request.cursor, "results": results}
 
 
 @app.get("/v1/diagnostics", response_model=DiagnosticsResponse)
