@@ -74,6 +74,7 @@ class WebAccountAuthEnabledTests(unittest.TestCase):
             oidc_google_client_secret="google-secret",
             oidc_github_client_id="github-client-id",
             oidc_github_client_secret="github-secret",
+            sync_signing_key="test-signing-key-abc123",
             public_app_url="http://127.0.0.1:8766",
         )
         main_module.settings = hosted
@@ -168,6 +169,45 @@ class WebAccountAuthEnabledTests(unittest.TestCase):
         plain = self.client.get("/account/login").text
         self.assertIn('/v1/auth/oauth/github/start"', plain)
         self.assertNotIn("start?app_flow=", plain)
+
+    def test_app_login_flow_binding_cookie_prevents_login_csrf(self) -> None:
+        # SECURITY (login-CSRF / flow fixation): the OAuth start must only attach app_flow to the
+        # authenticating account when the caller holds the signed df_af cookie the /account/login page
+        # set. Without it, app_flow is dropped so a victim's OAuth completion can't be captured by an
+        # attacker-owned poll flow.
+        import json
+        import re
+        from backend.app import main as m
+
+        FLOW = "flw_bindtest01"
+        page = self.client.get(f"/account/login?app_flow={FLOW}")
+        setc = page.headers.get("set-cookie", "")
+        self.assertIn("df_af=", setc)
+        self.assertIn("HttpOnly", setc)
+        cookie_val = re.search(r"df_af=([^;]+)", setc).group(1)
+
+        def app_flow_id_of(state: str):
+            flow = m._auth_runtime_or_404().control_store.get_flow(state)
+            self.assertIsNotNone(flow)
+            return json.loads(flow.get("payload_json") or "{}").get("app_flow_id")
+
+        # No cookie -> app_flow DROPPED (attacker's silent-link path is defeated).
+        no_cookie = TestClient(m.app)
+        s1 = no_cookie.get(f"/v1/auth/oauth/github/start?app_flow={FLOW}")
+        self.assertEqual(s1.status_code, 200, s1.text)
+        self.assertIsNone(app_flow_id_of(s1.json()["state"]))
+
+        # Forged cookie -> also dropped.
+        forged = TestClient(m.app)
+        forged.cookies.set("df_af", f"{FLOW}.deadbeef")
+        s2 = forged.get(f"/v1/auth/oauth/github/start?app_flow={FLOW}")
+        self.assertIsNone(app_flow_id_of(s2.json()["state"]))
+
+        # Valid server-issued cookie -> app_flow honored (the legitimate desktop handoff still works).
+        good = TestClient(m.app)
+        good.cookies.set("df_af", cookie_val)
+        s3 = good.get(f"/v1/auth/oauth/github/start?app_flow={FLOW}")
+        self.assertEqual(app_flow_id_of(s3.json()["state"]), FLOW)
 
     def test_app_login_ignores_malformed_app_flow(self) -> None:
         # A non-[A-Za-z0-9_] app_flow (e.g. an injection attempt) is dropped, not interpolated.

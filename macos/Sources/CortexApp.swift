@@ -5092,7 +5092,10 @@ final class AppState: ObservableObject {
                 body: body
             )
             let started = try JSONDecoder().decode(GoogleOAuthStartResponse.self, from: data)
-            guard let authURL = URL(string: started.authorization_url) else {
+            // Only open an http(s) URL from the server-controlled authorization_url (never a
+            // file://, custom-scheme, or app URL a malicious/MITM response could inject).
+            guard let authURL = URL(string: started.authorization_url),
+                  let scheme = authURL.scheme?.lowercased(), scheme == "https" || scheme == "http" else {
                 status = "\(connector.name) sign-in returned an invalid link"
                 return
             }

@@ -559,7 +559,13 @@ class OidcProviderRegistry:
         return {
             "subject": str(claims["sub"]),
             "email": email,
-            "email_verified": bool(claims.get("email_verified")) and email is not None,
+            # Some IdPs (notably Sign in with Apple) encode email_verified as the STRING "true"/"false"
+            # rather than a JSON boolean. bool("false") is True, so parse explicitly: only a real
+            # boolean True or the strings "true"/"1" count as verified.
+            "email_verified": (
+                claims.get("email_verified") is True
+                or str(claims.get("email_verified")).strip().lower() in ("true", "1")
+            ) and email is not None,
             "display_name": str(claims.get("name") or ""),
         }
 

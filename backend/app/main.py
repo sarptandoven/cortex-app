@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from datetime import datetime, timedelta, timezone
 import html
+import hashlib
 import hmac
 import json
 import logging
@@ -2540,6 +2541,26 @@ def auth_providers() -> dict[str, Any]:
     return {"results": runtime.oidc.enabled_providers()}
 
 
+APP_FLOW_COOKIE_NAME = "df_af"
+
+
+def _app_flow_cookie(flow_id: str) -> str:
+    """Signed value that binds a browser to a desktop app-login poll flow. It is set as an HttpOnly
+    cookie when the browser opens /account/login?app_flow=<flow_id> (webauth.py) and required back at
+    the OAuth start below. This prevents a login-CSRF / flow-fixation account takeover: without it,
+    an attacker who started their own poll flow could send a victim a provider-start link and have
+    the victim's OAuth completion attach the victim's account to the attacker's flow."""
+    key = (settings.sync_signing_key or "").encode()
+    sig = hmac.new(key, flow_id.encode(), hashlib.sha256).hexdigest()
+    return f"{flow_id}.{sig}"
+
+
+def _app_flow_cookie_valid(cookie: str | None, flow_id: str) -> bool:
+    if not cookie or not flow_id or not (settings.sync_signing_key or ""):
+        return False
+    return hmac.compare_digest(cookie, _app_flow_cookie(flow_id))
+
+
 @app.get("/v1/auth/oauth/{provider}/start")
 def auth_oauth_start(
     provider: str,
@@ -2549,11 +2570,16 @@ def auth_oauth_start(
 ) -> dict[str, Any]:
     runtime = _auth_runtime_or_404()
     _auth_rate_limit(runtime, "oauth_start", request)
+    # Login-CSRF / flow-fixation guard for the desktop app-login handoff: only honor app_flow when
+    # this browser opened the app-login page and carries the matching signed cookie. Otherwise drop
+    # it and treat this as an ordinary web sign-in (mints a session for THIS browser only), so a
+    # victim's OAuth completion can never be attached to an attacker-owned poll flow.
+    bound_flow = app_flow if _app_flow_cookie_valid(request.cookies.get(APP_FLOW_COOKIE_NAME), app_flow) else ""
     try:
         return runtime.oidc.start(
             provider,
             redirect_uri or _default_oauth_redirect(provider),
-            app_flow_id=app_flow or None,
+            app_flow_id=bound_flow or None,
         )
     except OidcError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -3296,6 +3322,8 @@ register_web_account_routes(
     # (tests/reboot) takes effect. "" when Turnstile is unconfigured -> the
     # signup page is byte-identical to today.
     turnstile_site_key=lambda: settings.turnstile_site_key if settings.turnstile_enabled else "",
+    # Signs the app-login flow-binding cookie (login-CSRF guard for the desktop OAuth handoff).
+    app_flow_cookie=_app_flow_cookie,
 )
 
 # OAuth token-exchange broker for confidential-client connectors (Notion, GitHub) — hosted-only.

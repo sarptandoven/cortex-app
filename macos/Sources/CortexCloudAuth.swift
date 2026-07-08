@@ -314,7 +314,10 @@ extension AppState {
         do {
             let startData = try await cloudPost(base: base, path: "/v1/auth/app/start", body: [:])
             let started = try JSONDecoder().decode(CortexCloudAppStartResponse.self, from: startData)
-            guard let browserURL = URL(string: started.browser_url) else {
+            // The server fully controls browser_url; only ever hand an http(s) URL to the OS opener
+            // so a malicious/MITM response can't launch a file://, custom-scheme, or app URL.
+            guard let browserURL = URL(string: started.browser_url),
+                  let scheme = browserURL.scheme?.lowercased(), scheme == "https" || scheme == "http" else {
                 throw CortexCloudAuthError.badResponse
             }
             NSWorkspace.shared.open(browserURL)

@@ -91,6 +91,7 @@ class AuthEnabledTestCase(unittest.TestCase):
             auth_access_ttl_seconds=0,
             auth_refresh_idle_ttl_seconds=0,
             auth_refresh_absolute_ttl_seconds=0,
+            sync_signing_key="test-signing-key-abc123",
             oidc_google_client_id="google-client-id",
             oidc_google_client_secret="google-secret",
             oidc_github_client_id="github-client-id",
@@ -474,6 +475,12 @@ class OAuthJourneyTests(AuthEnabledTestCase):
         self.assertEqual(pending.status_code, 200)
         self.assertEqual(pending.json(), {"status": "pending"})
 
+        # A real browser loads /account/login?app_flow=<flow_id> first, which sets the signed df_af
+        # binding cookie the OAuth start now requires before it will attach app_flow (login-CSRF
+        # guard). The TestClient runs over http and won't echo a Secure cookie, so set the same signed
+        # value directly to simulate the browser holding it.
+        from backend.app import main as _main
+        self.client.cookies.set("df_af", _main._app_flow_cookie(flow_id))
         state, nonce = self._oauth_start(app_flow=flow_id)
         authorize_url = self.runtime.control_store.get_flow(state)
         assert authorize_url is not None

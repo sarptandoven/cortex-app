@@ -840,6 +840,7 @@ def register_web_account_routes(
     runtime_or_404: Callable[[], Any],
     list_providers: Callable[[], list[dict[str, Any]]],
     turnstile_site_key: Callable[[], str] | None = None,
+    app_flow_cookie: Callable[[str], str] | None = None,
 ) -> None:
     """Register the /account* browser pages on ``app``.
 
@@ -879,7 +880,18 @@ def register_web_account_routes(
         raw_flow = (request.query_params.get("app_flow") or "")[:120]
         app_flow = raw_flow if raw_flow and raw_flow.replace("_", "").isalnum() else ""
         buttons = _provider_buttons_html(providers, app_flow=app_flow)
-        return _html_response(_page("Sign in · Cortex", _login_body(buttons), "app.js"))
+        resp = _html_response(_page("Sign in · Cortex", _login_body(buttons), "app.js"))
+        # Bind THIS browser to the desktop app-login poll flow: set a signed cookie that the OAuth
+        # start requires before it will attach an authenticated account to app_flow (main.py
+        # _app_flow_cookie / auth_oauth_start). Prevents a login-CSRF / flow-fixation takeover where a
+        # victim's OAuth completion is captured by an attacker-owned poll flow. Cookie name must match
+        # main.APP_FLOW_COOKIE_NAME ("df_af").
+        if app_flow and app_flow_cookie is not None:
+            resp.set_cookie(
+                "df_af", app_flow_cookie(app_flow),
+                max_age=900, httponly=True, samesite="lax", secure=True, path="/",
+            )
+        return resp
 
     @app.get("/account/signup", response_class=HTMLResponse)
     def account_signup() -> Response:
