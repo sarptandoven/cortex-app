@@ -80,6 +80,9 @@ ENTITY_KIND_TO_MOC_DIR = {"person": "People", "project": "Projects", "org": "Org
 HOME_PAGE_FILENAME = "Cortex — Start Here.md"
 DAILY_DIRECTORY = "Journal"
 CONSTELLATION_CANVAS_FILENAME = "Constellation.canvas"
+# A generated daily page is named exactly YYYY-MM-DD.md. Pruning/listing keys on this shape so a
+# user's own note dropped into Journal/ is never mistaken for a generated page (and never deleted).
+_DAILY_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 BACKUP_DENY_FILENAMES = {
     ".env",
     ".netrc",
@@ -540,12 +543,23 @@ class CortexVault:
             base = self.root / "memories"
             if base.exists():
                 for path in list(self._iter_memory_notes_for_id(memory_id)):
-                    if path != target:
-                        try:
-                            path.unlink()
-                            self._prune_empty_parents(path.parent, base)
-                        except OSError:
-                            pass
+                    if path == target:
+                        continue
+                    # Confirm the note is OURS (or a corrupt/no-id note at our shortid) before
+                    # unlinking, exactly like the delete/has/patch sweeps — so a shortid collision
+                    # can never delete a DIFFERENT memory's note (the invariant memory_note_short_id
+                    # promises).
+                    try:
+                        parsed_id = parse_memory_markdown(path.read_text(encoding="utf-8")).get("id")
+                    except Exception:
+                        parsed_id = None
+                    if parsed_id and parsed_id != memory_id:
+                        continue
+                    try:
+                        path.unlink()
+                        self._prune_empty_parents(path.parent, base)
+                    except OSError:
+                        pass
             atomic_write_text(target, render_memory_markdown(record))
         except Exception:
             # Additive mirror: never let a Markdown write failure break the authoritative
@@ -578,6 +592,14 @@ class CortexVault:
             if path == target:
                 continue
             try:
+                if target.exists():
+                    # A new-scheme note for this id already exists (it is authoritative — written by
+                    # the current save/patch path). This `path` is a stale legacy duplicate for the
+                    # same id; unlink it rather than os.replace over the target, so we never clobber
+                    # a note the user may have edited.
+                    path.unlink()
+                    self._prune_empty_parents(path.parent, base)
+                    continue
                 target.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(path, target)  # atomic rename; content preserved exactly
                 self._prune_empty_parents(path.parent, base)
@@ -701,21 +723,25 @@ class CortexVault:
             return None
 
     def list_daily_dates(self) -> set[str]:
-        """The set of dates (file stems) that currently have a Journal page on disk."""
+        """The set of dates that currently have a GENERATED Journal page on disk (YYYY-MM-DD.md only,
+        so a user's own note in Journal/ is never counted or pruned)."""
         base = self.root / DAILY_DIRECTORY
         if not base.exists():
             return set()
-        return {path.stem for path in base.glob("*.md")}
+        return {path.stem for path in base.glob("*.md") if _DAILY_DATE_RE.fullmatch(path.stem)}
 
     def prune_daily_pages(self, keep_dates: set[str]) -> int:
-        """Delete Journal pages whose date is not in keep_dates (a day that fell empty within the
-        regenerated window). Only touches dates IN the caller's window — callers pass the full set of
-        dates they considered, so a day outside the window is never pruned."""
+        """Delete generated Journal pages whose date is not in keep_dates (a day that fell empty
+        within the regenerated window). ONLY ever deletes files whose stem is a YYYY-MM-DD date — a
+        user's own note dropped into Journal/ (e.g. reading-list.md) is never touched. Days outside
+        the caller's window are also never pruned (callers pass the full considered set)."""
         removed = 0
         base = self.root / DAILY_DIRECTORY
         if not base.exists():
             return 0
         for path in base.glob("*.md"):
+            if not _DAILY_DATE_RE.fullmatch(path.stem):
+                continue  # not a generated day page (user-authored) -> never delete
             if path.stem not in keep_dates:
                 try:
                     path.unlink()

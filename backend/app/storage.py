@@ -11322,6 +11322,9 @@ class CortexStore:
             {
                 "memory_id": str(row["id"]),
                 "text": str(row["summary"] or row["content"] or "")[:200],
+                # The note's filename stem, so a MOC "Supporting memories" [[wikilink]] resolves after
+                # the N2 rename (memory notes are <slug>--<shortid>.md, not <id>.md).
+                "stem": self.vault.memory_note_stem({"id": row["id"], "summary": row["summary"], "content": row["content"]}),
                 "source": row["source"],
                 "source_url": row["source_url"],
             }
@@ -11406,7 +11409,9 @@ class CortexStore:
                     mid = str(evidence.get("memory_id") or "")
                     if mid and mid not in seen_mem:
                         seen_mem.add(mid)
-                        memory_links.append({"wikilink": mid, "note": str(evidence.get("text") or "")[:120]})
+                        # Target the note's filename stem (N2) so the [[wikilink]] resolves; fall back
+                        # to the id only if the evidence carried no stem.
+                        memory_links.append({"wikilink": str(evidence.get("stem") or mid), "note": str(evidence.get("text") or "")[:120]})
             peer_ids = sorted(
                 (p for p in (communities.get(community.get(node_id)) or []) if p != node_id and p in nodes),
                 key=lambda p: (-round(float(centrality.get(p, 0.0)), 6), p),
@@ -11517,7 +11522,15 @@ class CortexStore:
 
         recent: list[dict[str, Any]] = []
         try:
-            for item in self.recent(user_id, limit=10):
+            # Stable order within the section (captured_at desc, then id) so same-second captures
+            # don't reshuffle the Home page on every rebuild. Over-fetch so the tiebreaker, not
+            # SQLite's unspecified same-timestamp order, decides the top 10.
+            recent_rows = sorted(
+                self.recent(user_id, limit=40),
+                key=lambda it: (str(it.get("captured_at") or ""), str(it.get("id") or "")),
+                reverse=True,
+            )[:10]
+            for item in recent_rows:
                 mid = str(item.get("id") or "")
                 if not mid:
                     continue
@@ -11573,7 +11586,7 @@ class CortexStore:
                            m.summary AS summary, m.content AS content, m.entity_ids_json AS entity_ids_json
                     FROM memories m
                     WHERE {' AND '.join(filters)} AND m.captured_at IS NOT NULL AND m.captured_at != ''
-                    ORDER BY m.captured_at
+                    ORDER BY m.captured_at, m.id
                     """,
                     params,
                 ).fetchall()

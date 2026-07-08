@@ -110,6 +110,28 @@ class MemoryFilenameTests(unittest.TestCase):
         self.assertEqual(len(notes), 1, f"legacy duplicate not swept: {[p.name for p in notes]}")
         self.assertFalse(legacy.exists())
 
+    # Review fix #1: the write-sweep confirms the frontmatter id, so a shortid collision can't
+    # delete a DIFFERENT memory's note.
+    def test_write_sweep_does_not_cross_delete_on_shortid_collision(self) -> None:
+        short = self.vault.memory_note_short_id(SAMPLE["id"])
+        other = self.mem_dir / "decision" / f"someone-else--{short}.md"  # same shortid, different id
+        atomic_write_text(other, render_memory_markdown(dict(SAMPLE, id="mem_OTHER", content="not mine")))
+        self.vault.write_memory(SAMPLE)  # writes SAMPLE's own note; must NOT unlink `other`
+        self.assertTrue(other.exists(), "write sweep cross-deleted a colliding different memory's note")
+
+    # Review fix #2: migration never clobbers an existing (possibly-edited) new-scheme note.
+    def test_migration_does_not_clobber_existing_new_scheme_note(self) -> None:
+        # A new-scheme note (user-edited) AND a stale legacy <id>.md for the same id coexist.
+        self.vault.write_memory(SAMPLE)
+        new_note = self._notes()[0]
+        new_note.write_text(new_note.read_text(encoding="utf-8") + "\nMy own edit.\n", encoding="utf-8")
+        legacy = self.mem_dir / "decision" / f"{SAMPLE['id']}.md"
+        atomic_write_text(legacy, render_memory_markdown(dict(SAMPLE, content="STALE legacy content")))
+        self.vault.migrate_memory_note_filenames("u")
+        self.assertFalse(legacy.exists(), "stale legacy duplicate not removed")
+        self.assertTrue(new_note.exists(), "migration clobbered the new-scheme note")
+        self.assertIn("My own edit.", new_note.read_text(encoding="utf-8"))  # user's edit preserved
+
 
 if __name__ == "__main__":
     unittest.main()

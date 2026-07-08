@@ -130,6 +130,25 @@ class VaultPagesTests(unittest.TestCase):
             pages = self.store.build_daily_pages(USER, window=1)
         self.assertLessEqual(len(pages), 1)
 
+    def test_daily_pages_deterministic_for_same_day(self) -> None:
+        # Review fix #3: same-second captures must render a byte-identical day page across rebuilds.
+        with mock.patch.dict(os.environ, ENABLED, clear=False):
+            self._seed_graph()  # both memories share the same whole-second captured_at
+            self.assertEqual(self.store.build_daily_pages(USER), self.store.build_daily_pages(USER))
+
+    def test_prune_daily_spares_user_authored_files(self) -> None:
+        # Review fix #4: a user's own note in Journal/ must never be deleted by the prune.
+        with mock.patch.dict(os.environ, ENABLED, clear=False):
+            self._seed_graph()
+            user_note = self.vault_root / "Journal" / "reading-list.md"
+            user_note.write_text("# My reading list\n- a book\n", encoding="utf-8")
+            # Full-window regen (days=None) runs prune; the user file must survive.
+            self.store.regenerate_daily_pages(USER)
+            self.assertTrue(user_note.exists(), "prune deleted a user-authored Journal file")
+            # Direct prune with an empty keep set also spares it.
+            self.store.vault.prune_daily_pages(set())
+            self.assertTrue(user_note.exists())
+
     # ---- N5 Canvas ----
 
     def test_canvas_is_valid_and_links_to_moc(self) -> None:

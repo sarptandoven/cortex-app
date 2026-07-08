@@ -183,6 +183,20 @@ class MocStoreTests(unittest.TestCase):
             tail = aliases[1:]
             self.assertEqual(tail, sorted(tail, key=str.lower))  # deterministic order
 
+    def test_moc_supporting_memory_links_resolve_to_note_stems(self) -> None:
+        # Review fix #5: MOC "Supporting memories" [[links]] target the note filename stem (N2), so
+        # they resolve — not the raw memory id (which is no longer a filename).
+        import re
+        with mock.patch.dict(os.environ, {"CORTEX_ENTITY_MOC": "1"}, clear=False):
+            self._save("Marcus and Dana shipped the billing service together.")
+            pages = self.store.build_entity_moc_pages(USER)
+            note_stems = {p.stem for p in (self.vault_root / "memories").rglob("*.md")}
+        links = [str(m.get("wikilink")) for page in pages for m in (page.get("memory_links") or [])]
+        self.assertTrue(links, "expected supporting-memory links on the MOC pages")
+        for link in links:
+            self.assertNotRegex(link, r"^mem_", f"supporting-memory link {link} is a raw id, not a stem")
+            self.assertIn(link, note_stems, f"supporting-memory link {link} matches no note file")
+
     def test_memory_wikilink_name_matches_a_moc_alias(self) -> None:
         # End-to-end resolution proof: the [[Name]] a memory note writes appears verbatim in some
         # MOC page's frontmatter aliases, so Obsidian resolves the click-through.
