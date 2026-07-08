@@ -101,11 +101,17 @@ extension AppState {
         (Bundle.main.object(forInfoDictionaryKey: "CortexRequireAccount") as? String)?.lowercased() == "true"
     }
 
-    /// True when the build requires an account AND the user is not signed into a cloud account.
-    /// Single source of truth for EVERY sign-in gate — the main-window wall (CortexView), the
-    /// menu-bar "Cortex Spotlight" quick panel, and onboarding presentation — so no surface can
-    /// drift out of sync and expose Ask/Capture/Review before the user has signed in.
-    var requiresSignIn: Bool { accountRequired && !isCloudMode }
+    /// True when the user holds a stored Cortex account session (a cxr_ refresh token), INDEPENDENT
+    /// of which memory endpoint is active. In the local-first + cloud-sync model (Option A) the data
+    /// plane stays local even when signed in, so "signed in" is NOT the same as `isCloudMode`: this
+    /// flag reflects identity + sync; `isCloudMode` reflects the (now rarely used) remote data plane.
+    var isSignedIn: Bool { AppState.storedCloudRefreshToken() != nil }
+
+    /// True when the build requires an account AND the user is not signed in. Single source of truth
+    /// for EVERY sign-in gate — the main-window wall (CortexView), the menu-bar "Cortex Spotlight"
+    /// quick panel, and onboarding presentation — so no surface can drift out of sync and expose
+    /// Ask/Capture/Review before the user has signed in.
+    var requiresSignIn: Bool { accountRequired && !isSignedIn }
 
     /// Message shown when a cloud-auth action is attempted in a build where it is disabled.
     static let cloudAuthUnavailableMessage = "Cortex Cloud is not available in this version."
@@ -373,7 +379,8 @@ extension AppState {
     @discardableResult
     func refreshCloudAccessToken() async -> Bool {
         guard let refreshToken = AppState.storedCloudRefreshToken() else { return false }
-        let base = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let base = cloudSyncBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !base.isEmpty else { return false }
         do {
             let data = try await cloudPost(base: base, path: "/v1/auth/refresh", body: [
                 "refresh_token": refreshToken
@@ -382,10 +389,9 @@ extension AppState {
             // Store the NEW refresh token first: the old one is now revoked server-side,
             // so we must never hold onto it (reusing it kills the whole token family).
             storeCloudRefreshToken(tokens.refresh_token)
-            // The access token lives ONLY in memory. It is never persisted under the
-            // local apiKey Keychain slot, so the local machine key stays intact and
-            // local mode remains byte-identical.
-            apiKey = tokens.access_token
+            // The access token lives ONLY in memory and is used for CLOUD SYNC only — never the
+            // local apiKey, so the local engine's machine key stays intact.
+            cloudAccessToken = tokens.access_token
             return true
         } catch {
             return false
@@ -397,31 +403,31 @@ extension AppState {
     private func performCloudSignOut() async {
         cloudAuthBusy = true
         defer { cloudAuthBusy = false }
-        // Best-effort server-side revocation with the current access token.
-        if AppState.hostIsRemote(endpoint) {
-            let base = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            _ = try? await cloudPost(base: base, path: "/v1/auth/logout", body: [:], bearer: apiKey)
+        // Best-effort server-side revocation using the cloud sync creds (the data plane is local).
+        let base = cloudSyncBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if !base.isEmpty {
+            _ = try? await cloudPost(base: base, path: "/v1/auth/logout", body: [:], bearer: cloudAccessToken)
         }
         resetToLocalDefaults()
         cloudAuthMessage = "Signed out of Cortex Cloud."
     }
 
     private func performDeleteCloudAccount(password: String) async {
-        guard AppState.hostIsRemote(endpoint), AppState.storedCloudRefreshToken() != nil else {
+        guard isSignedIn, !cloudSyncBaseURL.isEmpty else {
             cloudAuthMessage = "You are not signed into a Cortex account."
             return
         }
         cloudAuthBusy = true
         cloudAuthMessage = "Deleting your account…"
         defer { cloudAuthBusy = false }
-        // The DELETE is session-authed; the in-memory access token may have expired since sign-in, so
-        // refresh it first (best-effort — if refresh fails the DELETE surfaces the auth error).
+        // The DELETE is session-authed; refresh the in-memory cloud access token first (best-effort —
+        // if refresh fails the DELETE surfaces the auth error).
         _ = await refreshCloudAccessToken()
-        let base = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let base = cloudSyncBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         do {
             var body: [String: Any] = [:]
             if !password.isEmpty { body["password"] = password }  // not trimmed: passwords may hold spaces
-            _ = try await cloudPost(base: base, path: "/v1/auth/account", body: body, bearer: apiKey, method: "DELETE")
+            _ = try await cloudPost(base: base, path: "/v1/auth/account", body: body, bearer: cloudAccessToken, method: "DELETE")
             resetToLocalDefaults()
             cloudAuthMessage = "Your account and all its data were permanently deleted."
         } catch {
@@ -441,29 +447,50 @@ extension AppState {
 
     private func applySignedInSession(base: String, tokens: CortexCloudTokenResponse, fallbackEmail: String) {
         storeCloudRefreshToken(tokens.refresh_token)
-        endpoint = base
-        // Access token is in-memory only (see refreshCloudAccessToken): the local
-        // machine key in the Keychain is never overwritten by a cloud session.
-        apiKey = tokens.access_token
+        // Local-first + cloud-sync (Option A): DO NOT point the memory data plane at the remote.
+        // `endpoint` stays local so all ingestion / Ask / graph / profile run on the mature local
+        // engine (first-run works instantly, offline-capable). The account is identity + the sync
+        // TARGET; a background sync pushes local memory to `cloudSyncBaseURL`.
+        cloudSyncBaseURL = base
+        UserDefaults.standard.set(base, forKey: AppState.cloudSyncBaseDefaultsKey)
+        // The cxs_ access token is for CLOUD SYNC only and lives in memory — it must NOT overwrite
+        // the local machine `apiKey` the local engine authenticates with.
+        cloudAccessToken = tokens.access_token
         let email = (tokens.account?.email ?? fallbackEmail).trimmingCharacters(in: .whitespacesAndNewlines)
         cloudAccountEmail = email
         UserDefaults.standard.set(email, forKey: AppState.cloudAccountEmailDefaultsKey)
-        UserDefaults.standard.set(base, forKey: "endpoint")
-        // Sign-in just switched the endpoint from local to the account's hosted backend. Re-run
-        // bootstrap (same re-entry the vault-folder change uses) so the app reloads memory/profile
-        // from the account instead of showing stale local data — and, now that isCloudMode is true,
-        // so onboarding (suppressed while the sign-in wall was up) can present for a first-run user.
+        // The sign-in wall just dropped (requiresSignIn is false once the refresh token is stored).
+        // Re-run bootstrap (same re-entry the vault-folder change uses) so local memory/profile
+        // reload and onboarding (suppressed behind the wall) can present for a first-run user.
         Task { await bootstrap() }
     }
 
     private func resetToLocalDefaults() {
         clearCloudRefreshToken()
         cloudAccountEmail = ""
+        cloudAccessToken = ""
+        cloudSyncBaseURL = ""
         UserDefaults.standard.removeObject(forKey: AppState.cloudAccountEmailDefaultsKey)
+        UserDefaults.standard.removeObject(forKey: AppState.cloudSyncBaseDefaultsKey)
+        // The data plane was already local (Option A). Keep it local + the local machine key.
         endpoint = AppState.localEndpointDefault
         UserDefaults.standard.set(AppState.localEndpointDefault, forKey: "endpoint")
-        // Restore the local machine-generated key so local mode works exactly as before.
         apiKey = AppState.restoreLocalAPIKey()
+    }
+
+    /// One-time migration to the local-first + cloud-sync model (Option A). A prior build pointed the
+    /// memory data plane at the remote (`endpoint` = the hosted URL) once signed in; that path is gone
+    /// — the data plane is always local now — so reset any persisted remote `endpoint` back to local,
+    /// preserving it as the cloud sync target if one isn't already recorded. Idempotent + a no-op for
+    /// users who were never signed in (endpoint already local). Call early in bootstrap().
+    func migrateToLocalFirstDataPlane() {
+        guard AppState.hostIsRemote(endpoint) else { return }
+        if cloudSyncBaseURL.isEmpty {
+            cloudSyncBaseURL = endpoint
+            UserDefaults.standard.set(endpoint, forKey: AppState.cloudSyncBaseDefaultsKey)
+        }
+        endpoint = AppState.localEndpointDefault
+        UserDefaults.standard.set(AppState.localEndpointDefault, forKey: "endpoint")
     }
 
     // MARK: Hosted URL normalization
@@ -546,9 +573,7 @@ struct CortexCloudSection: View {
 
     private static var defaultHostedURL: String { AppState.defaultHostedURL }
 
-    private var isSignedIn: Bool {
-        AppState.storedCloudRefreshToken() != nil && AppState.hostIsRemote(state.endpoint)
-    }
+    private var isSignedIn: Bool { state.isSignedIn }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -602,11 +627,10 @@ struct CortexCloudSection: View {
                 Text("Signed in as \(state.cloudAccountEmail.isEmpty ? "your Cortex Cloud account" : state.cloudAccountEmail)")
                     .font(.subheadline)
             }
-            Text("Endpoint: \(state.endpoint)")
+            Text("Your memory stays on this Mac and syncs to your account.")
                 .font(.caption)
                 .foregroundColor(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+                .fixedSize(horizontal: false, vertical: true)
             Button {
                 state.signOutOfCloud()
             } label: {

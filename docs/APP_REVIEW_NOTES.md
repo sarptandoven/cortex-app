@@ -21,16 +21,17 @@ which **requires a signed-in account**.
 - **Password:** `<PASTE IN APP STORE CONNECT SIGN-IN INFORMATION>`
 - (Or sign in with the reviewer's own Apple ID via **Sign in with Apple** — see 4.8.)
 
-Doppl builds a private, cited memory for the user. Signing in enables the app's account-based
-functionality: the user's memory is stored under their account, synced across their devices, and
-reachable from their AI tools. Sign-in runs over HTTPS (`https://api.signindoppl.com`) using the
-system networking stack (Swift `URLSession`).
+Doppl builds a private, cited memory for the user. The memory is created and stored **on the user's
+Mac** (local-first); signing in enables the app's account-based functionality: that on-device memory
+**syncs to the user's account** so it's durable, available across their devices, and reachable from
+their AI tools. Sign-in + sync run over HTTPS (`https://api.signindoppl.com`) using the system
+networking stack (Swift `URLSession`).
 
 **How to review every feature after signing in (no downloads or files needed):**
 1. Launch Doppl and sign in with the demo account above (or Sign in with Apple).
 2. On first run choose **Explore with sample notes** — Doppl loads a small bundled set of example
-   notes into your account and distills them (processed and stored under your account on the hosted
-   backend); a progress bar shows it building.
+   notes and distills them **on-device** (a progress bar shows it building); the resulting memory
+   syncs to your account.
 3. Open **Home**: the distilled profile ("What Doppl has learned") across every memory type, and
    **Your Constellation**, an interactive map of people, projects, and topics you can click.
 4. Open **Ask** and type e.g. "how do I like to write?" — you get a cited answer sourced from the
@@ -87,12 +88,12 @@ the status‑bar menu.
 
 ### Architecture summary for the reviewer
 - SwiftUI + AppKit front end.
-- When signed in (which the build requires), the user's memory is created, stored, and retrieved in
-  **their account on the hosted backend** (`https://api.signindoppl.com`), reached over HTTPS via
-  Swift `URLSession`. That is the account functionality: the memory the app distills belongs to, and
-  is synced from, the account. (The app also bundles a code‑signed local engine that runs on
-  `127.0.0.1` loopback for on‑device preprocessing; the account's hosted backend is the system of
-  record for a signed‑in user.)
+- The app is **local-first**: a bundled, code‑signed engine on `127.0.0.1` (loopback only) creates,
+  stores, and retrieves the user's memory **on the user's Mac**. When signed in (which the build
+  requires), that on‑device memory **syncs to the user's account** on the hosted backend
+  (`https://api.signindoppl.com`) over HTTPS via Swift `URLSession`, so it is durable and available
+  across the user's devices. The account is the user's identity + sync anchor; the on‑device store is
+  where memory lives and is read.
 - Data collected: the account **email** and **name** the user provides at sign‑in, and the **memory
   content** the user chooses to add to their account (their own notes/thoughts) — all **Linked** to
   the account, used only to operate the account (**App Functionality**), **not** used for tracking,

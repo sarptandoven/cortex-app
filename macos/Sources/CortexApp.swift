@@ -2974,6 +2974,7 @@ final class AppState: ObservableObject {
     private static let mcpAPIKeyDefaultsKey = "localBetaMCPAPIKey.v1"
     static let cloudRefreshTokenKey = "cortexCloudRefreshToken.v1"
     static let cloudAccountEmailDefaultsKey = "cortexCloudAccountEmail.v1"
+    static let cloudSyncBaseDefaultsKey = "cortexCloudSyncBase.v1"
     static let localEndpointDefault = "http://127.0.0.1:8766"
     private static let obsidianVaultPathDefaultsKey = "connectedObsidianVaultPath.v1"
     private static let obsidianVaultBookmarkDefaultsKey = "connectedObsidianVaultBookmark.v1"
@@ -3070,6 +3071,12 @@ final class AppState: ObservableObject {
     @Published var mcpAPIKey: String = AppState.loadOrCreateMCPAPIKey()
     // Cortex Cloud (hosted account) state. Never populated in local mode.
     @Published var cloudAccountEmail: String = UserDefaults.standard.string(forKey: AppState.cloudAccountEmailDefaultsKey) ?? ""
+    /// Hosted base URL the signed-in account syncs to (Option A: the account is identity + the sync
+    /// target; the memory data plane stays LOCAL). Empty when signed out.
+    @Published var cloudSyncBaseURL: String = UserDefaults.standard.string(forKey: AppState.cloudSyncBaseDefaultsKey) ?? ""
+    /// Short-lived cxs_ access token used for CLOUD SYNC requests only (in-memory; it must never
+    /// overwrite the local machine `apiKey` the local engine uses).
+    var cloudAccessToken: String = ""
     @Published var cloudAuthBusy: Bool = false
     @Published var cloudAuthMessage: String = ""
     @Published var importHistory: [SourceImportHistoryItem] = []
@@ -3579,6 +3586,9 @@ final class AppState: ObservableObject {
         // (Also serves as a visible on-launch proof that the icon animates at all.)
         beginMenuBarWork()
         defer { endMenuBarWork() }
+        // Local-first + cloud-sync (Option A): make sure the data plane is local before anything reads
+        // it — a prior build may have persisted a remote `endpoint` for a signed-in user.
+        migrateToLocalFirstDataPlane()
         // First-run guidance must appear INSTANTLY — before the backend cold-starts and the
         // load*() chain runs below — otherwise a slow/cold engine leaves a genuine new user
         // staring at a blank window with no instructions. This is self-heal-free and gated purely
