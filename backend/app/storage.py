@@ -2868,6 +2868,12 @@ class CortexStore:
         # Migrate legacy memories to Markdown notes once (runs even when the JSON vault already
         # has records), so two-way editing can safely treat a missing note as a user deletion.
         self._backfill_memory_markdown(user_id)
+        # One-time-per-startup: give an existing vault its browsable entity MOC pages without waiting
+        # for the next capture/rebuild. No-op unless CORTEX_ENTITY_MOC is on (desktop). Best-effort.
+        try:
+            self.regenerate_entity_moc(user_id)
+        except Exception:
+            pass
         vault_diagnostics = self.vault.diagnostics()
         existing_records = sum(
             vault_diagnostics["record_counts"].get(key, 0)
@@ -9225,6 +9231,16 @@ class CortexStore:
                 memory.pop("_link_names", None)
                 memory.pop("_backlinks", None)
 
+        # Refresh the browsable entity MOC pages (People/Projects/Topics) for interactive captures.
+        # Skipped during bulk imports (import_id set) — the post-import rebuild regenerates them
+        # once — and a no-op unless CORTEX_ENTITY_MOC is on (desktop only). Best-effort; the graph
+        # analysis opens its own connections, so this runs AFTER the capture transaction closes.
+        if import_id is None:
+            try:
+                self.regenerate_entity_moc(user_id)
+            except Exception:
+                pass
+
         return {
             "capture_id": capture_id,
             "summary": summary,
@@ -11108,6 +11124,132 @@ class CortexStore:
             }
             for row in rows
         ]
+
+    def _entity_moc_enabled(self) -> bool:
+        """Entity MOC (People/Projects/Orgs/Topics) pages are a LOCAL, single-user desktop feature
+        (browse your graph in Obsidian). OFF by default so the hosted/bucket backend — where one
+        vault root is SHARED across users and entity ids are name-derived, not user-scoped — never
+        generates them (they would collide across users and re-run the whole-graph analysis on every
+        capture). The desktop app opts in via CORTEX_ENTITY_MOC."""
+        return os.environ.get("CORTEX_ENTITY_MOC", "").strip().lower() in {"1", "true", "on", "yes"}
+
+    def build_entity_moc_pages(self, user_id: str, *, sector: str | None = None) -> list[dict[str, Any]]:
+        """One MOC page dict per graphed canonical entity, derived from a SINGLE entity_graph_analysis
+        pass (centrality / community / co-mention edges) plus cited co-mention memories. Deterministic
+        (no timestamps, stable ordering) and current-truth. Returns [] on an empty graph."""
+        try:
+            analysis = self.entity_graph_analysis(user_id, include_pending=False, sector=sector)
+        except Exception:
+            return []
+        nodes = analysis.get("nodes") or {}
+        if not nodes:
+            return []
+        centrality = analysis.get("centrality") or {}
+        community = analysis.get("community") or {}
+        communities = analysis.get("communities") or {}
+
+        # Undirected incident co-mention weight + a stable relation label per focal id.
+        incident: dict[str, dict[str, float]] = {}
+        relation: dict[tuple[str, str], str] = {}
+        for edge in (analysis.get("edges") or []):
+            src, tgt = str(edge.get("source") or ""), str(edge.get("target") or "")
+            if not src or not tgt or src == tgt or src not in nodes or tgt not in nodes:
+                continue
+            weight = float(edge.get("weight") or 0.0)
+            rel = str(edge.get("relation") or "related")
+            src_row = incident.setdefault(src, {})
+            src_row[tgt] = src_row.get(tgt, 0.0) + weight
+            tgt_row = incident.setdefault(tgt, {})
+            tgt_row[src] = tgt_row.get(src, 0.0) + weight
+            relation.setdefault((src, tgt), rel)
+            relation.setdefault((tgt, src), rel)
+
+        aliases_by_id: dict[str, list] = {}
+        try:
+            with connect(self.db_path) as conn:
+                for row in conn.execute(
+                    "SELECT id, aliases_json FROM entities WHERE user_id = ?", (user_id,)
+                ).fetchall():
+                    try:
+                        aliases_by_id[str(row["id"])] = json.loads(row["aliases_json"] or "[]")
+                    except Exception:
+                        aliases_by_id[str(row["id"])] = []
+        except Exception:
+            aliases_by_id = {}
+
+        def _stem(node_id: str) -> str:
+            return self.vault.entity_moc_stem(node_id, (nodes.get(node_id) or {}).get("label") or node_id)
+
+        pages: list[dict[str, Any]] = []
+        for node_id, node in nodes.items():
+            neigh = incident.get(node_id, {})
+            ranked = sorted(
+                neigh,
+                key=lambda nid: (-round(neigh[nid], 6), -round(float(centrality.get(nid, 0.0)), 6), nid),
+            )[:12]
+            connections = [
+                {
+                    "wikilink": _stem(nid),
+                    "name": (nodes.get(nid) or {}).get("label") or nid,
+                    "relation": relation.get((node_id, nid), "related"),
+                    "weight": neigh[nid],
+                }
+                for nid in ranked
+            ]
+            memory_links: list[dict[str, Any]] = []
+            seen_mem: set[str] = set()
+            for nid in ranked[:4]:
+                for evidence in self._entity_edge_evidence(user_id, node_id, nid, limit=2):
+                    mid = str(evidence.get("memory_id") or "")
+                    if mid and mid not in seen_mem:
+                        seen_mem.add(mid)
+                        memory_links.append({"wikilink": mid, "note": str(evidence.get("text") or "")[:120]})
+            peer_ids = sorted(
+                (p for p in (communities.get(community.get(node_id)) or []) if p != node_id and p in nodes),
+                key=lambda p: (-round(float(centrality.get(p, 0.0)), 6), p),
+            )[:8]
+            community_peers = [
+                {"wikilink": _stem(p), "name": (nodes.get(p) or {}).get("label") or p} for p in peer_ids
+            ]
+            pages.append({
+                "cortex_generated": True,
+                "entity_id": node_id,
+                "kind": node.get("kind") or "topic",
+                "name": node.get("label") or node_id,
+                "aliases": aliases_by_id.get(node_id, []),
+                "centrality": round(float(centrality.get(node_id, 0.0)), 6),
+                "community": community.get(node_id),
+                "supporting_count": int(node.get("weight") or 0),
+                "connections": connections,
+                "memory_links": memory_links,
+                "community_peers": community_peers,
+            })
+        return pages
+
+    def regenerate_entity_moc(self, user_id: str, *, sector: str | None = None) -> dict[str, int]:
+        """Rebuild ALL entity MOC pages from the current graph and prune orphans. Best-effort; never
+        raises into the caller (save/rebuild). No-op unless MOC generation is enabled and the vault
+        markdown mirror is on."""
+        if not self._entity_moc_enabled() or not getattr(self.vault, "markdown_mirror", True):
+            return {"written": 0, "pruned": 0}
+        try:
+            pages = self.build_entity_moc_pages(user_id, sector=sector)
+        except Exception:
+            return {"written": 0, "pruned": 0}
+        written = 0
+        keep: set[str] = set()
+        for page in pages:
+            entity_id = str(page.get("entity_id") or "")
+            if not entity_id:
+                continue
+            keep.add(hashlib.sha1(entity_id.encode("utf-8")).hexdigest()[:8])
+            if self.vault.write_entity_markdown(page) is not None:
+                written += 1
+        try:
+            pruned = self.vault.prune_entity_moc_pages(keep)
+        except Exception:
+            pruned = 0
+        return {"written": written, "pruned": pruned}
 
     def about_person(self, user_id: str, name: str, limit: int = 12) -> list[dict[str, Any]]:
         slug = "person_" + "".join(ch.lower() if ch.isalnum() else "-" for ch in name).strip("-")
@@ -15529,6 +15671,13 @@ class CortexStore:
                     "tombstones": tombstone_counts,
                 },
             )
+
+        # Regenerate the browsable entity MOC pages from the freshly-rebuilt graph (covers reconcile
+        # and post-import rebuilds). No-op unless CORTEX_ENTITY_MOC is on (desktop). Best-effort.
+        try:
+            self.regenerate_entity_moc(user_id)
+        except Exception:
+            pass
 
         return {
             "rebuilt_at": timestamp,

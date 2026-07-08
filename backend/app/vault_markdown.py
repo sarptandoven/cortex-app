@@ -243,6 +243,104 @@ def parse_memory_markdown(text: str) -> dict[str, Any]:
     return record
 
 
+# Entity Map-of-Content (MOC) page frontmatter, stable order. cortex_generated:true marks the
+# page machine-owned so it is never treated as user-authored (and it lives OUTSIDE memories/, so
+# reconcile literally cannot see it). No generated timestamp -> an unchanged graph renders a
+# byte-identical page, so a git/iCloud-synced vault gets no churny diffs.
+ENTITY_MOC_FRONTMATTER_FIELDS: tuple[str, ...] = (
+    "cortex_generated",
+    "entity_id",
+    "kind",
+    "name",
+    "aliases",
+    "centrality",
+    "community",
+    "supporting_count",
+)
+
+
+def _moc_alias_link(target: str, display: str = "") -> str:
+    """An Obsidian [[target|display]] link. target is a file stem (already path-safe); display is
+    sanitized to not break the link. Falls back to [[target]] when display is empty/equal."""
+    tgt = str(target or "").strip()
+    if not tgt:
+        return ""
+    show = str(display or "").strip()
+    for bad in ("]", "[", "|"):
+        show = show.replace(bad, " ")
+    show = " ".join(show.split())
+    return f"[[{tgt}|{show}]]" if show and show != tgt else f"[[{tgt}]]"
+
+
+def render_entity_moc_markdown(page: dict[str, Any]) -> str:
+    """Render one entity Map-of-Content page: cortex_generated frontmatter + a body of [[wikilinks]]
+    to co-mentioned entities and cited memories. Human-browsable; machine-owned; deterministic."""
+    lines: list[str] = [_FENCE]
+    for field in ENTITY_MOC_FRONTMATTER_FIELDS:
+        if field in page and page[field] is not None:
+            lines.append(f"{field}: {_dump_value(page[field])}")
+    lines.append(_FENCE)
+    lines.append("")
+    lines.append(f"# {page.get('name') or page.get('entity_id') or 'Entity'}")
+    lines.append("")
+
+    aliases = [str(a).strip() for a in (page.get("aliases") or []) if str(a).strip()]
+    if aliases:
+        lines.append("**Also known as:** " + ", ".join(aliases))
+        lines.append("")
+
+    connections = page.get("connections") or []
+    if connections:
+        lines.append("## Connected")
+        lines.append("")
+        for conn_item in connections:
+            if not isinstance(conn_item, dict):
+                continue
+            link = _moc_alias_link(conn_item.get("wikilink") or "", conn_item.get("name") or "")
+            if not link:
+                continue
+            rel = str(conn_item.get("relation") or "related").strip()
+            weight = conn_item.get("weight")
+            suffix = f" — {rel}" if rel else ""
+            try:
+                if weight and float(weight) >= 1:
+                    suffix += f" (×{int(float(weight))})"
+            except (TypeError, ValueError):
+                pass
+            lines.append(f"- {link}{suffix}")
+        lines.append("")
+
+    memory_links = page.get("memory_links") or []
+    if memory_links:
+        lines.append("## Supporting memories")
+        lines.append("")
+        for mem in memory_links:
+            if not isinstance(mem, dict):
+                continue
+            target = str(mem.get("wikilink") or "").strip()
+            if not target:
+                continue
+            note = str(mem.get("note") or "").strip().replace("\n", " ")
+            lines.append(f"- [[{target}]]" + (f" — {note}" if note else ""))
+        lines.append("")
+
+    peers = page.get("community_peers") or []
+    if peers:
+        lines.append("## Same area")
+        lines.append("")
+        chips = [
+            _moc_alias_link(peer.get("wikilink") or "", peer.get("name") or "")
+            for peer in peers
+            if isinstance(peer, dict) and (peer.get("wikilink"))
+        ]
+        chips = [chip for chip in chips if chip]
+        if chips:
+            lines.append(", ".join(chips))
+            lines.append("")
+
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
 def atomic_write_text(path: Path, text: str) -> None:
     """Crash-safe write: temp file -> fsync -> atomic replace -> fsync parent directory.
 

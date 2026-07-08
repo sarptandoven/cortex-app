@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -11,7 +12,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
-from .vault_markdown import atomic_write_text, parse_memory_markdown, render_memory_markdown
+from .vault_markdown import (
+    atomic_write_text,
+    parse_memory_markdown,
+    render_entity_moc_markdown,
+    render_memory_markdown,
+)
 
 
 # A process-wide lock per vault root. In hosted/bucket mode many request threads (plus the
@@ -60,6 +66,12 @@ VAULT_DIRECTORIES = (
 )
 RESTORE_ROOT_FILES = {"manifest.json", "settings.json", "events.jsonl"}
 RESTORE_DIRECTORIES = {"imports", "source_accounts", "sync_cursors", "sync_devices", "sync_receipts", "captures", "memories", "tasks", "entities", "graph_edges", "deletion_tombstones", "attachments"}
+# Entity Map-of-Content folders. DELIBERATELY not in VAULT_DIRECTORIES / RESTORE_DIRECTORIES:
+# reconcile globs only memories/**, and backup restores only RESTORE_DIRECTORIES, so these
+# machine-owned, fully-regenerable pages are invisible to both. They still sync via git/iCloud
+# (that is the whole point — a browsable People/Projects/Topics graph in the vault).
+ENTITY_MOC_DIRECTORIES = ("People", "Projects", "Orgs", "Topics")
+ENTITY_KIND_TO_MOC_DIR = {"person": "People", "project": "Projects", "org": "Orgs", "topic": "Topics"}
 BACKUP_DENY_FILENAMES = {
     ".env",
     ".netrc",
@@ -507,6 +519,69 @@ class CortexVault:
         kind = safe_segment(record.get("kind"), "edge")
         path = self.root / "graph_edges" / kind / f"{safe_segment(record.get('id'), 'edge')}.json"
         return self._write_record(path, "graph_edge", record)
+
+    # ---- Entity Map-of-Content (MOC) pages: browsable People/Projects/Orgs/Topics graph ----
+
+    def entity_moc_dir_for_kind(self, kind: str | None) -> str:
+        return ENTITY_KIND_TO_MOC_DIR.get(str(kind or "").strip().lower(), "Topics")
+
+    def entity_moc_stem(self, entity_id: str, label: str | None = None) -> str:
+        """The MOC note filename stem — the SINGLE source of the entity->entity wikilink target and
+        the on-disk filename, so links always resolve. `<slug>--<hash8>`: slug is human-browsable
+        (from the label), hash8 disambiguates + stays stable across label edits."""
+        eid = str(entity_id or "")
+        slug = safe_segment(label or eid, "entity")
+        short = hashlib.sha1(eid.encode("utf-8")).hexdigest()[:8]
+        return f"{slug}--{short}"
+
+    def entity_moc_path(self, page: dict[str, Any]) -> Path:
+        folder = self.entity_moc_dir_for_kind(page.get("kind"))
+        return self.root / folder / f"{self.entity_moc_stem(page.get('entity_id'), page.get('name'))}.md"
+
+    def write_entity_markdown(self, page: dict[str, Any]) -> Path | None:
+        """Write/refresh one entity MOC page. Additive & best-effort: a failure here never breaks
+        the authoritative JSON entity write (mirrors _write_memory_markdown). If the label changed,
+        the file moves — the stale page for this id (same hash8) is removed first."""
+        if not self.markdown_mirror:
+            return None
+        entity_id = str(page.get("entity_id") or "")
+        if not entity_id:
+            return None
+        try:
+            target = self.entity_moc_path(page)
+            short = hashlib.sha1(entity_id.encode("utf-8")).hexdigest()[:8]
+            for folder in ENTITY_MOC_DIRECTORIES:
+                base = self.root / folder
+                if not base.exists():
+                    continue
+                for path in base.glob(f"*--{short}.md"):
+                    if path != target:
+                        try:
+                            path.unlink()
+                        except OSError:
+                            pass
+            atomic_write_text(target, render_entity_moc_markdown(page))
+            return target
+        except Exception:
+            return None
+
+    def prune_entity_moc_pages(self, keep_short_ids: set[str]) -> int:
+        """Delete MOC pages whose entity hash8 is not in keep_short_ids (entity deleted/merged away)."""
+        removed = 0
+        for folder in ENTITY_MOC_DIRECTORIES:
+            base = self.root / folder
+            if not base.exists():
+                continue
+            for path in base.glob("*.md"):
+                stem = path.stem
+                short = stem.rsplit("--", 1)[-1] if "--" in stem else ""
+                if short and short not in keep_short_ids:
+                    try:
+                        path.unlink()
+                        removed += 1
+                    except OSError:
+                        pass
+        return removed
 
     def write_tombstone(
         self,

@@ -2553,6 +2553,11 @@ final class BackendSupervisor {
         // scripts/rerank_eval.py (ON never regresses OFF under real model2vec; CI-gated) and it
         // no-ops under the hash embedder, so it only activates with the bundled model2vec.
         environment["CORTEX_RERANK"] = "linear+mmr"
+        // Entity Map-of-Content pages: browsable People/Projects/Orgs/Topics notes in the vault,
+        // one per canonical entity, cross-linked by [[wikilinks]]. A LOCAL desktop feature only —
+        // the backend keeps this OFF by default so the shared hosted/bucket vault never generates
+        // them; the single-user desktop app opts in here.
+        environment["CORTEX_ENTITY_MOC"] = "1"
         if let googleClientID = Bundle.main.object(forInfoDictionaryKey: "CortexGoogleOAuthClientID") as? String {
             let trimmedGoogleClientID = googleClientID.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmedGoogleClientID.isEmpty {
