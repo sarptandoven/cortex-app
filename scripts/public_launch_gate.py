@@ -8,9 +8,9 @@ the human/external items it cannot (so an automated "green" is never mistaken fo
 
 Usage:
   # Automated checks against a running (staging or prod) backend + local repo:
-  python3 scripts/public_launch_gate.py --base-url https://api.trydoppl.com
+  python3 scripts/public_launch_gate.py --base-url https://api.signindoppl.com
   # Beta profile is more lenient (autoverify allowed, TLS/notarization optional):
-  python3 scripts/public_launch_gate.py --base-url https://api.trydoppl.com --profile beta
+  python3 scripts/public_launch_gate.py --base-url https://api.signindoppl.com --profile beta
 
 Notes:
   - Provide --admin-token (or CORTEX_ADMIN_TOKEN) to also check admin-only surfaces.
@@ -179,7 +179,7 @@ MANUAL_ITEMS = [
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--base-url", help="Running backend to check (e.g. https://api.trydoppl.com)")
+    ap.add_argument("--base-url", help="Running backend to check (e.g. https://api.signindoppl.com)")
     ap.add_argument("--admin-token", default=os.environ.get("CORTEX_ADMIN_TOKEN", ""))
     ap.add_argument("--profile", choices=("beta", "public"), default="public",
                     help="'public' gates strictly; 'beta' downgrades TLS/readiness/site items to warnings")

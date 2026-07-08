@@ -20,14 +20,15 @@ Legend:
 - Turn on "Backups"
 - Create it, then **copy the server's IP address** (looks like `203.0.113.7`).
 
-**1b. Point your domain at it.** In your DNS provider for `trydoppl.com`, add ONE record:
+**1b. Point your domain at it.** In your DNS provider for **`signindoppl.com`** (where you registered
+it), add ONE record:
 - Type: **A**, Name: **api**, Value: **<the server IP>**, TTL: default.
-- This makes `api.trydoppl.com` point at the server. (Doesn't touch your website.)
-- Wait ~5 min, then confirm: `On your Mac:` `dig +short api.trydoppl.com` should print the IP.
+- This makes `api.signindoppl.com` point at the server.
+- Wait ~5 min, then confirm: `On your Mac:` `dig +short api.signindoppl.com` should print the IP.
 
 **1c. Deploy — one command.** `On your Mac:`
 ```bash
-deploy/push.sh root@<the server IP> api.trydoppl.com
+deploy/push.sh root@<the server IP> api.signindoppl.com
 ```
 This uploads the code and sets up EVERYTHING on the server automatically: HTTPS certificate,
 Python, the API service, background worker, firewall, nightly backups, and it **generates your
@@ -36,9 +37,9 @@ password manager immediately** (they are shown only once). The admin token = you
 
 **1d. Verify it's live.** `On your Mac:`
 ```bash
-curl https://api.trydoppl.com/health      # -> {"status":"ok", ...}
+curl https://api.signindoppl.com/health      # -> {"status":"ok", ...}
 ```
-Then open **https://api.trydoppl.com/admin** in a browser, paste your **admin token** → you'll see
+Then open **https://api.signindoppl.com/admin** in a browser, paste your **admin token** → you'll see
 the user dashboard (0 users so far). ✅ Accounts backend + admin are now running.
 
 > Email is off by default (`CORTEX_AUTH_AUTOVERIFY=1`): people sign up and are active instantly, no
@@ -55,7 +56,7 @@ After editing the server's env file, apply it with:
 ### 2a. GitHub (2 minutes, no review)
 1. https://github.com/settings/developers → **New OAuth App**.
 2. Application name: `Doppl`. Homepage URL: `https://trydoppl.com`.
-   **Authorization callback URL:** `https://api.trydoppl.com/v1/auth/oauth/github/callback`
+   **Authorization callback URL:** `https://api.signindoppl.com/v1/auth/oauth/github/callback`
 3. Create it → copy the **Client ID**; click "Generate a new client secret" → copy the **secret**.
 4. `On the server:` in `/etc/cortex/cortex.env` set:
    ```
@@ -68,7 +69,7 @@ After editing the server's env file, apply it with:
 1. https://console.cloud.google.com → create a project → APIs & Services → **OAuth consent screen**
    (External; add app name `Doppl`, your email, the domain `trydoppl.com`).
 2. Credentials → **Create credentials → OAuth client ID → Web application**.
-   **Authorized redirect URI:** `https://api.trydoppl.com/v1/auth/oauth/google/callback`
+   **Authorized redirect URI:** `https://api.signindoppl.com/v1/auth/oauth/google/callback`
 3. Copy the **Client ID** and **Client secret** → set on the server:
    ```
    CORTEX_OIDC_GOOGLE_CLIENT_ID=<...>
@@ -106,7 +107,7 @@ After editing the server's env file, apply it with:
 1. In the Doppl app (or via the API), sign up an account, e.g. `review@trydoppl.com` /
    a strong password. Add a couple of notes so the reviewer sees a working app.
    (API way, `On your Mac:`
-   `curl -X POST https://api.trydoppl.com/v1/auth/signup -H 'content-type: application/json' -d '{"email":"review@trydoppl.com","password":"<a strong password>"}'`)
+   `curl -X POST https://api.signindoppl.com/v1/auth/signup -H 'content-type: application/json' -d '{"email":"review@trydoppl.com","password":"<a strong password>"}'`)
 2. Put that email + password into `docs/APP_REVIEW_NOTES.md` where it says
    `<APP REVIEW DEMO EMAIL>` / `<APP REVIEW DEMO PASSWORD>`.
 
@@ -125,9 +126,9 @@ Once Steps 1–4 are done, reply and I will (no action from you):
 `On your Mac:` `deploy/push.sh root@<the server IP> --update`
 
 ## Where to see your users
-Anytime: open **https://api.trydoppl.com/admin**, paste your admin token (`CORTEX_API_KEY`).
+Anytime: open **https://api.signindoppl.com/admin**, paste your admin token (`CORTEX_API_KEY`).
 Shows total/active/pending users, signups per day, which provider they used, and a searchable list.
-JSON if you prefer: `curl -H "Authorization: Bearer <admin token>" https://api.trydoppl.com/v1/admin/metrics`
+JSON if you prefer: `curl -H "Authorization: Bearer <admin token>" https://api.signindoppl.com/v1/admin/metrics`
 
 ## Already done (nothing for you)
 Sign in with Apple/Google/GitHub/email (backend + app UI), per-user cloud memory + backups + sync,

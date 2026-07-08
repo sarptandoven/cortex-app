@@ -85,26 +85,26 @@ Needed as you go (ask when you reach the step):
       brew install cloudflared
       cloudflared tunnel login            # FOUNDER logs in (browser) — ask them
       cloudflared tunnel create cortex
-      cloudflared tunnel route dns cortex api.trydoppl.com
+      cloudflared tunnel route dns cortex api.signindoppl.com
       # write ~/.cloudflared/config.yml (template in the README) mapping
-      #   api.trydoppl.com -> http://127.0.0.1:8766
+      #   api.signindoppl.com -> http://127.0.0.1:8766
       sudo cloudflared service install    # always-on tunnel daemon
     No domain yet / just testing:
       cloudflared tunnel --url http://127.0.0.1:8766   # prints a temp https URL
-    CHECK: curl -s https://api.trydoppl.com/health  → ok  (from any network)
+    CHECK: curl -s https://api.signindoppl.com/health  → ok  (from any network)
 
 2.5 Verify it's genuinely usable online.
     Run the gate against the PUBLIC url:
-      python3 scripts/public_launch_gate.py --base-url https://api.trydoppl.com --profile beta
+      python3 scripts/public_launch_gate.py --base-url https://api.signindoppl.com --profile beta
     Then a real end-to-end account check:
-      curl -s -X POST https://api.trydoppl.com/v1/auth/signup \
+      curl -s -X POST https://api.signindoppl.com/v1/auth/signup \
         -H 'Content-Type: application/json' \
         -d '{"email":"hermes-test@trydoppl.com","password":"<a-long-password>"}'
-      curl -s -X POST https://api.trydoppl.com/v1/auth/login \
+      curl -s -X POST https://api.signindoppl.com/v1/auth/login \
         -H 'Content-Type: application/json' \
         -d '{"email":"hermes-test@trydoppl.com","password":"<same>"}'
       # login should return an access_token starting cxs_ and account status "active"
-    Open https://api.trydoppl.com/account/signup in the browser — the signup page
+    Open https://api.signindoppl.com/account/signup in the browser — the signup page
     should render. (Clean up the test account afterward via the account-delete
     endpoint or leave it; your call.)
 
@@ -117,7 +117,7 @@ Needed as you go (ask when you reach the step):
 ────────────────────────────────────────────────────────────────────────────
 3.1 GitHub login (optional, 5 min, no review).
     Founder creates a GitHub OAuth app (Homepage https://trydoppl.com, callback
-    https://api.trydoppl.com/v1/auth/oauth/github/callback) and hands you the
+    https://api.signindoppl.com/v1/auth/oauth/github/callback) and hands you the
     client id/secret. Add to ~/CortexServer/cortex.env:
       CORTEX_OIDC_GITHUB_CLIENT_ID=... / CORTEX_OIDC_GITHUB_CLIENT_SECRET=...
     Restart: launchctl unload/load ~/Library/LaunchAgents/com.cortex.api.plist
@@ -130,7 +130,7 @@ Needed as you go (ask when you reach the step):
       scripts/publish_release.sh --tag v0.1.0-beta --release-dir <output-dir> \
         --repo doppl-tech/cortex-app
     Tell testers: right-click Cortex.app → Open the first time (unnotarized).
-    In the app: Settings → Cortex Cloud → enter https://api.trydoppl.com → sign in.
+    In the app: Settings → Cortex Cloud → enter https://api.signindoppl.com → sign in.
 
 3.3 Off-machine backups (do BEFORE real users rely on it).
     The mini is the whole system; local backups die with it. Set up an offsite
@@ -138,7 +138,7 @@ Needed as you go (ask when you reach the step):
     README.md §4 and docs/runbooks/KEK_ESCROW.md. Confirm one restore works.
 
 3.4 Basic monitoring.
-    Add a free UptimeRobot monitor on https://api.trydoppl.com/ready → founder's
+    Add a free UptimeRobot monitor on https://api.signindoppl.com/ready → founder's
     phone. Stand up the status page later (docs/STATUS_PAGE.md) if wanted.
 
 ────────────────────────────────────────────────────────────────────────────
@@ -167,14 +167,14 @@ DO NOT flip to PUBLIC (autoverify off / open signups) without explicit approval.
 ────────────────────────────────────────────────────────────────────────────
 - Deploy an update:  git pull && bash deploy/macmini/setup.sh  (idempotent)
 - Logs:  tail -f ~/CortexServer/logs/com.cortex.api.err.log
-- Status: launchctl list | grep com.cortex ; curl https://api.trydoppl.com/ready
+- Status: launchctl list | grep com.cortex ; curl https://api.signindoppl.com/ready
 - Incidents: follow docs/runbooks/HOSTED_INCIDENTS.md.
 - Keep both git remotes in sync on every commit.
 
 ────────────────────────────────────────────────────────────────────────────
 7. ACCEPTANCE — you are "done with Phase 1" when ALL are true
 ────────────────────────────────────────────────────────────────────────────
-[ ] https://api.trydoppl.com/health and /ready return ok from an outside network.
+[ ] https://api.signindoppl.com/health and /ready return ok from an outside network.
 [ ] A signup → login round-trip works against the public URL (active account).
 [ ] The web /account/signup page loads publicly.
 [ ] The macOS app can sign in to the hosted backend and get a cited answer.

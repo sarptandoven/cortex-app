@@ -14,7 +14,7 @@ hundreds of beta users fit comfortably here and the upgrade is a snapshot-restor
    - Add your SSH key. Enable "Backups" (+20% ≈ €1.40/mo — one click, worth it).
    - Note the server IP.
 
-2. **Point DNS** — add one A record: `api.trydoppl.com` → the VM IP.
+2. **Point DNS** — add one A record: `api.signindoppl.com` → the VM IP.
    (You own trydoppl.com — one A record does not disturb the site already living there.
    No domain handy? Pass `--sslip` below and you get `api.<ip>.sslip.io` with real TLS —
    fine for a private beta, not for public links.)
@@ -22,7 +22,7 @@ hundreds of beta users fit comfortably here and the upgrade is a snapshot-restor
 3. **From this repo on your Mac, run one command:**
 
    ```bash
-   deploy/push.sh root@<VM-IP> api.trydoppl.com
+   deploy/push.sh root@<VM-IP> api.signindoppl.com
    ```
 
    That uploads the current tree and runs `bootstrap.sh` on the box: OS hardening +
@@ -30,8 +30,8 @@ hundreds of beta users fit comfortably here and the upgrade is a snapshot-restor
    KEK, signing key — printed ONCE at the end; store them in a password manager),
    systemd services for the API + background worker, nightly WAL-safe backups, done.
 
-4. **Verify:** `curl https://api.trydoppl.com/health` → `{"status":"ok",...}` and open
-   `https://api.trydoppl.com/ready`.
+4. **Verify:** `curl https://api.signindoppl.com/health` → `{"status":"ok",...}` and open
+   `https://api.signindoppl.com/ready`.
 
 5. **Escrow the KEK** (printed by bootstrap): copy `/etc/cortex/kek` into your password
    manager AND one offline place. If the box dies and the KEK is lost, every user's
@@ -63,7 +63,7 @@ release dir is kept for instant rollback: `ln -sfn /srv/cortex/releases/<prev> /
 - `CORTEX_RATE_LIMIT_PER_MINUTE=120`, `CORTEX_DEFAULT_MEMORY_QUOTA=20000` — non-zero on
   purpose; raise deliberately.
 - `CORTEX_OIDC_GITHUB_CLIENT_ID/SECRET` — enables "Continue with GitHub".
-- Add a free UptimeRobot monitor on `https://api.trydoppl.com/ready` (5 minutes, your phone
+- Add a free UptimeRobot monitor on `https://api.signindoppl.com/ready` (5 minutes, your phone
   finds out before your users do).
 
 ## Scale-up path (unchanged code)

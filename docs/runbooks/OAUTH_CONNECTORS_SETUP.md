@@ -16,13 +16,13 @@ same as reading your data): `CORTEX_OIDC_GOOGLE_CLIENT_ID/SECRET`, `CORTEX_OIDC_
 
 ## The one thing people get wrong: redirect URIs
 Register **both** the local-app and hosted redirect URIs so it works either way. Use your real
-public API origin for the hosted one (`https://api.trydoppl.com`).
+public API origin for the hosted one (`https://api.signindoppl.com`).
 
 | Purpose | Redirect URI(s) to register |
 |---|---|
-| Google **connectors** (Gmail/Drive) | `http://127.0.0.1:8766/v1/connectors/google/oauth/callback` **and** `https://api.trydoppl.com/v1/connectors/google/oauth/callback` |
-| Notion / Outlook **connectors** (managed) | `http://127.0.0.1:8766/v1/connectors/oauth/callback` **and** `https://api.trydoppl.com/v1/connectors/oauth/callback` |
-| Google/GitHub **account login** (OIDC) | `https://api.trydoppl.com/v1/auth/oauth/google/callback` and `.../github/callback` |
+| Google **connectors** (Gmail/Drive) | `http://127.0.0.1:8766/v1/connectors/google/oauth/callback` **and** `https://api.signindoppl.com/v1/connectors/google/oauth/callback` |
+| Notion / Outlook **connectors** (managed) | `http://127.0.0.1:8766/v1/connectors/oauth/callback` **and** `https://api.signindoppl.com/v1/connectors/oauth/callback` |
+| Google/GitHub **account login** (OIDC) | `https://api.signindoppl.com/v1/auth/oauth/google/callback` and `.../github/callback` |
 
 ---
 
@@ -57,10 +57,10 @@ public API origin for the hosted one (`https://api.trydoppl.com`).
 
 ## 4. Account login — Google + GitHub (optional; separate from data)
 - **GitHub** (2 min, no review): <https://github.com/settings/developers> → New OAuth App →
-  Homepage `https://trydoppl.com`, callback `https://api.trydoppl.com/v1/auth/oauth/github/callback` →
+  Homepage `https://trydoppl.com`, callback `https://api.signindoppl.com/v1/auth/oauth/github/callback` →
   `CORTEX_OIDC_GITHUB_CLIENT_ID/SECRET`.
 - **Google login:** reuse the project from §1; add an OAuth client (or reuse) with redirect
-  `https://api.trydoppl.com/v1/auth/oauth/google/callback` → `CORTEX_OIDC_GOOGLE_CLIENT_ID/SECRET`.
+  `https://api.signindoppl.com/v1/auth/oauth/google/callback` → `CORTEX_OIDC_GOOGLE_CLIENT_ID/SECRET`.
   (Publishing the consent screen is required for non-test users — a Lane-C launch item.)
 
 ---

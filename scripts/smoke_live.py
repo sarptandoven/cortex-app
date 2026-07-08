@@ -7,7 +7,7 @@ capture -> approve -> ask, and asserts a CITED answer comes back, then cleans up
 the scoped token it minted. Stdlib-only (matches the shipping backend), so it
 runs anywhere python3 does.
 
-    python3 scripts/smoke_live.py --base-url https://api.trydoppl.com
+    python3 scripts/smoke_live.py --base-url https://api.signindoppl.com
     python3 scripts/smoke_live.py --base-url https://<host> --deep
 
 Exit code 0 = all checks passed, 1 = something failed. Suitable for a cron /
@@ -54,7 +54,7 @@ def _ok(label, cond, detail=""):
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--base-url", required=True, help="public backend URL, e.g. https://api.trydoppl.com")
+    ap.add_argument("--base-url", required=True, help="public backend URL, e.g. https://api.signindoppl.com")
     ap.add_argument("--deep", action="store_true", help="run the full signup->capture->approve->ask loop")
     args = ap.parse_args()
     base = args.base_url

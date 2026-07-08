@@ -32,7 +32,7 @@ Get it:  dash.cloudflare.com -> My Profile -> API Tokens -> Create Token ->
          publish the site too.
 Scope:   Zone -> DNS -> Edit, restricted to the trydoppl.com zone. (+ Pages:Edit
          if publishing the site.)
-Lets the agent: add the api.trydoppl.com A record, all SPF/DKIM/DMARC records
+Lets the agent: add the api.signindoppl.com A record, all SPF/DKIM/DMARC records
          your email provider needs, and deploy the static site to Cloudflare
          Pages mapped to trydoppl.com.
 Revoke:  after DNS + site are set (you rarely change DNS after launch).
@@ -95,7 +95,7 @@ SUGGESTED HANDOFF (one message to the agent)
 --------------------------------------------------------------------------------
 "Here are scoped tokens: HETZNER=<..>, CLOUDFLARE=<..>, GITHUB_PAT=<..>,
  POSTMARK=<..>. Canonical org repo is <org/repo> (DECISION 0 = Option A).
- Provision cortex-prod, deploy to api.trydoppl.com in BETA mode, wire DNS +
+ Provision cortex-prod, deploy to api.signindoppl.com in BETA mode, wire DNS +
  email DNS, publish the site, set up CI + a Release for the DMG I'll notarize,
  and run the launch gate. Stop and ask me before anything destructive or before
  flipping to PUBLIC mode."

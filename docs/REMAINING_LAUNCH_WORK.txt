@@ -13,7 +13,7 @@ you can say "Hermes, do H3 and H7" or "I finished F4, unblock H2."
 
 Throughout, the assumed names are:
   Site:            https://trydoppl.com
-  API:             https://api.trydoppl.com
+  API:             https://api.signindoppl.com
   Support email:   support@trydoppl.com   Privacy: privacy@trydoppl.com
 Replace if you choose different ones (tell Hermes so it updates the repo).
 
@@ -137,17 +137,17 @@ F5. PROVISION THE SERVER + DEPLOY (the backend goes live)
        key added, "Backups" checkbox ON. Note the public IP.
     b. In trydoppl.com DNS, add:  A record, name "api", value <SERVER-IP>
        (and AAAA with the IPv6 if given). Wait until
-       `dig +short api.trydoppl.com` returns the IP.
+       `dig +short api.signindoppl.com` returns the IP.
     c. From the repo on your Mac (or hand SSH access to Hermes — see H11):
-         deploy/push.sh root@<SERVER-IP> api.trydoppl.com
+         deploy/push.sh root@<SERVER-IP> api.signindoppl.com
        It sets up Caddy HTTPS + systemd + nightly backups and PRINTS your admin
        token + encryption KEK ONCE.
     d. For PUBLIC launch (not beta), before/after deploy set in
        /etc/cortex/cortex.env:  CORTEX_AUTH_AUTOVERIFY=0 and the SMTP_* values
        from F3, then: systemctl restart cortex-api cortex-worker
   DEPENDS ON: F7(domain, done), F3(if public). Notarization (F2) is independent.
-  DONE-WHEN: https://api.trydoppl.com/health and /ready are green;
-             https://api.trydoppl.com/account/signup loads in a browser.
+  DONE-WHEN: https://api.signindoppl.com/health and /ready are green;
+             https://api.signindoppl.com/account/signup loads in a browser.
 
 F6. ESCROW THE ENCRYPTION KEK (do immediately after F5)
   WHY: lose it = all encrypted user data is unrecoverable; leaked-with-a-backup =
@@ -165,12 +165,12 @@ F8. OAUTH LOGIN APPS
   STEPS:
     a. GitHub (5 min, no review): github.com -> Settings -> Developer settings ->
        OAuth Apps -> New. Homepage https://trydoppl.com ; callback
-       https://api.trydoppl.com/v1/auth/oauth/github/callback . Copy client id +
+       https://api.signindoppl.com/v1/auth/oauth/github/callback . Copy client id +
        secret into /etc/cortex/cortex.env (CORTEX_OIDC_GITHUB_CLIENT_ID/SECRET),
        restart cortex-api.
     b. Google (1–2 wk review): Google Cloud -> APIs & Services -> Credentials ->
        OAuth client ID (Web); redirect
-       https://api.trydoppl.com/v1/auth/oauth/google/callback . Configure the
+       https://api.signindoppl.com/v1/auth/oauth/google/callback . Configure the
        consent screen (add your privacy + terms URLs), submit for verification.
        Set CORTEX_OIDC_GOOGLE_CLIENT_ID/SECRET, restart.
   DEPENDS ON: F5 (server), F1 (privacy/terms URLs live for Google).
@@ -201,7 +201,7 @@ F10. BUILD + NOTARIZE THE DMG (one command, after F2)
 F11. MONITORING + OFFSITE BACKUP ACCOUNTS
   WHY: know about failures before users do; survive a dead box.
   STEPS:
-    a. UptimeRobot (free): monitor https://api.trydoppl.com/ready every 5 min ->
+    a. UptimeRobot (free): monitor https://api.signindoppl.com/ready every 5 min ->
        phone/email alert.
     b. healthchecks.io (free): make a check; give Hermes the ping URL to wire
        into the backup job (set BACKUP_PING_URL).
@@ -215,7 +215,7 @@ F12. BILLING ACCOUNT (only if charging at launch)
   STEPS: apply to Paddle (recommended, handles tax) -> create product "Cortex Pro
     $20/mo" -> put the webhook secret into /etc/cortex/cortex.env
     (CORTEX_BILLING_PROVIDER=paddle, CORTEX_PADDLE_WEBHOOK_SECRET=...), set the
-    webhook URL to https://api.trydoppl.com/v1/billing/webhook, and ensure your
+    webhook URL to https://api.signindoppl.com/v1/billing/webhook, and ensure your
     checkout passes the Cortex user_id in custom_data.cortex_user_id. Restart.
   DEPENDS ON: F1, F5.  DONE-WHEN: a live checkout flips a test user to "pro".
 
@@ -225,7 +225,7 @@ F13. LEGAL REVIEW + HUMAN TESTS (final gates)
   b. Usability test: 5–8 non-technical people install + reach a cited answer
      unaided in <10 min. Fix what trips them; re-test.
   c. Manually click through the Mac app's "Sign in to Cortex Cloud" once against
-     https://api.trydoppl.com (the one path no automated test covers).
+     https://api.signindoppl.com (the one path no automated test covers).
   DEPENDS ON: most of the above.  DONE-WHEN: lawyer signs off; usability passes.
 
 FOUNDER CRITICAL PATH (do in this order, parallelize the [START NOW]s):
@@ -297,20 +297,20 @@ H3. [UNBLOCKED] TAKE THE BINARIES OUT OF GIT
   DONE-WHEN: no binaries in git; the distribution checker still passes.
 
 H4. [UNBLOCKED] DOMAIN-CONSISTENCY PASS
-  WHY: make trydoppl.com / api.trydoppl.com the concrete, correct values
+  WHY: make trydoppl.com / api.signindoppl.com the concrete, correct values
        everywhere and remove placeholder/localhost assumptions from user-facing
        copy and operator docs.
   STEPS:
     a. In deploy/README.md, deploy/cortex.env.example, and
        docs/COMPLETE_LAUNCH_INSTRUCTIONS.txt: ensure examples use
-       api.trydoppl.com and the correct OAuth callback URLs
-       (https://api.trydoppl.com/v1/auth/oauth/{github,google}/callback) and the
+       api.signindoppl.com and the correct OAuth callback URLs
+       (https://api.signindoppl.com/v1/auth/oauth/{github,google}/callback) and the
        email from-address @trydoppl.com.
     b. Grep the repo for stray "example.com", "YOUR-DOMAIN", localhost-in-
        user-copy; fix any that are meant to be the real domain (leave genuine
        localhost/dev defaults alone).
     c. Ensure the macOS app's default hosted URL suggestion (the Cortex Cloud
-       sign-in field) is https://api.trydoppl.com (verify in
+       sign-in field) is https://api.signindoppl.com (verify in
        macos/Sources/CortexCloudAuth.swift; build.sh after).
   DEPENDS ON: nothing.  DONE-WHEN: one grep shows no wrong-domain user-facing
              strings; app builds.
@@ -331,7 +331,7 @@ H6. [UNBLOCKED to scaffold; deploy BLOCKED-ON F4] STATUS PAGE
        GitHub Actions + Pages in the org.
   STEPS:
     a. Scaffold an "upptime" configuration (a small YAML) monitoring
-       https://api.trydoppl.com/ready and https://trydoppl.com. Either as a
+       https://api.signindoppl.com/ready and https://trydoppl.com. Either as a
        dedicated org repo or a workflow in the canonical repo.
     b. Document what the founder enables (Pages + a token secret) in F4.
   DEPENDS ON: deploy needs F4.  DONE-WHEN: status page builds + shows the checks.
@@ -380,7 +380,7 @@ H11. [BLOCKED-ON F5 + credentials] DEPLOY / OPS EXECUTION (only if given access)
        and run the launch gate against the live server.
   STEPS: only with explicit founder authorization + credentials. Then:
     deploy/push.sh, set env, restart services, run
-    `python3 scripts/public_launch_gate.py --base-url https://api.trydoppl.com`.
+    `python3 scripts/public_launch_gate.py --base-url https://api.signindoppl.com`.
   DEPENDS ON: F5 + founder-granted SSH.  DONE-WHEN: launch gate automated checks
              green against the live server.
 
@@ -403,7 +403,7 @@ HOW THE TWO TRACKS MEET (the launch, in order)
    Hermes H10 (load test on staging).
 7. Founder: F5 flip to public (autoverify off + SMTP), Hermes H5 (legal values).
 8. Founder: F13 (lawyer sign-off + usability test + manual app sign-in click).
-9. Run `python3 scripts/public_launch_gate.py --base-url https://api.trydoppl.com
+9. Run `python3 scripts/public_launch_gate.py --base-url https://api.signindoppl.com
    --profile public` -> all automated checks green + every MANUAL item confirmed.
 10. LAUNCH. Watch UptimeRobot + the status page; keep the incident runbook handy.
 

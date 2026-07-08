@@ -48,7 +48,7 @@ enum CortexCloudAuthError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidHostedURL:
-            return "That Cortex Cloud URL is not valid. Use something like https://api.trydoppl.com."
+            return "That Cortex Cloud URL is not valid. Use something like https://api.signindoppl.com."
         case .badResponse:
             return "Cortex Cloud returned an unexpected response."
         case .httpStatus(let code, let body):
@@ -110,7 +110,7 @@ extension AppState {
     static var defaultHostedURL: String {
         let configured = (Bundle.main.object(forInfoDictionaryKey: "CortexHostedAPIURL") as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return configured.isEmpty ? "https://api.trydoppl.com" : configured
+        return configured.isEmpty ? "https://api.signindoppl.com" : configured
     }
 
     /// The one and only gate for every new cloud code path.

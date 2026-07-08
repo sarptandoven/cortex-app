@@ -79,7 +79,7 @@ and the notes above stand.
   email/password. Sign in with Apple is presented first and prominently, satisfying Guideline 4.8.
 - **What the account provides (Guideline 5.1.1(v)).** Signing in enables cross-device sync and
   cloud backup of the user's memory — real account-based functionality, which is why an account is
-  required. Sign-in runs over HTTPS to `https://api.trydoppl.com` (Swift URLSession).
+  required. Sign-in runs over HTTPS to `https://api.signindoppl.com` (Swift URLSession).
 - **Demo account for review.** Username: `<APP REVIEW DEMO EMAIL>` · Password:
   `<APP REVIEW DEMO PASSWORD>`. (Fill these in from an active account before submitting; or use
   Sign in with Apple with your own Apple ID.) The demo account has sample memory pre-loaded so the

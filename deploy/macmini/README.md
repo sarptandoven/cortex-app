@@ -45,14 +45,14 @@ Verify: `curl http://127.0.0.1:8766/health` → `{"status":"ok",...}`.
 brew install cloudflared
 cloudflared tunnel login                       # opens browser; pick trydoppl.com
 cloudflared tunnel create cortex               # note the tunnel ID/credentials file
-cloudflared tunnel route dns cortex api.trydoppl.com
+cloudflared tunnel route dns cortex api.signindoppl.com
 ```
 Create `~/.cloudflared/config.yml`:
 ```
 tunnel: <TUNNEL-ID>
 credentials-file: /Users/<you>/.cloudflared/<TUNNEL-ID>.json
 ingress:
-  - hostname: api.trydoppl.com
+  - hostname: api.signindoppl.com
     service: http://127.0.0.1:8766
   - service: http_status:404
 ```
@@ -60,12 +60,12 @@ Run it as a service so it's always up:
 ```
 sudo cloudflared service install     # installs a launchd daemon for the tunnel
 ```
-Now `https://api.trydoppl.com` reaches your mini with real TLS — Cloudflare
+Now `https://api.signindoppl.com` reaches your mini with real TLS — Cloudflare
 terminates HTTPS and the tunnel carries traffic over an outbound connection, so
 no inbound firewall/port changes are needed.
 
-Verify from anywhere: `curl https://api.trydoppl.com/health`, then open
-`https://api.trydoppl.com/account/signup`.
+Verify from anywhere: `curl https://api.signindoppl.com/health`, then open
+`https://api.signindoppl.com/account/signup`.
 
 Quick test without a domain/account: `cloudflared tunnel --url http://127.0.0.1:8766`
 prints a temporary `https://<random>.trycloudflare.com` URL (ephemeral).
@@ -77,7 +77,7 @@ doesn't take the data with it. Easiest: a Backblaze B2 / Cloudflare R2 bucket +
 `deploy/backup.sh` (adapt paths to `~/CortexServer`). Escrow the KEK separately.
 
 ## Step 5 — Point the app + web at it
-Same as any hosted deployment: users open `https://api.trydoppl.com/account/signup`
+Same as any hosted deployment: users open `https://api.signindoppl.com/account/signup`
 in a browser, or in the macOS app enter that URL under Settings → Cortex Cloud
 and sign in. Nothing else changes.
 

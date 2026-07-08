@@ -28,12 +28,12 @@ A1. CREATE THE SERVER (~5 min)  [you: form + card]
 
 A2. POINT DNS (~2 min + propagation)  [you]
     In trydoppl.com DNS add:  A  |  name: api  |  value: <SERVER-IP>
-    Wait until:  dig +short api.trydoppl.com   returns the IP.
+    Wait until:  dig +short api.signindoppl.com   returns the IP.
     OR hand to agent: give a Cloudflare DNS token; the agent adds it.
 
 A3. DEPLOY (~5 min)  [you: one command | OR fully hand to agent]
     From this repo on your Mac:
-      deploy/push.sh root@<SERVER-IP> api.trydoppl.com
+      deploy/push.sh root@<SERVER-IP> api.signindoppl.com
     It hardens the box, gets HTTPS, starts the API + worker, enables nightly
     backups, and PRINTS your admin token + encryption KEK ONCE.
     OR hand to agent: with the Hetzner + Cloudflare tokens the agent runs A1–A3
@@ -47,15 +47,15 @@ A4. SAVE THE SECRETS + ESCROW THE KEK (~5 min)  [you — cannot delegate]
     step you must physically own.
 
 A5. VERIFY (~2 min)  [you or agent]
-    curl https://api.trydoppl.com/health   -> {"status":"ok",...}
-    open  https://api.trydoppl.com/account/signup  in a browser -> the signup page
+    curl https://api.signindoppl.com/health   -> {"status":"ok",...}
+    open  https://api.signindoppl.com/account/signup  in a browser -> the signup page
     Then run the automated gate:
-      python3 scripts/public_launch_gate.py --base-url https://api.trydoppl.com --profile beta
+      python3 scripts/public_launch_gate.py --base-url https://api.signindoppl.com --profile beta
 
 A6. TURN ON GITHUB LOGIN (~5 min, optional but nice)  [you]
     github.com -> Settings -> Developer settings -> OAuth Apps -> New:
       Homepage https://trydoppl.com
-      Callback https://api.trydoppl.com/v1/auth/oauth/github/callback
+      Callback https://api.signindoppl.com/v1/auth/oauth/github/callback
     Put the client id/secret into /etc/cortex/cortex.env
     (CORTEX_OIDC_GITHUB_CLIENT_ID / _SECRET) then:
       ssh root@<IP> systemctl restart cortex-api
@@ -103,7 +103,7 @@ B3. APPLE DEVELOPER ID CERT (~15 min + up to 1–2 wk if switching to an Org
 
 B4. GOOGLE SIGN-IN REVIEW (~1–2 wk)  [you]
     Google Cloud -> APIs & Services -> Credentials -> OAuth client (Web),
-    redirect https://api.trydoppl.com/v1/auth/oauth/google/callback ; configure
+    redirect https://api.signindoppl.com/v1/auth/oauth/google/callback ; configure
     the consent screen with your privacy + terms URLs; SUBMIT for verification.
     (GitHub already covers social login in the meantime.)
 
@@ -138,7 +138,7 @@ C3. PUBLISH THE SITE  [you or agent]
     trydoppl.com. Repoint the download buttons to the notarized Release.
 
 C4. MONITORING + BACKUPS + RESTORE DRILL  [you set up accounts; agent wires]
-    - UptimeRobot monitor on https://api.trydoppl.com/ready -> your phone.
+    - UptimeRobot monitor on https://api.signindoppl.com/ready -> your phone.
     - Offsite backups (set BACKUP_RCLONE_REMOTE) + healthchecks.io ping.
     - DO A RESTORE DRILL (restore a backup to a scratch box, supply the escrowed
       KEK, confirm a credential decrypts). This is a hard launch gate.
@@ -164,7 +164,7 @@ C8. HUMAN GATES  [you — cannot delegate]
       backend (the one path no automated test covers).
 
 C9. RUN THE FINAL GATE  [you or agent]
-      python3 scripts/public_launch_gate.py --base-url https://api.trydoppl.com --profile public
+      python3 scripts/public_launch_gate.py --base-url https://api.signindoppl.com --profile public
     Green automated checks + every MANUAL item confirmed = GO.
 
 ================================================================================
@@ -173,7 +173,7 @@ FASTEST OFFLOAD — one message to hand the machine work to an agent
 Create the 4 scoped tokens in docs/DELEGATION_TOKENS.txt, then send:
   "Tokens: HETZNER=<..>, CLOUDFLARE=<..>, GITHUB_PAT=<..>, POSTMARK=<..>.
    Canonical repo = doppl-tech/cortex-app. Do LANE A (provision cortex-prod,
-   deploy to api.trydoppl.com in BETA, wire DNS + email DNS, publish nothing
+   deploy to api.signindoppl.com in BETA, wire DNS + email DNS, publish nothing
    yet), then run the beta launch gate and report the admin token + KEK to me
    privately. Stop before anything destructive or before PUBLIC mode."
 Then revoke the tokens when it's done. You are left with only: pay, entity,
@@ -182,7 +182,7 @@ Apple cert, OAuth apps, Paddle KYC, KEK escrow, lawyer, usability test.
 ================================================================================
 IF YOU DO NOTHING ELSE TODAY
 ================================================================================
-1. Create the Hetzner VM + the api.trydoppl.com DNS record. (A1, A2)
+1. Create the Hetzner VM + the api.signindoppl.com DNS record. (A1, A2)
 2. Run deploy/push.sh (or hand me the two tokens). (A3)
 3. Escrow the KEK. (A4)
 4. Start the entity + Apple + email clocks. (B1, B3, B5)

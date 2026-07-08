@@ -14,7 +14,7 @@ Upptime. See `status/` for the ready-to-use config.
 
 Only two endpoints, intentionally minimal:
 
-- `https://api.trydoppl.com/ready` — the API readiness probe (200 = serviceable).
+- `https://api.signindoppl.com/ready` — the API readiness probe (200 = serviceable).
 - `https://trydoppl.com` — the public website.
 
 Defined in `status/.upptimerc.yml`.

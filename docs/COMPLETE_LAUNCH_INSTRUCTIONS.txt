@@ -60,7 +60,7 @@ launch date if these haven't been started. None of them block a BETA.
 
 0.1 [YOU][WAIT ~1–3 days] Buy/confirm the domain you'll use for the API and site.
     You already control trydoppl.com. You will use a subdomain, e.g.
-    api.trydoppl.com for the backend. No new purchase needed if you use it.
+    api.signindoppl.com for the backend. No new purchase needed if you use it.
 
 0.2 [YOU][WAIT ~1–2 weeks] Apple: you said you enrolled in the Apple Developer
     Program. Confirm the enrollment is under the ENTITY you will operate as
@@ -132,7 +132,7 @@ PART 1 — DECIDE: BETA vs PUBLIC, AND THE DECISIONS CHECKLIST
 
 1.2 Decisions to lock before you spend money (write the answers down):
     ( ) Brand name shown to users: "Cortex"? "Doppl"? (Site + emails + app use it.)
-    ( ) Domain for the API: api.trydoppl.com (assumed throughout this doc).
+    ( ) Domain for the API: api.signindoppl.com (assumed throughout this doc).
     ( ) Free-only at launch, or paid tier at launch? (Changes whether you need
         Paddle/Stripe on day one.)
     ( ) Which logins: email/password (always), GitHub (easy), Google (needs
@@ -152,14 +152,14 @@ publish static files.
 
 2.2 [YOU] After you have the server's IP (PART 3), add ONE record:
       Type: A
-      Name: api          (this makes api.trydoppl.com)
+      Name: api          (this makes api.signindoppl.com)
       Value: <SERVER-IP>
       TTL: automatic / 300
     If your host gives you an IPv6 address too, also add an AAAA record with the
     same Name "api" and the IPv6 value.
 
 2.3 [WAIT ~5–60 min] DNS propagates. Check with:
-      [TERMINAL] dig +short api.trydoppl.com
+      [TERMINAL] dig +short api.signindoppl.com
     It should print your server IP. HTTPS certificates (PART 4) only work AFTER
     this resolves.
 
@@ -216,13 +216,13 @@ complete deploy kit under deploy/ that does all the server setup for you.
       ls deploy/                        # you should see push.sh, bootstrap.sh, etc.
 
 4.2 [TERMINAL] Run the deploy (replace the IP and domain):
-      deploy/push.sh root@<SERVER-IP> api.trydoppl.com
+      deploy/push.sh root@<SERVER-IP> api.signindoppl.com
 
     What this does, automatically, on the server (you don't type any of it):
       - Uploads the current committed code to /srv/cortex/releases/<timestamp>.
       - Hardens the OS: firewall (only SSH + HTTPS open), disables SSH password
         login, installs automatic security updates + fail2ban.
-      - Installs Caddy, which gets a REAL HTTPS certificate for api.trydoppl.com
+      - Installs Caddy, which gets a REAL HTTPS certificate for api.signindoppl.com
         automatically (this is why DNS in PART 2 must resolve first).
       - Creates a Python virtual environment and installs the backend's
         dependencies.
@@ -237,7 +237,7 @@ complete deploy kit under deploy/ that does all the server setup for you.
 4.3 [YOU] When it finishes it prints a block like:
       Admin token : cxop_....................
       KEK (escrow offline + password manager): <base64>
-      API         : https://api.trydoppl.com
+      API         : https://api.signindoppl.com
     COPY THE ADMIN TOKEN AND THE KEK NOW. You will not be shown them again.
     See PART 6 for exactly what to do with them.
 
@@ -264,12 +264,12 @@ complete deploy kit under deploy/ that does all the server setup for you.
 PART 5 — VERIFY THE BACKEND IS HEALTHY
 ================================================================================
 5.1 [TERMINAL] From your Mac:
-      curl https://api.trydoppl.com/health
+      curl https://api.signindoppl.com/health
     Expect JSON with "status":"ok". If you get a certificate error, wait a minute
     (Caddy is still issuing the cert) and retry.
 
 5.2 [TERMINAL] Readiness (checks the multi-tenant runtime is correctly set up):
-      curl https://api.trydoppl.com/ready
+      curl https://api.signindoppl.com/ready
     Should return a JSON contract with status "ok". If it says "blocked", read
     the "checks" list — each blocked item names exactly what env var to set
     (e.g. rate limit is zero, KEK missing). Fix in /etc/cortex/cortex.env and
@@ -277,15 +277,15 @@ PART 5 — VERIFY THE BACKEND IS HEALTHY
 
 5.3 [TERMINAL] Create your first real account through the API to prove it works
     end to end (in beta autoverify mode this immediately activates):
-      curl -X POST https://api.trydoppl.com/v1/auth/signup \
+      curl -X POST https://api.signindoppl.com/v1/auth/signup \
         -H "Content-Type: application/json" \
         -d '{"email":"you@trydoppl.com","password":"<a-long-password>"}'
-      curl -X POST https://api.trydoppl.com/v1/auth/login \
+      curl -X POST https://api.signindoppl.com/v1/auth/login \
         -H "Content-Type: application/json" \
         -d '{"email":"you@trydoppl.com","password":"<a-long-password>"}'
     The login should return an access_token starting with "cxs_".
 
-5.4 [YOU] Open https://api.trydoppl.com/account/signup in a browser — you should
+5.4 [YOU] Open https://api.signindoppl.com/account/signup in a browser — you should
     see the actual signup page. This is the front door your users use.
 
 ================================================================================
@@ -338,7 +338,7 @@ PART 7 — ACCOUNTS: HOW THEY WORK + GOOGLE/GITHUB LOGIN
        - Application name: Cortex
        - Homepage URL: https://trydoppl.com
        - Authorization callback URL:
-           https://api.trydoppl.com/v1/auth/oauth/github/callback
+           https://api.signindoppl.com/v1/auth/oauth/github/callback
        - Register, then "Generate a new client secret".
     b. [TERMINAL] On the server, edit /etc/cortex/cortex.env and set:
            CORTEX_OIDC_GITHUB_CLIENT_ID=<the client id>
@@ -350,7 +350,7 @@ PART 7 — ACCOUNTS: HOW THEY WORK + GOOGLE/GITHUB LOGIN
     a. [YOU] Google Cloud Console → APIs & Services → Credentials → Create OAuth
        client ID → Web application.
        - Authorized redirect URI:
-           https://api.trydoppl.com/v1/auth/oauth/google/callback
+           https://api.signindoppl.com/v1/auth/oauth/google/callback
     b. [YOU] Configure the OAuth consent screen; add your privacy policy + terms
        URLs (PART 14); submit for verification. Until it's verified you can still
        test with up to 100 users.
@@ -502,7 +502,7 @@ PART 11 — CONNECTING THE APP TO YOUR HOSTED BACKEND (what users do)
      - CORTEX CLOUD (your hosted backend): they sign in with an account.
 
 11.2 To use your hosted backend, in the app's Settings → "Cortex Cloud" section:
-     - Enter the hosted URL: https://api.trydoppl.com
+     - Enter the hosted URL: https://api.signindoppl.com
      - Sign in with email+password, or "Sign in with browser" (Google/GitHub).
      - The app stores the session securely in the Mac Keychain and refreshes it
        automatically. There's a "Create an account" link that opens your signup
@@ -535,7 +535,7 @@ PART 12 — BACKUPS, MONITORING, ALERTING
      - Also keep Hetzner's VM snapshot backups (the checkbox from PART 3.2) on.
 
 12.3 [YOU] Uptime + alerts so YOU find out before users:
-     - UptimeRobot (free): monitor https://api.trydoppl.com/ready every 5 min,
+     - UptimeRobot (free): monitor https://api.signindoppl.com/ready every 5 min,
        alert to your phone/email on failure.
      - healthchecks.io (free): create a check; set BACKUP_PING_URL in the env so
        the nightly backup "pings" it — you get alerted if a backup ever misses.
@@ -695,7 +695,7 @@ Do not open PUBLIC signups until every box is checked. (Beta needs only the
 first group.)
 
 INFRASTRUCTURE & DATA SAFETY
-  ( ) https://api.trydoppl.com/health and /ready both green.
+  ( ) https://api.signindoppl.com/health and /ready both green.
   ( ) Rate limit and quota are non-zero (in /ready checks).
   ( ) Nightly backup ran at least 7 nights; offsite copy confirmed.
   ( ) Restore drill done in the last 30 days (data recovered + credential
@@ -804,7 +804,7 @@ Sharded-SQLite tier — running everything on one box (the sanctioned setup for 
 APPENDIX A — EVERY ENVIRONMENT VARIABLE (in /etc/cortex/cortex.env)
 ================================================================================
 Identity / URLs
-  CORTEX_PUBLIC_BASE_URL   Public HTTPS URL of the API (https://api.trydoppl.com).
+  CORTEX_PUBLIC_BASE_URL   Public HTTPS URL of the API (https://api.signindoppl.com).
   CORTEX_PUBLIC_APP_URL    URL used in email links / OAuth redirects (usually same).
 Operator
   CORTEX_API_KEY           Your operator admin token (cxop_...). Control plane only.
@@ -845,7 +845,7 @@ Backups (optional offsite)
 APPENDIX B — COMMON FAILURES AND FIXES
 ================================================================================
 "curl https://api... certificate error" → Caddy is still issuing the cert, or DNS
-   isn't resolving yet. Wait a minute; confirm `dig +short api.trydoppl.com`
+   isn't resolving yet. Wait a minute; confirm `dig +short api.signindoppl.com`
    returns your IP; check `journalctl -u caddy`.
 "/ready says blocked" → read the "checks" array; each blocked check's "detail"
    says exactly which env var to set. Common: rate limit/quota is 0, or KEK not
@@ -856,7 +856,7 @@ APPENDIX B — COMMON FAILURES AND FIXES
 "App won't open on a tester's Mac" → not notarized: right-click → Open, or System
    Settings → Privacy & Security → Open Anyway. Fix permanently by notarizing.
 "App can't reach hosted backend" → the URL must be https and reachable; check the
-   endpoint field is exactly https://api.trydoppl.com and /health works in a
+   endpoint field is exactly https://api.signindoppl.com and /health works in a
    browser.
 "Worker not processing" → `systemctl status cortex-worker`; restart it; check
    disk isn't full (`df -h`).
@@ -865,10 +865,10 @@ APPENDIX B — COMMON FAILURES AND FIXES
 ================================================================================
 APPENDIX C — COMMAND CHEAT-SHEET
 ================================================================================
-Deploy (first time):   deploy/push.sh root@<IP> api.trydoppl.com
+Deploy (first time):   deploy/push.sh root@<IP> api.signindoppl.com
 Deploy (update):       git pull && deploy/push.sh root@<IP> --update
-Health:                curl https://api.trydoppl.com/health
-Ready:                 curl https://api.trydoppl.com/ready
+Health:                curl https://api.signindoppl.com/health
+Ready:                 curl https://api.signindoppl.com/ready
 Logs (API):            ssh root@<IP> journalctl -u cortex-api -n 200 --no-pager
 Logs (worker):         ssh root@<IP> journalctl -u cortex-worker -n 200 --no-pager
 Edit settings:         ssh root@<IP> nano /etc/cortex/cortex.env
@@ -880,13 +880,13 @@ Load test (staging):   python3 scripts/load_test_10k.py --users 10000 \
                           --duration 300 --concurrency 64 --base-url https://staging.trydoppl.com
 
 Provision a user as operator (admin token):
-  curl -X POST https://api.trydoppl.com/v1/admin/users \
+  curl -X POST https://api.signindoppl.com/v1/admin/users \
     -H "Authorization: Bearer <cxop_ADMIN_TOKEN>" \
     -H "Content-Type: application/json" \
     -d '{"user_id":"<id>","plan":"free"}'
 
 Encryption backfill (then set CORTEX_REQUIRE_ENCRYPTED_CREDENTIALS=1):
-  curl -X POST https://api.trydoppl.com/v1/admin/encryption/backfill \
+  curl -X POST https://api.signindoppl.com/v1/admin/encryption/backfill \
     -H "Authorization: Bearer <cxop_ADMIN_TOKEN>"
 
 ================================================================================
