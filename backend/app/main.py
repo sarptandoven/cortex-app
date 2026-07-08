@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlencode
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from .accounts import iso_utc, utc_now
@@ -40,7 +40,12 @@ from .oidc_registry import OidcError, OidcProviderRegistry
 from .ratelimit import TokenBucketRateLimiter
 from .sharding import StoreRegistry
 from .storage import BACKEND_VERSION
-from .webauth import register_web_account_routes
+from .webauth import (
+    FAVICON_SVG,
+    PUBLIC_PAGE_CSP,
+    register_web_account_routes,
+    render_public_page,
+)
 
 
 settings = load_settings()
@@ -430,7 +435,7 @@ def _capture_page(message: str = "", status: str = "ready", token: str = "", tit
     <!doctype html>
     <html>
       <head>
-        <title>Cortex Capture</title>
+        <title>Doppl Capture</title>
         <style>
           body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 32px; line-height: 1.45; max-width: 760px; color: #1f2328; }}
           label {{ display: block; font-weight: 600; margin-top: 14px; }}
@@ -445,12 +450,12 @@ def _capture_page(message: str = "", status: str = "ready", token: str = "", tit
       </head>
       <body>
         <p class="status {'ok' if status == 'saved' else 'err' if status == 'error' else ''}">{escaped_status}</p>
-        <h1>Save to Cortex</h1>
-        <p class="hint">Capture selected text, page context, links, or notes into your local Cortex memory.</p>
+        <h1>Save to Doppl</h1>
+        <p class="hint">Capture selected text, page context, links, or notes into your local Doppl memory.</p>
         {f"<p><strong>{escaped_message}</strong></p>" if escaped_message else ""}
         <form method="post" action="/capture">
           <label>Token</label>
-          <input name="token" value="" autocomplete="off" placeholder="Paste Cortex token" />
+          <input name="token" value="" autocomplete="off" placeholder="Paste your Doppl token" />
           <label>Title</label>
           <input name="title" value="{escaped_title}" />
           <label>Source URL</label>
@@ -458,7 +463,7 @@ def _capture_page(message: str = "", status: str = "ready", token: str = "", tit
           <label>Content</label>
           <textarea name="content">{escaped_content}</textarea>
           <input type="hidden" name="source" value="browser-capture" />
-          <button type="submit">Save to Cortex</button>
+          <button type="submit">Save to Doppl</button>
         </form>
       </body>
     </html>
@@ -480,7 +485,7 @@ def _auth_query_token(token: str | None, *, required_scope: str = "write") -> st
     # (no key, local shard, scoped tokens off) may fall through to the default user, matching
     # every other auth path which never grants access on a missing/invalid token.
     if settings.api_key or settings.require_scoped_api_tokens or settings.shard_mode != "local":
-        raise HTTPException(status_code=401, detail="Missing or invalid Cortex capture token")
+        raise HTTPException(status_code=401, detail="Missing or invalid Doppl capture token")
     return settings.default_user_id
 
 
@@ -503,27 +508,177 @@ def _save_capture_from_values(content: str, source: str, title: str | None, sour
 
 
 @app.get("/", response_class=HTMLResponse)
-def root() -> str:
-    return """
-    <!doctype html>
-    <html>
-      <head>
-        <title>Cortex Local API</title>
-        <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 40px; line-height: 1.45; max-width: 760px; }
-          code { background: #f3f3f3; padding: 2px 5px; border-radius: 4px; }
-          .status { display: inline-block; padding: 4px 8px; border-radius: 999px; background: #e8f7ed; color: #116329; font-weight: 600; }
-        </style>
-      </head>
-      <body>
-        <p class="status">Cortex backend is running</p>
-        <h1>Cortex Local API</h1>
-        <p>This local service stores and retrieves shared AI memory for the macOS app and MCP-compatible tools.</p>
-        <p>Useful checks: <code>/health</code>, <code>/ready</code>, <code>/.well-known/cortex.json</code>.</p>
-        <p>Authenticated API endpoints require the Cortex token configured in the app.</p>
-      </body>
-    </html>
-    """
+def root() -> Response:
+    """Branded landing at the domain root. Account CTAs render only when auth is enabled (the hosted
+    plane); a plain local backend just shows the download + developer health hints."""
+    account_cta = (
+        '      <div class="cta">\n'
+        '        <a class="button primary" href="/account/login">Sign in</a>\n'
+        '        <a class="button secondary" href="/account/signup" style="margin-left:10px">Create an account</a>\n'
+        "      </div>\n"
+        if settings.auth_enabled
+        else ""
+    )
+    body = (
+        "    <h1>Your memory, everywhere you think.</h1>\n"
+        '    <p class="lede">Doppl is your private, local-first AI memory — it remembers what you '
+        "learn and decide, and gives it back, cited, to the tools you already use.</p>\n"
+        f"{account_cta}"
+        '    <div class="cta"><a class="button secondary" href="/download" '
+        'style="width:auto;padding:12px 22px">Download the Mac app</a></div>\n'
+        '    <div class="foot-links">\n'
+        '      <a href="/terms">Terms</a><a href="/privacy">Privacy</a>\n'
+        '      <p class="muted" style="margin-top:12px">Service health: '
+        "<code>/health</code> · <code>/ready</code> · <code>/.well-known/cortex.json</code>. "
+        "Authenticated API access uses a token minted from your account.</p>\n"
+        "    </div>\n"
+    )
+    return _public_html(render_public_page("Doppl — your private AI memory", body))
+
+
+def _public_html(document: str) -> HTMLResponse:
+    """A public content page (landing/terms/privacy/download) with its own route-scoped CSP so the
+    inline <style> renders (Caddy's set-default CSP defers to this)."""
+    response = HTMLResponse(content=document)
+    response.headers["Content-Security-Policy"] = PUBLIC_PAGE_CSP
+    response.headers["Referrer-Policy"] = "same-origin"
+    return response
+
+
+def _capture_html(body: str, status_code: int = 200) -> HTMLResponse:
+    """The /capture quick-capture page: inline <style> + a native form, no JS. Carries the same
+    route-scoped CSP as the public pages so it renders styled instead of raw under Caddy's strict
+    default CSP."""
+    response = HTMLResponse(content=body, status_code=status_code)
+    response.headers["Content-Security-Policy"] = PUBLIC_PAGE_CSP
+    response.headers["Referrer-Policy"] = "same-origin"
+    return response
+
+
+@app.get("/favicon.svg")
+def favicon_svg() -> Response:
+    """The Doppl brand mark, so every page's <link rel=icon> resolves instead of 404ing."""
+    return Response(
+        content=FAVICON_SVG,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+def _public_footer(links: list[tuple[str, str]]) -> str:
+    """A foot-links row for the public pages. Account links (/account/*) are dropped when auth is
+    disabled (a plain local backend has no /account routes), so no footer link ever dead-ends."""
+    parts = [
+        f'<a href="{href}">{html.escape(label)}</a>'
+        for href, label in links
+        if settings.auth_enabled or not href.startswith("/account/")
+    ]
+    return '    <div class="foot-links">' + "".join(parts) + "</div>\n"
+
+
+@app.get("/download", response_class=HTMLResponse)
+def download_page() -> Response:
+    """Where to get the Mac app. Points at the live product site (trydoppl.com), which hosts the
+    signed DMG + update feed (see docs/DISTRIBUTION.md)."""
+    body = (
+        "    <h1>Download Doppl for Mac</h1>\n"
+        '    <p class="lede">Doppl runs as a native macOS app with a local vault. Download it, open '
+        "it, and sign in with your account to sync.</p>\n"
+        '    <div class="cta">\n'
+        '      <a class="button primary" href="https://trydoppl.com" '
+        'style="width:auto;padding:12px 22px">Get Doppl for Mac</a>\n'
+        "    </div>\n"
+        "    <h2>Install</h2>\n"
+        "    <ul>\n"
+        "      <li>Download the <code>.dmg</code> from the site.</li>\n"
+        "      <li>Open it and drag Doppl to Applications.</li>\n"
+        "      <li>Launch Doppl and sign in — your memory stays on your Mac.</li>\n"
+        "    </ul>\n"
+        + _public_footer([("/", "Home"), ("/account/login", "Sign in"), ("/terms", "Terms"), ("/privacy", "Privacy")])
+    )
+    return _public_html(render_public_page("Download · Doppl", body))
+
+
+@app.get("/terms", response_class=HTMLResponse)
+def terms_page() -> Response:
+    body = _TERMS_BODY + _public_footer(
+        [("/", "Home"), ("/privacy", "Privacy"), ("/account/signup", "Create an account")]
+    )
+    return _public_html(render_public_page("Terms of Service · Doppl", body))
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy_page() -> Response:
+    body = _PRIVACY_BODY + _public_footer(
+        [("/", "Home"), ("/terms", "Terms"), ("/account/signup", "Create an account")]
+    )
+    return _public_html(render_public_page("Privacy Policy · Doppl", body))
+
+
+# Plain-language Terms + Privacy that reflect how Doppl ACTUALLY works (local-first storage, per-user
+# encryption, crypto-shred deletion, no data sale). A solid, honest baseline the founder should have
+# reviewed by counsel before broad launch; far better than the 404 the signup page linked to.
+_TERMS_BODY = (
+    "    <h1>Terms of Service</h1>\n"
+    '    <p class="lede">These terms cover your use of Doppl (the “Service”), a personal AI-memory '
+    "app and the account that syncs it. By creating an account you agree to them.</p>\n"
+    "    <h2>Eligibility</h2>\n"
+    "    <p>You must be at least 16 years old to use Doppl. By signing up you confirm that you are.</p>\n"
+    "    <h2>Your account</h2>\n"
+    "    <p>You are responsible for keeping your credentials secure and for activity under your "
+    "account. Tell us promptly if you suspect unauthorized use. You may delete your account at any "
+    "time from your account page; deletion is permanent.</p>\n"
+    "    <h2>Your content</h2>\n"
+    "    <p>The notes, captures, and memories you store are <strong>yours</strong>. You grant Doppl "
+    "only the limited permission needed to store, index, and sync that content to provide the "
+    "Service to you. We do not sell your content and we do not use it to train models for others.</p>\n"
+    "    <h2>Acceptable use</h2>\n"
+    "    <ul>\n"
+    "      <li>Don’t use Doppl to break the law or infringe others’ rights.</li>\n"
+    "      <li>Don’t attempt to disrupt, overload, or reverse-engineer the hosted service.</li>\n"
+    "      <li>Don’t store content you have no right to store.</li>\n"
+    "    </ul>\n"
+    "    <h2>Service changes &amp; availability</h2>\n"
+    "    <p>Doppl is offered on an “as is” and “as available” basis, without warranties of any kind. "
+    "During beta, features may change and availability isn’t guaranteed. To the extent permitted by "
+    "law, Doppl isn’t liable for indirect or consequential damages.</p>\n"
+    "    <h2>Termination</h2>\n"
+    "    <p>You can stop using Doppl and delete your account any time. We may suspend accounts that "
+    "violate these terms.</p>\n"
+    "    <h2>Contact</h2>\n"
+    '    <p>Questions about these terms? Email <a href="mailto:support@signindoppl.com">'
+    "support@signindoppl.com</a>.</p>\n"
+)
+
+_PRIVACY_BODY = (
+    "    <h1>Privacy Policy</h1>\n"
+    '    <p class="lede">Doppl is built local-first: your memory lives on your device, and your '
+    "account exists to identify you and sync your own data. Here’s exactly what that means.</p>\n"
+    "    <h2>What we collect</h2>\n"
+    "    <ul>\n"
+    "      <li><strong>Account details</strong> — your email address and (optionally) your name, to "
+    "create and secure your account.</li>\n"
+    "      <li><strong>Sign-in metadata</strong> — session and device info needed to keep you signed "
+    "in and to show you your active sessions.</li>\n"
+    "      <li><strong>Your memory content</strong> — the notes and captures you choose to save. "
+    "This is stored for you and synced to your devices.</li>\n"
+    "    </ul>\n"
+    "    <h2>How your content is protected</h2>\n"
+    "    <p>Your memory is stored with per-user isolation and encrypted at rest with a key unique to "
+    "your account. We don’t sell your data, we don’t share it with advertisers, and we don’t use it "
+    "to train models for other people.</p>\n"
+    "    <h2>Deletion &amp; your control</h2>\n"
+    "    <p>You can delete your account from your account page at any time. Deletion "
+    "<strong>crypto-shreds</strong> your encryption keys — making your stored content permanently "
+    "unreadable — and removes your data. You can also sign out of individual sessions.</p>\n"
+    "    <h2>Third parties</h2>\n"
+    "    <p>If you sign in with Google, GitHub, or Apple, we receive only the basic profile "
+    "(identifier and email) needed to create your account. Optional payment processing, if you "
+    "subscribe, is handled by a third-party processor — we never store your card details.</p>\n"
+    "    <h2>Contact</h2>\n"
+    '    <p>Privacy questions or a data request? Email <a href="mailto:support@signindoppl.com">'
+    "support@signindoppl.com</a>.</p>\n"
+)
 
 
 @app.get("/health")
@@ -574,7 +729,7 @@ def capture_page(
         try:
             user_id = _auth_query_token(token)
             response = _save_capture_from_values(payload, source, title, url, user_id)
-            return HTMLResponse(
+            return _capture_html(
                 _capture_page(
                     message=f"Saved {len(response.get('memories', []))} memories.",
                     status="saved",
@@ -584,11 +739,11 @@ def capture_page(
                 )
             )
         except HTTPException as exc:
-            return HTMLResponse(
+            return _capture_html(
                 _capture_page(message=str(exc.detail), status="error", token=token, title=title, url=url, content=payload),
                 status_code=exc.status_code,
             )
-    return HTMLResponse(_capture_page(token=token, title=title, url=url, content=payload))
+    return _capture_html(_capture_page(token=token, title=title, url=url, content=payload))
 
 
 @app.post("/capture", response_class=HTMLResponse)
@@ -604,7 +759,7 @@ async def capture_form(request: Request) -> HTMLResponse:
     try:
         user_id = _auth_query_token(token)
         response = _save_capture_from_values(content, source, title, url, user_id)
-        return HTMLResponse(
+        return _capture_html(
             _capture_page(
                 message=f"Saved {len(response.get('memories', []))} memories.",
                 status="saved",
@@ -614,7 +769,7 @@ async def capture_form(request: Request) -> HTMLResponse:
             )
         )
     except HTTPException as exc:
-        return HTMLResponse(
+        return _capture_html(
             _capture_page(message=str(exc.detail), status="error", token=token, title=title, url=url, content=content),
             status_code=exc.status_code,
         )
@@ -2871,11 +3026,37 @@ def admin_accounts_endpoint(
     )
 
 
+# Route-scoped CSP for the admin dashboard: the JS lives at /admin/app.js (script-src 'self', no
+# inline script or on* handlers), inline <style>/style= is allowed, and fetch() to the same-origin
+# /v1/admin/* is permitted. Caddy's set-default CSP defers to this, so the page renders + works.
+_ADMIN_CSP = (
+    "default-src 'none'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "connect-src 'self'; "
+    "img-src 'self' data:; "
+    "base-uri 'none'; "
+    "form-action 'self'"
+)
+
+
 @app.get("/admin", response_class=HTMLResponse)
-def admin_dashboard() -> HTMLResponse:
+def admin_dashboard() -> Response:
     """Self-contained admin dashboard. It prompts for the admin key (kept only in this browser's
     sessionStorage) and calls the authed /v1/admin/* JSON endpoints — no key is embedded here."""
-    return HTMLResponse(content=_ADMIN_DASHBOARD_HTML)
+    response = HTMLResponse(content=_ADMIN_DASHBOARD_HTML)
+    response.headers["Content-Security-Policy"] = _ADMIN_CSP
+    response.headers["Referrer-Policy"] = "same-origin"
+    return response
+
+
+@app.get("/admin/app.js")
+def admin_app_js() -> Response:
+    """The admin dashboard's JS, external so /admin can keep script-src 'self' (no inline script)."""
+    response = PlainTextResponse(content=_ADMIN_APP_JS, media_type="application/javascript")
+    response.headers["Content-Security-Policy"] = _ADMIN_CSP
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 _ADMIN_DASHBOARD_HTML = """<!doctype html>
@@ -2909,13 +3090,13 @@ _ADMIN_DASHBOARD_HTML = """<!doctype html>
   <h2 style="margin-top:0">Doppl Admin</h2>
   <p style="color:var(--muted)">Enter your admin key to view users and metrics.</p>
   <input id="key" type="password" placeholder="Operator API key (CORTEX_API_KEY)" autocomplete="off"/>
-  <div style="margin-top:12px"><button onclick="enter()">Sign in</button></div>
+  <div style="margin-top:12px"><button id="enter-btn">Sign in</button></div>
   <div id="gateErr" class="err"></div>
 </div>
 <div id="app" style="display:none">
   <header><h1>Doppl - Admin</h1><div style="flex:1"></div>
-    <div class="toolbar"><input id="q" placeholder="Search email/name" style="width:220px" oninput="debouncedUsers()"/>
-    <button class="ghost" onclick="refresh()">Refresh</button><button class="ghost" onclick="logout()">Lock</button></div>
+    <div class="toolbar"><input id="q" placeholder="Search email/name" style="width:220px"/>
+    <button class="ghost" id="refresh-btn">Refresh</button><button class="ghost" id="logout-btn">Lock</button></div>
   </header>
   <main>
     <div id="kpis" class="kpis"></div>
@@ -2927,7 +3108,12 @@ _ADMIN_DASHBOARD_HTML = """<!doctype html>
     <div id="err" class="err"></div>
   </main>
 </div>
-<script>
+<script src="/admin/app.js"></script></body></html>"""
+
+
+# Externalized so the /admin CSP can stay at script-src 'self' (no inline script, no on* handlers) —
+# the operator dashboard renders account emails/names, so keeping the CSP net intact matters.
+_ADMIN_APP_JS = """'use strict';
 const K="doppl_admin_key";
 function key(){return sessionStorage.getItem(K)||""}
 async function api(path){
@@ -2975,8 +3161,14 @@ async function loadUsers(){
 }
 let t;function debouncedUsers(){clearTimeout(t);t=setTimeout(loadUsers,300)}
 function refresh(){show()}
+// Wire events here (no inline on* handlers) so the CSP stays at script-src 'self'.
+document.getElementById("enter-btn").addEventListener("click",enter);
+document.getElementById("refresh-btn").addEventListener("click",refresh);
+document.getElementById("logout-btn").addEventListener("click",logout);
+document.getElementById("q").addEventListener("input",debouncedUsers);
+document.getElementById("key").addEventListener("keydown",function(e){if(e.key==="Enter")enter();});
 if(key())show();
-</script></body></html>"""
+"""
 
 
 @app.delete("/v1/auth/oauth/{provider}/unlink")

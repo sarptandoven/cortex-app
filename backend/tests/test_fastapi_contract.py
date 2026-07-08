@@ -85,7 +85,7 @@ class FastAPIContractTests(unittest.TestCase):
         response = self.client.get("/capture", params={"token": "wrong-token", "content": "Remember this."})
 
         self.assertEqual(response.status_code, 401)
-        self.assertIn("Missing or invalid Cortex capture token", response.text)
+        self.assertIn("Missing or invalid Doppl capture token", response.text)
         self.assertNotIn("wrong-token", response.text)
 
     def test_capture_post_invalid_token_returns_unauthorized_page(self) -> None:
@@ -96,7 +96,7 @@ class FastAPIContractTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 401)
-        self.assertIn("Missing or invalid Cortex capture token", response.text)
+        self.assertIn("Missing or invalid Doppl capture token", response.text)
         self.assertNotIn("wrong-token", response.text)
 
     def test_capture_post_empty_content_returns_validation_status(self) -> None:

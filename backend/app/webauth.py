@@ -253,6 +253,16 @@ main.oauth .note { text-align: left; }
 main.oauth .actions { margin-top: 20px; }
 @keyframes cortex-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 0s; } }
+/* Public content pages (landing / terms / privacy / download): a comfortable reading column. */
+main.doc { max-width: 720px; }
+.doc .lede { color: var(--muted); font-size: 17px; margin: 0 0 20px; }
+.doc h2 { font-size: 19px; margin: 30px 0 10px; }
+.doc ul { margin: 0 0 14px; padding-left: 22px; }
+.doc .muted { color: var(--faint); font-size: 13px; }
+.doc .cta { margin: 24px 0 8px; }
+.doc .cta .button { display: inline-flex; width: auto; padding: 12px 22px; }
+.doc .foot-links { border-top: 1px solid var(--line); margin-top: 32px; padding-top: 16px; }
+.doc .foot-links a { font-weight: 650; margin-right: 18px; }
 """.strip()
 
 
@@ -290,6 +300,56 @@ def _html_response(document: str, *, csp: str = _ACCOUNT_CSP) -> HTMLResponse:
     response.headers["Content-Security-Policy"] = csp
     response.headers["Referrer-Policy"] = "same-origin"
     return response
+
+
+# CSP for the PUBLIC content pages (landing / terms / privacy / download). They are static — no
+# fetch(), no JS at all — so this is stricter than _ACCOUNT_CSP: only an inline <style>, images and
+# fonts from self. Served by main.py for pages that must exist WITHOUT an account (a user reads the
+# terms before signing up), so they can't live behind the auth-gated /account routes.
+PUBLIC_PAGE_CSP = (
+    "default-src 'none'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "font-src 'self'; "
+    "base-uri 'none'; "
+    "form-action 'self'"
+)
+
+# The brand mark as an inline SVG (wax-red rounded square with a soft inner highlight) — matches the
+# .brand-mark chip in the header. Served at /favicon.svg so every page's <link rel=icon> resolves.
+FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Doppl">'
+    '<rect width="32" height="32" rx="8" fill="#8c3a2b"/>'
+    '<rect x="1" y="1" width="30" height="30" rx="7" fill="none" stroke="#ffffff" '
+    'stroke-opacity="0.35" stroke-width="1"/>'
+    '<circle cx="16" cy="16" r="6.5" fill="#f7f4ed"/>'
+    "</svg>"
+)
+
+
+def render_public_page(title: str, body_html: str) -> str:
+    """A full HTML document for a PUBLIC content page (no JS), in the same Archive shell + palette
+    as the account front-door. ``title`` is baked by us (escaped); ``body_html`` is trusted markup
+    composed by the caller (no user input). Used by main.py for /, /terms, /privacy, /download."""
+    safe_title = html.escape(title)
+    return (
+        "<!doctype html>\n"
+        '<html lang="en">\n'
+        "<head>\n"
+        '  <meta charset="utf-8">\n'
+        '  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        f"  <title>{safe_title}</title>\n"
+        '  <link rel="icon" href="/favicon.svg" type="image/svg+xml">\n'
+        f"  <style>{_SHARED_CSS}</style>\n"
+        "</head>\n"
+        "<body>\n"
+        '  <header class="account-header">\n'
+        '    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>Doppl</span></a>\n'
+        "  </header>\n"
+        f'  <main class="doc">\n{body_html}\n  </main>\n'
+        "</body>\n"
+        "</html>\n"
+    )
 
 
 # --------------------------------------------------------------- page markup
