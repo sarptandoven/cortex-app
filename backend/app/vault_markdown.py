@@ -64,6 +64,12 @@ _GENERATED_MARKER = "<!-- cortex:generated-links -->"
 # frontmatter or body. Any other underscore-prefixed helper key is likewise kept out of the note.
 _GENERATED_KEYS = ("_link_names", "_backlinks")
 
+# Frontmatter keys that render PROJECTS from a real field but never stores. They are emitted for
+# Obsidian's benefit and STRIPPED on parse, so the durable record round-trips byte-identically (the
+# source field — e.g. `topics` for `tags` — stays the single source of truth). Adding a key here
+# means: emit it in render from its source, and drop it in parse.
+_PROJECTED_ONLY_FIELDS = ("tags",)
+
 
 def _wikilink(name: str) -> str:
     """Render an Obsidian [[target]] link, sanitizing the characters that would break the link
@@ -73,6 +79,16 @@ def _wikilink(name: str) -> str:
         text = text.replace(bad, " ")
     text = " ".join(text.split())
     return f"[[{text}]]" if text else ""
+
+
+def _obsidian_tag(value: str) -> str:
+    """A tag-safe slug for an Obsidian frontmatter tag. Obsidian tags allow [A-Za-z0-9_/-] (and
+    unicode letters) but NOT spaces or most punctuation; a bad char truncates/breaks the tag. Map
+    runs of disallowed chars to '-', collapse/strip, and drop a purely-numeric tag (Obsidian ignores
+    those). Empty -> "" (caller skips)."""
+    raw = "".join(ch if (ch.isalnum() or ch in "_-/") else "-" for ch in str(value or ""))
+    slug = "-".join(part for part in raw.split("-") if part)
+    return "" if (not slug or slug.isdigit()) else slug
 
 
 def _dump_value(value: Any) -> str:
@@ -119,6 +135,20 @@ def render_memory_markdown(record: dict[str, Any]) -> str:
         if field in record and record[field] is not None:
             lines.append(f"{field}: {_dump_value(record[field])}")
             emitted.add(field)
+    # Obsidian-native tags projected from topics so the tag pane / #tag search light up. Computed at
+    # render time and NEVER stored (parse strips it, see _PROJECTED_ONLY_FIELDS), so the JSON
+    # source-of-truth and render->parse->render idempotency are unchanged. `topics` stays canonical.
+    if "tags" not in emitted:
+        tag_slugs: list[str] = []
+        tseen: set[str] = set()
+        for topic in (record.get("topics") or []):
+            slug = _obsidian_tag(topic)
+            if slug and slug.lower() not in tseen:
+                tseen.add(slug.lower())
+                tag_slugs.append(slug)
+        if tag_slugs:
+            lines.append(f"tags: {_dump_value(tag_slugs)}")
+            emitted.add("tags")
     # Preserve any additional structured fields (except the body) so nothing is silently lost.
     # Underscore-prefixed keys (e.g. _link_names/_backlinks) are internal render inputs, never
     # frontmatter — skipping them here is what stops the generated-link data leaking into YAML.
@@ -246,7 +276,9 @@ def parse_memory_markdown(text: str) -> dict[str, Any]:
                     continue
                 key, _, rest = frontmatter_line.partition(":")
                 key = key.strip()
-                if key:
+                # Projected-only fields (e.g. `tags`, emitted from `topics`) are render output, never
+                # stored — dropping them here keeps the durable record byte-identical to today.
+                if key and key not in _PROJECTED_ONLY_FIELDS:
                     record[key] = _parse_value(rest)
             body_start = closing + 1
     body_lines = _strip_generated_sections(lines[body_start:])
@@ -295,7 +327,14 @@ def render_entity_moc_markdown(page: dict[str, Any]) -> str:
     lines.append(f"# {page.get('name') or page.get('entity_id') or 'Entity'}")
     lines.append("")
 
-    aliases = [str(a).strip() for a in (page.get("aliases") or []) if str(a).strip()]
+    # Frontmatter `aliases` now includes the display name (so Obsidian [[Name]] links resolve to
+    # this page); exclude the name from the human "Also known as" line so it reads naturally.
+    display_lc = str(page.get("name") or "").strip().lower()
+    aliases = [
+        str(a).strip()
+        for a in (page.get("aliases") or [])
+        if str(a).strip() and str(a).strip().lower() != display_lc
+    ]
     if aliases:
         lines.append("**Also known as:** " + ", ".join(aliases))
         lines.append("")

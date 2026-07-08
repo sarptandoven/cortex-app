@@ -11314,12 +11314,26 @@ class CortexStore:
             community_peers = [
                 {"wikilink": _stem(p), "name": (nodes.get(p) or {}).get("label") or p} for p in peer_ids
             ]
+            # Obsidian resolves [[X]] against a note's frontmatter `aliases`; the DISPLAY NAME must be
+            # an alias so the [[Name]] links Cortex writes into memory notes actually open this MOC
+            # page (the file basename is <slug>--<hash>, which never matches [[Name]]). Name first,
+            # then aliases + the entity_id (so a raw-id fallback link resolves too), deduped
+            # case-insensitively and the tail sorted so the page stays byte-deterministic (no churn).
+            display_name = str(node.get("label") or node_id).strip()
+            alias_pool = [str(a).strip() for a in (aliases_by_id.get(node_id) or []) if str(a).strip()]
+            alias_pool.append(str(node_id))
+            seen_alias_lc = {display_name.lower()}
+            ordered_aliases = [display_name] if display_name else []
+            for alias in sorted(alias_pool, key=lambda s: s.lower()):
+                if alias.lower() not in seen_alias_lc:
+                    seen_alias_lc.add(alias.lower())
+                    ordered_aliases.append(alias)
             pages.append({
                 "cortex_generated": True,
                 "entity_id": node_id,
                 "kind": node.get("kind") or "topic",
-                "name": node.get("label") or node_id,
-                "aliases": aliases_by_id.get(node_id, []),
+                "name": display_name or node_id,
+                "aliases": ordered_aliases,
                 "centrality": round(float(centrality.get(node_id, 0.0)), 6),
                 "community": community.get(node_id),
                 "supporting_count": int(node.get("weight") or 0),

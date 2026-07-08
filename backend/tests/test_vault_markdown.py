@@ -11,6 +11,7 @@ from backend.app.vault_markdown import (
     atomic_write_text,
     parse_memory_markdown,
     render_memory_markdown,
+    _obsidian_tag,
     _wikilink,
 )
 
@@ -226,6 +227,34 @@ class MarkdownCodecTests(unittest.TestCase):
         rec["_link_names"] = {"ent_cortex": "Cortex"}
         parsed = parse_memory_markdown(render_memory_markdown(rec))
         self.assertEqual(parsed["content"], rec["content"])
+
+    # ---- N1: Obsidian-native tags projected from topics (render-only, lossless) ----
+
+    def test_topics_emit_obsidian_tags(self) -> None:
+        text = render_memory_markdown(SAMPLE_MEMORY)
+        frontmatter = text.split("---", 2)[1]
+        self.assertIn('tags: ["database", "launch", "scaling"]', frontmatter)
+
+    def test_tag_slug_sanitizes_spaces_and_punctuation(self) -> None:
+        self.assertEqual(_obsidian_tag("Machine Learning"), "Machine-Learning")
+        self.assertNotIn(" ", _obsidian_tag("Machine Learning"))
+        self.assertEqual(_obsidian_tag("C++"), "C")           # trailing punctuation collapsed away
+        self.assertEqual(_obsidian_tag("2026"), "")           # pure-numeric dropped (Obsidian ignores)
+        self.assertEqual(_obsidian_tag(""), "")
+        self.assertEqual(_obsidian_tag("a/b_c-d"), "a/b_c-d")  # allowed chars preserved
+
+    def test_tags_do_not_leak_into_the_durable_record(self) -> None:
+        parsed = parse_memory_markdown(render_memory_markdown(SAMPLE_MEMORY))
+        self.assertNotIn("tags", parsed)                      # projection stripped on parse
+        self.assertEqual(parsed["topics"], SAMPLE_MEMORY["topics"])  # source of truth intact
+
+    def test_render_parse_render_idempotent_with_tags(self) -> None:
+        t1 = render_memory_markdown(SAMPLE_MEMORY)
+        reparsed = parse_memory_markdown(t1)
+        reparsed["topics"] = SAMPLE_MEMORY["topics"]  # topics is the source; re-attach as ingest would
+        t2 = render_memory_markdown(reparsed)
+        self.assertEqual(t1.count("tags:"), 1)
+        self.assertEqual(t2.count("tags:"), 1)        # no duplication across the round-trip
 
 
 class VaultMemoryMirrorTests(unittest.TestCase):

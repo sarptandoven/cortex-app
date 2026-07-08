@@ -54,6 +54,18 @@ class MocRenderTests(unittest.TestCase):
         # No timestamp -> byte-identical output for the same page (no git-sync churn).
         self.assertEqual(render_entity_moc_markdown(SAMPLE_PAGE), render_entity_moc_markdown(SAMPLE_PAGE))
 
+    def test_aliases_frontmatter_carries_name_for_resolution(self) -> None:
+        # N1: the display NAME must be in the frontmatter `aliases:` so a memory note's [[Alice]]
+        # link resolves to this MOC page (the file basename is <slug>--<hash>, never "Alice").
+        page = dict(SAMPLE_PAGE)
+        page["aliases"] = ["Alice", "alice@acme.com", "person_alice"]  # name-first, as build_ produces
+        text = render_entity_moc_markdown(page)
+        frontmatter = text.split("---", 2)[1]
+        self.assertIn('aliases: ["Alice", "alice@acme.com", "person_alice"]', frontmatter)
+        # The human "Also known as" body line omits the display name (it's in aliases already).
+        self.assertNotIn("**Also known as:** Alice,", text)
+        self.assertIn("alice@acme.com", text.split("## ", 1)[0])  # alias still shown in the body header
+
     def test_moc_page_is_not_parsed_as_a_memory(self) -> None:
         # A MOC page must never accidentally satisfy the memory parser as real content.
         parsed = parse_memory_markdown(render_entity_moc_markdown(SAMPLE_PAGE))
@@ -155,6 +167,37 @@ class MocStoreTests(unittest.TestCase):
         p1 = self.store.build_entity_moc_pages(USER)
         p2 = self.store.build_entity_moc_pages(USER)
         self.assertEqual(p1, p2)
+
+    def test_moc_aliases_include_display_name_and_are_sorted(self) -> None:
+        # N1 core: each page's aliases start with the display name (so [[Name]] resolves) and the
+        # tail is deduped + sorted (deterministic, no git churn).
+        with mock.patch.dict(os.environ, {"CORTEX_ENTITY_MOC": "1"}, clear=False):
+            self._save("Marcus and Dana shipped the billing service together.")
+        pages = self.store.build_entity_moc_pages(USER)
+        self.assertTrue(pages)
+        for page in pages:
+            aliases = page["aliases"]
+            self.assertEqual(aliases[0], page["name"])  # name first -> [[Name]] resolves
+            self.assertIn(page["entity_id"], aliases)   # raw-id fallback link resolves too
+            self.assertEqual(len(aliases), len({a.lower() for a in aliases}))  # deduped
+            tail = aliases[1:]
+            self.assertEqual(tail, sorted(tail, key=str.lower))  # deterministic order
+
+    def test_memory_wikilink_name_matches_a_moc_alias(self) -> None:
+        # End-to-end resolution proof: the [[Name]] a memory note writes appears verbatim in some
+        # MOC page's frontmatter aliases, so Obsidian resolves the click-through.
+        with mock.patch.dict(os.environ, {"CORTEX_ENTITY_MOC": "1"}, clear=False):
+            self._save("Marcus approved Dana's billing migration plan.")
+            notes = "\n".join(p.read_text(encoding="utf-8") for p in (self.vault_root / "memories").rglob("*.md"))
+            moc_aliases: set[str] = set()
+            for page in self.store.build_entity_moc_pages(USER):
+                moc_aliases.update(page["aliases"])
+        # Every [[X]] entity link in a memory Links block should resolve to a MOC alias.
+        import re
+        links = set(re.findall(r"\[\[([^\]|]+)\]\]", notes.split("## Links", 1)[-1] if "## Links" in notes else ""))
+        entity_links = {l for l in links if not l.startswith("mem_")}  # exclude memory backlinks
+        self.assertTrue(entity_links, "expected entity wikilinks in the note Links block")
+        self.assertTrue(entity_links & moc_aliases, f"no entity link resolves to a MOC alias: {entity_links} vs {moc_aliases}")
 
 
 if __name__ == "__main__":
