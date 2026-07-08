@@ -3995,7 +3995,10 @@ final class AppState: ObservableObject {
                 await self?.saveQuickCapture(text, source)
             }
         }
-        QuickCapture.shared.setEnabled(quickCaptureEnabled, keybind: quickCaptureKeybind)
+        // Don't keep the quick-capture hotkey live while the sign-in wall is up: it would run the
+        // capture pipeline and show a "Saved" notch even though saveQuickCapture correctly discards
+        // the result. Re-wired (enabled) by the post-sign-in bootstrap re-run.
+        QuickCapture.shared.setEnabled(quickCaptureEnabled && !requiresSignIn, keybind: quickCaptureKeybind)
     }
 
     /// Called once at launch (from bootstrap) so a persisted quick-capture pref is honored without
@@ -4010,6 +4013,9 @@ final class AppState: ObservableObject {
     /// icon or overwrite the visible status line. The notch "captured" pill is raised by
     /// QuickCapture on the capture event itself; here we stamp lastCapturedAt and announce learning.
     func saveQuickCapture(_ text: String, _ source: String) async {
+        // Respect the required-account gate: write no memory while the sign-in wall is up (covers the
+        // edge where quick-capture was enabled while signed in, then the user signed back out).
+        guard !requiresSignIn else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         lastCapturedAt = Date()
@@ -4264,6 +4270,14 @@ final class AppState: ObservableObject {
     }
 
     func openConnectionsPrivacy(statusMessage: String = "Connections and privacy") {
+        // Required-account gate: the Connections sheet exposes connector management and local-API
+        // controls that operate on account-gated memory, and it presents modally OVER the sign-in
+        // wall. While the wall is up (e.g. opened via ⌘, / Settings), don't present it — the main
+        // window's wall is where the user signs in.
+        guard !requiresSignIn else {
+            status = "Sign in to Doppl to manage connections."
+            return
+        }
         status = statusMessage
         // If the user tapped "Open Connections" from inside the onboarding sheet, we can't just
         // set showConnectionsPrivacy = true — both are sheets on the same presenter, so the new
@@ -4479,6 +4493,9 @@ final class AppState: ObservableObject {
     private func startConnectedSourceAutoSync(initialSync: Bool = true) {
         obsidianAutoSyncTask?.cancel()
         directConnectorAutoSyncTask?.cancel()
+        // Required-account gate: never run background source syncs while the sign-in wall is up.
+        // Re-invoked (unblocked) by the post-sign-in bootstrap re-run.
+        guard !requiresSignIn else { return }
         guard storedObsidianVaultURL() != nil || !sourceAccounts.isEmpty || !configuredDirectConnectorIDs.isEmpty else { return }
         directConnectorAutoSyncTask = Task { [weak self] in
             if initialSync {
@@ -6653,6 +6670,11 @@ final class AppState: ObservableObject {
     /// onboarding→Connections handoff (openConnectionsPrivacy sets showOnboarding=false to let the
     /// Connections sheet present), which broke "Open Connections" on the final step.
     func presentOnboardingForFirstRunIfNeeded() {
+        // Never present onboarding while the sign-in wall is up: the onboarding sheet ("Explore with
+        // sample notes") would present modally OVER the wall and let an unsigned user drive the
+        // pipeline, bypassing the required-account gate. Re-runs after sign-in (applySignedInSession
+        // re-bootstraps), by which point requiresSignIn is false.
+        guard !requiresSignIn else { return }
         guard !onboardingComplete, !onboardingDismissedForSession, !showOnboarding else { return }
         setOnboardingStep(firstIncompleteOnboardingStep())
         // Flip on the next runloop tick so the `.sheet` is driven AFTER the NSHostingController's
@@ -6661,6 +6683,7 @@ final class AppState: ObservableObject {
         // in showOnboardingAgain().
         DispatchQueue.main.async { [weak self] in
             guard let self,
+                  !self.requiresSignIn,
                   !self.onboardingComplete,
                   !self.onboardingDismissedForSession,
                   !self.showOnboarding else { return }
@@ -6670,6 +6693,8 @@ final class AppState: ObservableObject {
     }
 
     func presentOnboardingIfNeeded() {
+        // See presentOnboardingForFirstRunIfNeeded: onboarding must not present over the sign-in wall.
+        guard !requiresSignIn else { return }
         // Self-heal: if a prior run left onboarding "complete" but no source is actually connected
         // (stale flag, or the user reset their data), setup isn't really done — reopen onboarding,
         // because Cortex has nothing to work from until a source is connected.
@@ -7418,7 +7443,7 @@ struct CortexView: View {
             // (Info.plist CortexRequireAccount) and the user is not signed in, a full-window
             // sign-in wall covers everything. Off by default so the app never bricks before the
             // hosted backend is live; the founder flips CortexRequireAccount=true once it is.
-            if state.accountRequired && !state.isCloudMode {
+            if state.requiresSignIn {
                 CortexSignInWall(state: state)
                     .transition(.opacity)
             }
@@ -10314,13 +10339,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             || state.syncProgress?.active == true
         let pending = max(state.review?.stats.pending_captures ?? 0, state.inbox.count)
         let progress = state.syncProgress
+        // Required-account gate: while the sign-in wall is up, surface nothing — no pill, no HUD, and
+        // in particular no memory-derived pending count (which would leak a "N to review" number).
+        let gated = state.requiresSignIn
         return LiveActivitySnapshot(
-            enabled: state.liveActivityEnabled,
-            working: working,
+            enabled: state.liveActivityEnabled && !gated,
+            working: working && !gated,
             done: progress?.done ?? 0,
             total: progress?.total ?? 0,
             detail: progress?.detail,  // already display-safe (syncDetailLabel → SourceDisplayName)
-            pendingCount: max(0, pending),
+            pendingCount: gated ? 0 : max(0, pending),
             learnedAt: state.lastLearnedAt,
             capturedAt: state.lastCapturedAt,
             learnedCount: state.lastLearnedCount,
@@ -10466,6 +10494,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         menu.addItem(header)
         menu.addItem(.separator())
 
+        // Required-account gate: when the build requires an account and the user is not signed in, the
+        // menu must not expose Ask / Review / Sync / Connections / extension-pairing / Copy-API — each
+        // operates on account-gated memory or exposes the local API. Offer only sign-in and Quit; the
+        // rest returns once signed in. (menuOpenCortex brings up the main window, i.e. the sign-in wall.)
+        if state.requiresSignIn {
+            addMenuItem(to: menu, title: "Sign in to Doppl…", action: #selector(menuOpenCortex), key: "")
+            menu.addItem(.separator())
+            addMenuItem(to: menu, title: "Quit \(appDisplayName)", action: #selector(menuQuit), key: "q")
+            return menu
+        }
+
         addMenuItem(to: menu, title: "Ask Cortex…  (⌃⌥Space)", action: #selector(menuAskSpotlight), key: "")
         addMenuItem(to: menu, title: "Open Cortex", action: #selector(menuOpenCortex), key: "o")
 
@@ -10565,6 +10604,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     /// .cortexPresentConstellation notification) and the right-click menu. The node "Explore in Ask"
     /// action runs a real Ask for that node and brings the main window forward.
     @objc private func presentConstellationOverlay() {
+        // Required-account gate: the Constellation overlay is a sibling NSPanel NOT covered by the
+        // main-window wall and displays memory nodes — never show it while the wall is up.
+        guard !state.requiresSignIn else { showMainWindow(); return }
         guard !state.graphNodes.isEmpty else {
             // Nothing to show yet — take the user to Home so they see the "learning" empty state.
             showMainWindow()

@@ -26,6 +26,9 @@ final class ConstellationOverlay {
     /// Show the overlay for `state`. `onExplore` runs when the user taps "Explore in Ask" on a node
     /// (the overlay dismisses itself first, then calls it).
     func present(state: AppState, onExplore: @escaping (GraphNode) -> Void) {
+        // Required-account gate (defense in depth): this overlay is a sibling panel NOT covered by
+        // the main-window sign-in wall, so refuse to present it while the user must sign in.
+        guard !state.requiresSignIn else { return }
         self.state = state
         self.onExplore = onExplore
         let panel = ensurePanel(state: state)

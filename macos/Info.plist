@@ -21,17 +21,15 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.2.0</string>
 	<key>CFBundleVersion</key>
-	<string>18</string>
+	<string>19</string>
 	<key>CortexDistributionMode</key>
 	<string>direct</string>
-	<key>CortexRequireAccount</key>
-	<string>false</string>
-	<key>CortexHostedAPIURL</key>
-	<string>https://api.signindoppl.com</string>
 	<key>CortexGitHubOAuthClientID</key>
 	<string>Ov23liwB0zkC2Qac88ig</string>
 	<key>CortexGoogleOAuthClientID</key>
 	<string></string>
+	<key>CortexHostedAPIURL</key>
+	<string>https://api.signindoppl.com</string>
 	<key>CortexMicrosoftOAuthClientID</key>
 	<string></string>
 	<key>CortexMicrosoftOAuthClientSecret</key>
@@ -42,6 +40,8 @@
 	<string></string>
 	<key>CortexReleaseChannel</key>
 	<string>local-beta</string>
+	<key>CortexRequireAccount</key>
+	<string>true</string>
 	<key>CortexUpdateFeedURL</key>
 	<string></string>
 	<key>ITSAppUsesNonExemptEncryption</key>

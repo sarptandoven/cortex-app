@@ -101,6 +101,12 @@ extension AppState {
         (Bundle.main.object(forInfoDictionaryKey: "CortexRequireAccount") as? String)?.lowercased() == "true"
     }
 
+    /// True when the build requires an account AND the user is not signed into a cloud account.
+    /// Single source of truth for EVERY sign-in gate — the main-window wall (CortexView), the
+    /// menu-bar "Cortex Spotlight" quick panel, and onboarding presentation — so no surface can
+    /// drift out of sync and expose Ask/Capture/Review before the user has signed in.
+    var requiresSignIn: Bool { accountRequired && !isCloudMode }
+
     /// Message shown when a cloud-auth action is attempted in a build where it is disabled.
     static let cloudAuthUnavailableMessage = "Cortex Cloud is not available in this version."
 
@@ -405,6 +411,11 @@ extension AppState {
         cloudAccountEmail = email
         UserDefaults.standard.set(email, forKey: AppState.cloudAccountEmailDefaultsKey)
         UserDefaults.standard.set(base, forKey: "endpoint")
+        // Sign-in just switched the endpoint from local to the account's hosted backend. Re-run
+        // bootstrap (same re-entry the vault-folder change uses) so the app reloads memory/profile
+        // from the account instead of showing stale local data — and, now that isCloudMode is true,
+        // so onboarding (suppressed while the sign-in wall was up) can present for a first-run user.
+        Task { await bootstrap() }
     }
 
     private func resetToLocalDefaults() {

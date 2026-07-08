@@ -35,7 +35,52 @@ struct MenuBarQuickPanel: View {
     }
     private var isSyncing: Bool { state.syncProgress?.active == true }
 
+    /// Required-account gate. When the build requires an account (Info.plist CortexRequireAccount)
+    /// and the user is not signed in, the quick panel must NOT expose Ask/Capture/Review — otherwise
+    /// clicking the menu-bar icon or pressing the global hotkey opens a fully functional surface that
+    /// bypasses the main-window sign-in wall (CortexView). Show a sign-in prompt that opens the main
+    /// window (where the wall lives) instead.
     var body: some View {
+        if state.requiresSignIn {
+            signInRequiredPanel
+        } else {
+            functionalPanel
+        }
+    }
+
+    private var signInRequiredPanel: some View {
+        VStack(spacing: 16) {
+            Spacer(minLength: 0)
+            ZStack {
+                Circle().fill(CortexDesign.accentSoft).frame(width: 54, height: 54)
+                Image(systemName: "brain.head.profile")
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundColor(CortexDesign.accent)
+            }
+            Text("Sign in to Doppl")
+                .font(.system(size: 18, weight: .bold, design: .serif))
+                .foregroundColor(CortexDesign.ink)
+            Text("Create your account or sign in to ask your memory and capture thoughts.")
+                .font(.callout)
+                .foregroundColor(CortexDesign.inkSecondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 4)
+            Button {
+                onOpenApp()
+            } label: {
+                Text("Sign in").frame(maxWidth: .infinity)
+            }
+            .controlSize(.large)
+            .keyboardShortcut(.defaultAction)
+            Spacer(minLength: 0)
+        }
+        .padding(24)
+        .frame(width: 384, height: 520)
+        .background(CortexDesign.appBackground)
+    }
+
+    private var functionalPanel: some View {
         VStack(spacing: 0) {
             header
             Divider().overlay(CortexDesign.hairline)
