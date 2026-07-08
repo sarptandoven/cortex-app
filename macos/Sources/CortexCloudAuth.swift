@@ -373,9 +373,9 @@ extension AppState {
 
     // MARK: Refresh — rotates the token; only the newest is ever kept
 
-    /// Calls /v1/auth/refresh with the stored cxr_ token, stores the NEW refresh
-    /// token, and updates apiKey with the new access token. Returns true on success.
-    /// Never call this from local mode.
+    /// Calls /v1/auth/refresh against `cloudSyncBaseURL` with the stored cxr_ token, stores the NEW
+    /// refresh token, and updates `cloudAccessToken` (used for cloud sync / logout / delete only —
+    /// never the local `apiKey`). Returns true on success. No-op when signed out / no sync base.
     @discardableResult
     func refreshCloudAccessToken() async -> Bool {
         guard let refreshToken = AppState.storedCloudRefreshToken() else { return false }
@@ -404,8 +404,11 @@ extension AppState {
         cloudAuthBusy = true
         defer { cloudAuthBusy = false }
         // Best-effort server-side revocation using the cloud sync creds (the data plane is local).
+        // Refresh the in-memory access token first: after an app restart it is empty (in-memory
+        // only), so without this the server-side session would never actually be revoked.
         let base = cloudSyncBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if !base.isEmpty {
+            _ = await refreshCloudAccessToken()
             _ = try? await cloudPost(base: base, path: "/v1/auth/logout", body: [:], bearer: cloudAccessToken)
         }
         resetToLocalDefaults()

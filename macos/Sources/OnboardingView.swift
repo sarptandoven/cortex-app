@@ -273,6 +273,13 @@ private struct OnboardingWelcomeStep: View {
 
 /// "Everything stays on your Mac", over a calm animated lock cradling a leaf.
 private struct OnboardingPrivacyStep: View {
+    // The required-account build (CortexRequireAccount=true) syncs memory to the user's account, so
+    // the "nothing is uploaded / no account needed" copy is only honest for the local-only build.
+    // Gate on the same Info.plist flag AppState.accountRequired reads.
+    private var accountRequired: Bool {
+        (Bundle.main.object(forInfoDictionaryKey: "CortexRequireAccount") as? String)?.lowercased() == "true"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 26) {
             HStack {
@@ -288,7 +295,9 @@ private struct OnboardingPrivacyStep: View {
                     .foregroundColor(CortexDesign.ink)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("Everything stays on your Mac. Cortex builds and keeps your memory index locally — nothing is uploaded, and there is no account to create.")
+                Text(accountRequired
+                     ? "Cortex builds and keeps your memory on your Mac, and syncs it to your account so it stays safe and reachable across your devices. Your memory is always yours."
+                     : "Everything stays on your Mac. Cortex builds and keeps your memory index locally — nothing is uploaded, and there is no account to create.")
                     .font(CortexDesign.Typography.prose(16))
                     .lineSpacing(4)
                     .foregroundColor(CortexDesign.inkSecondary)
@@ -297,14 +306,18 @@ private struct OnboardingPrivacyStep: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 OnboardingCheckRow(
-                    title: "On this Mac only",
-                    detail: "Your notes and memory never leave your device.",
+                    title: accountRequired ? "Built on your Mac" : "On this Mac only",
+                    detail: accountRequired
+                        ? "Your memory is created and kept on your device."
+                        : "Your notes and memory never leave your device.",
                     systemImage: "lock.shield",
                     color: CortexDesign.sealMoss
                 )
                 OnboardingCheckRow(
-                    title: "No account needed",
-                    detail: "Nothing to sign up for. You are in control the whole way.",
+                    title: accountRequired ? "Synced to your account" : "No account needed",
+                    detail: accountRequired
+                        ? "Signed in, your memory is backed up and reachable across your devices."
+                        : "Nothing to sign up for. You are in control the whole way.",
                     systemImage: "person.crop.circle.badge.checkmark",
                     color: CortexDesign.sealMoss
                 )
