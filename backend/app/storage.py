@@ -10,6 +10,7 @@ import platform
 import re
 import secrets
 import sys
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -16893,7 +16894,7 @@ class CortexStore:
         }
 
     def _safe_sync_object_id(self, object_id: str) -> str | None:
-        if re.match(r"^(cap|mem|task|ent|edge|evt|imp|irec|job|sacct|sdev|srec|sync|tok|backup|tomb|vec)_[A-Za-z0-9]+$", object_id or ""):
+        if re.match(r"^(cap|mem|task|ent|edge|evt|imp|irec|job|sacct|sdev|srec|sync|tok|backup|tomb|vec|asess)_[A-Za-z0-9]+$", object_id or ""):
             return object_id
         return None
 
@@ -17023,6 +17024,249 @@ class CortexStore:
             metadata["error"] = error[:240]
         with connect(self.db_path) as conn:
             self._event(conn, user_id, f"mcp:{tool_name}", "agent", "tool_call", metadata)
+
+    # ------------------------------------------------------------------
+    # Agent continuity (Phase 1): sessions + checkpoint episodes
+    # ------------------------------------------------------------------
+
+    def _agent_session_from_row(self, row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "token_id": row["token_id"],
+            "host_label": row["host_label"],
+            "status": row["status"],
+            "goal": row["goal"],
+            "parent_session_id": row["parent_session_id"],
+            "metadata": self._json_or_empty(row["metadata_json"]),
+            "started_at": row["started_at"],
+            "last_checkpoint_at": row["last_checkpoint_at"],
+            "updated_at": row["updated_at"],
+            "closed_at": row["closed_at"],
+        }
+
+    def begin_agent_session(
+        self,
+        user_id: str,
+        *,
+        goal: str = "",
+        host_label: str = "",
+        token_id: str | None = None,
+        parent_session_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Open a continuity session for an agent working toward a goal. The session id is the
+        durable handle the agent passes back to checkpoint_agent_session / resume_agent_session,
+        letting a NEW conversation (post-compaction, new window, different tool) pick up exactly
+        where the previous one stopped."""
+        timestamp = now_iso()
+        session_id = stable_id("asess_", f"{user_id}:{timestamp}:{goal[:120]}:{uuid.uuid4().hex}")
+        goal_text = str(goal or "").strip()[:500]
+        host_text = str(host_label or "").strip()[:120]
+        parent_id = str(parent_session_id or "").strip() or None
+        with connect(self.db_path) as conn:
+            if parent_id:
+                parent = conn.execute(
+                    "SELECT id FROM agent_sessions WHERE user_id = ? AND id = ?", (user_id, parent_id)
+                ).fetchone()
+                # A dangling parent pointer is silently dropped rather than rejected: continuity
+                # must degrade gracefully when an agent carries a stale id across a DB restore.
+                if parent is None:
+                    parent_id = None
+            conn.execute(
+                """
+                INSERT INTO agent_sessions
+                (id, user_id, token_id, host_label, status, goal, parent_session_id, metadata_json, started_at, last_checkpoint_at, updated_at, closed_at)
+                VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, NULL, ?, NULL)
+                """,
+                (
+                    session_id,
+                    user_id,
+                    (str(token_id or "").strip() or None),
+                    host_text,
+                    goal_text,
+                    parent_id,
+                    json.dumps(metadata if isinstance(metadata, dict) else {}),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            self._event(conn, user_id, session_id, "agent_session", "started", {"goal": goal_text[:120], "host": host_text})
+            row = conn.execute(
+                "SELECT * FROM agent_sessions WHERE user_id = ? AND id = ?", (user_id, session_id)
+            ).fetchone()
+        return self._agent_session_from_row(row)
+
+    def checkpoint_agent_session(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        summary: str,
+        details: str = "",
+        status: str = "active",
+        next_steps: list[str] | None = None,
+        source: str = "agent",
+    ) -> dict[str, Any]:
+        """Persist a continuity checkpoint: what the agent did / learned / plans next.
+
+        The checkpoint becomes a durable EPISODE memory via the normal save_capture pipeline
+        (vault note + FTS + graph), with two deliberate deviations from a user capture:
+          - it is auto-approved (an agent's own work log needs no review-queue attention), and
+          - it is FORCED onto the episodic layer, so a checkpoint can never smuggle content
+            into the personal layers (preference/style/negative) that describe the user.
+        Provenance is cortex-session://<id>, which classifies as agent authorship (trust 0.5).
+        """
+        session = self._require_agent_session(user_id, session_id)
+        if session["status"] == "closed":
+            raise ValueError("Agent session is closed; begin a new session (optionally with parent_session_id).")
+        summary_text = str(summary or "").strip()
+        if not summary_text:
+            raise ValueError("Checkpoint summary is required.")
+        next_list = [str(step).strip()[:300] for step in (next_steps or []) if str(step or "").strip()][:12]
+        body_lines = [summary_text]
+        details_text = str(details or "").strip()
+        if details_text:
+            body_lines.extend(["", details_text])
+        if next_list:
+            body_lines.extend(["", "Next steps:"] + [f"- {step}" for step in next_list])
+        content = "\n".join(body_lines)
+        timestamp = now_iso()
+        checkpoint_index = self._next_checkpoint_index(user_id, session_id)
+        goal_text = str(session.get("goal") or "").strip()
+        title = f"Agent checkpoint {checkpoint_index}: {goal_text[:80]}" if goal_text else f"Agent checkpoint {checkpoint_index}"
+        # Deterministic extraction is bypassed on purpose: a checkpoint IS the record, verbatim.
+        # One record, kind=event/layer=episodic, summary = the agent's own one-liner.
+        record = {
+            "id": stable_id("mem_", f"{user_id}:{session_id}:checkpoint:{checkpoint_index}"),
+            "kind": "event",
+            "layer": "episodic",
+            "content": content,
+            "raw_excerpt": summary_text[:500],
+            "confidence": "confirmed",
+            "importance": 3,
+            "entity_ids": [],
+            "topics": ["agent-session"],
+            "occurred_at": timestamp,
+            "sector": "",
+        }
+        extracted = {
+            "records": [record],
+            "tasks": [],
+            "entities": [],
+            "summary": summary_text[:280],
+            "_source": source,
+            "_timestamp": timestamp,
+        }
+        saved = self.save_capture(
+            user_id=user_id,
+            content=content,
+            source=source,
+            source_url=f"cortex-session://{session_id}",
+            title=title,
+            extracted=extracted,
+            capture_id_override=stable_id("cap_", f"{user_id}:{session_id}:checkpoint:{checkpoint_index}"),
+            auto_approve=True,
+        )
+        normalized_status = status if status in ("active", "paused", "blocked") else "active"
+        with connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE agent_sessions SET status = ?, last_checkpoint_at = ?, updated_at = ? WHERE user_id = ? AND id = ?",
+                (normalized_status, timestamp, timestamp, user_id, session_id),
+            )
+            self._event(
+                conn,
+                user_id,
+                session_id,
+                "agent_session",
+                "checkpoint",
+                {"index": checkpoint_index, "capture_id": saved.get("capture_id"), "status": normalized_status},
+            )
+        return {
+            "session_id": session_id,
+            "checkpoint_index": checkpoint_index,
+            "capture_id": saved.get("capture_id"),
+            "memory_ids": [item.get("id") for item in saved.get("memories", [])],
+            "status": normalized_status,
+            "checkpointed_at": timestamp,
+        }
+
+    def resume_agent_session(self, user_id: str, session_id: str, *, checkpoint_limit: int = 5) -> dict[str, Any]:
+        """Everything a fresh conversation needs to continue a previous agent's work: the session
+        goal/status plus its most recent checkpoint episodes (cited, newest first), and the
+        parent chain so multi-session efforts stay traceable."""
+        session = self._require_agent_session(user_id, session_id)
+        limit = max(1, min(int(checkpoint_limit or 5), 20))
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM memories
+                WHERE user_id = ? AND source_url = ? AND status = 'active'
+                ORDER BY captured_at DESC, id DESC LIMIT ?
+                """,
+                (user_id, f"cortex-session://{session_id}", limit),
+            ).fetchall()
+            checkpoints = [self._memory_from_row(row) for row in rows]
+            parent_chain: list[dict[str, Any]] = []
+            seen = {session_id}
+            cursor = session.get("parent_session_id")
+            while cursor and cursor not in seen and len(parent_chain) < 10:
+                seen.add(cursor)
+                parent_row = conn.execute(
+                    "SELECT * FROM agent_sessions WHERE user_id = ? AND id = ?", (user_id, cursor)
+                ).fetchone()
+                if parent_row is None:
+                    break
+                parent = self._agent_session_from_row(parent_row)
+                parent_chain.append({"id": parent["id"], "goal": parent["goal"], "status": parent["status"], "last_checkpoint_at": parent["last_checkpoint_at"]})
+                cursor = parent["parent_session_id"]
+            self._event(conn, user_id, session_id, "agent_session", "resumed", {"checkpoints": len(checkpoints)})
+        return {"session": session, "checkpoints": checkpoints, "parent_chain": parent_chain}
+
+    def close_agent_session(self, user_id: str, session_id: str, *, outcome: str = "") -> dict[str, Any]:
+        session = self._require_agent_session(user_id, session_id)
+        timestamp = now_iso()
+        outcome_text = str(outcome or "").strip()
+        if session["status"] != "closed":
+            with connect(self.db_path) as conn:
+                conn.execute(
+                    "UPDATE agent_sessions SET status = 'closed', updated_at = ?, closed_at = ? WHERE user_id = ? AND id = ?",
+                    (timestamp, timestamp, user_id, session_id),
+                )
+                self._event(conn, user_id, session_id, "agent_session", "closed", {"outcome": outcome_text[:240]})
+            session = self._require_agent_session(user_id, session_id)
+        return session
+
+    def list_agent_sessions(self, user_id: str, *, status: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        bounded = max(1, min(int(limit or 20), 100))
+        query = "SELECT * FROM agent_sessions WHERE user_id = ?"
+        params: list[Any] = [user_id]
+        if status:
+            query += " AND status = ?"
+            params.append(str(status))
+        query += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(bounded)
+        with connect(self.db_path) as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._agent_session_from_row(row) for row in rows]
+
+    def _require_agent_session(self, user_id: str, session_id: str) -> dict[str, Any]:
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM agent_sessions WHERE user_id = ? AND id = ?",
+                (user_id, str(session_id or "").strip()),
+            ).fetchone()
+        if row is None:
+            raise ValueError("Unknown agent session; call start_agent_session first (ids look like asess_...).")
+        return self._agent_session_from_row(row)
+
+    def _next_checkpoint_index(self, user_id: str, session_id: str) -> int:
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM memory_events WHERE user_id = ? AND object_type = 'agent_session' AND object_id = ? AND event_type = 'checkpoint'",
+                (user_id, session_id),
+            ).fetchone()
+        return int(row["n"] or 0) + 1
 
     def _enqueue_job(
         self,

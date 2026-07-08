@@ -776,6 +776,80 @@ TOOLS = [
             "required": ["task"],
         },
     },
+    {
+        "name": "start_agent_session",
+        "description": (
+            "Open a continuity session for a goal you are working on. Returns a session_id to pass "
+            "to checkpoint_agent_session as you work and to resume_agent_session in a future "
+            "conversation, so work survives context loss, compaction, and tool switches."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "What this session is trying to accomplish."},
+                "host_label": {"type": "string", "description": "Where the agent runs (e.g. 'claude-desktop', 'cursor')."},
+                "parent_session_id": {"type": "string", "description": "Optional previous session this continues."},
+            },
+            "required": ["goal"],
+        },
+    },
+    {
+        "name": "checkpoint_agent_session",
+        "description": (
+            "Save a durable progress checkpoint (what you did, learned, and plan next) into the "
+            "user's memory as a cited episode. Auto-approved, episodic-only: checkpoints never "
+            "touch the user's personal preference/style layers."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+                "summary": {"type": "string", "description": "One-paragraph state of the work right now."},
+                "details": {"type": "string", "description": "Optional longer notes: decisions, findings, dead ends."},
+                "next_steps": {"type": "array", "items": {"type": "string"}, "description": "Concrete next actions for whoever resumes."},
+                "status": {"type": "string", "enum": ["active", "paused", "blocked"], "default": "active"},
+            },
+            "required": ["session_id", "summary"],
+        },
+    },
+    {
+        "name": "resume_agent_session",
+        "description": (
+            "Pick up where a previous agent session left off: returns the session goal/status, its "
+            "recent checkpoints (newest first, cited), and the parent session chain."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+                "checkpoint_limit": {"type": "integer", "default": 5, "minimum": 1, "maximum": 20},
+            },
+            "required": ["session_id"],
+        },
+    },
+    {
+        "name": "list_agent_sessions",
+        "description": "List recent agent continuity sessions (optionally filtered by status) to find one to resume.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["active", "paused", "blocked", "closed"]},
+                "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100},
+            },
+        },
+    },
+    {
+        "name": "close_agent_session",
+        "description": "Mark an agent continuity session finished. Its checkpoints remain in memory as episodes.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+                "outcome": {"type": "string", "description": "Optional final outcome summary."},
+            },
+            "required": ["session_id"],
+        },
+    },
 ]
 
 # The curated CORE surface an agent sees by default: one tool per job (working context,
@@ -812,6 +886,11 @@ MCP_TOOL_SURFACES: dict[str, frozenset[str]] = {
             "get_decisions",
             "remember_this",
             "list_capabilities",
+            "start_agent_session",
+            "checkpoint_agent_session",
+            "resume_agent_session",
+            "list_agent_sessions",
+            "close_agent_session",
         }
     ),
     "chat": frozenset(
@@ -833,6 +912,9 @@ MCP_TOOL_SURFACES: dict[str, frozenset[str]] = {
 READ_TOOLS = {
     "use_cortex",
     "get_context",
+    # Continuity reads: finding/resuming a session pulls only agent-authored episodes.
+    "resume_agent_session",
+    "list_agent_sessions",
     "ask_memory",
     "get_entity_context",
     "expand_context",
@@ -874,6 +956,10 @@ REVIEW_TOOLS = {
 }
 WRITE_TOOLS = {
     "remember_this",
+    # Continuity writes: sessions + checkpoint episodes are agent write-back.
+    "start_agent_session",
+    "checkpoint_agent_session",
+    "close_agent_session",
     "connect_source_account",
     "sync_source_records",
     "sync_github",
@@ -961,6 +1047,11 @@ _TOOL_TITLE_OVERRIDES: dict[str, str] = {
     "get_person_map": "Whole-Person Map",
     "remember_this": "Remember This",
     "list_capabilities": "List Cortex Capabilities",
+    "start_agent_session": "Start Agent Session",
+    "checkpoint_agent_session": "Checkpoint Agent Session",
+    "resume_agent_session": "Resume Agent Session",
+    "list_agent_sessions": "List Agent Sessions",
+    "close_agent_session": "Close Agent Session",
 }
 
 
@@ -1838,6 +1929,57 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             cite_capture_provenance=True,
             auto_approve=load_settings().auto_approve_captures,
         ))
+    if name == "start_agent_session":
+        return store.agent_payload(
+            user_id,
+            store.begin_agent_session(
+                user_id,
+                goal=_text_arg(args, "goal", max_chars=500),
+                host_label=_text_arg(args, "host_label", max_chars=120),
+                parent_session_id=_text_arg(args, "parent_session_id", max_chars=80) or None,
+            ),
+        )
+    if name == "checkpoint_agent_session":
+        next_steps_arg = args.get("next_steps")
+        next_steps = [str(step) for step in next_steps_arg] if isinstance(next_steps_arg, list) else []
+        return store.agent_payload(
+            user_id,
+            store.checkpoint_agent_session(
+                user_id,
+                _text_arg(args, "session_id", max_chars=80),
+                summary=_text_arg(args, "summary", max_chars=4000),
+                details=_text_arg(args, "details", max_chars=20000),
+                next_steps=next_steps,
+                status=_text_arg(args, "status", "active", max_chars=12) or "active",
+            ),
+        )
+    if name == "resume_agent_session":
+        return store.agent_payload(
+            user_id,
+            store.resume_agent_session(
+                user_id,
+                _text_arg(args, "session_id", max_chars=80),
+                checkpoint_limit=_bounded_int_arg(args, "checkpoint_limit", 5, minimum=1, maximum=20),
+            ),
+        )
+    if name == "list_agent_sessions":
+        return store.agent_payload(
+            user_id,
+            store.list_agent_sessions(
+                user_id,
+                status=_text_arg(args, "status", max_chars=12) or None,
+                limit=_bounded_int_arg(args, "limit", 20, minimum=1, maximum=100),
+            ),
+        )
+    if name == "close_agent_session":
+        return store.agent_payload(
+            user_id,
+            store.close_agent_session(
+                user_id,
+                _text_arg(args, "session_id", max_chars=80),
+                outcome=_text_arg(args, "outcome", max_chars=2000),
+            ),
+        )
     if name == "use_cortex":
         task = _text_arg(args, "task")
         intent = _text_arg(args, "intent", max_chars=16) or None

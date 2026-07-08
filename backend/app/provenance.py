@@ -98,7 +98,13 @@ def classify_author(
     prov = provenance if isinstance(provenance, dict) else {}
     if source_account_id or prov.get("source_account_id"):
         return "connector"
-    if str(source_url or "").strip().lower().startswith("cortex-capture://"):
+    normalized_url = str(source_url or "").strip().lower()
+    # Phase 1 continuity episodes cite their agent session (cortex-session://<id>) the same way
+    # deliberate captures cite themselves. The session URL means "an agent checkpointed this",
+    # so it classifies as agent BEFORE the capture-URL rule can ever apply.
+    if normalized_url.startswith("cortex-session://"):
+        return "agent"
+    if normalized_url.startswith("cortex-capture://"):
         return "user"
     if str(layer or "").strip().lower() in _PERSONAL_LAYERS:
         return "user"
