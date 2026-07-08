@@ -26,6 +26,8 @@
 	<string>direct</string>
 	<key>CortexRequireAccount</key>
 	<string>false</string>
+	<key>CortexHostedAPIURL</key>
+	<string>https://api.trydoppl.com</string>
 	<key>CortexGitHubOAuthClientID</key>
 	<string>Ov23liwB0zkC2Qac88ig</string>
 	<key>CortexGoogleOAuthClientID</key>

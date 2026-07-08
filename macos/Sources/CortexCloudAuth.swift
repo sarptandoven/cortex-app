@@ -105,7 +105,13 @@ extension AppState {
     static let cloudAuthUnavailableMessage = "Cortex Cloud is not available in this version."
 
     /// The default hosted API the sign-in surface targets when the user hasn't entered another.
-    static let defaultHostedURL = "https://api.trydoppl.com"
+    /// Read from Info.plist `CortexHostedAPIURL` so the backend domain can be changed with a
+    /// one-line plist edit (then a rebuild) — no source change — falling back to the shipped default.
+    static var defaultHostedURL: String {
+        let configured = (Bundle.main.object(forInfoDictionaryKey: "CortexHostedAPIURL") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return configured.isEmpty ? "https://api.trydoppl.com" : configured
+    }
 
     /// The one and only gate for every new cloud code path.
     ///
@@ -487,7 +493,7 @@ struct CortexCloudSection: View {
     @State private var email: String = ""
     @State private var password: String = ""
 
-    private static let defaultHostedURL = "https://api.trydoppl.com"
+    private static var defaultHostedURL: String { AppState.defaultHostedURL }
 
     private var isSignedIn: Bool {
         AppState.storedCloudRefreshToken() != nil && AppState.hostIsRemote(state.endpoint)
