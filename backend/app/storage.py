@@ -3301,7 +3301,7 @@ class CortexStore:
                 (id, user_id, import_id, source, source_url, source_account_id, external_id, title, raw_text, raw_hash, summary, review_status, approved_at, captured_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
-                  user_id = excluded.user_id,
+                  user_id = captures.user_id,
                   import_id = COALESCE(captures.import_id, excluded.import_id),
                   source = excluded.source,
                   source_url = excluded.source_url,
@@ -8934,7 +8934,17 @@ class CortexStore:
         normalized_source_account_id = (source_account_id or "").strip() or None
         normalized_external_id = (external_id or "").strip()[:240] or None
         override_id = str(capture_id_override or "").strip()
+        override_ok = False
         if override_id.startswith("cap_"):
+            candidate = override_id[:80]
+            with connect(self.db_path) as _guard_conn:
+                _owner = _guard_conn.execute("SELECT user_id FROM captures WHERE id = ?", (candidate,)).fetchone()
+            # SECURITY: the captures PK is id-only, so a client-supplied id (Phase-2 sync idempotency
+            # key) that already belongs to ANOTHER user must never be honored — it would hijack /
+            # overwrite their capture. Accept the override only when the id is new or already this
+            # user's; otherwise fall through to a fresh, per-user deterministic id below.
+            override_ok = _owner is None or _owner["user_id"] == user_id
+        if override_ok:
             capture_id = override_id[:80]
         elif normalized_source_account_id and normalized_external_id:
             capture_id = stable_id("cap_", f"{user_id}:{normalized_source_account_id}:{normalized_external_id}")
@@ -9019,7 +9029,7 @@ class CortexStore:
                 (id, user_id, import_id, source, source_url, source_account_id, external_id, title, raw_text, raw_hash, summary, review_status, approved_at, captured_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
-                  user_id = excluded.user_id,
+                  user_id = captures.user_id,
                   import_id = COALESCE(captures.import_id, excluded.import_id),
                   source = excluded.source,
                   source_url = excluded.source_url,
@@ -9090,6 +9100,34 @@ class CortexStore:
 
             for entity in extracted.get("entities", []):
                 entities.append(self._save_entity(conn, user_id, entity, captured_at))
+
+            # Entity resolution may have merged an extracted mention into an existing canonical node
+            # (e.g. 'Marcus' -> 'Marcus Feld'). Remap this capture's memory/task entity_ids to the
+            # canonical ids so edges + the stored entity_ids_json point at one node, not fragments.
+            entity_remap = {
+                str(src["id"]): saved["id"]
+                for src, saved in zip(extracted.get("entities", []), entities)
+                if src.get("id") and saved["id"] != str(src["id"])
+            }
+            if entity_remap:
+                def _remap_ids(ids: list[str]) -> list[str]:
+                    out: list[str] = []
+                    for eid in ids:
+                        mapped = entity_remap.get(eid, eid)
+                        if mapped not in out:
+                            out.append(mapped)
+                    return out
+                for memory in memories:
+                    original = list(memory.get("entity_ids", []))
+                    remapped = _remap_ids(original)
+                    if remapped != original:
+                        memory["entity_ids"] = remapped
+                        conn.execute(
+                            "UPDATE memories SET entity_ids_json = ? WHERE user_id = ? AND id = ?",
+                            (json.dumps(remapped), user_id, memory["id"]),
+                        )
+                for task in tasks:
+                    task["entity_ids"] = _remap_ids(list(task.get("entity_ids", [])))
 
             for memory in memories:
                 for entity_id in memory.get("entity_ids", []):
@@ -19799,16 +19837,79 @@ class CortexStore:
             "captured_at": captured_at,
         }
 
+    @staticmethod
+    def _normalize_entity_name(value: str) -> str:
+        """Lowercased, punctuation→space, collapsed — the comparison key for entity resolution."""
+        return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", str(value or "").lower())).strip()
+
+    def _resolve_canonical_entity(self, conn, user_id: str, entity: dict[str, Any]):
+        """Conservative entity resolution: find an EXISTING canonical entity row this mention is the
+        same as, so fragments ('Marcus' / 'marcus@acme.com' / 'Marcus Feld') collapse to one node.
+        Only HIGH-PRECISION matches auto-merge — a wrong merge (two different people) is worse than a
+        duplicate, so anything ambiguous is left separate (a later slice suggests those for review).
+        Rules (same kind + user): (1) exact normalized name == an existing name/alias; (2) an email's
+        local-part matches an existing person (either direction); (3) a single-word name that is the
+        UNAMBIGUOUS leading word of exactly ONE existing person. Returns the row, or None."""
+        kind = str(entity.get("kind") or "person")
+        norm = self._normalize_entity_name(entity.get("name") or "")
+        if not norm:
+            return None
+        raw_name = str(entity.get("name") or "").strip()
+        incoming_email_local = None
+        if "@" in raw_name and "." in raw_name.rsplit("@", 1)[-1]:
+            incoming_email_local = self._normalize_entity_name(raw_name.split("@", 1)[0].replace(".", " ").replace("_", " "))
+        rows = conn.execute("SELECT * FROM entities WHERE user_id = ? AND kind = ?", (user_id, kind)).fetchall()
+        email_match = None
+        leading = []
+        for row in rows:
+            if row["id"] == entity.get("id"):
+                continue  # the exact-id path already covers this
+            names = [row["name"]] + json.loads(row["aliases_json"] or "[]")
+            norms = {n for n in (self._normalize_entity_name(x) for x in names) if n}
+            emails_local = {
+                self._normalize_entity_name(x.split("@", 1)[0].replace(".", " ").replace("_", " "))
+                for x in names if isinstance(x, str) and "@" in x
+            }
+            emails_local = {e for e in emails_local if e}
+            if norm in norms:
+                return row  # (1) exact normalized name/alias — highest precision
+            if (incoming_email_local and incoming_email_local in norms) or (norm in emails_local):
+                email_match = row  # (2) email <-> name
+                continue
+            if " " not in norm and kind == "person":  # (3) collect leading-word (first-name) candidates
+                if any(" " in other and other.split(" ", 1)[0] == norm for other in norms):
+                    leading.append(row)
+        if email_match is not None:
+            return email_match
+        if len(leading) == 1:  # merge only when EXACTLY one existing person leads with this first name
+            return leading[0]
+        return None
+
     def _save_entity(self, conn, user_id: str, entity: dict[str, Any], captured_at: str) -> dict[str, Any]:
         entity_id = entity["id"]
-        existing = conn.execute("SELECT id FROM entities WHERE user_id = ? AND id = ?", (user_id, entity_id)).fetchone()
-        if existing:
-            conn.execute("UPDATE entities SET context = ?, last_seen = ? WHERE user_id = ? AND id = ?", (entity.get("context", ""), captured_at, user_id, entity_id))
-        else:
+        canonical = self._resolve_canonical_entity(conn, user_id, entity)
+        if canonical is not None and canonical["id"] != entity_id:
+            # Merge this mention into the existing canonical node: record the incoming name + its
+            # would-be id as aliases, refresh last_seen. The caller remaps entity_ids to canonical.
+            aliases = set(json.loads(canonical["aliases_json"] or "[]"))
+            for alias in (entity.get("name"), entity_id, *(entity.get("aliases") or [])):
+                text = str(alias or "").strip()
+                if text and text != canonical["name"] and text != canonical["id"]:
+                    aliases.add(text)
             conn.execute(
-                "INSERT INTO entities (id, user_id, kind, name, aliases_json, context, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (entity_id, user_id, entity.get("kind", "person"), entity.get("name", entity_id), json.dumps(entity.get("aliases", [])), entity.get("context", ""), captured_at, captured_at),
+                "UPDATE entities SET aliases_json = ?, last_seen = ?, context = COALESCE(NULLIF(context, ''), ?) WHERE user_id = ? AND id = ?",
+                (json.dumps(sorted(aliases)), captured_at, entity.get("context", ""), user_id, canonical["id"]),
             )
+            entity_id = canonical["id"]
+        else:
+            existing = conn.execute("SELECT id FROM entities WHERE user_id = ? AND id = ?", (user_id, entity_id)).fetchone()
+            if existing:
+                conn.execute("UPDATE entities SET context = ?, last_seen = ? WHERE user_id = ? AND id = ?", (entity.get("context", ""), captured_at, user_id, entity_id))
+            else:
+                conn.execute(
+                    "INSERT INTO entities (id, user_id, kind, name, aliases_json, context, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (entity_id, user_id, entity.get("kind", "person"), entity.get("name", entity_id), json.dumps(entity.get("aliases", [])), entity.get("context", ""), captured_at, captured_at),
+                )
         row = conn.execute("SELECT * FROM entities WHERE user_id = ? AND id = ?", (user_id, entity_id)).fetchone()
         return {
             "id": row["id"],

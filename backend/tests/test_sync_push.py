@@ -73,6 +73,27 @@ class SyncPushTests(unittest.TestCase):
         self._save("mine")
         self.assertEqual(self.store.capture_change_page("other-user", 0, 100)["items"], [])
 
+    def test_capture_id_override_cannot_hijack_another_users_capture(self) -> None:
+        # SECURITY: the captures PK is id-only, so a client-supplied capture id (Phase-2 sync) must
+        # never address another user's row. If user B pushes user A's capture id, B must get a FRESH
+        # capture, and A's capture (owner + content) must be untouched.
+        def save(user, content):
+            return self.store.save_capture(
+                user_id=user, content=content, source="macos", source_url=None, title=None,
+                extracted=extract_context(content, "macos"), capture_id_override="cap_shared_target_1",
+                cite_capture_provenance=True, auto_approve=True,
+            )
+        a = save("user-A", "Alice private note")
+        b = save("user-B", "Bob overwrite attempt")
+        self.assertEqual(a["capture_id"], "cap_shared_target_1")       # A owns the id it asked for
+        self.assertNotEqual(b["capture_id"], "cap_shared_target_1")    # B is refused it -> fresh id
+        page_a = self.store.capture_change_page("user-A", 0, 10)
+        self.assertEqual(len(page_a["items"]), 1)
+        self.assertEqual(page_a["items"][0]["content"], "Alice private note")  # A's content intact
+        page_b = self.store.capture_change_page("user-B", 0, 10)
+        self.assertEqual(len(page_b["items"]), 1)
+        self.assertEqual(page_b["items"][0]["content"], "Bob overwrite attempt")
+
 
 if __name__ == "__main__":
     unittest.main()
