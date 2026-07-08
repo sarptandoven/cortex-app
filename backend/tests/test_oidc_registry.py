@@ -425,6 +425,27 @@ class RegistryPolicyTests(OidcRegistryTestBase):
         with self.assertRaises(OidcError):
             registry.start("google", "https://app.example/callback")
 
+    def test_apple_native_only_excluded_from_browser_buttons(self) -> None:
+        # Apple (client id = bundle id, NO secret) is usable for NATIVE id_token sign-in but must NOT
+        # render as a web "Continue with Apple" button: its browser code exchange needs an ES256
+        # secret we don't ship, so a web button would 404 on the callback.
+        registry = self._registry(
+            _settings(
+                oidc_apple_client_id="com.cortex.doppl",
+                oidc_google_client_id="google-client-id",
+                oidc_google_client_secret="google-secret",
+            )
+        )
+        buttons = [row["provider"] for row in registry.enabled_providers()]
+        self.assertNotIn("apple", buttons)
+        self.assertIn("google", buttons)
+        # Apple stays present + enabled in the table (so native verify works — see AppleNativeOidcTests);
+        # it is only excluded from the WEB button list.
+        self.assertTrue(registry.providers["apple"].enabled)
+        # And the browser start path is refused for Apple (no secret to complete the code exchange).
+        with self.assertRaises(OidcError):
+            registry.start("apple", "https://app.example/callback")
+
     def test_enabled_providers_carries_no_secrets(self) -> None:
         registry = self._registry(
             _settings(

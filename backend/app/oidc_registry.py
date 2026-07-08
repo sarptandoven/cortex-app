@@ -334,7 +334,11 @@ class OidcProviderRegistry:
                 "button_order": definition.button_order,
             }
             for definition in self.providers.values()
-            if definition.enabled
+            # A browser "Continue with X" button must be able to complete the server-side code
+            # exchange, which requires a client secret. Apple's native-only flow (client id = bundle
+            # id, no ES256 secret) is surfaced by the macOS app's native Sign in with Apple button
+            # instead — it must never render as a web button that would 404 on the code exchange.
+            if definition.enabled and definition.client_secret
         ]
         return sorted(rows, key=lambda row: (row["button_order"], row["provider"]))
 
