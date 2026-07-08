@@ -392,10 +392,14 @@ class EndToEndUserJourneyTests(unittest.TestCase):
         # No-op when nothing changed.
         self.assertFalse(self.store.reconcile_vault_edits(self.user_id)["reconciled"])
 
-        # Sam hand-edits a note in his vault (as if in Obsidian).
-        matches = list((self.store.vault.root / "memories").rglob("mem_decision.md"))
-        self.assertTrue(matches, "no markdown note for mem_decision")
-        md_path = matches[0]
+        # Sam hand-edits a note in his vault (as if in Obsidian). Notes are <slug>--<shortid>.md,
+        # so find it by the frontmatter id rather than the filename.
+        md_path = None
+        for path in (self.store.vault.root / "memories").rglob("*.md"):
+            if parse_memory_markdown(path.read_text(encoding="utf-8")).get("id") == "mem_decision":
+                md_path = path
+                break
+        self.assertIsNotNone(md_path, "no markdown note for mem_decision")
         record = parse_memory_markdown(md_path.read_text(encoding="utf-8"))
         record["content"] = "Sam changed course and picked Postgres with read replicas after all."
         atomic_write_text(md_path, render_memory_markdown(record))

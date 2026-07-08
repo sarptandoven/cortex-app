@@ -57,7 +57,14 @@ class VaultWikilinkTests(unittest.TestCase):
         self._save("Marcus is migrating the billing service to the new database.")
         joined = "\n".join(self._note_texts())
         self.assertIn("## Backlinks", joined)
-        self.assertIn("- [[mem_", joined)  # note-to-note wikilink by memory id
+        # Backlink targets the neighbour's note FILENAME stem (<slug>--<shortid>) so it resolves in
+        # Obsidian after the human-readable rename, displaying the human label via an alias link.
+        import re
+        backlinks = re.findall(r"- \[\[([^\]|]+)\|", joined)
+        self.assertTrue(backlinks, "no stem-targeted backlink emitted")
+        # Every backlink target is a real note filename stem in the vault.
+        note_stems = {p.stem for p in (self.vault_root / "memories").rglob("*.md")}
+        self.assertTrue(set(backlinks) & note_stems, f"backlink {backlinks} matches no note file {note_stems}")
 
     def test_note_round_trips_and_json_is_clean(self) -> None:
         self._save("Marcus and Dana approved the database migration.")

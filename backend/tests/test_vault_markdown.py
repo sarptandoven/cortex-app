@@ -132,10 +132,17 @@ class MarkdownCodecTests(unittest.TestCase):
 
     def test_backlinks_section_emitted(self) -> None:
         rec = dict(SAMPLE_MEMORY)
-        rec["_backlinks"] = [{"id": "mem_neighbor1", "label": "Chose Postgres earlier"}]
+        # With a stem (the neighbour's note filename), the backlink targets the stem, displays label.
+        rec["_backlinks"] = [{"id": "mem_neighbor1", "stem": "chose-postgres--abc123", "label": "Chose Postgres earlier"}]
         text = render_memory_markdown(rec)
         self.assertIn("## Backlinks", text)
-        self.assertIn("- [[mem_neighbor1]] — Chose Postgres earlier", text)
+        self.assertIn("- [[chose-postgres--abc123|Chose Postgres earlier]]", text)
+
+    def test_backlink_falls_back_to_id_when_stem_absent(self) -> None:
+        rec = dict(SAMPLE_MEMORY)
+        rec["_backlinks"] = [{"id": "mem_neighbor1", "label": "Chose Postgres earlier"}]
+        text = render_memory_markdown(rec)
+        self.assertIn("- [[mem_neighbor1|Chose Postgres earlier]]", text)  # id fallback, still resolves
 
     def test_generated_keys_never_leak_into_frontmatter(self) -> None:
         rec = dict(SAMPLE_MEMORY)
@@ -271,13 +278,17 @@ class VaultMemoryMirrorTests(unittest.TestCase):
         self.vault.write_memory(SAMPLE_MEMORY)
         md_path = self.vault.memory_markdown_path(SAMPLE_MEMORY)
         self.assertTrue(md_path.exists(), "markdown mirror not written")
-        self.assertEqual(md_path, self.vault.root / "memories" / "decision" / "mem_8e74cf70b6e9.md")
+        # Human-readable filename: <summary-slug>--<id-derived shortid>.md under the layer folder.
+        self.assertEqual(md_path.parent, self.vault.root / "memories" / "decision")
+        self.assertIn("--", md_path.stem)
+        self.assertIn("sqlite", md_path.stem.lower())  # slug from the summary
+        self.assertTrue(md_path.stem.endswith(self.vault.memory_note_short_id(SAMPLE_MEMORY["id"])))
         text = md_path.read_text(encoding="utf-8")
         self.assertIn("kind: \"decision\"", text)
         self.assertIn("sharded SQLite", text)
-        # The JSON record still exists (source of truth in Phase 1).
+        # The JSON record is still id-named (source of truth).
         self.assertTrue((self.vault.root / "memories" / "decision" / "mem_8e74cf70b6e9.json").exists())
-        # And it round-trips back to the same fields.
+        # And it round-trips back to the same fields (id parsed from frontmatter, not filename).
         parsed = parse_memory_markdown(text)
         self.assertEqual(parsed["id"], SAMPLE_MEMORY["id"])
         self.assertEqual(parsed["content"], SAMPLE_MEMORY["content"])
@@ -292,9 +303,10 @@ class VaultMemoryMirrorTests(unittest.TestCase):
         moved = dict(SAMPLE_MEMORY)
         moved["layer"] = "semantic"
         self.vault.write_memory(moved)
-        notes = list((self.vault.root / "memories").rglob(f"{SAMPLE_MEMORY['id']}.md"))
+        notes = list((self.vault.root / "memories").rglob("*.md"))
         self.assertEqual(len(notes), 1, f"orphaned note(s): {[str(p) for p in notes]}")
-        self.assertEqual(notes[0], self.vault.root / "memories" / "semantic" / f"{SAMPLE_MEMORY['id']}.md")
+        self.assertEqual(notes[0].parent, self.vault.root / "memories" / "semantic")
+        self.assertTrue(notes[0].stem.endswith(self.vault.memory_note_short_id(SAMPLE_MEMORY["id"])))
 
     def test_patch_memory_updates_the_markdown_note(self) -> None:
         self.vault.write_memory(SAMPLE_MEMORY)
@@ -304,15 +316,20 @@ class VaultMemoryMirrorTests(unittest.TestCase):
         self.assertEqual(record["superseded_by"], "mem_new")
 
     def test_patch_markdown_native_memory_without_json(self) -> None:
-        path = self.vault.root / "memories" / "semantic" / "mem_native.md"
+        # A hand-written legacy <id>.md note is patched: the patch finds it by id (via the legacy
+        # glob), re-renders to the human-readable stem path, and sweeps the legacy name.
+        legacy = self.vault.root / "memories" / "semantic" / "mem_native.md"
         atomic_write_text(
-            path,
+            legacy,
             render_memory_markdown(
                 {"id": "mem_native", "user_id": "u", "kind": "claim", "layer": "semantic", "status": "active", "content": "native memory"}
             ),
         )
         self.assertTrue(self.vault.patch_memory("mem_native", {"status": "archived"}))
-        self.assertEqual(parse_memory_markdown(path.read_text(encoding="utf-8"))["status"], "archived")
+        notes = list((self.vault.root / "memories").rglob("*.md"))
+        self.assertEqual(len(notes), 1, f"expected one note, got {[p.name for p in notes]}")
+        self.assertFalse(legacy.exists(), "legacy <id>.md note not swept after patch")
+        self.assertEqual(parse_memory_markdown(notes[0].read_text(encoding="utf-8"))["status"], "archived")
 
     def test_vault_sync_scaffolding(self) -> None:
         # ensure() ran in setUp; the vault should be safe + self-explanatory to sync/open.

@@ -171,7 +171,7 @@ class ReviewR2StorageFixTests(unittest.TestCase):
         self.store.ensure_vault_backfilled(self.user_id)
 
         # Delete exactly ONE note. Small deletions are always honored (below the floor guard).
-        matches = list(self._memories_dir().rglob("mem_0.md"))
+        matches = list(self.store.vault._iter_memory_notes_for_id("mem_0"))
         self.assertTrue(matches, "no markdown note found for mem_0")
         matches[0].unlink()
 
@@ -189,7 +189,7 @@ class ReviewR2StorageFixTests(unittest.TestCase):
         self._seed_memories(1)
         # Remove the note so mem_0 is a DB row with no note. Do NOT call ensure_vault_backfilled
         # (that would set the flag before the failing run under test).
-        matches = list(self._memories_dir().rglob("mem_0.md"))
+        matches = list(self.store.vault._iter_memory_notes_for_id("mem_0"))
         self.assertTrue(matches, "no markdown note found for mem_0")
         matches[0].unlink()
         self.assertFalse(self.store.vault.has_memory_markdown("mem_0"))

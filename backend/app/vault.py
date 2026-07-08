@@ -475,24 +475,63 @@ class CortexVault:
         self._write_memory_markdown(record)
         return written
 
+    def memory_note_short_id(self, memory_id: str) -> str:
+        """Stable 12-hex (48-bit) fingerprint of a memory id, used as the note-filename
+        disambiguator AND by every stale-note sweep. Derived from the immutable id (never the
+        summary/content) so it is invariant across edits — that is what makes glob-by-suffix
+        reliable. Sweeps that mutate/delete also confirm the parsed frontmatter id, so even an
+        (astronomically unlikely) collision can at worst rewrite the same logical note."""
+        return hashlib.sha1(str(memory_id or "").encode("utf-8")).hexdigest()[:12]
+
+    def memory_note_stem(self, record: dict[str, Any]) -> str:
+        """`<summary-slug>--<shortid>` — the SINGLE source of both the on-disk note filename and the
+        note-to-note wikilink target, so backlinks always resolve. The slug (from summary, else
+        content, else id) makes the vault browsable; the shortid (hash of the immutable id) keeps
+        the file identity fixed across summary edits."""
+        memory_id = str(record.get("id") or "")
+        label = record.get("summary") or record.get("content") or memory_id
+        label = " ".join(str(label).split())  # collapse newlines/whitespace before slugging
+        slug = (safe_segment(label, "memory")[:64]).strip("-._") or "memory"
+        return f"{slug}--{self.memory_note_short_id(memory_id)}"
+
     def memory_markdown_path(self, record: dict[str, Any]) -> Path:
-        """Human-readable note path: memories/<layer>/<id>.md (layer reads better than kind
-        for a person browsing their vault in a Markdown editor; id keeps it stable across edits)."""
+        """Human-readable note path: memories/<layer>/<summary-slug>--<shortid>.md. The slug makes
+        the vault browsable; the shortid (hash of the immutable id) keeps the filename stable across
+        summary edits and lets the stale-note sweeps glob by *--<short>.md. The memory id is still
+        parsed from FRONTMATTER on rebuild, so the filename carries no load-bearing identity."""
         layer = safe_segment(record.get("layer") or record.get("kind"), "memory")
-        memory_id = safe_segment(record.get("id"), "memory")
-        return self.root / "memories" / layer / f"{memory_id}.md"
+        return self.root / "memories" / layer / f"{self.memory_note_stem(record)}.md"
+
+    def _iter_memory_notes_for_id(self, memory_id: str):
+        """Yield every note path whose filename shortid matches this memory id (plus any legacy
+        <id>.md note from before the slug rename). Replaces the old rglob('<id>.md') now that
+        filenames are <slug>--<shortid>.md. Callers that mutate/delete must still confirm the parsed
+        frontmatter id to be collision-proof."""
+        base = self.root / "memories"
+        if not base.exists():
+            return
+        short = self.memory_note_short_id(memory_id)
+        seen: set[Path] = set()
+        for pattern in (f"*--{short}.md", f"{safe_segment(memory_id)}.md"):
+            for path in base.rglob(pattern):
+                if path not in seen:
+                    seen.add(path)
+                    yield path
 
     def _write_memory_markdown(self, record: dict[str, Any]) -> None:
         if not self.markdown_mirror:
             return
         try:
             target = self.memory_markdown_path(record)
-            # If the memory's layer changed, its note path changes; remove any stale note for
-            # this id at a different path so a rebuild can't pick up an orphaned duplicate.
-            memory_id = safe_segment(record.get("id"), "memory")
+            # If the memory's layer OR summary changed (new note path), or a legacy <id>.md note
+            # exists from before the slug rename, remove any stale note for this id at a different
+            # path so a rebuild can't pick up an orphaned duplicate. _iter_memory_notes_for_id
+            # matches by the id-derived shortid AND the legacy exact-id name, so this also performs
+            # the passive migration: the first re-write of any legacy note cleans up the old file.
+            memory_id = str(record.get("id") or "")
             base = self.root / "memories"
             if base.exists():
-                for path in base.rglob(f"{memory_id}.md"):
+                for path in list(self._iter_memory_notes_for_id(memory_id)):
                     if path != target:
                         try:
                             path.unlink()
@@ -504,6 +543,40 @@ class CortexVault:
             # Additive mirror: never let a Markdown write failure break the authoritative
             # JSON record write above.
             pass
+
+    def migrate_memory_note_filenames(self, user_id: str | None = None) -> int:
+        """Rename legacy memories/<layer>/<id>.md notes to the human-readable <slug>--<shortid>.md
+        scheme. Idempotent (a note already at its target path is skipped) and content-preserving
+        (atomic rename, not a re-render, so no content is ever lost — a stale generated-links block
+        simply refreshes on the note's next write). Scoped to user_id when the vault is shared.
+        Best-effort; returns the number of notes renamed."""
+        if not self.markdown_mirror:
+            return 0
+        base = self.root / "memories"
+        if not base.exists():
+            return 0
+        renamed = 0
+        for path in list(base.rglob("*.md")):
+            try:
+                record = parse_memory_markdown(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            memory_id = record.get("id")
+            if not memory_id:
+                continue
+            if user_id is not None and record.get("user_id") not in (None, user_id):
+                continue
+            target = self.memory_markdown_path(record)
+            if path == target:
+                continue
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(path, target)  # atomic rename; content preserved exactly
+                self._prune_empty_parents(path.parent, base)
+                renamed += 1
+            except OSError:
+                continue
+        return renamed
 
     def write_task(self, record: dict[str, Any]) -> Path:
         kind = safe_segment(record.get("kind"), "task")
@@ -650,7 +723,7 @@ class CortexVault:
         base = self.root / "memories"
         if not base.exists():
             return False
-        for path in base.rglob(f"{safe_segment(memory_id)}.md"):
+        for path in self._iter_memory_notes_for_id(memory_id):
             try:
                 record = parse_memory_markdown(path.read_text(encoding="utf-8"))
             except Exception:
@@ -706,13 +779,24 @@ class CortexVault:
 
     def has_memory_markdown(self, memory_id: str) -> bool:
         """True if a Markdown note file exists for this memory id (even if it fails to parse) —
-        so reconcile treats a corrupt-but-present note as still-present, not as a deletion."""
+        so reconcile treats a corrupt-but-present note as still-present, not as a deletion. Notes are
+        now <slug>--<shortid>.md, so we match by the id-derived shortid (plus any legacy <id>.md) and
+        confirm the parsed frontmatter id, so a shortid collision can't mask a real deletion."""
         if not memory_id:
             return False
         base = self.root / "memories"
         if not base.exists():
             return False
-        return any(base.rglob(f"{safe_segment(memory_id)}.md"))
+        for path in self._iter_memory_notes_for_id(memory_id):
+            try:
+                parsed_id = parse_memory_markdown(path.read_text(encoding="utf-8")).get("id")
+            except Exception:
+                return True  # unreadable file at our shortid -> present (reconcile safety)
+            # Our note, or a corrupt/garbage note at our shortid (no parseable id), counts as present;
+            # only a note carrying a DIFFERENT valid id (an impossible-in-practice collision) doesn't.
+            if not parsed_id or parsed_id == memory_id:
+                return True
+        return False
 
     def markdown_backfill_done(self, user_id: str) -> bool:
         manifest = self._read_json(self.manifest_path, {})
@@ -1272,7 +1356,16 @@ class CortexVault:
         if not base.exists():
             return False
         removed = False
-        for path in base.rglob(f"{safe_segment(memory_id)}.md"):
+        # Notes are <slug>--<shortid>.md; match by the id-derived shortid (plus legacy <id>.md) and
+        # CONFIRM the parsed frontmatter id before unlinking, so a shortid collision can never delete
+        # a different memory's note.
+        for path in list(self._iter_memory_notes_for_id(memory_id)):
+            try:
+                parsed_id = parse_memory_markdown(path.read_text(encoding="utf-8")).get("id")
+            except Exception:
+                parsed_id = None  # unreadable note for our shortid -> treat as ours, delete it
+            if parsed_id and parsed_id != memory_id:
+                continue  # a DIFFERENT memory's note (collision) -> never delete it
             try:
                 path.unlink()
                 self._prune_empty_parents(path.parent, base)

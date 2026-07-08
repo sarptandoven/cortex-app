@@ -2868,6 +2868,12 @@ class CortexStore:
         # Migrate legacy memories to Markdown notes once (runs even when the JSON vault already
         # has records), so two-way editing can safely treat a missing note as a user deletion.
         self._backfill_memory_markdown(user_id)
+        # Rename any legacy <id>.md memory notes to the human-readable <slug>--<shortid>.md scheme
+        # (idempotent, content-preserving). Runs after the backfill so every memory has a note first.
+        try:
+            self.vault.migrate_memory_note_filenames(user_id)
+        except Exception:
+            pass
         # One-time-per-startup: give an existing vault its browsable entity MOC pages without waiting
         # for the next capture/rebuild. No-op unless CORTEX_ENTITY_MOC is on (desktop). Best-effort.
         try:
@@ -9807,6 +9813,8 @@ class CortexStore:
             rows = conn.execute(
                 f"""
                 SELECT m.id AS id,
+                       COALESCE(NULLIF(m.summary, ''), '') AS summary,
+                       m.content AS content,
                        COALESCE(NULLIF(m.summary, ''), m.content) AS label,
                        COUNT(DISTINCT me.entity_id) AS shared
                 FROM memory_entities me
@@ -9827,7 +9835,14 @@ class CortexStore:
             label = str(row["label"] or "").strip().replace("\n", " ")
             if len(label) > 120:
                 label = label[:117].rstrip() + "..."
-            out.append({"id": str(row["id"]), "label": label})
+            # The backlink wikilink must target the neighbour's NOTE FILENAME stem (the file is now
+            # <slug>--<shortid>.md, not <id>.md), computed the same way as the file itself so it
+            # always resolves. Fall back to the id when the vault can't build a stem.
+            try:
+                stem = self.vault.memory_note_stem({"id": row["id"], "summary": row["summary"], "content": row["content"]})
+            except Exception:
+                stem = str(row["id"])
+            out.append({"id": str(row["id"]), "label": label, "stem": stem})
         return out
 
     def _condense_llm_enabled(self) -> bool:

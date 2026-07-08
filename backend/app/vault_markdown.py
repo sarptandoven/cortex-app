@@ -221,9 +221,12 @@ def _render_generated_sections(record: dict[str, Any]) -> str:
             bid = str(backlink.get("id") or "").strip()
             if not bid:
                 continue
+            # Note-to-note wikilink: target the neighbour's note FILENAME stem (<slug>--<shortid>)
+            # so the link resolves after the human-readable rename (N2); the id is only the fallback
+            # for a note whose stem couldn't be computed. Display the human label via an alias link.
+            target = str(backlink.get("stem") or bid).strip()
             label = str(backlink.get("label") or bid).strip().replace("\n", " ")
-            # Note-to-note wikilink by memory id (each memory note filename is <id>.md).
-            out.append(f"- [[{bid}]]" + (f" — {label}" if label and label != bid else ""))
+            out.append(f"- {_moc_alias_link(target, label)}")
     out.append(_GENERATED_MARKER)
     return "\n".join(out)
 

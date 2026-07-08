@@ -86,9 +86,14 @@ class MarkdownSourceOfTruthTests(unittest.TestCase):
         self.assertEqual(restored.get("layer"), "decision")
 
     def _seeded_md_path(self, memory_id: str) -> Path:
-        matches = list((self.store.vault.root / "memories").rglob(f"{memory_id}.md"))
-        self.assertTrue(matches, f"no markdown note for {memory_id}")
-        return matches[0]
+        # Notes are now <slug>--<shortid>.md, so locate by the frontmatter id, not the filename.
+        for path in (self.store.vault.root / "memories").rglob("*.md"):
+            try:
+                if parse_memory_markdown(path.read_text(encoding="utf-8")).get("id") == memory_id:
+                    return path
+            except Exception:
+                continue
+        self.fail(f"no markdown note for {memory_id}")
 
     def test_reconcile_is_noop_when_nothing_changed(self) -> None:
         self._seed_memory()
