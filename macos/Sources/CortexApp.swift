@@ -4724,7 +4724,7 @@ final class AppState: ObservableObject {
             await refreshAfterCapture()
 
             announceLearned(count: synced.saved + synced.queued)
-            status = "Loaded sample notes — building your memory…"
+            status = importSummary(synced, sourceName: "Sample notes")
         } catch {
             status = CortexRecoveryText.failureStatus("Sample notes", error: error)
         }
@@ -6092,12 +6092,9 @@ final class AppState: ObservableObject {
             await refreshAfterCapture()
 
             announceLearned(count: synced.saved + synced.queued)
-            if synced.scan.truncated == true {
-                status = "\(connector.name) synced \(synced.scan.records_returned) of \(synced.scan.records_found) notes. Larger libraries sync partially."
-            } else if synced.saved > 0 || synced.queued > 0 {
-                let count = synced.saved + synced.queued
+            if synced.saved > 0 || synced.queued > 0 {
                 let bridge = pluginInstalled ? " Cortex bridge installed." : ""
-                status = "\(connector.name) synced \(count) note\(count == 1 ? "" : "s") into Review.\(bridge)"
+                status = importSummary(synced, sourceName: connector.name) + bridge
             } else if synced.skipped > 0, !automatic {
                 status = pluginInstalled ? "\(connector.name) already up to date. Cortex bridge installed." : "\(connector.name) already up to date"
             } else if !automatic {
@@ -6110,6 +6107,22 @@ final class AppState: ObservableObject {
                 status = CortexRecoveryText.failureStatus("\(connector.name) sync", error: error)
             }
         }
+    }
+
+    /// Human-readable "what happened" summary for an import/sync, so the silent filters (duplicates
+    /// skipped, items failed, a large library truncated) are VISIBLE instead of hidden — the counts
+    /// come straight from the sync response the app already decodes.
+    private func importSummary(_ r: ObsidianConnectorSyncResponse, sourceName: String) -> String {
+        let kept = r.saved + r.queued
+        let found = r.scan.records_found
+        var parts: [String] = ["\(kept) memor\(kept == 1 ? "y" : "ies") saved"]
+        if r.skipped > 0 { parts.append("\(r.skipped) duplicate\(r.skipped == 1 ? "" : "s") skipped") }
+        if r.failed > 0 { parts.append("\(r.failed) couldn’t be read") }
+        var summary = "\(sourceName): from \(found) note\(found == 1 ? "" : "s"), " + parts.joined(separator: ", ") + "."
+        if r.scan.truncated == true {
+            summary += " Large library — \(r.scan.records_returned) of \(found) scanned; sync again to continue."
+        }
+        return summary
     }
 
     private func loadSyncReceipts(for devices: [SyncDeviceItem]) async -> [String: [SyncReceiptItem]] {
