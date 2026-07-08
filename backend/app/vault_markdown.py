@@ -40,6 +40,7 @@ MEMORY_FRONTMATTER_FIELDS: tuple[str, ...] = (
     "updated_at",
     "capture_id",
     "user_id",
+    "author_class",
     "topics",
     "entity_ids",
     "summary",
@@ -68,7 +69,10 @@ _GENERATED_KEYS = ("_link_names", "_backlinks")
 # Obsidian's benefit and STRIPPED on parse, so the durable record round-trips byte-identically (the
 # source field — e.g. `topics` for `tags` — stays the single source of truth). Adding a key here
 # means: emit it in render from its source, and drop it in parse.
-_PROJECTED_ONLY_FIELDS = ("tags",)
+# tags: projected from topics at render time. trust_score: a DERIVED ranking signal recomputed
+# from author_class (+ Phase 3 corroboration) — never rendered into notes and stripped on parse,
+# so a hand-edited score can never enter the rebuild source of truth.
+_PROJECTED_ONLY_FIELDS = ("tags", "trust_score")
 
 
 def _wikilink(name: str) -> str:
@@ -153,7 +157,7 @@ def render_memory_markdown(record: dict[str, Any]) -> str:
     # Underscore-prefixed keys (e.g. _link_names/_backlinks) are internal render inputs, never
     # frontmatter — skipping them here is what stops the generated-link data leaking into YAML.
     for key in sorted(record.keys()):
-        if key in emitted or key == "content" or key.startswith("_"):
+        if key in emitted or key == "content" or key.startswith("_") or key in _PROJECTED_ONLY_FIELDS:
             continue
         value = record[key]
         if value is None:

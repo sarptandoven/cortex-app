@@ -103,6 +103,8 @@ CREATE TABLE IF NOT EXISTS memories (
   updated_at TEXT,
   raw_excerpt TEXT,
   occurrences INTEGER NOT NULL DEFAULT 1,
+  author_class TEXT NOT NULL DEFAULT 'unknown',
+  trust_score REAL NOT NULL DEFAULT 0.5,
   FOREIGN KEY(capture_id) REFERENCES captures(id) ON DELETE CASCADE
 );
 
@@ -330,6 +332,34 @@ CREATE TABLE IF NOT EXISTS memory_jobs (
   completed_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS agent_sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  token_id TEXT,
+  host_label TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  goal TEXT,
+  parent_session_id TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  started_at TEXT NOT NULL,
+  last_checkpoint_at TEXT,
+  updated_at TEXT NOT NULL,
+  closed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS context_packs (
+  pack_sha TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  session_id TEXT,
+  task TEXT NOT NULL DEFAULT '',
+  intent TEXT NOT NULL DEFAULT '',
+  surface TEXT NOT NULL DEFAULT '',
+  engine_version INTEGER NOT NULL,
+  resolution_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(user_id, pack_sha)
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
   memory_id UNINDEXED,
   content,
@@ -391,6 +421,8 @@ MIGRATIONS = [
     "ALTER TABLE memories ADD COLUMN valid_to TEXT",
     "ALTER TABLE memories ADD COLUMN superseded_by TEXT",
     "ALTER TABLE memories ADD COLUMN occurrences INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE memories ADD COLUMN author_class TEXT NOT NULL DEFAULT 'unknown'",
+    "ALTER TABLE memories ADD COLUMN trust_score REAL NOT NULL DEFAULT 0.5",
     "ALTER TABLE import_sessions ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0",
 ]
 
@@ -430,6 +462,10 @@ CREATE INDEX IF NOT EXISTS idx_capture_processing_user_status ON capture_process
 CREATE INDEX IF NOT EXISTS idx_memory_jobs_claim ON memory_jobs(status, run_at, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_memory_jobs_user_status ON memory_jobs(user_id, status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memory_jobs_object ON memory_jobs(user_id, object_type, object_id);
+CREATE INDEX IF NOT EXISTS idx_memories_author_class ON memories(user_id, author_class);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_user_status ON agent_sessions(user_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_context_packs_user_created ON context_packs(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_context_packs_session ON context_packs(user_id, session_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS oauth_pending (
   state TEXT PRIMARY KEY,

@@ -33,6 +33,7 @@ from .profile import build_profile_sections
 from .condense import condense_section
 from .graph_analysis import analyze_entity_graph
 from .extractor import extract_context, now_iso, stable_id
+from .provenance import base_trust_score, classify_author, normalize_author_class, normalize_trust_score
 from .sqlite_runtime import SQLITE_RUNTIME, sqlite3
 from .source_ingest import SourceRecord, analyze_sources, import_source_records_page, supported_sources
 from .vault import CortexVault
@@ -2364,6 +2365,11 @@ def _memory_edit_signature(record: dict[str, Any]) -> str:
             "superseded_by": str(record.get("superseded_by") or "").strip(),
             "status": str(record.get("status") or "active").strip(),
             "raw_excerpt": str(record.get("raw_excerpt") or "").strip(),
+            # author_class is deliberately NOT part of the edit signature. It is derived from
+            # durable fields (source/source_url/kind) on every rebuild, so a hand-edited value in
+            # frontmatter must not count as user-editable divergence: legacy notes without the
+            # field would otherwise diverge forever from backfilled DB rows, and editing YAML must
+            # never be a path to flipping agent-authored records to user-authored.
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -2860,6 +2866,7 @@ class CortexStore:
         # production path constructs the store after init_db, so all memories reads/writes
         # below can rely on the column existing.
         self._ensure_memory_occurrences_column()
+        self._ensure_provenance_substrate()
 
     def _ensure_memory_occurrences_column(self) -> None:
         with connect(self.db_path) as conn:
@@ -2871,6 +2878,90 @@ class CortexStore:
                 # open will converge, and nothing can touch memories before then.
                 if "duplicate column name" not in message and "no such table" not in message:
                     raise
+
+    def _ensure_provenance_substrate(self) -> None:
+        """Phase 0 substrate: authorship/trust columns plus the agent_sessions and context_packs
+        tables. Same duplicate-column-tolerant, init_db-converging pattern as the occurrences
+        guard above, so legacy databases upgrade in place. Backfill of author_class/trust_score
+        for pre-existing rows runs exactly once (rows still at the 'unknown' default)."""
+        with connect(self.db_path) as conn:
+            for statement in (
+                "ALTER TABLE memories ADD COLUMN author_class TEXT NOT NULL DEFAULT 'unknown'",
+                "ALTER TABLE memories ADD COLUMN trust_score REAL NOT NULL DEFAULT 0.5",
+            ):
+                try:
+                    conn.execute(statement)
+                except sqlite3.OperationalError as exc:
+                    message = str(exc).lower()
+                    if "duplicate column name" not in message and "no such table" not in message:
+                        raise
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_sessions (
+                  id TEXT PRIMARY KEY,
+                  user_id TEXT NOT NULL,
+                  token_id TEXT,
+                  host_label TEXT,
+                  status TEXT NOT NULL DEFAULT 'active',
+                  goal TEXT,
+                  parent_session_id TEXT,
+                  metadata_json TEXT NOT NULL DEFAULT '{}',
+                  started_at TEXT NOT NULL,
+                  last_checkpoint_at TEXT,
+                  updated_at TEXT NOT NULL,
+                  closed_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS context_packs (
+                  pack_sha TEXT NOT NULL,
+                  user_id TEXT NOT NULL,
+                  session_id TEXT,
+                  task TEXT NOT NULL DEFAULT '',
+                  intent TEXT NOT NULL DEFAULT '',
+                  surface TEXT NOT NULL DEFAULT '',
+                  engine_version INTEGER NOT NULL,
+                  resolution_json TEXT NOT NULL DEFAULT '{}',
+                  created_at TEXT NOT NULL,
+                  PRIMARY KEY(user_id, pack_sha)
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_author_class ON memories(user_id, author_class)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_sessions_user_status ON agent_sessions(user_id, status, updated_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_context_packs_user_created ON context_packs(user_id, created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_context_packs_session ON context_packs(user_id, session_id, created_at DESC)")
+            self._backfill_author_class(conn)
+
+    def _backfill_author_class(self, conn) -> None:
+        """Classify pre-Phase-0 rows exactly once. Only rows still at the schema default
+        ('unknown' with the untouched 0.5 score) are candidates, so re-running is a no-op and a
+        future explicit author_class is never clobbered. Classification uses only durable record
+        fields, so a vault rebuild reproduces the identical result."""
+        try:
+            rows = conn.execute(
+                "SELECT id, user_id, source, source_url, layer, provenance_json FROM memories WHERE author_class = 'unknown'"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return  # brand-new path before init_db; nothing to backfill
+        updates: list[tuple[str, float, str, str]] = []
+        for row in rows:
+            provenance = self._json_or_empty(row["provenance_json"])
+            author_class = classify_author(
+                source=row["source"],
+                source_url=row["source_url"],
+                layer=row["layer"],
+                provenance=provenance,
+            )
+            if author_class != "unknown":
+                updates.append((author_class, base_trust_score(author_class), row["user_id"], row["id"]))
+        for author_class, trust, user_id, memory_id in updates:
+            conn.execute(
+                "UPDATE memories SET author_class = ?, trust_score = ? WHERE user_id = ? AND id = ?",
+                (author_class, trust, user_id, memory_id),
+            )
 
     def settings(self, user_id: str) -> dict[str, Any]:
         with connect(self.db_path) as conn:
@@ -2953,6 +3044,7 @@ class CortexStore:
                         "entity_ids": json.loads(row["entity_ids_json"] or "[]"),
                         "occurred_at": row["occurred_at"],
                         "occurrences": _memory_occurrences(row["occurrences"] if "occurrences" in row.keys() else 1),
+                        "author_class": normalize_author_class(row["author_class"] if "author_class" in row.keys() else "unknown"),
                         "captured_at": row["captured_at"],
                         "updated_at": row["updated_at"],
                         "raw_excerpt": row["raw_excerpt"],
@@ -16168,11 +16260,22 @@ class CortexStore:
                 entity_ids = memory.get("entity_ids", [])
                 captured_at = memory.get("captured_at") or timestamp
                 provenance = memory.get("provenance") if isinstance(memory.get("provenance"), dict) else {}
+                # Vault records that predate Phase 0 carry no author_class: re-derive it from the
+                # same durable fields the live save path uses, so a rebuild converges instead of
+                # resetting authorship to 'unknown'.
+                rebuilt_author_class = normalize_author_class(memory.get("author_class"))
+                if rebuilt_author_class == "unknown":
+                    rebuilt_author_class = classify_author(
+                        source=memory.get("source", "vault"),
+                        source_url=memory.get("source_url"),
+                        layer=memory_layer(memory.get("kind", "observation"), memory.get("layer")),
+                        provenance=provenance,
+                    )
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO memories
-                    (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, occurrences, captured_at, updated_at, raw_excerpt)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, occurrences, captured_at, updated_at, raw_excerpt, author_class, trust_score)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         memory["id"],
@@ -16203,6 +16306,12 @@ class CortexStore:
                         captured_at,
                         memory.get("updated_at") or captured_at,
                         memory.get("raw_excerpt"),
+                        rebuilt_author_class,
+                        # trust_score is derived, never restored from user-editable frontmatter:
+                        # a hand-edited score in the vault must not inflate ranking trust.
+                        normalize_trust_score(memory.get("trust_score"), rebuilt_author_class)
+                        if normalize_author_class(memory.get("author_class")) != "unknown"
+                        else base_trust_score(rebuilt_author_class),
                     ),
                 )
                 if memory.get("status", "active") == "active":
@@ -18037,6 +18146,16 @@ class CortexStore:
             "SELECT capture_id, occurrences FROM memories WHERE user_id = ? AND id = ?",
             (user_id, memory_id),
         ).fetchone()
+        # Phase 0 authorship: classify from durable fields only (source label, self-citation
+        # URL, personal layer, connector account) so a vault rebuild reproduces the same answer.
+        author_class = classify_author(
+            source=source,
+            source_url=memory_source_url,
+            layer=layer,
+            provenance=provenance,
+            source_account_id=(source_account or {}).get("id"),
+        )
+        trust_score = base_trust_score(author_class)
         occurrences = 1
         if existing_memory:
             occurrences = _memory_occurrences(existing_memory["occurrences"])
@@ -18045,8 +18164,8 @@ class CortexStore:
         conn.execute(
             """
             INSERT OR REPLACE INTO memories
-            (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, occurrences, captured_at, updated_at, raw_excerpt)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, occurrences, captured_at, updated_at, raw_excerpt, author_class, trust_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 memory_id,
@@ -18073,6 +18192,8 @@ class CortexStore:
                 captured_at,
                 captured_at,
                 raw_excerpt,
+                author_class,
+                trust_score,
             ),
         )
         conn.execute("DELETE FROM memory_entities WHERE memory_id = ?", (memory_id,))
@@ -18130,6 +18251,10 @@ class CortexStore:
             "captured_at": captured_at,
             "updated_at": captured_at,
             "raw_excerpt": raw_excerpt,
+            "author_class": author_class,
+            # Derived ranking signal, recomputable from author_class (+ Phase 3 adjustments);
+            # included on the payload for API consumers but never treated as user-editable.
+            "trust_score": trust_score,
         }
 
     def _bump_duplicate_memory_occurrences(
@@ -21183,6 +21308,11 @@ class CortexStore:
             "valid_to": row["valid_to"] if "valid_to" in keys else None,
             "superseded_by": row["superseded_by"] if "superseded_by" in keys else None,
             "occurrences": _memory_occurrences(row["occurrences"]) if "occurrences" in keys else 1,
+            "author_class": normalize_author_class(row["author_class"] if "author_class" in keys else "unknown"),
+            "trust_score": normalize_trust_score(
+                row["trust_score"] if "trust_score" in keys else None,
+                row["author_class"] if "author_class" in keys else "unknown",
+            ),
             "captured_at": row["captured_at"],
             "updated_at": row["updated_at"] if "updated_at" in keys else row["captured_at"],
             "raw_excerpt": row["raw_excerpt"],

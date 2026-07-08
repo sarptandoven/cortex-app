@@ -65,6 +65,11 @@ VAULT_DIRECTORIES = (
     "attachments",
     "backups",
     "exports",
+    # Pinned context packs (Phase 0 substrate). Machine-owned, content-addressed JSON blobs.
+    # DELIBERATELY absent from RESTORE_DIRECTORIES: packs are an audit artifact of past agent
+    # calls, not durable user records — reconcile (globs memories/** only) and backup restore
+    # ignore them, while git/iCloud still syncs them for cross-device replay.
+    "context_packs",
 )
 RESTORE_ROOT_FILES = {"manifest.json", "settings.json", "events.jsonl"}
 RESTORE_DIRECTORIES = {"imports", "source_accounts", "sync_cursors", "sync_devices", "sync_receipts", "captures", "memories", "tasks", "entities", "graph_edges", "deletion_tombstones", "attachments"}
@@ -321,6 +326,33 @@ class CortexVault:
         day = safe_segment(str(record.get("created_at", ""))[:10], "undated")
         path = self.root / "imports" / day / f"{safe_segment(record.get('id'), 'import')}.json"
         return self._write_record(path, "import", record)
+
+    def context_pack_path(self, pack_sha: str) -> Path:
+        """Content-addressed pack location: context_packs/<sha[:2]>/<sha>.json. Sharded on the
+        first byte so a long-lived vault never accumulates one giant directory."""
+        sha = safe_segment(str(pack_sha or ""), "pack")
+        return self.root / "context_packs" / sha[:2] / f"{sha}.json"
+
+    def write_context_pack(self, pack_sha: str, canonical_bytes: bytes) -> Path:
+        """Store the EXACT canonical pack bytes (already hashed by the caller). Unlike
+        _write_record, no envelope keys are injected: byte-identity is the whole contract —
+        sha256(file bytes) == pack_sha must hold forever, so replay/verify can prove integrity.
+        Content-addressed files are immutable: an existing file is left untouched."""
+        path = self.context_pack_path(pack_sha)
+        if path.exists():
+            return path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(path.name + ".tmp")
+        temp.write_bytes(canonical_bytes)
+        temp.replace(path)
+        return path
+
+    def read_context_pack(self, pack_sha: str) -> bytes | None:
+        path = self.context_pack_path(pack_sha)
+        try:
+            return path.read_bytes()
+        except FileNotFoundError:
+            return None
 
     def write_source_account(self, record: dict[str, Any]) -> Path:
         user_id = safe_segment(record.get("user_id"), "unknown")
