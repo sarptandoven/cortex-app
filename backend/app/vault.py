@@ -1110,11 +1110,15 @@ class CortexVault:
         }
 
     def _write_record(self, path: Path, record_type: str, record: dict[str, Any]) -> Path:
+        # Underscore-prefixed keys are internal, in-memory render inputs (e.g. a memory's
+        # _link_names / _backlinks used to build the note's [[wikilinks]]); they must never enter
+        # the durable JSON source-of-truth (a rebuild reads these files back). The Markdown mirror
+        # still sees the full record because _write_memory_markdown runs on the original dict.
         payload = {
             "vault_record_type": record_type,
             "vault_record_version": VAULT_VERSION,
             "vault_updated_at": vault_now(),
-            **record,
+            **{key: value for key, value in record.items() if not key.startswith("_")},
         }
         return self._write_json(path, payload)
 

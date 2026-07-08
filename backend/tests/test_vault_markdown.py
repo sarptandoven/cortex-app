@@ -11,6 +11,7 @@ from backend.app.vault_markdown import (
     atomic_write_text,
     parse_memory_markdown,
     render_memory_markdown,
+    _wikilink,
 )
 
 
@@ -69,8 +70,12 @@ class MarkdownCodecTests(unittest.TestCase):
 
     def test_body_is_the_human_readable_memory_content(self) -> None:
         text = render_memory_markdown(SAMPLE_MEMORY)
-        after = text.split("---", 2)[2].strip()
-        self.assertEqual(after, SAMPLE_MEMORY["content"])
+        after = text.split("---", 2)[2]
+        # The human-readable content is the body up to the auto-generated links block, and it
+        # always round-trips back cleanly via parse (which strips the generated block).
+        content_part = after.split("<!-- cortex:generated-links -->", 1)[0].strip()
+        self.assertEqual(content_part, SAMPLE_MEMORY["content"])
+        self.assertEqual(parse_memory_markdown(text)["content"], SAMPLE_MEMORY["content"])
 
     def test_lenient_parse_of_hand_edited_frontmatter(self) -> None:
         # A user editing in Obsidian may write bare YAML rather than JSON-quoted values.
@@ -92,14 +97,100 @@ class MarkdownCodecTests(unittest.TestCase):
 
     def test_module_is_stdlib_only_under_dash_S(self) -> None:
         # The shipping backend runs `python3 -S` (no site-packages). The Markdown layer must
-        # import cleanly there and must NOT depend on PyYAML.
+        # import cleanly there and must NOT depend on PyYAML. Exercise the generated-links path too.
         result = subprocess.run(
-            [sys.executable, "-S", "-c", "import backend.app.vault_markdown as m; m.render_memory_markdown({'id':'x','content':'y'})"],
+            [
+                sys.executable,
+                "-S",
+                "-c",
+                "import backend.app.vault_markdown as m; "
+                "m.render_memory_markdown({'id':'x','content':'y','entity_ids':['e'],"
+                "'_link_names':{'e':'E'},'_backlinks':[{'id':'m','label':'l'}]})",
+            ],
             cwd=str(Path(__file__).resolve().parents[2]),
             capture_output=True,
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    # ---- Objective 5: generated [[wikilinks]] + Backlinks (lossless & idempotent) ----
+
+    def test_links_section_emitted_with_resolved_names(self) -> None:
+        rec = dict(SAMPLE_MEMORY)
+        rec["_link_names"] = {"ent_cortex": "Cortex", "ent_dana": "Dana Lee"}
+        text = render_memory_markdown(rec)
+        self.assertIn("## Links", text)
+        self.assertIn("[[Cortex]]", text)
+        self.assertIn("[[Dana Lee]]", text)
+        self.assertIn("[[database]]", text)  # topic wikilink
+        self.assertIn("[[launch]]", text)
+
+    def test_unresolved_entity_id_falls_back_to_id(self) -> None:
+        text = render_memory_markdown(dict(SAMPLE_MEMORY))  # no _link_names
+        self.assertIn("[[ent_cortex]]", text)  # raw id used, never crashes
+
+    def test_backlinks_section_emitted(self) -> None:
+        rec = dict(SAMPLE_MEMORY)
+        rec["_backlinks"] = [{"id": "mem_neighbor1", "label": "Chose Postgres earlier"}]
+        text = render_memory_markdown(rec)
+        self.assertIn("## Backlinks", text)
+        self.assertIn("- [[mem_neighbor1]] — Chose Postgres earlier", text)
+
+    def test_generated_keys_never_leak_into_frontmatter(self) -> None:
+        rec = dict(SAMPLE_MEMORY)
+        rec["_link_names"] = {"ent_cortex": "Cortex"}
+        rec["_backlinks"] = [{"id": "m", "label": "x"}]
+        text = render_memory_markdown(rec)
+        frontmatter = text.split("---", 2)[1]
+        self.assertNotIn("_link_names", frontmatter)
+        self.assertNotIn("_backlinks", frontmatter)
+
+    def test_parse_strips_generated_sections_content_is_clean(self) -> None:
+        # THE core round-trip guarantee: content must never absorb generated wikilinks.
+        rec = dict(SAMPLE_MEMORY)
+        rec["_link_names"] = {"ent_cortex": "Cortex", "ent_dana": "Dana Lee"}
+        rec["_backlinks"] = [{"id": "mem_n", "label": "neighbor"}]
+        parsed = parse_memory_markdown(render_memory_markdown(rec))
+        self.assertEqual(parsed["content"], SAMPLE_MEMORY["content"])
+        self.assertNotIn("[[", parsed["content"])
+
+    def test_render_parse_render_is_idempotent(self) -> None:
+        # No unbounded growth: exactly one Links section after a full round-trip re-render.
+        rec = dict(SAMPLE_MEMORY)
+        rec["_link_names"] = {"ent_cortex": "Cortex", "ent_dana": "Dana Lee"}
+        rec["_backlinks"] = [{"id": "mem_n", "label": "neighbor"}]
+        t1 = render_memory_markdown(rec)
+        reparsed = parse_memory_markdown(t1)
+        reparsed["_link_names"] = rec["_link_names"]
+        reparsed["_backlinks"] = rec["_backlinks"]
+        reparsed["topics"] = SAMPLE_MEMORY["topics"]
+        reparsed["entity_ids"] = SAMPLE_MEMORY["entity_ids"]
+        t2 = render_memory_markdown(reparsed)
+        self.assertEqual(t1.count("## Links"), 1)
+        self.assertEqual(t2.count("## Links"), 1)
+        self.assertEqual(t1.count("## Backlinks"), 1)
+        self.assertEqual(t2.count("## Backlinks"), 1)
+
+    def test_user_text_below_generated_block_is_preserved(self) -> None:
+        # A user who types below the auto-generated block must not lose that text on parse.
+        rec = dict(SAMPLE_MEMORY)
+        rec["_link_names"] = {"ent_cortex": "Cortex"}
+        text = render_memory_markdown(rec)
+        edited = text.rstrip("\n") + "\n\nMy own footnote below the links.\n"
+        parsed = parse_memory_markdown(edited)
+        self.assertIn("My own footnote below the links.", parsed["content"])
+        self.assertNotIn("[[", parsed["content"])  # generated block still stripped
+        self.assertEqual(parsed["content"].count(SAMPLE_MEMORY["content"]), 1)
+
+    def test_existing_round_trip_unaffected_without_link_maps(self) -> None:
+        # Backfill/patch paths render without _link_names/_backlinks -> content still clean.
+        parsed = parse_memory_markdown(render_memory_markdown(dict(SAMPLE_MEMORY)))
+        self.assertEqual(parsed["content"], SAMPLE_MEMORY["content"])
+
+    def test_wikilink_sanitizes_brackets_and_pipes(self) -> None:
+        self.assertEqual(_wikilink("A|B]C"), "[[A B C]]")
+        self.assertEqual(_wikilink(""), "")
+        self.assertEqual(_wikilink("  spaced  name  "), "[[spaced name]]")
 
 
 class VaultMemoryMirrorTests(unittest.TestCase):

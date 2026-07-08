@@ -9176,6 +9176,26 @@ class CortexStore:
             )
 
             self.vault.write_settings(user_id, user_settings_snapshot)
+
+            # Vault graph enrichment: resolve each memory's canonical entity_ids -> display names
+            # and compute its co-mention backlinks, so every Markdown note carries real Obsidian
+            # [[wikilinks]] + a "## Backlinks" list. Best-effort — a failure here must never block
+            # the capture write. entity_ids are already canonical here (remap ran above), and these
+            # underscore keys are consumed by the renderer and stripped from the durable JSON.
+            try:
+                needed_ids: set[str] = set()
+                for memory in memories:
+                    needed_ids.update(str(e) for e in (memory.get("entity_ids") or []))
+                id_to_name = self._entity_names_for_ids(conn, user_id, needed_ids)
+                for memory in memories:
+                    mem_entity_ids = list(memory.get("entity_ids") or [])
+                    memory["_link_names"] = {eid: id_to_name.get(eid, eid) for eid in mem_entity_ids}
+                    memory["_backlinks"] = self._backlinks_for_memory(
+                        conn, user_id, memory["id"], mem_entity_ids
+                    )
+            except Exception:
+                pass
+
             self.vault.write_capture_bundle(
                 capture={
                     "id": capture_id,
@@ -9199,6 +9219,11 @@ class CortexStore:
                 entities=entities,
                 edges=edges,
             )
+            # The vault renderer has consumed the transient link inputs; drop them so they never
+            # ride into the API response or any downstream consumer of the returned memories.
+            for memory in memories:
+                memory.pop("_link_names", None)
+                memory.pop("_backlinks", None)
 
         return {
             "capture_id": capture_id,
@@ -9728,6 +9753,66 @@ class CortexStore:
                 [*params, user_id, entity_a, entity_b],
             ).fetchall()
         return sorted(str(row["memory_id"]) for row in rows)
+
+    def _entity_names_for_ids(self, conn, user_id: str, entity_ids) -> dict[str, str]:
+        """Canonical display names for a set of entity ids, for [[wikilinks]] in the vault notes.
+        One batched read (chunked under SQLite's variable limit); ids with no entity row are simply
+        absent so the render layer falls back to the id itself. Best-effort — never raises."""
+        ids = [str(e) for e in dict.fromkeys(entity_ids or []) if str(e or "").strip()]
+        if not ids:
+            return {}
+        names: dict[str, str] = {}
+        try:
+            for start in range(0, len(ids), 400):
+                chunk = ids[start:start + 400]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"SELECT id, name FROM entities WHERE user_id = ? AND id IN ({placeholders})",
+                    [user_id, *chunk],
+                ).fetchall()
+                for row in rows:
+                    if row["name"]:
+                        names[str(row["id"])] = str(row["name"])
+        except Exception:
+            return names
+        return names
+
+    def _backlinks_for_memory(self, conn, user_id: str, memory_id: str, entity_ids, *, limit: int = 6) -> list[dict[str, Any]]:
+        """Co-mention neighbours of a memory: OTHER active memories that share >=1 entity with it,
+        ranked by number of shared entities then recency. Feeds the note's "## Backlinks" list so
+        the vault becomes a real Obsidian graph. Abstains (empty) on a memory with no entities.
+        Best-effort — never raises into the capture write."""
+        ids = [str(e) for e in dict.fromkeys(entity_ids or []) if str(e or "").strip()]
+        if not ids:
+            return []
+        out: list[dict[str, Any]] = []
+        try:
+            placeholders = ",".join("?" for _ in ids[:400])
+            rows = conn.execute(
+                f"""
+                SELECT m.id AS id,
+                       COALESCE(NULLIF(m.summary, ''), m.content) AS label,
+                       COUNT(DISTINCT me.entity_id) AS shared
+                FROM memory_entities me
+                JOIN memories m ON m.id = me.memory_id AND m.user_id = me.user_id
+                WHERE me.user_id = ?
+                  AND me.entity_id IN ({placeholders})
+                  AND me.memory_id != ?
+                  AND m.status = 'active'
+                GROUP BY m.id
+                ORDER BY shared DESC, m.captured_at DESC
+                LIMIT ?
+                """,
+                [user_id, *ids[:400], memory_id, limit],
+            ).fetchall()
+        except Exception:
+            return []
+        for row in rows:
+            label = str(row["label"] or "").strip().replace("\n", " ")
+            if len(label) > 120:
+                label = label[:117].rstrip() + "..."
+            out.append({"id": str(row["id"]), "label": label})
+        return out
 
     def _condense_llm_enabled(self) -> bool:
         """The profile's per-section prose may be rewritten by an LLM ONLY when one is genuinely
