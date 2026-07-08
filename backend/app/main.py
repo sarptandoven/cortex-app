@@ -11,11 +11,11 @@ import os
 import secrets
 import time
 from typing import Any
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from .accounts import iso_utc, utc_now
@@ -2628,13 +2628,20 @@ def _app_flow_cookie_valid(cookie: str | None, flow_id: str) -> bool:
     return hmac.compare_digest(cookie, _app_flow_cookie(flow_id))
 
 
+def _wants_html(request: Request) -> bool:
+    """True when the caller is a browser navigation (Accept: text/html), false for the desktop app /
+    JSON API clients (Accept: application/json or */*). Lets the OAuth start/callback endpoints keep
+    their JSON contract for the app while giving a real browser a 302 redirect through the flow."""
+    return "text/html" in (request.headers.get("accept") or "").lower()
+
+
 @app.get("/v1/auth/oauth/{provider}/start")
 def auth_oauth_start(
     provider: str,
     request: Request,
     redirect_uri: str = Query(default="", max_length=500),
     app_flow: str = Query(default="", max_length=120),
-) -> dict[str, Any]:
+) -> Any:
     runtime = _auth_runtime_or_404()
     _auth_rate_limit(runtime, "oauth_start", request)
     # Login-CSRF / flow-fixation guard for the desktop app-login handoff: only honor app_flow when
@@ -2643,13 +2650,18 @@ def auth_oauth_start(
     # victim's OAuth completion can never be attached to an attacker-owned poll flow.
     bound_flow = app_flow if _app_flow_cookie_valid(request.cookies.get(APP_FLOW_COOKIE_NAME), app_flow) else ""
     try:
-        return runtime.oidc.start(
+        result = runtime.oidc.start(
             provider,
             redirect_uri or _default_oauth_redirect(provider),
             app_flow_id=bound_flow or None,
         )
     except OidcError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    # A browser (the "Continue with X" button on the web login page) must be REDIRECTED to the
+    # provider; only the app/JSON clients get the {authorize_url,...} body.
+    if _wants_html(request):
+        return RedirectResponse(result["authorize_url"], status_code=302)
+    return result
 
 
 # Shown in the browser after a successful desktop app-login OAuth handoff. Tokens are delivered to
@@ -2678,13 +2690,22 @@ def auth_oauth_callback(
 ) -> Any:
     runtime = _auth_runtime_or_404()
     _auth_rate_limit(runtime, "oauth_callback", request)
+    wants_html = _wants_html(request)
+
+    def _fail(detail: str, status: int) -> Any:
+        # A browser gets bounced to the completion page (no tokens) — its JS shows a friendly
+        # "couldn't complete sign in" with a link back to login; the JSON API keeps its error code.
+        if wants_html:
+            return RedirectResponse("/account/oauth/complete", status_code=302)
+        raise HTTPException(status_code=status, detail=detail)
+
     if error:
-        raise HTTPException(status_code=400, detail="The provider did not authorize Cortex.")
+        return _fail("The provider did not authorize Cortex.", 400)
     try:
         identity = runtime.oidc.complete(provider, state=state, code=code)
     except OidcError as exc:
         _auth_logger.info("oauth callback rejected for %s: %s", provider, exc)
-        raise HTTPException(status_code=401, detail=GENERIC_AUTH_FAILURE) from exc
+        return _fail(GENERIC_AUTH_FAILURE, 401)
     try:
         result = runtime.service.find_or_challenge_identity(
             provider,
@@ -2695,10 +2716,16 @@ def auth_oauth_callback(
             profile={"provider": provider},
         )
     except AuthError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
+        return _fail(str(exc), 401)
     if result["action"] == "link_required":
         # Never-silent-auto-link: the user must authenticate with the existing
         # method, then complete the link via POST /v1/auth/oauth/{provider}/link.
+        if wants_html:
+            # The browser flow has no in-page challenge handoff; bounce to the completion
+            # page with a marker so its JS explains "already have an account — sign in first".
+            return RedirectResponse(
+                "/account/oauth/complete?link_required=1", status_code=302
+            )
         return JSONResponse(
             status_code=409,
             content={
@@ -2718,6 +2745,9 @@ def auth_oauth_callback(
         # App login: NO token ever rides a redirect URL. The callback completes
         # the flow server-side; the app polls the pair out with its poll_secret.
         _complete_app_login_flow(runtime, str(app_flow_id), account)
+        if wants_html:
+            # The desktop handoff finished in the browser: show the "return to Doppl" page.
+            return HTMLResponse(content=_APP_LOGIN_DONE_HTML)
         return {"action": result["action"], "status": "complete_in_app"}
     session = runtime.service.mint_session(
         account,
@@ -2725,6 +2755,16 @@ def auth_oauth_callback(
         ip=_client_ip(request),
         user_agent=(request.headers.get("user-agent") or "")[:200] or None,
     )
+    if wants_html:
+        # Web sign-in: hand the session pair to the browser in the URL FRAGMENT (never the
+        # query) so tokens never reach the server access log or Referer header. The completion
+        # page's JS reads them out of location.hash into localStorage, then scrubs the hash.
+        fragment = urlencode(
+            {"access_token": session["access"], "refresh_token": session["refresh"]}
+        )
+        return RedirectResponse(
+            f"/account/oauth/complete#{fragment}", status_code=302
+        )
     return {"action": result["action"], **_session_pair_payload(session)}
 
 

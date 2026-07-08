@@ -261,6 +261,101 @@ class WebAccountAuthEnabledTests(unittest.TestCase):
         for path in ACCOUNT_PAGES + ("/account/app.js",):
             self.assertLess(self.client.get(path).status_code, 500, path)
 
+    # ---- browser OAuth content-negotiation (the "I can't sign in" fix) ----
+
+    def test_oauth_start_redirects_a_browser_to_the_provider(self) -> None:
+        # THE bug: clicking "Continue with Google" showed raw JSON. A browser navigation
+        # (Accept: text/html) must be 302-redirected to the provider's authorize URL.
+        r = self.client.get(
+            "/v1/auth/oauth/google/start",
+            headers={"accept": "text/html"},
+            follow_redirects=False,
+        )
+        self.assertEqual(r.status_code, 302, r.text)
+        loc = r.headers["location"]
+        self.assertIn("accounts.google.com", loc)
+        self.assertIn("client_id=google-client-id", loc)
+        self.assertIn("redirect_uri=", loc)
+
+    def test_oauth_start_keeps_json_contract_for_the_app(self) -> None:
+        # The desktop app / JSON-API client (Accept: */* or application/json) still gets the
+        # {authorize_url, state} body it polls against — the app contract must not change.
+        r = self.client.get(
+            "/v1/auth/oauth/google/start", headers={"accept": "application/json"}
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertIn("accounts.google.com", body["authorize_url"])
+        self.assertIn("state", body)
+
+    def test_oauth_callback_bounces_browser_to_completion_on_error(self) -> None:
+        # A provider error (or a bad state) must bounce a browser to /account/oauth/complete
+        # (its JS shows a friendly failure), NOT surface a raw JSON 4xx in the address bar.
+        r = self.client.get(
+            "/v1/auth/oauth/google/callback",
+            params={"error": "access_denied"},
+            headers={"accept": "text/html"},
+            follow_redirects=False,
+        )
+        self.assertEqual(r.status_code, 302, r.text)
+        self.assertEqual(r.headers["location"], "/account/oauth/complete")
+
+    def test_oauth_callback_keeps_json_error_for_the_app(self) -> None:
+        # The JSON-API caller keeps its HTTP error code (no redirect) so the app can react.
+        r = self.client.get(
+            "/v1/auth/oauth/google/callback",
+            params={"error": "access_denied"},
+            headers={"accept": "application/json"},
+            follow_redirects=False,
+        )
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("detail", r.json())
+
+    def test_oauth_callback_delivers_tokens_to_browser_in_url_fragment(self) -> None:
+        # The success path: a browser lands back on /account/oauth/complete with the session
+        # pair in the URL FRAGMENT (never the query), so tokens never reach the server log.
+        from unittest import mock
+
+        runtime = main_module._auth_runtime_or_404()
+        identity = {
+            "subject": "sub-123",
+            "email": "signin@example.com",
+            "email_verified": True,
+            "display_name": "Sign In",
+        }  # no app_flow_id -> plain web sign-in
+        result = {"action": "login", "account": {"account_id": "acc_1", "status": "login"}}
+        session = {
+            "access": "AT.browser.token",
+            "refresh": "RT.browser.token",
+            "session_id": "sess_1",
+            "account": {"account_id": "acc_1", "status": "login", "primary_email": "signin@example.com"},
+        }
+        with mock.patch.object(runtime.oidc, "complete", return_value=identity), mock.patch.object(
+            runtime.service, "find_or_challenge_identity", return_value=result
+        ), mock.patch.object(runtime.service, "mint_session", return_value=session):
+            r = self.client.get(
+                "/v1/auth/oauth/google/callback",
+                params={"code": "auth-code", "state": "state-token"},
+                headers={"accept": "text/html"},
+                follow_redirects=False,
+            )
+        self.assertEqual(r.status_code, 302, r.text)
+        loc = r.headers["location"]
+        self.assertTrue(loc.startswith("/account/oauth/complete#"), loc)
+        self.assertIn("access_token=AT.browser.token", loc)
+        self.assertIn("refresh_token=RT.browser.token", loc)
+        # Tokens are in the FRAGMENT only — never the query string.
+        self.assertNotIn("?access_token", loc)
+        self.assertNotIn("access_token=AT.browser.token", loc.split("#", 1)[0])
+
+    def test_oauth_complete_js_reads_tokens_from_url_fragment(self) -> None:
+        # The success redirect puts tokens in the URL FRAGMENT (never the query), so the
+        # completion JS must read location.hash — not window.location.search — for them.
+        js = self.client.get("/account/app.js").text
+        self.assertIn("window.location.hash", js)
+        self.assertIn("access_token", js)
+        self.assertIn("refresh_token", js)
+
 
 class WebAccountAuthDisabledTests(unittest.TestCase):
     """Default boot (no auth env): the /account* front-door must be absent

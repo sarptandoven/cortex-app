@@ -669,10 +669,13 @@ _APP_JS = r"""
   function initOauthComplete() {
     if (document.body.className.indexOf('oauth') === -1) return;
     var status = document.getElementById('status');
-    var params = new URLSearchParams(window.location.search);
-    var access = params.get('access_token');
-    var refresh = params.get('refresh_token');
-    if (params.get('action') === 'link_required' || params.get('link_required')) {
+    var query = new URLSearchParams(window.location.search);
+    // Tokens ride the URL FRAGMENT (never the query) so they never reach the server access log or
+    // a Referer header; the link_required marker is a plain query flag (no secret).
+    var hash = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
+    var access = hash.get('access_token');
+    var refresh = hash.get('refresh_token');
+    if (query.get('action') === 'link_required' || query.get('link_required')) {
       setStatus(status, '', '');
       document.getElementById('link-note').classList.remove('hidden');
       document.getElementById('login-link').classList.remove('hidden');
@@ -680,6 +683,8 @@ _APP_JS = r"""
     }
     if (access && refresh) {
       store({ access_token: access, refresh_token: refresh });
+      // Scrub the tokens out of the address bar / history before navigating on.
+      try { history.replaceState(null, '', window.location.pathname); } catch (e) {}
       window.location.href = '/account/home';
       return;
     }
