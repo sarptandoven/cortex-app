@@ -226,6 +226,18 @@ extension AppState {
         Task { await performCloudSignOut() }
     }
 
+    /// Permanently delete the signed-in Cortex account and all its cloud data. Required by App Store
+    /// Guideline 5.1.1(v): an app that offers account creation must also offer in-app account
+    /// deletion. `password` is required by the server ONLY for email/password accounts (blank is
+    /// fine for Apple/Google/GitHub accounts).
+    func deleteCloudAccount(password: String) {
+        guard isCloudAuthAvailable else {
+            cloudAuthMessage = AppState.cloudAuthUnavailableMessage
+            return
+        }
+        Task { await performDeleteCloudAccount(password: password) }
+    }
+
     func openCloudSignup(hostedURL: String) {
         guard isCloudAuthAvailable else {
             cloudAuthMessage = AppState.cloudAuthUnavailableMessage
@@ -391,6 +403,29 @@ extension AppState {
         cloudAuthMessage = "Signed out of Cortex Cloud."
     }
 
+    private func performDeleteCloudAccount(password: String) async {
+        guard AppState.hostIsRemote(endpoint), AppState.storedCloudRefreshToken() != nil else {
+            cloudAuthMessage = "You are not signed into a Cortex account."
+            return
+        }
+        cloudAuthBusy = true
+        cloudAuthMessage = "Deleting your account…"
+        defer { cloudAuthBusy = false }
+        // The DELETE is session-authed; the in-memory access token may have expired since sign-in, so
+        // refresh it first (best-effort — if refresh fails the DELETE surfaces the auth error).
+        _ = await refreshCloudAccessToken()
+        let base = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        do {
+            var body: [String: Any] = [:]
+            if !password.isEmpty { body["password"] = password }  // not trimmed: passwords may hold spaces
+            _ = try await cloudPost(base: base, path: "/v1/auth/account", body: body, bearer: apiKey, method: "DELETE")
+            resetToLocalDefaults()
+            cloudAuthMessage = "Your account and all its data were permanently deleted."
+        } catch {
+            cloudAuthMessage = CortexCloudAuth.describe(error)
+        }
+    }
+
     /// Called on refresh failure inside a cloud request: wipe the session and surface
     /// the standard expiry message.
     func handleCloudSessionExpired() {
@@ -451,10 +486,10 @@ extension AppState {
     //   1. the auth endpoints are reachable before any valid access token exists, and
     //   2. refreshCloudAccessToken() can NEVER recurse into the 401-refresh path.
 
-    private func cloudPost(base: String, path: String, body: [String: Any], bearer: String? = nil) async throws -> Data {
+    private func cloudPost(base: String, path: String, body: [String: Any], bearer: String? = nil, method: String = "POST") async throws -> Data {
         guard let url = URL(string: base + path) else { throw CortexCloudAuthError.invalidHostedURL }
         var req = URLRequest(url: url)
-        req.httpMethod = "POST"
+        req.httpMethod = method
         req.timeoutInterval = 30
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let bearer, !bearer.isEmpty {
@@ -503,6 +538,8 @@ struct CortexCloudSection: View {
     @State private var hostedURL: String = ""
     @State private var email: String = ""
     @State private var password: String = ""
+    @State private var showDeleteConfirm = false
+    @State private var deletePassword = ""
 
     private static var defaultHostedURL: String { AppState.defaultHostedURL }
 
@@ -573,6 +610,44 @@ struct CortexCloudSection: View {
                 Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
             }
             .disabled(state.cloudAuthBusy)
+
+            Divider().padding(.vertical, 2)
+
+            // In-app account deletion (App Store Guideline 5.1.1(v)): an account-creation app must let
+            // the user permanently delete their account and data from within the app.
+            if showDeleteConfirm {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("This permanently deletes your account and all of its memory. This cannot be undone.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    SecureField("Password (leave blank if you use Apple / Google / GitHub)", text: $deletePassword)
+                        .textFieldStyle(.roundedBorder)
+                        .textContentType(.password)
+                    HStack {
+                        Button(role: .destructive) {
+                            state.deleteCloudAccount(password: deletePassword)
+                            deletePassword = ""
+                            showDeleteConfirm = false
+                        } label: {
+                            Label("Delete my account permanently", systemImage: "trash")
+                        }
+                        .disabled(state.cloudAuthBusy)
+                        Button("Cancel") {
+                            deletePassword = ""
+                            showDeleteConfirm = false
+                        }
+                        if state.cloudAuthBusy { ProgressView().scaleEffect(0.6) }
+                    }
+                }
+            } else {
+                Button(role: .destructive) {
+                    showDeleteConfirm = true
+                } label: {
+                    Label("Delete account…", systemImage: "trash")
+                }
+                .disabled(state.cloudAuthBusy)
+            }
         }
     }
 

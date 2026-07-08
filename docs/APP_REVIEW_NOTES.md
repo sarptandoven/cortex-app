@@ -48,6 +48,12 @@ personal-memory product: your memory lives under your account so it can (a) sync
 devices and (b) be reached by your AI assistants and tools through the account. This is
 account-based functionality per 5.1.1(v), which is why sign-in is required.
 
+**In-app account deletion (5.1.1(v)).** A signed-in user can permanently delete their account and
+all of its data from within the app: open **Connections** (the settings surface) → the **Cortex
+Cloud** section → **Delete account…** → confirm. This calls `DELETE /v1/auth/account`, which
+crypto-shreds the user's key material, deletes their memory (and backups), and revokes every
+session — no website detour needed.
+
 ## 4.8 — Sign in with Apple
 
 The sign-in screen offers **Sign in with Apple** (native `ASAuthorizationController` flow),
