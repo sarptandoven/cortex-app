@@ -197,14 +197,34 @@ Resume point for the phased expansion roadmap (see docs/EXPANSION_ROADMAP_PHASES
     manifest read, bundle export-scoped, round-trip + tamper-fail, 422s, read-only refused the
     bundle); metadata + scorecard-parity suites auto-cover the new tools
 
+## OpenClaw exploration doc (shipped)
+- `docs/OPENCLAW_ATTACHMENT_EXPLORATION.md` — the user's asked-for bridge between the Phase A-D
+  memory foundation and OpenClaw's local execution power. Exploration only, no code this pass.
+- Grounded in current facts (re-fetched both sources): OpenClaw = self-hosted local agent with
+  hands (files/browser/shell/APIs), ~180k stars, plugin system with a typed `contextEngine` slot;
+  TencentDB-Agent-Memory = an MIT/TS plugin that fills that slot via a local Gateway on :8420
+  (capture/search/recall, optional Bearer auth). Cortex already ships the same shape: /mcp + /v1
+  on :8766 with get_context / build_context_pack / remember_this + agent-session tools
+- Thesis: "Cortex is the memory, OpenClaw is the hands." Cortex is a strict upgrade over the
+  default TencentDB memory slot (curation/review gate, citations, honest metrics, Phase C
+  reputation, Phase D integrity+portability, real non-chat inputs); TencentDB's one edge is
+  symbolic short-term Mermaid offload, which the attachment reframes as newly-relevant but
+  parked (position 1: let OpenClaw/TencentDB own it; position 2: take the pattern only if real
+  workhorse sessions measurably demand it — same measure-before-you-add-learning bar)
+- Three integration options, cheapest first: (A) OpenClaw → existing /mcp, zero Cortex code,
+  prove the loop first; (B) thin `contextEngine` TS plugin proxying to :8766 for native
+  auto-recall/auto-capture UX, likely zero new Cortex endpoints; (C) deep merge, not recommended.
+  Recommendation: A to validate, then B if the loop feels right, keep short-term offload out
+- Respects standing invariants: cited-or-silent extended to action, review gate for capture,
+  allow_agent_exports + export scope gate egress, both-servers+MCP parity if any endpoint added
+
 ## State
 - Full suite green: 1594 tests + 372 subtests
-- Branch pushed through `aee75da` (Phase C); Phase D is the next commit
+- Branch pushed through `3ba79e7` (Phase D); OpenClaw doc is the next commit
 - Shipped DMG (build 21) predates Phase 2b + A + B + C + D — build 22 ships at the end of
   the approved slate (write-back → session harvest → reputation → integrity → OpenClaw
-  exploration doc)
+  exploration doc → build/DMG)
 
 ## Next
-- OpenClaw exploration doc (TencentDB as workhorse-agent attachment using Cortex memory)
-- Build 22 + DMG last, with verify_context_pack shipped in it
+- Build 22 + DMG last, with verify_context_pack shipped in it (everything A-D aboard)
 - Prefetch: only add learning if the most-recent baseline plateaus (measure first)
