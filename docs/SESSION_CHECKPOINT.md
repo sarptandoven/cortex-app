@@ -247,6 +247,27 @@ Resume point for the phased expansion roadmap (see docs/EXPANSION_ROADMAP_PHASES
 - Branch pushed through `de7a730` (context-pack identity fix); Info.plist bumped to build 22
   (uncommitted, ships with the release commit)
 
+## Build 22 (shipped)
+- Release commit `2f585f5` (bumps CFBundleVersion 21 -> 22), packaged via
+  `macos/package_release.sh` (local-beta, bundled Python). Artifacts in
+  `outputs/Cortex-0.2.0-22/`: DMG, app.zip, Obsidian plugin zip, checksums, latest.json,
+  BETA_HANDOFF.md. Handoff records `Git dirty: false`, commit 2f585f5. DMG checksum VALID,
+  `shasum -c` OK on all three.
+- What build 22 adds over build 21 (which was Phases 0-6): Phase 2b verify_context_pack, Phase A
+  Obsidian write-back, Phase B session harvesting, Phase C source reputation, Phase D integrity +
+  portable bundle, and the context-pack identity fix. All ship because build.sh copies
+  backend/app wholesale into Contents/Resources (as compiled .pyc).
+- Verified IN THE SHIPPED BUNDLE: strings on storage.pyc/mcp_tools.pyc show verify_context_pack,
+  source_reputation, integrity_digest/verify_integrity/export_manifest/export_portable_bundle,
+  CONTEXT_PACK_ENVELOPE_KEYS, and MCP get_source_reputation/get_memory_integrity/
+  verify_memory_*/export_memory_bundle. Then ran a 7-check e2e smoke on the bundle's OWN Python
+  3.12.6: replay-verify True, recompute match, integrity chain over 7 events + self-verify,
+  silent-tamper caught, reputation read-model, and re-pin idempotent (the fix works end-to-end).
+- Site (site/downloads) still points at build 14 and was never updated for 21 either; publishing
+  to the site is a separate step, out of scope for this slate (the outputs/ DMG is the deliverable,
+  same as build 21).
+
 ## Next
-- Build 22 + DMG last, with verify_context_pack shipped in it (everything A-D aboard)
-- Prefetch: only add learning if the most-recent baseline plateaus (measure first)
+- Approved slate fully complete: write-back (A) -> session harvest (B) -> reputation (C) ->
+  integrity (D) -> OpenClaw exploration doc -> build 22 + DMG. Plus the context-pack identity
+  fix caught during the build gate. Nothing outstanding.
