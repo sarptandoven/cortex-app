@@ -137,6 +137,7 @@ _SOURCE_DISPLAY_LABELS: dict[str, str] = {
     "apple-notes": "Apple Notes",
     "chatgpt": "ChatGPT",
     "claude": "Claude",
+    "agent-sessions": "Agent Sessions",
 }
 
 
@@ -5465,6 +5466,147 @@ class CortexStore:
                 last_error=(result["errors"][0].get("error") if result["errors"] else None),
                 completed=result["failed"] == 0,
             )
+        if scan.errors:
+            result["errors"] = [*(result.get("errors") or []), *scan.errors]
+            result["failed"] = int(result.get("failed") or 0) + len(scan.errors)
+            if result.get("status") == "complete":
+                result["status"] = "partial"
+        if scan.truncated and result.get("status") == "complete":
+            result["status"] = "partial"
+        result["source_account"] = self._source_account_by_id(user_id, account["id"]) or account
+        result["scan"] = scan_summary
+        return result
+
+    def sync_agent_sessions(
+        self,
+        user_id: str,
+        *,
+        agents: list[str] | None = None,
+        claude_dir: str | None = None,
+        codex_dir: str | None = None,
+        cursor_dir: str | None = None,
+        source_account_id: str | None = None,
+        account_label: str | None = None,
+        processing: str = "sync",
+        max_records: int = 200,
+        per_session_limit: int = 25,
+        cursor_name: str = "agent-sessions",
+        review_required: bool = True,
+    ) -> dict[str, Any]:
+        """Harvest the user's OWN messages from local coding-agent session logs (Claude Code,
+        Codex, Cursor) into the review pipeline.
+
+        Deliberate differences from a notes-vault sync:
+          - review_required defaults True. A vault is curated by the user; session prompts are
+            raw and noisy, so a human approves what becomes memory.
+          - No archive-missing reconciliation, ever. Session logs rotate and get deleted; the
+            entire point of harvesting is that memory OUTLIVES the log file. A capture must not
+            die because its source log was cleaned up.
+          - Incremental by file mtime high-water mark; stable external ids make re-scans
+            dedupe no-ops.
+        """
+        from .connectors.agent_sessions import AGENT_SESSIONS_SOURCE, scan_agent_sessions
+
+        if processing not in {"sync", "async"}:
+            raise ValueError("processing must be sync or async")
+        resolved_account_id = (source_account_id or "").strip() or stable_id("sacct_", f"{user_id}:{AGENT_SESSIONS_SOURCE}:local")
+        self._ensure_source_account_can_sync(user_id, resolved_account_id, expected_source=AGENT_SESSIONS_SOURCE)
+        previous_cursor = self._latest_sync_cursor_value(user_id, resolved_account_id, cursor_name)
+        scan = scan_agent_sessions(
+            agents=agents,
+            claude_dir=claude_dir,
+            codex_dir=codex_dir,
+            cursor_dir=cursor_dir,
+            max_records=max_records,
+            per_session_limit=per_session_limit,
+            cursor_value=previous_cursor,
+        )
+        scan_summary = scan.to_summary()
+        label = (account_label or "Agent sessions (this Mac)").strip()[:160]
+        empty_complete_scan = not scan.records and not scan.errors and not scan.truncated and scan.files_seen == 0
+        account = self.upsert_source_account(
+            user_id,
+            source=AGENT_SESSIONS_SOURCE,
+            account_label=label,
+            account_identifier="local-agent-sessions",
+            connection_type="local_folder",
+            status="empty" if empty_complete_scan else "connected",
+            auth_state="needs_content" if empty_complete_scan else "healthy",
+            # Harvested prompts are raw self-explanation, not curated notes: review-gate them by
+            # default so the user approves what becomes memory.
+            policy={"review_required": bool(review_required), "allow_ai_context": True},
+            metadata={
+                "connector": AGENT_SESSIONS_SOURCE,
+                "connector_version": scan_summary["connector_version"],
+                "agents": agents or ["claude", "codex", "cursor"],
+                "roots": scan.roots,
+                "files_seen": scan.files_seen,
+                "files_scanned": scan.files_scanned,
+                "skipped_files": scan.skipped_files,
+                "records_found": scan.records_found,
+                "records_returned": scan.records_returned,
+                "truncated": scan.truncated,
+            },
+            last_error=scan.errors[0]["error"] if scan.errors else None,
+            account_id=resolved_account_id,
+        )
+        state = {
+            "connector": AGENT_SESSIONS_SOURCE,
+            "connector_version": scan_summary["connector_version"],
+            "roots": scan.roots,
+            "files_seen": scan.files_seen,
+            "files_scanned": scan.files_scanned,
+            "skipped_files": scan.skipped_files,
+            "records_found": scan.records_found,
+            "records_returned": scan.records_returned,
+            "truncated": scan.truncated,
+            "scan_errors": scan.errors,
+        }
+        if not scan.records:
+            cursor = self.upsert_sync_cursor(
+                user_id,
+                source=AGENT_SESSIONS_SOURCE,
+                source_account_id=account["id"],
+                cursor_name=cursor_name,
+                cursor_value=scan.cursor_value or previous_cursor,
+                high_water_mark=scan.high_water_mark,
+                state=state,
+                last_error=scan.errors[0]["error"] if scan.errors else None,
+                completed=not scan.errors,
+            )
+            updated_account = self._source_account_by_id(user_id, account["id"]) or account
+            return {
+                "source_account_id": account["id"],
+                "source": AGENT_SESSIONS_SOURCE,
+                "status": "partial" if scan.errors or scan.truncated else "empty",
+                "processing": processing,
+                "received": 0,
+                "queued": 0,
+                "saved": 0,
+                "skipped": 0,
+                "failed": len(scan.errors),
+                "archived_missing": 0,
+                "capture_ids": [],
+                "records": [],
+                "errors": scan.errors,
+                "cursor": cursor,
+                "source_account": updated_account,
+                "scan": scan_summary,
+            }
+
+        source_records = [record.to_source_account_record() for record in scan.records]
+        result = self.sync_source_account_records(
+            user_id,
+            account["id"],
+            records=source_records,
+            cursor_name=cursor_name,
+            cursor_value=scan.cursor_value,
+            high_water_mark=scan.high_water_mark,
+            state=state,
+            processing=processing,
+            # NEVER archive-missing: logs rotate, harvested memory must outlive the log file.
+            archive_missing=False,
+        )
         if scan.errors:
             result["errors"] = [*(result.get("errors") or []), *scan.errors]
             result["failed"] = int(result.get("failed") or 0) + len(scan.errors)

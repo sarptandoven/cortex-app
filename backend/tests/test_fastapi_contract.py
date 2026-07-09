@@ -1050,6 +1050,78 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(naked.status_code, 422)
         self.assertIn("vault", naked.json()["detail"].lower())
 
+    def test_agent_sessions_sync_endpoint_contract(self) -> None:
+        """Phase B REST surface: POST /v1/connectors/agent-sessions/sync harvests the user's own
+        messages from local agent logs into review. Write-scoped like the other connector syncs;
+        the API exposes no directory-override fields (no arbitrary-path scanning)."""
+        import os as _os
+
+        user = "phaseb-rest-contract"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+
+        with tempfile.TemporaryDirectory() as home:
+            claude_root = Path(home) / ".claude" / "projects" / "proj"
+            claude_root.mkdir(parents=True)
+            long_text = "I want the ledger service to use Postgres for its jsonb audit trail support."
+            with (claude_root / "s1.jsonl").open("w", encoding="utf-8") as handle:
+                handle.write(json.dumps({
+                    "type": "user",
+                    "message": {"role": "user", "content": long_text},
+                    "uuid": "u1",
+                    "timestamp": "2026-07-01T10:00:00Z",
+                }) + "\n")
+
+            # scan_agent_sessions resolves default roots from Path.home(); point HOME at our fixture.
+            with patch.dict(_os.environ, {"HOME": home}):
+                with patch("pathlib.Path.home", return_value=Path(home)):
+                    synced = self.client.post(
+                        "/v1/connectors/agent-sessions/sync",
+                        json={"agents": ["claude"], "max_records": 10},
+                        headers=headers,
+                    )
+                    self.assertEqual(synced.status_code, 200)
+                    body = synced.json()
+                    self.assertEqual(body["source"], "agent-sessions")
+                    self.assertGreaterEqual(body["saved"], 1)
+
+                    # Idempotent: unchanged logs re-scan to nothing.
+                    again = self.client.post(
+                        "/v1/connectors/agent-sessions/sync",
+                        json={"agents": ["claude"], "max_records": 10},
+                        headers=headers,
+                    )
+                    self.assertEqual(again.status_code, 200)
+                    self.assertEqual(again.json()["saved"], 0)
+
+        # Harvested captures are review-gated: they show up in the inbox as pending.
+        inbox = self.client.get("/v1/inbox", headers=headers)
+        self.assertEqual(inbox.status_code, 200)
+        harvested = inbox.json()["results"]
+        self.assertTrue(any(item.get("source") == "agent-sessions" for item in harvested))
+
+        # Write scope discipline: a read-only token is refused.
+        ro_token = "cxa_phaseb_rest_ro_123456789"
+        registered = self.client.post(
+            "/v1/integrations/api-token",
+            json={"token": ro_token, "label": "phaseb sessions ro", "scopes": ["read"]},
+            headers=headers,
+        )
+        self.assertEqual(registered.status_code, 200)
+        refused = self.client.post(
+            "/v1/connectors/agent-sessions/sync",
+            json={"agents": ["claude"]},
+            headers={"Authorization": f"Bearer {ro_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(refused.status_code, 403)
+
+        # Invalid agent name → 422.
+        bad = self.client.post(
+            "/v1/connectors/agent-sessions/sync",
+            json={"agents": ["not-an-agent"]},
+            headers=headers,
+        )
+        self.assertEqual(bad.status_code, 422)
+
     def test_retrieval_endpoints_support_source_account_and_facet_scope(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "source-scope-contract"}
 

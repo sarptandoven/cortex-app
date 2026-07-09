@@ -220,6 +220,29 @@ class ObsidianVaultSyncResponse(SourceAccountSyncResponse):
     scan: dict[str, Any]
 
 
+class AgentSessionsSyncRequest(BaseModel):
+    """Harvest the user's own messages from local coding-agent session logs.
+
+    No directory-override fields on purpose: the API surface must not let a caller point the
+    scanner at arbitrary filesystem paths. Directories are the agents' well-known locations.
+    """
+
+    agents: list[Literal["claude", "codex", "cursor"]] | None = None
+    source_account_id: str | None = Field(default=None, max_length=80)
+    account_label: str | None = Field(default=None, max_length=160)
+    processing: Literal["sync", "async"] = "sync"
+    max_records: int = Field(default=200, ge=1, le=500)
+    per_session_limit: int = Field(default=25, ge=1, le=200)
+    cursor_name: str = Field(default="agent-sessions", min_length=1, max_length=120)
+    # Harvested prompts are raw self-explanation, not curated notes: review-gate by default.
+    review_required: bool = True
+
+
+class AgentSessionsSyncResponse(SourceAccountSyncResponse):
+    source_account: SourceAccountResponse
+    scan: dict[str, Any]
+
+
 class GitHubSyncRequest(BaseModel):
     token: str = Field(..., min_length=1, max_length=4000)
     repositories: list[str] = Field(..., min_length=1, max_length=25)

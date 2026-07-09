@@ -103,12 +103,47 @@ Resume point for the phased expansion roadmap (see docs/EXPANSION_ROADMAP_PHASES
     default, ingestion exclusion + full sync/write-back round trip, scope + trust
     gate + readOnlyHint discipline, audit event); contract tests on both servers
 
+- Phase B: session harvesting — the user's own agent prompts become memory — this commit
+  - The user already explains themselves to Claude Code / Codex / Cursor every day;
+    those transcripts sit on local disk and evaporate. Harvest the USER'S OWN messages
+    (never agent replies) into the review pipeline.
+  - New connectors/agent_sessions.py: scan_agent_sessions over three local formats —
+    Claude ~/.claude/projects/*.jsonl (type=user, skip isMeta/isSidechain), Codex
+    ~/.codex/sessions/**/rollout-*.jsonl (event_msg/user_message, subagent rollups
+    excluded), Cursor workspaceStorage/*/state.vscdb (sqlite ItemTable
+    aiService.prompts, opened read-only). User words only; agent output would launder
+    model prose into first-party evidence (same principle as the write-back exclusion)
+  - Noise gates: <-prefixed command/env wrappers dropped, sub-40-char steering
+    ("continue", "yes") dropped, 1MB line cap (embedded tool dumps), 8k message cap.
+    Incremental by file-mtime high-water mark; truncation never advances the HWM past
+    a partially-emitted file; stable external ids (agent:session:anchor) make re-scan
+    a dedupe no-op
+  - storage.sync_agent_sessions: harvested prompts are review-gated by default (raw
+    self-explanation, not curated notes); NEVER archive-missing (memory must OUTLIVE a
+    rotated log); records a source account + cursor like any connector
+  - MCP: sync_agent_sessions in WRITE_TOOLS + DIRECT_CONNECTOR_SYNC_TOOLS, agent-list
+    arg only (no directory-override — an MCP client can't point the scanner at
+    arbitrary paths)
+  - REST: POST /v1/connectors/agent-sessions/sync on both servers (write scope,
+    AgentSessionsSyncRequest with no path fields, invalid agent / out-of-range bound
+    -> 422)
+  - tests: test_agent_sessions_connector.py (12: per-format harvest, agent/meta/
+    sidechain/subagent exclusion, content-block join, read-only Cursor open, stable
+    ids, incremental cursor, truncation HWM hold, corrupt-file-is-error, unknown
+    agent reject), test_agent_sessions_store.py (7: review-gated, never-archive,
+    rescan no-op, source account + cursor, MCP route + write-scope), FastAPI +
+    standalone contract tests (harvest + inbox review-gating, idempotent, scope
+    refusal, 422s); metadata suite auto-covers the new tool
+
 ## State
-- Full suite green: 1544 tests + 372 subtests
-- Branch pushed through `df70b99`; Phase A is the next commit
-- Shipped DMG (build 21) predates Phase 2b + Phase A — build 22 ships at the end of
+- Full suite green: 1565 tests + 372 subtests
+- Branch pushed through `0e7ffd9`; Phase B is the next commit
+- Shipped DMG (build 21) predates Phase 2b + A + B — build 22 ships at the end of
   the approved slate (write-back → session harvest → reputation → integrity → OpenClaw
   exploration doc)
 
 ## Next
+- Phase C: reputation (approve/reject rates per agent/source gate review_required)
+- Phase D: integrity/portability (hash-linked events, manifest, lossless export)
+- OpenClaw exploration doc, then build 22 + DMG last
 - Prefetch: only add learning if the most-recent baseline plateaus (measure first)

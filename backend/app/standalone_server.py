@@ -1282,6 +1282,43 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError) as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
+            if method == "POST" and path == "/v1/connectors/agent-sessions/sync":
+                # Harvest the user's own messages from local coding-agent session logs. No
+                # directory-override fields: the caller cannot point the scanner at arbitrary
+                # paths (agent list only), same guard as the MCP tool.
+                body = self._json_body()
+                try:
+                    try:
+                        max_records = int(body.get("max_records") or 200)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError("max_records must be an integer") from exc
+                    if max_records < 1 or max_records > 500:
+                        raise ValueError("max_records must be between 1 and 500")
+                    try:
+                        per_session_limit = int(body.get("per_session_limit") or 25)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError("per_session_limit must be an integer") from exc
+                    if per_session_limit < 1 or per_session_limit > 200:
+                        raise ValueError("per_session_limit must be between 1 and 200")
+                    raw_agents = body.get("agents")
+                    agents = [str(item) for item in raw_agents] if isinstance(raw_agents, list) else None
+                    result = store.sync_agent_sessions(
+                        user_id,
+                        agents=agents,
+                        source_account_id=str(body.get("source_account_id") or "") or None,
+                        account_label=str(body.get("account_label") or "") or None,
+                        processing=str(body.get("processing") or "sync"),
+                        max_records=max_records,
+                        per_session_limit=per_session_limit,
+                        cursor_name=str(body.get("cursor_name") or "agent-sessions"),
+                        review_required=bool(body.get("review_required", True)),
+                    )
+                    self._send_json(store.public_payload(user_id, result) if hasattr(store, "public_payload") else result)
+                except FileNotFoundError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.NOT_FOUND)
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
             if method == "POST" and path == "/v1/connectors/obsidian/write-back":
                 # Obsidian write-back: refresh the distilled, cited Cortex/ pages in the user's
                 # vault. Export-scoped (memory egress into user-owned files), MCP-tool parity.

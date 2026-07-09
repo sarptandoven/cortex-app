@@ -73,6 +73,7 @@ class FakeStore:
         self.assemble_context_calls: list[dict] = []
         self.verify_context_pack_calls: list[tuple[str, str]] = []
         self.write_obsidian_pages_calls: list[tuple[str, str | None, int]] = []
+        self.sync_agent_sessions_calls: list[tuple] = []
         self.oauth_pending: dict[tuple[str, str], dict] = {}
 
     def remember_oauth_pending(self, *, state, user_id, flow, payload, ttl_seconds: int = 600) -> None:
@@ -219,6 +220,41 @@ class FakeStore:
             "skipped_unowned": [],
             "pruned": [],
             "people_pages": 0,
+        }
+
+    def sync_agent_sessions(
+        self,
+        user_id: str,
+        *,
+        agents=None,
+        claude_dir=None,
+        codex_dir=None,
+        cursor_dir=None,
+        source_account_id=None,
+        account_label=None,
+        processing: str = "sync",
+        max_records: int = 200,
+        per_session_limit: int = 25,
+        cursor_name: str = "agent-sessions",
+        review_required: bool = True,
+    ) -> dict:
+        self.sync_agent_sessions_calls.append((user_id, tuple(agents) if agents else None, max_records, per_session_limit, review_required))
+        return {
+            "source_account_id": "sacct-agent-sessions",
+            "source": "agent-sessions",
+            "status": "complete",
+            "processing": processing,
+            "received": 1,
+            "queued": 0,
+            "saved": 1,
+            "skipped": 0,
+            "failed": 0,
+            "archived_missing": 0,
+            "capture_ids": ["cap-harvest-1"],
+            "records": [],
+            "errors": [],
+            "cursor": {"cursor_value": "hwm=2026-07-01T10:00:00+00:00"},
+            "scan": {"connector": "agent-sessions"},
         }
 
     def delete_capture(self, user_id: str, capture_id: str) -> bool:
@@ -4432,6 +4468,69 @@ class StandaloneServerTests(unittest.TestCase):
             self.assertEqual(context.exception.code, 403)
         finally:
             self.fake_store.denied_agent_access = set()
+            self.fake_store.api_token_scopes = ["read"]
+
+    def test_agent_sessions_sync_route_on_shipping_server(self) -> None:
+        # Phase B: POST /v1/connectors/agent-sessions/sync reaches store.sync_agent_sessions,
+        # forwards the agent list + bounds, is write-scoped for API tokens, ValueError -> 422.
+        self.fake_store.sync_agent_sessions_calls.clear()
+        with request.urlopen(
+            request.Request(
+                self.base_url + "/v1/connectors/agent-sessions/sync",
+                data=json.dumps({"agents": ["claude", "codex"], "max_records": 42, "per_session_limit": 7, "review_required": False}).encode("utf-8"),
+                headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+                method="POST",
+            ),
+            timeout=5,
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(payload["source"], "agent-sessions")
+        self.assertEqual(payload["saved"], 1)
+        self.assertEqual(
+            self.fake_store.sync_agent_sessions_calls,
+            [("local", ("claude", "codex"), 42, 7, False)],
+        )
+
+        # Out-of-range bound -> 422.
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/connectors/agent-sessions/sync",
+                    data=json.dumps({"max_records": 99999}).encode("utf-8"),
+                    headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+                    method="POST",
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 422)
+
+        # Write scope discipline for scoped API tokens.
+        self.fake_store.api_token_scopes = ["read"]
+        try:
+            with self.assertRaises(error.HTTPError) as context:
+                request.urlopen(
+                    request.Request(
+                        self.base_url + "/v1/connectors/agent-sessions/sync",
+                        data=json.dumps({"agents": ["claude"]}).encode("utf-8"),
+                        headers={"Authorization": "Bearer cxa-standalone-token", "Content-Type": "application/json"},
+                        method="POST",
+                    ),
+                    timeout=5,
+                )
+            self.assertEqual(context.exception.code, 403)
+
+            self.fake_store.api_token_scopes = ["read", "write"]
+            with request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/connectors/agent-sessions/sync",
+                    data=json.dumps({"agents": ["claude"]}).encode("utf-8"),
+                    headers={"Authorization": "Bearer cxa-standalone-token", "Content-Type": "application/json"},
+                    method="POST",
+                ),
+                timeout=5,
+            ) as response:
+                self.assertEqual(json.loads(response.read().decode("utf-8"))["source"], "agent-sessions")
+        finally:
             self.fake_store.api_token_scopes = ["read"]
 
     def test_mcp_tools_list_filters_read_only_scoped_token(self) -> None:

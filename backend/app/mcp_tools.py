@@ -373,6 +373,23 @@ TOOLS = [
         },
     },
     {
+        "name": "sync_agent_sessions",
+        "description": "Harvest the user's own messages from local coding-agent session logs (Claude Code, Codex, Cursor) into the review queue. User words only — agent replies are never ingested.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agents": {"type": "array", "items": {"type": "string", "enum": ["claude", "codex", "cursor"]}},
+                "source_account_id": {"type": "string"},
+                "account_label": {"type": "string"},
+                "processing": {"type": "string", "default": "sync", "enum": ["sync", "async"]},
+                "max_records": {"type": "integer", "default": 200},
+                "per_session_limit": {"type": "integer", "default": 25},
+                "cursor_name": {"type": "string", "default": "agent-sessions"},
+                "review_required": {"type": "boolean", "default": True},
+            },
+        },
+    },
+    {
         "name": "sync_readwise",
         "description": "Fetch Readwise highlights with a read-only token, then sync them into Cortex with stable citations.",
         "inputSchema": {
@@ -1151,6 +1168,7 @@ WRITE_TOOLS = {
     "sync_google_drive",
     "sync_outlook",
     "sync_slack",
+    "sync_agent_sessions",
     "sync_readwise",
     "sync_calendar",
     "sync_raindrop",
@@ -1185,6 +1203,7 @@ MAINTENANCE_TOOLS = {
 SCOPED_MCP_MAINTENANCE_REVIEW_TOOLS = {"approve_memory_capture", "archive_memory_capture"}
 DESTRUCTIVE_TOOLS = {"forget_memory", "delete_memory_capture", "delete_memory_backups", "restore_latest_memory_backup", "delete_all_user_data"}
 DIRECT_CONNECTOR_SYNC_TOOLS = {
+    "sync_agent_sessions",
     "sync_github",
     "sync_gmail",
     "sync_google_drive",
@@ -2589,6 +2608,23 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             workspace_url=args.get("workspace_url"),
             complete_snapshot=_bool_arg(args, "complete_snapshot"),
             api_base_url=args.get("api_base_url"),
+        )
+        return store.agent_payload(user_id, result)
+    if name == "sync_agent_sessions":
+        # Local log harvesting: agent list only, no directory override args — an MCP client must
+        # not be able to point the scanner at arbitrary filesystem paths.
+        raw_agents = args.get("agents")
+        agent_list = [str(item) for item in raw_agents] if isinstance(raw_agents, list) else None
+        result = store.sync_agent_sessions(
+            user_id,
+            agents=agent_list,
+            source_account_id=args.get("source_account_id"),
+            account_label=args.get("account_label"),
+            processing=args.get("processing", "sync"),
+            max_records=_bounded_int_arg(args, "max_records", 200, maximum=MCP_SYNC_RECORD_MAX),
+            per_session_limit=_bounded_int_arg(args, "per_session_limit", 25, maximum=200),
+            cursor_name=args.get("cursor_name", "agent-sessions"),
+            review_required=_bool_arg(args, "review_required", True),
         )
         return store.agent_payload(user_id, result)
     if name == "sync_readwise":
