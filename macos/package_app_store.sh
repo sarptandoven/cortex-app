@@ -108,8 +108,25 @@ log() { printf '%s\n' "$*"; }
 section() { printf '\n== %s ==\n' "$*"; }
 
 find_identity() {
-  # Return the first codesigning identity whose name contains ANY of the given
-  # patterns (accepts modern + legacy cert names).
+  # Return the first identity whose name contains ANY of the given patterns
+  # (accepts modern + legacy cert names).
+  #
+  # Policy matters: app-signing certs (Apple Distribution / 3rd Party Mac
+  # Developer Application) are valid under the `codesigning` policy, but
+  # INSTALLER certs (Apple Distribution Installer / 3rd Party Mac Developer
+  # Installer) sign .pkg files via productbuild and are NOT codesigning-policy
+  # identities — `security find-identity -p codesigning` never lists them. Pass
+  # policy="basic" (the unfiltered list) to find an installer identity. Default
+  # stays `codesigning` so the app-signing lookup is unchanged.
+  local policy="codesigning"
+  if [[ "$1" == "--policy" ]]; then
+    policy="$2"
+    shift 2
+  fi
+  local -a find_args=(-v)
+  if [[ "$policy" != "basic" ]]; then
+    find_args+=(-p "$policy")
+  fi
   local line
   while IFS= read -r line; do
     local p
@@ -120,7 +137,7 @@ find_identity() {
         return 0
       fi
     done
-  done < <(security find-identity -v -p codesigning 2>/dev/null)
+  done < <(security find-identity "${find_args[@]}" 2>/dev/null)
   return 0
 }
 
@@ -133,8 +150,10 @@ if [[ -z "$SIGN_IDENTITY" ]]; then
 fi
 
 # --- Resolve the installer signing identity (modern first, then legacy). ---
+# Installer certs are not codesigning-policy identities, so look them up in the
+# basic (unfiltered) identity list.
 if [[ -z "$INSTALLER_IDENTITY" ]]; then
-  INSTALLER_IDENTITY="$(find_identity "Apple Distribution Installer:" "3rd Party Mac Developer Installer:")"
+  INSTALLER_IDENTITY="$(find_identity --policy basic "Apple Distribution Installer:" "3rd Party Mac Developer Installer:")"
 fi
 
 PROFILE_PRESENT="0"
