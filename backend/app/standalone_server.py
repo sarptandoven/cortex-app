@@ -971,6 +971,47 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 except ValueError as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
+            if method == "POST" and path == "/v1/twin/would-i":
+                body = self._json_body()
+                try:
+                    self._send_json(
+                        store.would_i(
+                            user_id,
+                            str(body.get("question") or "")[:500],
+                            limit=max(1, min(int(body.get("limit") or 8), 20)),
+                        )
+                    )
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path == "/v1/twin/draft-as-me":
+                body = self._json_body()
+                try:
+                    self._send_json(
+                        store.draft_as_me(
+                            user_id,
+                            str(body.get("prompt") or "")[:2000],
+                            medium=str(body.get("medium") or "")[:60],
+                            limit=max(1, min(int(body.get("limit") or 8), 20)),
+                        )
+                    )
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path == "/v1/twin/grade":
+                body = self._json_body()
+                try:
+                    self._send_json(
+                        store.grade_twin_prediction(
+                            user_id,
+                            str(body.get("prediction_id") or "")[:120],
+                            str(body.get("outcome") or "")[:20],
+                            actual=str(body.get("actual") or "")[:500],
+                        )
+                    )
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
             if method == "POST" and path == "/v1/captures/queue":
                 body = self._json_body()
                 try:
@@ -1955,6 +1996,14 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         user_id,
                         days=_int_param(params, "days", 7, 1, 90),
                         token_id=(params.get("token_id") or [None])[0],
+                    )
+                )
+                return
+            if method == "GET" and path == "/v1/twin/scorecard":
+                self._send_json(
+                    store.get_twin_scorecard(
+                        user_id,
+                        days=_int_param(params, "days", 90, 1, 365),
                     )
                 )
                 return

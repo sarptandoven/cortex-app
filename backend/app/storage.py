@@ -17447,8 +17447,8 @@ class CortexStore:
     # because storage must not import the tool layer; a parity test in
     # test_phase4_eval_harness.py asserts these sets agree with mcp_tools.READ_TOOLS /
     # WRITE_TOOLS so drift is caught at test time, not in production.
-    SCORECARD_READ_TOOL_PREFIXES = ("get_", "list_", "search_", "ask_", "resume_", "prepare_", "build_", "expand_", "use_")
-    SCORECARD_WRITE_TOOL_PREFIXES = ("remember_", "start_", "checkpoint_", "close_", "connect_", "sync_", "approve_", "archive_", "forget_", "delete_", "submit_")
+    SCORECARD_READ_TOOL_PREFIXES = ("get_", "list_", "search_", "ask_", "resume_", "prepare_", "build_", "expand_", "use_", "would_", "draft_")
+    SCORECARD_WRITE_TOOL_PREFIXES = ("remember_", "start_", "checkpoint_", "close_", "connect_", "sync_", "approve_", "archive_", "forget_", "delete_", "submit_", "grade_")
 
     def _scorecard_tool_kind(self, tool_name: str) -> str:
         name = str(tool_name or "")
@@ -17907,6 +17907,292 @@ class CortexStore:
                 (user_id, session_id),
             ).fetchone()
         return int(row["n"] or 0) + 1
+
+    # ------------------------------------------------------------------
+    # Phase 5: Delegate / Twin — would_i, draft_as_me, prediction accuracy loop
+    # ------------------------------------------------------------------
+
+    _TWIN_EVIDENCE_LAYERS = ("preference", "style", "negative", "decision")
+    # A verdict needs at least one cited evidence item; anything less abstains.
+    _TWIN_MIN_EVIDENCE = 1
+    # User vetoes (negative layer) outweigh same-trust preferences: a single "never do X"
+    # should beat a generic supporting preference of equal trust.
+    _TWIN_VETO_WEIGHT = 1.5
+
+    # Question scaffolding stripped before retrieval and relevance matching — FTS on
+    # "Would I pick postgres for a relational database?" otherwise matches nothing.
+    _TWIN_QUESTION_STOPWORDS = frozenset(
+        "would could should do does did i my me a an the for to in on of at with use pick"
+        " choose want this that next new any some it be is was am are".split()
+    )
+
+    def _twin_query_terms(self, question: str) -> list[str]:
+        words = re.findall(r"[a-z0-9]+", str(question or "").casefold())
+        return [w for w in words if w not in self._TWIN_QUESTION_STOPWORDS and len(w) >= 3]
+
+    @staticmethod
+    def _twin_terms_match(a: str, b: str) -> bool:
+        # Prefix tolerance absorbs simple inflection (friday/fridays, write/writing)
+        # without a stemmer dependency.
+        if a == b:
+            return True
+        if len(a) >= 4 and len(b) >= 4:
+            return a.startswith(b[:4]) and b.startswith(a[:4]) and (a.startswith(b) or b.startswith(a))
+        return False
+
+    def _twin_relevant(self, item: dict[str, Any], terms: list[str]) -> bool:
+        """Keep only evidence that shares a content word with the question. search() falls
+        back to recency when FTS misses, so without this gate unrelated recent memories
+        would masquerade as evidence and poison the lean."""
+        if not terms:
+            return False
+        content_words = set(re.findall(r"[a-z0-9]+", str(item.get("content") or "").casefold()))
+        content_words |= set(re.findall(r"[a-z0-9]+", str(item.get("summary") or "").casefold()))
+        return any(self._twin_terms_match(term, word) for term in terms for word in content_words)
+
+    def _twin_evidence_item(self, item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "memory_id": str(item.get("id") or ""),
+            "layer": str(item.get("layer") or ""),
+            "content": str(item.get("summary") or item.get("content") or "")[:240],
+            "author_class": normalize_author_class(item.get("author_class")),
+            "trust_score": normalize_trust_score(item.get("trust_score"), item.get("author_class")),
+            "occurred_at": item.get("occurred_at"),
+            "source": item.get("source"),
+        }
+
+    def _twin_hard_constraints(self, negatives: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Machine-checkable vetoes (roadmap 5.3): negative-layer items, USER-authored only —
+        Phase 3's supersession invariant means agent-reported constraints never bind the twin."""
+        constraints = []
+        for item in negatives:
+            if normalize_author_class(item.get("author_class")) != "user":
+                continue
+            constraints.append(self._twin_evidence_item(item))
+        constraints.sort(key=lambda c: c["trust_score"], reverse=True)
+        return constraints
+
+    _TWIN_NEGATION_RE = re.compile(
+        r"\b(?:never|not|no|avoid|avoids|dislike|dislikes|hate|hates|refuse|refuses|"
+        r"won't|wouldn't|don't|doesn't|stop|stopped|against|reject|rejects|rejected)\b",
+        re.IGNORECASE,
+    )
+
+    def would_i(self, user_id: str, question: str, *, limit: int = 8) -> dict[str, Any]:
+        """Phase 5.1: retrieval-first twin prediction. Pull preference/style/negative/decision
+        evidence relevant to the question, compute a deterministic rule-based lean (trust-weighted
+        supporting vs. opposing evidence), and answer ONLY with citations. When the evidence is
+        thin the verdict is insufficient_evidence — the twin never invents a preference. Every
+        prediction is persisted as a twin_prediction event so its accuracy can be graded later
+        (5.4) and measured by the Phase 4 harness."""
+        text = str(question or "").strip()
+        if not text:
+            raise ValueError("question is required")
+        bounded = max(1, min(int(limit or 8), 20))
+        terms = self._twin_query_terms(text)
+        search_query = " ".join(terms) or text
+
+        by_layer: dict[str, list[dict[str, Any]]] = {}
+        seen: set[str] = set()
+        for layer in self._TWIN_EVIDENCE_LAYERS:
+            items = []
+            for item in self.search(user_id, search_query, limit=bounded, layer=layer):
+                memory_id = str(item.get("id") or "")
+                if memory_id and memory_id not in seen and self._twin_relevant(item, terms):
+                    seen.add(memory_id)
+                    items.append(item)
+            by_layer[layer] = items
+
+        supporting: list[dict[str, Any]] = []
+        opposing: list[dict[str, Any]] = []
+        for layer in ("preference", "style", "decision"):
+            for item in by_layer[layer]:
+                content = str(item.get("summary") or item.get("content") or "")
+                bucket = opposing if self._TWIN_NEGATION_RE.search(content) else supporting
+                bucket.append(item)
+        # The negative layer is opposition by construction, whatever its phrasing.
+        opposing.extend(by_layer["negative"])
+
+        def _weight(items: list[dict[str, Any]], *, veto: bool = False) -> float:
+            total = sum(normalize_trust_score(i.get("trust_score"), i.get("author_class")) for i in items)
+            return total
+
+        # Negative-layer vetoes carry extra weight: an explicit "never X" from the user
+        # should beat an equal-trust generic preference.
+        veto_bonus = (self._TWIN_VETO_WEIGHT - 1.0) * _weight(by_layer["negative"])
+        support_weight = round(_weight(supporting), 4)
+        oppose_weight = round(_weight(opposing) + veto_bonus, 4)
+        evidence_count = len(supporting) + len(opposing)
+
+        if evidence_count < self._TWIN_MIN_EVIDENCE:
+            verdict = "insufficient_evidence"
+        elif support_weight > oppose_weight * 1.25:
+            verdict = "likely_yes"
+        elif oppose_weight > support_weight * 1.25:
+            verdict = "likely_no"
+        else:
+            verdict = "mixed"
+
+        prediction_id = stable_id("twin_", f"{user_id}:{now_iso()}:{text[:200]}:{uuid.uuid4().hex}")
+        result = {
+            "prediction_id": prediction_id,
+            "question": text[:500],
+            "verdict": verdict,
+            "rationale": (
+                f"{len(supporting)} supporting item(s) (trust weight {support_weight}) vs "
+                f"{len(opposing)} opposing item(s) (trust weight {oppose_weight})."
+                if verdict != "insufficient_evidence"
+                else "Not enough cited evidence in memory to predict; say so instead of inventing."
+            ),
+            "supporting": [self._twin_evidence_item(i) for i in supporting[:bounded]],
+            "opposing": [self._twin_evidence_item(i) for i in opposing[:bounded]],
+            "hard_constraints": self._twin_hard_constraints(by_layer["negative"]),
+            "evidence_count": evidence_count,
+            "generated_at": now_iso(),
+            "grading": {
+                "how": "When the real decision lands, call grade_twin_prediction with this prediction_id.",
+            },
+        }
+        metadata = {
+            "question": text[:500],
+            "verdict": verdict,
+            "evidence_count": evidence_count,
+            "support_weight": support_weight,
+            "oppose_weight": oppose_weight,
+            "cited_memory_ids": sorted(seen)[:50],
+        }
+        with connect(self.db_path) as conn:
+            self._event(conn, user_id, prediction_id, "twin", "twin_prediction", metadata)
+        return result
+
+    def draft_as_me(self, user_id: str, prompt: str, *, medium: str = "", limit: int = 8) -> dict[str, Any]:
+        """Phase 5.2: compile a cited voice pack the CALLING agent uses to draft. Cortex does not
+        generate the draft itself in v1 — it supplies style evidence, relevant preferences, and
+        user-authored hard constraints, staying model-agnostic."""
+        text = str(prompt or "").strip()
+        if not text:
+            raise ValueError("prompt is required")
+        bounded = max(1, min(int(limit or 8), 20))
+        medium_text = str(medium or "").strip()[:60]
+        style_query = f"{medium_text} writing style".strip() if medium_text else "writing style"
+
+        style = self.search(user_id, style_query, limit=bounded, layer="style")
+        preferences = self.search(user_id, text, limit=bounded, layer="preference")
+        negatives = self.search(user_id, text, limit=bounded, layer="negative")
+        context = self.search(user_id, text, limit=bounded)
+
+        seen: set[str] = set()
+
+        def _dedupe(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            out = []
+            for item in items:
+                memory_id = str(item.get("id") or "")
+                if memory_id and memory_id not in seen:
+                    seen.add(memory_id)
+                    out.append(self._twin_evidence_item(item))
+            return out
+
+        return {
+            "prompt": text[:500],
+            "medium": medium_text or None,
+            "voice": _dedupe(style),
+            "preferences": _dedupe(preferences),
+            "hard_constraints": self._twin_hard_constraints(negatives),
+            "relevant_context": _dedupe(context),
+            "instructions": (
+                "Draft in the user's voice using the cited style evidence. Honor every hard "
+                "constraint (user-authored vetoes). Where evidence is silent, stay neutral "
+                "rather than inventing a preference."
+            ),
+            "generated_at": now_iso(),
+        }
+
+    def grade_twin_prediction(self, user_id: str, prediction_id: str, outcome: str, *, actual: str = "") -> dict[str, Any]:
+        """Phase 5.4 accuracy loop: record how a twin prediction turned out. Grades accrue to
+        get_twin_scorecard — accuracy over time is the twin's headline metric."""
+        pid = str(prediction_id or "").strip()
+        if not pid:
+            raise ValueError("prediction_id is required")
+        verdict = str(outcome or "").strip().lower()
+        if verdict not in {"correct", "incorrect", "unclear"}:
+            raise ValueError("outcome must be one of: correct, incorrect, unclear")
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT metadata_json FROM memory_events WHERE user_id = ? AND object_id = ? AND object_type = 'twin' AND event_type = 'twin_prediction'",
+                (user_id, pid),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Unknown prediction_id; ids look like twin_... and come from would_i.")
+            prediction_meta = self._json_or_empty(row["metadata_json"])
+            event = self._event(
+                conn,
+                user_id,
+                pid,
+                "twin",
+                "twin_prediction_graded",
+                {
+                    "outcome": verdict,
+                    "actual": str(actual or "").strip()[:500] or None,
+                    "predicted_verdict": prediction_meta.get("verdict"),
+                    "question": prediction_meta.get("question"),
+                },
+            )
+        return {
+            "prediction_id": pid,
+            "outcome": verdict,
+            "predicted_verdict": prediction_meta.get("verdict"),
+            "graded_at": event["created_at"],
+        }
+
+    def get_twin_scorecard(self, user_id: str, *, days: int = 90) -> dict[str, Any]:
+        """Read-model over twin_prediction / twin_prediction_graded events: prediction volume,
+        verdict mix, graded accuracy, and the ungraded backlog (the review surface's queue)."""
+        window_days = max(1, min(int(days), 365))
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT object_id, event_type, metadata_json, created_at
+                FROM memory_events
+                WHERE user_id = ? AND object_type = 'twin'
+                  AND created_at >= datetime('now', ?)
+                ORDER BY created_at, rowid
+                """,
+                (user_id, f"-{window_days} days"),
+            ).fetchall()
+        predictions: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            metadata = self._json_or_empty(row["metadata_json"])
+            pid = str(row["object_id"])
+            if row["event_type"] == "twin_prediction":
+                predictions[pid] = {
+                    "prediction_id": pid,
+                    "question": metadata.get("question"),
+                    "verdict": metadata.get("verdict"),
+                    "predicted_at": row["created_at"],
+                    "outcome": None,
+                }
+            elif row["event_type"] == "twin_prediction_graded" and pid in predictions:
+                predictions[pid]["outcome"] = metadata.get("outcome")
+        items = list(predictions.values())
+        graded = [p for p in items if p["outcome"] in {"correct", "incorrect"}]
+        correct = sum(1 for p in graded if p["outcome"] == "correct")
+        verdict_mix: dict[str, int] = {}
+        for p in items:
+            key = str(p["verdict"] or "unknown")
+            verdict_mix[key] = verdict_mix.get(key, 0) + 1
+        return {
+            "generated_at": now_iso(),
+            "window_days": window_days,
+            "predictions": len(items),
+            "verdict_mix": verdict_mix,
+            "graded": len(graded),
+            "accuracy": round(correct / len(graded), 4) if graded else None,
+            "ungraded": [p for p in items if p["outcome"] is None and p["verdict"] != "insufficient_evidence"][:20],
+            "caveats": [
+                "Accuracy covers only predictions the user has graded.",
+                "insufficient_evidence verdicts are excluded from the grading queue.",
+            ],
+        }
 
     def _enqueue_job(
         self,

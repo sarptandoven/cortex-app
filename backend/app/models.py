@@ -864,6 +864,23 @@ class GradeAnswerRequest(BaseModel):
     pack_sha: str | None = Field(default=None, max_length=80)
 
 
+class WouldIRequest(BaseModel):
+    question: str = Field(..., min_length=1, max_length=500)
+    limit: int = Field(default=8, ge=1, le=20)
+
+
+class DraftAsMeRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=2_000)
+    medium: str = Field(default="", max_length=60)
+    limit: int = Field(default=8, ge=1, le=20)
+
+
+class GradeTwinPredictionRequest(BaseModel):
+    prediction_id: str = Field(..., min_length=1, max_length=120)
+    outcome: str = Field(..., min_length=1, max_length=20)
+    actual: str = Field(default="", max_length=500)
+
+
 class ContextReuseRequest(BaseModel):
     surface: str = Field(default="macos", max_length=80)
     query: str = Field(default="", max_length=500)

@@ -913,6 +913,54 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "would_i",
+        "description": "Predict what the user would decide or prefer, from cited memory evidence only (preferences, style, decisions, and negative-layer vetoes). Returns likely_yes/likely_no/mixed with supporting and opposing citations, or insufficient_evidence when memory cannot answer honestly. Never invents a preference.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "The decision or preference question, e.g. 'Would I use tailwind for this project?'"},
+                "limit": {"type": "integer", "default": 8, "minimum": 1, "maximum": 20},
+            },
+            "required": ["question"],
+        },
+    },
+    {
+        "name": "draft_as_me",
+        "description": "Compile a cited voice pack for drafting in the user's voice: style evidence, relevant preferences, user-authored hard constraints (vetoes), and relevant context. The calling agent writes the draft; Cortex supplies the compiled persona.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "What is being drafted, e.g. 'reply to the investor intro email'."},
+                "medium": {"type": "string", "description": "Optional medium, e.g. 'email', 'slack', 'blog post'."},
+                "limit": {"type": "integer", "default": 8, "minimum": 1, "maximum": 20},
+            },
+            "required": ["prompt"],
+        },
+    },
+    {
+        "name": "grade_twin_prediction",
+        "description": "Record how a would_i prediction turned out (correct, incorrect, or unclear) once the real decision is known. Grades accrue to the twin scorecard — accuracy over time is the twin's headline metric.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prediction_id": {"type": "string", "description": "The twin_... id returned by would_i."},
+                "outcome": {"type": "string", "enum": ["correct", "incorrect", "unclear"]},
+                "actual": {"type": "string", "description": "Optional: what the user actually decided."},
+            },
+            "required": ["prediction_id", "outcome"],
+        },
+    },
+    {
+        "name": "get_twin_scorecard",
+        "description": "Return the twin's prediction accuracy scorecard: prediction volume, verdict mix, graded accuracy, and the ungraded backlog awaiting user grading. Read-only.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "days": {"type": "integer", "default": 90, "minimum": 1, "maximum": 365},
+            },
+        },
+    },
 ]
 
 # The curated CORE surface an agent sees by default: one tool per job (working context,
@@ -969,6 +1017,9 @@ MCP_TOOL_SURFACES: dict[str, frozenset[str]] = {
             "expand_context",
             "remember_this",
             "list_capabilities",
+            "would_i",
+            "draft_as_me",
+            "grade_twin_prediction",
         }
     ),
 }
@@ -1002,6 +1053,11 @@ READ_TOOLS = {
     "get_decision_history",
     "get_belief_timeline",
     "get_tool_scorecard",
+    # Twin reads: would_i / draft_as_me only retrieve and compile cited evidence — the
+    # twin_prediction event they log is audit trail, same as record_context_reuse.
+    "would_i",
+    "draft_as_me",
+    "get_twin_scorecard",
     "get_open_questions",
     "list_memory_topics",
     "list_memory_entities",
@@ -1028,6 +1084,8 @@ WRITE_TOOLS = {
     "remember_this",
     # Grading writes an answer_graded audit event (roadmap: submit_answer_for_grading is write scope).
     "submit_answer_for_grading",
+    # Recording a prediction outcome is a durable write to the accuracy ledger (Phase 5.4).
+    "grade_twin_prediction",
     # Continuity writes: sessions + checkpoint episodes are agent write-back.
     "start_agent_session",
     "checkpoint_agent_session",
@@ -1129,6 +1187,10 @@ _TOOL_TITLE_OVERRIDES: dict[str, str] = {
     "submit_answer_for_grading": "Grade Answer Against Memory",
     "get_context_pack": "Replay Pinned Context Pack",
     "list_context_packs": "List Pinned Context Packs",
+    "would_i": "Would I? (Cited Twin Prediction)",
+    "draft_as_me": "Draft As Me (Voice Pack)",
+    "grade_twin_prediction": "Grade Twin Prediction",
+    "get_twin_scorecard": "Twin Accuracy Scorecard",
 }
 
 
@@ -2603,6 +2665,32 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             days=_bounded_int_arg(args, "days", 7, maximum=90),
             token_id=str(args.get("token_id") or "").strip() or None,
         )
+        return store.agent_payload(user_id, result)
+    if name == "would_i":
+        question = _text_arg(args, "question", "", max_chars=500)
+        result = store.would_i(user_id, question, limit=_bounded_int_arg(args, "limit", 8, maximum=20))
+        store.record_context_reuse(user_id, surface="mcp", query=question, target="twin-prediction")
+        return store.agent_payload(user_id, result)
+    if name == "draft_as_me":
+        prompt = _text_arg(args, "prompt", "", max_chars=2000)
+        result = store.draft_as_me(
+            user_id,
+            prompt,
+            medium=_text_arg(args, "medium", "", max_chars=60),
+            limit=_bounded_int_arg(args, "limit", 8, maximum=20),
+        )
+        store.record_context_reuse(user_id, surface="mcp", query=prompt, target="voice-pack")
+        return store.agent_payload(user_id, result)
+    if name == "grade_twin_prediction":
+        result = store.grade_twin_prediction(
+            user_id,
+            _text_arg(args, "prediction_id", "", max_chars=120),
+            _text_arg(args, "outcome", "", max_chars=20),
+            actual=_text_arg(args, "actual", "", max_chars=500),
+        )
+        return store.agent_payload(user_id, result)
+    if name == "get_twin_scorecard":
+        result = store.get_twin_scorecard(user_id, days=_bounded_int_arg(args, "days", 90, maximum=365))
         return store.agent_payload(user_id, result)
     if name == "submit_answer_for_grading":
         result = store.grade_answer(

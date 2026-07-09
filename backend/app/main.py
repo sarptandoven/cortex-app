@@ -35,7 +35,7 @@ from .observability import metrics, route_label
 from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CalendarSyncRequest, CalendarSyncResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GitHubRepositoryDiscoveryRequest, GitHubRepositoryDiscoveryResponse, GitHubSyncRequest, GitHubSyncResponse, GmailSyncRequest, GmailSyncResponse, GoogleDriveSyncRequest, GoogleDriveSyncResponse, GoogleOAuthCompleteRequest, GoogleOAuthCompleteResponse, GoogleOAuthStartRequest, GoogleOAuthStartResponse, GraphResponse, JiraSyncRequest, JiraSyncResponse, JobRunResponse, LinearSyncRequest, LinearSyncResponse, ListResponse, MaintenanceResponse, ManagedOAuthCompleteRequest, ManagedOAuthCompleteResponse, ManagedOAuthStartRequest, ManagedOAuthStartResponse, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, NotionSyncRequest, NotionSyncResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, OutlookSyncRequest, OutlookSyncResponse, ProductLoopResponse, QueuedCaptureResponse, RaindropSyncRequest, RaindropSyncResponse, ReadwiseSyncRequest, ReadwiseSyncResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SlackChannelDiscoveryRequest, SlackChannelDiscoveryResponse, SlackSyncRequest, SlackSyncResponse, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse, ZoteroSyncRequest, ZoteroSyncResponse
 from .models import UserListResponse, UserProvisionRequest, UserProvisionResponse, UserStatusResponse
 from .models import CaptureChangePage, SyncIngestRequest, SyncIngestResponse
-from .models import GradeAnswerRequest
+from .models import GradeAnswerRequest, WouldIRequest, DraftAsMeRequest, GradeTwinPredictionRequest
 from .oauth_broker import register_oauth_broker_routes
 from .oidc_registry import OidcError, OidcProviderRegistry
 from .ratelimit import TokenBucketRateLimiter
@@ -1774,6 +1774,29 @@ def tool_scorecard(
 @app.post("/v1/eval/grade-answer")
 def grade_answer(payload: GradeAnswerRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
     return store.grade_answer(user_id, payload.answer_text, session_id=payload.session_id, pack_sha=payload.pack_sha)
+
+
+@app.post("/v1/twin/would-i")
+def twin_would_i(payload: WouldIRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    return store.would_i(user_id, payload.question, limit=payload.limit)
+
+
+@app.post("/v1/twin/draft-as-me")
+def twin_draft_as_me(payload: DraftAsMeRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    return store.draft_as_me(user_id, payload.prompt, medium=payload.medium, limit=payload.limit)
+
+
+@app.post("/v1/twin/grade")
+def twin_grade(payload: GradeTwinPredictionRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    return store.grade_twin_prediction(user_id, payload.prediction_id, payload.outcome, actual=payload.actual)
+
+
+@app.get("/v1/twin/scorecard")
+def twin_scorecard(
+    days: int = Query(default=90, ge=1, le=365),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return store.get_twin_scorecard(user_id, days=days)
 
 
 @app.get("/v1/tasks/open")
