@@ -590,6 +590,16 @@ TOOLS = [
         },
     },
     {
+        "name": "get_source_reputation",
+        "description": "Return per-source approve/reject reputation from the review ledger: how often you approve vs reject what each source proposes, with a promote/demote recommendation for trusting a source. Read-only; never changes a trust setting on its own.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "days": {"type": "integer", "default": 90, "minimum": 1, "maximum": 365},
+            },
+        },
+    },
+    {
         "name": "submit_answer_for_grading",
         "description": "Submit an answer produced with Cortex context for deterministic faithfulness grading: each factual claim is checked against memory and returned as consistent, contradicted, or unsupported, with citations. Results accrue to the host scorecard.",
         "inputSchema": {
@@ -1121,6 +1131,7 @@ READ_TOOLS = {
     "get_decision_history",
     "get_belief_timeline",
     "get_tool_scorecard",
+    "get_source_reputation",
     # Twin reads: would_i / draft_as_me only retrieve and compile cited evidence — the
     # twin_prediction event they log is audit trail, same as record_context_reuse.
     "would_i",
@@ -1266,6 +1277,7 @@ _TOOL_TITLE_OVERRIDES: dict[str, str] = {
     "close_agent_session": "Close Agent Session",
     "get_belief_timeline": "Trace Belief Timeline",
     "get_tool_scorecard": "Review Tool Scorecard",
+    "get_source_reputation": "Source Reputation",
     "submit_answer_for_grading": "Grade Answer Against Memory",
     "get_context_pack": "Replay Pinned Context Pack",
     "list_context_packs": "List Pinned Context Packs",
@@ -2776,6 +2788,12 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             user_id,
             days=_bounded_int_arg(args, "days", 7, maximum=90),
             token_id=str(args.get("token_id") or "").strip() or None,
+        )
+        return store.agent_payload(user_id, result)
+    if name == "get_source_reputation":
+        result = store.source_reputation(
+            user_id,
+            days=_bounded_int_arg(args, "days", 90, maximum=365),
         )
         return store.agent_payload(user_id, result)
     if name == "would_i":

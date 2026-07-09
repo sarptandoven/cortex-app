@@ -74,6 +74,7 @@ class FakeStore:
         self.verify_context_pack_calls: list[tuple[str, str]] = []
         self.write_obsidian_pages_calls: list[tuple[str, str | None, int]] = []
         self.sync_agent_sessions_calls: list[tuple] = []
+        self.source_reputation_calls: list[tuple] = []
         self.oauth_pending: dict[tuple[str, str], dict] = {}
 
     def remember_oauth_pending(self, *, state, user_id, flow, payload, ttl_seconds: int = 600) -> None:
@@ -255,6 +256,18 @@ class FakeStore:
             "errors": [],
             "cursor": {"cursor_value": "hwm=2026-07-01T10:00:00+00:00"},
             "scan": {"connector": "agent-sessions"},
+        }
+
+    def source_reputation(self, user_id: str, *, days: int = 90) -> dict:
+        self.source_reputation_calls.append((user_id, days))
+        return {
+            "generated_at": "2026-07-01T10:00:00Z",
+            "window_days": days,
+            "min_decisions": 8,
+            "sources": [{"source": "slack", "approved": 9, "rejected": 1, "approval_rate": 0.9, "verdict": "reliable"}],
+            "accounts": [],
+            "recommendations": [{"source": "slack", "recommendation": "promote"}],
+            "caveats": [],
         }
 
     def delete_capture(self, user_id: str, capture_id: str) -> bool:
@@ -4530,6 +4543,39 @@ class StandaloneServerTests(unittest.TestCase):
                 timeout=5,
             ) as response:
                 self.assertEqual(json.loads(response.read().decode("utf-8"))["source"], "agent-sessions")
+        finally:
+            self.fake_store.api_token_scopes = ["read"]
+
+    def test_source_reputation_route_on_shipping_server(self) -> None:
+        # Phase C: GET /v1/sources/reputation reaches store.source_reputation, forwards the
+        # bounded window, is read-scoped (a write-only API token is refused).
+        self.fake_store.source_reputation_calls.clear()
+        with request.urlopen(
+            request.Request(
+                self.base_url + "/v1/sources/reputation?days=30",
+                headers={"Authorization": "Bearer test-token"},
+                method="GET",
+            ),
+            timeout=5,
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(payload["min_decisions"], 8)
+        self.assertEqual(payload["recommendations"], [{"source": "slack", "recommendation": "promote"}])
+        self.assertEqual(self.fake_store.source_reputation_calls, [("local", 30)])
+
+        # Read scope discipline: a write-only scoped API token is refused (this is a read-model).
+        self.fake_store.api_token_scopes = ["write"]
+        try:
+            with self.assertRaises(error.HTTPError) as context:
+                request.urlopen(
+                    request.Request(
+                        self.base_url + "/v1/sources/reputation",
+                        headers={"Authorization": "Bearer cxa-standalone-token"},
+                        method="GET",
+                    ),
+                    timeout=5,
+                )
+            self.assertEqual(context.exception.code, 403)
         finally:
             self.fake_store.api_token_scopes = ["read"]
 

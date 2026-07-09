@@ -2088,6 +2088,15 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     )
                 )
                 return
+            if method == "GET" and path == "/v1/sources/reputation":
+                # Phase C: per-source approve/reject reputation from the review ledger (read-only).
+                self._send_json(
+                    store.source_reputation(
+                        user_id,
+                        days=_int_param(params, "days", 90, 1, 365),
+                    )
+                )
+                return
             if method == "GET" and path == "/v1/alerts":
                 status = (params.get("status") or ["pending"])[0]
                 self._send_json(

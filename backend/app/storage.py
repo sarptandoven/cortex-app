@@ -5239,7 +5239,7 @@ class CortexStore:
             external_id = str(row["external_id"] or "").strip()
             if external_id in active_external_ids:
                 continue
-            if self.archive_capture(user_id, row["id"]):
+            if self.archive_capture(user_id, row["id"], reason="reconcile"):
                 archived += 1
         return archived
 
@@ -13553,7 +13553,10 @@ class CortexStore:
     def approve_capture(self, user_id: str, capture_id: str) -> bool:
         timestamp = now_iso()
         with connect(self.db_path) as conn:
-            row = conn.execute("SELECT id, review_status FROM captures WHERE user_id = ? AND id = ?", (user_id, capture_id)).fetchone()
+            row = conn.execute(
+                "SELECT id, review_status, source, source_account_id FROM captures WHERE user_id = ? AND id = ?",
+                (user_id, capture_id),
+            ).fetchone()
             if not row:
                 return False
             if row["review_status"] == "archived":
@@ -13562,14 +13565,22 @@ class CortexStore:
                 "UPDATE captures SET review_status = 'approved', approved_at = ?, archived_at = NULL WHERE user_id = ? AND id = ?",
                 (timestamp, user_id, capture_id),
             )
-            self._event(conn, user_id, capture_id, "capture", "approved", {})
+            # source + account let the reputation read-model (Phase C) aggregate the approve
+            # signal per connector and per source account, symmetric with the archive event.
+            self._event(conn, user_id, capture_id, "capture", "approved", {
+                "source": row["source"],
+                "source_account_id": row["source_account_id"],
+            })
             self.vault.patch_capture(capture_id, {"review_status": "approved", "approved_at": timestamp, "archived_at": None})
         return True
 
-    def archive_capture(self, user_id: str, capture_id: str) -> bool:
+    def archive_capture(self, user_id: str, capture_id: str, *, reason: str = "user_review") -> bool:
         timestamp = now_iso()
         with connect(self.db_path) as conn:
-            row = conn.execute("SELECT id FROM captures WHERE user_id = ? AND id = ?", (user_id, capture_id)).fetchone()
+            row = conn.execute(
+                "SELECT id, source, source_account_id FROM captures WHERE user_id = ? AND id = ?",
+                (user_id, capture_id),
+            ).fetchone()
             if not row:
                 return False
             conn.execute(
@@ -13595,7 +13606,16 @@ class CortexStore:
                     f"DELETE FROM memory_relations WHERE user_id = ? AND (source_memory_id IN ({placeholders}) OR target_memory_id IN ({placeholders}))",
                     [user_id, *memory_ids, *memory_ids],
                 )
-            self._event(conn, user_id, capture_id, "capture", "archived", {"memory_count": len(memory_ids)})
+            self._event(conn, user_id, capture_id, "capture", "archived", {
+                "memory_count": len(memory_ids),
+                # reason distinguishes a genuine user rejection ("user_review") from an automated
+                # reconciliation archive ("reconcile", a source file disappeared). Reputation
+                # (Phase C) counts only user_review archives as rejections; source + account let it
+                # aggregate the approve/reject signal per connector and per source account.
+                "reason": reason,
+                "source": row["source"],
+                "source_account_id": row["source_account_id"],
+            })
             self.vault.patch_capture(capture_id, {"review_status": "archived", "archived_at": timestamp})
             for memory_id in memory_ids:
                 self.vault.patch_memory(memory_id, {"status": "archived", "updated_at": timestamp})
@@ -18015,6 +18035,143 @@ class CortexStore:
                 "Faithfulness metrics cover only answers submitted via submit_answer_for_grading.",
                 "Usage-rate metrics cover every logged MCP tool call in the window.",
             ],
+        }
+
+    # ------------------------------------------------------------------
+    # Source reputation (Phase C): learn which sources earn trust at review
+    # ------------------------------------------------------------------
+
+    # A source needs at least this many DECIDED captures (approved + user-rejected) before its
+    # reputation is allowed to influence the review gate. Below this, one lucky approval must not
+    # auto-trust a whole connector.
+    REPUTATION_MIN_DECISIONS = 8
+    # At or above this approval rate a well-established source is a promotion CANDIDATE (the user
+    # still flips the actual trust toggle — reputation recommends, it never auto-trusts).
+    REPUTATION_PROMOTE_RATE = 0.9
+    # At or below this approval rate a TRUSTED source is a demotion candidate: the user keeps
+    # approving almost nothing from it, so its auto-trust is probably wrong.
+    REPUTATION_DEMOTE_RATE = 0.5
+
+    def source_reputation(self, user_id: str, *, days: int = 90) -> dict[str, Any]:
+        """Pure read-model over the capture review ledger: per source (and per source account),
+        how often the user APPROVES vs REJECTS what it proposes.
+
+        Signal hygiene (the whole thing is worthless if the signal is dirty):
+          - Approvals come from capture.approved events; rejections from capture.archived events
+            with reason=user_review ONLY. Automated reconciliation archives (reason=reconcile,
+            a source file disappeared) are NOT rejections and are excluded.
+          - A capture that was approved and later archived counts once as its final decision
+            (archived), so re-approve/re-reject churn can't inflate totals — we fold to the last
+            decision per capture.
+          - Recommendations require REPUTATION_MIN_DECISIONS decided captures; below that the
+            verdict is "insufficient_evidence" and the gate is never touched.
+        Reputation RECOMMENDS; it never flips a trust toggle on its own (cited-or-silent applied
+        to autonomy: we only suggest what the user's own review history already supports)."""
+        window_days = max(1, min(int(days), 365))
+        cutoff = (
+            (datetime.now(timezone.utc) - timedelta(days=window_days))
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        # Fold to the last decision per capture: {capture_id: (created_at, decision, source, account)}
+        last_decision: dict[str, tuple[str, str, str, str | None]] = {}
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT object_id, event_type, metadata_json, created_at
+                FROM memory_events
+                WHERE user_id = ?
+                  AND object_type = 'capture'
+                  AND event_type IN ('approved', 'archived')
+                  AND created_at >= ?
+                ORDER BY created_at ASC, rowid ASC
+                """,
+                (user_id, cutoff),
+            ).fetchall()
+            trusted_accounts = {
+                account["id"]: account
+                for account in self.list_source_accounts(user_id, include_disconnected=True)
+            }
+        for row in rows:
+            metadata = self._json_or_empty(row["metadata_json"])
+            if row["event_type"] == "archived" and str(metadata.get("reason") or "user_review") != "user_review":
+                # Automated reconciliation archive — not a user rejection. Skip entirely; it must
+                # not even overwrite an earlier genuine decision for this capture.
+                continue
+            decision = "approved" if row["event_type"] == "approved" else "rejected"
+            source = str(metadata.get("source") or "unknown")
+            account_id = metadata.get("source_account_id")
+            last_decision[row["object_id"]] = (row["created_at"], decision, source, account_id)
+
+        # Aggregate per source and per (source, account).
+        source_totals: dict[str, dict[str, Any]] = {}
+        account_totals: dict[str, dict[str, Any]] = {}
+        for _created_at, decision, source, account_id in last_decision.values():
+            bucket = source_totals.setdefault(source, {"approved": 0, "rejected": 0})
+            bucket[decision] += 1
+            if account_id:
+                acct_bucket = account_totals.setdefault(account_id, {"source": source, "approved": 0, "rejected": 0})
+                acct_bucket[decision] += 1
+
+        sources = [
+            self._reputation_entry(source, totals, trusted=None)
+            for source, totals in sorted(source_totals.items())
+        ]
+        accounts = []
+        for account_id, totals in sorted(account_totals.items()):
+            account = trusted_accounts.get(account_id)
+            policy = account.get("policy") if account else {}
+            trusted = bool(isinstance(policy, dict) and policy.get("review_required") is False)
+            entry = self._reputation_entry(totals["source"], totals, trusted=trusted)
+            entry["source_account_id"] = account_id
+            entry["account_label"] = account.get("account_label") if account else None
+            accounts.append(entry)
+
+        recommendations = [entry for entry in accounts if entry["recommendation"] in {"promote", "demote"}]
+        return {
+            "generated_at": now_iso(),
+            "window_days": window_days,
+            "min_decisions": self.REPUTATION_MIN_DECISIONS,
+            "sources": sources,
+            "accounts": accounts,
+            "recommendations": recommendations,
+            "caveats": [
+                "Approval rate counts only decided captures (approved or user-rejected at review).",
+                "Automated reconciliation archives (a source file disappeared) are excluded.",
+                "Reputation recommends; it never changes a source's trust setting on its own.",
+            ],
+        }
+
+    def _reputation_entry(self, source: str, totals: dict[str, Any], *, trusted: bool | None) -> dict[str, Any]:
+        approved = int(totals.get("approved") or 0)
+        rejected = int(totals.get("rejected") or 0)
+        decided = approved + rejected
+        approval_rate = (approved / decided) if decided else None
+        if decided < self.REPUTATION_MIN_DECISIONS:
+            verdict = "insufficient_evidence"
+            recommendation = "hold"
+        elif approval_rate is not None and approval_rate >= self.REPUTATION_PROMOTE_RATE:
+            verdict = "reliable"
+            # Only recommend promotion for a source that is NOT already trusted.
+            recommendation = "promote" if trusted is False else "hold"
+        elif approval_rate is not None and approval_rate <= self.REPUTATION_DEMOTE_RATE:
+            verdict = "noisy"
+            # Only recommend demotion for a source the user currently auto-trusts.
+            recommendation = "demote" if trusted is True else "hold"
+        else:
+            verdict = "mixed"
+            recommendation = "hold"
+        return {
+            "source": source,
+            "source_label": _source_display_label(source),
+            "approved": approved,
+            "rejected": rejected,
+            "decided": decided,
+            "approval_rate": round(approval_rate, 3) if approval_rate is not None else None,
+            "verdict": verdict,
+            "recommendation": recommendation,
+            "trusted": trusted,
         }
 
     def grade_answer(

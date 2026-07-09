@@ -1122,6 +1122,58 @@ class FastAPIContractTests(unittest.TestCase):
         )
         self.assertEqual(bad.status_code, 422)
 
+    def test_source_reputation_endpoint_contract(self) -> None:
+        """Phase C REST surface: GET /v1/sources/reputation returns the per-source review
+        reputation read-model with promote/demote recommendations. Read-scoped; never mutates."""
+        user = "phasec-rest-contract"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+
+        # A connected but untrusted source account, then a strong approval record.
+        store = main_module.store
+        account = store.upsert_source_account(
+            user,
+            source="slack",
+            account_label="Team Slack",
+            policy={"review_required": True, "allow_ai_context": True},
+        )
+        ids = []
+        for i in range(store.REPUTATION_MIN_DECISIONS):
+            saved = store.save_capture(
+                user_id=user,
+                content=f"Decision {i}: we standardized deploy cadence and the rollout policy.",
+                source="slack",
+                source_url=f"slack://thread/{i}",
+                title=None,
+                extracted={"summary": f"Decision {i}: standardized deploy cadence."},
+                source_account_id=account["id"],
+                external_id=f"slk-{i}",
+            )
+            ids.append(saved["capture_id"])
+        for cid in ids:
+            store.approve_capture(user, cid)
+
+        response = self.client.get("/v1/sources/reputation", headers=headers)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertIn("recommendations", body)
+        self.assertEqual(body["min_decisions"], store.REPUTATION_MIN_DECISIONS)
+        recs = {r["source"]: r["recommendation"] for r in body["recommendations"]}
+        self.assertEqual(recs.get("slack"), "promote")
+
+        # A write-only token is refused: this is a read-model.
+        wo_token = "cxa_phasec_rest_wo_123456789"
+        registered = self.client.post(
+            "/v1/integrations/api-token",
+            json={"token": wo_token, "label": "phasec reputation wo", "scopes": ["write"]},
+            headers=headers,
+        )
+        self.assertEqual(registered.status_code, 200)
+        refused = self.client.get(
+            "/v1/sources/reputation",
+            headers={"Authorization": f"Bearer {wo_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(refused.status_code, 403)
+
     def test_retrieval_endpoints_support_source_account_and_facet_scope(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "source-scope-contract"}
 

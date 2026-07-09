@@ -1826,6 +1826,16 @@ def tool_scorecard(
     return store.get_tool_scorecard(user_id, days=days, token_id=token_id)
 
 
+@app.get("/v1/sources/reputation")
+def source_reputation(
+    days: int = Query(default=90, ge=1, le=365),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    """Phase C: per-source approve/reject reputation from the review ledger. Read-only; it
+    recommends promoting a reliable source or demoting a noisy trusted one, never auto-flips."""
+    return store.source_reputation(user_id, days=days)
+
+
 @app.post("/v1/eval/grade-answer")
 def grade_answer(payload: GradeAnswerRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
     return store.grade_answer(user_id, payload.answer_text, session_id=payload.session_id, pack_sha=payload.pack_sha)

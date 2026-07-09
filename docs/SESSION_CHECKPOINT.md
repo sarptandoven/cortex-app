@@ -135,15 +135,43 @@ Resume point for the phased expansion roadmap (see docs/EXPANSION_ROADMAP_PHASES
     standalone contract tests (harvest + inbox review-gating, idempotent, scope
     refusal, 422s); metadata suite auto-covers the new tool
 
+- Phase C: source reputation — the review ledger learns which sources earn trust — this commit
+  - A pure READ-MODEL over the capture review ledger: per source (and per source
+    account) how often the user APPROVES vs REJECTS what it proposes. It RECOMMENDS
+    promote/demote; it never flips a trust toggle on its own (cited-or-silent applied
+    to autonomy — we only suggest what the user's own review history already supports)
+  - Signal hygiene was the whole game (a dirty signal is worse than none):
+    approvals come from capture.approved, rejections ONLY from capture.archived with
+    reason=user_review. Added a `reason` param to archive_capture (default user_review)
+    and tagged the reconciliation caller reason=reconcile, so an automated archive
+    (a source file disappeared) is NOT counted as a rejection — and does not even
+    overwrite an earlier genuine approval. approve/archive events now carry source +
+    source_account_id so the model can aggregate per connector and per account
+  - Fold-to-last-decision per capture (approve→reject churn can't inflate totals);
+    ORDER BY created_at, rowid so the later same-second event wins the fold
+  - Evidence floor: REPUTATION_MIN_DECISIONS=8 decided captures before any verdict
+    counts (one lucky streak must not auto-trust a connector). Verdicts insufficient_
+    evidence / reliable (>=0.9) / noisy (<=0.5) / mixed → promote only for an UNtrusted
+    source, demote only for a currently-TRUSTED one
+  - MCP: get_source_reputation in READ_TOOLS (read-model, not a mutation — a write-only
+    token is refused); readOnlyHint true, openWorldHint false (purely local)
+  - REST: GET /v1/sources/reputation on both servers (read scope via GET fall-through,
+    bounded days window)
+  - tests: test_source_reputation.py (12: approval rate + reliable verdict, reconcile-
+    archive-is-not-a-rejection, fold-to-last-decision, min-decisions gate, promote-only-
+    untrusted, already-trusted-holds, demote-only-trusted-noisy, untrusted-noisy-holds,
+    mixed-holds, window excludes old decisions, report caveats, MCP read-scope parity);
+    FastAPI + standalone contract tests (report + promote rec, read-scope refusal of a
+    write-only token); metadata suite auto-covers the new tool
+
 ## State
-- Full suite green: 1565 tests + 372 subtests
-- Branch pushed through `0e7ffd9`; Phase B is the next commit
-- Shipped DMG (build 21) predates Phase 2b + A + B — build 22 ships at the end of
+- Full suite green: 1579 tests + 372 subtests
+- Branch pushed through `21b2d9d` (Phase B); Phase C is the next commit
+- Shipped DMG (build 21) predates Phase 2b + A + B + C — build 22 ships at the end of
   the approved slate (write-back → session harvest → reputation → integrity → OpenClaw
   exploration doc)
 
 ## Next
-- Phase C: reputation (approve/reject rates per agent/source gate review_required)
 - Phase D: integrity/portability (hash-linked events, manifest, lossless export)
 - OpenClaw exploration doc, then build 22 + DMG last
 - Prefetch: only add learning if the most-recent baseline plateaus (measure first)
