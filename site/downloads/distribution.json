@@ -1,22 +1,29 @@
 {
- "artifacts": [
-  {
-   "filename": "Cortex-0.2.0-14.dmg",
-   "kind": "dmg",
-   "sha256": "f8d0d8d5dff6c5363db3afd97873641647465179a263a25a438e1827c7dcfc02",
-   "size_bytes": 84899666,
-   "url": "https://trydoppl.com/downloads/Cortex-0.2.0-14.dmg"
-  },
-  {
-   "filename": "Cortex-0.2.0-14.app.zip",
-   "kind": "zip",
-   "sha256": "c6a4d763fd47b44a2125837173122ec8f127c9fdfd726e3cefb3c2bf01d27fa7",
-   "size_bytes": 67732064,
-   "url": "https://trydoppl.com/downloads/Cortex-0.2.0-14.app.zip"
-  }
- ],
- "build": "14",
- "channel": "local-beta",
- "prepared_at": null,
- "version": "0.2.0"
+  "artifacts": [
+    {
+      "filename": "Cortex-0.2.0-22.dmg",
+      "kind": "dmg",
+      "sha256": "eb421cf0fd767b3aaf8a1d5ef05235186b67e056d30f299c777ae89d9cad34b9",
+      "size_bytes": 87312603,
+      "url": "downloads/Cortex-0.2.0-22.dmg"
+    },
+    {
+      "filename": "Cortex-0.2.0-22.app.zip",
+      "kind": "zip",
+      "sha256": "eb8797c807fa2b50fc9a5972660ffd639348c59077a84c192a342f6266c4f2bd",
+      "size_bytes": 68365377,
+      "url": "downloads/Cortex-0.2.0-22.app.zip"
+    },
+    {
+      "filename": "cortex-memory-0.1.0.zip",
+      "kind": "obsidian-plugin",
+      "sha256": "c74d9f0e46cda400e2fac5638afff3153c7f85efe2292aef035d7414d0637383",
+      "size_bytes": 3423,
+      "url": "downloads/cortex-memory-0.1.0.zip"
+    }
+  ],
+  "build": "22",
+  "channel": "local-beta",
+  "prepared_at": "2026-07-09T19:23:49+00:00",
+  "version": "0.2.0"
 }
