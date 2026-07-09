@@ -499,6 +499,33 @@ class CortexVault:
         except Exception:
             pass
 
+    def authorship_key(self) -> bytes:
+        """Vault-local HMAC key for the Phase 3 authorship ledger. Stored inside
+        credentials.json (already secret: chmod 600, gitignored, excluded from restore)
+        so no new secret file is introduced. Created lazily on first use."""
+        self.ensure()
+        with self._lock:
+            credentials = self._read_json(
+                self.credentials_path,
+                {
+                    "vault_record_type": "credentials",
+                    "vault_record_version": VAULT_VERSION,
+                    "users": {},
+                },
+            )
+            existing = str(credentials.get("authorship_key_hex") or "").strip()
+            if existing:
+                try:
+                    return bytes.fromhex(existing)
+                except ValueError:
+                    pass  # corrupt hex: rotate below rather than crash forever
+            key = os.urandom(32)
+            credentials["authorship_key_hex"] = key.hex()
+            credentials["vault_updated_at"] = vault_now()
+            self._write_json(self.credentials_path, credentials)
+            self._chmod_credentials_file()
+            return key
+
     def delete_source_credential(self, *, user_id: str, source_account_id: str) -> bool:
         with self._lock:
             credentials = self._read_json(self.credentials_path, {})

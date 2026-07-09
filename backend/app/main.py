@@ -1752,6 +1752,15 @@ def decision_history(
     return store.decision_history(user_id, query, limit=limit, sector=sector, include_superseded=include_superseded, as_of=as_of)
 
 
+@app.get("/v1/beliefs/timeline")
+def belief_timeline(
+    topic: str = Query(default="", max_length=240),
+    limit: int = Query(default=20, ge=1, le=50),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return store.get_belief_timeline(user_id, topic, limit=limit)
+
+
 @app.get("/v1/tasks/open")
 def open_tasks(limit: int = Query(default=20, ge=1, le=100), user_id: str = Depends(auth)) -> dict[str, Any]:
     return {"results": store.open_tasks(user_id, limit)}

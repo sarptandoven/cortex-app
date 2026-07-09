@@ -1926,6 +1926,15 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     )
                 )
                 return
+            if method == "GET" and path == "/v1/beliefs/timeline":
+                self._send_json(
+                    store.get_belief_timeline(
+                        user_id,
+                        (params.get("topic") or [""])[0],
+                        limit=_int_param(params, "limit", 20, 1, 50),
+                    )
+                )
+                return
             if method == "GET" and path == "/v1/tasks/open":
                 self._send_json({"results": store.open_tasks(user_id, _int_param(params, "limit", 20, 1, 100))})
                 return

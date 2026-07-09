@@ -4729,7 +4729,10 @@ Never use [[Templates/Marketing]] boilerplate in memory.
 
         self.assertEqual(ran["processed"], 0)
         self.assertEqual(self.store.search(self.user_id, "Queued deletion"), [])
-        self.assertEqual(self.store.list_jobs(self.user_id), [])
+        # Phase 3 schedules a nightly rescore_trust job on worker ticks; only
+        # capture-scoped jobs must be gone after deleting the capture.
+        leftover = [job for job in self.store.list_jobs(self.user_id) if job["job_type"] != "rescore_trust"]
+        self.assertEqual(leftover, [])
 
     def test_job_health_reports_queued_failed_and_stale_running_jobs(self) -> None:
         first = self.store.enqueue_capture(

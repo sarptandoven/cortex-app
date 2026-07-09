@@ -129,3 +129,64 @@ def normalize_trust_score(value: Any, author_class: Any = "unknown") -> float:
     if score != score:  # NaN
         return base_trust_score(author_class)
     return min(1.0, max(0.0, score))
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: deterministic trust scoring and authorship signing.
+# ---------------------------------------------------------------------------
+
+# Corroboration: each repeated independent observation of the same statement adds
+# a small bonus, capped so volume can never outrank authorship class.
+_CORROBORATION_STEP = 0.05
+_CORROBORATION_CAP = 0.15
+# A memory that cites where it came from is auditable; one that does not is
+# slightly discounted (except user-authored statements, which ARE the source).
+_UNCITED_PENALTY = 0.1
+# A superseded memory has been explicitly replaced: floor its score so retrieval
+# tie-breaks never prefer it, without erasing the provenance signal entirely.
+_SUPERSEDED_FACTOR = 0.5
+
+
+def compute_trust_score(
+    *,
+    author_class: Any,
+    has_citation: bool = False,
+    occurrences: int = 1,
+    superseded: bool = False,
+) -> float:
+    """Deterministic Phase 3 trust score: base(author) + corroboration - citation
+    penalty, halved when superseded. Pure function of durable record fields, so
+    the write path, the rescore job, and a vault rebuild all converge. Property
+    guaranteed (and tested): corroboration never LOWERS a score."""
+    normalized = normalize_author_class(author_class)
+    score = base_trust_score(normalized)
+    try:
+        extra = max(0, int(occurrences) - 1)
+    except (TypeError, ValueError):
+        extra = 0
+    score += min(_CORROBORATION_CAP, extra * _CORROBORATION_STEP)
+    if not has_citation and normalized != "user":
+        score -= _UNCITED_PENALTY
+    if superseded:
+        score *= _SUPERSEDED_FACTOR
+    return min(1.0, max(0.0, round(score, 4)))
+
+
+def sign_authorship(key: bytes, *, memory_id: Any, author_class: Any) -> str:
+    """HMAC-SHA256 over the identity-bearing authorship fields. Content is NOT
+    covered (users may edit their note text freely — two-way editing is a
+    feature) and neither is captured_at (the occurrence-bump path legitimately
+    refreshes it). What must never silently flip out-of-band is WHO asserted
+    a given memory id."""
+    import hashlib
+    import hmac as _hmac
+
+    message = "\x1f".join([str(memory_id or ""), normalize_author_class(author_class)]).encode("utf-8")
+    return _hmac.new(key, message, hashlib.sha256).hexdigest()
+
+
+def verify_authorship(key: bytes, signature: Any, *, memory_id: Any, author_class: Any) -> bool:
+    import hmac as _hmac
+
+    expected = sign_authorship(key, memory_id=memory_id, author_class=author_class)
+    return _hmac.compare_digest(expected, str(signature or ""))

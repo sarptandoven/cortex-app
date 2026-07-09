@@ -130,7 +130,20 @@ class Phase0SubstrateTests(unittest.TestCase):
             layer = row["layer"] or ""
             expected = "user" if layer in ("preference", "style", "negative") else "agent"
             self.assertEqual(row["author_class"], expected, dict(row))
-            self.assertEqual(row["trust_score"], base_trust_score(expected))
+            # Phase 3: the live save path now applies the full derived score (an uncited
+            # non-user record is discounted below the class base). The Phase 0 invariant
+            # that survives is determinism + classification, checked above.
+            from backend.app.provenance import compute_trust_score
+
+            self.assertEqual(
+                row["trust_score"],
+                compute_trust_score(
+                    author_class=expected,
+                    has_citation=bool(str(row["source_url"] or "").strip()),
+                    occurrences=row["occurrences"],
+                    superseded=bool(str(row["superseded_by"] or "").strip()),
+                ),
+            )
 
     # -- backfill ------------------------------------------------------------------------
 

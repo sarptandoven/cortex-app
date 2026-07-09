@@ -550,6 +550,18 @@ TOOLS = [
         },
     },
     {
+        "name": "get_belief_timeline",
+        "description": "Return the revision history of a belief: for each memory matching the topic, the current version plus every superseded revision, with authorship, trust, and citations. Read-only.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "topic": {"type": "string", "description": "Belief or topic to trace, e.g. 'preferred database'."},
+                "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 50},
+            },
+            "required": ["topic"],
+        },
+    },
+    {
         "name": "get_open_questions",
         "description": "Return open questions and action items.",
         "inputSchema": {"type": "object", "properties": {}},
@@ -964,6 +976,7 @@ READ_TOOLS = {
     "list_source_connectors",
     "get_decisions",
     "get_decision_history",
+    "get_belief_timeline",
     "get_open_questions",
     "list_memory_topics",
     "list_memory_entities",
@@ -1084,6 +1097,7 @@ _TOOL_TITLE_OVERRIDES: dict[str, str] = {
     "resume_agent_session": "Resume Agent Session",
     "list_agent_sessions": "List Agent Sessions",
     "close_agent_session": "Close Agent Session",
+    "get_belief_timeline": "Trace Belief Timeline",
     "get_context_pack": "Replay Pinned Context Pack",
     "list_context_packs": "List Pinned Context Packs",
 }
@@ -2548,6 +2562,11 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             as_of=args.get("as_of"),
         )
         store.record_context_reuse(user_id, surface="mcp", query=query, target="decision-history")
+        return store.agent_payload(user_id, result)
+    if name == "get_belief_timeline":
+        topic = _text_arg(args, "topic", "", max_chars=240)
+        result = store.get_belief_timeline(user_id, topic, limit=_bounded_int_arg(args, "limit", 20, maximum=50))
+        store.record_context_reuse(user_id, surface="mcp", query=topic, target="belief-timeline")
         return store.agent_payload(user_id, result)
     if name == "get_open_questions":
         return store.agent_payload(user_id, store.open_tasks(user_id, _bounded_int_arg(args, "limit", 20)))
