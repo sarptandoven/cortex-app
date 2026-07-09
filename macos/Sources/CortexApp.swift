@@ -11026,7 +11026,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             return self.hasUsefulIntersection(intersection, for: frame)
         }
         let tooSmall = frame.width < window.minSize.width || frame.height < window.minSize.height
-        guard !visibleEnough || tooSmall || !visibleOnPreferredScreen() else { return }
+        // A corrupt autosaved frame (e.g. from a different display arrangement or a polluted
+        // defaults domain) can restore absurdly large — a 3400pt-tall window on an 1125pt screen
+        // still "intersects" enough to pass the checks above while most of it hangs far off
+        // screen and macOS may not render it at all. Treat any frame meaningfully larger than
+        // the biggest attached screen as corrupt and re-center at the sane default.
+        let maxScreen = visibleFrames.reduce(NSRect.zero) { $0.union($1) }
+        let absurdlyLarge = !visibleFrames.isEmpty
+            && (frame.height > maxScreen.height * 1.25 || frame.width > maxScreen.width * 1.25)
+        guard !visibleEnough || tooSmall || absurdlyLarge || !visibleOnPreferredScreen() else { return }
 
         center(window, in: preferredScreenFrame)
         logWindowState("after ensureMainWindowIsVisible reset")
