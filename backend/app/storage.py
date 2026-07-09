@@ -651,6 +651,9 @@ DEFAULT_USER_SETTINGS: dict[str, Any] = {
     "redact_sensitive_context": True,
     "source_policies": {},
     "identity_aliases": [],
+    # Phase 6 annoyance budget: proactive alerts per day. Product-survival constraint —
+    # exceeding the budget suppresses (and logs) instead of nagging. 0 disables alerts.
+    "proactive_alerts_daily_budget": 3,
 }
 
 
@@ -2952,6 +2955,25 @@ class CortexStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_sessions_user_status ON agent_sessions(user_id, status, updated_at DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_context_packs_user_created ON context_packs(user_id, created_at DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_context_packs_session ON context_packs(user_id, session_id, created_at DESC)")
+            # Phase 6 anticipatory context: proactive alerts need mutable status (pending ->
+            # delivered -> dismissed/accepted) so they get a table, not just events. Every
+            # status transition is ALSO an event (dismissals are training labels).
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS proactive_alerts (
+                  id TEXT PRIMARY KEY,
+                  user_id TEXT NOT NULL,
+                  kind TEXT NOT NULL,
+                  status TEXT NOT NULL DEFAULT 'pending',
+                  title TEXT NOT NULL DEFAULT '',
+                  detail_json TEXT NOT NULL DEFAULT '{}',
+                  created_at TEXT NOT NULL,
+                  delivered_at TEXT,
+                  resolved_at TEXT
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_proactive_alerts_user_status ON proactive_alerts(user_id, status, created_at DESC)")
             # Phase 3 authorship ledger: per-memory HMAC over (id, author_class) with a
             # vault-local key. Detects out-of-band frontmatter tampering (an agent or sync
             # client silently flipping author_class: agent -> user) during reconcile; a
@@ -9060,6 +9082,11 @@ class CortexStore:
                 merged["source_policies"] = _normalize_source_policies(updates.get("source_policies"))
             if "identity_aliases" in updates:
                 merged["identity_aliases"] = _normalize_identity_aliases(updates.get("identity_aliases"))
+            if "proactive_alerts_daily_budget" in updates:
+                try:
+                    merged["proactive_alerts_daily_budget"] = min(20, max(0, int(updates["proactive_alerts_daily_budget"])))
+                except (TypeError, ValueError):
+                    merged["proactive_alerts_daily_budget"] = int(DEFAULT_USER_SETTINGS["proactive_alerts_daily_budget"])
             timestamp = now_iso()
             for key, value in merged.items():
                 conn.execute(
@@ -9392,6 +9419,15 @@ class CortexStore:
         if import_id is None:
             try:
                 self.regenerate_vault_pages(user_id, days=[str(captured_at)[:10]] if captured_at else None)
+            except Exception:
+                pass
+
+        # Phase 6.1 contradiction interrupt: runs AFTER the capture transaction (a detection
+        # failure must never fail the write), only for interactive captures — bulk imports
+        # would flood the daily alert budget with historical noise.
+        if import_id is None and memories:
+            try:
+                self._raise_write_contradiction_alerts(user_id, memories)
             except Exception:
                 pass
 
@@ -17390,7 +17426,18 @@ class CortexStore:
             raise PermissionError(labels.get(capability, "Agent action is disabled in Cortex Trust controls."))
 
     def agent_payload(self, user_id: str, value: Any) -> Any:
-        return self._shared_payload(value, redact_sensitive=bool(self.settings(user_id)["redact_sensitive_context"]))
+        payload = self._shared_payload(value, redact_sensitive=bool(self.settings(user_id)["redact_sensitive_context"]))
+        # Phase 6.1 delivery transport: pending proactive alerts ride the next tool response
+        # as warnings[]. Only dict payloads can carry them, and an existing warnings key is
+        # never clobbered. Best-effort: alert delivery must never break a tool response.
+        if isinstance(payload, dict) and "warnings" not in payload:
+            try:
+                warnings = self.pending_alert_warnings(user_id)
+                if warnings:
+                    payload["warnings"] = warnings
+            except Exception:
+                pass
+        return payload
 
     def record_agent_event(
         self,
@@ -17448,7 +17495,7 @@ class CortexStore:
     # test_phase4_eval_harness.py asserts these sets agree with mcp_tools.READ_TOOLS /
     # WRITE_TOOLS so drift is caught at test time, not in production.
     SCORECARD_READ_TOOL_PREFIXES = ("get_", "list_", "search_", "ask_", "resume_", "prepare_", "build_", "expand_", "use_", "would_", "draft_")
-    SCORECARD_WRITE_TOOL_PREFIXES = ("remember_", "start_", "checkpoint_", "close_", "connect_", "sync_", "approve_", "archive_", "forget_", "delete_", "submit_", "grade_")
+    SCORECARD_WRITE_TOOL_PREFIXES = ("remember_", "start_", "checkpoint_", "close_", "connect_", "sync_", "approve_", "archive_", "forget_", "delete_", "submit_", "grade_", "resolve_")
 
     def _scorecard_tool_kind(self, tool_name: str) -> str:
         name = str(tool_name or "")
@@ -18192,6 +18239,331 @@ class CortexStore:
                 "Accuracy covers only predictions the user has graded.",
                 "insufficient_evidence verdicts are excluded from the grading queue.",
             ],
+        }
+
+    # ------------------------------------------------------------------
+    # Phase 6: Anticipatory context — contradiction interrupts, prefetch, annoyance budget
+    # ------------------------------------------------------------------
+
+    # A stale/conflicting memory only warrants an interrupt when the existing side is
+    # trustworthy; low-trust noise contradicting low-trust noise stays in Review.
+    _ALERT_MIN_TRUST = 0.6
+
+    def _alert_from_row(self, row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "kind": row["kind"],
+            "status": row["status"],
+            "title": row["title"],
+            "detail": self._json_or_empty(row["detail_json"]),
+            "created_at": row["created_at"],
+            "delivered_at": row["delivered_at"],
+            "resolved_at": row["resolved_at"],
+        }
+
+    def _alerts_created_today(self, conn, user_id: str) -> int:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM proactive_alerts WHERE user_id = ? AND created_at >= date('now')",
+            (user_id,),
+        ).fetchone()
+        return int(row["n"] or 0)
+
+    def raise_proactive_alert(
+        self,
+        user_id: str,
+        *,
+        kind: str,
+        title: str,
+        detail: dict[str, Any] | None = None,
+        dedupe_key: str = "",
+    ) -> dict[str, Any] | None:
+        """Create a budget-gated proactive alert. Returns the alert, or None when suppressed
+        (over budget, budget disabled, or a duplicate). Suppressions are logged as events so
+        the precision metric can count what the budget cost us."""
+        clean_kind = str(kind or "").strip()[:40] or "generic"
+        clean_title = str(title or "").strip()[:200]
+        if not clean_title:
+            raise ValueError("alert title is required")
+        payload = detail if isinstance(detail, dict) else {}
+        # Deterministic id from the dedupe key: re-detecting the same condition (same conflict
+        # pair, same day) is a no-op instead of a second nag.
+        seed = dedupe_key.strip() or f"{clean_kind}:{clean_title}"
+        alert_id = stable_id("alrt_", f"{user_id}:{seed}")
+        with connect(self.db_path) as conn:
+            budget = int(self._settings(conn, user_id)["proactive_alerts_daily_budget"])
+            existing = conn.execute(
+                "SELECT id FROM proactive_alerts WHERE user_id = ? AND id = ?", (user_id, alert_id)
+            ).fetchone()
+            if existing:
+                return None
+            if self._alerts_created_today(conn, user_id) >= budget:
+                self._event(
+                    conn, user_id, alert_id, "proactive_alert", "alert_suppressed",
+                    {"kind": clean_kind, "title": clean_title, "reason": "daily_budget", "budget": budget},
+                )
+                return None
+            timestamp = now_iso()
+            conn.execute(
+                "INSERT INTO proactive_alerts(id, user_id, kind, status, title, detail_json, created_at) VALUES (?, ?, ?, 'pending', ?, ?, ?)",
+                (alert_id, user_id, clean_kind, clean_title, json.dumps(payload), timestamp),
+            )
+            self._event(
+                conn, user_id, alert_id, "proactive_alert", "alert_raised",
+                {"kind": clean_kind, "title": clean_title},
+            )
+        return {"id": alert_id, "kind": clean_kind, "status": "pending", "title": clean_title, "detail": payload, "created_at": timestamp}
+
+    def list_proactive_alerts(self, user_id: str, *, status: str | None = "pending", limit: int = 20) -> list[dict[str, Any]]:
+        bounded = max(1, min(int(limit or 20), 100))
+        query = "SELECT * FROM proactive_alerts WHERE user_id = ?"
+        params: list[Any] = [user_id]
+        if status:
+            query += " AND status = ?"
+            params.append(str(status))
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(bounded)
+        with connect(self.db_path) as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._alert_from_row(row) for row in rows]
+
+    def resolve_proactive_alert(self, user_id: str, alert_id: str, resolution: str) -> dict[str, Any]:
+        """Dismiss or accept an alert. Every resolution is an event: dismissals are the
+        training labels the roadmap's annoyance budget depends on (dismissal-as-label)."""
+        clean_id = str(alert_id or "").strip()
+        verdict = str(resolution or "").strip().lower()
+        if verdict not in {"dismissed", "accepted"}:
+            raise ValueError("resolution must be one of: dismissed, accepted")
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM proactive_alerts WHERE user_id = ? AND id = ?", (user_id, clean_id)
+            ).fetchone()
+            if row is None:
+                raise ValueError("Unknown alert id; ids look like alrt_... from list_proactive_alerts.")
+            timestamp = now_iso()
+            conn.execute(
+                "UPDATE proactive_alerts SET status = ?, resolved_at = ? WHERE user_id = ? AND id = ?",
+                (verdict, timestamp, user_id, clean_id),
+            )
+            self._event(
+                conn, user_id, clean_id, "proactive_alert", f"alert_{verdict}",
+                {"kind": row["kind"], "title": row["title"]},
+            )
+        return {"id": clean_id, "status": verdict, "resolved_at": timestamp}
+
+    def get_alert_precision(self, user_id: str, *, days: int = 30) -> dict[str, Any]:
+        """The Phase 6 headline metric: accepted / resolved alerts, plus raised/suppressed
+        volume. Pure read-model over the alert table + suppression events."""
+        window_days = max(1, min(int(days), 365))
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS n FROM proactive_alerts WHERE user_id = ? AND created_at >= datetime('now', ?) GROUP BY status",
+                (user_id, f"-{window_days} days"),
+            ).fetchall()
+            counts = {row["status"]: int(row["n"]) for row in rows}
+            suppressed = conn.execute(
+                "SELECT COUNT(*) AS n FROM memory_events WHERE user_id = ? AND object_type = 'proactive_alert' AND event_type = 'alert_suppressed' AND created_at >= datetime('now', ?)",
+                (user_id, f"-{window_days} days"),
+            ).fetchone()
+        accepted = counts.get("accepted", 0)
+        dismissed = counts.get("dismissed", 0)
+        resolved = accepted + dismissed
+        return {
+            "generated_at": now_iso(),
+            "window_days": window_days,
+            "raised": sum(counts.values()),
+            "pending": counts.get("pending", 0),
+            "delivered": counts.get("delivered", 0),
+            "accepted": accepted,
+            "dismissed": dismissed,
+            "suppressed_by_budget": int(suppressed["n"] or 0),
+            "precision": round(accepted / resolved, 4) if resolved else None,
+            "caveats": ["Precision covers only alerts the user resolved (accepted or dismissed)."],
+        }
+
+    def _raise_write_contradiction_alerts(self, user_id: str, memories: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Phase 6.1 write-path contradiction interrupt: when a just-saved memory makes a field
+        claim that disagrees with an existing HIGH-TRUST active memory, raise a budget-gated
+        alert. Deterministic — same claim machinery as detect_conflicts, no ML. Best-effort by
+        contract (called post-transaction); a failure here must never fail the capture."""
+        new_claims: list[tuple[str, str, dict[str, Any]]] = []
+        new_ids = {str(m.get("id") or "") for m in memories}
+        for memory in memories:
+            for field, value in self._answer_field_claims(memory).items():
+                new_claims.append((field, value, memory))
+        if not new_claims:
+            return []
+        fields = sorted({field for field, _, _ in new_claims})
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM memories
+                WHERE user_id = ? AND status = 'active'
+                  AND (superseded_by IS NULL OR superseded_by = '')
+                ORDER BY id
+                LIMIT 2000
+                """,
+                (user_id,),
+            ).fetchall()
+        existing_claims: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+        for row in rows:
+            item = self._memory_from_row(row)
+            if str(item.get("id") or "") in new_ids:
+                continue
+            for field, value in self._answer_field_claims(item).items():
+                if field in fields:
+                    existing_claims.setdefault(field, []).append((value, item))
+        alerts: list[dict[str, Any]] = []
+
+        def _values_agree(a: str, b: str) -> bool:
+            # Same tolerance as grade_answer, plus a head-token rule: extracted claim values
+            # drag along sentence tails ("postgres for the launch" vs "postgres going
+            # forward"), so two claims agree when their head tokens match. For an INTERRUPT
+            # (unlike Review) a missed nag is cheaper than a false one — restatements must
+            # never alert; detect_conflicts still catches anything subtler.
+            if a == b:
+                return True
+            if a.startswith(b + " ") or b.startswith(a + " "):
+                return True
+            head_a, head_b = a.split(" ", 1)[0], b.split(" ", 1)[0]
+            return bool(head_a) and head_a == head_b
+
+        for field, value, memory in new_claims:
+            for known_value, existing in existing_claims.get(field, []):
+                if _values_agree(value, known_value):
+                    continue
+                trust = normalize_trust_score(existing.get("trust_score"), existing.get("author_class"))
+                if trust < self._ALERT_MIN_TRUST:
+                    continue
+                alert = self.raise_proactive_alert(
+                    user_id,
+                    kind="contradiction",
+                    title=f"New capture disagrees on {field}: '{value}' vs '{known_value}'",
+                    detail={
+                        "field": field,
+                        "new": {"memory_id": str(memory.get("id") or ""), "claim": value},
+                        "existing": {
+                            "memory_id": str(existing.get("id") or ""),
+                            "claim": known_value,
+                            "trust_score": trust,
+                            "author_class": normalize_author_class(existing.get("author_class")),
+                        },
+                    },
+                    dedupe_key=f"contradiction:{field}:{memory.get('id')}:{existing.get('id')}",
+                )
+                if alert:
+                    alerts.append(alert)
+        return alerts
+
+    def pending_alert_warnings(self, user_id: str, *, limit: int = 3) -> list[dict[str, Any]]:
+        """Undelivered alerts as a warnings[] block for the next tool response (the transport
+        the roadmap names: everything passes through agent_payload). Marks them delivered —
+        each alert interrupts exactly one response, then lives in Review until resolved."""
+        bounded = max(1, min(int(limit or 3), 10))
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM proactive_alerts WHERE user_id = ? AND status = 'pending' ORDER BY created_at LIMIT ?",
+                (user_id, bounded),
+            ).fetchall()
+            warnings = []
+            timestamp = now_iso()
+            for row in rows:
+                alert = self._alert_from_row(row)
+                conn.execute(
+                    "UPDATE proactive_alerts SET status = 'delivered', delivered_at = ? WHERE user_id = ? AND id = ?",
+                    (timestamp, user_id, row["id"]),
+                )
+                warnings.append(
+                    {
+                        "alert_id": alert["id"],
+                        "kind": alert["kind"],
+                        "message": alert["title"],
+                        "detail": alert["detail"],
+                        "resolve_with": "resolve_proactive_alert(alert_id, 'accepted'|'dismissed')",
+                    }
+                )
+        return warnings
+
+    # ---- 6.2 Prefetch predictor (dumbest-model-first, per roadmap) ---------------------
+
+    def predict_next_pack(self, user_id: str, *, host_label: str = "") -> dict[str, Any] | None:
+        """Baseline predictor: the pack most likely wanted next is the most recent pinned pack,
+        preferring packs from this host's most recent agent session. Deliberately trivial —
+        the roadmap says start with the dumbest model that can win and measure hit-rate before
+        adding learning."""
+        host = str(host_label or "").strip()
+        with connect(self.db_path) as conn:
+            row = None
+            if host:
+                row = conn.execute(
+                    """
+                    SELECT cp.* FROM context_packs cp
+                    JOIN agent_sessions s ON s.id = cp.session_id AND s.user_id = cp.user_id
+                    WHERE cp.user_id = ? AND s.host_label = ?
+                    ORDER BY cp.created_at DESC LIMIT 1
+                    """,
+                    (user_id, host),
+                ).fetchone()
+            if row is None:
+                # Recency must come from PIN EVENTS, not the index row: re-pinning an existing
+                # sha is an INSERT OR IGNORE (created_at frozen), so the row order goes stale
+                # the moment a user returns to an earlier task. Every pin call logs a 'pinned'
+                # event, so the latest event is the true most-recent usage.
+                event = conn.execute(
+                    """
+                    SELECT object_id FROM memory_events
+                    WHERE user_id = ? AND object_type = 'context_pack' AND event_type = 'pinned'
+                    ORDER BY created_at DESC, rowid DESC LIMIT 1
+                    """,
+                    (user_id,),
+                ).fetchone()
+                if event:
+                    row = conn.execute(
+                        "SELECT * FROM context_packs WHERE user_id = ? AND pack_sha = ?",
+                        (user_id, event["object_id"]),
+                    ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    "SELECT * FROM context_packs WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+                    (user_id,),
+                ).fetchone()
+        if row is None:
+            return None
+        return {
+            "pack_sha": row["pack_sha"],
+            "task": row["task"],
+            "intent": row["intent"],
+            "surface": row["surface"],
+            "session_id": row["session_id"],
+            "created_at": row["created_at"],
+            "predictor": "most_recent" + ("_host" if host else ""),
+        }
+
+    def record_prefetch_outcome(self, user_id: str, *, predicted_sha: str, requested_sha: str) -> dict[str, Any]:
+        """Log one prefetch trial (hit = the predicted pack is the one actually requested).
+        The event log is the metric store; get_prefetch_hit_rate reads it back."""
+        hit = bool(predicted_sha) and predicted_sha == requested_sha
+        with connect(self.db_path) as conn:
+            self._event(
+                conn, user_id, predicted_sha or "(none)", "prefetch", "prefetch_outcome",
+                {"hit": hit, "requested_sha": requested_sha[:64]},
+            )
+        return {"hit": hit}
+
+    def get_prefetch_hit_rate(self, user_id: str, *, days: int = 30) -> dict[str, Any]:
+        window_days = max(1, min(int(days), 365))
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT metadata_json FROM memory_events WHERE user_id = ? AND object_type = 'prefetch' AND event_type = 'prefetch_outcome' AND created_at >= datetime('now', ?)",
+                (user_id, f"-{window_days} days"),
+            ).fetchall()
+        trials = len(rows)
+        hits = sum(1 for row in rows if self._json_or_empty(row["metadata_json"]).get("hit"))
+        return {
+            "generated_at": now_iso(),
+            "window_days": window_days,
+            "trials": trials,
+            "hits": hits,
+            "hit_rate": round(hits / trials, 4) if trials else None,
         }
 
     def _enqueue_job(
@@ -21774,6 +22146,10 @@ class CortexStore:
             settings["context_pack_limit"] = min(50, max(4, int(settings["context_pack_limit"])))
         except (TypeError, ValueError):
             settings["context_pack_limit"] = int(DEFAULT_USER_SETTINGS["context_pack_limit"])
+        try:
+            settings["proactive_alerts_daily_budget"] = min(20, max(0, int(settings["proactive_alerts_daily_budget"])))
+        except (TypeError, ValueError):
+            settings["proactive_alerts_daily_budget"] = int(DEFAULT_USER_SETTINGS["proactive_alerts_daily_budget"])
         return settings
 
     def _redact_text(self, value: str, enabled: bool = True) -> str:

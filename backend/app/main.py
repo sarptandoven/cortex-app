@@ -1799,6 +1799,40 @@ def twin_scorecard(
     return store.get_twin_scorecard(user_id, days=days)
 
 
+@app.get("/v1/alerts")
+def proactive_alerts(
+    status: str = Query(default="pending", max_length=20),
+    limit: int = Query(default=20, ge=1, le=100),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return {"alerts": store.list_proactive_alerts(user_id, status=None if status == "all" else status, limit=limit)}
+
+
+@app.post("/v1/alerts/{alert_id}/resolve")
+def resolve_alert(
+    alert_id: str,
+    resolution: str = Query(..., max_length=20),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return store.resolve_proactive_alert(user_id, alert_id, resolution)
+
+
+@app.get("/v1/alerts/precision")
+def alert_precision(
+    days: int = Query(default=30, ge=1, le=365),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return store.get_alert_precision(user_id, days=days)
+
+
+@app.get("/v1/prefetch/hit-rate")
+def prefetch_hit_rate(
+    days: int = Query(default=30, ge=1, le=365),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return store.get_prefetch_hit_rate(user_id, days=days)
+
+
 @app.get("/v1/tasks/open")
 def open_tasks(limit: int = Query(default=20, ge=1, le=100), user_id: str = Depends(auth)) -> dict[str, Any]:
     return {"results": store.open_tasks(user_id, limit)}

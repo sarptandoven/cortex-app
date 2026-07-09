@@ -6,23 +6,29 @@ Resume point for the phased expansion roadmap (see docs/EXPANSION_ROADMAP_PHASES
 - Phase 2: pinned context packs — `11d2bd3`
 - Phase 3: provenance ledger & hygiene — `a676ad4`
 - Phase 4: personal eval harness — `10477e9`
-- Phase 5: delegate/twin — this commit
-  - `would_i`: retrieval-first cited prediction (likely_yes/likely_no/mixed/insufficient_evidence),
-    trust-weighted lean with 1.5x veto weight for negative layer, stopword-stripped query terms +
-    relevance gate against search()'s recency fallback; persists twin_prediction events
-  - `draft_as_me`: compiled voice pack (style/preferences/hard_constraints/context), no generation
-  - `grade_twin_prediction` + `get_twin_scorecard`: 5.4 accuracy loop over twin events
-  - hard_constraints: user-authored negative-layer only (5.3)
-  - REST: POST /v1/twin/would-i, /v1/twin/draft-as-me, /v1/twin/grade, GET /v1/twin/scorecard
-    (both main.py and standalone_server.py)
-  - Scorecard prefixes extended: would_/draft_ read, grade_ write (parity test)
-  - tests/test_phase5_twin.py: 40-fact persona, 20 held-out questions, verdict accuracy 1.0
-    (gate >= 0.8), zero uncited predictions
+- Phase 5: delegate/twin — `e8e76ef`
+- Phase 6: anticipatory context — this commit
+  - 6.1 contradiction interrupts: post-transaction detection in save_capture (interactive
+    captures only; bulk imports excluded), trust-gated (>=0.6 existing side), head-token
+    agreement tolerance so restatements never alert; delivery via warnings[] injected in
+    agent_payload, exactly-once (pending -> delivered)
+  - 6.2 prefetch predictor: predict_next_pack (most-recent baseline, host-scoped variant
+    via agent_sessions join; recency from 'pinned' events since re-pins are INSERT OR
+    IGNORE), record_prefetch_outcome + get_prefetch_hit_rate metrics
+  - 6.3 annoyance budget: proactive_alerts_daily_budget setting (default 3, clamp 0-20),
+    suppression logged as events, dedupe by deterministic alert id, dismissal-as-label,
+    get_alert_precision headline metric
+  - New table proactive_alerts (Phase 0-style idempotent guard)
+  - MCP: get_proactive_alerts (read), resolve_proactive_alert (write)
+  - REST: GET /v1/alerts, /v1/alerts/precision, /v1/prefetch/hit-rate,
+    POST /v1/alerts/{id}/resolve (both servers)
+  - tests/test_phase6_anticipatory.py: 19 tests incl. replayed 12-request usage simulation
+    (hit-rate >= 8/12 gate, beats no-predictor baseline)
 
 ## State
-- Full suite green: 1455 tests + 322 subtests
+- Full suite green: 1474 tests + 322 subtests
 
-## Next
-- Phase 6 (anticipatory context) per the roadmap doc: contradiction interrupts first,
-  then prefetch predictor, annoyance budget
-- Optional: macOS UI panel for twin scorecard (ship order rule: UI last)
+## Next (roadmap phases 0-6 all complete)
+- macOS UI: twin scorecard panel, alerts in Review surface (ship order rule: UI last)
+- Prefetch: only add learning if the most-recent baseline plateaus (measure first)
+- Push branch (now 9 commits ahead of origin)

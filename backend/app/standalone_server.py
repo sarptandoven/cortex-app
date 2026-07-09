@@ -1012,6 +1012,20 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError) as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
+            if method == "POST" and path.startswith("/v1/alerts/") and path.endswith("/resolve"):
+                alert_id = unquote(path.removeprefix("/v1/alerts/").removesuffix("/resolve").strip("/"))
+                body = self._json_body()
+                try:
+                    self._send_json(
+                        store.resolve_proactive_alert(
+                            user_id,
+                            alert_id[:120],
+                            str(body.get("resolution") or (params.get("resolution") or [""])[0])[:20],
+                        )
+                    )
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
             if method == "POST" and path == "/v1/captures/queue":
                 body = self._json_body()
                 try:
@@ -2006,6 +2020,24 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         days=_int_param(params, "days", 90, 1, 365),
                     )
                 )
+                return
+            if method == "GET" and path == "/v1/alerts":
+                status = (params.get("status") or ["pending"])[0]
+                self._send_json(
+                    {
+                        "alerts": store.list_proactive_alerts(
+                            user_id,
+                            status=None if status == "all" else status,
+                            limit=_int_param(params, "limit", 20, 1, 100),
+                        )
+                    }
+                )
+                return
+            if method == "GET" and path == "/v1/alerts/precision":
+                self._send_json(store.get_alert_precision(user_id, days=_int_param(params, "days", 30, 1, 365)))
+                return
+            if method == "GET" and path == "/v1/prefetch/hit-rate":
+                self._send_json(store.get_prefetch_hit_rate(user_id, days=_int_param(params, "days", 30, 1, 365)))
                 return
             if method == "GET" and path == "/v1/tasks/open":
                 self._send_json({"results": store.open_tasks(user_id, _int_param(params, "limit", 20, 1, 100))})

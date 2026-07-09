@@ -961,6 +961,29 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "get_proactive_alerts",
+        "description": "Return proactive alerts Cortex raised (e.g. a new capture contradicting a high-trust memory). Budget-capped per day and always dismissible. Read-only.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["pending", "delivered", "dismissed", "accepted", "all"], "default": "delivered"},
+                "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100},
+            },
+        },
+    },
+    {
+        "name": "resolve_proactive_alert",
+        "description": "Accept or dismiss a proactive alert. Every resolution is recorded as a training label for alert precision.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "alert_id": {"type": "string", "description": "The alrt_... id from a warnings[] block or get_proactive_alerts."},
+                "resolution": {"type": "string", "enum": ["accepted", "dismissed"]},
+            },
+            "required": ["alert_id", "resolution"],
+        },
+    },
 ]
 
 # The curated CORE surface an agent sees by default: one tool per job (working context,
@@ -1058,6 +1081,7 @@ READ_TOOLS = {
     "would_i",
     "draft_as_me",
     "get_twin_scorecard",
+    "get_proactive_alerts",
     "get_open_questions",
     "list_memory_topics",
     "list_memory_entities",
@@ -1086,6 +1110,8 @@ WRITE_TOOLS = {
     "submit_answer_for_grading",
     # Recording a prediction outcome is a durable write to the accuracy ledger (Phase 5.4).
     "grade_twin_prediction",
+    # Resolving an alert mutates its status and records a precision training label (Phase 6.3).
+    "resolve_proactive_alert",
     # Continuity writes: sessions + checkpoint episodes are agent write-back.
     "start_agent_session",
     "checkpoint_agent_session",
@@ -1191,6 +1217,8 @@ _TOOL_TITLE_OVERRIDES: dict[str, str] = {
     "draft_as_me": "Draft As Me (Voice Pack)",
     "grade_twin_prediction": "Grade Twin Prediction",
     "get_twin_scorecard": "Twin Accuracy Scorecard",
+    "get_proactive_alerts": "Proactive Alerts",
+    "resolve_proactive_alert": "Resolve Proactive Alert",
 }
 
 
@@ -2691,6 +2719,21 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         return store.agent_payload(user_id, result)
     if name == "get_twin_scorecard":
         result = store.get_twin_scorecard(user_id, days=_bounded_int_arg(args, "days", 90, maximum=365))
+        return store.agent_payload(user_id, result)
+    if name == "get_proactive_alerts":
+        status = str(args.get("status") or "delivered").strip().lower()
+        result = store.list_proactive_alerts(
+            user_id,
+            status=None if status == "all" else status,
+            limit=_bounded_int_arg(args, "limit", 20, maximum=100),
+        )
+        return store.agent_payload(user_id, {"alerts": result})
+    if name == "resolve_proactive_alert":
+        result = store.resolve_proactive_alert(
+            user_id,
+            _text_arg(args, "alert_id", "", max_chars=120),
+            _text_arg(args, "resolution", "", max_chars=20),
+        )
         return store.agent_payload(user_id, result)
     if name == "submit_answer_for_grading":
         result = store.grade_answer(
