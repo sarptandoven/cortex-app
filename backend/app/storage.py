@@ -13834,6 +13834,8 @@ class CortexStore:
         intent: str | None = None,
         include_identity: bool = True,
         format: str = "json",
+        pin: bool = False,
+        session_id: str | None = None,
     ) -> dict[str, Any] | str:
         """The context assembly engine: given a task (+ surface + budget), build a
         token-budgeted, permissioned, cited context pack for an external agent.
@@ -13843,7 +13845,15 @@ class CortexStore:
         per-intent budget allocator. Every included item is citation-backed
         (`_has_source_citation`); superseded facts are never served; drops are counted
         and visible, never silent. `include_identity=False` (read-only tokens) replaces
-        the identity layer with an explicit omission record instead of erroring."""
+        the identity layer with an explicit omission record instead of erroring.
+
+        With `pin=True` (Phase 2) the assembled pack is also persisted as an immutable,
+        content-addressed artifact: canonical JSON bytes hashed with sha256, written
+        byte-exact to the vault (context_packs/<sha[:2]>/<sha>.json) and indexed in the
+        context_packs table. The returned pack gains a `pin` block with the sha, so an
+        agent can later prove exactly what context it acted on (get_context_pack replays
+        and re-verifies the hash). `session_id` links the pin to an agent continuity
+        session so a resumed conversation can find the packs its predecessor used."""
         self.require_agent_access(user_id, "read")
         task = str(task or "").strip()[:500]
         surface = str(surface or "agent").strip().lower()[:40] or "agent"
@@ -14127,8 +14137,154 @@ class CortexStore:
             "receipt": {"tool": "get_context", "audited": True, "event_kind": "context_pack"},
         }
         if output_format == "markdown":
+            if pin:
+                pinned = self.pin_context_pack(user_id, result, session_id=session_id)
+                result["pin"] = pinned
             return self._render_context_markdown(result)
+        if pin:
+            result["pin"] = self.pin_context_pack(user_id, result, session_id=session_id)
         return result
+
+    # ------------------------------------------------------------------
+    # Context pack pinning (Phase 2): immutable, replayable context
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _canonical_pack_bytes(pack: dict[str, Any]) -> bytes:
+        """The canonical byte encoding whose sha256 IS the pack identity: sorted keys,
+        no whitespace, UTF-8 (ensure_ascii for byte-stability across json versions).
+        The `pin` block itself is never part of the hashed content (it describes the
+        artifact, so including it would make the hash self-referential)."""
+        body = {key: value for key, value in pack.items() if key != "pin"}
+        return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+
+    def pin_context_pack(
+        self,
+        user_id: str,
+        pack: dict[str, Any],
+        *,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist an assembled context pack as an immutable audit artifact. Content-addressed:
+        the same pack bytes always land at the same sha (re-pinning is a no-op), and the vault
+        file is written byte-exact so sha256(file) == pack_sha holds forever. The DB row is the
+        queryable index (task/intent/surface/session); the vault file is the source of truth."""
+        if not isinstance(pack, dict):
+            raise ValueError("Only JSON-format context packs can be pinned.")
+        linked_session = str(session_id or "").strip() or None
+        if linked_session:
+            # Fail loudly on a bad linkage rather than pinning an orphan: the whole point of
+            # session linkage is that resume can trust it.
+            self._require_agent_session(user_id, linked_session)
+        canonical = self._canonical_pack_bytes(pack)
+        pack_sha = hashlib.sha256(canonical).hexdigest()
+        timestamp = now_iso()
+        coverage = pack.get("coverage") or {}
+        budget = pack.get("budget") or {}
+        resolution = {
+            "coverage_status": coverage.get("status"),
+            "layers_with_evidence": coverage.get("layers_with_evidence"),
+            "citation_count": len(pack.get("citations") or []),
+            "used_tokens": budget.get("used_tokens"),
+            "token_budget": budget.get("token_budget"),
+            "byte_size": len(canonical),
+        }
+        self.vault.write_context_pack(pack_sha, canonical)
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO context_packs
+                (pack_sha, user_id, session_id, task, intent, surface, engine_version, resolution_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    pack_sha,
+                    user_id,
+                    linked_session,
+                    str(pack.get("task") or "")[:500],
+                    str(pack.get("intent") or "")[:40],
+                    str(pack.get("surface") or "")[:40],
+                    int(pack.get("version") or CONTEXT_ENGINE_VERSION),
+                    json.dumps(resolution),
+                    timestamp,
+                ),
+            )
+            self._event(
+                conn,
+                user_id,
+                pack_sha,
+                "context_pack",
+                "pinned",
+                {"session_id": linked_session, "task": str(pack.get("task") or "")[:120], "byte_size": len(canonical)},
+            )
+        return {"pack_sha": pack_sha, "pinned_at": timestamp, "session_id": linked_session, "byte_size": len(canonical)}
+
+    def get_context_pack(self, user_id: str, pack_sha: str, *, verify: bool = True) -> dict[str, Any]:
+        """Replay a pinned pack: return the EXACT context a past agent acted on, with integrity
+        proven (sha256 of the stored bytes recomputed against the requested sha). A verification
+        failure is an error, not a degraded payload — a tampered audit artifact must never be
+        served as if it were authentic."""
+        sha = str(pack_sha or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", sha):
+            raise ValueError("pack_sha must be a 64-char hex sha256 (from get_context with pin=true).")
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM context_packs WHERE user_id = ? AND pack_sha = ?", (user_id, sha)
+            ).fetchone()
+        if row is None:
+            raise ValueError("Unknown context pack for this user; list_context_packs shows available shas.")
+        raw = self.vault.read_context_pack(sha)
+        if raw is None:
+            raise ValueError("Context pack file is missing from the vault; it may have been removed externally.")
+        verified = hashlib.sha256(raw).hexdigest() == sha
+        if verify and not verified:
+            raise ValueError("Context pack failed integrity verification: stored bytes do not match the sha.")
+        return {
+            "pack_sha": sha,
+            "verified": verified,
+            "session_id": row["session_id"],
+            "task": row["task"],
+            "intent": row["intent"],
+            "surface": row["surface"],
+            "engine_version": row["engine_version"],
+            "resolution": self._json_or_empty(row["resolution_json"]),
+            "created_at": row["created_at"],
+            "pack": json.loads(raw.decode("utf-8")),
+        }
+
+    def list_context_packs(
+        self,
+        user_id: str,
+        *,
+        session_id: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """The queryable index of pinned packs (metadata only, no pack bodies): what context was
+        served, when, for which task/session. Newest first."""
+        bounded = max(1, min(int(limit or 20), 100))
+        query = "SELECT * FROM context_packs WHERE user_id = ?"
+        params: list[Any] = [user_id]
+        linked_session = str(session_id or "").strip()
+        if linked_session:
+            query += " AND session_id = ?"
+            params.append(linked_session)
+        query += " ORDER BY created_at DESC, pack_sha LIMIT ?"
+        params.append(bounded)
+        with connect(self.db_path) as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [
+            {
+                "pack_sha": row["pack_sha"],
+                "session_id": row["session_id"],
+                "task": row["task"],
+                "intent": row["intent"],
+                "surface": row["surface"],
+                "engine_version": row["engine_version"],
+                "resolution": self._json_or_empty(row["resolution_json"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
 
     def _match_context_entity(self, user_id: str, task: str) -> str:
         """Deterministic entity mention detection: the longest known entity name that appears

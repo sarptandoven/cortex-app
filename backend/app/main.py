@@ -1880,8 +1880,27 @@ def post_context(body: dict[str, Any], request: Request, user_id: str = Depends(
         intent=str(body.get("intent") or "") or None,
         include_identity=_bearer_has_export_scope(request),
         format=format,
+        pin=bool(body.get("pin")),
+        session_id=str(body.get("session_id") or "") or None,
     )
     return _context_response(pack, format)
+
+
+@app.get("/v1/context/packs", response_model=None)
+def list_context_packs(
+    session_id: str | None = Query(default=None, max_length=80),
+    limit: int = Query(default=20, ge=1, le=100),
+    user_id: str = Depends(auth),
+) -> Any:
+    return store.list_context_packs(user_id, session_id=session_id, limit=limit)
+
+
+@app.get("/v1/context/packs/{pack_sha}", response_model=None)
+def get_context_pack(pack_sha: str, user_id: str = Depends(auth)) -> Any:
+    try:
+        return store.get_context_pack(user_id, pack_sha)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @app.get("/v1/personal-profile", response_model=None)

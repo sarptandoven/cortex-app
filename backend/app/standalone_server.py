@@ -1979,6 +1979,8 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     project = str(body.get("project") or "") or None
                     as_of = str(body.get("as_of") or "") or None
                     output_format = str(body.get("format") or "json").strip().lower()
+                    pin = bool(body.get("pin"))
+                    pin_session_id = str(body.get("session_id") or "") or None
                     try:
                         token_budget = int(body.get("token_budget") or 2000)
                     except (TypeError, ValueError):
@@ -1993,6 +1995,8 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     as_of = (params.get("as_of") or [None])[0]
                     output_format = ((params.get("format") or ["json"])[0] or "json").strip().lower()
                     token_budget = _int_param(params, "token_budget", 2000, 1, 100000)
+                    pin = ((params.get("pin") or [""])[0] or "").strip().lower() in {"1", "true", "yes"}
+                    pin_session_id = (params.get("session_id") or [None])[0] or None
                 if output_format not in {"json", "markdown"}:
                     self._send_json({"detail": "format must be json or markdown"}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                     return
@@ -2009,11 +2013,26 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     # of distilled context, so it is always included.
                     include_identity=True,
                     format=output_format,
+                    pin=pin,
+                    session_id=pin_session_id,
                 )
                 if output_format == "markdown":
                     self._send_text(pack, media_type="text/markdown")
                 else:
                     self._send_json(pack)
+                return
+            if method == "GET" and path == "/v1/context/packs":
+                self._send_json(store.list_context_packs(
+                    user_id,
+                    session_id=(params.get("session_id") or [None])[0] or None,
+                    limit=_int_param(params, "limit", 20, 1, 100),
+                ))
+                return
+            if method == "GET" and path.startswith("/v1/context/packs/"):
+                try:
+                    self._send_json(store.get_context_pack(user_id, unquote(path.rsplit("/", 1)[1])))
+                except ValueError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.NOT_FOUND)
                 return
             if method == "GET" and path == "/v1/personal-profile":
                 query = (params.get("query") or [""])[0]

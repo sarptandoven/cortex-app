@@ -693,6 +693,8 @@ TOOLS = [
                 "project": {"type": "string", "description": "Entity/project name to center the pack on."},
                 "as_of": {"type": "string"},
                 "format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
+                "pin": {"type": "boolean", "default": False, "description": "Persist this pack as an immutable, sha256-addressed audit artifact you can replay later via get_context_pack."},
+                "session_id": {"type": "string", "description": "Agent continuity session (asess_...) to link a pinned pack to."},
             },
         },
     },
@@ -850,6 +852,31 @@ TOOLS = [
             "required": ["session_id"],
         },
     },
+    {
+        "name": "get_context_pack",
+        "description": (
+            "Replay a pinned context pack by sha: returns the EXACT context that was served at pin "
+            "time, with sha256 integrity verified. Use to audit or reproduce what a past agent saw."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pack_sha": {"type": "string", "description": "64-char hex sha256 from get_context pin or list_context_packs."},
+            },
+            "required": ["pack_sha"],
+        },
+    },
+    {
+        "name": "list_context_packs",
+        "description": "List pinned context packs (metadata only, newest first), optionally filtered to one agent session.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "Only packs linked to this agent session (asess_...)."},
+                "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100},
+            },
+        },
+    },
 ]
 
 # The curated CORE surface an agent sees by default: one tool per job (working context,
@@ -891,6 +918,8 @@ MCP_TOOL_SURFACES: dict[str, frozenset[str]] = {
             "resume_agent_session",
             "list_agent_sessions",
             "close_agent_session",
+            "get_context_pack",
+            "list_context_packs",
         }
     ),
     "chat": frozenset(
@@ -915,6 +944,9 @@ READ_TOOLS = {
     # Continuity reads: finding/resuming a session pulls only agent-authored episodes.
     "resume_agent_session",
     "list_agent_sessions",
+    # Pack replay/listing are pure reads of machine-owned audit artifacts.
+    "get_context_pack",
+    "list_context_packs",
     "ask_memory",
     "get_entity_context",
     "expand_context",
@@ -1052,6 +1084,8 @@ _TOOL_TITLE_OVERRIDES: dict[str, str] = {
     "resume_agent_session": "Resume Agent Session",
     "list_agent_sessions": "List Agent Sessions",
     "close_agent_session": "Close Agent Session",
+    "get_context_pack": "Replay Pinned Context Pack",
+    "list_context_packs": "List Pinned Context Packs",
 }
 
 
@@ -2006,6 +2040,22 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
                 intent=_text_arg(args, "intent", max_chars=16) or None,
                 include_identity=include_identity,
                 format=_text_arg(args, "format", "json", max_chars=12) or "json",
+                pin=bool(args.get("pin")),
+                session_id=_text_arg(args, "session_id", max_chars=80) or None,
+            ),
+        )
+    if name == "get_context_pack":
+        return store.agent_payload(
+            user_id,
+            store.get_context_pack(user_id, _text_arg(args, "pack_sha", max_chars=64)),
+        )
+    if name == "list_context_packs":
+        return store.agent_payload(
+            user_id,
+            store.list_context_packs(
+                user_id,
+                session_id=_text_arg(args, "session_id", max_chars=80) or None,
+                limit=_bounded_int_arg(args, "limit", 20, minimum=1, maximum=100),
             ),
         )
     if name == "ask_memory":
