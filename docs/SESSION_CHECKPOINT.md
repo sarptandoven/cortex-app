@@ -271,3 +271,28 @@ Resume point for the phased expansion roadmap (see docs/EXPANSION_ROADMAP_PHASES
 - Approved slate fully complete: write-back (A) -> session harvest (B) -> reputation (C) ->
   integrity (D) -> OpenClaw exploration doc -> build 22 + DMG. Plus the context-pack identity
   fix caught during the build gate. Nothing outstanding.
+
+## Shipping build 22 (both channels)
+- **Direct/DMG published to the site** (commit `a19d638`): ran
+  `scripts/prepare_distribution_site.py --release-dir outputs/Cortex-0.2.0-22`, removed the stale
+  build-14 artifacts, and bumped the hardcoded 0.2.0-14 references in index.html / app.js
+  (fallback) / privacy.html to 0.2.0-22. `check_distribution_site.py` passes (html-links,
+  release-manifest, artifact-hashes); every site sha256 verified against the copied file. Site
+  binaries are git-tracked, matching how build 14 was published (publish_release.sh is the
+  GitHub-Releases-hosted alternative, out of scope here).
+- **App Store package built** (`outputs/Doppl-AppStore-0.2.0-22/`): ran
+  `macos/package_app_store.sh` — sandboxed app-store bundle (com.cortex.doppl, build 22),
+  PrivacyInfo.xcprivacy present, ITSAppUsesNonExemptEncryption=false, signed .pkg. Verified:
+  `pkgutil --check-signature` shows a valid Apple installer cert chain; `codesign --verify --deep
+  --strict` on the .app is "valid on disk / satisfies its Designated Requirement"; entitlements
+  carry app-sandbox + applesignin + team/app-identifier + keychain-access-groups; all Phases A-D
+  + CONTEXT_PACK_ENVELOPE_KEYS present in the MAS-bundled backend.
+- **Script fix** (commit `f58d4d3`): package_app_store.sh's find_identity used `-p codesigning`
+  for BOTH certs, but installer certs are not codesigning-policy identities, so the installer cert
+  (present in the keychain) was silently missed and the pkg fell back to UNSIGNED. Added an
+  optional `--policy basic` for the installer lookup. Now the pkg is properly installer-signed.
+- **Only remaining gap to an uploadable MAS build is owner-only**: the Mac App Store provisioning
+  profile for com.cortex.doppl (register the App ID + generate/download the profile in the Apple
+  Developer portal), then re-run with CORTEX_MAS_PROFILE set. Full steps in
+  `outputs/Doppl-AppStore-0.2.0-22/FOUNDER_CHECKLIST.txt`. Report: status=dry-run,
+  uploadable=false, provisioning_profile=missing, installer_package=signed, privacy_manifest=present.
