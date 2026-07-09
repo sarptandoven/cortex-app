@@ -914,6 +914,23 @@ TOOLS = [
         },
     },
     {
+        "name": "verify_context_pack",
+        "description": (
+            "Diagnostic recompute-verify of a pinned context pack: re-run the context engine with "
+            "the pack's stored inputs (as_of pinned to pin time) and diff against the stored bytes. "
+            "Reports match, drift (with per-layer memory-id drift), or engine_mismatch when the "
+            "engine version changed. Storage integrity (sha256) is always verified first. Drift is "
+            "expected as the corpus evolves; it is not tampering."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pack_sha": {"type": "string", "description": "64-char hex sha256 from get_context pin or list_context_packs."},
+            },
+            "required": ["pack_sha"],
+        },
+    },
+    {
         "name": "would_i",
         "description": "Predict what the user would decide or prefer, from cited memory evidence only (preferences, style, decisions, and negative-layer vetoes). Returns likely_yes/likely_no/mixed with supporting and opposing citations, or insufficient_evidence when memory cannot answer honestly. Never invents a preference.",
         "inputSchema": {
@@ -1144,6 +1161,9 @@ MAINTENANCE_TOOLS = {
     "repair_memory_storage",
     "rebuild_memory_search",
     "rebuild_index_from_vault",
+    # Phase 2b: recompute-verify is a diagnostic (reads the corpus, emits an audit event) —
+    # deliberately maintenance-scoped like the other diagnostics, not part of the core surface.
+    "verify_context_pack",
 }
 SCOPED_MCP_MAINTENANCE_REVIEW_TOOLS = {"approve_memory_capture", "archive_memory_capture"}
 DESTRUCTIVE_TOOLS = {"forget_memory", "delete_memory_capture", "delete_memory_backups", "restore_latest_memory_backup", "delete_all_user_data"}
@@ -1213,6 +1233,7 @@ _TOOL_TITLE_OVERRIDES: dict[str, str] = {
     "submit_answer_for_grading": "Grade Answer Against Memory",
     "get_context_pack": "Replay Pinned Context Pack",
     "list_context_packs": "List Pinned Context Packs",
+    "verify_context_pack": "Recompute-Verify Context Pack",
     "would_i": "Would I? (Cited Twin Prediction)",
     "draft_as_me": "Draft As Me (Voice Pack)",
     "grade_twin_prediction": "Grade Twin Prediction",
@@ -2190,6 +2211,11 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
                 session_id=_text_arg(args, "session_id", max_chars=80) or None,
                 limit=_bounded_int_arg(args, "limit", 20, minimum=1, maximum=100),
             ),
+        )
+    if name == "verify_context_pack":
+        return store.agent_payload(
+            user_id,
+            store.verify_context_pack(user_id, _text_arg(args, "pack_sha", max_chars=64)),
         )
     if name == "ask_memory":
         return store.agent_payload(

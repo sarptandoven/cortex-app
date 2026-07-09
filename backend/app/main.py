@@ -244,6 +244,10 @@ def _required_api_scope(method: str, path: str) -> str:
         return "maintenance"
     if normalized_path in {"/v1/diagnostics", "/v1/reliability/report", "/v1/jobs/health"}:
         return "maintenance"
+    # Recompute-verify is a maintenance diagnostic (same scope as the MCP tool): it re-runs
+    # the context engine and writes an audit event, beyond what plain read tokens are for.
+    if normalized_path.startswith("/v1/context/packs/") and normalized_path.endswith("/verify") and normalized_method == "POST":
+        return "maintenance"
     if normalized_path.startswith("/v1/maintenance/") or normalized_path in {"/v1/jobs/run", "/v1/maintenance/jobs/run", "/v1/sources/sync-due"}:
         return "maintenance"
     if normalized_path in {"/v1/integrations/api-token", "/v1/integrations/mcp-token", "/v1/integrations/tokens"}:
@@ -1980,6 +1984,18 @@ def list_context_packs(
 def get_context_pack(pack_sha: str, user_id: str = Depends(auth)) -> Any:
     try:
         return store.get_context_pack(user_id, pack_sha)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/v1/context/packs/{pack_sha}/verify", response_model=None)
+def verify_context_pack(pack_sha: str, user_id: str = Depends(auth)) -> Any:
+    """Phase 2b diagnostic: recompute the pack with its stored inputs and diff. POST because
+    it does work (a full context assembly) and emits an audit event, unlike the pure reads."""
+    try:
+        return store.verify_context_pack(user_id, pack_sha)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 

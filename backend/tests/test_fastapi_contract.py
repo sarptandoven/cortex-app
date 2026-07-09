@@ -880,6 +880,83 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertNotIn("error", ask_payload)
         self.assertEqual(ask_payload["result"]["structuredContent"]["status"], "cited")
 
+    def test_context_pack_verify_endpoint_contract(self) -> None:
+        """Phase 2b REST surface: POST /v1/context/packs/{sha}/verify recomputes a pinned
+        pack and reports match/drift. Maintenance-scoped (parity with the MCP tool)."""
+        user = "phase2b-rest-contract"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+        self.client.put(
+            "/v1/settings",
+            json={"allow_pending_in_context": True, "allow_agent_maintenance": True},
+            headers=headers,
+        )
+        saved = self.client.post(
+            "/v1/captures",
+            json={
+                "content": "We decided to use PostgreSQL for Atlas because of jsonb support.",
+                "source": "macos",
+                "source_url": "obsidian://vault/notes/atlas.md",
+            },
+            headers=headers,
+        )
+        self.assertEqual(saved.status_code, 200)
+        pinned = self.client.post(
+            "/v1/context",
+            json={"task": "which database did we decide on for Atlas?", "pin": True},
+            headers=headers,
+        )
+        self.assertEqual(pinned.status_code, 200)
+        pack_sha = pinned.json()["pin"]["pack_sha"]
+
+        verified = self.client.post(f"/v1/context/packs/{pack_sha}/verify", headers=headers)
+        self.assertEqual(verified.status_code, 200)
+        body = verified.json()
+        self.assertEqual(body["pack_sha"], pack_sha)
+        self.assertEqual(body["status"], "match")
+        self.assertTrue(body["verified_storage"])
+        self.assertTrue(body["caveats"])
+
+        missing = self.client.post(f"/v1/context/packs/{'0' * 64}/verify", headers=headers)
+        self.assertEqual(missing.status_code, 404)
+
+        # Scope discipline: read+write tokens are refused; read+maintenance passes; the
+        # user-level maintenance trust gate blocks even a correctly-scoped token.
+        # (Distinct labels matter: token registration upserts by label.)
+        rw_token = "cxa_phase2b_rest_rw_123456789"
+        maint_token = "cxa_phase2b_rest_maint_123456789"
+        for token, label, scopes in (
+            (rw_token, "phase2b verify rw", ["read", "write"]),
+            (maint_token, "phase2b verify maint", ["read", "maintenance"]),
+        ):
+            registered = self.client.post(
+                "/v1/integrations/api-token",
+                json={"token": token, "label": label, "scopes": scopes},
+                headers=headers,
+            )
+            self.assertEqual(registered.status_code, 200)
+
+        refused = self.client.post(
+            f"/v1/context/packs/{pack_sha}/verify",
+            headers={"Authorization": f"Bearer {rw_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(refused.status_code, 403)
+        self.assertIn("maintenance scope", refused.json()["detail"])
+
+        allowed = self.client.post(
+            f"/v1/context/packs/{pack_sha}/verify",
+            headers={"Authorization": f"Bearer {maint_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(allowed.status_code, 200)
+        self.assertEqual(allowed.json()["status"], "match")
+
+        self.client.put("/v1/settings", json={"allow_agent_maintenance": False}, headers=headers)
+        gated = self.client.post(
+            f"/v1/context/packs/{pack_sha}/verify",
+            headers={"Authorization": f"Bearer {maint_token}", "X-Cortex-User": user},
+        )
+        self.assertEqual(gated.status_code, 403)
+        self.assertIn("maintenance actions are disabled", gated.json()["detail"])
+
     def test_retrieval_endpoints_support_source_account_and_facet_scope(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "source-scope-contract"}
 

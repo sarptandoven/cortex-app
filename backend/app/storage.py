@@ -14068,6 +14068,7 @@ class CortexStore:
         format: str = "json",
         pin: bool = False,
         session_id: str | None = None,
+        record_reuse: bool = True,
     ) -> dict[str, Any] | str:
         """The context assembly engine: given a task (+ surface + budget), build a
         token-budgeted, permissioned, cited context pack for an external agent.
@@ -14345,10 +14346,13 @@ class CortexStore:
                 ).fetchone()
             pending_excluded = int(row["n"] if row else 0)
         sections_omitted = ["identity"] if identity_omitted else []
-        try:
-            self.record_context_reuse(user_id, surface=surface, query=task, target="context-engine")
-        except Exception:
-            pass
+        # Live calls feed the reuse/prefetch signal; diagnostic recomputes (verify_context_pack)
+        # must not, or verifying a pack would teach the predictor phantom usage.
+        if record_reuse:
+            try:
+                self.record_context_reuse(user_id, surface=surface, query=task, target="context-engine")
+            except Exception:
+                pass
 
         result: dict[str, Any] = {
             "version": CONTEXT_ENGINE_VERSION,
@@ -14424,6 +14428,9 @@ class CortexStore:
             "used_tokens": budget.get("used_tokens"),
             "token_budget": budget.get("token_budget"),
             "byte_size": len(canonical),
+            # Phase 2b: the effective as_of. A pack assembled without an explicit as_of used
+            # now() at assembly time, so recompute is only defined if we record that moment.
+            "as_of_effective": str((pack.get("filters") or {}).get("as_of") or pack.get("generated_at") or "") or None,
         }
         self.vault.write_context_pack(pack_sha, canonical)
         with connect(self.db_path) as conn:
@@ -14487,6 +14494,138 @@ class CortexStore:
             "created_at": row["created_at"],
             "pack": json.loads(raw.decode("utf-8")),
         }
+
+    # -- Phase 2b: recompute-verify (diagnostic) ---------------------------------------------
+
+    @staticmethod
+    def _pack_recompute_diff(stored: dict[str, Any], recomputed: dict[str, Any]) -> dict[str, Any]:
+        """Field-level diff of the parts of a pack that recompute can meaningfully reproduce.
+        The envelope (generated_at, receipt, pin) is excluded by design: it describes the
+        assembly event, not the assembled context, and can never match across runs."""
+        excluded = {"generated_at", "receipt", "pin"}
+
+        def canonical(pack: dict[str, Any]) -> dict[str, Any]:
+            return {key: value for key, value in pack.items() if key not in excluded}
+
+        stored_body = canonical(stored)
+        recomputed_body = canonical(recomputed)
+        changed: list[dict[str, Any]] = []
+        for key in sorted(set(stored_body) | set(recomputed_body)):
+            if stored_body.get(key) == recomputed_body.get(key):
+                continue
+            entry: dict[str, Any] = {"field": key}
+            if key == "layers":
+                # The most useful signal for drift: which memory ids moved in/out per layer.
+                def layer_ids(pack_body: dict[str, Any]) -> dict[str, list[str]]:
+                    ids: dict[str, list[str]] = {}
+                    for layer_entry in pack_body.get("layers") or []:
+                        layer_name = str(layer_entry.get("layer") or "")
+                        ids[layer_name] = [
+                            str(item.get("memory_id") or item.get("task_id") or "")
+                            for item in (layer_entry.get("items") or [])
+                        ]
+                    return ids
+
+                stored_ids = layer_ids(stored_body)
+                recomputed_ids = layer_ids(recomputed_body)
+                per_layer: dict[str, Any] = {}
+                for layer_name in sorted(set(stored_ids) | set(recomputed_ids)):
+                    before = stored_ids.get(layer_name, [])
+                    after = recomputed_ids.get(layer_name, [])
+                    if before != after:
+                        per_layer[layer_name] = {
+                            "missing_from_recompute": [i for i in before if i not in after],
+                            "new_in_recompute": [i for i in after if i not in before],
+                        }
+                entry["layer_drift"] = per_layer
+            changed.append(entry)
+        return {"equal": not changed, "changed_fields": changed}
+
+    def verify_context_pack(self, user_id: str, pack_sha: str) -> dict[str, Any]:
+        """Phase 2b diagnostic: re-run the context engine with a pinned pack's stored inputs
+        (task/intent/surface/budget/filters, as_of pinned to the recorded effective moment)
+        and diff the result against the stored bytes.
+
+        This is a DIAGNOSTIC, not a guarantee: recompute-equality is only defined under the
+        same engine version and local deterministic providers, and the corpus keeps moving
+        (new memories, supersessions, trust rescoring legitimately change what would be
+        packed). Three honest verdicts:
+          - engine_mismatch: the engine version changed; a diff would only measure the
+            version bump, so the recompute is skipped.
+          - match: byte-identical modulo the envelope (generated_at/receipt/pin).
+          - drift: same engine, different result — the diff names what moved, field by
+            field, with per-layer memory-id drift.
+        Storage integrity (sha256 of stored bytes) is always checked first and a tampered
+        artifact is an error, exactly like get_context_pack."""
+        stored = self.get_context_pack(user_id, pack_sha)  # raises on unknown/tampered
+        stored_pack = stored["pack"]
+        if int(stored["engine_version"]) != CONTEXT_ENGINE_VERSION:
+            return {
+                "pack_sha": stored["pack_sha"],
+                "status": "engine_mismatch",
+                "stored_engine_version": stored["engine_version"],
+                "current_engine_version": CONTEXT_ENGINE_VERSION,
+                "verified_storage": True,
+                "detail": (
+                    "The context engine version changed since this pack was pinned; a recompute "
+                    "would measure the version bump, not corpus drift. The stored bytes remain "
+                    "integrity-verified and replayable via get_context_pack."
+                ),
+            }
+        filters = stored_pack.get("filters") or {}
+        budget = stored_pack.get("budget") or {}
+        resolution = stored.get("resolution") or {}
+        as_of = (
+            str(filters.get("as_of") or "").strip()
+            or str(resolution.get("as_of_effective") or "").strip()
+            or str(stored_pack.get("generated_at") or "").strip()
+            or None
+        )
+        recomputed = self.assemble_context(
+            user_id,
+            str(stored_pack.get("task") or ""),
+            surface=str(stored_pack.get("surface") or "agent"),
+            token_budget=int(budget.get("token_budget") or 2000),
+            sector=str(filters.get("sector") or "").strip() or None,
+            project=str(filters.get("project") or "").strip() or None,
+            as_of=as_of,
+            intent=str(stored_pack.get("intent") or "").strip() or None,
+            include_identity="identity" not in ((stored_pack.get("coverage") or {}).get("sections_omitted") or []),
+            format="json",
+            pin=False,
+            record_reuse=False,
+        )
+        assert isinstance(recomputed, dict)
+        # The recompute passes as_of explicitly (that's the mechanism that pins time), but the
+        # original pack may have recorded filters.as_of = null when the caller didn't pass one.
+        # Both describe the same effective moment, so normalize the echo before diffing —
+        # otherwise every verify of an as_of-less pack would report phantom filter drift.
+        if isinstance(recomputed.get("filters"), dict) and isinstance(stored_pack.get("filters"), dict):
+            recomputed["filters"]["as_of"] = stored_pack["filters"].get("as_of")
+        diff = self._pack_recompute_diff(stored_pack, recomputed)
+        result = {
+            "pack_sha": stored["pack_sha"],
+            "status": "match" if diff["equal"] else "drift",
+            "verified_storage": True,
+            "engine_version": CONTEXT_ENGINE_VERSION,
+            "as_of_used": as_of,
+            "diff": diff,
+            "caveats": [
+                "Recompute-equality holds only under local deterministic providers and the same engine version.",
+                "Drift is expected as the corpus evolves (new memories, supersessions, trust rescoring); it is not tampering.",
+                "Storage integrity (sha256 of stored bytes) is verified independently of recompute.",
+            ],
+        }
+        with connect(self.db_path) as conn:
+            self._event(
+                conn,
+                user_id,
+                stored["pack_sha"],
+                "context_pack",
+                "recompute_verified",
+                {"status": result["status"], "changed_fields": [c["field"] for c in diff["changed_fields"]]},
+            )
+        return result
 
     def list_context_packs(
         self,

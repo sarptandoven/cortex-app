@@ -151,6 +151,10 @@ def _required_api_scope(method: str, path: str) -> str:
         return "maintenance"
     if normalized_path in {"/v1/diagnostics", "/v1/reliability/report", "/v1/jobs/health"}:
         return "maintenance"
+    # Recompute-verify is a maintenance diagnostic (same scope as the MCP tool): it re-runs
+    # the context engine and writes an audit event, beyond what plain read tokens are for.
+    if normalized_path.startswith("/v1/context/packs/") and normalized_path.endswith("/verify") and normalized_method == "POST":
+        return "maintenance"
     if normalized_path.startswith("/v1/maintenance/") or normalized_path in {"/v1/jobs/run", "/v1/maintenance/jobs/run", "/v1/sources/sync-due"}:
         return "maintenance"
     if normalized_path in {"/v1/integrations/api-token", "/v1/integrations/mcp-token", "/v1/integrations/tokens", "/v1/pair"}:
@@ -2144,6 +2148,17 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if method == "GET" and path.startswith("/v1/context/packs/"):
                 try:
                     self._send_json(store.get_context_pack(user_id, unquote(path.rsplit("/", 1)[1])))
+                except ValueError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.NOT_FOUND)
+                return
+            if method == "POST" and path.startswith("/v1/context/packs/") and path.endswith("/verify"):
+                # Phase 2b diagnostic: recompute with stored inputs and diff. POST because it
+                # does work (a full assembly) and emits an audit event, unlike the pure reads.
+                sha = unquote(path[len("/v1/context/packs/"):-len("/verify")])
+                try:
+                    self._send_json(store.verify_context_pack(user_id, sha))
+                except PermissionError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.FORBIDDEN)
                 except ValueError as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.NOT_FOUND)
                 return

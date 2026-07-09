@@ -7,7 +7,7 @@ Resume point for the phased expansion roadmap (see docs/EXPANSION_ROADMAP_PHASES
 - Phase 3: provenance ledger & hygiene — `a676ad4`
 - Phase 4: personal eval harness — `10477e9`
 - Phase 5: delegate/twin — `e8e76ef`
-- Phase 6: anticipatory context — this commit
+- Phase 6: anticipatory context — `1969ebf`
   - 6.1 contradiction interrupts: post-transaction detection in save_capture (interactive
     captures only; bulk imports excluded), trust-gated (>=0.6 existing side), head-token
     agreement tolerance so restatements never alert; delivery via warnings[] injected in
@@ -25,7 +25,7 @@ Resume point for the phased expansion roadmap (see docs/EXPANSION_ROADMAP_PHASES
   - tests/test_phase6_anticipatory.py: 19 tests incl. replayed 12-request usage simulation
     (hit-rate >= 8/12 gate, beats no-predictor baseline)
 
-- macOS UI for phases 4-6 — this commit
+- macOS UI for phases 4-6 — `e81cfd9`
   - New TwinAlertsModels.swift: Codable mirrors of alert/twin/metrics JSON (field names
     match backend snake_case exactly), TwinQuestionDetector (prefix-gated: "would i",
     "should i", "do i", "am i", "will i", "how would i")
@@ -47,9 +47,41 @@ Resume point for the phased expansion roadmap (see docs/EXPANSION_ROADMAP_PHASES
     (likely_yes / likely_no / insufficient_evidence, alerts with+without detail);
     rendered previews reviewed for all four surfaces
 
+- Release build 21 shipped — `ea62d35` + `10ddfe9`
+  - CFBundleVersion 21, CORTEX_BUNDLE_PYTHON=1 build, DMG delivered to
+    ~/Downloads/Cortex-0.2.0-21.dmg (82M), live-verified: alerts/precision/hit-rate/
+    twin scorecard/eval scorecard endpoints, MCP catalog 81 tools (13 phase tools),
+    budget round-trip, honest would-i abstain
+  - Window-frame fix: corrupt autosaved frame (3400pt tall) passed intersection checks
+    but never rendered; added absurdlyLarge clamp (>125% of largest screen union)
+
+- Phase 2b: recompute-verify diagnostic — this commit
+  - storage.verify_context_pack: integrity check first (tampered = error, never a
+    verdict), engine_mismatch when CONTEXT_ENGINE_VERSION differs (diff would only
+    measure the version bump), else recompute with stored inputs + as_of pinned to
+    the recorded effective moment; statuses match/drift with per-field, per-layer
+    memory-id diff (_pack_recompute_diff, envelope excluded); honest caveats;
+    recompute_verified audit event
+  - assemble_context gains record_reuse flag: diagnostic recomputes never feed the
+    prefetch/reuse signal; pack resolution records as_of_effective for exact replay
+  - filters.as_of null-echo normalized before diffing (else phantom drift on
+    as_of-less packs)
+  - MCP: verify_context_pack (maintenance-scoped diagnostic, catalog-only surface)
+  - REST: POST /v1/context/packs/{sha}/verify on both servers, maintenance scope in
+    both _required_api_scope maps (parity with the MCP tool), PermissionError -> 403,
+    ValueError -> 404
+  - tests/test_phase2b_recompute_verify.py: 13 tests (match/drift/engine_mismatch/
+    tampered, as_of pinning, reuse-signal isolation, event emission, no new pins,
+    scope + trust-gate discipline, user scoping, advertised-surface gating)
+  - Contract tests: FastAPI + standalone verify routes (scope refusal, trust gate,
+    404 mapping); token registration upserts by label — scoped test tokens need
+    distinct labels
+
 ## State
-- Full suite green: 1496 tests + 372 subtests
+- Full suite green: 1527 tests + 372 subtests
+- Branch pushed through `10ddfe9`; Phase 2b is the next commit
+- Shipped DMG (build 21) predates Phase 2b — rebuild if verify_context_pack should
+  ship in the app bundle
 
 ## Next
 - Prefetch: only add learning if the most-recent baseline plateaus (measure first)
-- Push branch (now 10 commits ahead of origin)

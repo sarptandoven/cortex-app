@@ -71,6 +71,7 @@ class FakeStore:
         self.require_agent_access_calls: list[tuple[str, str]] = []
         self.context_pack_calls: list[tuple[str, str, int, str | None]] = []
         self.assemble_context_calls: list[dict] = []
+        self.verify_context_pack_calls: list[tuple[str, str]] = []
         self.oauth_pending: dict[tuple[str, str], dict] = {}
 
     def remember_oauth_pending(self, *, state, user_id, flow, payload, ttl_seconds: int = 600) -> None:
@@ -199,6 +200,12 @@ class FakeStore:
             "layers": [],
             "citations": [],
         }
+
+    def verify_context_pack(self, user_id: str, pack_sha: str) -> dict:
+        self.verify_context_pack_calls.append((user_id, pack_sha))
+        if pack_sha == "missing" * 8:  # 56 chars, clearly not a known sha
+            raise ValueError("Unknown context pack sha for this user")
+        return {"pack_sha": pack_sha, "status": "match", "verified_storage": True, "diff": {"equal": True}}
 
     def delete_capture(self, user_id: str, capture_id: str) -> bool:
         self.delete_capture_calls.append((user_id, capture_id))
@@ -4267,6 +4274,77 @@ class StandaloneServerTests(unittest.TestCase):
         with self.assertRaises(error.HTTPError) as context:
             self.post_json("/v1/context", {"task": "x", "format": "yaml"})
         self.assertEqual(context.exception.code, 422)
+
+    def test_context_pack_verify_route_on_shipping_server(self) -> None:
+        # Phase 2b: POST /v1/context/packs/{sha}/verify reaches store.verify_context_pack,
+        # is maintenance-scoped for API tokens, and maps ValueError -> 404.
+        self.fake_store.verify_context_pack_calls.clear()
+        sha = "a" * 64
+        with request.urlopen(
+            request.Request(
+                self.base_url + f"/v1/context/packs/{sha}/verify",
+                headers={"Authorization": "Bearer test-token"},
+                method="POST",
+            ),
+            timeout=5,
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(payload["status"], "match")
+        self.assertEqual(self.fake_store.verify_context_pack_calls, [("local", sha)])
+
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/context/packs/" + "missing" * 8 + "/verify",
+                    headers={"Authorization": "Bearer test-token"},
+                    method="POST",
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 404)
+
+        # Maintenance scope discipline for scoped API tokens (parity with the MCP tool).
+        self.fake_store.api_token_scopes = ["read", "write"]
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + f"/v1/context/packs/{sha}/verify",
+                    headers={"Authorization": "Bearer cxa-standalone-token"},
+                    method="POST",
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 403)
+        self.assertIn("maintenance scope", context.exception.read().decode("utf-8"))
+
+        self.fake_store.api_token_scopes = ["read", "maintenance"]
+        with request.urlopen(
+            request.Request(
+                self.base_url + f"/v1/context/packs/{sha}/verify",
+                headers={"Authorization": "Bearer cxa-standalone-token"},
+                method="POST",
+            ),
+            timeout=5,
+        ) as response:
+            self.assertEqual(json.loads(response.read().decode("utf-8"))["status"], "match")
+
+        # The user-level maintenance trust gate blocks even a correctly-scoped token.
+        self.fake_store.denied_agent_access = {"maintenance"}
+        try:
+            with self.assertRaises(error.HTTPError) as context:
+                request.urlopen(
+                    request.Request(
+                        self.base_url + f"/v1/context/packs/{sha}/verify",
+                        headers={"Authorization": "Bearer cxa-standalone-token"},
+                        method="POST",
+                    ),
+                    timeout=5,
+                )
+            self.assertEqual(context.exception.code, 403)
+            self.assertIn("maintenance actions are disabled", context.exception.read().decode("utf-8"))
+        finally:
+            self.fake_store.denied_agent_access = set()
+            self.fake_store.api_token_scopes = ["read"]
 
     def test_mcp_tools_list_filters_read_only_scoped_token(self) -> None:
         scoped_request = request.Request(
