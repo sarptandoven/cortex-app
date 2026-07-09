@@ -10629,7 +10629,13 @@ class CortexStore:
         primary_candidates = [item for item in candidates if not self._is_related_result(item)]
         primary_by_id = {str(item.get("id") or ""): item for item in primary_candidates}
         query_terms = self._lexical_fallback_terms(query, limit=12)
-        query_has_layer_intent = bool(query_layer_boosts(query))
+        # Layer-intent exemption is PER-LAYER, not per-query: "how do I usually write?"
+        # legitimately retrieves style memories with zero term overlap, but a subject
+        # query that merely contains an intent keyword ("what is the release tag for
+        # X?" -> procedural via "release") must not exempt items OUTSIDE the boosted
+        # layer, or the gate happily cites project Y's release tag for project X
+        # (caught by the MemoryTruth abstention probes).
+        intent_layers = set(query_layer_boosts(query))
         # Semantic-relevance exemption: with a real embedding model, a paraphrase legitimately has
         # no keyword overlap with the memory it matches, so the keyword-only relevance check would
         # wrongly abstain. Exempt candidates that are genuinely close to the query in embedding
@@ -10637,6 +10643,8 @@ class CortexStore:
         # corpus (best match still far) keeps abstaining rather than citing a nearest-but-unrelated
         # neighbour. No-op for the hash provider (keyword plumbing, not semantics).
         semantic_relevant_ids = self._semantically_relevant_ids(query, primary_candidates)
+        distinctive_terms = self._distinctive_query_terms(query_terms, primary_candidates)
+        compound_terms = self._query_compound_terms(query)
         primary_source_backed = [
             item
             for item in primary_candidates
@@ -10644,9 +10652,11 @@ class CortexStore:
             and self._primary_citation_is_relevant(
                 item,
                 query_terms,
-                exempt=(
-                    query_has_layer_intent
-                    or str(item.get("id") or "") in person_injected_ids
+                distinctive_terms=distinctive_terms,
+                compound_terms=compound_terms,
+                exempt=str(item.get("id") or "") in person_injected_ids,
+                term_match_exempt=(
+                    str(item.get("layer") or "") in intent_layers
                     or str(item.get("id") or "") in semantic_relevant_ids
                 ),
             )
@@ -10694,7 +10704,7 @@ class CortexStore:
                 # Re-run the SAME gate over the widened candidate set (single-sourced in
                 # _regate_after_hop so hop 1 and hop 2 are byte-for-byte the same gate as the first pass).
                 results, cited_results, citations, conflicts, evidence = self._regate_after_hop(
-                    query, candidates, query_terms=query_terms, query_has_layer_intent=query_has_layer_intent,
+                    query, candidates, query_terms=query_terms, intent_layers=intent_layers,
                     person_injected_ids=person_injected_ids, limit=limit, redact_sensitive=redact_sensitive,
                 )
                 evidence["recovered_by_hop"] = True
@@ -10721,7 +10731,7 @@ class CortexStore:
                                 hop2_added = True
                     if hop2_added:
                         results, cited_results, citations, conflicts, evidence = self._regate_after_hop(
-                            query, candidates, query_terms=query_terms, query_has_layer_intent=query_has_layer_intent,
+                            query, candidates, query_terms=query_terms, intent_layers=intent_layers,
                             person_injected_ids=person_injected_ids, limit=limit, redact_sensitive=redact_sensitive,
                         )
                         evidence["recovered_by_hop"] = True
@@ -10865,7 +10875,7 @@ class CortexStore:
         return queries[:3]
 
     def _regate_after_hop(
-        self, query: str, candidates: list[dict[str, Any]], *, query_terms, query_has_layer_intent: bool,
+        self, query: str, candidates: list[dict[str, Any]], *, query_terms, intent_layers: set[str],
         person_injected_ids: set[str], limit: int, redact_sensitive: bool,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
         """Re-run the EXACT first-pass cite gate over a widened candidate set. Single-sourced so hop 1
@@ -10874,6 +10884,8 @@ class CortexStore:
         primary_candidates = [item for item in candidates if not self._is_related_result(item)]
         primary_by_id = {str(item.get("id") or ""): item for item in primary_candidates}
         semantic_relevant_ids = self._semantically_relevant_ids(query, primary_candidates)
+        distinctive_terms = self._distinctive_query_terms(query_terms, primary_candidates)
+        compound_terms = self._query_compound_terms(query)
         primary_source_backed = [
             item
             for item in primary_candidates
@@ -10881,9 +10893,11 @@ class CortexStore:
             and self._primary_citation_is_relevant(
                 item,
                 query_terms,
-                exempt=(
-                    query_has_layer_intent
-                    or str(item.get("id") or "") in person_injected_ids
+                distinctive_terms=distinctive_terms,
+                compound_terms=compound_terms,
+                exempt=str(item.get("id") or "") in person_injected_ids,
+                term_match_exempt=(
+                    str(item.get("layer") or "") in intent_layers
                     or str(item.get("id") or "") in semantic_relevant_ids
                 ),
             )
@@ -11544,20 +11558,107 @@ class CortexStore:
         threshold = max(floor, best * rel_factor)
         return {item_id for item_id, sim in sims.items() if sim >= threshold}
 
-    def _primary_citation_is_relevant(self, item: dict[str, Any], query_terms: list[str], *, exempt: bool = False) -> bool:
+    def _distinctive_query_terms(self, query_terms: list[str], pool: list[dict[str, Any]]) -> set[str]:
+        """Terms that discriminate the query's *subject* within this candidate pool.
+
+        A term that appears in most retrieved candidates ("project", "release", "tag")
+        cannot tell the right memory apart from a wrong one - the pool was retrieved BY
+        those boilerplate terms. A term that appears in FEW of them ("quokka", "harbor")
+        is the query's subject, and citing a candidate that misses it is a wrong-subject
+        answer: without this check, asking about an unknown project X confidently cites
+        project Y because both say "release tag" (the MemoryTruth abstention probes
+        caught exactly this). A term that appears in NONE is excluded - it discriminates
+        nothing within this pool. Dead verb morphology ("decide" never prefix-matches
+        "decision") must not veto every candidate, and unknown-subject abstention is the
+        compound-term check's job. Document frequency is computed over the pool the gate
+        is currently ranking, so the check is deterministic and needs no corpus
+        statistics, embeddings, or ML. Single-term queries keep the prior any-term
+        behavior - one term carries no boilerplate/subject split.
+        """
+        if len(query_terms) < 2 or len(pool) < 2:
+            return set()
+        document_frequency: dict[str, int] = {term: 0 for term in query_terms}
+        for item in pool:
+            for term in self._item_matched_query_terms(item, query_terms):
+                document_frequency[term] += 1
+        cutoff = max(1, int(len(pool) * 0.4))
+        distinctive = {term for term, count in document_frequency.items() if 0 < count <= cutoff}
+        # If no term clears the bar the query is all boilerplate ("what changed?"):
+        # return empty so the gate keeps prior behavior instead of abstaining on everything.
+        return distinctive if len(distinctive) < len(query_terms) else set()
+
+    def _query_compound_terms(self, query: str) -> list[set[str]]:
+        """Hyphenated compounds in the raw query, as sets of required term parts.
+
+        "delta-dynamo project" names ONE subject, "delta-dynamo"; a memory about
+        "delta-meridian" matches the "delta" half and is still the WRONG subject
+        (us-east-1 vs us-west-2, data-retention vs data-residency). Term splitting
+        loses the hyphen, so the gate needs the compound back: a candidate may only
+        be cited when it matches EVERY surviving part of each compound the query
+        names. Parts are normalized exactly like _lexical_fallback_terms (stopwords,
+        length, plural-s) so prefix matching stays consistent; compounds with fewer
+        than two surviving parts impose no constraint ("e-mail" -> just "mail").
+        """
+        compounds: list[set[str]] = []
+        for token in re.findall(r"[a-z0-9_]+(?:-[a-z0-9_]+)+", str(query or "").lower().replace("'", "")):
+            parts: set[str] = set()
+            for raw_part in token.split("-"):
+                clean = raw_part.strip("_")
+                if not clean or clean in QUERY_LEXICAL_FALLBACK_STOPWORDS:
+                    continue
+                if len(clean) > 3 and clean.endswith("s") and not clean.endswith(("ss", "ies")):
+                    clean = clean[:-1]
+                if len(clean) < 3:
+                    continue
+                parts.add(clean)
+            if len(parts) >= 2:
+                compounds.append(parts)
+        return compounds
+
+    def _primary_citation_is_relevant(
+        self,
+        item: dict[str, Any],
+        query_terms: list[str],
+        *,
+        exempt: bool = False,
+        term_match_exempt: bool = False,
+        distinctive_terms: set[str] | None = None,
+        compound_terms: list[set[str]] | None = None,
+    ) -> bool:
         # Ask must cite or abstain. Primary candidates are the highest-ranked search
         # hits, but on a small corpus the lexical/LIKE fallback returns a best-available
         # memory even when nothing truly matches (e.g. "capital of Mongolia" surfacing a
         # pricing note). Require at least one meaningful query term to actually appear in
         # the memory before it can be cited, so unrelated fallback hits produce an honest
-        # abstention instead of a misleading citation. Exemptions preserve legitimate
-        # non-keyword retrieval: layer-intent queries ("how do I usually write?", "what
-        # changed recently?") and person-briefing hits are relevant by construction, not
-        # by surface term overlap. When the query has no extractable terms, keep prior
-        # behavior and let ranking decide rather than risk a wrong abstention.
+        # abstention instead of a misleading citation. When the pool exposes distinctive
+        # subject terms (see _distinctive_query_terms), the match must include one of
+        # them - matching only boilerplate ("release tag ... project") is a wrong-subject
+        # citation, which is worse than abstaining.
+        #
+        # Exemptions come in two strengths. `exempt` (person-briefing hits) bypasses
+        # everything: those items were injected by entity linkage, which is relevance
+        # by construction. `term_match_exempt` (layer-intent queries like "how do I
+        # usually write?", and embedding-close paraphrases) bypasses only the
+        # term-overlap checks - non-keyword retrieval is exactly what those exemptions
+        # protect. But a hyphenated compound subject named in the query
+        # (_query_compound_terms) stays a HARD constraint for them: compounds are
+        # lexical identifiers (project names, regions), an intent keyword like
+        # "release" must not let project Y's runbook answer for project X, and
+        # embeddings notoriously score delta-meridian ~= delta-dynamo. When the query
+        # has no extractable terms, keep prior behavior and let ranking decide rather
+        # than risk a wrong abstention.
         if exempt or not query_terms:
             return True
-        return bool(self._item_matched_query_terms(item, query_terms))
+        if not term_match_exempt:
+            matched = self._item_matched_query_terms(item, query_terms)
+            if not matched:
+                return False
+            if distinctive_terms and not (matched & distinctive_terms):
+                return False
+        for parts in compound_terms or []:
+            if self._item_matched_query_terms(item, sorted(parts)) != parts:
+                return False
+        return True
 
     def _item_matched_query_terms(self, item: dict[str, Any], terms: list[str]) -> set[str]:
         topics = item.get("topics") if isinstance(item.get("topics"), list) else []
