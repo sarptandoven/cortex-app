@@ -296,3 +296,38 @@ Resume point for the phased expansion roadmap (see docs/EXPANSION_ROADMAP_PHASES
   Developer portal), then re-run with CORTEX_MAS_PROFILE set. Full steps in
   `outputs/Doppl-AppStore-0.2.0-22/FOUNDER_CHECKLIST.txt`. Report: status=dry-run,
   uploadable=false, provisioning_profile=missing, installer_package=signed, privacy_manifest=present.
+
+## M1 MemoryTruth-light + whole-pipeline verification (commit c429523)
+- **Moonshot 1 shipped light** (`backend/bench/memorytruth.py`): deterministic,
+  verifiable-by-construction memory bench. No LLM judge - every gold answer is a unique seeded
+  slug, grading is exact matching, so the LoCoMo failure mode (wrong keys / lenient judge) is
+  structurally impossible. Four graded categories: recall, abstention, temporal
+  (supersession + belief timeline), provenance (citation resolvability, author_class survival,
+  integrity-chain verify). CLI: `python3 -m backend.bench.memorytruth --seed N [--url --token]`.
+- **The bench immediately caught a real confabulation bug**: ask_memory answered questions about
+  UNKNOWN subjects by citing same-shaped memories about DIFFERENT subjects (project X's "release
+  tag" question -> confidently cited project Y's). Abstention score was 0.17 before the fix.
+  Three-part cite-gate fix in storage.py: (1) `_distinctive_query_terms` - pool-relative document
+  frequency separates subject terms from boilerplate; matched-by-zero terms excluded so dead verb
+  morphology (decide/decision) can't veto everything; (2) `_query_compound_terms` - hyphenated
+  compounds must match ALL parts (delta-dynamo != delta-meridian), hard even under
+  intent/semantic exemptions; (3) layer-intent exemption narrowed per-query -> per-layer.
+  `test_retrieval_quality` caught my first over-strict cut (kept as the guardrail, gate fixed).
+  After: 1.0 on all 4 categories across 15 seeds.
+- **Non-tautology proven**: 4 sabotage tests (confabulating gate, broken supersession, tampered
+  event log, dead retrieval) each tank their category - the bench can actually fail.
+- **Whole pipeline verified end-to-end, all floors 1.0 on every surface**:
+  in-process store; LIVE standalone server over HTTP (test_memorytruth_pipeline.py boots the real
+  server: auth -> /v1/tools/call -> extractor -> SQLite -> vault -> retrieval -> cite gate ->
+  supersession -> timeline -> integrity chain; + HTTP==inprocess agreement test); FastAPI /mcp
+  JSON-RPC surface (structuredContent path); and the FRESH APP BUNDLE's .pyc backend served by
+  bundled-target python3.12 over HTTP. HTTP integrity checks use the Phase D REST endpoints
+  because tool calls are themselves audited events (pin->verify must be write-free).
+- **Whole app verified**: full suite 1609 + 372 subtests green under `-n 8 --dist loadfile`
+  (+13 new tests); macos/build.sh green (fresh Cortex.app, gate fixes present in bundle .pyc,
+  app-store .pyc-only boot check passed); site checker green (html-links, release-manifest,
+  artifact-hashes); outputs + site DMG checksums verified OK.
+- **PUSH BLOCKED (owner action)**: both the stored git PAT and the env GITHUB_TOKEN began
+  returning 401 at ~21:40Z (pushes worked until ~19:55Z). No gh oauth token, no SSH key on this
+  machine. Commit c429523 is local-only until a fresh token lands in ~/.git-credentials
+  (format `https://<PAT>@github.com`) or `gh auth login` is run.
