@@ -218,12 +218,34 @@ Resume point for the phased expansion roadmap (see docs/EXPANSION_ROADMAP_PHASES
 - Respects standing invariants: cited-or-silent extended to action, review gate for capture,
   allow_agent_exports + export scope gate egress, both-servers+MCP parity if any endpoint added
 
+## Context-pack identity fix (shipped, de7a730)
+- Found while parallelizing the suite for the build 22 gate: the prefetch predictor's replay
+  test passed serially but failed under pytest-xdist (-n 8). Root cause was a real PRODUCTION
+  bug, not a flake: `assemble_context` baked `"generated_at": now_iso()` into
+  `_canonical_pack_bytes`, so the same task pinned a second later got a different `pack_sha`.
+- Blast radius: (1) the "most recent pack" prefetch predictor scored 0.0 hit-rate under an
+  advancing clock (every real session) — the phase6 test only saw 0.75 because fast serial runs
+  pinned all 12 events inside one clock-second; (2) `pin_context_pack`'s documented
+  "re-pinning is a no-op" was false, so `context_packs` grew unbounded.
+- Fix: one shared `CONTEXT_PACK_ENVELOPE_KEYS = {generated_at, receipt, pin}` constant used by
+  BOTH `_canonical_pack_bytes` (identity hash) and `_pack_recompute_diff` (recompute envelope),
+  so they can never drift apart. `generated_at` stays in the live/stored payload (as_of recompute
+  reads it); it is just no longer part of the sha. The recompute-diff already excluded that exact
+  set, and `test_context_engine.test_deterministic_output` already pops `generated_at` before
+  comparing — the identity hash simply never agreed with that existing intent.
+- Backward-compatible, no migration: `get_context_pack` verifies `sha256(stored vault bytes) ==
+  pack_sha` per-file, so every existing build-21 pack still self-verifies against its own bytes;
+  only newly-assembled packs get the corrected time-independent identity. Locked invariant
+  `sha256(file) == pack_sha` still holds.
+- Regression guards (both verified to FAIL against reverted code):
+  test_hit_rate_holds_when_the_clock_advances_between_pins,
+  test_repin_is_idempotent_across_clock_seconds.
+- Suite now 1596 passed (+2) + 372 subtests, green (run parallel: `-n 8 --dist loadfile`).
+
 ## State
-- Full suite green: 1594 tests + 372 subtests
-- Branch pushed through `3ba79e7` (Phase D); OpenClaw doc is the next commit
-- Shipped DMG (build 21) predates Phase 2b + A + B + C + D — build 22 ships at the end of
-  the approved slate (write-back → session harvest → reputation → integrity → OpenClaw
-  exploration doc → build/DMG)
+- Full suite green: 1596 tests + 372 subtests
+- Branch pushed through `de7a730` (context-pack identity fix); Info.plist bumped to build 22
+  (uncommitted, ships with the release commit)
 
 ## Next
 - Build 22 + DMG last, with verify_context_pack shipped in it (everything A-D aboard)
