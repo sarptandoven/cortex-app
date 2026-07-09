@@ -71,6 +71,7 @@ private struct ConnectionsPrivacyOverview: View {
     @State private var privacySettingsExpanded = false
     @State private var connectedExpanded = false
     @State private var advancedExpanded = false
+    @State private var activityMetricsExpanded = false
     @State private var advancedSourcesExpanded = false
     @State private var sourceAuditExpanded = false
     @State private var recoveryToolsExpanded = false
@@ -259,6 +260,21 @@ private struct ConnectionsPrivacyOverview: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             }
+
+            DisclosureGroup(isExpanded: $activityMetricsExpanded) {
+                ConnectionsToolUsageSection(state: state)
+                    .padding(.top, 10)
+            } label: {
+                ConnectionsDisclosureLabel(
+                    systemImage: "gauge.with.needle",
+                    title: "Activity & alerts",
+                    detail: "How tools use memory, and how often Cortex may interrupt"
+                )
+            }
+            .padding(14)
+            .background(connectionsPanelBackground)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CortexDesign.hairline))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
 
             DisclosureGroup(isExpanded: $recoveryToolsExpanded) {
                 VStack(alignment: .leading, spacing: 14) {

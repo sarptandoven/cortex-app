@@ -23,6 +23,11 @@ struct AskTab: View {
                         // Only show an answer that matches the query in the box — a result carried
                         // over from onboarding (shared state) with an empty field here reads as a
                         // stale answer the user never asked for on this screen.
+                        // Personal "would I" questions get the twin's cited verdict first,
+                        // then the ordinary answer beneath it.
+                        if let twinPrediction = state.twinPrediction {
+                            AskTwinPredictionCard(prediction: twinPrediction)
+                        }
                         AskResponseSection(
                             state: state,
                             citedMemoriesExpanded: $citedMemoriesExpanded

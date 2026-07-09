@@ -1434,6 +1434,9 @@ struct AppSettingsResponse: Codable, Equatable {
     var allow_agent_maintenance: Bool
     var allow_agent_destructive_actions: Bool
     var redact_sensitive_context: Bool
+    /// Phase 6.3 annoyance budget (0-20). Optional so older backends that omit the key
+    /// still decode; the UI treats nil as the backend default of 3.
+    var proactive_alerts_daily_budget: Int?
     var source_policies: [String: SourcePolicySetting]?
     var identity_aliases: [String]?
 
@@ -1447,6 +1450,7 @@ struct AppSettingsResponse: Codable, Equatable {
         allow_agent_maintenance: false,
         allow_agent_destructive_actions: false,
         redact_sensitive_context: true,
+        proactive_alerts_daily_budget: 3,
         source_policies: [:],
         identity_aliases: []
     )
@@ -3180,6 +3184,15 @@ final class AppState: ObservableObject {
     @Published var auditEvents: [AuditEventItem] = []
     @Published var integrationTokens: [IntegrationTokenItem] = []
     @Published var showRevokedIntegrationTokens: Bool = false
+    // Phases 5-6 surfaces: contradiction interrupts, the twin, and their honest metrics.
+    @Published var proactiveAlerts: [ProactiveAlertItem] = []
+    @Published var inFlightAlertIds: Set<String> = []
+    @Published var twinPrediction: TwinPredictionResponse?
+    @Published var twinScorecard: TwinScorecardResponse?
+    @Published var inFlightTwinGradeIds: Set<String> = []
+    @Published var alertPrecision: AlertPrecisionResponse?
+    @Published var prefetchHitRate: PrefetchHitRateResponse?
+    @Published var toolScorecard: ToolScorecardResponse?
     @Published var diagnostics: DiagnosticsResponse?
     @Published var reliabilityReport: ReliabilityReportResponse?
     @Published var lastBackupPath: String?
@@ -3679,6 +3692,8 @@ final class AppState: ObservableObject {
         await loadReliability()
         await loadMirrorInsight()
         await loadProfile()
+        await loadProactiveAlerts()
+        await loadTwinScorecard()
         refreshStoredConnectorConfigState()
         refreshIntegrationStates()
         startConnectedSourceAutoSync()
@@ -4002,6 +4017,116 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: Phases 5-6 — proactive alerts, the twin, and their metrics
+
+    func loadProactiveAlerts() async {
+        do {
+            let data = try await request(path: "/v1/alerts?status=pending&limit=20", method: "GET")
+            proactiveAlerts = try JSONDecoder().decode(ProactiveAlertsResponse.self, from: data).alerts
+        } catch {
+            // Alerts are a proactive extra on Review, not its core queue — a load failure
+            // stays quiet rather than clobbering the status line every poll.
+            proactiveAlerts = []
+        }
+    }
+
+    /// Accept or dismiss a proactive alert. Every resolution is a training label for the
+    /// annoyance budget (dismissal-as-label), so this always round-trips to the backend.
+    func resolveProactiveAlert(_ alert: ProactiveAlertItem, resolution: String) {
+        guard !inFlightAlertIds.contains(alert.id) else { return }
+        inFlightAlertIds.insert(alert.id)
+        Task {
+            defer { inFlightAlertIds.remove(alert.id) }
+            do {
+                let encoded = alert.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? alert.id
+                _ = try await request(
+                    path: "/v1/alerts/\(encoded)/resolve?resolution=\(resolution)",
+                    method: "POST",
+                    body: ["resolution": resolution]
+                )
+                withAnimation(.easeOut(duration: 0.25)) {
+                    proactiveAlerts.removeAll { $0.id == alert.id }
+                }
+                status = resolution == "accepted" ? "Alert accepted" : "Alert dismissed"
+                await loadProactiveAlerts()
+            } catch {
+                status = CortexRecoveryText.failureStatus("Alert", error: error)
+            }
+        }
+    }
+
+    func loadTwinScorecard() async {
+        do {
+            let data = try await request(path: "/v1/twin/scorecard?days=90", method: "GET")
+            twinScorecard = try JSONDecoder().decode(TwinScorecardResponse.self, from: data)
+        } catch {
+            twinScorecard = nil
+        }
+    }
+
+    /// Grade a twin prediction from the Review queue ("Cortex predicted X — how did it go?").
+    /// Grades accrue to the scorecard; accuracy over time is the twin's headline metric.
+    func gradeTwinPrediction(_ prediction: TwinUngradedPrediction, outcome: String) {
+        guard !inFlightTwinGradeIds.contains(prediction.id) else { return }
+        inFlightTwinGradeIds.insert(prediction.id)
+        Task {
+            defer { inFlightTwinGradeIds.remove(prediction.id) }
+            do {
+                _ = try await request(
+                    path: "/v1/twin/grade",
+                    method: "POST",
+                    body: ["prediction_id": prediction.prediction_id, "outcome": outcome]
+                )
+                status = "Prediction graded"
+                await loadTwinScorecard()
+            } catch {
+                status = CortexRecoveryText.failureStatus("Grade prediction", error: error)
+            }
+        }
+    }
+
+    /// Best-effort twin consult for personal "would I" questions in Ask. Returns nil on any
+    /// failure so the ordinary cited answer never depends on the twin.
+    func fetchTwinPrediction(question: String) async -> TwinPredictionResponse? {
+        do {
+            let data = try await request(
+                path: "/v1/twin/would-i",
+                method: "POST",
+                body: ["question": question]
+            )
+            return try JSONDecoder().decode(TwinPredictionResponse.self, from: data)
+        } catch {
+            return nil
+        }
+    }
+
+    func loadAlertPrecision() async {
+        do {
+            let data = try await request(path: "/v1/alerts/precision?days=30", method: "GET")
+            alertPrecision = try JSONDecoder().decode(AlertPrecisionResponse.self, from: data)
+        } catch {
+            alertPrecision = nil
+        }
+    }
+
+    func loadPrefetchHitRate() async {
+        do {
+            let data = try await request(path: "/v1/prefetch/hit-rate?days=30", method: "GET")
+            prefetchHitRate = try JSONDecoder().decode(PrefetchHitRateResponse.self, from: data)
+        } catch {
+            prefetchHitRate = nil
+        }
+    }
+
+    func loadToolScorecard() async {
+        do {
+            let data = try await request(path: "/v1/eval/scorecard?days=7", method: "GET")
+            toolScorecard = try JSONDecoder().decode(ToolScorecardResponse.self, from: data)
+        } catch {
+            toolScorecard = nil
+        }
+    }
+
     func runSearch() {
         Task { await search() }
     }
@@ -4012,6 +4137,7 @@ final class AppState: ObservableObject {
         searchResults = []
         askAnswer = ""
         askCitations = []
+        twinPrediction = nil
         askError = nil
         hasSearched = false
     }
@@ -4118,6 +4244,7 @@ final class AppState: ObservableObject {
             searchResults = []
             askAnswer = ""
             askCitations = []
+            twinPrediction = nil
             askError = nil
             hasSearched = false
             status = "Enter a search term"
@@ -4131,6 +4258,10 @@ final class AppState: ObservableObject {
             let encoded = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q
             let data = try await request(path: "/v1/ask?query=\(encoded)&limit=12", method: "GET")
             let answer = try JSONDecoder().decode(AskResponse.self, from: data)
+            // Personal "would I / should I" questions also consult the twin: a cited,
+            // graded prediction from preference/decision layers, never an invention.
+            // Best-effort — a twin failure must not break the ordinary answer.
+            twinPrediction = TwinQuestionDetector.isTwinQuestion(q) ? await fetchTwinPrediction(question: q) : nil
             searchResults = answer.results
             askAnswer = answer.answer
             askCitations = answer.citations
@@ -4153,6 +4284,7 @@ final class AppState: ObservableObject {
             askAnswer = ""
             askCitations = []
             searchResults = []
+            twinPrediction = nil
             askError = CortexRecoveryText.failureStatus("Search", error: error)
             status = CortexRecoveryText.failureStatus("Search", error: error)
         }
@@ -4457,6 +4589,7 @@ final class AppState: ObservableObject {
                 "allow_agent_maintenance": appSettings.allow_agent_maintenance,
                 "allow_agent_destructive_actions": appSettings.allow_agent_destructive_actions,
                 "redact_sensitive_context": appSettings.redact_sensitive_context,
+                "proactive_alerts_daily_budget": appSettings.proactive_alerts_daily_budget ?? 3,
                 "identity_aliases": appSettings.identity_aliases ?? []
             ]
             if let policies = sourcePoliciesBody() {

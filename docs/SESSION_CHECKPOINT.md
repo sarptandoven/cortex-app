@@ -25,10 +25,31 @@ Resume point for the phased expansion roadmap (see docs/EXPANSION_ROADMAP_PHASES
   - tests/test_phase6_anticipatory.py: 19 tests incl. replayed 12-request usage simulation
     (hit-rate >= 8/12 gate, beats no-predictor baseline)
 
-## State
-- Full suite green: 1474 tests + 322 subtests
+- macOS UI for phases 4-6 — this commit
+  - New TwinAlertsModels.swift: Codable mirrors of alert/twin/metrics JSON (field names
+    match backend snake_case exactly), TwinQuestionDetector (prefix-gated: "would i",
+    "should i", "do i", "am i", "will i", "how would i")
+  - New TwinAlertsViews.swift: Review alert cards (NEW/KNOWN claim rows, Dismiss/Noted,
+    contradiction-only subtitle + arrows icon, bell for other kinds), Review twin grading
+    (Wrong / Can't say / Right), Ask twin prediction card (For/Against/HARD LINES buckets,
+    constraint rows dedupe against Against, muted spine + honest abstain copy on
+    insufficient_evidence), Model twin scorecard (em-dash accuracy until graded),
+    Connections "Activity & alerts" (per-host usage, precision + prefetch tiles with
+    em-dash placeholders, budget stepper 0-20 with OFF state)
+  - Wiring: Review reload refreshes alerts+grading, Ask consults twin only for
+    twin-questions (best-effort), Model gates scorecard on predictions > 0, budget
+    stepper persists via PATCH /v1/settings (proactive_alerts_daily_budget added to
+    FastAPI SettingsResponse/UpdateRequest)
+  - tests/test_macos_phase_ui_contract.py: 21 tests + 50 subtests pin Swift<->backend
+    parity (endpoint paths, resolution labels, grade outcomes, Codable fields, prefix
+    gating, theme guardrails: gold never text, kerned stamps, max weight semibold)
+  - Validated: build.sh green; payload decode parity via swiftc against live-server JSON
+    (likely_yes / likely_no / insufficient_evidence, alerts with+without detail);
+    rendered previews reviewed for all four surfaces
 
-## Next (roadmap phases 0-6 all complete)
-- macOS UI: twin scorecard panel, alerts in Review surface (ship order rule: UI last)
+## State
+- Full suite green: 1496 tests + 372 subtests
+
+## Next
 - Prefetch: only add learning if the most-recent baseline plateaus (measure first)
-- Push branch (now 9 commits ahead of origin)
+- Push branch (now 10 commits ahead of origin)

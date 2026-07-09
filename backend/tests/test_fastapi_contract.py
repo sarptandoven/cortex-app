@@ -4051,6 +4051,31 @@ END:VCALENDAR
         self.assertEqual(fetched.status_code, 200)
         self.assertEqual(fetched.json()["identity_aliases"], ["sarpt", "sarpt@example.com"])
 
+    def test_proactive_alerts_budget_settings_round_trip(self) -> None:
+        # The macOS Connections sheet edits this field; the response model must carry it
+        # (a silent drop here would reset the stepper to the default on every reload).
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "alerts-budget-contract"}
+
+        fetched = self.client.get("/v1/settings", headers=headers)
+        self.assertEqual(fetched.status_code, 200)
+        self.assertEqual(fetched.json()["proactive_alerts_daily_budget"], 3)
+
+        updated = self.client.put(
+            "/v1/settings",
+            json={"proactive_alerts_daily_budget": 7},
+            headers=headers,
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["proactive_alerts_daily_budget"], 7)
+
+        clamped = self.client.put(
+            "/v1/settings",
+            json={"proactive_alerts_daily_budget": 99},
+            headers=headers,
+        )
+        self.assertEqual(clamped.status_code, 200)
+        self.assertEqual(clamped.json()["proactive_alerts_daily_budget"], 20)
+
     def test_sync_capture_uses_identity_aliases_for_personal_memory_gating(self) -> None:
         self._allow_pending_context("identity-capture-contract")
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "identity-capture-contract"}

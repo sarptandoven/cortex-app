@@ -39,6 +39,12 @@ struct ModelTab: View {
                     .frame(maxWidth: 620, alignment: .leading)
                     .transition(.opacity)
                 }
+                if let scorecard = state.twinScorecard, scorecard.predictions > 0 {
+                    // The twin's accuracy record — only once it has actually predicted
+                    // something; an all-zero scorecard is noise, not a mirror.
+                    TwinScorecardCard(scorecard: scorecard)
+                        .transition(.opacity)
+                }
                 if let profile = state.profile, !profile.sections.isEmpty {
                     VStack(alignment: .leading, spacing: CortexDesign.Space.sm) {
                         SectionHeader(

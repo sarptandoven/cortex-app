@@ -16,6 +16,8 @@ struct ReviewTab: View {
                     if shouldShowSourceHealth {
                         ReviewSourceHealthStrip(state: state)
                     }
+                    ReviewProactiveAlertsSection(state: state)
+                    ReviewTwinGradingSection(state: state)
                     ReviewInboxSection(state: state, captures: state.inbox)
                 }
             }
@@ -43,6 +45,8 @@ struct ReviewTab: View {
         await state.loadInbox()
         await state.loadReview()
         await state.loadProductLoop()
+        await state.loadProactiveAlerts()
+        await state.loadTwinScorecard()
     }
 
     private var shouldShowSourceHealth: Bool {
