@@ -3,9 +3,11 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from backend.app.database import init_db
 from backend.app import mcp_tools
+from backend.app import storage
 from backend.app.storage import CortexStore, connect
 
 
@@ -226,6 +228,69 @@ class PrefetchPredictorTests(_Phase6Fixture):
         # 12 trials: first has no history (miss), 3 switches (miss) -> 8 hits minimum.
         self.assertGreaterEqual(report["hit_rate"], 8 / 12)
         self.assertGreater(report["hit_rate"], 0.0)  # beats the no-predictor baseline
+
+    def test_hit_rate_holds_when_the_clock_advances_between_pins(self) -> None:
+        """Regression guard for the content-address bug: `generated_at` used to be part of the
+        pack's identity hash, so the SAME task pinned a second later produced a DIFFERENT
+        pack_sha, and the 'most recent pack' predictor never matched a real repeat request. The
+        original replay test passed only because it ran fast enough to pin every event inside a
+        single clock-second (identical timestamp -> identical sha -> accidental hits). With a
+        monotonic clock that advances between pins (i.e. every real-world session), the broken
+        predictor scored 0.0. This test pins the clock forward on every assembly and asserts the
+        hit-rate survives, so the regression can never return silently."""
+        self._seed("m-clock", "Decided to use postgres for the billing project")
+        schedule = ["billing", "billing", "billing", "frontend", "frontend", "frontend",
+                    "frontend", "billing", "billing", "billing", "billing", "billing"]
+        task_text = {"billing": "billing database work", "frontend": "frontend styling work"}
+        # A monotonic clock: each now_iso() call is one second later than the previous, so
+        # consecutive pins land in different seconds — the exact condition that broke identity.
+        tick = {"n": 0}
+        real_now = storage.now_iso
+
+        def advancing_now() -> str:
+            tick["n"] += 1
+            base = real_now()  # anchored at real now so events stay inside the 30-day window
+            # Replace the seconds field deterministically by appending an offset via timedelta
+            import datetime as _dt
+            parsed = _dt.datetime.fromisoformat(base.replace("Z", "+00:00"))
+            return (parsed + _dt.timedelta(seconds=tick["n"])).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        with mock.patch.object(storage, "now_iso", advancing_now):
+            for task in schedule:
+                predicted = self.store.predict_next_pack(self.user_id)
+                requested_sha = self._pin(task_text[task])
+                self.store.record_prefetch_outcome(
+                    self.user_id,
+                    predicted_sha=(predicted or {}).get("pack_sha", ""),
+                    requested_sha=requested_sha,
+                )
+        report = self.store.get_prefetch_hit_rate(self.user_id)
+        self.assertEqual(report["trials"], len(schedule))
+        # Same sticky pattern, same >= 8/12 floor — but now proven under an advancing clock,
+        # not an artifact of same-second pinning.
+        self.assertGreaterEqual(report["hit_rate"], 8 / 12)
+
+    def test_repin_is_idempotent_across_clock_seconds(self) -> None:
+        """The content-address corollary: pinning the same task twice, in two different clock
+        seconds, must produce ONE pack (same sha), not two. Before the fix the wall-clock
+        `generated_at` in the hashed body made every pin unique, so list_context_packs grew
+        without bound and re-pins were never no-ops."""
+        self._seed("m-idem", "Decided to use postgres for the billing project")
+        real_now = storage.now_iso
+        tick = {"n": 0}
+
+        def advancing_now() -> str:
+            tick["n"] += 1
+            import datetime as _dt
+            parsed = _dt.datetime.fromisoformat(real_now().replace("Z", "+00:00"))
+            return (parsed + _dt.timedelta(seconds=tick["n"])).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        with mock.patch.object(storage, "now_iso", advancing_now):
+            first = self._pin("billing database work")
+            second = self._pin("billing database work")  # same inputs, later second
+        self.assertEqual(first, second)
+        packs = self.store.list_context_packs(self.user_id)
+        self.assertEqual(len([p for p in packs if p["pack_sha"] == first]), 1)
 
 
 class Phase6ToolSurfaceTests(_Phase6Fixture):

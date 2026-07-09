@@ -91,6 +91,14 @@ MCP_TOKEN_SCOPES = {"read", "write", "export", "maintenance", "destructive", "ad
 CONTEXT_ENGINE_VERSION = 2
 CONTEXT_MIN_TOKEN_BUDGET = 300
 CONTEXT_MAX_TOKEN_BUDGET = 6000
+# The context-pack "envelope": fields that describe the ASSEMBLY EVENT, not the assembled
+# context. They are excluded from the content-address (pack identity) AND from recompute-diff,
+# for the same reason: `generated_at` is wall-clock now(), `receipt` is a fixed audit stub, and
+# `pin` self-references the artifact. Two assemblies of the same corpus+inputs a second apart
+# must land on the SAME sha, so the "most recent pack" prefetch predictor and the
+# re-pin-is-idempotent guarantee both hold. One constant keeps the identity hash and the diff
+# from ever drifting apart.
+CONTEXT_PACK_ENVELOPE_KEYS = frozenset({"generated_at", "receipt", "pin"})
 CONTEXT_LAYER_ORDER = ("constraints", "decisions", "facts", "entity", "procedures", "identity", "open_loops", "recency")
 # Per-intent budget weights (percent-like; normalized at pack time). The intent shapes WHICH
 # layers dominate: drafting leans on identity/constraints, acting on procedures, planning on
@@ -14690,9 +14698,15 @@ class CortexStore:
     def _canonical_pack_bytes(pack: dict[str, Any]) -> bytes:
         """The canonical byte encoding whose sha256 IS the pack identity: sorted keys,
         no whitespace, UTF-8 (ensure_ascii for byte-stability across json versions).
-        The `pin` block itself is never part of the hashed content (it describes the
-        artifact, so including it would make the hash self-referential)."""
-        body = {key: value for key, value in pack.items() if key != "pin"}
+
+        The envelope (generated_at/receipt/pin) is excluded: those describe the assembly
+        event, not the assembled context. Excluding them is what makes the sha a true
+        content-address — two assemblies of the same corpus+inputs a moment apart hash
+        identical, so re-pinning is genuinely idempotent and the "most recent pack" prefetch
+        predictor can actually match a repeat request. (Including wall-clock `generated_at`
+        silently made every pin unique, breaking both.) The same envelope set is excluded by
+        the recompute-diff, via the shared CONTEXT_PACK_ENVELOPE_KEYS constant."""
+        body = {key: value for key, value in pack.items() if key not in CONTEXT_PACK_ENVELOPE_KEYS}
         return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
 
     def pin_context_pack(
@@ -14798,8 +14812,10 @@ class CortexStore:
     def _pack_recompute_diff(stored: dict[str, Any], recomputed: dict[str, Any]) -> dict[str, Any]:
         """Field-level diff of the parts of a pack that recompute can meaningfully reproduce.
         The envelope (generated_at, receipt, pin) is excluded by design: it describes the
-        assembly event, not the assembled context, and can never match across runs."""
-        excluded = {"generated_at", "receipt", "pin"}
+        assembly event, not the assembled context, and can never match across runs. This is the
+        same CONTEXT_PACK_ENVELOPE_KEYS set the content-address excludes — pack identity and
+        recompute-equality must agree on what counts as content."""
+        excluded = CONTEXT_PACK_ENVELOPE_KEYS
 
         def canonical(pack: dict[str, Any]) -> dict[str, Any]:
             return {key: value for key, value in pack.items() if key not in excluded}
