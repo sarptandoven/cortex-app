@@ -718,6 +718,34 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {"format": {"type": "string", "default": "markdown"}}},
     },
     {
+        "name": "get_memory_integrity",
+        "description": "Return a tamper-evident digest of the whole memory history: a hash-chain head over the append-only event log, plus the counts it attests. Pin the head now and recompute it later to prove nothing in the past was silently edited. Read-only, computed from the local event log.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "verify_memory_integrity",
+        "description": "Recompute the memory's event hash-chain and compare it to a head you pinned earlier. Returns whether the history is byte-identical (matches) or has changed since. Read-only continuity proof; new events legitimately advance the head.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"expected_head": {"type": "string", "description": "The chain_head from an earlier get_memory_integrity call."}},
+            "required": ["expected_head"],
+        },
+    },
+    {
+        "name": "export_memory_bundle",
+        "description": "Export the whole memory as one self-verifying, restorable bundle: the full export payload wrapped in an integrity manifest (chain head + payload sha256 + record counts). Hand it to another Cortex instance or keep it as a cold archive; it can be verified byte-for-byte before restore. Carries the full corpus out of Cortex custody.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "verify_memory_bundle",
+        "description": "Verify a portable memory bundle WITHOUT trusting its source: recompute the payload hash from the embedded payload and check it against the manifest. Returns whether the bundle is intact and safe to restore. Pure check of the bundle you pass in.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"bundle": {"type": "object", "description": "A bundle produced by export_memory_bundle."}},
+            "required": ["bundle"],
+        },
+    },
+    {
         "name": "write_obsidian_pages",
         "description": "Write/refresh the distilled, cited Cortex pages (Profile, People) inside the connected Obsidian vault's Cortex/ folder.",
         "inputSchema": {
@@ -1132,6 +1160,12 @@ READ_TOOLS = {
     "get_belief_timeline",
     "get_tool_scorecard",
     "get_source_reputation",
+    # Phase D integrity/portability reads: digest + verify expose only hashes/counts (no content),
+    # and verify_memory_bundle is a pure check of a bundle the caller passes in. The bundle EXPORT
+    # itself carries content, so it lives in EXPORT_TOOLS, not here.
+    "get_memory_integrity",
+    "verify_memory_integrity",
+    "verify_memory_bundle",
     # Twin reads: would_i / draft_as_me only retrieve and compile cited evidence — the
     # twin_prediction event they log is audit trail, same as record_context_reuse.
     "would_i",
@@ -1194,6 +1228,10 @@ WRITE_TOOLS = {
 }
 EXPORT_TOOLS = {
     "export_memory",
+    # Phase D: the portable bundle wraps the FULL export payload (all captures/memories/tasks/
+    # entities/edges) in an integrity manifest. It carries the whole corpus out of Cortex custody,
+    # so it is export-scoped exactly like export_memory — not a plain read.
+    "export_memory_bundle",
     # Obsidian write-back persists distilled memory (profile/people pages) OUTSIDE Cortex custody,
     # into the user's vault files (which then sync via git/iCloud). That is egress of personal
     # memory — gated exactly like a bulk export, NOT like an in-store write.
@@ -1278,6 +1316,10 @@ _TOOL_TITLE_OVERRIDES: dict[str, str] = {
     "get_belief_timeline": "Trace Belief Timeline",
     "get_tool_scorecard": "Review Tool Scorecard",
     "get_source_reputation": "Source Reputation",
+    "get_memory_integrity": "Memory Integrity Digest",
+    "verify_memory_integrity": "Verify Memory Integrity",
+    "export_memory_bundle": "Export Portable Memory Bundle",
+    "verify_memory_bundle": "Verify Memory Bundle",
     "submit_answer_for_grading": "Grade Answer Against Memory",
     "get_context_pack": "Replay Pinned Context Pack",
     "list_context_packs": "List Pinned Context Packs",
@@ -2892,6 +2934,20 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         if args.get("format", "markdown") == "json":
             return store.export_json(user_id)
         return store.export_markdown(user_id)
+    if name == "get_memory_integrity":
+        return store.integrity_digest(user_id)
+    if name == "verify_memory_integrity":
+        expected = _text_arg(args, "expected_head", max_chars=128)
+        if not expected:
+            raise ValueError("expected_head is required")
+        return store.verify_integrity(user_id, expected)
+    if name == "export_memory_bundle":
+        return store.export_portable_bundle(user_id)
+    if name == "verify_memory_bundle":
+        bundle = args.get("bundle")
+        if not isinstance(bundle, dict):
+            raise ValueError("bundle must be a JSON object")
+        return store.verify_portable_bundle(bundle)
     if name == "write_obsidian_pages":
         return store.agent_payload(
             user_id,

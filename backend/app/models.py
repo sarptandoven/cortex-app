@@ -243,6 +243,20 @@ class AgentSessionsSyncResponse(SourceAccountSyncResponse):
     scan: dict[str, Any]
 
 
+class VerifyIntegrityRequest(BaseModel):
+    """Phase D: prove continuity by recomputing the event hash-chain head and comparing it to a
+    head the caller pinned earlier. Just the expected head — the events themselves are the store's."""
+
+    expected_head: str = Field(..., min_length=1, max_length=128)
+
+
+class VerifyBundleRequest(BaseModel):
+    """Phase D: verify a portable memory bundle WITHOUT trusting its source — recompute the payload
+    hash from the embedded payload and check it against the manifest. Pure function of its input."""
+
+    bundle: dict[str, Any]
+
+
 class GitHubSyncRequest(BaseModel):
     token: str = Field(..., min_length=1, max_length=4000)
     repositories: list[str] = Field(..., min_length=1, max_length=25)

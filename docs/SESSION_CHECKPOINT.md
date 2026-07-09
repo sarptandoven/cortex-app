@@ -164,14 +164,47 @@ Resume point for the phased expansion roadmap (see docs/EXPANSION_ROADMAP_PHASES
     FastAPI + standalone contract tests (report + promote rec, read-scope refusal of a
     write-only token); metadata suite auto-covers the new tool
 
+- Phase D: memory integrity + portability — prove nothing was silently edited, hand the whole
+  memory over intact — this commit
+  - A tamper-evident hash CHAIN over the append-only event log: link_0 = a fixed genesis
+    constant, link_n = sha256(link_{n-1} + ':' + sha256(canonical(event_n))), folded oldest
+    first (created_at, rowid tiebreak). The final link is the chain_head. Any edit, reorder,
+    insertion, or deletion anywhere in history changes the head — tamper-EVIDENCE, cheap to
+    recompute, impossible to forge without rewriting the whole log. Pure read-model, no writes
+  - integrity_digest (head + attested counts) + verify_integrity(expected_head): pin the head
+    today, recompute tomorrow; a mismatch means the past moved (new events advance it
+    legitimately — verify makes no judgement about WHY, only whether it matches)
+  - Portable, self-verifying export: export_manifest (head + payload_sha256 + record counts,
+    attests the export WITHOUT containing it) and export_portable_bundle (full export_json
+    payload wrapped in that manifest). verify_portable_bundle recomputes the payload hash from
+    the embedded payload and checks it against the manifest — the RECEIVING half of portability,
+    a pure function of its argument so it can check a bundle from anywhere before a restore
+  - Canonicalization is the same discipline as the context pack: json sorted keys, compact
+    separators, ensure_ascii — byte-stable across Python/json versions. Comparisons use
+    hmac.compare_digest
+  - MCP: get_memory_integrity / verify_memory_integrity / verify_memory_bundle in READ_TOOLS
+    (hashes/counts/pure-check, no content egress); export_memory_bundle in EXPORT_TOOLS (carries
+    the whole corpus out of custody, export scope + allow_agent_exports trust gate). Added
+    "verify_" to SCORECARD_READ_TOOL_PREFIXES so the storage-side classifier parity guard stays
+    in sync (verify_* tools are read-side recompute+compare)
+  - REST: GET /v1/integrity/digest, POST /v1/integrity/verify, GET /v1/export/manifest (all
+    read); GET /v1/export/bundle (export); POST /v1/export/verify (read) — on both servers, with
+    the export-scope entry registered in both _required_api_scope maps
+  - tests: test_memory_integrity.py (13: deterministic head, empty→genesis, new-event-advances,
+    self-verify, stale-head-rejected, SILENT-TAMPER-detected, empty-expected-head, bundle
+    round-trip, modified-payload-fails, manifest-attests-same-bytes, malformed-bundle-raises,
+    counts-match-export, MCP scope+dispatch); FastAPI + standalone contract tests (digest/verify/
+    manifest read, bundle export-scoped, round-trip + tamper-fail, 422s, read-only refused the
+    bundle); metadata + scorecard-parity suites auto-cover the new tools
+
 ## State
-- Full suite green: 1579 tests + 372 subtests
-- Branch pushed through `21b2d9d` (Phase B); Phase C is the next commit
-- Shipped DMG (build 21) predates Phase 2b + A + B + C — build 22 ships at the end of
+- Full suite green: 1594 tests + 372 subtests
+- Branch pushed through `aee75da` (Phase C); Phase D is the next commit
+- Shipped DMG (build 21) predates Phase 2b + A + B + C + D — build 22 ships at the end of
   the approved slate (write-back → session harvest → reputation → integrity → OpenClaw
   exploration doc)
 
 ## Next
-- Phase D: integrity/portability (hash-linked events, manifest, lossless export)
-- OpenClaw exploration doc, then build 22 + DMG last
+- OpenClaw exploration doc (TencentDB as workhorse-agent attachment using Cortex memory)
+- Build 22 + DMG last, with verify_context_pack shipped in it
 - Prefetch: only add learning if the most-recent baseline plateaus (measure first)

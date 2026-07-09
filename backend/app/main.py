@@ -36,6 +36,7 @@ from .models import AgentSessionsSyncRequest, AgentSessionsSyncResponse, APIToke
 from .models import UserListResponse, UserProvisionRequest, UserProvisionResponse, UserStatusResponse
 from .models import CaptureChangePage, SyncIngestRequest, SyncIngestResponse
 from .models import GradeAnswerRequest, WouldIRequest, DraftAsMeRequest, GradeTwinPredictionRequest
+from .models import VerifyIntegrityRequest, VerifyBundleRequest
 from .oauth_broker import register_oauth_broker_routes
 from .oidc_registry import OidcError, OidcProviderRegistry
 from .ratelimit import TokenBucketRateLimiter
@@ -238,6 +239,14 @@ def _required_api_scope(method: str, path: str) -> str:
     # pack are reads — that is the holistic picture Cortex exists to hand an agent.
     if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/support/bundle"}:
         return "export"
+    # Phase D: the portable bundle carries the full corpus out of Cortex custody — export-scoped
+    # like the raw dumps. The integrity digest / manifest / verify endpoints expose only hashes and
+    # counts (no content), so they are reads; verify-integrity and verify-bundle are POSTs only
+    # because they carry input in the body, so they must be pinned to read too.
+    if normalized_path == "/v1/export/bundle":
+        return "export"
+    if normalized_path in {"/v1/integrity/digest", "/v1/integrity/verify", "/v1/export/manifest", "/v1/export/verify"}:
+        return "read"
     # Obsidian write-back persists distilled memory into user-owned vault files (egress out of
     # Cortex custody) — export-scoped like the bulk exports, parity with the MCP tool.
     if normalized_path == "/v1/connectors/obsidian/write-back":
@@ -2452,6 +2461,43 @@ def export_json(user_id: str = Depends(auth)) -> dict[str, Any]:
 @app.get("/v1/export.md")
 def export_markdown(user_id: str = Depends(auth)) -> Response:
     return Response(content=store.export_markdown(user_id), media_type="text/markdown")
+
+
+@app.get("/v1/integrity/digest")
+def integrity_digest(user_id: str = Depends(auth)) -> dict[str, Any]:
+    """Phase D: the tamper-evident hash-chain head over the append-only event log, plus the counts
+    it attests. Read-only (hashes + counts, no content) — pin it now, recompute later to prove the
+    past was not silently edited."""
+    return store.integrity_digest(user_id)
+
+
+@app.post("/v1/integrity/verify")
+def verify_integrity(payload: VerifyIntegrityRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    """Phase D: recompute the chain and compare against a head the caller pinned earlier. Read-only;
+    a POST only because it carries the expected head in the body."""
+    return store.verify_integrity(user_id, payload.expected_head)
+
+
+@app.get("/v1/export/manifest")
+def export_manifest(user_id: str = Depends(auth)) -> dict[str, Any]:
+    """Phase D: a verifiable manifest (integrity head + record counts + payload sha256) for the
+    portable export. Read-only — it attests the export without containing its content."""
+    return store.export_manifest(user_id)
+
+
+@app.get("/v1/export/bundle")
+def export_portable_bundle(user_id: str = Depends(auth)) -> dict[str, Any]:
+    """Phase D: the whole memory as one self-verifying, restorable object (full export payload +
+    integrity manifest). Export-scoped — it carries the full corpus out of Cortex custody."""
+    return store.export_portable_bundle(user_id)
+
+
+@app.post("/v1/export/verify")
+def verify_portable_bundle(payload: VerifyBundleRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    """Phase D: verify a portable bundle WITHOUT trusting its source. A pure function of the bundle
+    bytes (it never touches the caller's own store), but still auth-gated for parity with every
+    other /v1 route and to keep the compute behind a token."""
+    return store.verify_portable_bundle(payload.bundle)
 
 
 @app.get("/.well-known/cortex.json")

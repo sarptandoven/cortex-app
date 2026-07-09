@@ -139,6 +139,13 @@ def _required_api_scope(method: str, path: str) -> str:
     # adaptation / context pack are reads — the holistic picture Cortex exists to hand an agent.
     if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/support/bundle"}:
         return "export"
+    # Phase D: the portable bundle carries the full corpus out of Cortex custody — export-scoped.
+    # The integrity digest / manifest / verify endpoints expose only hashes + counts (no content),
+    # so they are reads (verify-* are POSTs only because they carry input in the body).
+    if normalized_path == "/v1/export/bundle":
+        return "export"
+    if normalized_path in {"/v1/integrity/digest", "/v1/integrity/verify", "/v1/export/manifest", "/v1/export/verify"}:
+        return "read"
     # Obsidian write-back persists distilled memory into user-owned vault files (egress out of
     # Cortex custody) — export-scoped like the bulk exports, parity with the MCP tool.
     if normalized_path == "/v1/connectors/obsidian/write-back":
@@ -1341,6 +1348,29 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError) as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
+            if method == "POST" and path == "/v1/integrity/verify":
+                # Phase D: recompute the chain and compare to a caller-pinned head (read scope).
+                body = self._json_body()
+                try:
+                    expected = str(body.get("expected_head") or "").strip()
+                    if not expected:
+                        raise ValueError("expected_head is required")
+                    self._send_json(store.verify_integrity(user_id, expected))
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path == "/v1/export/verify":
+                # Phase D: verify a portable bundle WITHOUT trusting its source. Pure function of
+                # the bundle bytes; auth-gated for parity but never touches the caller's own store.
+                body = self._json_body()
+                try:
+                    bundle = body.get("bundle")
+                    if not isinstance(bundle, dict):
+                        raise ValueError("bundle must be a JSON object")
+                    self._send_json(store.verify_portable_bundle(bundle))
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
             if method == "POST" and path == "/v1/connectors/github/discover":
                 body = self._json_body()
                 try:
@@ -2486,6 +2516,18 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and path == "/v1/export.md":
                 self._send_text(store.export_markdown(user_id), media_type="text/markdown")
+                return
+            if method == "GET" and path == "/v1/integrity/digest":
+                # Phase D: tamper-evident hash-chain head over the event log (read-only).
+                self._send_json(store.integrity_digest(user_id))
+                return
+            if method == "GET" and path == "/v1/export/manifest":
+                # Phase D: verifiable manifest (head + counts + payload sha256) for the export.
+                self._send_json(store.export_manifest(user_id))
+                return
+            if method == "GET" and path == "/v1/export/bundle":
+                # Phase D: whole memory as one self-verifying, restorable object (export scope).
+                self._send_json(store.export_portable_bundle(user_id))
                 return
             self._send_json({"detail": "Not found"}, status=HTTPStatus.NOT_FOUND)
         except _RequestTooLarge as exc:

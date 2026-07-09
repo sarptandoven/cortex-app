@@ -75,6 +75,11 @@ class FakeStore:
         self.write_obsidian_pages_calls: list[tuple[str, str | None, int]] = []
         self.sync_agent_sessions_calls: list[tuple] = []
         self.source_reputation_calls: list[tuple] = []
+        self.integrity_digest_calls: list[str] = []
+        self.verify_integrity_calls: list[tuple] = []
+        self.export_manifest_calls: list[str] = []
+        self.export_portable_bundle_calls: list[str] = []
+        self.verify_portable_bundle_calls: list[dict] = []
         self.oauth_pending: dict[tuple[str, str], dict] = {}
 
     def remember_oauth_pending(self, *, state, user_id, flow, payload, ttl_seconds: int = 600) -> None:
@@ -268,6 +273,70 @@ class FakeStore:
             "accounts": [],
             "recommendations": [{"source": "slack", "recommendation": "promote"}],
             "caveats": [],
+        }
+
+    def integrity_digest(self, user_id: str) -> dict:
+        self.integrity_digest_calls.append(user_id)
+        return {
+            "generated_at": "2026-07-01T10:00:00Z",
+            "chain_version": "v1",
+            "genesis": "cortex:integrity:v1:genesis",
+            "chain_head": "deadbeef" * 8,
+            "event_count": 3,
+            "first_event_at": "2026-07-01T09:00:00Z",
+            "last_event_at": "2026-07-01T10:00:00Z",
+            "attested_counts": {"memories": 2, "captures": 3, "entities": 0, "tasks": 0},
+        }
+
+    def verify_integrity(self, user_id: str, expected_head: str) -> dict:
+        self.verify_integrity_calls.append((user_id, expected_head))
+        matches = expected_head == "deadbeef" * 8
+        return {
+            "generated_at": "2026-07-01T10:00:00Z",
+            "chain_version": "v1",
+            "expected_head": expected_head,
+            "actual_head": "deadbeef" * 8,
+            "matches": matches,
+            "event_count": 3,
+            "last_event_at": "2026-07-01T10:00:00Z",
+        }
+
+    def export_manifest(self, user_id: str) -> dict:
+        self.export_manifest_calls.append(user_id)
+        return {
+            "generated_at": "2026-07-01T10:00:00Z",
+            "user_id": user_id,
+            "chain_version": "v1",
+            "chain_head": "deadbeef" * 8,
+            "event_count": 3,
+            "payload_sha256": "cafe" * 16,
+            "payload_bytes": 512,
+            "record_counts": {"captures": 3, "memories": 2, "tasks": 0, "entities": 0, "edges": 0, "imports": 0},
+        }
+
+    def export_portable_bundle(self, user_id: str) -> dict:
+        self.export_portable_bundle_calls.append(user_id)
+        return {
+            "cortex_bundle_version": "v1",
+            "manifest": {
+                "user_id": user_id,
+                "chain_head": "deadbeef" * 8,
+                "payload_sha256": "cafe" * 16,
+                "record_counts": {"captures": 3, "memories": 2, "tasks": 0, "entities": 0, "edges": 0, "imports": 0},
+            },
+            "payload": {"captures": [], "memories": [], "tasks": [], "entities": [], "edges": [], "imports": []},
+        }
+
+    def verify_portable_bundle(self, bundle: dict) -> dict:
+        self.verify_portable_bundle_calls.append(bundle)
+        if not isinstance(bundle, dict) or not isinstance(bundle.get("manifest"), dict) or not isinstance(bundle.get("payload"), dict):
+            raise ValueError("A portable bundle needs both a 'manifest' object and a 'payload' object.")
+        return {
+            "generated_at": "2026-07-01T10:00:00Z",
+            "payload_matches": True,
+            "counts_match": True,
+            "verified": True,
+            "recomputed_payload_sha256": "cafe" * 16,
         }
 
     def delete_capture(self, user_id: str, capture_id: str) -> bool:
@@ -4570,6 +4639,122 @@ class StandaloneServerTests(unittest.TestCase):
                 request.urlopen(
                     request.Request(
                         self.base_url + "/v1/sources/reputation",
+                        headers={"Authorization": "Bearer cxa-standalone-token"},
+                        method="GET",
+                    ),
+                    timeout=5,
+                )
+            self.assertEqual(context.exception.code, 403)
+        finally:
+            self.fake_store.api_token_scopes = ["read"]
+
+    def test_integrity_and_portability_routes_on_shipping_server(self) -> None:
+        # Phase D: the integrity digest / manifest / verify routes are read-scoped; the portable
+        # bundle is export-scoped; verify routes reach the store and map ValueError -> 422.
+        self.fake_store.integrity_digest_calls.clear()
+        self.fake_store.export_portable_bundle_calls.clear()
+
+        # GET digest (read).
+        with request.urlopen(
+            request.Request(
+                self.base_url + "/v1/integrity/digest",
+                headers={"Authorization": "Bearer test-token"},
+                method="GET",
+            ),
+            timeout=5,
+        ) as response:
+            digest = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(digest["chain_head"], "deadbeef" * 8)
+        self.assertEqual(self.fake_store.integrity_digest_calls, ["local"])
+
+        # POST verify-integrity (read scope; carries the head in the body).
+        with request.urlopen(
+            request.Request(
+                self.base_url + "/v1/integrity/verify",
+                data=json.dumps({"expected_head": "deadbeef" * 8}).encode("utf-8"),
+                headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+                method="POST",
+            ),
+            timeout=5,
+        ) as response:
+            self.assertTrue(json.loads(response.read().decode("utf-8"))["matches"])
+        self.assertEqual(self.fake_store.verify_integrity_calls, [("local", "deadbeef" * 8)])
+
+        # Missing expected_head -> 422.
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/integrity/verify",
+                    data=json.dumps({}).encode("utf-8"),
+                    headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+                    method="POST",
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 422)
+
+        # GET manifest (read).
+        with request.urlopen(
+            request.Request(
+                self.base_url + "/v1/export/manifest",
+                headers={"Authorization": "Bearer test-token"},
+                method="GET",
+            ),
+            timeout=5,
+        ) as response:
+            self.assertEqual(json.loads(response.read().decode("utf-8"))["payload_sha256"], "cafe" * 16)
+
+        # GET bundle (export scope) then POST verify-bundle (read scope) round-trips.
+        with request.urlopen(
+            request.Request(
+                self.base_url + "/v1/export/bundle",
+                headers={"Authorization": "Bearer test-token"},
+                method="GET",
+            ),
+            timeout=5,
+        ) as response:
+            bundle = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(self.fake_store.export_portable_bundle_calls, ["local"])
+        with request.urlopen(
+            request.Request(
+                self.base_url + "/v1/export/verify",
+                data=json.dumps({"bundle": bundle}).encode("utf-8"),
+                headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+                method="POST",
+            ),
+            timeout=5,
+        ) as response:
+            self.assertTrue(json.loads(response.read().decode("utf-8"))["verified"])
+
+        # A non-object bundle -> 422.
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/export/verify",
+                    data=json.dumps({"bundle": "not-an-object"}).encode("utf-8"),
+                    headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+                    method="POST",
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 422)
+
+        # Scope discipline: a read-only scoped API token can read the digest but NOT pull the bundle.
+        self.fake_store.api_token_scopes = ["read"]
+        try:
+            with request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/integrity/digest",
+                    headers={"Authorization": "Bearer cxa-standalone-token"},
+                    method="GET",
+                ),
+                timeout=5,
+            ) as response:
+                self.assertEqual(response.status, 200)
+            with self.assertRaises(error.HTTPError) as context:
+                request.urlopen(
+                    request.Request(
+                        self.base_url + "/v1/export/bundle",
                         headers={"Authorization": "Bearer cxa-standalone-token"},
                         method="GET",
                     ),

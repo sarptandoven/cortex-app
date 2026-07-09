@@ -17930,7 +17930,7 @@ class CortexStore:
     # because storage must not import the tool layer; a parity test in
     # test_phase4_eval_harness.py asserts these sets agree with mcp_tools.READ_TOOLS /
     # WRITE_TOOLS so drift is caught at test time, not in production.
-    SCORECARD_READ_TOOL_PREFIXES = ("get_", "list_", "search_", "ask_", "resume_", "prepare_", "build_", "expand_", "use_", "would_", "draft_")
+    SCORECARD_READ_TOOL_PREFIXES = ("get_", "list_", "search_", "ask_", "resume_", "prepare_", "build_", "expand_", "use_", "would_", "draft_", "verify_")
     SCORECARD_WRITE_TOOL_PREFIXES = ("remember_", "start_", "checkpoint_", "close_", "connect_", "sync_", "approve_", "archive_", "forget_", "delete_", "submit_", "grade_", "resolve_")
 
     def _scorecard_tool_kind(self, tool_name: str) -> str:
@@ -18172,6 +18172,251 @@ class CortexStore:
             "verdict": verdict,
             "recommendation": recommendation,
             "trusted": trusted,
+        }
+
+    # ------------------------------------------------------------------
+    # Memory integrity + portability (Phase D): a tamper-evident hash chain
+    # over the append-only event log, and a lossless self-verifying export.
+    # ------------------------------------------------------------------
+
+    # The genesis link: the hash that seeds every user's chain before the first event. A fixed,
+    # non-secret constant so any independent verifier can recompute the chain from the raw events
+    # without side data. Versioned so the hashing scheme can evolve without ambiguity.
+    INTEGRITY_CHAIN_GENESIS = "cortex:integrity:v1:genesis"
+    INTEGRITY_CHAIN_VERSION = "v1"
+
+    @staticmethod
+    def _integrity_event_fingerprint(event: dict[str, Any]) -> str:
+        """The canonical per-event content hash. Covers exactly the immutable identity of an
+        event — id, object, type, metadata, timestamp — encoded as sorted-key compact UTF-8 so
+        the bytes are stable across Python/json versions (same discipline as the context pack).
+        user_id is deliberately excluded: the chain is already per user, so folding it in would be
+        redundant and would leak the id into every link."""
+        body = {
+            "id": event.get("id"),
+            "object_id": event.get("object_id"),
+            "object_type": event.get("object_type"),
+            "event_type": event.get("event_type"),
+            "metadata": event.get("metadata") if isinstance(event.get("metadata"), dict) else {},
+            "created_at": event.get("created_at"),
+        }
+        canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _integrity_link(cls, prev_hash: str, fingerprint: str) -> str:
+        """Fold one event into the chain: link_n = sha256(link_{n-1} || fingerprint_n). Any edit,
+        reorder, insertion, or deletion anywhere in the history changes every downstream link and
+        therefore the head — that is the whole tamper-evidence property."""
+        return hashlib.sha256(f"{prev_hash}:{fingerprint}".encode("utf-8")).hexdigest()
+
+    def _compute_integrity_chain(self, user_id: str) -> tuple[str, int, str | None, str | None]:
+        """Fold the user's entire event history (oldest first) into a single head hash.
+        Returns (head, event_count, first_created_at, last_created_at). Deterministic ordering is
+        essential, so ties on the second-precision created_at are broken by rowid (insertion
+        order) — the same tiebreak the reputation fold uses."""
+        head = self.INTEGRITY_CHAIN_GENESIS
+        count = 0
+        first_at: str | None = None
+        last_at: str | None = None
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, object_id, object_type, event_type, metadata_json, created_at
+                FROM memory_events
+                WHERE user_id = ?
+                ORDER BY created_at ASC, rowid ASC
+                """,
+                (user_id,),
+            ).fetchall()
+        for row in rows:
+            event = {
+                "id": row["id"],
+                "object_id": row["object_id"],
+                "object_type": row["object_type"],
+                "event_type": row["event_type"],
+                "metadata": self._json_or_empty(row["metadata_json"]),
+                "created_at": row["created_at"],
+            }
+            fingerprint = self._integrity_event_fingerprint(event)
+            head = self._integrity_link(head, fingerprint)
+            count += 1
+            if first_at is None:
+                first_at = row["created_at"]
+            last_at = row["created_at"]
+        return head, count, first_at, last_at
+
+    def integrity_digest(self, user_id: str) -> dict[str, Any]:
+        """A tamper-evident summary of the memory's whole history: the hash-chain head over the
+        append-only event log, plus the counts it attests. Two Cortex instances that agree on the
+        head agree, event-for-event, on everything that ever happened to this memory. The head is
+        cheap to recompute and cannot be forged without rewriting the entire event log.
+
+        This is a pure read-model — it never writes. It exists so an agent (or the user) can prove
+        continuity: pin the head today, recompute it tomorrow, and any silent edit to the past is
+        exposed as a changed head."""
+        head, event_count, first_at, last_at = self._compute_integrity_chain(user_id)
+        stats = self.stats(user_id)
+        return {
+            "generated_at": now_iso(),
+            "chain_version": self.INTEGRITY_CHAIN_VERSION,
+            "genesis": self.INTEGRITY_CHAIN_GENESIS,
+            "chain_head": head,
+            "event_count": event_count,
+            "first_event_at": first_at,
+            "last_event_at": last_at,
+            "attested_counts": {
+                "memories": stats.get("active_memories"),
+                "captures": stats.get("total_captures"),
+                "entities": stats.get("entities"),
+                "tasks": stats.get("open_tasks"),
+            },
+            "how_to_verify": (
+                "Recompute sha256 folding over the event log (oldest first): "
+                "link_0 = genesis, link_n = sha256(link_{n-1} + ':' + sha256(canonical(event_n))). "
+                "The final link is chain_head. A changed head means the history changed."
+            ),
+        }
+
+    def verify_integrity(self, user_id: str, expected_head: str) -> dict[str, Any]:
+        """Recompute the chain and compare against a head the caller pinned earlier. This is how
+        continuity is proven after the fact: if the recomputed head matches, not a single past
+        event was altered, reordered, inserted, or dropped; if it differs, the history moved and
+        the caller should investigate. Read-only; it makes no judgement about WHY a head changed
+        (new events legitimately advance it), only whether it matches what was expected."""
+        expected = str(expected_head or "").strip().lower()
+        head, event_count, _first_at, last_at = self._compute_integrity_chain(user_id)
+        matches = bool(expected) and hmac.compare_digest(expected, head)
+        return {
+            "generated_at": now_iso(),
+            "chain_version": self.INTEGRITY_CHAIN_VERSION,
+            "expected_head": expected or None,
+            "actual_head": head,
+            "matches": matches,
+            "event_count": event_count,
+            "last_event_at": last_at,
+            "note": (
+                "Matched: the event history is byte-identical to when the expected head was taken."
+                if matches
+                else "Mismatch: the event history changed since the expected head was taken (new "
+                "events advance the head legitimately; an unexpected change warrants a look)."
+            ),
+        }
+
+    def export_manifest(self, user_id: str) -> dict[str, Any]:
+        """A verifiable manifest for a portable export: the integrity head, the exact counts the
+        export should contain, and a content hash of the full export payload. A recipient can
+        recompute sha256 over the export bytes and check it against payload_sha256 here — the
+        export proves its own completeness and integrity without trusting the transport.
+
+        Lossless is the contract: the manifest is derived from the same export_json the user can
+        download, so what the manifest attests and what the file contains are the same bytes."""
+        digest = self.integrity_digest(user_id)
+        payload = self.export_json(user_id)
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+        payload_sha256 = hashlib.sha256(canonical).hexdigest()
+        return {
+            "generated_at": now_iso(),
+            "user_id": user_id,
+            "chain_version": self.INTEGRITY_CHAIN_VERSION,
+            "chain_head": digest["chain_head"],
+            "event_count": digest["event_count"],
+            "payload_sha256": payload_sha256,
+            "payload_bytes": len(canonical),
+            "record_counts": {
+                "captures": len(payload.get("captures") or []),
+                "memories": len(payload.get("memories") or []),
+                "tasks": len(payload.get("tasks") or []),
+                "entities": len(payload.get("entities") or []),
+                "edges": len(payload.get("edges") or []),
+                "imports": len(payload.get("imports") or []),
+            },
+            "how_to_verify": (
+                "Recompute sha256 over canonical(export_json) (sorted keys, compact separators, "
+                "ensure_ascii) and check it equals payload_sha256. Recompute the event hash chain "
+                "and check the final link equals chain_head. Both must hold for a trusted restore."
+            ),
+        }
+
+    def export_portable_bundle(self, user_id: str) -> dict[str, Any]:
+        """The whole memory as one self-verifying, restorable object: the full export payload with
+        its integrity manifest wrapped around it. Because the manifest carries payload_sha256 and
+        the chain head, this bundle can be handed to a different Cortex instance (or kept as a cold
+        archive) and verified byte-for-byte before anything is trusted or restored.
+
+        The 'explain yourself to a computer once, ever' promise only holds if the memory is
+        portable AND provably intact — this is that guarantee made concrete."""
+        payload = self.export_json(user_id)
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+        payload_sha256 = hashlib.sha256(canonical).hexdigest()
+        digest = self.integrity_digest(user_id)
+        return {
+            "cortex_bundle_version": self.INTEGRITY_CHAIN_VERSION,
+            "manifest": {
+                "generated_at": now_iso(),
+                "user_id": user_id,
+                "chain_version": self.INTEGRITY_CHAIN_VERSION,
+                "chain_head": digest["chain_head"],
+                "event_count": digest["event_count"],
+                "payload_sha256": payload_sha256,
+                "payload_bytes": len(canonical),
+                "record_counts": {
+                    "captures": len(payload.get("captures") or []),
+                    "memories": len(payload.get("memories") or []),
+                    "tasks": len(payload.get("tasks") or []),
+                    "entities": len(payload.get("entities") or []),
+                    "edges": len(payload.get("edges") or []),
+                    "imports": len(payload.get("imports") or []),
+                },
+            },
+            "payload": payload,
+            "how_to_verify": (
+                "sha256(canonical(bundle.payload)) must equal bundle.manifest.payload_sha256, "
+                "where canonical = json sorted keys, compact separators, ensure_ascii."
+            ),
+        }
+
+    def verify_portable_bundle(self, bundle: dict[str, Any]) -> dict[str, Any]:
+        """Verify a bundle produced by export_portable_bundle WITHOUT trusting its source: recompute
+        the payload hash from the embedded payload and check it against the manifest. This is the
+        receiving half of portability — before a restore, prove the bundle is internally consistent
+        and unmodified. Pure function of its argument (it does not touch the user's own store), so
+        it can check a bundle from anywhere."""
+        if not isinstance(bundle, dict):
+            raise ValueError("A portable bundle must be a JSON object.")
+        manifest = bundle.get("manifest")
+        payload = bundle.get("payload")
+        if not isinstance(manifest, dict) or not isinstance(payload, dict):
+            raise ValueError("A portable bundle needs both a 'manifest' object and a 'payload' object.")
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+        recomputed = hashlib.sha256(canonical).hexdigest()
+        claimed = str(manifest.get("payload_sha256") or "").strip().lower()
+        payload_matches = bool(claimed) and hmac.compare_digest(claimed, recomputed)
+        claimed_counts = manifest.get("record_counts") if isinstance(manifest.get("record_counts"), dict) else {}
+        actual_counts = {
+            "captures": len(payload.get("captures") or []),
+            "memories": len(payload.get("memories") or []),
+            "tasks": len(payload.get("tasks") or []),
+            "entities": len(payload.get("entities") or []),
+            "edges": len(payload.get("edges") or []),
+            "imports": len(payload.get("imports") or []),
+        }
+        counts_match = all(
+            int(claimed_counts.get(key) or 0) == actual_counts[key] for key in actual_counts
+        ) if claimed_counts else False
+        return {
+            "generated_at": now_iso(),
+            "payload_matches": payload_matches,
+            "counts_match": counts_match,
+            "verified": payload_matches and counts_match,
+            "claimed_payload_sha256": claimed or None,
+            "recomputed_payload_sha256": recomputed,
+            "record_counts": actual_counts,
+            "note": (
+                "Verified: the bundle payload is intact and its manifest counts match; safe to restore."
+                if payload_matches and counts_match
+                else "Do NOT restore: the bundle payload does not match its manifest (corrupted or modified)."
+            ),
         }
 
     def grade_answer(

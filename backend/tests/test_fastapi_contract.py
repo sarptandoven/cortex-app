@@ -1174,6 +1174,71 @@ class FastAPIContractTests(unittest.TestCase):
         )
         self.assertEqual(refused.status_code, 403)
 
+    def test_integrity_and_portability_endpoints_contract(self) -> None:
+        """Phase D REST surface: the integrity digest / verify / manifest are read-scoped (hashes
+        and counts, no content); the portable bundle is export-scoped (carries the full corpus);
+        the bundle round-trips through verify; a tampered bundle fails verification."""
+        user = "phased-rest-contract"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+        store = main_module.store
+        ids = []
+        for i in range(3):
+            saved = store.save_capture(
+                user_id=user,
+                content=f"Decision {i}: we standardized deploy cadence and the rollout policy.",
+                source="note",
+                source_url=f"note://x/{i}",
+                title=None,
+                extracted={"summary": f"Decision {i}: standardized deploy cadence."},
+                external_id=f"phd-{i}",
+            )
+            ids.append(saved["capture_id"])
+        for cid in ids[:2]:
+            store.approve_capture(user, cid)
+
+        # Integrity digest (read): a chain head over the event log.
+        digest = self.client.get("/v1/integrity/digest", headers=headers)
+        self.assertEqual(digest.status_code, 200)
+        head = digest.json()["chain_head"]
+        self.assertTrue(head)
+
+        # Verify (read, POST because it carries the head): the head matches itself.
+        verify = self.client.post("/v1/integrity/verify", json={"expected_head": head}, headers=headers)
+        self.assertEqual(verify.status_code, 200)
+        self.assertTrue(verify.json()["matches"])
+
+        # Manifest (read): attests the export payload without containing it.
+        manifest = self.client.get("/v1/export/manifest", headers=headers)
+        self.assertEqual(manifest.status_code, 200)
+        self.assertEqual(manifest.json()["chain_head"], head)
+
+        # Enable exports, then pull the portable bundle (export scope) and verify it round-trips.
+        self.client.put("/v1/settings", json={"allow_agent_exports": True}, headers=headers)
+        bundle_resp = self.client.get("/v1/export/bundle", headers=headers)
+        self.assertEqual(bundle_resp.status_code, 200)
+        bundle = bundle_resp.json()
+        verified = self.client.post("/v1/export/verify", json={"bundle": bundle}, headers=headers)
+        self.assertEqual(verified.status_code, 200)
+        self.assertTrue(verified.json()["verified"])
+
+        # A tampered bundle fails verification.
+        bundle["payload"]["memories"].append({"id": "injected", "content": "not real"})
+        tampered = self.client.post("/v1/export/verify", json={"bundle": bundle}, headers=headers)
+        self.assertEqual(tampered.status_code, 200)
+        self.assertFalse(tampered.json()["verified"])
+
+        # Scope discipline: a read-only token can read the digest but NOT pull the bundle (export).
+        ro_token = "cxa_phased_rest_ro_123456789"
+        registered = self.client.post(
+            "/v1/integrations/api-token",
+            json={"token": ro_token, "label": "phased integrity ro", "scopes": ["read"]},
+            headers=headers,
+        )
+        self.assertEqual(registered.status_code, 200)
+        ro_headers = {"Authorization": f"Bearer {ro_token}", "X-Cortex-User": user}
+        self.assertEqual(self.client.get("/v1/integrity/digest", headers=ro_headers).status_code, 200)
+        self.assertEqual(self.client.get("/v1/export/bundle", headers=ro_headers).status_code, 403)
+
     def test_retrieval_endpoints_support_source_account_and_facet_scope(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "source-scope-contract"}
 
