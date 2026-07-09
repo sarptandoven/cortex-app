@@ -37,6 +37,7 @@ from .models import UserListResponse, UserProvisionRequest, UserProvisionRespons
 from .models import CaptureChangePage, SyncIngestRequest, SyncIngestResponse
 from .models import GradeAnswerRequest, WouldIRequest, DraftAsMeRequest, GradeTwinPredictionRequest
 from .models import VerifyIntegrityRequest, VerifyBundleRequest
+from .models import WorkingCanvasNodeRequest, WorkingCanvasNodeResponse, WorkingCanvasResponse
 from .oauth_broker import register_oauth_broker_routes
 from .oidc_registry import OidcError, OidcProviderRegistry
 from .ratelimit import TokenBucketRateLimiter
@@ -251,7 +252,9 @@ def _required_api_scope(method: str, path: str) -> str:
     # Cortex custody) — export-scoped like the bulk exports, parity with the MCP tool.
     if normalized_path == "/v1/connectors/obsidian/write-back":
         return "export"
-    if normalized_path in {"/v1/context", "/v1/context-pack", "/v1/personal-profile", "/v1/agent-adaptation"}:
+    if normalized_path in {"/v1/context", "/v1/context-pack", "/v1/personal-profile", "/v1/agent-adaptation", "/v1/working-canvas"}:
+        return "read"
+    if normalized_path.startswith("/v1/working-canvas/") and normalized_method == "GET":
         return "read"
     if normalized_path == "/v1/settings" and normalized_method in {"PUT", "PATCH"}:
         return "maintenance"
@@ -2476,6 +2479,45 @@ def verify_integrity(payload: VerifyIntegrityRequest, user_id: str = Depends(aut
     """Phase D: recompute the chain and compare against a head the caller pinned earlier. Read-only;
     a POST only because it carries the expected head in the body."""
     return store.verify_integrity(user_id, payload.expected_head)
+
+
+@app.post("/v1/working-canvas/nodes", response_model=WorkingCanvasNodeResponse)
+def record_working_canvas_node(payload: WorkingCanvasNodeRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    """M3: offload raw tool evidence into a receipted symbolic working-memory canvas node."""
+    try:
+        return store.record_working_canvas_node(
+            user_id,
+            session_id=payload.session_id,
+            node_id=payload.node_id,
+            label=payload.label,
+            summary=payload.summary,
+            raw_text=payload.raw_text,
+            predecessor_node_id=payload.predecessor_node_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/v1/working-canvas", response_model=WorkingCanvasResponse)
+def get_working_canvas(session_id: str, limit: int = 80, user_id: str = Depends(auth)) -> dict[str, Any]:
+    """M3: compact Mermaid canvas for an agent session, with verifiable node receipts."""
+    try:
+        return store.get_working_canvas(user_id, session_id=session_id, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/v1/working-canvas/{session_id}/nodes/{node_id}", response_model=WorkingCanvasNodeResponse)
+def get_working_canvas_node(session_id: str, node_id: str, include_raw: bool = True, user_id: str = Depends(auth)) -> dict[str, Any]:
+    """M3: recover one node's raw evidence and verify it against its content hash. An unknown node
+    is a 404; missing or tampered evidence is a 409 (the record exists but its proof is broken,
+    which the caller must treat differently from "never existed")."""
+    try:
+        return store.get_working_canvas_node(user_id, session_id=session_id, node_id=node_id, include_raw=include_raw)
+    except ValueError as exc:
+        message = str(exc)
+        status = 404 if "not found" in message else 409
+        raise HTTPException(status_code=status, detail=message) from exc
 
 
 @app.get("/v1/export/manifest")

@@ -72,6 +72,9 @@ class FakeStore:
         self.context_pack_calls: list[tuple[str, str, int, str | None]] = []
         self.assemble_context_calls: list[dict] = []
         self.verify_context_pack_calls: list[tuple[str, str]] = []
+        self.record_working_canvas_calls: list[tuple[str, dict]] = []
+        self.get_working_canvas_calls: list[tuple[str, dict]] = []
+        self.get_working_canvas_node_calls: list[tuple[str, dict]] = []
         self.write_obsidian_pages_calls: list[tuple[str, str | None, int]] = []
         self.sync_agent_sessions_calls: list[tuple] = []
         self.source_reputation_calls: list[tuple] = []
@@ -214,6 +217,56 @@ class FakeStore:
         if pack_sha == "missing" * 8:  # 56 chars, clearly not a known sha
             raise ValueError("Unknown context pack sha for this user")
         return {"pack_sha": pack_sha, "status": "match", "verified_storage": True, "diff": {"equal": True}}
+
+    def record_working_canvas_node(self, user_id: str, **kwargs) -> dict:
+        self.record_working_canvas_calls.append((user_id, dict(kwargs)))
+        if not str(kwargs.get("raw_text") or "").strip():
+            raise ValueError("raw_text is required")
+        return {
+            "session_id": kwargs.get("session_id"),
+            "node_id": kwargs.get("node_id"),
+            "label": kwargs.get("label") or kwargs.get("node_id"),
+            "summary": kwargs.get("summary") or "raw evidence offloaded",
+            "raw_sha256": "ab" * 32,
+            "raw_bytes": len(str(kwargs.get("raw_text") or "").encode("utf-8")),
+            "receipt_event_id": "evt-canvas-1",
+            "predecessor_node_id": kwargs.get("predecessor_node_id"),
+            "verified": True,
+        }
+
+    def get_working_canvas(self, user_id: str, **kwargs) -> dict:
+        self.get_working_canvas_calls.append((user_id, dict(kwargs)))
+        if not str(kwargs.get("session_id") or "").strip():
+            raise ValueError("session_id is required")
+        return {
+            "session_id": kwargs.get("session_id"),
+            "node_count": 1,
+            "nodes": [{"node_id": "step_1", "receipt_event_id": "evt-canvas-1"}],
+            "canvas": 'flowchart TD\n  step_1["Grep the repo"]',
+            "contract": {"drill_down": "get_working_canvas_node"},
+        }
+
+    def get_working_canvas_node(self, user_id: str, **kwargs) -> dict:
+        self.get_working_canvas_node_calls.append((user_id, dict(kwargs)))
+        node_id = str(kwargs.get("node_id") or "")
+        if node_id == "never-recorded":
+            raise ValueError("working canvas node not found")
+        if node_id == "tampered":
+            raise ValueError("working canvas evidence hash mismatch")
+        result = {
+            "session_id": kwargs.get("session_id"),
+            "node_id": node_id,
+            "label": node_id,
+            "summary": "raw evidence offloaded",
+            "raw_sha256": "ab" * 32,
+            "raw_bytes": 9,
+            "receipt_event_id": "evt-canvas-1",
+            "predecessor_node_id": None,
+            "verified": True,
+        }
+        if kwargs.get("include_raw", True):
+            result["raw_text"] = "raw bytes"
+        return result
 
     def write_obsidian_pages(self, user_id: str, *, vault_path: str | None = None, people_limit: int = 10) -> dict:
         self.write_obsidian_pages_calls.append((user_id, vault_path, people_limit))
@@ -4757,6 +4810,136 @@ class StandaloneServerTests(unittest.TestCase):
                         self.base_url + "/v1/export/bundle",
                         headers={"Authorization": "Bearer cxa-standalone-token"},
                         method="GET",
+                    ),
+                    timeout=5,
+                )
+            self.assertEqual(context.exception.code, 403)
+        finally:
+            self.fake_store.api_token_scopes = ["read"]
+
+    def test_working_canvas_routes_on_shipping_server(self) -> None:
+        # M3 REST surface on the SHIPPING server: record (write) -> canvas (read) -> drill-down
+        # (read); unknown node -> 404; tampered evidence -> 409; empty raw_text -> 422; a
+        # read-only scoped token can read the canvas but NOT record onto it.
+        self.fake_store.record_working_canvas_calls.clear()
+        self.fake_store.get_working_canvas_calls.clear()
+        self.fake_store.get_working_canvas_node_calls.clear()
+
+        with request.urlopen(
+            request.Request(
+                self.base_url + "/v1/working-canvas/nodes",
+                data=json.dumps({
+                    "session_id": "sa-sess",
+                    "node_id": "step-1",
+                    "label": "Grep the repo",
+                    "raw_text": "verbose stdout",
+                }).encode("utf-8"),
+                headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+                method="POST",
+            ),
+            timeout=5,
+        ) as response:
+            recorded = json.loads(response.read().decode("utf-8"))
+        self.assertTrue(recorded["verified"])
+        self.assertEqual(recorded["receipt_event_id"], "evt-canvas-1")
+        self.assertEqual(len(self.fake_store.record_working_canvas_calls), 1)
+        self.assertEqual(self.fake_store.record_working_canvas_calls[0][1]["session_id"], "sa-sess")
+
+        with request.urlopen(
+            request.Request(
+                self.base_url + "/v1/working-canvas?session_id=sa-sess",
+                headers={"Authorization": "Bearer test-token"},
+                method="GET",
+            ),
+            timeout=5,
+        ) as response:
+            canvas = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(canvas["node_count"], 1)
+        self.assertIn("flowchart TD", canvas["canvas"])
+
+        with request.urlopen(
+            request.Request(
+                self.base_url + "/v1/working-canvas/sa-sess/nodes/step-1",
+                headers={"Authorization": "Bearer test-token"},
+                method="GET",
+            ),
+            timeout=5,
+        ) as response:
+            node = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(node["raw_text"], "raw bytes")
+        self.assertEqual(
+            self.fake_store.get_working_canvas_node_calls[-1][1],
+            {"session_id": "sa-sess", "node_id": "step-1", "include_raw": True},
+        )
+
+        # include_raw=false is honored.
+        with request.urlopen(
+            request.Request(
+                self.base_url + "/v1/working-canvas/sa-sess/nodes/step-1?include_raw=false",
+                headers={"Authorization": "Bearer test-token"},
+                method="GET",
+            ),
+            timeout=5,
+        ) as response:
+            no_raw = json.loads(response.read().decode("utf-8"))
+        self.assertNotIn("raw_text", no_raw)
+
+        # Unknown node -> 404.
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/working-canvas/sa-sess/nodes/never-recorded",
+                    headers={"Authorization": "Bearer test-token"},
+                    method="GET",
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 404)
+
+        # Tampered/missing evidence -> 409 (exists but its proof is broken).
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/working-canvas/sa-sess/nodes/tampered",
+                    headers={"Authorization": "Bearer test-token"},
+                    method="GET",
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 409)
+
+        # Empty raw_text -> 422.
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/working-canvas/nodes",
+                    data=json.dumps({"session_id": "sa-sess", "node_id": "bad", "raw_text": "  "}).encode("utf-8"),
+                    headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+                    method="POST",
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 422)
+
+        # Scope discipline: a read-only scoped token reads the canvas but cannot record.
+        self.fake_store.api_token_scopes = ["read"]
+        try:
+            with request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/working-canvas?session_id=sa-sess",
+                    headers={"Authorization": "Bearer cxa-standalone-token"},
+                    method="GET",
+                ),
+                timeout=5,
+            ) as response:
+                self.assertEqual(response.status, 200)
+            with self.assertRaises(error.HTTPError) as context:
+                request.urlopen(
+                    request.Request(
+                        self.base_url + "/v1/working-canvas/nodes",
+                        data=json.dumps({"session_id": "sa-sess", "node_id": "x", "raw_text": "y"}).encode("utf-8"),
+                        headers={"Authorization": "Bearer cxa-standalone-token", "Content-Type": "application/json"},
+                        method="POST",
                     ),
                     timeout=5,
                 )

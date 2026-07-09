@@ -360,6 +360,21 @@ CREATE TABLE IF NOT EXISTS context_packs (
   PRIMARY KEY(user_id, pack_sha)
 );
 
+CREATE TABLE IF NOT EXISTS working_canvas_nodes (
+  user_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  raw_sha256 TEXT NOT NULL,
+  raw_bytes INTEGER NOT NULL,
+  receipt_event_id TEXT NOT NULL,
+  predecessor_node_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(user_id, session_id, node_id)
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
   memory_id UNINDEXED,
   content,
@@ -466,6 +481,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_author_class ON memories(user_id, author
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_user_status ON agent_sessions(user_id, status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_context_packs_user_created ON context_packs(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_context_packs_session ON context_packs(user_id, session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_working_canvas_session ON working_canvas_nodes(user_id, session_id, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS oauth_pending (
   state TEXT PRIMARY KEY,

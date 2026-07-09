@@ -1239,6 +1239,101 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(self.client.get("/v1/integrity/digest", headers=ro_headers).status_code, 200)
         self.assertEqual(self.client.get("/v1/export/bundle", headers=ro_headers).status_code, 403)
 
+    def test_working_canvas_endpoints_contract(self) -> None:
+        """M3 REST surface: recording a node is write-scoped and returns the receipt (never the
+        raw text); the canvas read is compact Mermaid; the drill-down read recovers verified raw
+        evidence; unknown nodes are 404; a read-only token can read but not record."""
+        user = "canvas-rest-contract"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+        raw = "verbose tool stdout worth offloading " * 40
+
+        recorded = self.client.post(
+            "/v1/working-canvas/nodes",
+            json={
+                "session_id": "rest-sess",
+                "node_id": "step-1",
+                "label": "Grep the repo",
+                "summary": "Found the handler in storage.py",
+                "raw_text": raw,
+            },
+            headers=headers,
+        )
+        self.assertEqual(recorded.status_code, 200)
+        node = recorded.json()
+        self.assertTrue(node["verified"])
+        self.assertIsNone(node["raw_text"])
+        self.assertTrue(node["receipt_event_id"])
+
+        follow_up = self.client.post(
+            "/v1/working-canvas/nodes",
+            json={
+                "session_id": "rest-sess",
+                "node_id": "step-2",
+                "label": "Patch the handler",
+                "raw_text": "diff applied cleanly",
+                "predecessor_node_id": "step-1",
+            },
+            headers=headers,
+        )
+        self.assertEqual(follow_up.status_code, 200)
+
+        canvas = self.client.get(
+            "/v1/working-canvas", params={"session_id": "rest-sess"}, headers=headers
+        )
+        self.assertEqual(canvas.status_code, 200)
+        body = canvas.json()
+        self.assertEqual(body["node_count"], 2)
+        self.assertIn("flowchart TD", body["canvas"])
+        self.assertIn("step_1 --> step_2", body["canvas"])
+        self.assertNotIn(raw, body["canvas"])
+
+        drill = self.client.get(
+            "/v1/working-canvas/rest-sess/nodes/step-1", headers=headers
+        )
+        self.assertEqual(drill.status_code, 200)
+        self.assertEqual(drill.json()["raw_text"], raw)
+        self.assertTrue(drill.json()["verified"])
+
+        missing = self.client.get(
+            "/v1/working-canvas/rest-sess/nodes/never-recorded", headers=headers
+        )
+        self.assertEqual(missing.status_code, 404)
+
+        empty = self.client.post(
+            "/v1/working-canvas/nodes",
+            json={"session_id": "rest-sess", "node_id": "bad", "raw_text": "   "},
+            headers=headers,
+        )
+        self.assertEqual(empty.status_code, 422)
+
+        # Scope discipline: read-only tokens can read the canvas but not record onto it.
+        ro_token = "cxa_canvas_rest_ro_123456789"
+        registered = self.client.post(
+            "/v1/integrations/api-token",
+            json={"token": ro_token, "label": "canvas ro", "scopes": ["read"]},
+            headers=headers,
+        )
+        self.assertEqual(registered.status_code, 200)
+        ro_headers = {"Authorization": f"Bearer {ro_token}", "X-Cortex-User": user}
+        self.assertEqual(
+            self.client.get(
+                "/v1/working-canvas", params={"session_id": "rest-sess"}, headers=ro_headers
+            ).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.get(
+                "/v1/working-canvas/rest-sess/nodes/step-1", headers=ro_headers
+            ).status_code,
+            200,
+        )
+        denied = self.client.post(
+            "/v1/working-canvas/nodes",
+            json={"session_id": "rest-sess", "node_id": "step-3", "raw_text": "nope"},
+            headers=ro_headers,
+        )
+        self.assertEqual(denied.status_code, 403)
+
     def test_retrieval_endpoints_support_source_account_and_facet_scope(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "source-scope-contract"}
 

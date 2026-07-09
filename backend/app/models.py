@@ -257,6 +257,36 @@ class VerifyBundleRequest(BaseModel):
     bundle: dict[str, Any]
 
 
+class WorkingCanvasNodeRequest(BaseModel):
+    session_id: str = Field(..., min_length=1, max_length=120)
+    node_id: str = Field(..., min_length=1, max_length=120)
+    raw_text: str = Field(..., min_length=1, max_length=200_000)
+    label: str = Field(default="", max_length=120)
+    summary: str = Field(default="", max_length=500)
+    predecessor_node_id: str | None = Field(default=None, max_length=120)
+
+
+class WorkingCanvasNodeResponse(BaseModel):
+    session_id: str
+    node_id: str
+    label: str
+    summary: str
+    raw_sha256: str
+    raw_bytes: int
+    receipt_event_id: str
+    predecessor_node_id: str | None = None
+    verified: bool
+    raw_text: str | None = None
+
+
+class WorkingCanvasResponse(BaseModel):
+    session_id: str
+    node_count: int
+    nodes: list[dict[str, Any]]
+    canvas: str
+    contract: dict[str, Any]
+
+
 class GitHubSyncRequest(BaseModel):
     token: str = Field(..., min_length=1, max_length=4000)
     repositories: list[str] = Field(..., min_length=1, max_length=25)

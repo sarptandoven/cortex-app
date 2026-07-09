@@ -16571,7 +16571,28 @@ class CortexStore:
                 "sync_receipts": conn.execute("SELECT COUNT(*) FROM sync_receipts WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "memory_jobs": conn.execute("SELECT COUNT(*) FROM memory_jobs WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "capture_processing_state": conn.execute("SELECT COUNT(*) FROM capture_processing_state WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "working_canvas_nodes": conn.execute("SELECT COUNT(*) FROM working_canvas_nodes WHERE user_id = ?", (user_id,)).fetchone()[0],
             }
+            # M3: raw canvas evidence is user data and must not survive "delete my data". The
+            # vault files are content-addressed (not user-scoped), so only delete blobs no OTHER
+            # tenant still references — same tenant-safety rule as the attachments sweep.
+            own_shas = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT DISTINCT raw_sha256 FROM working_canvas_nodes WHERE user_id = ?", (user_id,)
+                ).fetchall()
+            }
+            shared_shas = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT DISTINCT raw_sha256 FROM working_canvas_nodes WHERE user_id != ?", (user_id,)
+                ).fetchall()
+            }
+            for sha in sorted(own_shas - shared_shas):
+                try:
+                    self.vault.working_canvas_evidence_path(sha).unlink(missing_ok=True)
+                except OSError:
+                    pass
             self._clear_user_vectors(conn, user_id)
             conn.execute("DELETE FROM memory_fts WHERE memory_id IN (SELECT id FROM memories WHERE user_id = ?)", (user_id,))
             conn.execute("DELETE FROM memory_entities WHERE user_id = ?", (user_id,))
@@ -16591,6 +16612,7 @@ class CortexStore:
             conn.execute("DELETE FROM import_records WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM import_sessions WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM capture_processing_state WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM working_canvas_nodes WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM authorship_signatures WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM captures WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM memory_events WHERE user_id = ?", (user_id,))
@@ -18048,7 +18070,7 @@ class CortexStore:
     # test_phase4_eval_harness.py asserts these sets agree with mcp_tools.READ_TOOLS /
     # WRITE_TOOLS so drift is caught at test time, not in production.
     SCORECARD_READ_TOOL_PREFIXES = ("get_", "list_", "search_", "ask_", "resume_", "prepare_", "build_", "expand_", "use_", "would_", "draft_", "verify_")
-    SCORECARD_WRITE_TOOL_PREFIXES = ("remember_", "start_", "checkpoint_", "close_", "connect_", "sync_", "approve_", "archive_", "forget_", "delete_", "submit_", "grade_", "resolve_")
+    SCORECARD_WRITE_TOOL_PREFIXES = ("remember_", "start_", "checkpoint_", "close_", "connect_", "sync_", "approve_", "archive_", "forget_", "delete_", "submit_", "grade_", "resolve_", "record_")
 
     def _scorecard_tool_kind(self, tool_name: str) -> str:
         name = str(tool_name or "")
@@ -18394,6 +18416,169 @@ class CortexStore:
                 "The final link is chain_head. A changed head means the history changed."
             ),
         }
+
+    @staticmethod
+    def _canvas_node_id(value: str) -> str:
+        raw = re.sub(r"[^A-Za-z0-9_]+", "_", str(value or "").strip())[:48].strip("_")
+        return raw or "node"
+
+    @staticmethod
+    def _canvas_label(value: str, fallback: str = "tool result") -> str:
+        text = " ".join(str(value or fallback).split())[:80]
+        return text.replace('"', "'") or fallback
+
+    @staticmethod
+    def _canvas_summary(value: str, fallback: str = "raw evidence offloaded") -> str:
+        text = " ".join(str(value or "").split())
+        return (text[:220] + "…") if len(text) > 220 else (text or fallback)
+
+    def record_working_canvas_node(
+        self,
+        user_id: str,
+        *,
+        session_id: str,
+        node_id: str,
+        raw_text: str,
+        label: str = "",
+        summary: str = "",
+        predecessor_node_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Offload one verbose tool result into a receipted working-memory canvas node.
+
+        The compact canvas gets only node_id/label/summary. The full raw evidence is stored as
+        content-addressed vault bytes and the append-only event log records the receipt, making the
+        drill-down auditable instead of a plain file pointer.
+        """
+        session_key = str(session_id or "").strip()
+        if not session_key:
+            raise ValueError("session_id is required")
+        node_key = self._canvas_node_id(node_id)
+        raw = str(raw_text or "")
+        if not raw.strip():
+            raise ValueError("raw_text is required")
+        raw_bytes = raw.encode("utf-8")
+        raw_sha = hashlib.sha256(raw_bytes).hexdigest()
+        self.vault.write_working_canvas_evidence(raw_sha, raw_bytes)
+        now = now_iso()
+        with connect(self.db_path) as conn:
+            existing = conn.execute(
+                "SELECT created_at FROM working_canvas_nodes WHERE user_id = ? AND session_id = ? AND node_id = ?",
+                (user_id, session_key, node_key),
+            ).fetchone()
+            event = self._event(
+                conn,
+                user_id,
+                f"{session_key}:{node_key}",
+                "working_canvas_node",
+                "receipted",
+                {
+                    "session_id": session_key,
+                    "node_id": node_key,
+                    "raw_sha256": raw_sha,
+                    "raw_bytes": len(raw_bytes),
+                    "predecessor_node_id": predecessor_node_id,
+                },
+            )
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO working_canvas_nodes(
+                  user_id, session_id, node_id, label, summary, raw_sha256, raw_bytes,
+                  receipt_event_id, predecessor_node_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    session_key,
+                    node_key,
+                    self._canvas_label(label or node_key),
+                    self._canvas_summary(summary or raw),
+                    raw_sha,
+                    len(raw_bytes),
+                    event["id"],
+                    self._canvas_node_id(predecessor_node_id) if predecessor_node_id else None,
+                    existing["created_at"] if existing else now,
+                    now,
+                ),
+            )
+        return self.get_working_canvas_node(user_id, session_id=session_key, node_id=node_key, include_raw=False)
+
+    def _working_canvas_rows(self, user_id: str, session_id: str, limit: int = 80) -> list[Any]:
+        with connect(self.db_path) as conn:
+            return conn.execute(
+                """
+                SELECT * FROM working_canvas_nodes
+                WHERE user_id = ? AND session_id = ?
+                ORDER BY created_at ASC, node_id ASC
+                LIMIT ?
+                """,
+                (user_id, str(session_id or "").strip(), max(1, min(int(limit or 80), 200))),
+            ).fetchall()
+
+    def get_working_canvas(self, user_id: str, *, session_id: str, limit: int = 80) -> dict[str, Any]:
+        session_key = str(session_id or "").strip()
+        if not session_key:
+            raise ValueError("session_id is required")
+        rows = self._working_canvas_rows(user_id, session_key, limit)
+        nodes: list[dict[str, Any]] = []
+        lines = ["flowchart TD"]
+        for row in rows:
+            node = {
+                "node_id": row["node_id"],
+                "label": row["label"],
+                "summary": row["summary"],
+                "raw_sha256": row["raw_sha256"],
+                "raw_bytes": row["raw_bytes"],
+                "receipt_event_id": row["receipt_event_id"],
+                "predecessor_node_id": row["predecessor_node_id"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+            nodes.append(node)
+            lines.append(f'  {row["node_id"]}["{self._canvas_label(row["label"])}"]')
+            if row["predecessor_node_id"]:
+                lines.append(f'  {row["predecessor_node_id"]} --> {row["node_id"]}')
+        return {
+            "session_id": session_key,
+            "node_count": len(nodes),
+            "nodes": nodes,
+            "canvas": "\n".join(lines),
+            "contract": {
+                "in_context": "Use the compact Mermaid canvas plus node summaries.",
+                "drill_down": "Call get_working_canvas_node with a node_id to recover raw evidence.",
+                "integrity": "Each node points at content-addressed raw evidence and an append-only receipt_event_id.",
+            },
+        }
+
+    def get_working_canvas_node(self, user_id: str, *, session_id: str, node_id: str, include_raw: bool = True) -> dict[str, Any]:
+        session_key = str(session_id or "").strip()
+        node_key = self._canvas_node_id(node_id)
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM working_canvas_nodes WHERE user_id = ? AND session_id = ? AND node_id = ?",
+                (user_id, session_key, node_key),
+            ).fetchone()
+        if row is None:
+            raise ValueError("working canvas node not found")
+        raw = self.vault.read_working_canvas_evidence(row["raw_sha256"])
+        if raw is None:
+            raise ValueError("working canvas evidence missing")
+        actual_sha = hashlib.sha256(raw).hexdigest()
+        if not hmac.compare_digest(actual_sha, row["raw_sha256"]):
+            raise ValueError("working canvas evidence hash mismatch")
+        result = {
+            "session_id": session_key,
+            "node_id": row["node_id"],
+            "label": row["label"],
+            "summary": row["summary"],
+            "raw_sha256": row["raw_sha256"],
+            "raw_bytes": row["raw_bytes"],
+            "receipt_event_id": row["receipt_event_id"],
+            "predecessor_node_id": row["predecessor_node_id"],
+            "verified": True,
+        }
+        if include_raw:
+            result["raw_text"] = raw.decode("utf-8")
+        return result
 
     def verify_integrity(self, user_id: str, expected_head: str) -> dict[str, Any]:
         """Recompute the chain and compare against a head the caller pinned earlier. This is how

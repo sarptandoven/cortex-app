@@ -354,6 +354,27 @@ class CortexVault:
         except FileNotFoundError:
             return None
 
+    def working_canvas_evidence_path(self, raw_sha256: str) -> Path:
+        """Content-addressed raw evidence for symbolic working-memory canvas nodes."""
+        sha = safe_segment(str(raw_sha256 or ""), "evidence")
+        return self.root / "working_canvas" / "evidence" / sha[:2] / f"{sha}.txt"
+
+    def write_working_canvas_evidence(self, raw_sha256: str, raw_bytes: bytes) -> Path:
+        path = self.working_canvas_evidence_path(raw_sha256)
+        if path.exists():
+            return path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(path.name + ".tmp")
+        temp.write_bytes(raw_bytes)
+        temp.replace(path)
+        return path
+
+    def read_working_canvas_evidence(self, raw_sha256: str) -> bytes | None:
+        try:
+            return self.working_canvas_evidence_path(raw_sha256).read_bytes()
+        except FileNotFoundError:
+            return None
+
     def write_source_account(self, record: dict[str, Any]) -> Path:
         user_id = safe_segment(record.get("user_id"), "unknown")
         source = safe_segment(record.get("source"), "source")

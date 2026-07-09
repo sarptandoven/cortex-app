@@ -156,7 +156,9 @@ def _required_api_scope(method: str, path: str) -> str:
         return "read"
     if normalized_path == "/v1/delivery/send":
         return "export"
-    if normalized_path in {"/v1/context", "/v1/context-pack", "/v1/personal-profile", "/v1/profile", "/v1/person-map", "/v1/agent-adaptation"}:
+    if normalized_path in {"/v1/context", "/v1/context-pack", "/v1/personal-profile", "/v1/profile", "/v1/person-map", "/v1/agent-adaptation", "/v1/working-canvas"}:
+        return "read"
+    if normalized_path.startswith("/v1/working-canvas/") and normalized_method == "GET":
         return "read"
     if normalized_path == "/v1/settings" and normalized_method in {"PUT", "PATCH"}:
         return "maintenance"
@@ -2263,6 +2265,52 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.FORBIDDEN)
                 except ValueError as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.NOT_FOUND)
+                return
+            if method == "POST" and path == "/v1/working-canvas/nodes":
+                # M3: offload raw tool evidence into a receipted symbolic working-memory canvas
+                # node (write scope, parity with the record_working_canvas_node MCP tool).
+                body = self._json_body()
+                try:
+                    self._send_json(store.record_working_canvas_node(
+                        user_id,
+                        session_id=str(body.get("session_id") or "")[:120],
+                        node_id=str(body.get("node_id") or "")[:120],
+                        label=str(body.get("label") or "")[:120],
+                        summary=str(body.get("summary") or "")[:500],
+                        raw_text=str(body.get("raw_text") or "")[:200_000],
+                        predecessor_node_id=(str(body.get("predecessor_node_id") or "")[:120] or None),
+                    ))
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "GET" and path == "/v1/working-canvas":
+                # M3: compact Mermaid canvas for an agent session, with verifiable node receipts.
+                try:
+                    self._send_json(store.get_working_canvas(
+                        user_id,
+                        session_id=(params.get("session_id") or [""])[0],
+                        limit=_int_param(params, "limit", 80, 1, 200),
+                    ))
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "GET" and path.startswith("/v1/working-canvas/") and "/nodes/" in path:
+                # M3 drill-down: unknown node -> 404; missing/tampered evidence -> 409 (the record
+                # exists but its proof is broken, which callers must treat differently).
+                remainder = path.removeprefix("/v1/working-canvas/")
+                session_part, _, node_part = remainder.partition("/nodes/")
+                include_raw = ((params.get("include_raw") or ["true"])[0] or "true").strip().lower() in {"1", "true", "yes"}
+                try:
+                    self._send_json(store.get_working_canvas_node(
+                        user_id,
+                        session_id=unquote(session_part),
+                        node_id=unquote(node_part),
+                        include_raw=include_raw,
+                    ))
+                except (TypeError, ValueError) as exc:
+                    message = str(exc)
+                    status = HTTPStatus.NOT_FOUND if "not found" in message else HTTPStatus.CONFLICT
+                    self._send_json({"detail": message}, status=status)
                 return
             if method == "GET" and path == "/v1/personal-profile":
                 query = (params.get("query") or [""])[0]

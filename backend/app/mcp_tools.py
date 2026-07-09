@@ -548,6 +548,32 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "default": ""}, "limit": {"type": "integer", "default": 12}, "target": {"type": "string", "default": "mcp-agent"}, "sector": {"type": "string"}}},
     },
     {
+        "name": "record_working_canvas_node",
+        "description": "Offload a verbose tool result into a compact symbolic working-memory canvas node backed by content-addressed raw evidence and an append-only receipt.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+                "node_id": {"type": "string"},
+                "label": {"type": "string"},
+                "summary": {"type": "string"},
+                "raw_text": {"type": "string"},
+                "predecessor_node_id": {"type": "string"},
+            },
+            "required": ["session_id", "node_id", "raw_text"],
+        },
+    },
+    {
+        "name": "get_working_canvas",
+        "description": "Return the compact Mermaid working-memory canvas for an agent session, with node receipts for verifiable drill-down.",
+        "inputSchema": {"type": "object", "properties": {"session_id": {"type": "string"}, "limit": {"type": "integer", "default": 80}}, "required": ["session_id"]},
+    },
+    {
+        "name": "get_working_canvas_node",
+        "description": "Recover and verify the raw evidence behind one symbolic working-memory canvas node.",
+        "inputSchema": {"type": "object", "properties": {"session_id": {"type": "string"}, "node_id": {"type": "string"}, "include_raw": {"type": "boolean", "default": True}}, "required": ["session_id", "node_id"]},
+    },
+    {
         "name": "get_decisions",
         "description": "Search decisions in Cortex memory.",
         "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "default": "decision"}, "sector": {"type": "string"}}},
@@ -1189,6 +1215,8 @@ READ_TOOLS = {
     "get_person_map",
     "get_agent_adaptation",
     "build_context_pack",
+    "get_working_canvas",
+    "get_working_canvas_node",
 }
 REVIEW_TOOLS = {
     "get_daily_review",
@@ -1196,6 +1224,7 @@ REVIEW_TOOLS = {
 }
 WRITE_TOOLS = {
     "remember_this",
+    "record_working_canvas_node",
     # Grading writes an answer_graded audit event (roadmap: submit_answer_for_grading is write scope).
     "submit_answer_for_grading",
     # Recording a prediction outcome is a durable write to the accuracy ledger (Phase 5.4).
@@ -1331,6 +1360,9 @@ _TOOL_TITLE_OVERRIDES: dict[str, str] = {
     "get_proactive_alerts": "Proactive Alerts",
     "resolve_proactive_alert": "Resolve Proactive Alert",
     "write_obsidian_pages": "Write Obsidian Pages",
+    "record_working_canvas_node": "Record Working Canvas Node",
+    "get_working_canvas": "Get Working Canvas",
+    "get_working_canvas_node": "Get Working Canvas Node",
 }
 
 
@@ -2806,6 +2838,33 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         value = store.context_pack(user_id, query, _bounded_int_arg(args, "limit", 12), sector=args.get("sector"))
         store.record_context_reuse(user_id, surface="mcp", query=query, target=_text_arg(args, "target", "mcp-agent", max_chars=MCP_NAME_MAX_CHARS))
         return value
+    if name == "record_working_canvas_node":
+        result = store.record_working_canvas_node(
+            user_id,
+            session_id=_text_arg(args, "session_id", "", max_chars=120),
+            node_id=_text_arg(args, "node_id", "", max_chars=120),
+            label=_text_arg(args, "label", "", max_chars=120),
+            summary=_text_arg(args, "summary", "", max_chars=500),
+            raw_text=_text_arg(args, "raw_text", "", max_chars=200000),
+            predecessor_node_id=_text_arg(args, "predecessor_node_id", "", max_chars=120) or None,
+        )
+        return store.agent_payload(user_id, result)
+    if name == "get_working_canvas":
+        result = store.get_working_canvas(
+            user_id,
+            session_id=_text_arg(args, "session_id", "", max_chars=120),
+            limit=_bounded_int_arg(args, "limit", 80, maximum=200),
+        )
+        store.record_context_reuse(user_id, surface="mcp", query=result["session_id"], target="working-canvas")
+        return store.agent_payload(user_id, result)
+    if name == "get_working_canvas_node":
+        result = store.get_working_canvas_node(
+            user_id,
+            session_id=_text_arg(args, "session_id", "", max_chars=120),
+            node_id=_text_arg(args, "node_id", "", max_chars=120),
+            include_raw=_bool_arg(args, "include_raw", True),
+        )
+        return store.agent_payload(user_id, result)
     if name == "get_decisions":
         return store.agent_payload(user_id, store.search(user_id, _text_arg(args, "query", "decision"), _bounded_int_arg(args, "top_k", 10), kind="decision", sector=args.get("sector")))
     if name == "get_decision_history":
