@@ -108,6 +108,41 @@ class WorkingCanvasTests(unittest.TestCase):
         node = self._call("get_working_canvas_node", {"session_id": "sess-6", "node_id": "tool-1"})
         self.assertEqual(node["raw_text"], "raw mcp payload")
 
+    def test_max_chars_budget_elides_oldest_but_keeps_drilldown(self) -> None:
+        # The Tencent mmdMaxTokenRatio analog: a tight budget elides the OLDEST
+        # nodes from the rendering (storage untouched), keeps an elision marker,
+        # and every elided node still drills down byte-exact.
+        for i in range(6):
+            self.store.record_working_canvas_node(
+                self.user_id,
+                session_id="sess-8",
+                node_id=f"step-{i}",
+                label=f"A long descriptive label for tool step number {i}",
+                raw_text=f"raw evidence for step {i}",
+                predecessor_node_id=f"step-{i-1}" if i else None,
+            )
+        full = self.store.get_working_canvas(self.user_id, session_id="sess-8")
+        self.assertEqual(full["visible_count"], 6)
+        self.assertNotIn("elided_node_ids", full)
+
+        budget = len(full["canvas"]) // 2
+        capped = self.store.get_working_canvas(self.user_id, session_id="sess-8", max_chars=budget)
+        self.assertLessEqual(len(capped["canvas"]), budget)
+        self.assertEqual(capped["node_count"], 6)
+        self.assertLess(capped["visible_count"], 6)
+        self.assertIn("_elided", capped["canvas"])
+        # Oldest elide first; the newest node always survives.
+        self.assertIn("step_0", capped["elided_node_ids"])
+        self.assertIn('step_5["', capped["canvas"])
+        # Elided nodes remain fully recoverable.
+        recovered = self.store.get_working_canvas_node(self.user_id, session_id="sess-8", node_id="step-0")
+        self.assertEqual(recovered["raw_text"], "raw evidence for step 0")
+
+        # A budget smaller than one node still renders the newest node (never empty).
+        tiny = self.store.get_working_canvas(self.user_id, session_id="sess-8", max_chars=10)
+        self.assertEqual(tiny["visible_count"], 1)
+        self.assertIn("step_5", tiny["canvas"])
+
     def test_delete_user_data_removes_canvas_rows_and_unshared_evidence(self) -> None:
         # "Delete my data" must take canvas rows AND their raw evidence blobs with it,
         # but never a blob another tenant still references (content-addressed = shared).

@@ -2499,10 +2499,11 @@ def record_working_canvas_node(payload: WorkingCanvasNodeRequest, user_id: str =
 
 
 @app.get("/v1/working-canvas", response_model=WorkingCanvasResponse)
-def get_working_canvas(session_id: str, limit: int = 80, user_id: str = Depends(auth)) -> dict[str, Any]:
-    """M3: compact Mermaid canvas for an agent session, with verifiable node receipts."""
+def get_working_canvas(session_id: str, limit: int = 80, max_chars: int = 0, user_id: str = Depends(auth)) -> dict[str, Any]:
+    """M3: compact Mermaid canvas for an agent session, with verifiable node receipts. max_chars
+    caps the rendered canvas (oldest nodes elide first; they stay drill-downable by node_id)."""
     try:
-        return store.get_working_canvas(user_id, session_id=session_id, limit=limit)
+        return store.get_working_canvas(user_id, session_id=session_id, limit=limit, max_chars=max_chars)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

@@ -282,9 +282,11 @@ class WorkingCanvasNodeResponse(BaseModel):
 class WorkingCanvasResponse(BaseModel):
     session_id: str
     node_count: int
+    visible_count: int
     nodes: list[dict[str, Any]]
     canvas: str
     contract: dict[str, Any]
+    elided_node_ids: list[str] | None = None
 
 
 class GitHubSyncRequest(BaseModel):

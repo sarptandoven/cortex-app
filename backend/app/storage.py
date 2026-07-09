@@ -18514,15 +18514,19 @@ class CortexStore:
                 (user_id, str(session_id or "").strip(), max(1, min(int(limit or 80), 200))),
             ).fetchall()
 
-    def get_working_canvas(self, user_id: str, *, session_id: str, limit: int = 80) -> dict[str, Any]:
+    def get_working_canvas(self, user_id: str, *, session_id: str, limit: int = 80, max_chars: int = 0) -> dict[str, Any]:
+        """The compact in-context canvas. max_chars is the Tencent mmdMaxTokenRatio analog:
+        when the rendered canvas would exceed the budget, the OLDEST nodes are elided from the
+        rendering (never from storage - drill-down by node_id still recovers them verbatim) and
+        a marker node keeps them discoverable. At least the newest node always renders, so a
+        budget smaller than one node line is exceeded rather than returning an empty canvas."""
         session_key = str(session_id or "").strip()
         if not session_key:
             raise ValueError("session_id is required")
         rows = self._working_canvas_rows(user_id, session_key, limit)
         nodes: list[dict[str, Any]] = []
-        lines = ["flowchart TD"]
         for row in rows:
-            node = {
+            nodes.append({
                 "node_id": row["node_id"],
                 "label": row["label"],
                 "summary": row["summary"],
@@ -18532,22 +18536,48 @@ class CortexStore:
                 "predecessor_node_id": row["predecessor_node_id"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
-            }
-            nodes.append(node)
-            lines.append(f'  {row["node_id"]}["{self._canvas_label(row["label"])}"]')
-            if row["predecessor_node_id"]:
-                lines.append(f'  {row["predecessor_node_id"]} --> {row["node_id"]}')
-        return {
+            })
+
+        def render(visible: list[dict[str, Any]], elided_count: int) -> str:
+            lines = ["flowchart TD"]
+            visible_ids = {n["node_id"] for n in visible}
+            if elided_count:
+                lines.append(f'  _elided["... {elided_count} earlier steps elided (drill down by node_id)"]')
+                if visible:
+                    lines.append(f'  _elided --> {visible[0]["node_id"]}')
+            for node in visible:
+                lines.append(f'  {node["node_id"]}["{self._canvas_label(node["label"])}"]')
+                predecessor = node["predecessor_node_id"]
+                if predecessor and predecessor in visible_ids:
+                    lines.append(f'  {predecessor} --> {node["node_id"]}')
+            return "\n".join(lines)
+
+        budget = max(0, int(max_chars or 0))
+        visible = list(nodes)
+        elided: list[dict[str, Any]] = []
+        canvas = render(visible, 0)
+        while budget and len(canvas) > budget and len(visible) > 1:
+            elided.append(visible.pop(0))
+            canvas = render(visible, len(elided))
+
+        result: dict[str, Any] = {
             "session_id": session_key,
             "node_count": len(nodes),
-            "nodes": nodes,
-            "canvas": "\n".join(lines),
+            "visible_count": len(visible),
+            "nodes": visible,
+            "canvas": canvas,
             "contract": {
                 "in_context": "Use the compact Mermaid canvas plus node summaries.",
                 "drill_down": "Call get_working_canvas_node with a node_id to recover raw evidence.",
                 "integrity": "Each node points at content-addressed raw evidence and an append-only receipt_event_id.",
             },
         }
+        if elided:
+            result["elided_node_ids"] = [n["node_id"] for n in elided]
+            result["contract"]["elided"] = (
+                "Older steps were elided to fit the budget; their node_ids still drill down verbatim."
+            )
+        return result
 
     def get_working_canvas_node(self, user_id: str, *, session_id: str, node_id: str, include_raw: bool = True) -> dict[str, Any]:
         session_key = str(session_id or "").strip()

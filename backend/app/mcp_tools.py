@@ -565,8 +565,8 @@ TOOLS = [
     },
     {
         "name": "get_working_canvas",
-        "description": "Return the compact Mermaid working-memory canvas for an agent session, with node receipts for verifiable drill-down.",
-        "inputSchema": {"type": "object", "properties": {"session_id": {"type": "string"}, "limit": {"type": "integer", "default": 80}}, "required": ["session_id"]},
+        "description": "Return the compact Mermaid working-memory canvas for an agent session, with node receipts for verifiable drill-down. max_chars caps the rendered canvas (oldest nodes elide first; they remain drill-downable).",
+        "inputSchema": {"type": "object", "properties": {"session_id": {"type": "string"}, "limit": {"type": "integer", "default": 80}, "max_chars": {"type": "integer", "default": 0}}, "required": ["session_id"]},
     },
     {
         "name": "get_working_canvas_node",
@@ -2860,6 +2860,7 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             user_id,
             session_id=_text_arg(args, "session_id", "", max_chars=120),
             limit=_bounded_int_arg(args, "limit", 80, maximum=200),
+            max_chars=_bounded_int_arg(args, "max_chars", 0, minimum=0, maximum=200000),
         )
         store.record_context_reuse(user_id, surface="mcp", query=result["session_id"], target="working-canvas")
         return store.agent_payload(user_id, result)

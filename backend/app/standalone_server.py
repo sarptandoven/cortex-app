@@ -2291,11 +2291,13 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and path == "/v1/working-canvas":
                 # M3: compact Mermaid canvas for an agent session, with verifiable node receipts.
+                # max_chars caps the rendering (oldest nodes elide first, still drill-downable).
                 try:
                     self._send_json(store.get_working_canvas(
                         user_id,
                         session_id=(params.get("session_id") or [""])[0],
                         limit=_int_param(params, "limit", 80, 1, 200),
+                        max_chars=_int_param(params, "max_chars", 0, 0, 200000),
                     ))
                 except (TypeError, ValueError) as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
