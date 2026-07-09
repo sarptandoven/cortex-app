@@ -887,7 +887,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     return
                 try:
                     value = call_tool(store, tool_user, tool_name, arguments, token_scopes=token_scopes)
-                    store.record_agent_event(tool_user, tool_name, arguments, success=True, token=context)
+                    store.record_agent_event(tool_user, tool_name, arguments, success=True, token=context, result=value)
                 except PermissionError as exc:
                     store.record_agent_event(tool_user, tool_name, arguments, success=False, error=str(exc), token=context)
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.FORBIDDEN)
@@ -957,6 +957,20 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"delivered": bool(result.get("ok")), "status": result.get("status"), "reason": result.get("reason")}, status=HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_GATEWAY)
                 return
 
+            if method == "POST" and path == "/v1/eval/grade-answer":
+                body = self._json_body()
+                try:
+                    self._send_json(
+                        store.grade_answer(
+                            user_id,
+                            str(body.get("answer_text") or "")[:20000],
+                            session_id=str(body.get("session_id") or "")[:120] or None,
+                            pack_sha=str(body.get("pack_sha") or "")[:80] or None,
+                        )
+                    )
+                except ValueError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
             if method == "POST" and path == "/v1/captures/queue":
                 body = self._json_body()
                 try:
@@ -1935,6 +1949,15 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     )
                 )
                 return
+            if method == "GET" and path == "/v1/eval/scorecard":
+                self._send_json(
+                    store.get_tool_scorecard(
+                        user_id,
+                        days=_int_param(params, "days", 7, 1, 90),
+                        token_id=(params.get("token_id") or [None])[0],
+                    )
+                )
+                return
             if method == "GET" and path == "/v1/tasks/open":
                 self._send_json({"results": store.open_tasks(user_id, _int_param(params, "limit", 20, 1, 100))})
                 return
@@ -2347,7 +2370,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 arguments = params.get("arguments", {}) or {}
                 try:
                     value = call_tool(store, user_id, tool_name, arguments, token_scopes=token_scopes)
-                    store.record_agent_event(user_id, tool_name, arguments, success=True, token=context)
+                    store.record_agent_event(user_id, tool_name, arguments, success=True, token=context, result=value)
                 except Exception as exc:
                     store.record_agent_event(user_id, tool_name, arguments, success=False, error=str(exc), token=context)
                     raise

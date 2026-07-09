@@ -2326,7 +2326,7 @@ class FakeStore:
     def agent_payload(self, user_id: str, value):
         return value
 
-    def record_agent_event(self, user_id: str, tool_name: str, args: dict, *, success: bool, error: str | None = None, token: dict | None = None) -> None:
+    def record_agent_event(self, user_id: str, tool_name: str, args: dict, *, success: bool, error: str | None = None, token: dict | None = None, result=None) -> None:
         self.agent_events.append({"user_id": user_id, "tool": tool_name, "success": success, "error": error, "token": token})
 
 

@@ -491,7 +491,10 @@ ANSWER_DATE_CLAIM_RE = re.compile(
 )
 ANSWER_CLAIM_FIELDS = (
     "backup owner",
+    "budget",
+    "cost",
     "database",
+    "deadline",
     "default connector",
     "handoff owner",
     "incident owner",
@@ -508,7 +511,10 @@ ANSWER_CLAIM_RE = re.compile(
     rf"\b(?P<field>{'|'.join(re.escape(field) for field in ANSWER_CLAIM_FIELDS)})\b\s+"
     r"(?:(?:is|was|uses?|choose|chooses|chosen as|should be|should use|will be|will use|"
     r"changed to|moved to|switched to|now is|now uses|replaces)\s+)"
-    r"(?P<value>[^.;\n]+)",
+    # Value runs to end-of-clause. A comma alone does not end the clause (dates like
+    # "march 3, 2026") but ", and" / ", but" starts a new coordinate clause and must not
+    # be swallowed — otherwise later claims in the sentence are consumed and never matched.
+    r"(?P<value>(?:(?!,\s+(?:and|but)\b)[^.;\n])+)",
     re.IGNORECASE,
 )
 ANSWER_FIELD_REQUIREMENTS: tuple[tuple[str, set[str], set[str]], ...] = (
@@ -10791,7 +10797,7 @@ class CortexStore:
         normalized = re.sub(r"\s+", " ", str(value or "").casefold()).strip(" .,:;")
         normalized = re.sub(r"^(?:the|a|an)\s+", "", normalized)
         normalized = re.split(
-            r"\b(?:according to|because|before|after|for now|from|in the|instead of|rather than|until|with)\b",
+            r"\b(?:according to|because|before|after|for now|for the|from|in the|instead of|rather than|until|with)\b",
             normalized,
             maxsplit=1,
         )[0].strip(" .,:;")
@@ -17395,12 +17401,27 @@ class CortexStore:
         success: bool,
         error: str | None = None,
         token: dict[str, Any] | None = None,
+        result: Any = None,
     ) -> None:
         metadata: dict[str, Any] = {
             "tool": tool_name,
             "success": success,
             "arg_keys": sorted(args.keys()),
         }
+        # Phase 4 (eval harness): persist retrieval-quality signals from the tool RESULT so the
+        # scorecard is a pure read-model over the event log. Only cheap scalar summaries are
+        # stored — never result content.
+        if isinstance(result, dict):
+            coverage = result.get("coverage")
+            if isinstance(coverage, dict) and coverage.get("status"):
+                metadata["coverage_status"] = str(coverage.get("status"))[:40]
+            conflicts = result.get("conflicts")
+            if isinstance(conflicts, list):
+                metadata["conflicts_served"] = len(conflicts)
+            # Grading verdict counts (submit_answer_for_grading) accrue to the scorecard.
+            if all(isinstance(result.get(bucket), list) for bucket in ("consistent", "contradicted", "unsupported")):
+                for bucket in ("consistent", "contradicted", "unsupported"):
+                    metadata[f"graded_{bucket}"] = len(result[bucket])
         if token:
             metadata["token_id"] = token.get("token_id")
             metadata["token_label"] = token.get("label")
@@ -17417,6 +17438,232 @@ class CortexStore:
             metadata["error"] = error[:240]
         with connect(self.db_path) as conn:
             self._event(conn, user_id, f"mcp:{tool_name}", "agent", "tool_call", metadata)
+
+    # ------------------------------------------------------------------
+    # Personal eval harness (Phase 4): request-side scorecard + answer grading
+    # ------------------------------------------------------------------
+
+    # Tool-name classification for the scorecard. Kept here (not imported from mcp_tools)
+    # because storage must not import the tool layer; a parity test in
+    # test_phase4_eval_harness.py asserts these sets agree with mcp_tools.READ_TOOLS /
+    # WRITE_TOOLS so drift is caught at test time, not in production.
+    SCORECARD_READ_TOOL_PREFIXES = ("get_", "list_", "search_", "ask_", "resume_", "prepare_", "build_", "expand_", "use_")
+    SCORECARD_WRITE_TOOL_PREFIXES = ("remember_", "start_", "checkpoint_", "close_", "connect_", "sync_", "approve_", "archive_", "forget_", "delete_", "submit_")
+
+    def _scorecard_tool_kind(self, tool_name: str) -> str:
+        name = str(tool_name or "")
+        if name.startswith(self.SCORECARD_READ_TOOL_PREFIXES):
+            return "read"
+        if name.startswith(self.SCORECARD_WRITE_TOOL_PREFIXES):
+            return "write"
+        return "other"
+
+    def get_tool_scorecard(self, user_id: str, *, days: int = 7, token_id: str | None = None) -> dict[str, Any]:
+        """Phase 4.1 request-side scoring: a pure read-model over the mcp:{tool} event log
+        (record_agent_event). Per token (= per host app) it reports memory-usage rate (days with
+        >=1 read-tool call before the first write that day), the retrieval-quality coverage mix,
+        and conflict exposure. No new writes, no LLM — free to compute from what we already log."""
+        window_days = max(1, min(int(days), 90))
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT object_id, metadata_json, created_at
+                FROM memory_events
+                WHERE user_id = ? AND object_type = 'agent' AND event_type = 'tool_call'
+                  AND object_id LIKE 'mcp:%'
+                  AND created_at >= datetime('now', ?)
+                ORDER BY created_at, rowid
+                """,
+                (user_id, f"-{window_days} days"),
+            ).fetchall()
+
+        # host key -> accumulator. Events without a token still show up under "(untokened)"
+        # so local/dev traffic is visible rather than silently dropped.
+        hosts: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            metadata = self._json_or_empty(row["metadata_json"])
+            tool = str(metadata.get("tool") or row["object_id"][len("mcp:"):])
+            key = str(metadata.get("token_id") or "") or "(untokened)"
+            host = hosts.setdefault(
+                key,
+                {
+                    "token_id": None if key == "(untokened)" else key,
+                    "token_label": metadata.get("token_label"),
+                    "calls": 0,
+                    "failed_calls": 0,
+                    "read_calls": 0,
+                    "write_calls": 0,
+                    "coverage_mix": {},
+                    "conflict_packs_served": 0,
+                    "grading": {"submissions": 0, "consistent": 0, "contradicted": 0, "unsupported": 0},
+                    "_days": {},
+                },
+            )
+            if metadata.get("token_label"):
+                host["token_label"] = metadata.get("token_label")
+            host["calls"] += 1
+            if metadata.get("success") is False:
+                host["failed_calls"] += 1
+            kind = self._scorecard_tool_kind(tool)
+            day = str(row["created_at"] or "")[:10]
+            day_state = host["_days"].setdefault(day, {"read_first": False, "write_seen": False})
+            if kind == "read":
+                host["read_calls"] += 1
+                if not day_state["write_seen"]:
+                    day_state["read_first"] = True
+            elif kind == "write":
+                host["write_calls"] += 1
+                day_state["write_seen"] = True
+            status = metadata.get("coverage_status")
+            if isinstance(status, str) and status:
+                host["coverage_mix"][status] = host["coverage_mix"].get(status, 0) + 1
+            conflicts_served = metadata.get("conflicts_served")
+            if isinstance(conflicts_served, int) and conflicts_served > 0:
+                host["conflict_packs_served"] += 1
+            if tool == "submit_answer_for_grading" and metadata.get("success") is not False:
+                grading = host["grading"]
+                grading["submissions"] += 1
+                for bucket in ("consistent", "contradicted", "unsupported"):
+                    count = metadata.get(f"graded_{bucket}")
+                    if isinstance(count, int):
+                        grading[bucket] += count
+
+        results: list[dict[str, Any]] = []
+        for key in sorted(hosts):
+            host = hosts[key]
+            day_states = host.pop("_days")
+            active_days = len(day_states)
+            memory_first_days = sum(1 for state in day_states.values() if state["read_first"])
+            host["active_days"] = active_days
+            host["memory_usage_rate"] = round(memory_first_days / active_days, 4) if active_days else 0.0
+            grading = host["grading"]
+            graded_total = grading["consistent"] + grading["contradicted"] + grading["unsupported"]
+            grading["faithfulness_rate"] = round(grading["consistent"] / graded_total, 4) if graded_total else None
+            results.append(host)
+        if token_id:
+            results = [host for host in results if host["token_id"] == token_id]
+        return {
+            "generated_at": now_iso(),
+            "window_days": window_days,
+            "hosts": results,
+            # Honest caveat surfaced in every payload (roadmap 4.2): faithfulness only covers
+            # answers voluntarily submitted; usage-rate metrics cover all logged tool traffic.
+            "caveats": [
+                "Faithfulness metrics cover only answers submitted via submit_answer_for_grading.",
+                "Usage-rate metrics cover every logged MCP tool call in the window.",
+            ],
+        }
+
+    def grade_answer(
+        self,
+        user_id: str,
+        answer_text: str,
+        *,
+        session_id: str | None = None,
+        pack_sha: str | None = None,
+    ) -> dict[str, Any]:
+        """Phase 4.2 output faithfulness: grade an agent's ANSWER against memory. Claims are
+        extracted deterministically (the same ANSWER_CLAIM_RE machinery detect_conflicts uses —
+        no LLM, so the grader is reproducible and golden-set testable), then each claim is checked
+        against the active corpus:
+          consistent    — an active memory makes the same field claim with the same value
+          contradicted  — an active memory makes the same field claim with a different value
+          unsupported   — no active memory speaks to that field at all
+        Every verdict cites the memory ids it was judged against. Results are recorded as an
+        answer_graded event so they accrue to the host scorecard."""
+        text = str(answer_text or "").strip()
+        if not text:
+            raise ValueError("answer_text is required")
+        claims = self._answer_field_claims({"content": text[:20000]})
+
+        # Build the memory-side claim index over active (non-superseded) memories once.
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM memories
+                WHERE user_id = ? AND status = 'active'
+                  AND (superseded_by IS NULL OR superseded_by = '')
+                ORDER BY id
+                LIMIT 2000
+                """,
+                (user_id,),
+            ).fetchall()
+        memory_claims: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+        for row in rows:
+            item = self._memory_from_row(row)
+            for field, value in self._answer_field_claims(item).items():
+                memory_claims.setdefault(field, []).append((value, item))
+
+        def _citation(item: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "memory_id": str(item.get("id") or ""),
+                "content": str(item.get("summary") or item.get("content") or "")[:200],
+                "author_class": normalize_author_class(item.get("author_class")),
+                "trust_score": normalize_trust_score(item.get("trust_score"), item.get("author_class")),
+                "source": item.get("source"),
+            }
+
+        consistent: list[dict[str, Any]] = []
+        contradicted: list[dict[str, Any]] = []
+        unsupported: list[dict[str, Any]] = []
+
+        def _values_agree(claimed: str, known: str) -> bool:
+            # Memory sentences often carry a qualifier tail the answer drops ("postgres for the
+            # launch" vs "postgres"). Treat a word-boundary prefix in either direction as
+            # agreement; anything else ("sqlite" vs "postgres…") stays a contradiction.
+            if claimed == known:
+                return True
+            return known.startswith(claimed + " ") or claimed.startswith(known + " ")
+
+        for field in sorted(claims):
+            value = claims[field]
+            entries = memory_claims.get(field) or []
+            matches = [item for known, item in entries if _values_agree(value, known)]
+            mismatches = [item for known, item in entries if not _values_agree(value, known)]
+            claim_payload = {"field": field, "claimed": value}
+            if matches:
+                consistent.append({**claim_payload, "citations": [_citation(item) for item in matches[:3]]})
+            elif mismatches:
+                # When several memories disagree, cite the CURRENT one (authority -> newer ->
+                # current-language), mirroring detect_conflicts' arbitration.
+                best = mismatches[0]
+                for other in mismatches[1:]:
+                    best, _, _ = self._answer_current_item(best, other)
+                best_claims = self._answer_field_claims(best)
+                contradicted.append(
+                    {
+                        **claim_payload,
+                        "expected": best_claims.get(field),
+                        "citations": [_citation(best)],
+                    }
+                )
+            else:
+                unsupported.append(claim_payload)
+
+        graded_total = len(consistent) + len(contradicted) + len(unsupported)
+        result = {
+            "generated_at": now_iso(),
+            "session_id": str(session_id or "").strip() or None,
+            "pack_sha": str(pack_sha or "").strip() or None,
+            "claims_extracted": graded_total,
+            "consistent": consistent,
+            "contradicted": contradicted,
+            "unsupported": unsupported,
+            "faithfulness_rate": round(len(consistent) / graded_total, 4) if graded_total else None,
+            "grader": {"mode": "deterministic", "engine": "answer_field_claims"},
+        }
+        metadata = {
+            "session_id": result["session_id"],
+            "pack_sha": result["pack_sha"],
+            "claims_extracted": graded_total,
+            "consistent": len(consistent),
+            "contradicted": len(contradicted),
+            "unsupported": len(unsupported),
+            "answer_chars": len(text),
+        }
+        with connect(self.db_path) as conn:
+            self._event(conn, user_id, "answer_grading", "agent", "answer_graded", metadata)
+        return result
 
     # ------------------------------------------------------------------
     # Agent continuity (Phase 1): sessions + checkpoint episodes
@@ -21779,7 +22026,10 @@ class CortexStore:
 
     def _event(self, conn, user_id: str, object_id: str, object_type: str, event_type: str, metadata: dict[str, Any]) -> dict[str, Any]:
         created_at = now_iso()
-        event_id = stable_id("evt_", user_id + object_id + object_type + event_type + created_at)
+        # created_at has second precision, so the id seed needs a nonce: without it, two events
+        # for the same object in the same second collide and INSERT OR REPLACE silently drops
+        # the earlier one (observed with rapid mcp:{tool} tool_call logging).
+        event_id = stable_id("evt_", user_id + object_id + object_type + event_type + created_at + uuid.uuid4().hex)
         conn.execute(
             "INSERT OR REPLACE INTO memory_events(id, user_id, object_id, object_type, event_type, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (event_id, user_id, object_id, object_type, event_type, json.dumps(metadata), created_at),

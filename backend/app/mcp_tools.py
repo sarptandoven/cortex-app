@@ -562,6 +562,30 @@ TOOLS = [
         },
     },
     {
+        "name": "get_tool_scorecard",
+        "description": "Return a per-host scorecard of how connected agents use Cortex memory: memory-usage rate, retrieval coverage mix, conflict exposure, and answer-grading faithfulness. Read-only, computed from the local audit log.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "days": {"type": "integer", "default": 7, "minimum": 1, "maximum": 90},
+                "token_id": {"type": "string", "description": "Optional token id to filter to one connected host."},
+            },
+        },
+    },
+    {
+        "name": "submit_answer_for_grading",
+        "description": "Submit an answer produced with Cortex context for deterministic faithfulness grading: each factual claim is checked against memory and returned as consistent, contradicted, or unsupported, with citations. Results accrue to the host scorecard.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "answer_text": {"type": "string", "description": "The answer text to grade against memory."},
+                "session_id": {"type": "string", "description": "Optional agent session id the answer belongs to."},
+                "pack_sha": {"type": "string", "description": "Optional sha256 of the context pack the answer was produced from."},
+            },
+            "required": ["answer_text"],
+        },
+    },
+    {
         "name": "get_open_questions",
         "description": "Return open questions and action items.",
         "inputSchema": {"type": "object", "properties": {}},
@@ -977,6 +1001,7 @@ READ_TOOLS = {
     "get_decisions",
     "get_decision_history",
     "get_belief_timeline",
+    "get_tool_scorecard",
     "get_open_questions",
     "list_memory_topics",
     "list_memory_entities",
@@ -1001,6 +1026,8 @@ REVIEW_TOOLS = {
 }
 WRITE_TOOLS = {
     "remember_this",
+    # Grading writes an answer_graded audit event (roadmap: submit_answer_for_grading is write scope).
+    "submit_answer_for_grading",
     # Continuity writes: sessions + checkpoint episodes are agent write-back.
     "start_agent_session",
     "checkpoint_agent_session",
@@ -1098,6 +1125,8 @@ _TOOL_TITLE_OVERRIDES: dict[str, str] = {
     "list_agent_sessions": "List Agent Sessions",
     "close_agent_session": "Close Agent Session",
     "get_belief_timeline": "Trace Belief Timeline",
+    "get_tool_scorecard": "Review Tool Scorecard",
+    "submit_answer_for_grading": "Grade Answer Against Memory",
     "get_context_pack": "Replay Pinned Context Pack",
     "list_context_packs": "List Pinned Context Packs",
 }
@@ -2567,6 +2596,21 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         topic = _text_arg(args, "topic", "", max_chars=240)
         result = store.get_belief_timeline(user_id, topic, limit=_bounded_int_arg(args, "limit", 20, maximum=50))
         store.record_context_reuse(user_id, surface="mcp", query=topic, target="belief-timeline")
+        return store.agent_payload(user_id, result)
+    if name == "get_tool_scorecard":
+        result = store.get_tool_scorecard(
+            user_id,
+            days=_bounded_int_arg(args, "days", 7, maximum=90),
+            token_id=str(args.get("token_id") or "").strip() or None,
+        )
+        return store.agent_payload(user_id, result)
+    if name == "submit_answer_for_grading":
+        result = store.grade_answer(
+            user_id,
+            _text_arg(args, "answer_text", "", max_chars=20000),
+            session_id=str(args.get("session_id") or "").strip() or None,
+            pack_sha=str(args.get("pack_sha") or "").strip() or None,
+        )
         return store.agent_payload(user_id, result)
     if name == "get_open_questions":
         return store.agent_payload(user_id, store.open_tasks(user_id, _bounded_int_arg(args, "limit", 20)))

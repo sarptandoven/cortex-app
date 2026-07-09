@@ -35,6 +35,7 @@ from .observability import metrics, route_label
 from .models import APITokenListResponse, APITokenRegistrationRequest, APITokenRegistrationResponse, APITokenRevokeResponse, AskResponse, BackupResponse, CalendarSyncRequest, CalendarSyncResponse, CaptureRequest, CaptureResponse, ContextReuseRequest, ContextReuseResponse, DataLifecycleReportResponse, DiagnosticsResponse, GitHubRepositoryDiscoveryRequest, GitHubRepositoryDiscoveryResponse, GitHubSyncRequest, GitHubSyncResponse, GmailSyncRequest, GmailSyncResponse, GoogleDriveSyncRequest, GoogleDriveSyncResponse, GoogleOAuthCompleteRequest, GoogleOAuthCompleteResponse, GoogleOAuthStartRequest, GoogleOAuthStartResponse, GraphResponse, JiraSyncRequest, JiraSyncResponse, JobRunResponse, LinearSyncRequest, LinearSyncResponse, ListResponse, MaintenanceResponse, ManagedOAuthCompleteRequest, ManagedOAuthCompleteResponse, ManagedOAuthStartRequest, ManagedOAuthStartResponse, MCPTokenRegistrationRequest, MCPTokenRegistrationResponse, MemoryQualityResponse, NotionSyncRequest, NotionSyncResponse, ObsidianVaultSyncRequest, ObsidianVaultSyncResponse, OutlookSyncRequest, OutlookSyncResponse, ProductLoopResponse, QueuedCaptureResponse, RaindropSyncRequest, RaindropSyncResponse, ReadwiseSyncRequest, ReadwiseSyncResponse, ReliabilityReportResponse, RepairStorageResponse, SearchResponse, SettingsResponse, SettingsUpdateRequest, SlackChannelDiscoveryRequest, SlackChannelDiscoveryResponse, SlackSyncRequest, SlackSyncResponse, SourceAccountListResponse, SourceAccountRequest, SourceAccountResponse, SourceAccountSyncRequest, SourceAccountSyncResponse, SourceAnalyzeRequest, SourceAnalyzeResponse, SourceImportDeleteResponse, SourceImportRequest, SourceImportResponse, SourceReadinessResponse, StatsResponse, SupportBundleResponse, SyncChangeFeedResponse, SyncCursorListResponse, SyncCursorRequest, SyncCursorResponse, SyncDeviceListResponse, SyncDeviceRequest, SyncDeviceResponse, SyncReceiptListResponse, SyncReceiptRequest, SyncReceiptResponse, VaultRebuildResponse, VectorRebuildResponse, ZoteroSyncRequest, ZoteroSyncResponse
 from .models import UserListResponse, UserProvisionRequest, UserProvisionResponse, UserStatusResponse
 from .models import CaptureChangePage, SyncIngestRequest, SyncIngestResponse
+from .models import GradeAnswerRequest
 from .oauth_broker import register_oauth_broker_routes
 from .oidc_registry import OidcError, OidcProviderRegistry
 from .ratelimit import TokenBucketRateLimiter
@@ -1759,6 +1760,20 @@ def belief_timeline(
     user_id: str = Depends(auth),
 ) -> dict[str, Any]:
     return store.get_belief_timeline(user_id, topic, limit=limit)
+
+
+@app.get("/v1/eval/scorecard")
+def tool_scorecard(
+    days: int = Query(default=7, ge=1, le=90),
+    token_id: str | None = Query(default=None, max_length=120),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return store.get_tool_scorecard(user_id, days=days, token_id=token_id)
+
+
+@app.post("/v1/eval/grade-answer")
+def grade_answer(payload: GradeAnswerRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    return store.grade_answer(user_id, payload.answer_text, session_id=payload.session_id, pack_sha=payload.pack_sha)
 
 
 @app.get("/v1/tasks/open")
@@ -3704,7 +3719,7 @@ async def mcp(request: Request, context: dict[str, Any] = Depends(mcp_auth)) -> 
             arguments = params.get("arguments", {}) or {}
             try:
                 value = call_tool(store, user_id, tool_name, arguments, token_scopes=token_scopes)
-                store.record_agent_event(user_id, tool_name, arguments, success=True, token=context)
+                store.record_agent_event(user_id, tool_name, arguments, success=True, token=context, result=value)
             except Exception as exc:
                 store.record_agent_event(user_id, tool_name, arguments, success=False, error=str(exc), token=context)
                 raise

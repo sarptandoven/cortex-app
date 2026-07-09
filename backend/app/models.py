@@ -858,6 +858,12 @@ class ProductLoopResponse(BaseModel):
     today: str
 
 
+class GradeAnswerRequest(BaseModel):
+    answer_text: str = Field(..., min_length=1, max_length=20_000)
+    session_id: str | None = Field(default=None, max_length=120)
+    pack_sha: str | None = Field(default=None, max_length=80)
+
+
 class ContextReuseRequest(BaseModel):
     surface: str = Field(default="macos", max_length=80)
     query: str = Field(default="", max_length=500)
