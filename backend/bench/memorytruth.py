@@ -21,6 +21,11 @@ Categories (each maps to a moonshot-doc probe class):
 - provenance:  every citation id must resolve to a real memory containing the slug,
                author_class must survive the pipeline as "user", and the integrity
                chain must verify (matches=True) after all writes
+- canvas:      M3 working-memory canvas - every verbose raw evidence blob offloaded
+               into a node must come back byte-identical on drill-down (the bench
+               compares bytes, it does NOT trust the verified flag), the compact
+               canvas must never leak raw evidence and must be >=40% smaller than
+               the raw it replaced, and every node must carry a receipt event id
 
 Run: python3 -m backend.bench.memorytruth --seed 7
      python3 -m backend.bench.memorytruth --url http://127.0.0.1:8766 --token <api-key>
@@ -37,7 +42,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 BENCH_NAME = "memorytruth-light"
-BENCH_VERSION = 1
+BENCH_VERSION = 2
 
 _ADJECTIVES = (
     "amber", "basalt", "cedar", "delta", "ember", "flint", "garnet", "harbor",
@@ -77,6 +82,7 @@ class Scenario:
     facts: list[dict[str, str]] = field(default_factory=list)          # {content, slug, question}
     revisions: list[dict[str, str]] = field(default_factory=list)      # {v1_content, v2_content, v1_slug, v2_slug, question, topic}
     abstention_probes: list[Probe] = field(default_factory=list)
+    canvas_nodes: list[dict[str, Any]] = field(default_factory=list)   # {node_id, label, summary, raw_text, slug, predecessor_node_id}
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -84,10 +90,11 @@ class Scenario:
             "facts": self.facts,
             "revisions": self.revisions,
             "abstention_probes": [vars(p) for p in self.abstention_probes],
+            "canvas_nodes": self.canvas_nodes,
         }
 
 
-def generate_scenario(seed: int, *, recall_n: int = 8, abstain_n: int = 6, temporal_n: int = 4) -> Scenario:
+def generate_scenario(seed: int, *, recall_n: int = 8, abstain_n: int = 6, temporal_n: int = 4, canvas_n: int = 5) -> Scenario:
     rng = random.Random(seed)
     scenario = Scenario(seed=seed)
     # Unique project names per probe so facts never collide into accidental
@@ -136,6 +143,25 @@ def generate_scenario(seed: int, *, recall_n: int = 8, abstain_n: int = 6, tempo
                 "topic": topic,
             }
         )
+
+    # M3 canvas nodes are generated LAST so adding this category never changes
+    # the facts/abstention/temporal content of pre-existing seeds (the rng draw
+    # order for those sections is untouched).
+    for i in range(canvas_n):
+        slug = _slug(rng)
+        filler = " ".join(rng.choice(_NOUNS) for _ in range(160))
+        scenario.canvas_nodes.append(
+            {
+                "node_id": f"n{i}_step",
+                "label": f"Tool step {i}",
+                "summary": f"Step {i} evidence recorded",
+                # Verbose, unique raw evidence with the slug buried mid-stream -
+                # the exact thing an agent would offload instead of carrying.
+                "raw_text": f"[tool:{i}] stdout begins\n{filler}\nevidence token {slug}\n{filler}\n",
+                "slug": slug,
+                "predecessor_node_id": f"n{i - 1}_step" if i > 0 else None,
+            }
+        )
     return scenario
 
 
@@ -152,6 +178,9 @@ class BenchClient(Protocol):
     def belief_timeline(self, topic: str) -> dict[str, Any]: ...
     def integrity_digest(self) -> dict[str, Any]: ...
     def verify_integrity(self, expected_head: str) -> dict[str, Any]: ...
+    def record_canvas_node(self, session_id: str, node: dict[str, Any]) -> dict[str, Any]: ...
+    def get_canvas(self, session_id: str) -> dict[str, Any]: ...
+    def get_canvas_node(self, session_id: str, node_id: str) -> dict[str, Any]: ...
 
 
 class InProcessClient:
@@ -190,6 +219,24 @@ class InProcessClient:
 
     def verify_integrity(self, expected_head: str) -> dict[str, Any]:
         return self._tool("verify_memory_integrity", {"expected_head": expected_head})
+
+    def record_canvas_node(self, session_id: str, node: dict[str, Any]) -> dict[str, Any]:
+        args = {
+            "session_id": session_id,
+            "node_id": node["node_id"],
+            "label": node.get("label") or "",
+            "summary": node.get("summary") or "",
+            "raw_text": node["raw_text"],
+        }
+        if node.get("predecessor_node_id"):
+            args["predecessor_node_id"] = node["predecessor_node_id"]
+        return self._tool("record_working_canvas_node", args)
+
+    def get_canvas(self, session_id: str) -> dict[str, Any]:
+        return self._tool("get_working_canvas", {"session_id": session_id})
+
+    def get_canvas_node(self, session_id: str, node_id: str) -> dict[str, Any]:
+        return self._tool("get_working_canvas_node", {"session_id": session_id, "node_id": node_id})
 
 
 class HTTPClient:
@@ -251,6 +298,24 @@ class HTTPClient:
 
     def verify_integrity(self, expected_head: str) -> dict[str, Any]:
         return self._request("POST", "/v1/integrity/verify", {"expected_head": expected_head})
+
+    def record_canvas_node(self, session_id: str, node: dict[str, Any]) -> dict[str, Any]:
+        args = {
+            "session_id": session_id,
+            "node_id": node["node_id"],
+            "label": node.get("label") or "",
+            "summary": node.get("summary") or "",
+            "raw_text": node["raw_text"],
+        }
+        if node.get("predecessor_node_id"):
+            args["predecessor_node_id"] = node["predecessor_node_id"]
+        return self._tool("record_working_canvas_node", args)
+
+    def get_canvas(self, session_id: str) -> dict[str, Any]:
+        return self._tool("get_working_canvas", {"session_id": session_id})
+
+    def get_canvas_node(self, session_id: str, node_id: str) -> dict[str, Any]:
+        return self._tool("get_working_canvas_node", {"session_id": session_id, "node_id": node_id})
 
 
 # --------------------------------------------------------------------------
@@ -330,6 +395,7 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
     abstention = CategoryScore()
     temporal = CategoryScore()
     provenance = CategoryScore()
+    canvas = CategoryScore()
 
     # --- Seed simple facts -------------------------------------------------
     for fact in scenario.facts:
@@ -431,11 +497,64 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
         f"integrity chain failed: head={head[:16]!r} matches={verified.get('matches')}",
     )
 
+    # --- M3 canvas probes -----------------------------------------------------
+    # The whole offload loop: record verbose evidence -> only a compact node stays
+    # in context -> drill-down recovers the raw bytes EXACTLY. Grading never trusts
+    # the store's own "verified" flag; it recomputes equality against the scenario.
+    if scenario.canvas_nodes:
+        session_id = f"bench-canvas-{scenario.seed}"
+        recorded_receipts: dict[str, str] = {}
+        for node in scenario.canvas_nodes:
+            result = client.record_canvas_node(session_id, node)
+            receipt = str((result or {}).get("receipt_event_id") or "")
+            raw_leaked = node["slug"] in json.dumps(result or {})
+            canvas.record(
+                bool(receipt) and not raw_leaked,
+                f"canvas record: node={node['node_id']} receipt={bool(receipt)} raw_leaked={raw_leaked}",
+            )
+            if receipt:
+                recorded_receipts[node["node_id"]] = receipt
+
+        board = client.get_canvas(session_id)
+        board_json = json.dumps(board or {})
+        raw_total = sum(len(n["raw_text"]) for n in scenario.canvas_nodes)
+        compact_len = len(str((board or {}).get("canvas") or ""))
+        node_count_ok = (board or {}).get("node_count") == len(scenario.canvas_nodes)
+        no_leak = not any(n["slug"] in board_json for n in scenario.canvas_nodes)
+        # Tencent's credible number is >=40% input-token reduction; the canvas text
+        # replacing the raw evidence must be at most 60% of the raw size. In practice
+        # it is far smaller; the floor just keeps the claim honest.
+        compact_ok = compact_len <= int(raw_total * 0.6)
+        edges_ok = all(
+            f'{n["predecessor_node_id"]} --> {n["node_id"]}' in str((board or {}).get("canvas") or "")
+            for n in scenario.canvas_nodes
+            if n.get("predecessor_node_id")
+        )
+        canvas.record(
+            node_count_ok and no_leak and compact_ok and edges_ok,
+            "canvas board: "
+            f"nodes_ok={node_count_ok} no_leak={no_leak} compact_ok={compact_ok} "
+            f"({compact_len}B vs raw {raw_total}B) edges_ok={edges_ok}",
+        )
+
+        for node in scenario.canvas_nodes:
+            recovered = client.get_canvas_node(session_id, node["node_id"])
+            raw_back = str((recovered or {}).get("raw_text") or "")
+            exact = raw_back == node["raw_text"]
+            receipt_stable = (
+                str((recovered or {}).get("receipt_event_id") or "") == recorded_receipts.get(node["node_id"], "")
+            )
+            canvas.record(
+                exact and receipt_stable,
+                f"canvas drill-down: node={node['node_id']} exact_bytes={exact} receipt_stable={receipt_stable}",
+            )
+
     categories = {
         "recall": recall,
         "abstention": abstention,
         "temporal": temporal,
         "provenance": provenance,
+        "canvas": canvas,
     }
     total_passed = sum(c.passed for c in categories.values())
     total_probes = sum(c.total for c in categories.values())

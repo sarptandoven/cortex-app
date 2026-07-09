@@ -192,6 +192,57 @@ class NonTautologyTests(unittest.TestCase):
             msg="bench failed to detect dead retrieval",
         )
 
+    def test_lossy_canvas_drilldown_tanks_canvas(self) -> None:
+        # Sabotage: drill-down returns truncated raw evidence (silent evidence
+        # loss - Tencent's structural failure mode). The bench compares BYTES
+        # against the scenario, so a lossy recovery must tank the category even
+        # though the store still reports verified=True internally.
+        with tempfile.TemporaryDirectory() as tmp:
+            store = _fresh_store(Path(tmp))
+            original = store.get_working_canvas_node
+
+            def lossy(user_id, **kwargs):
+                result = original(user_id, **kwargs)
+                if result.get("raw_text"):
+                    result["raw_text"] = result["raw_text"][: len(result["raw_text"]) // 2]
+                return result
+
+            store.get_working_canvas_node = lossy
+            client = InProcessClient(store, "bench-user")
+            report = run_bench(client, generate_scenario(7), mode="inprocess")
+        self.assertLess(
+            report["categories"]["canvas"]["score"],
+            1.0,
+            msg="bench failed to detect lossy canvas drill-down",
+        )
+
+    def test_leaky_canvas_board_tanks_canvas(self) -> None:
+        # Sabotage: the compact canvas leaks the raw evidence into context
+        # (defeating the whole offload). The no-leak + compactness probes must
+        # catch it.
+        with tempfile.TemporaryDirectory() as tmp:
+            store = _fresh_store(Path(tmp))
+            original = store.get_working_canvas
+
+            def leaky(user_id, **kwargs):
+                result = original(user_id, **kwargs)
+                blobs = []
+                for node in result.get("nodes") or []:
+                    raw = store.vault.read_working_canvas_evidence(node["raw_sha256"])
+                    if raw:
+                        blobs.append(raw.decode("utf-8"))
+                result["canvas"] = result["canvas"] + "\n" + "\n".join(blobs)
+                return result
+
+            store.get_working_canvas = leaky
+            client = InProcessClient(store, "bench-user")
+            report = run_bench(client, generate_scenario(7), mode="inprocess")
+        self.assertLess(
+            report["categories"]["canvas"]["score"],
+            1.0,
+            msg="bench failed to detect raw evidence leaking into the compact canvas",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

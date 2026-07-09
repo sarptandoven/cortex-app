@@ -2269,7 +2269,13 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if method == "POST" and path == "/v1/working-canvas/nodes":
                 # M3: offload raw tool evidence into a receipted symbolic working-memory canvas
                 # node (write scope, parity with the record_working_canvas_node MCP tool).
+                # raw_text is never trimmed or truncated - the contract is byte-exact recovery,
+                # so an oversized payload is rejected (422, parity with the FastAPI model).
                 body = self._json_body()
+                raw_text = str(body.get("raw_text") or "")
+                if len(raw_text) > 200_000:
+                    self._send_json({"detail": "raw_text exceeds 200000 characters"}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                    return
                 try:
                     self._send_json(store.record_working_canvas_node(
                         user_id,
@@ -2277,7 +2283,7 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         node_id=str(body.get("node_id") or "")[:120],
                         label=str(body.get("label") or "")[:120],
                         summary=str(body.get("summary") or "")[:500],
-                        raw_text=str(body.get("raw_text") or "")[:200_000],
+                        raw_text=raw_text,
                         predecessor_node_id=(str(body.get("predecessor_node_id") or "")[:120] or None),
                     ))
                 except (TypeError, ValueError) as exc:

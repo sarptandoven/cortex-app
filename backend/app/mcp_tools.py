@@ -2839,13 +2839,19 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         store.record_context_reuse(user_id, surface="mcp", query=query, target=_text_arg(args, "target", "mcp-agent", max_chars=MCP_NAME_MAX_CHARS))
         return value
     if name == "record_working_canvas_node":
+        # raw_text deliberately bypasses _text_arg: stripping whitespace would silently
+        # mutate the offloaded evidence, and the whole M3 contract is byte-exact recovery
+        # (the hash is computed over exactly what the agent handed us).
+        raw_text = str(args.get("raw_text") or "")
+        if len(raw_text) > 200000:
+            raise ValueError("MCP argument 'raw_text' exceeds 200000 characters.")
         result = store.record_working_canvas_node(
             user_id,
             session_id=_text_arg(args, "session_id", "", max_chars=120),
             node_id=_text_arg(args, "node_id", "", max_chars=120),
             label=_text_arg(args, "label", "", max_chars=120),
             summary=_text_arg(args, "summary", "", max_chars=500),
-            raw_text=_text_arg(args, "raw_text", "", max_chars=200000),
+            raw_text=raw_text,
             predecessor_node_id=_text_arg(args, "predecessor_node_id", "", max_chars=120) or None,
         )
         return store.agent_payload(user_id, result)
