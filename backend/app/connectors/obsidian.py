@@ -299,6 +299,13 @@ def _records_for_note(root: Path, path: Path, raw: str, *, modified: float, size
         return _records_for_canvas(root, path, raw, modified=modified, size=size)
 
     cleaned, frontmatter, tags, wikilinks, callouts, removed_blocks = _parse_obsidian_markdown(raw)
+    if frontmatter.get("cortex_generated") is True:
+        # Cortex write-back pages (Cortex/Profile.md, Cortex/People/*) are distilled FROM memory;
+        # re-ingesting them would launder derived text back in as fresh first-party evidence.
+        # Marker-based (not folder-based) so a user's own note inside Cortex/ still ingests, and a
+        # generated page moved elsewhere stays excluded. Hand-adding the marker is an explicit
+        # per-note opt-out.
+        return []
     if not cleaned:
         return []
 

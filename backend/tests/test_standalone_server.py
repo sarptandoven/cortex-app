@@ -72,6 +72,7 @@ class FakeStore:
         self.context_pack_calls: list[tuple[str, str, int, str | None]] = []
         self.assemble_context_calls: list[dict] = []
         self.verify_context_pack_calls: list[tuple[str, str]] = []
+        self.write_obsidian_pages_calls: list[tuple[str, str | None, int]] = []
         self.oauth_pending: dict[tuple[str, str], dict] = {}
 
     def remember_oauth_pending(self, *, state, user_id, flow, payload, ttl_seconds: int = 600) -> None:
@@ -206,6 +207,19 @@ class FakeStore:
         if pack_sha == "missing" * 8:  # 56 chars, clearly not a known sha
             raise ValueError("Unknown context pack sha for this user")
         return {"pack_sha": pack_sha, "status": "match", "verified_storage": True, "diff": {"equal": True}}
+
+    def write_obsidian_pages(self, user_id: str, *, vault_path: str | None = None, people_limit: int = 10) -> dict:
+        self.write_obsidian_pages_calls.append((user_id, vault_path, people_limit))
+        if vault_path == "/nonexistent/writeback/vault":
+            raise ValueError("Notes folder path must be a readable folder")
+        return {
+            "vault_path": vault_path or "/tmp/fake-vault",
+            "written": ["Cortex/Profile.md"],
+            "unchanged": [],
+            "skipped_unowned": [],
+            "pruned": [],
+            "people_pages": 0,
+        }
 
     def delete_capture(self, user_id: str, capture_id: str) -> bool:
         self.delete_capture_calls.append((user_id, capture_id))
@@ -4342,6 +4356,80 @@ class StandaloneServerTests(unittest.TestCase):
                 )
             self.assertEqual(context.exception.code, 403)
             self.assertIn("maintenance actions are disabled", context.exception.read().decode("utf-8"))
+        finally:
+            self.fake_store.denied_agent_access = set()
+            self.fake_store.api_token_scopes = ["read"]
+
+    def test_obsidian_writeback_route_on_shipping_server(self) -> None:
+        # Phase A: POST /v1/connectors/obsidian/write-back reaches store.write_obsidian_pages,
+        # is export-scoped for API tokens, and maps ValueError -> 422.
+        self.fake_store.write_obsidian_pages_calls.clear()
+        with request.urlopen(
+            request.Request(
+                self.base_url + "/v1/connectors/obsidian/write-back",
+                data=json.dumps({"vault_path": "/tmp/some-vault", "people_limit": 5}).encode("utf-8"),
+                headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+                method="POST",
+            ),
+            timeout=5,
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(payload["written"], ["Cortex/Profile.md"])
+        self.assertEqual(self.fake_store.write_obsidian_pages_calls, [("local", "/tmp/some-vault", 5)])
+
+        with self.assertRaises(error.HTTPError) as context:
+            request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/connectors/obsidian/write-back",
+                    data=json.dumps({"vault_path": "/nonexistent/writeback/vault"}).encode("utf-8"),
+                    headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+                    method="POST",
+                ),
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 422)
+
+        # Export scope discipline for scoped API tokens (parity with the MCP tool).
+        self.fake_store.api_token_scopes = ["read", "write"]
+        try:
+            with self.assertRaises(error.HTTPError) as context:
+                request.urlopen(
+                    request.Request(
+                        self.base_url + "/v1/connectors/obsidian/write-back",
+                        data=json.dumps({"vault_path": "/tmp/some-vault"}).encode("utf-8"),
+                        headers={"Authorization": "Bearer cxa-standalone-token", "Content-Type": "application/json"},
+                        method="POST",
+                    ),
+                    timeout=5,
+                )
+            self.assertEqual(context.exception.code, 403)
+            self.assertIn("export scope", context.exception.read().decode("utf-8"))
+
+            self.fake_store.api_token_scopes = ["read", "export"]
+            with request.urlopen(
+                request.Request(
+                    self.base_url + "/v1/connectors/obsidian/write-back",
+                    data=json.dumps({"vault_path": "/tmp/some-vault"}).encode("utf-8"),
+                    headers={"Authorization": "Bearer cxa-standalone-token", "Content-Type": "application/json"},
+                    method="POST",
+                ),
+                timeout=5,
+            ) as response:
+                self.assertEqual(json.loads(response.read().decode("utf-8"))["written"], ["Cortex/Profile.md"])
+
+            # The user-level export trust gate blocks even a correctly-scoped token.
+            self.fake_store.denied_agent_access = {"export"}
+            with self.assertRaises(error.HTTPError) as context:
+                request.urlopen(
+                    request.Request(
+                        self.base_url + "/v1/connectors/obsidian/write-back",
+                        data=json.dumps({"vault_path": "/tmp/some-vault"}).encode("utf-8"),
+                        headers={"Authorization": "Bearer cxa-standalone-token", "Content-Type": "application/json"},
+                        method="POST",
+                    ),
+                    timeout=5,
+                )
+            self.assertEqual(context.exception.code, 403)
         finally:
             self.fake_store.denied_agent_access = set()
             self.fake_store.api_token_scopes = ["read"]

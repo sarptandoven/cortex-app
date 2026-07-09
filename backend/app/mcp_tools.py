@@ -691,6 +691,17 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {"format": {"type": "string", "default": "markdown"}}},
     },
     {
+        "name": "write_obsidian_pages",
+        "description": "Write/refresh the distilled, cited Cortex pages (Profile, People) inside the connected Obsidian vault's Cortex/ folder.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "vault_path": {"type": "string", "description": "Optional vault folder; defaults to the connected Obsidian source account's vault."},
+                "people_limit": {"type": "integer", "default": 10, "minimum": 0, "maximum": 50},
+            },
+        },
+    },
+    {
         "name": "forget_memory",
         "description": "Permanently delete one memory by id from the active index and local vault records.",
         "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
@@ -1152,7 +1163,13 @@ WRITE_TOOLS = {
     "forget_memory",
     "delete_memory_capture",
 }
-EXPORT_TOOLS = {"export_memory"}
+EXPORT_TOOLS = {
+    "export_memory",
+    # Obsidian write-back persists distilled memory (profile/people pages) OUTSIDE Cortex custody,
+    # into the user's vault files (which then sync via git/iCloud). That is egress of personal
+    # memory — gated exactly like a bulk export, NOT like an in-store write.
+    "write_obsidian_pages",
+}
 MAINTENANCE_TOOLS = {
     "create_memory_backup",
     "sync_connected_sources",
@@ -1240,6 +1257,7 @@ _TOOL_TITLE_OVERRIDES: dict[str, str] = {
     "get_twin_scorecard": "Twin Accuracy Scorecard",
     "get_proactive_alerts": "Proactive Alerts",
     "resolve_proactive_alert": "Resolve Proactive Alert",
+    "write_obsidian_pages": "Write Obsidian Pages",
 }
 
 
@@ -1256,7 +1274,11 @@ def _tool_annotations(name: str) -> dict[str, Any]:
     is_write = name in WRITE_TOOLS
     is_maintenance = name in MAINTENANCE_TOOLS
     is_destructive = name in DESTRUCTIVE_TOOLS
-    read_only = (is_read or is_export) and not (is_write or is_maintenance or is_destructive)
+    # Export-scoped tools that WRITE files outside Cortex custody (vault write-back). Scope-wise
+    # they are exports (memory egress), but advertising them readOnly would let clients
+    # auto-approve a filesystem mutation.
+    writes_external_files = name in {"write_obsidian_pages"}
+    read_only = (is_read or is_export) and not (is_write or is_maintenance or is_destructive or writes_external_files)
     idempotent = (is_read or is_export) and not is_destructive
     return {
         "title": _tool_title(name),
@@ -2816,6 +2838,15 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         if args.get("format", "markdown") == "json":
             return store.export_json(user_id)
         return store.export_markdown(user_id)
+    if name == "write_obsidian_pages":
+        return store.agent_payload(
+            user_id,
+            store.write_obsidian_pages(
+                user_id,
+                vault_path=_text_arg(args, "vault_path", max_chars=2000) or None,
+                people_limit=_bounded_int_arg(args, "people_limit", 10, minimum=0, maximum=50),
+            ),
+        )
     if name == "forget_memory":
         return {"deleted": store.delete_memory(user_id, args["id"])}
     if name == "delete_memory_capture":

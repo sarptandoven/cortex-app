@@ -957,6 +957,99 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(gated.status_code, 403)
         self.assertIn("maintenance actions are disabled", gated.json()["detail"])
 
+    def test_obsidian_writeback_endpoint_contract(self) -> None:
+        """Phase A REST surface: POST /v1/connectors/obsidian/write-back maintains the cited
+        Cortex/ pages in the user's vault. Export-scoped + allow_agent_exports trust gate
+        (parity with the write_obsidian_pages MCP tool)."""
+        user = "phasea-rest-contract"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+        self.client.put(
+            "/v1/settings",
+            json={"review_new_captures": False, "allow_agent_exports": True},
+            headers=headers,
+        )
+        saved = self.client.post(
+            "/v1/captures",
+            json={
+                "content": "I prefer short bullet-point status updates over long prose.",
+                "source": "note",
+                "source_url": "obsidian://vault/notes/style.md",
+            },
+            headers=headers,
+        )
+        self.assertEqual(saved.status_code, 200)
+
+        with tempfile.TemporaryDirectory() as vault_dir:
+            written = self.client.post(
+                "/v1/connectors/obsidian/write-back",
+                json={"vault_path": vault_dir},
+                headers=headers,
+            )
+            self.assertEqual(written.status_code, 200)
+            body = written.json()
+            self.assertTrue(body["written"])
+            self.assertTrue((Path(vault_dir) / "Cortex" / "Profile.md").is_file())
+
+            # Idempotent: an unchanged corpus writes zero bytes on the second run.
+            rerun = self.client.post(
+                "/v1/connectors/obsidian/write-back",
+                json={"vault_path": vault_dir},
+                headers=headers,
+            )
+            self.assertEqual(rerun.status_code, 200)
+            self.assertEqual(rerun.json()["written"], [])
+            self.assertTrue(rerun.json()["unchanged"])
+
+            # Scope discipline: read+write refused (needs export); read+export passes; the
+            # user-level allow_agent_exports trust gate blocks even a correctly-scoped token.
+            rw_token = "cxa_phasea_rest_rw_123456789"
+            export_token = "cxa_phasea_rest_export_123456789"
+            for token, label, scopes in (
+                (rw_token, "phasea writeback rw", ["read", "write"]),
+                (export_token, "phasea writeback export", ["read", "export"]),
+            ):
+                registered = self.client.post(
+                    "/v1/integrations/api-token",
+                    json={"token": token, "label": label, "scopes": scopes},
+                    headers=headers,
+                )
+                self.assertEqual(registered.status_code, 200)
+
+            refused = self.client.post(
+                "/v1/connectors/obsidian/write-back",
+                json={"vault_path": vault_dir},
+                headers={"Authorization": f"Bearer {rw_token}", "X-Cortex-User": user},
+            )
+            self.assertEqual(refused.status_code, 403)
+            self.assertIn("export scope", refused.json()["detail"])
+
+            allowed = self.client.post(
+                "/v1/connectors/obsidian/write-back",
+                json={"vault_path": vault_dir},
+                headers={"Authorization": f"Bearer {export_token}", "X-Cortex-User": user},
+            )
+            self.assertEqual(allowed.status_code, 200)
+
+            self.client.put("/v1/settings", json={"allow_agent_exports": False}, headers=headers)
+            gated = self.client.post(
+                "/v1/connectors/obsidian/write-back",
+                json={"vault_path": vault_dir},
+                headers={"Authorization": f"Bearer {export_token}", "X-Cortex-User": user},
+            )
+            self.assertEqual(gated.status_code, 403)
+
+        # Bad vault path → 422 (same contract as connect/sync).
+        bad = self.client.post(
+            "/v1/connectors/obsidian/write-back",
+            json={"vault_path": "/nonexistent/path/for/writeback"},
+            headers=headers,
+        )
+        self.assertEqual(bad.status_code, 422)
+        # No vault connected and no path → 422 with guidance.
+        naked = self.client.post("/v1/connectors/obsidian/write-back", json={}, headers=headers)
+        self.assertEqual(naked.status_code, 422)
+        self.assertIn("vault", naked.json()["detail"].lower())
+
     def test_retrieval_endpoints_support_source_account_and_facet_scope(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "source-scope-contract"}
 

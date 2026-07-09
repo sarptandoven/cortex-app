@@ -238,6 +238,10 @@ def _required_api_scope(method: str, path: str) -> str:
     # pack are reads — that is the holistic picture Cortex exists to hand an agent.
     if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/support/bundle"}:
         return "export"
+    # Obsidian write-back persists distilled memory into user-owned vault files (egress out of
+    # Cortex custody) — export-scoped like the bulk exports, parity with the MCP tool.
+    if normalized_path == "/v1/connectors/obsidian/write-back":
+        return "export"
     if normalized_path in {"/v1/context", "/v1/context-pack", "/v1/personal-profile", "/v1/agent-adaptation"}:
         return "read"
     if normalized_path == "/v1/settings" and normalized_method in {"PUT", "PATCH"}:
@@ -942,6 +946,30 @@ def sync_obsidian_vault(request: ObsidianVaultSyncRequest, user_id: str = Depend
         return store.public_payload(user_id, result)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/v1/connectors/obsidian/write-back", response_model=None)
+def write_obsidian_pages(body: dict[str, Any] | None = None, user_id: str = Depends(auth)) -> Any:
+    """Obsidian write-back: refresh the distilled, cited Cortex/ pages inside the user's vault.
+    Export-scoped (memory egress into user-owned files), parity with the MCP tool."""
+    payload = body or {}
+    try:
+        people_limit = int(payload.get("people_limit") or 10)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="people_limit must be an integer")
+    try:
+        result = store.write_obsidian_pages(
+            user_id,
+            vault_path=str(payload.get("vault_path") or "") or None,
+            people_limit=people_limit,
+        )
+        return store.public_payload(user_id, result)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

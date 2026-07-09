@@ -139,6 +139,10 @@ def _required_api_scope(method: str, path: str) -> str:
     # adaptation / context pack are reads — the holistic picture Cortex exists to hand an agent.
     if normalized_path in {"/v1/export.json", "/v1/export.md", "/v1/support/bundle"}:
         return "export"
+    # Obsidian write-back persists distilled memory into user-owned vault files (egress out of
+    # Cortex custody) — export-scoped like the bulk exports, parity with the MCP tool.
+    if normalized_path == "/v1/connectors/obsidian/write-back":
+        return "export"
     # Delivery: previewing the cited brief is a read; SENDING it out of Cortex is egress of
     # personal memory, gated like a bulk export (export scope + allow_agent_exports trust toggle).
     if normalized_path == "/v1/delivery/preview":
@@ -1275,6 +1279,28 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     self._send_json(store.public_payload(user_id, result) if hasattr(store, "public_payload") else result)
                 except FileNotFoundError as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.NOT_FOUND)
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path == "/v1/connectors/obsidian/write-back":
+                # Obsidian write-back: refresh the distilled, cited Cortex/ pages in the user's
+                # vault. Export-scoped (memory egress into user-owned files), MCP-tool parity.
+                body = self._json_body()
+                try:
+                    try:
+                        people_limit = int(body.get("people_limit") or 10)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError("people_limit must be an integer") from exc
+                    result = store.write_obsidian_pages(
+                        user_id,
+                        vault_path=str(body.get("vault_path") or "") or None,
+                        people_limit=people_limit,
+                    )
+                    self._send_json(store.public_payload(user_id, result) if hasattr(store, "public_payload") else result)
+                except FileNotFoundError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.NOT_FOUND)
+                except PermissionError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.FORBIDDEN)
                 except (TypeError, ValueError) as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return

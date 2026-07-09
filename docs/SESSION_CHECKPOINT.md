@@ -77,11 +77,38 @@ Resume point for the phased expansion roadmap (see docs/EXPANSION_ROADMAP_PHASES
     404 mapping); token registration upserts by label — scoped test tokens need
     distinct labels
 
+- Phase A: bidirectional Obsidian (cited write-back pages) — this commit
+  - Pattern borrowed from TencentDB-Agent-Memory (pattern, not code): the top of the
+    memory pyramid should be human-readable Markdown living in the user's own vault
+  - New obsidian_writeback.py: pure renderers (render_readme / render_profile_page /
+    render_person_page), no timestamps in bytes so idempotency = byte-equality;
+    cited-or-silent (every bullet carries its `mem_` id); cortex_generated: true
+    frontmatter marker = machine ownership; parse_generated_marker fails safe to
+    "not generated" (never touch a user's file on a parse doubt)
+  - storage.write_obsidian_pages: writes Cortex/README.md, Cortex/Profile.md,
+    Cortex/People/<slug>--<sha>.md into the connected vault (or explicit vault_path);
+    only marker-verified files are written or pruned (user file with the same name →
+    skipped_unowned); byte-equal renders skip (no mtime churn for git/iCloud);
+    stale generated People pages pruned; obsidian_writeback audit event
+  - Connector: _records_for_note returns [] for cortex_generated notes — Cortex never
+    re-ingests its own distillate (marker-based, so a user note dropped inside
+    Cortex/ still ingests)
+  - MCP: write_obsidian_pages in EXPORT_TOOLS (memory egress into user-owned files);
+    _tool_annotations gains writes_external_files so it is NOT advertised readOnlyHint
+    despite living in export scope
+  - REST: POST /v1/connectors/obsidian/write-back on both servers, export scope in
+    both _required_api_scope maps, allow_agent_exports trust gate, ValueError -> 422
+  - tests/test_obsidian_writeback.py: 15 tests (pages + citations, idempotent rerun,
+    corpus-change rewrite, unowned-file safety, marker-only pruning, connected-vault
+    default, ingestion exclusion + full sync/write-back round trip, scope + trust
+    gate + readOnlyHint discipline, audit event); contract tests on both servers
+
 ## State
-- Full suite green: 1527 tests + 372 subtests
-- Branch pushed through `10ddfe9`; Phase 2b is the next commit
-- Shipped DMG (build 21) predates Phase 2b — rebuild if verify_context_pack should
-  ship in the app bundle
+- Full suite green: 1544 tests + 372 subtests
+- Branch pushed through `df70b99`; Phase A is the next commit
+- Shipped DMG (build 21) predates Phase 2b + Phase A — build 22 ships at the end of
+  the approved slate (write-back → session harvest → reputation → integrity → OpenClaw
+  exploration doc)
 
 ## Next
 - Prefetch: only add learning if the most-recent baseline plateaus (measure first)

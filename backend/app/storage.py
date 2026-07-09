@@ -5476,6 +5476,141 @@ class CortexStore:
         result["scan"] = scan_summary
         return result
 
+    def write_obsidian_pages(
+        self,
+        user_id: str,
+        *,
+        vault_path: str | None = None,
+        people_limit: int = 10,
+    ) -> dict[str, Any]:
+        """Obsidian write-back: maintain a machine-owned ``Cortex/`` folder inside the user's own
+        vault with distilled, CITED pages (README, Profile.md, People/<person>.md). The inverse of
+        sync_obsidian_vault — memory flows OUT to the vault the user already lives in.
+
+        Safety rules (each one tested):
+          - Only writes under <vault>/Cortex/. The vault must be a connected Obsidian source
+            account's vault_path (or an explicit vault_path argument for first-run).
+          - Only creates/overwrites/prunes files whose frontmatter carries cortex_generated:true.
+            A user's own file in Cortex/ is NEVER touched (fail-safe marker parse).
+          - Deterministic renders + byte-equality skip = idempotent; re-running with an unchanged
+            corpus writes nothing (mtime churn would dirty the user's git/iCloud sync for nothing).
+          - Stale generated People pages (person no longer in the top set) are pruned — but only
+            marker-verified ones.
+          - Redaction: pages honor redact_sensitive_context via the same shared-payload paths the
+            API uses (build_profile/person_context already apply it).
+        The generated pages are excluded from ingestion by the connector (cortex_generated marker),
+        so Cortex never re-reads its own distillate as evidence."""
+        from .connectors.obsidian import vault_identity
+        from .obsidian_writeback import (
+            PEOPLE_DIRNAME,
+            PROFILE_FILENAME,
+            README_FILENAME,
+            WRITEBACK_DIRNAME,
+            parse_generated_marker,
+            person_page_filename,
+            render_person_page,
+            render_profile_page,
+            render_readme,
+        )
+
+        resolved_path = str(vault_path or "").strip()
+        if not resolved_path:
+            for account in self.list_source_accounts(user_id):
+                if account.get("source") != "obsidian":
+                    continue
+                candidate = str((account.get("metadata") or {}).get("vault_path") or "").strip()
+                if candidate:
+                    resolved_path = candidate
+                    break
+        if not resolved_path:
+            raise ValueError("No connected Obsidian vault found; connect one or pass vault_path")
+        identity = vault_identity(resolved_path)  # raises FileNotFoundError on a bad path
+        root = Path(identity.vault_path)
+
+        people_limit = max(0, min(50, int(people_limit)))
+        profile = self.build_profile(user_id)
+        pages: list[tuple[Path, str]] = [
+            (root / WRITEBACK_DIRNAME / README_FILENAME, render_readme()),
+            (root / WRITEBACK_DIRNAME / PROFILE_FILENAME, render_profile_page(profile)),
+        ]
+        expected_person_files: set[str] = set()
+        if people_limit:
+            people = [
+                entity
+                for entity in self.list_entities(user_id, limit=people_limit * 3, include_pending=False)
+                if str(entity.get("kind") or "") == "person"
+            ][:people_limit]
+            for entity in people:
+                context = self.person_context(user_id, str(entity.get("name") or ""))
+                if not context.get("resolved"):
+                    continue
+                filename = person_page_filename(str(entity.get("id") or ""), str(entity.get("name") or ""))
+                expected_person_files.add(filename)
+                pages.append((root / WRITEBACK_DIRNAME / PEOPLE_DIRNAME / filename, render_person_page(context)))
+
+        written: list[str] = []
+        unchanged: list[str] = []
+        skipped_unowned: list[str] = []
+        for path, rendered in pages:
+            relative = str(path.relative_to(root))
+            if path.exists():
+                try:
+                    existing = path.read_text(encoding="utf-8")
+                except OSError:
+                    existing = None
+                if existing is not None and not parse_generated_marker(existing)["generated"]:
+                    # A user file occupies this name. Their note wins; we never overwrite it.
+                    skipped_unowned.append(relative)
+                    continue
+                if existing == rendered:
+                    unchanged.append(relative)
+                    continue
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(rendered, encoding="utf-8")
+            written.append(relative)
+
+        pruned: list[str] = []
+        people_dir = root / WRITEBACK_DIRNAME / PEOPLE_DIRNAME
+        if people_dir.is_dir():
+            for existing_page in sorted(people_dir.glob("*.md")):
+                if existing_page.name in expected_person_files:
+                    continue
+                try:
+                    marker = parse_generated_marker(existing_page.read_text(encoding="utf-8"))
+                except OSError:
+                    continue
+                if marker["generated"] and marker["page"] == "person":
+                    existing_page.unlink()
+                    pruned.append(str(existing_page.relative_to(root)))
+
+        result = {
+            "vault_path": identity.vault_path,
+            "vault_name": identity.vault_name,
+            "folder": WRITEBACK_DIRNAME,
+            "written": written,
+            "unchanged": unchanged,
+            "pruned": pruned,
+            "skipped_unowned": skipped_unowned,
+            "profile_readiness": int(profile.get("readiness") or 0),
+            "people_pages": len(expected_person_files),
+        }
+        with connect(self.db_path) as conn:
+            self._event(
+                conn,
+                user_id,
+                identity.vault_id,
+                "obsidian_writeback",
+                "pages_written",
+                {
+                    "written": len(written),
+                    "unchanged": len(unchanged),
+                    "pruned": len(pruned),
+                    "skipped_unowned": len(skipped_unowned),
+                    "people_pages": len(expected_person_files),
+                },
+            )
+        return result
+
     def _direct_connector_can_archive_missing(
         self,
         *,
