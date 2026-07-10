@@ -1,4 +1,4 @@
-# RESUME HERE - Session Checkpoint (2026-07-10, end of M2 session)
+# RESUME HERE - Session Checkpoint (2026-07-10, bench v3 session)
 
 > Paste-able context for continuing this work in a fresh chat. Read top to bottom;
 > the "Start the next session with" section at the end is the actual prompt.
@@ -6,16 +6,18 @@
 ## Where we are
 
 Repo: `~/repos/cortex-app`, branch `mass-scale-app-redesign`.
-Working tree: **clean** after the M2 commit. All commits **pushed** (auth fixed, see below).
+Working tree: **clean** after the bench v3 commit. All commits **pushed**.
+Note: other agent sessions work in this repo too (5bb9929 landed from a parallel
+session); always `git fetch` + rebase-check before pushing.
 
 ```
+c6bc9f1  M1+M2: bench v3 - belief_proof category graded by independent crypto
+5bb9929  M2: harden proof discovery, integrity caching, and audit contracts
+5fdf099  M2: sealed bi-temporal Proof-of-Belief across storage, MCP, and both HTTP servers
 5f1139f  M3: canvas token-budget cap (max_chars) with oldest-first elision
 0f6ef7e  M1xM3: canvas category in MemoryTruth + the byte-mutation bug it caught
 ab94757  M3: receipted symbolic working-memory canvas (Tencent's trick, verifiable)
-218cc08  docs: RESUME_CHECKPOINT (previous session)
-75ff7c2  docs: checkpoint M1 MemoryTruth-light + whole-pipeline verification
 c429523  M1: MemoryTruth-light benchmark + the wrong-subject citation fixes
-5fdf099  M2: sealed bi-temporal Proof-of-Belief across storage, MCP, and both HTTP servers
 ```
 
 ## The arc so far (oldest -> newest)
@@ -99,22 +101,37 @@ Fixed: raw_text exempt from trimming in mcp_tools (length check kept); standalon
 server now rejects oversized raw_text (422) instead of silently truncating.
 Silent truncation/mutation is the exact "silent evidence loss" M3 exists to kill.
 
-## MemoryTruth is now v2 (5 categories)
+## MemoryTruth is now v3 (6 categories)
 
-`backend/bench/memorytruth.py`: recall, abstention, temporal, provenance, and
-**canvas** (record returns receipt + never echoes raw; board holds count, leaks no
-slug, renders edges, is <=60% of raw bytes; drill-down byte-identical with stable
-receipt). Grading recomputes equality against the scenario - never trusts the
-store's verified flag. Sabotage tests prove each category can fail (lossy
-drill-down + leaky board tank canvas).
+`backend/bench/memorytruth.py`: recall, abstention, temporal, provenance, canvas,
+and **belief_proof** (15 probes/seed). belief_proof grades M2 end to end and
+NEVER trusts store verdicts: `_independent_verify_belief_proof` reimplements the
+crypto contract (canonical event fingerprint, chain fold from genesis/prefix,
+canonical snapshot re-hash) so a lying store is caught. Probes: P1 current shows
+v2 never v1; P2 retro known_at = v2.recorded_at - 1us shows v1 never v2; P3
+bench-doctored content rejected by both independent + store verifiers (parity);
+P4 unknown topics don't fabricate the never-seeded compound; P5 a prefix head
+pinned before all probe traffic reproduces byte-identically at end of run (the
+pin anchor waits out the current server second - second-precision audit rows
+truncate down and would race a same-second prefix). Report carries
+`belief_proof_latency` {count, p50_ms, max_ms} from real probe timings.
 
-**Floors: 1.0 on all 5 categories, seeds 7/21/42/99/1234, in-process AND live
-HTTP** (test_memorytruth_pipeline.py boots the real standalone server).
+Sabotage tests (test_memorytruth_bench.py NonTautologyTests) prove each failure
+mode tanks the category: retconning store (ignores known_at), doctored response
+content with intact receipts, rubber-stamp verify_belief_proof, and a **coherent
+DB rewrite after the pin** (UPDATE trigger clears cached fingerprint, store
+rebuilds its chain green, only the external pin catches it - asserted that the
+pin probe specifically is what fails).
+
+**Floors: 1.0 on all 6 categories, seeds 7/21/42/99/1234, in-process AND live
+HTTP** (fresh standalone server per seed; also test_memorytruth_pipeline.py).
+Proof latency p50 ~28ms in-process, ~38ms over HTTP.
 
 ## Verification state
 
-- Full suite: **1633 passed + 372 subtests** (`python3 -m pytest backend/tests -q
-  -n 8 --dist loadfile`, from repo root).
+- Full suite: **1637 passed + 372 subtests** (isolated worktree; the working repo
+  had 145 unrelated failures from ANOTHER agent's in-flight M6 edits to
+  storage.py - not ours, verify in a worktree when the tree is shared).
 - MemoryTruth: `python3 -m backend.bench.memorytruth --seed 7` -> 1.0 overall.
 - NOT yet done since M3/M2: a fresh `macos/build.sh` bundle build + bundle-level
   bench run (do this before shipping build 23).
@@ -144,8 +161,9 @@ env -u GITHUB_TOKEN git -c credential.helper= -c credential.helper=store push
 "Continue cortex-app on branch mass-scale-app-redesign. Read
 docs/RESUME_CHECKPOINT.md and docs/MEMORY_MOONSHOTS.md first. M1, M3, and M2 are
 shipped and green: Proof-of-Belief is bi-temporal and chain-sealed on MCP,
-FastAPI, and standalone; MemoryTruth v2 scores 1.0 on all 5 categories; full
-suite is 1633+372. Next operational gate: run a fresh macos/build.sh plus the
-bundle-level MemoryTruth bench before build 23. Then prove OpenClaw attachment
-Option A (zero-code MCP against the live server) before considering the
-TypeScript contextEngine plugin. Keep the floors green."
+FastAPI, and standalone; MemoryTruth v3 scores 1.0 on all 6 categories
+(belief_proof graded by independent crypto, sabotage-tested); full suite is
+1637+372 in a clean worktree. Next operational gate: run a fresh macos/build.sh
+plus the bundle-level MemoryTruth bench before build 23. Then prove OpenClaw
+attachment Option A (zero-code MCP against the live server) before considering
+the TypeScript contextEngine plugin. Keep the floors green."
