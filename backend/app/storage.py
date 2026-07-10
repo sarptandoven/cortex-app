@@ -2893,6 +2893,9 @@ class CortexStore:
         # until reconciled; lets us detect an embedding-model/dimension change and rebuild the
         # (rebuildable) vec table + re-embed rather than silently mismatching.
         self._vector_index_ensured: int | None = None
+        # Current-head Proof-of-Belief substrate. The cache key is a trigger-maintained per-user
+        # memory-event revision, so direct SQL edits/deletes/inserts invalidate it too.
+        self._belief_integrity_cache: dict[str, dict[str, Any]] = {}
         # Reconcile the vector index to the active model's dimension once, up front, on a dedicated
         # connection (safe: not nested in any caller transaction).
         self._ensure_vector_index()
@@ -2905,6 +2908,7 @@ class CortexStore:
         self._ensure_provenance_substrate()
         self._ensure_event_fingerprints()
         self._ensure_belief_snapshot_search_index()
+        self._prewarm_belief_integrity_cache()
 
     def _ensure_memory_occurrences_column(self) -> None:
         with connect(self.db_path) as conn:
@@ -3037,6 +3041,29 @@ class CortexStore:
                     },
                     snapshot,
                 )
+
+    def _prewarm_belief_integrity_cache(self) -> None:
+        """Shift the one-time chain fold to store startup so the first proof meets the latency SLO."""
+        with connect(self.db_path) as conn:
+            try:
+                user_ids = [
+                    str(row["user_id"])
+                    for row in conn.execute(
+                        "SELECT DISTINCT user_id FROM memory_events ORDER BY user_id"
+                    ).fetchall()
+                ]
+            except sqlite3.OperationalError as exc:
+                if "no such table" in str(exc).lower():
+                    return
+                raise
+        through = _transaction_now_iso()
+        for user_id in user_ids:
+            self._integrity_merkle_proof(
+                user_id,
+                through=through,
+                relevant_event_ids=set(),
+                include_all=True,
+            )
 
     def _ensure_provenance_substrate(self) -> None:
         """Phase 0 substrate: authorship/trust columns plus the agent_sessions and context_packs
@@ -17387,9 +17414,11 @@ class CortexStore:
             conn.execute("DELETE FROM authorship_signatures WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM captures WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM memory_events WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM memory_event_revisions WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM user_settings WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM api_tokens WHERE user_id = ?", (user_id,))
             vault_counts = self.vault.delete_user_records(user_id, include_backups=include_backups)
+        self._belief_integrity_cache.pop(user_id, None)
         return {
             "deleted_at": deleted_at,
             "include_backups": include_backups,
@@ -18547,12 +18576,16 @@ class CortexStore:
         }
 
     def audit_log(self, user_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        # Belief receipts are high-volume integrity substrate, not user actions. Proof/timeline APIs
+        # expose them directly; excluding them here preserves the audit log as a useful recent-action
+        # ledger instead of letting a vault rebuild crowd out connector, permission, and deletion events.
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT *
                 FROM memory_events
                 WHERE user_id = ?
+                  AND event_type NOT IN ('belief_recorded', 'belief_revised', 'belief_superseded')
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
@@ -19269,22 +19302,41 @@ class CortexStore:
         through_dt = _parse_iso_timestamp(through)
         if through_dt is None:
             raise ValueError("known_at must be an ISO-8601 date or timestamp")
+        cached_substrate: dict[str, Any] | None = None
+        revision = -1
         with connect(self.db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT rowid AS event_rowid, id, object_id, object_type, event_type,
-                       metadata_json, fingerprint_sha256, created_at
-                FROM memory_events
-                WHERE user_id = ?
-                ORDER BY created_at ASC, rowid ASC
-                """,
+            revision_row = conn.execute(
+                "SELECT revision FROM memory_event_revisions WHERE user_id = ?",
                 (user_id,),
-            ).fetchall()
+            ).fetchone()
+            revision = int(revision_row["revision"]) if revision_row is not None else 0
+            candidate_cache = self._belief_integrity_cache.get(user_id) if include_all else None
+            if candidate_cache is not None and candidate_cache.get("revision") == revision:
+                cached_substrate = candidate_cache
+                rows = candidate_cache["rows"]
+            else:
+                fetched_rows = conn.execute(
+                    """
+                    SELECT rowid AS event_rowid, id, object_id, object_type, event_type,
+                           metadata_json, fingerprint_sha256, created_at
+                    FROM memory_events
+                    WHERE user_id = ?
+                    ORDER BY created_at ASC, rowid ASC
+                    """,
+                    (user_id,),
+                ).fetchall()
+                rows = [dict(row) for row in fetched_rows]
 
         cutoff_events: list[dict[str, Any]] = []
         cutoff_fingerprints: list[str] = []
-        current_links: list[str] = []
-        current_head = self.INTEGRITY_CHAIN_GENESIS
+        current_links: list[str] = (
+            cached_substrate["current_links"] if cached_substrate is not None else []
+        )
+        current_head = (
+            str(cached_substrate["current_head"])
+            if cached_substrate is not None
+            else self.INTEGRITY_CHAIN_GENESIS
+        )
         first_at: str | None = None
         last_at: str | None = None
         for row in rows:
@@ -19308,8 +19360,9 @@ class CortexStore:
                 if len(cached_fingerprint) == 64
                 else self._integrity_event_fingerprint(event)
             )
-            current_head = self._integrity_link(current_head, fingerprint)
-            current_links.append(current_head)
+            if cached_substrate is None:
+                current_head = self._integrity_link(current_head, fingerprint)
+                current_links.append(current_head)
             if not include_all:
                 event_dt = _parse_iso_timestamp(event["created_at"])
                 if event_dt is None or event_dt > through_dt:
@@ -19319,6 +19372,14 @@ class CortexStore:
             if first_at is None:
                 first_at = event["created_at"]
             last_at = event["created_at"]
+
+        if include_all and cached_substrate is None:
+            self._belief_integrity_cache[user_id] = {
+                "revision": revision,
+                "rows": rows,
+                "current_links": current_links,
+                "current_head": current_head,
+            }
 
         if len(cutoff_events) == len(rows):
             # Default/current proofs cover the whole event history. Reuse the chain links already
@@ -19860,17 +19921,30 @@ class CortexStore:
             ),
         }
 
+    @staticmethod
+    def _canonical_export_bytes(payload: dict[str, Any]) -> bytes:
+        """Canonical attested export bytes, excluding the informational wall-clock timestamp."""
+        attested = dict(payload)
+        attested.pop("exported_at", None)
+        return json.dumps(
+            attested,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+
     def export_manifest(self, user_id: str) -> dict[str, Any]:
         """A verifiable manifest for a portable export: the integrity head, the exact counts the
         export should contain, and a content hash of the full export payload. A recipient can
         recompute sha256 over the export bytes and check it against payload_sha256 here — the
         export proves its own completeness and integrity without trusting the transport.
 
-        Lossless is the contract: the manifest is derived from the same export_json the user can
-        download, so what the manifest attests and what the file contains are the same bytes."""
+        Lossless durable state is the contract: the manifest is derived from the same export_json the
+        user can download. The informational exported_at wall-clock is excluded from the hash so two
+        unchanged exports attest identically even when generated in different seconds."""
         digest = self.integrity_digest(user_id)
         payload = self.export_json(user_id)
-        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+        canonical = self._canonical_export_bytes(payload)
         payload_sha256 = hashlib.sha256(canonical).hexdigest()
         return {
             "generated_at": now_iso(),
@@ -19889,8 +19963,9 @@ class CortexStore:
                 "imports": len(payload.get("imports") or []),
             },
             "how_to_verify": (
-                "Recompute sha256 over canonical(export_json) (sorted keys, compact separators, "
-                "ensure_ascii) and check it equals payload_sha256. Recompute the event hash chain "
+                "Recompute sha256 over canonical(export_json without informational exported_at) "
+                "(sorted keys, compact separators, ensure_ascii) and check it equals payload_sha256. "
+                "Recompute the event hash chain "
                 "and check the final link equals chain_head. Both must hold for a trusted restore."
             ),
         }
@@ -19904,7 +19979,7 @@ class CortexStore:
         The 'explain yourself to a computer once, ever' promise only holds if the memory is
         portable AND provably intact — this is that guarantee made concrete."""
         payload = self.export_json(user_id)
-        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+        canonical = self._canonical_export_bytes(payload)
         payload_sha256 = hashlib.sha256(canonical).hexdigest()
         digest = self.integrity_digest(user_id)
         return {
@@ -19928,8 +20003,9 @@ class CortexStore:
             },
             "payload": payload,
             "how_to_verify": (
-                "sha256(canonical(bundle.payload)) must equal bundle.manifest.payload_sha256, "
-                "where canonical = json sorted keys, compact separators, ensure_ascii."
+                "sha256(canonical(bundle.payload without informational exported_at)) must equal "
+                "bundle.manifest.payload_sha256, where canonical = json sorted keys, compact "
+                "separators, ensure_ascii."
             ),
         }
 
@@ -19945,7 +20021,7 @@ class CortexStore:
         payload = bundle.get("payload")
         if not isinstance(manifest, dict) or not isinstance(payload, dict):
             raise ValueError("A portable bundle needs both a 'manifest' object and a 'payload' object.")
-        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+        canonical = self._canonical_export_bytes(payload)
         recomputed = hashlib.sha256(canonical).hexdigest()
         claimed = str(manifest.get("payload_sha256") or "").strip().lower()
         payload_matches = bool(claimed) and hmac.compare_digest(claimed, recomputed)

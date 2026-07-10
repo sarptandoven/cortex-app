@@ -207,6 +207,11 @@ CREATE TABLE IF NOT EXISTS memory_events (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS memory_event_revisions (
+  user_id TEXT PRIMARY KEY,
+  revision INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS user_settings (
   user_id TEXT NOT NULL,
   key TEXT NOT NULL,
@@ -481,9 +486,29 @@ CREATE INDEX IF NOT EXISTS idx_edges_user_target ON graph_edges(user_id, target_
 CREATE INDEX IF NOT EXISTS idx_events_user_created ON memory_events(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_user_type_event_created ON memory_events(user_id, object_type, event_type, created_at DESC);
 CREATE TRIGGER IF NOT EXISTS invalidate_memory_event_fingerprint
-AFTER UPDATE OF id, object_id, object_type, event_type, metadata_json, created_at ON memory_events
+AFTER UPDATE OF id, user_id, object_id, object_type, event_type, metadata_json, created_at ON memory_events
 BEGIN
   UPDATE memory_events SET fingerprint_sha256 = NULL WHERE rowid = NEW.rowid;
+END;
+CREATE TRIGGER IF NOT EXISTS revise_memory_events_after_insert
+AFTER INSERT ON memory_events
+BEGIN
+  INSERT INTO memory_event_revisions(user_id, revision) VALUES (NEW.user_id, 1)
+  ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1;
+END;
+CREATE TRIGGER IF NOT EXISTS revise_memory_events_after_delete
+AFTER DELETE ON memory_events
+BEGIN
+  INSERT INTO memory_event_revisions(user_id, revision) VALUES (OLD.user_id, 1)
+  ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1;
+END;
+CREATE TRIGGER IF NOT EXISTS revise_memory_events_after_update
+AFTER UPDATE OF id, user_id, object_id, object_type, event_type, metadata_json, created_at ON memory_events
+BEGIN
+  INSERT INTO memory_event_revisions(user_id, revision) VALUES (OLD.user_id, 1)
+  ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1;
+  INSERT INTO memory_event_revisions(user_id, revision) VALUES (NEW.user_id, 1)
+  ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1;
 END;
 CREATE INDEX IF NOT EXISTS idx_api_tokens_active ON api_tokens(audience, revoked_at, user_id);
 CREATE INDEX IF NOT EXISTS idx_source_accounts_user_source ON source_accounts(user_id, source, status, updated_at DESC);
@@ -590,6 +615,12 @@ def _apply_lightweight_migrations(conn: sqlite3.Connection) -> None:
     conn.execute(
         "UPDATE memories SET recorded_at = captured_at "
         "WHERE recorded_at IS NULL OR recorded_at = ''"
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO memory_event_revisions(user_id, revision)
+        SELECT user_id, 1 FROM memory_events GROUP BY user_id
+        """
     )
     # Never invent transaction time from updated_at: that field may be a trust rescore, rebuild, or
     # metadata edit. Only an actual pre-M2 conflict_resolved receipt is a defensible supersession

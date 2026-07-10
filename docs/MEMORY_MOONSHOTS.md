@@ -101,6 +101,11 @@ Ranked by **(revolutionary impact) x (only-Cortex-can-build-it) x (measurability
 
 **Tier: technical leap that widens the moat.**
 
+**Status (2026-07-10): shipped.** Explicit valid/transaction time, sealed snapshot and
+supersession receipts, anchored hash-chain verification, historical snapshot search, and
+MCP/FastAPI/standalone parity are green. The v1 verifier honestly proves receipt inclusion,
+not arbitrary search completeness; an authenticated search index remains a future upgrade.
+
 **The idea.** Cortex already has append-only supersession (valid-time, sort of) and an integrity hash chain (transaction ordering). Fuse them into a **full bi-temporal graph** (Zep's model: *valid-time* = when a fact was true in the world, *transaction-time* = when Cortex learned it) **but sealed by the integrity chain**, so every belief-state is not just queryable but *provable*. You can answer "what did you believe about X on March 3rd, and prove you're not retconning it?" - and the proof is a hash chain, not a promise.
 
 **Why it's revolutionary.** This is memory for domains where being wrong is expensive and *auditability is mandatory*: medicine, law, finance, safety, compliance, journalism. "The AI changed its mind" is a liability today. "The AI changed its mind, here is the timestamped, tamper-evident record of exactly what it knew when and why it updated" is a *feature you can sell to a regulator*. No other memory system can do this because no other memory system has the hash chain. Zep has bi-temporal but no cryptographic seal; everyone else overwrites and loses history.

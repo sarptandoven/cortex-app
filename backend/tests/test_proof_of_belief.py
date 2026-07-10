@@ -459,6 +459,20 @@ class ProofOfBeliefTests(unittest.TestCase):
         self.assertEqual(deleted["beliefs"], [])
         self.assertEqual(deleted["proof"]["event_count_at_known_at"], 0)
         self.assertTrue(deleted["proof"]["verified"])
+        with connect(self.db_path) as conn:
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) FROM belief_snapshot_fts WHERE user_id = ?",
+                    (self.user_id,),
+                ).fetchone()[0],
+                0,
+            )
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT revision FROM memory_event_revisions WHERE user_id = ?",
+                    (self.user_id,),
+                ).fetchone()
+            )
 
     def test_vault_rebuild_deduplicates_snapshot_receipts(self) -> None:
         self._seed(
