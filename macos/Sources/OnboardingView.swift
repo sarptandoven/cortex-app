@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// A deep, guided, animated first-run walkthrough for Cortex — "The Archive".
 ///
@@ -331,13 +332,15 @@ private struct OnboardingPrivacyStep: View {
 
 /// The two clear first-source paths (connect notes / explore with sample notes), beside an
 /// animated illustration of notes distilling into a single memory. Preserves the original
-/// first-source actions: `connectLocalNotesFolder` and `loadSampleNotes`.
+/// first-source actions: `connectLocalNotesFolder` and `loadSampleNotes`, and honors the
+/// "drag in a ChatGPT / Claude export" promise with a real drop target + file picker.
 private struct OnboardingAddMemoryStep: View {
     @ObservedObject var state: AppState
     /// Called after sample notes load so the walkthrough moves forward to "See yourself".
     let advance: () -> Void
 
     @State private var loadingSamples = false
+    @State private var dropTargeted = false
 
     private var obsidianConnector: SourceConnectorCatalogItem? {
         state.sourceConnectorCatalog.first { $0.id == "obsidian" }
@@ -373,6 +376,8 @@ private struct OnboardingAddMemoryStep: View {
             ) {
                 runConnectAction()
             }
+
+            aiExportOption
 
             sampleNotesOption
         }
@@ -411,6 +416,48 @@ private struct OnboardingAddMemoryStep: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 2)
+    }
+
+    /// The promised ChatGPT / Claude export path: a real drop target that routes straight into
+    /// `AppState.importFromPath`, plus the same file picker Connections uses
+    /// (`importAIChatExport`). Without this, the step's copy said "drag in an export" while only
+    /// offering the notes-folder flow.
+    @ViewBuilder
+    private var aiExportOption: some View {
+        RoundedRectangle(cornerRadius: 10)
+            .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6]))
+            .foregroundColor(dropTargeted ? CortexDesign.accent : CortexDesign.softBorder)
+            .frame(height: 58)
+            .overlay(
+                HStack(spacing: 8) {
+                    if state.importInFlight { ProgressView().controlSize(.small) }
+                    Text(state.importInFlight ? "Importing your chats…" : "Drag a ChatGPT / Claude export here, or")
+                        .font(.callout)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                    if !state.importInFlight {
+                        Button {
+                            state.importAIChatExport()
+                        } label: {
+                            Label("Choose export file…", systemImage: "folder.badge.plus")
+                        }
+                        .buttonStyle(.link)
+                    }
+                }
+            )
+            .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+                guard let provider = providers.first else { return false }
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                    var resolved: String?
+                    if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) {
+                        resolved = url.standardizedFileURL.path
+                    } else if let url = item as? URL {
+                        resolved = url.standardizedFileURL.path
+                    }
+                    guard let path = resolved else { return }
+                    Task { @MainActor in await state.importFromPath(path) }
+                }
+                return true
+            }
     }
 
     private func exploreWithSampleNotes() {
@@ -683,7 +730,8 @@ private struct OnboardingQuickCaptureStep: View {
 
 // MARK: - Step 6: Connect your AI tools
 
-/// Brief close: point to Connections for wiring up AI tools, and finish.
+/// Brief close: point to Connections for wiring up AI tools, record the first backup decision
+/// (the last setup-loop gate), and finish.
 private struct OnboardingConnectToolsStep: View {
     @ObservedObject var state: AppState
 
@@ -717,6 +765,8 @@ private struct OnboardingConnectToolsStep: View {
             .buttonStyle(.bordered)
             .controlSize(.large)
 
+            backupCard
+
             OnboardingCheckRow(
                 title: "You're set up",
                 detail: "Press Finish to enter your Archive. You can revisit any of this later.",
@@ -725,6 +775,52 @@ private struct OnboardingConnectToolsStep: View {
             )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The setup loop's last gate (`OnboardingStep.trustBackup`) needs an explicit first-backup
+    /// decision. Offer it here — back up now, or skip and decide later from Settings — so the
+    /// walkthrough can genuinely complete onboarding instead of only dismissing for the session.
+    @ViewBuilder
+    private var backupCard: some View {
+        if state.onboardingHasBackupDecision {
+            OnboardingCheckRow(
+                title: state.onboardingBackupDecision == "skipped" ? "Backup skipped for now" : "First backup saved",
+                detail: state.onboardingBackupDecision == "skipped"
+                    ? "You can back up anytime from Settings → Data & Recovery."
+                    : "Your local memory has a restorable snapshot on this Mac.",
+                systemImage: "archivebox",
+                color: CortexDesign.sealMoss
+            )
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Back up your memory")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(CortexDesign.ink)
+                    Text("Save a restorable snapshot of your local memory, or decide later in Settings.")
+                        .font(.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                HStack(spacing: 10) {
+                    Button {
+                        state.createBackup()
+                    } label: {
+                        Label("Back Up Now", systemImage: "archivebox")
+                    }
+                    .buttonStyle(.bordered)
+                    Button("Skip for now") {
+                        state.skipFirstBackup()
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(CortexDesign.panelBackground)
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(CortexDesign.softBorder, lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
     }
 }
 

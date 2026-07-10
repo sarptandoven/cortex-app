@@ -219,6 +219,36 @@ class MacOSConnectorUIContractTests(unittest.TestCase):
         self.assertIn("onboardingHasSource", onboarding_source)
         self.assertIn("notesNeedContent", onboarding_source)
 
+    def test_onboarding_walkthrough_can_actually_complete_the_setup_loop(self) -> None:
+        """Every OnboardingStep gate must be satisfiable from inside the walkthrough. The last
+        gate (`.trustBackup`) needs an explicit first-backup decision, so the closing beat must
+        offer both createBackup and skipFirstBackup — otherwise finishOnboarding() always falls
+        back to session-dismiss and onboarding completion never persists."""
+        app_source = CORTEX_APP.read_text(encoding="utf-8")
+        onboarding_source = (ROOT / "macos" / "Sources" / "OnboardingView.swift").read_text(encoding="utf-8")
+
+        # The gate itself stays intact in AppState.
+        self.assertIn("case .trustBackup:", app_source)
+        self.assertIn("return onboardingHasBackupDecision", app_source)
+        self.assertIn("func skipFirstBackup()", app_source)
+
+        # The walkthrough renders a real decision: back up now, or explicitly skip.
+        self.assertIn("state.createBackup()", onboarding_source)
+        self.assertIn("state.skipFirstBackup()", onboarding_source)
+        self.assertIn("onboardingHasBackupDecision", onboarding_source)
+
+    def test_onboarding_add_memory_honors_the_export_drag_promise(self) -> None:
+        """The add-memory beat promises "drag in a ChatGPT / Claude export" — so the step must
+        actually accept a file drop and offer the export file picker, routed through the same
+        AppState import paths Connections uses."""
+        onboarding_source = (ROOT / "macos" / "Sources" / "OnboardingView.swift").read_text(encoding="utf-8")
+
+        self.assertIn("ChatGPT / Claude export", onboarding_source)
+        self.assertIn(".onDrop(of: [.fileURL]", onboarding_source)
+        self.assertIn("state.importFromPath(path)", onboarding_source)
+        self.assertIn("state.importAIChatExport()", onboarding_source)
+        self.assertIn("state.importInFlight", onboarding_source)
+
     def test_obsidian_plugin_is_installed_and_configured_by_mac_app(self) -> None:
         app_source = CORTEX_APP.read_text(encoding="utf-8")
 
