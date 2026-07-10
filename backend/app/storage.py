@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import base64
+import binascii
 import json
 import math
 import os
@@ -20478,6 +20479,10 @@ class CortexStore:
     BELIEF_PROOF_VERSION = "v1"
     BELIEF_MERKLE_EMPTY = hashlib.sha256(b"cortex:belief-proof:v1:empty").hexdigest()
     BELIEF_MERKLE_MAX_EVENTS = 2048
+    PORTABLE_MEMORY_PROTOCOL = "cortex-portable-memory"
+    PORTABLE_MEMORY_VERSION = 1
+    PORTABLE_MEMORY_MAX_RECORDS = 100_000
+    PORTABLE_MEMORY_MAX_CONTENT_BYTES = 100 * 1024 * 1024
 
     @staticmethod
     def _integrity_event_fingerprint(event: dict[str, Any]) -> str:
@@ -21257,27 +21262,38 @@ class CortexStore:
         }
 
     def export_portable_bundle(self, user_id: str) -> dict[str, Any]:
-        """The whole memory as one self-verifying, restorable object: the full export payload with
-        its integrity manifest wrapped around it. Because the manifest carries payload_sha256 and
-        the chain head, this bundle can be handed to a different Cortex instance (or kept as a cold
-        archive) and verified byte-for-byte before anything is trusted or restored.
+        """Export a signed, independently verifiable portable-memory v1 bundle.
 
-        The 'explain yourself to a computer once, ever' promise only holds if the memory is
-        portable AND provably intact — this is that guarantee made concrete."""
+        The legacy payload and manifest remain in place for backward compatibility. M8 adds a
+        stable Ed25519 signer identity and an ordered fingerprint proof for the source integrity
+        chain. A recipient can pin ``signature.key_id`` to authenticate future exports.
+        """
         payload = self.export_json(user_id)
         canonical = self._canonical_export_bytes(payload)
         payload_sha256 = hashlib.sha256(canonical).hexdigest()
-        digest = self.integrity_digest(user_id)
-        return {
-            "cortex_bundle_version": self.INTEGRITY_CHAIN_VERSION,
+        integrity_proof = self._portable_integrity_proof(user_id)
+        private_seed, public_key, key_id = self.vault.portable_signing_keypair()
+        bundle = {
+            "cortex_bundle_version": "v2",
+            "protocol": {
+                "name": self.PORTABLE_MEMORY_PROTOCOL,
+                "version": self.PORTABLE_MEMORY_VERSION,
+                "capabilities": [
+                    "signed-export",
+                    "signer-pinning",
+                    "tenant-rebound-import",
+                    "belief-timeline-preservation",
+                ],
+            },
             "manifest": {
                 "generated_at": now_iso(),
                 "user_id": user_id,
                 "chain_version": self.INTEGRITY_CHAIN_VERSION,
-                "chain_head": digest["chain_head"],
-                "event_count": digest["event_count"],
+                "chain_head": integrity_proof["chain_head"],
+                "event_count": integrity_proof["event_count"],
                 "payload_sha256": payload_sha256,
                 "payload_bytes": len(canonical),
+                "signing_key_id": key_id,
                 "record_counts": {
                     "captures": len(payload.get("captures") or []),
                     "memories": len(payload.get("memories") or []),
@@ -21288,14 +21304,108 @@ class CortexStore:
                 },
             },
             "payload": payload,
+            "integrity_proof": integrity_proof,
             "how_to_verify": (
-                "sha256(canonical(bundle.payload without informational exported_at)) must equal "
-                "bundle.manifest.payload_sha256, where canonical = json sorted keys, compact "
-                "separators, ensure_ascii."
+                "Verify payload_sha256 and record counts, fold integrity_proof.event_fingerprints "
+                "from its genesis to reproduce manifest.chain_head, then verify the Ed25519 "
+                "signature over the canonical protocol/manifest/payload/proof envelope. Pin "
+                "signature.key_id when the sender identity is already trusted."
             ),
         }
+        try:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        except ImportError as exc:  # pragma: no cover - packaged backend always includes it
+            raise RuntimeError("Portable bundle signing requires the cryptography package.") from exc
+        signature = Ed25519PrivateKey.from_private_bytes(private_seed).sign(
+            self._canonical_portable_bundle_bytes(bundle)
+        )
+        bundle["signature"] = {
+            "algorithm": "ed25519",
+            "key_id": key_id,
+            "public_key": self._portable_b64encode(public_key),
+            "value": self._portable_b64encode(signature),
+        }
+        return bundle
 
-    def verify_portable_bundle(self, bundle: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _portable_b64encode(value: bytes) -> str:
+        return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _portable_b64decode(value: Any, *, expected_bytes: int, label: str) -> bytes:
+        text = str(value or "").strip()
+        if not text or len(text) > expected_bytes * 4:
+            raise ValueError(f"Portable bundle {label} is malformed.")
+        try:
+            decoded = base64.b64decode(
+                text + "=" * (-len(text) % 4),
+                altchars=b"-_",
+                validate=True,
+            )
+        except (binascii.Error, ValueError, TypeError) as exc:
+            raise ValueError(f"Portable bundle {label} is malformed.") from exc
+        if len(decoded) != expected_bytes:
+            raise ValueError(f"Portable bundle {label} is malformed.")
+        return decoded
+
+    def _portable_integrity_proof(self, user_id: str) -> dict[str, Any]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, object_id, object_type, event_type, metadata_json, created_at
+                FROM memory_events WHERE user_id = ? ORDER BY created_at ASC, rowid ASC
+                """,
+                (user_id,),
+            ).fetchall()
+        fingerprints: list[str] = []
+        head = self.INTEGRITY_CHAIN_GENESIS
+        for row in rows:
+            fingerprint = self._integrity_event_fingerprint(
+                {
+                    "id": row["id"],
+                    "object_id": row["object_id"],
+                    "object_type": row["object_type"],
+                    "event_type": row["event_type"],
+                    "metadata": self._json_or_empty(row["metadata_json"]),
+                    "created_at": row["created_at"],
+                }
+            )
+            fingerprints.append(fingerprint)
+            head = self._integrity_link(head, fingerprint)
+        return {
+            "chain_version": self.INTEGRITY_CHAIN_VERSION,
+            "genesis": self.INTEGRITY_CHAIN_GENESIS,
+            "event_count": len(fingerprints),
+            "event_fingerprints": fingerprints,
+            "chain_head": head,
+        }
+
+    def _canonical_portable_bundle_bytes(self, bundle: dict[str, Any]) -> bytes:
+        protocol = bundle.get("protocol") if isinstance(bundle.get("protocol"), dict) else {}
+        manifest = dict(bundle.get("manifest") or {})
+        manifest.pop("generated_at", None)
+        payload = dict(bundle.get("payload") or {})
+        payload.pop("exported_at", None)
+        proof = bundle.get("integrity_proof") if isinstance(bundle.get("integrity_proof"), dict) else {}
+        envelope = {
+            "protocol": protocol,
+            "manifest": manifest,
+            "payload": payload,
+            "integrity_proof": proof,
+        }
+        return json.dumps(
+            envelope,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+
+    def verify_portable_bundle(
+        self,
+        bundle: dict[str, Any],
+        *,
+        expected_signing_key_id: str | None = None,
+    ) -> dict[str, Any]:
         """Verify a bundle produced by export_portable_bundle WITHOUT trusting its source: recompute
         the payload hash from the embedded payload and check it against the manifest. This is the
         receiving half of portability — before a restore, prove the bundle is internally consistent
@@ -21307,35 +21417,495 @@ class CortexStore:
         payload = bundle.get("payload")
         if not isinstance(manifest, dict) or not isinstance(payload, dict):
             raise ValueError("A portable bundle needs both a 'manifest' object and a 'payload' object.")
+
+        def portable_int(value: Any, default: int = -1) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError, OverflowError):
+                return default
+
         canonical = self._canonical_export_bytes(payload)
         recomputed = hashlib.sha256(canonical).hexdigest()
         claimed = str(manifest.get("payload_sha256") or "").strip().lower()
+        expected_key_id = str(expected_signing_key_id or "").strip().lower()
         payload_matches = bool(claimed) and hmac.compare_digest(claimed, recomputed)
         claimed_counts = manifest.get("record_counts") if isinstance(manifest.get("record_counts"), dict) else {}
+        collection_names = ("captures", "memories", "tasks", "entities", "edges", "imports")
+        collections_valid = all(
+            payload.get(name) is None or isinstance(payload.get(name), list)
+            for name in collection_names
+        )
         actual_counts = {
-            "captures": len(payload.get("captures") or []),
-            "memories": len(payload.get("memories") or []),
-            "tasks": len(payload.get("tasks") or []),
-            "entities": len(payload.get("entities") or []),
-            "edges": len(payload.get("edges") or []),
-            "imports": len(payload.get("imports") or []),
+            name: len(payload.get(name) or []) if isinstance(payload.get(name) or [], list) else 0
+            for name in collection_names
         }
         counts_match = all(
-            int(claimed_counts.get(key) or 0) == actual_counts[key] for key in actual_counts
+            portable_int(claimed_counts.get(key), 0) == actual_counts[key] for key in actual_counts
         ) if claimed_counts else False
+        legacy_bundle = (
+            str(bundle.get("cortex_bundle_version") or "").strip().lower() == "v1"
+            and not bundle.get("protocol")
+            and not bundle.get("integrity_proof")
+            and not bundle.get("signature")
+        )
+        if legacy_bundle:
+            verified = payload_matches and counts_match and collections_valid and not expected_key_id
+            return {
+                "generated_at": now_iso(),
+                "payload_matches": payload_matches,
+                "counts_match": counts_match,
+                "collections_valid": collections_valid,
+                "protocol_matches": False,
+                "tenant_consistent": None,
+                "integrity_matches": False,
+                "proof_structure_valid": False,
+                "public_key_valid": False,
+                "signature_valid": False,
+                "signer_matches": not expected_key_id,
+                "signing_key_id": None,
+                "expected_signing_key_id": expected_key_id or None,
+                "legacy_bundle": True,
+                "importable": False,
+                "verified": verified,
+                "claimed_payload_sha256": claimed or None,
+                "recomputed_payload_sha256": recomputed,
+                "record_counts": actual_counts,
+                "note": (
+                    "Verified legacy unsigned bundle payload. Re-export from Cortex v2 before import."
+                    if verified
+                    else "Legacy bundle payload verification failed."
+                ),
+            }
+        protocol = bundle.get("protocol") if isinstance(bundle.get("protocol"), dict) else {}
+        protocol_matches = (
+            protocol.get("name") == self.PORTABLE_MEMORY_PROTOCOL
+            and portable_int(protocol.get("version"), 0) == self.PORTABLE_MEMORY_VERSION
+        )
+        source_user_id = str(manifest.get("user_id") or "").strip()
+        payload_user_id = str(payload.get("user_id") or "").strip()
+        memories = payload.get("memories") if isinstance(payload.get("memories"), list) else []
+        tenant_consistent = bool(source_user_id) and source_user_id == payload_user_id and all(
+            not isinstance(memory, dict)
+            or not str(memory.get("user_id") or "").strip()
+            or str(memory.get("user_id") or "").strip() == source_user_id
+            for memory in memories
+        )
+
+        proof = bundle.get("integrity_proof") if isinstance(bundle.get("integrity_proof"), dict) else {}
+        proof_structure_valid = isinstance(proof.get("event_fingerprints"), list)
+        fingerprints = proof.get("event_fingerprints") if proof_structure_valid else []
+        proof_head = str(proof.get("genesis") or "")
+        fingerprints_valid = proof_head == self.INTEGRITY_CHAIN_GENESIS
+        if len(fingerprints) > self.PORTABLE_MEMORY_MAX_RECORDS * 20:
+            fingerprints_valid = False
+        for fingerprint in fingerprints:
+            value = str(fingerprint or "").strip().lower()
+            if len(value) != 64 or not re.fullmatch(r"[0-9a-f]{64}", value):
+                fingerprints_valid = False
+                break
+            proof_head = self._integrity_link(proof_head, value)
+        integrity_matches = (
+            fingerprints_valid
+            and proof_structure_valid
+            and portable_int(proof.get("event_count")) == len(fingerprints)
+            and portable_int(manifest.get("event_count")) == len(fingerprints)
+            and hmac.compare_digest(str(proof.get("chain_head") or ""), proof_head)
+            and hmac.compare_digest(str(manifest.get("chain_head") or ""), proof_head)
+        )
+
+        signature = bundle.get("signature") if isinstance(bundle.get("signature"), dict) else {}
+        signing_key_id = str(signature.get("key_id") or "").strip().lower()
+        manifest_key_id = str(manifest.get("signing_key_id") or "").strip().lower()
+        signature_valid = False
+        public_key_valid = False
+        try:
+            public_key_bytes = self._portable_b64decode(
+                signature.get("public_key"), expected_bytes=32, label="public key"
+            )
+            signature_bytes = self._portable_b64decode(
+                signature.get("value"), expected_bytes=64, label="signature"
+            )
+            recomputed_key_id = hashlib.sha256(public_key_bytes).hexdigest()
+            public_key_valid = (
+                signature.get("algorithm") == "ed25519"
+                and bool(signing_key_id)
+                and hmac.compare_digest(signing_key_id, recomputed_key_id)
+                and hmac.compare_digest(manifest_key_id, recomputed_key_id)
+            )
+            if public_key_valid:
+                from cryptography.exceptions import InvalidSignature
+                from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+                try:
+                    Ed25519PublicKey.from_public_bytes(public_key_bytes).verify(
+                        signature_bytes,
+                        self._canonical_portable_bundle_bytes(bundle),
+                    )
+                    signature_valid = True
+                except InvalidSignature:
+                    signature_valid = False
+        except (ImportError, ValueError):
+            signature_valid = False
+        signer_matches = not expected_key_id or (
+            bool(signing_key_id) and hmac.compare_digest(expected_key_id, signing_key_id)
+        )
+        verified = all(
+            (
+                payload_matches,
+                counts_match,
+                collections_valid,
+                protocol_matches,
+                tenant_consistent,
+                integrity_matches,
+                public_key_valid,
+                signature_valid,
+                signer_matches,
+            )
+        )
         return {
             "generated_at": now_iso(),
             "payload_matches": payload_matches,
             "counts_match": counts_match,
-            "verified": payload_matches and counts_match,
+            "collections_valid": collections_valid,
+            "protocol_matches": protocol_matches,
+            "tenant_consistent": tenant_consistent,
+            "integrity_matches": integrity_matches,
+            "proof_structure_valid": proof_structure_valid,
+            "public_key_valid": public_key_valid,
+            "signature_valid": signature_valid,
+            "signer_matches": signer_matches,
+            "signing_key_id": signing_key_id or None,
+            "expected_signing_key_id": expected_key_id or None,
+            "legacy_bundle": False,
+            "importable": verified,
+            "verified": verified,
             "claimed_payload_sha256": claimed or None,
             "recomputed_payload_sha256": recomputed,
             "record_counts": actual_counts,
             "note": (
-                "Verified: the bundle payload is intact and its manifest counts match; safe to restore."
-                if payload_matches and counts_match
-                else "Do NOT restore: the bundle payload does not match its manifest (corrupted or modified)."
+                "Verified: payload, source chain, tenant binding, and Ed25519 signature all match."
+                if verified
+                else "Do NOT import: one or more payload, chain, tenant, signer, or signature checks failed."
             ),
+        }
+
+    def import_portable_bundle(
+        self,
+        user_id: str,
+        bundle: dict[str, Any],
+        *,
+        expected_signing_key_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Verify then atomically merge portable memories into a target tenant.
+
+        Imported ids are deterministically rebound to the target tenant and source signer. Replays
+        are idempotent. A valid but unpinned signer is treated as a connector; an explicitly pinned
+        signer may preserve its original author classes and trust scores. Source transaction time is
+        retained in provenance while local ``recorded_at`` reflects the import transaction.
+        """
+        verdict = self.verify_portable_bundle(
+            bundle,
+            expected_signing_key_id=expected_signing_key_id,
+        )
+        if not verdict.get("importable"):
+            raise ValueError(verdict["note"])
+        manifest = bundle["manifest"]
+        payload = bundle["payload"]
+        source_memories = payload.get("memories") if isinstance(payload.get("memories"), list) else []
+        if len(source_memories) > self.PORTABLE_MEMORY_MAX_RECORDS:
+            raise ValueError("Portable bundle contains too many memory records.")
+        content_bytes = sum(
+            len(str(memory.get("content") or "").encode("utf-8"))
+            for memory in source_memories
+            if isinstance(memory, dict)
+        )
+        if content_bytes > self.PORTABLE_MEMORY_MAX_CONTENT_BYTES:
+            raise ValueError("Portable bundle memory content exceeds the import limit.")
+
+        signing_key_id = str(verdict["signing_key_id"])
+        source_user_id = str(manifest["user_id"])
+        source_chain_head = str(manifest["chain_head"])
+        payload_sha256 = str(manifest["payload_sha256"])
+        signer_pinned = bool(expected_signing_key_id)
+        principal_id = f"portable:{signing_key_id[:48]}"
+        capture_id = stable_id("cap_", f"portable:{user_id}:{signing_key_id}:{source_user_id}")
+        imported_at = now_iso()
+
+        source_by_id: dict[str, dict[str, Any]] = {}
+        for item in source_memories:
+            if not isinstance(item, dict):
+                raise ValueError("Portable bundle memories must be JSON objects.")
+            source_id = str(item.get("id") or "").strip()
+            if not source_id or len(source_id) > 240 or source_id in source_by_id:
+                raise ValueError("Portable bundle contains a missing or duplicate memory id.")
+            source_by_id[source_id] = item
+        id_map = {
+            source_id: stable_id(
+                "mem_",
+                f"portable:{user_id}:{signing_key_id}:{source_user_id}:{source_id}",
+            )
+            for source_id in source_by_id
+        }
+
+        prepared: list[dict[str, Any]] = []
+        for source_id, item in source_by_id.items():
+            original_provenance = item.get("provenance") if isinstance(item.get("provenance"), dict) else {}
+            prior_lineage = original_provenance.get("portable_lineage")
+            lineage = list(prior_lineage)[-7:] if isinstance(prior_lineage, list) else []
+            source_memory_sha256 = hashlib.sha256(
+                json.dumps(
+                    item,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                ).encode("utf-8")
+            ).hexdigest()
+            lineage.append(
+                {
+                    "protocol": self.PORTABLE_MEMORY_PROTOCOL,
+                    "version": self.PORTABLE_MEMORY_VERSION,
+                    "signing_key_id": signing_key_id,
+                    "source_user_id": source_user_id,
+                    "source_memory_id": source_id,
+                    "source_memory_sha256": source_memory_sha256,
+                    "source_chain_head": source_chain_head,
+                    "payload_sha256": payload_sha256,
+                    "source_author_class": normalize_author_class(item.get("author_class")),
+                    "source_author_principal_id": str(item.get("author_principal_id") or ""),
+                    "source_trust_score": normalize_trust_score(
+                        item.get("trust_score"), item.get("author_class")
+                    ),
+                    "signer_pinned": signer_pinned,
+                }
+            )
+            author_class = (
+                normalize_author_class(item.get("author_class")) if signer_pinned else "connector"
+            )
+            original_trust = normalize_trust_score(item.get("trust_score"), item.get("author_class"))
+            trust_score = original_trust if signer_pinned else min(0.7, original_trust)
+            superseded_source_id = str(item.get("superseded_by") or "").strip()
+            if superseded_source_id and superseded_source_id not in id_map:
+                raise ValueError("Portable bundle contains a broken supersession reference.")
+            prepared.append(
+                {
+                    **item,
+                    "id": id_map[source_id],
+                    "source_id": source_id,
+                    "capture_id": capture_id,
+                    "user_id": user_id,
+                    "entity_ids": [],
+                    "provenance": {
+                        **original_provenance,
+                        "source_entity_ids": list(item.get("entity_ids") or []),
+                        "portable_lineage": lineage,
+                    },
+                    "superseded_by": id_map.get(superseded_source_id) if superseded_source_id else None,
+                    "author_class": author_class,
+                    "author_principal_id": principal_id,
+                    "trust_score": trust_score,
+                }
+            )
+
+        capture_record = {
+            "id": capture_id,
+            "user_id": user_id,
+            "source": "cortex-portable-memory",
+            "source_url": f"cortex-bundle://{signing_key_id}/{source_user_id}",
+            "author_principal_id": principal_id,
+            "external_id": payload_sha256,
+            "title": f"Portable memory from {source_user_id}",
+            "raw_text": f"Signed portable memory import from {source_user_id}.",
+            "raw_hash": payload_sha256,
+            "summary": f"{len(prepared)} signed memories imported from {source_user_id}.",
+            "review_status": "approved",
+            "approved_at": imported_at,
+            "archived_at": None,
+            "captured_at": imported_at,
+        }
+        inserted: list[dict[str, Any]] = []
+        skipped = 0
+        with connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            capture_cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO captures
+                (id, user_id, source, source_url, author_principal_id, external_id, title,
+                 raw_text, raw_hash, summary, review_status, approved_at, captured_at)
+                VALUES (?, ?, 'cortex-portable-memory', ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?)
+                """,
+                (
+                    capture_id,
+                    user_id,
+                    f"cortex-bundle://{signing_key_id}/{source_user_id}",
+                    principal_id,
+                    payload_sha256,
+                    f"Portable memory from {source_user_id}",
+                    f"Signed portable memory import from {source_user_id}.",
+                    payload_sha256,
+                    f"{len(prepared)} signed memories imported from {source_user_id}.",
+                    imported_at,
+                    imported_at,
+                ),
+            )
+            capture_inserted = capture_cursor.rowcount > 0
+            for item in prepared:
+                existing = conn.execute(
+                    "SELECT * FROM memories WHERE user_id = ? AND id = ?",
+                    (user_id, item["id"]),
+                ).fetchone()
+                if existing is not None:
+                    existing_provenance = self._json_or_empty(existing["provenance_json"])
+                    existing_lineage = existing_provenance.get("portable_lineage")
+                    expected_source_sha = item["provenance"]["portable_lineage"][-1][
+                        "source_memory_sha256"
+                    ]
+                    same = any(
+                        isinstance(entry, dict)
+                        and entry.get("signing_key_id") == signing_key_id
+                        and entry.get("source_user_id") == source_user_id
+                        and entry.get("source_memory_id") == item["source_id"]
+                        and entry.get("source_memory_sha256") == expected_source_sha
+                        for entry in (existing_lineage if isinstance(existing_lineage, list) else [])
+                    )
+                    if not same:
+                        raise ValueError(
+                            f"Portable memory {item['source_id']} conflicts with an earlier import."
+                        )
+                    skipped += 1
+                    continue
+                status = str(item.get("status") or "active")
+                if status not in {"active", "archived"}:
+                    status = "archived"
+                captured_at = str(item.get("captured_at") or imported_at)
+                topics = [str(value)[:160] for value in list(item.get("topics") or [])[:100]]
+                memory = {
+                    "id": item["id"],
+                    "capture_id": capture_id,
+                    "user_id": user_id,
+                    "kind": str(item.get("kind") or "observation")[:80],
+                    "layer": memory_layer(item.get("kind"), item.get("layer")),
+                    "content": str(item.get("content") or ""),
+                    "summary": str(item.get("summary") or ""),
+                    "source": str(item.get("source") or "portable-memory")[:120],
+                    "source_url": str(item.get("source_url") or "") or None,
+                    "confidence": str(item.get("confidence") or "confirmed")[:40],
+                    "importance": max(1, min(int(item.get("importance") or 3), 5)),
+                    "status": status,
+                    "sector": str(item.get("sector") or "")[:80],
+                    "source_type": str(item.get("source_type") or "portable-memory")[:80],
+                    "provenance": item["provenance"],
+                    "topics": topics,
+                    "entity_ids": [],
+                    "occurred_at": item.get("occurred_at"),
+                    "valid_from": item.get("valid_from"),
+                    "valid_to": item.get("valid_to"),
+                    "superseded_by": item.get("superseded_by"),
+                    "superseded_at": item.get("superseded_at"),
+                    "occurrences": max(1, int(item.get("occurrences") or 1)),
+                    "captured_at": captured_at,
+                    "recorded_at": imported_at,
+                    "updated_at": imported_at,
+                    "raw_excerpt": str(item.get("raw_excerpt") or "")[:2000],
+                    "author_class": item["author_class"],
+                    "author_principal_id": principal_id,
+                    "trust_score": item["trust_score"],
+                }
+                conn.execute(
+                    """
+                    INSERT INTO memories
+                    (id, capture_id, user_id, kind, layer, content, summary, source, source_url,
+                     confidence, importance, status, sector, source_type, provenance_json,
+                     topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by,
+                     superseded_at, occurrences, captured_at, recorded_at, updated_at, raw_excerpt,
+                     author_class, author_principal_id, trust_score)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        memory["id"], capture_id, user_id, memory["kind"], memory["layer"],
+                        memory["content"], memory["summary"], memory["source"], memory["source_url"],
+                        memory["confidence"], memory["importance"], memory["status"], memory["sector"],
+                        memory["source_type"], json.dumps(memory["provenance"], sort_keys=True),
+                        json.dumps(topics), memory["occurred_at"], memory["valid_from"], memory["valid_to"],
+                        memory["superseded_by"], memory["superseded_at"], memory["occurrences"],
+                        memory["captured_at"], imported_at, imported_at, memory["raw_excerpt"],
+                        memory["author_class"], principal_id, memory["trust_score"],
+                    ),
+                )
+                for topic in topics:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO memory_topics(memory_id, topic, user_id, created_at) VALUES (?, ?, ?, ?)",
+                        (memory["id"], topic, user_id, imported_at),
+                    )
+                if status == "active":
+                    conn.execute(
+                        "INSERT INTO memory_fts(memory_id, content, summary, source, topics) VALUES (?, ?, ?, ?, ?)",
+                        (memory["id"], memory["content"], memory["summary"], memory["source"], " ".join(topics)),
+                    )
+                    self._enqueue_embed_memory_job(
+                        conn,
+                        memory_id=memory["id"],
+                        capture_id=capture_id,
+                        user_id=user_id,
+                        content=memory["content"],
+                        summary=memory["summary"],
+                        source=memory["source"],
+                        layer=memory["layer"],
+                        topics=topics,
+                        captured_at=captured_at,
+                    )
+                self._record_authorship_signature(
+                    conn,
+                    user_id,
+                    memory["id"],
+                    memory["author_class"],
+                    principal_id=principal_id,
+                )
+                self._record_belief_snapshot_event(
+                    conn,
+                    user_id,
+                    memory,
+                    created_at=imported_at,
+                    reason="portable_bundle_import",
+                )
+                inserted.append(memory)
+            self._event(
+                conn,
+                user_id,
+                capture_id,
+                "portable_memory_bundle",
+                "imported",
+                {
+                    "signing_key_id": signing_key_id,
+                    "source_user_id": source_user_id,
+                    "source_chain_head": source_chain_head,
+                    "payload_sha256": payload_sha256,
+                    "signer_pinned": signer_pinned,
+                    "inserted": len(inserted),
+                    "skipped": skipped,
+                },
+                created_at=imported_at,
+            )
+            # The native vault is the durable source of truth. Mirror before the SQLite context
+            # commits so any vault failure rolls the database transaction back rather than reporting
+            # a successful import that cannot survive a rebuild.
+            self.vault.write_portable_memory_bundle(
+                capture=capture_record if capture_inserted else None,
+                memories=inserted,
+            )
+        return {
+            "imported_at": imported_at,
+            "verified": True,
+            "protocol": bundle["protocol"],
+            "signing_key_id": signing_key_id,
+            "signer_pinned": signer_pinned,
+            "source_user_id": source_user_id,
+            "source_chain_head": source_chain_head,
+            "payload_sha256": payload_sha256,
+            "capture_id": capture_id,
+            "memories_inserted": len(inserted),
+            "memories_skipped": skipped,
+            "memory_id_map": id_map,
+            "vault_warnings": [],
         }
 
     def grade_answer(

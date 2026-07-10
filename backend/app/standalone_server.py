@@ -1472,7 +1472,40 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     bundle = body.get("bundle")
                     if not isinstance(bundle, dict):
                         raise ValueError("bundle must be a JSON object")
-                    self._send_json(store.verify_portable_bundle(bundle))
+                    expected_value = body.get("expected_signing_key_id")
+                    if expected_value is not None and not isinstance(expected_value, str):
+                        raise ValueError("expected_signing_key_id must be a string")
+                    expected_signing_key_id = str(expected_value or "").strip() or None
+                    if expected_signing_key_id and len(expected_signing_key_id) > 128:
+                        raise ValueError("expected_signing_key_id exceeds 128 characters")
+                    self._send_json(
+                        store.verify_portable_bundle(
+                            bundle,
+                            expected_signing_key_id=expected_signing_key_id,
+                        )
+                    )
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path == "/v1/import/bundle":
+                body = self._json_body()
+                try:
+                    bundle = body.get("bundle")
+                    if not isinstance(bundle, dict):
+                        raise ValueError("bundle must be a JSON object")
+                    expected_value = body.get("expected_signing_key_id")
+                    if expected_value is not None and not isinstance(expected_value, str):
+                        raise ValueError("expected_signing_key_id must be a string")
+                    expected_signing_key_id = str(expected_value or "").strip() or None
+                    if expected_signing_key_id and len(expected_signing_key_id) > 128:
+                        raise ValueError("expected_signing_key_id exceeds 128 characters")
+                    self._send_json(
+                        store.import_portable_bundle(
+                            user_id,
+                            bundle,
+                            expected_signing_key_id=expected_signing_key_id,
+                        )
+                    )
                 except (TypeError, ValueError) as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return

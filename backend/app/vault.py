@@ -317,6 +317,51 @@ class CortexVault:
             written[f"edge:{edge['id']}"] = str(self.write_edge(edge))
         return written
 
+    def write_portable_memory_bundle(
+        self,
+        *,
+        capture: dict[str, Any] | None,
+        memories: list[dict[str, Any]],
+    ) -> None:
+        """Write one portable import's vault records as a rollback-safe group.
+
+        SQLite cannot share a transaction with the filesystem. The caller writes this group before
+        committing SQLite, so a later vault failure must restore every path already touched. Holding
+        the process-wide reentrant vault lock prevents another writer from observing or modifying the
+        snapshot while the group is in flight.
+        """
+        self.ensure()
+        paths: list[Path] = []
+        if capture is not None:
+            day = safe_segment(str(capture.get("captured_at", ""))[:10], "undated")
+            paths.append(
+                self.root / "captures" / day / f"{safe_segment(capture.get('id'), 'capture')}.json"
+            )
+        for memory in memories:
+            kind = safe_segment(memory.get("kind"), "memory")
+            paths.append(
+                self.root / "memories" / kind / f"{safe_segment(memory.get('id'), 'memory')}.json"
+            )
+            paths.append(self.memory_markdown_path(memory))
+
+        with self._lock:
+            snapshots = {path: path.read_bytes() if path.exists() else None for path in paths}
+            try:
+                if capture is not None:
+                    self.write_capture(capture)
+                for memory in memories:
+                    self.write_memory(memory)
+            except Exception:
+                for path, previous in snapshots.items():
+                    if previous is None:
+                        path.unlink(missing_ok=True)
+                        continue
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    temp = path.with_name(path.name + ".portable-rollback.tmp")
+                    temp.write_bytes(previous)
+                    temp.replace(path)
+                raise
+
     def write_capture(self, record: dict[str, Any]) -> Path:
         day = safe_segment(str(record.get("captured_at", ""))[:10], "undated")
         path = self.root / "captures" / day / f"{safe_segment(record.get('id'), 'capture')}.json"
@@ -546,6 +591,59 @@ class CortexVault:
             self._write_json(self.credentials_path, credentials)
             self._chmod_credentials_file()
             return key
+
+    def portable_signing_keypair(self) -> tuple[bytes, bytes, str]:
+        """Return the vault's stable Ed25519 portable-memory signing identity.
+
+        The private seed stays in ``credentials.json`` beside the existing authorship key and is
+        excluded from exports/backups. Bundles carry only the public key plus its SHA-256 key id,
+        so another Cortex instance can verify a signature and optionally pin the expected signer.
+        ``cryptography`` is imported lazily to keep ordinary standalone startup dependency-free.
+        """
+        try:
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        except ImportError as exc:  # pragma: no cover - packaged backend always includes it
+            raise RuntimeError("Portable bundle signing requires the cryptography package.") from exc
+
+        self.ensure()
+        with self._lock:
+            credentials = self._read_json(
+                self.credentials_path,
+                {
+                    "vault_record_type": "credentials",
+                    "vault_record_version": VAULT_VERSION,
+                    "users": {},
+                },
+            )
+            seed_hex = str(credentials.get("portable_ed25519_private_key_hex") or "").strip()
+            private_key = None
+            if seed_hex:
+                try:
+                    seed = bytes.fromhex(seed_hex)
+                    if len(seed) == 32:
+                        private_key = Ed25519PrivateKey.from_private_bytes(seed)
+                except (TypeError, ValueError):
+                    private_key = None
+            if private_key is None:
+                private_key = Ed25519PrivateKey.generate()
+                seed = private_key.private_bytes(
+                    encoding=serialization.Encoding.Raw,
+                    format=serialization.PrivateFormat.Raw,
+                    encryption_algorithm=serialization.NoEncryption(),
+                )
+                credentials["portable_ed25519_private_key_hex"] = seed.hex()
+                credentials["vault_updated_at"] = vault_now()
+                self._write_json(self.credentials_path, credentials)
+                self._chmod_credentials_file()
+            else:
+                seed = bytes.fromhex(seed_hex)
+            public_key = private_key.public_key().public_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw,
+            )
+            key_id = hashlib.sha256(public_key).hexdigest()
+            return seed, public_key, key_id
 
     def delete_source_credential(self, *, user_id: str, source_account_id: str) -> bool:
         with self._lock:

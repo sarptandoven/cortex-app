@@ -1429,6 +1429,21 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertEqual(verified.status_code, 200)
         self.assertTrue(verified.json()["verified"])
 
+        # Import is write-scoped, tenant-rebound, and can pin the source signer.
+        import_headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user + "-target"}
+        imported = self.client.post(
+            "/v1/import/bundle",
+            json={"bundle": bundle, "expected_signing_key_id": bundle["signature"]["key_id"]},
+            headers=import_headers,
+        )
+        self.assertEqual(imported.status_code, 200)
+        self.assertTrue(imported.json()["verified"])
+        self.assertEqual(
+            imported.json()["memories_inserted"] + imported.json()["memories_skipped"],
+            len(bundle["payload"]["memories"]),
+        )
+        self.assertTrue(imported.json()["signer_pinned"])
+
         # A tampered bundle fails verification.
         bundle["payload"]["memories"].append({"id": "injected", "content": "not real"})
         tampered = self.client.post("/v1/export/verify", json={"bundle": bundle}, headers=headers)

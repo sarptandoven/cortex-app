@@ -259,10 +259,17 @@ class VerifyBeliefProofRequest(BaseModel):
 
 
 class VerifyBundleRequest(BaseModel):
-    """Phase D: verify a portable memory bundle WITHOUT trusting its source — recompute the payload
-    hash from the embedded payload and check it against the manifest. Pure function of its input."""
+    """Verify a signed portable memory bundle without trusting its source."""
 
     bundle: dict[str, Any]
+    expected_signing_key_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class ImportBundleRequest(BaseModel):
+    """M8: verify and import a signed portable memory bundle into the authenticated tenant."""
+
+    bundle: dict[str, Any]
+    expected_signing_key_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class MemoryConsolidationRequest(BaseModel):

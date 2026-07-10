@@ -37,7 +37,7 @@ from .models import UserListResponse, UserProvisionRequest, UserProvisionRespons
 from .models import CaptureChangePage, SyncIngestRequest, SyncIngestResponse
 from .models import GradeAnswerRequest, WouldIRequest, DraftAsMeRequest, GradeTwinPredictionRequest
 from .models import SharedMemoryWriteRequest, SharedPrincipalCreateRequest
-from .models import MemoryConsolidationRequest, VerifyBeliefProofRequest, VerifyIntegrityRequest, VerifyBundleRequest
+from .models import ImportBundleRequest, MemoryConsolidationRequest, VerifyBeliefProofRequest, VerifyIntegrityRequest, VerifyBundleRequest
 from .models import WorkingCanvasNodeRequest, WorkingCanvasNodeResponse, WorkingCanvasResponse
 from .oauth_broker import register_oauth_broker_routes
 from .oidc_registry import OidcError, OidcProviderRegistry
@@ -2739,7 +2739,26 @@ def verify_portable_bundle(payload: VerifyBundleRequest, user_id: str = Depends(
     """Phase D: verify a portable bundle WITHOUT trusting its source. A pure function of the bundle
     bytes (it never touches the caller's own store), but still auth-gated for parity with every
     other /v1 route and to keep the compute behind a token."""
-    return store.verify_portable_bundle(payload.bundle)
+    try:
+        return store.verify_portable_bundle(
+            payload.bundle,
+            expected_signing_key_id=payload.expected_signing_key_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/v1/import/bundle")
+def import_portable_bundle(payload: ImportBundleRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    """M8: verify, tenant-rebind, and idempotently import a signed portable memory bundle."""
+    try:
+        return store.import_portable_bundle(
+            user_id,
+            payload.bundle,
+            expected_signing_key_id=payload.expected_signing_key_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/.well-known/cortex.json")

@@ -90,7 +90,8 @@ class FakeStore:
         self.verify_integrity_calls: list[tuple] = []
         self.export_manifest_calls: list[str] = []
         self.export_portable_bundle_calls: list[str] = []
-        self.verify_portable_bundle_calls: list[dict] = []
+        self.verify_portable_bundle_calls: list[tuple[dict, str | None]] = []
+        self.import_portable_bundle_calls: list[tuple[str, dict, str | None]] = []
         self.belief_timeline_calls: list[dict] = []
         self.belief_proof_calls: list[dict] = []
         self.verify_belief_proof_calls: list[dict] = []
@@ -561,8 +562,8 @@ class FakeStore:
             "payload": {"captures": [], "memories": [], "tasks": [], "entities": [], "edges": [], "imports": []},
         }
 
-    def verify_portable_bundle(self, bundle: dict) -> dict:
-        self.verify_portable_bundle_calls.append(bundle)
+    def verify_portable_bundle(self, bundle: dict, *, expected_signing_key_id: str | None = None) -> dict:
+        self.verify_portable_bundle_calls.append((bundle, expected_signing_key_id))
         if not isinstance(bundle, dict) or not isinstance(bundle.get("manifest"), dict) or not isinstance(bundle.get("payload"), dict):
             raise ValueError("A portable bundle needs both a 'manifest' object and a 'payload' object.")
         return {
@@ -571,6 +572,21 @@ class FakeStore:
             "counts_match": True,
             "verified": True,
             "recomputed_payload_sha256": "cafe" * 16,
+        }
+
+    def import_portable_bundle(
+        self,
+        user_id: str,
+        bundle: dict,
+        *,
+        expected_signing_key_id: str | None = None,
+    ) -> dict:
+        self.import_portable_bundle_calls.append((user_id, bundle, expected_signing_key_id))
+        return {
+            "verified": True,
+            "signing_key_id": expected_signing_key_id or "feed" * 16,
+            "memories_inserted": 2,
+            "memories_skipped": 0,
         }
 
     def delete_capture(self, user_id: str, capture_id: str) -> bool:
@@ -5099,13 +5115,29 @@ class StandaloneServerTests(unittest.TestCase):
         with request.urlopen(
             request.Request(
                 self.base_url + "/v1/export/verify",
-                data=json.dumps({"bundle": bundle}).encode("utf-8"),
+                data=json.dumps({"bundle": bundle, "expected_signing_key_id": "feed" * 16}).encode("utf-8"),
                 headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
                 method="POST",
             ),
             timeout=5,
         ) as response:
             self.assertTrue(json.loads(response.read().decode("utf-8"))["verified"])
+        self.assertEqual(self.fake_store.verify_portable_bundle_calls[-1][1], "feed" * 16)
+
+        # POST import-bundle is write-scoped and forwards signer pinning to the store.
+        with request.urlopen(
+            request.Request(
+                self.base_url + "/v1/import/bundle",
+                data=json.dumps({"bundle": bundle, "expected_signing_key_id": "feed" * 16}).encode("utf-8"),
+                headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"},
+                method="POST",
+            ),
+            timeout=5,
+        ) as response:
+            imported = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(imported["memories_inserted"], 2)
+        self.assertEqual(self.fake_store.import_portable_bundle_calls[-1][0], "local")
+        self.assertEqual(self.fake_store.import_portable_bundle_calls[-1][2], "feed" * 16)
 
         # A non-object bundle -> 422.
         with self.assertRaises(error.HTTPError) as context:

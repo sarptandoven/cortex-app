@@ -802,10 +802,25 @@ TOOLS = [
     },
     {
         "name": "verify_memory_bundle",
-        "description": "Verify a portable memory bundle WITHOUT trusting its source: recompute the payload hash from the embedded payload and check it against the manifest. Returns whether the bundle is intact and safe to restore. Pure check of the bundle you pass in.",
+        "description": "Verify a signed portable memory bundle without trusting its source. Optionally pin the expected signing key id.",
         "inputSchema": {
             "type": "object",
-            "properties": {"bundle": {"type": "object", "description": "A bundle produced by export_memory_bundle."}},
+            "properties": {
+                "bundle": {"type": "object", "description": "A bundle produced by export_memory_bundle."},
+                "expected_signing_key_id": {"type": "string", "description": "Optional SHA-256 signer key id to pin."},
+            },
+            "required": ["bundle"],
+        },
+    },
+    {
+        "name": "import_memory_bundle",
+        "description": "Verify and idempotently import memories from a signed portable bundle into this Cortex tenant. Pin expected_signing_key_id to preserve the source author trust class.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "bundle": {"type": "object", "description": "A signed bundle produced by export_memory_bundle."},
+                "expected_signing_key_id": {"type": "string", "description": "Optional SHA-256 signer key id to pin."},
+            },
             "required": ["bundle"],
         },
     },
@@ -1396,6 +1411,7 @@ WRITE_TOOLS = {
     "remember_this",
     "record_shared_memory",
     "record_working_canvas_node",
+    "import_memory_bundle",
     # Grading writes an answer_graded audit event (roadmap: submit_answer_for_grading is write scope).
     "submit_answer_for_grading",
     # Recording a prediction outcome is a durable write to the accuracy ledger (Phase 5.4).
@@ -3327,7 +3343,22 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         bundle = args.get("bundle")
         if not isinstance(bundle, dict):
             raise ValueError("bundle must be a JSON object")
-        return store.verify_portable_bundle(bundle)
+        if args.get("expected_signing_key_id") is not None and not isinstance(args.get("expected_signing_key_id"), str):
+            raise ValueError("expected_signing_key_id must be a string")
+        expected_signing_key_id = _text_arg(args, "expected_signing_key_id", max_chars=128) or None
+        return store.verify_portable_bundle(bundle, expected_signing_key_id=expected_signing_key_id)
+    if name == "import_memory_bundle":
+        bundle = args.get("bundle")
+        if not isinstance(bundle, dict):
+            raise ValueError("bundle must be a JSON object")
+        if args.get("expected_signing_key_id") is not None and not isinstance(args.get("expected_signing_key_id"), str):
+            raise ValueError("expected_signing_key_id must be a string")
+        expected_signing_key_id = _text_arg(args, "expected_signing_key_id", max_chars=128) or None
+        return store.import_portable_bundle(
+            user_id,
+            bundle,
+            expected_signing_key_id=expected_signing_key_id,
+        )
     if name == "write_obsidian_pages":
         return store.agent_payload(
             user_id,
