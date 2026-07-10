@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import unittest
 
-from backend.app.graph_analysis import analyze_entity_graph
+from backend.app.graph_analysis import analyze_entity_graph, personalized_page_rank
 
 
 # --- Tiny builders matching the input contract ------------------------------
@@ -393,6 +393,196 @@ class GraphAnalysisTests(unittest.TestCase):
         self.assertEqual(
             [(b["source"], b["target"]) for b in bridges],
             [("a1", "b2"), ("a2", "b1")],
+        )
+
+
+class PersonalizedPageRankTests(unittest.TestCase):
+    def assert_valid_pagerank(self, result, expected_nodes):
+        self.assertEqual(
+            set(result.keys()), {"scores", "ranked", "iterations", "converged"}
+        )
+        self.assertEqual(set(result["scores"].keys()), set(expected_nodes))
+        self.assertEqual(set(result["ranked"]), set(expected_nodes))
+        self.assertEqual(len(result["ranked"]), len(expected_nodes))
+        self.assertIsInstance(result["iterations"], int)
+        self.assertIsInstance(result["converged"], bool)
+        total = sum(result["scores"].values())
+        self.assertAlmostEqual(total, 1.0, places=12)
+        for score in result["scores"].values():
+            self.assertGreaterEqual(score, 0.0)
+            self.assertLessEqual(score, 1.0)
+            self.assertEqual(score, score)  # not NaN
+            self.assertNotIn(score, (float("inf"), float("-inf")))
+
+    def test_pagerank_accepts_node_ids_or_dicts_and_is_deterministic(self):
+        node_ids = ["c", "a", "b", "d"]
+        edges = [
+            edge("a", "b", weight=2.0),
+            edge("b", "c", weight=1.0),
+            edge("c", "d", weight=0.5),
+        ]
+        result = personalized_page_rank(
+            node_ids, edges, {"a": 1.0}, max_iterations=200, tolerance=1e-12
+        )
+        repeated = personalized_page_rank(
+            node_ids, edges, {"a": 1.0}, max_iterations=200, tolerance=1e-12
+        )
+        dict_nodes_reordered = [node("d"), node("b"), node("a"), node("c")]
+        reversed_edges_reordered = [
+            edge("d", "c", weight=0.5),
+            edge("c", "b", weight=1.0),
+            edge("b", "a", weight=2.0),
+        ]
+        reordered = personalized_page_rank(
+            dict_nodes_reordered,
+            reversed_edges_reordered,
+            {"a": 1.0},
+            max_iterations=200,
+            tolerance=1e-12,
+        )
+
+        self.assertEqual(result, repeated)
+        self.assertEqual(result, reordered)
+        self.assert_valid_pagerank(result, node_ids)
+        self.assertTrue(result["converged"])
+
+    def test_pagerank_seed_localization_and_multi_hop_propagation(self):
+        nodes = ["seed", "hop1", "hop2", "hop3"]
+        edges = [
+            edge("seed", "hop1", weight=1.0),
+            edge("hop1", "hop2", weight=1.0),
+            edge("hop2", "hop3", weight=1.0),
+        ]
+        result = personalized_page_rank(
+            nodes, edges, {"seed": 1.0}, max_iterations=300, tolerance=1e-13
+        )
+
+        self.assert_valid_pagerank(result, nodes)
+        self.assertTrue(result["converged"])
+        local_mass = result["scores"]["seed"] + result["scores"]["hop1"]
+        remote_mass = result["scores"]["hop2"] + result["scores"]["hop3"]
+        self.assertGreater(local_mass, remote_mass)
+        self.assertGreater(result["scores"]["seed"], result["scores"]["hop2"])
+        self.assertGreater(result["scores"]["hop2"], result["scores"]["hop3"])
+        self.assertGreater(result["scores"]["hop3"], 0.0)
+
+    def test_pagerank_weighted_edges_prefer_stronger_neighbor(self):
+        nodes = ["seed", "heavy", "light"]
+        edges = [
+            edge("seed", "heavy", weight=10.0),
+            edge("seed", "light", weight=1.0),
+        ]
+        result = personalized_page_rank(
+            nodes, edges, {"seed": 1.0}, max_iterations=200, tolerance=1e-12
+        )
+
+        self.assert_valid_pagerank(result, nodes)
+        self.assertGreater(result["scores"]["heavy"], result["scores"]["light"])
+        self.assertLess(result["ranked"].index("heavy"), result["ranked"].index("light"))
+
+    def test_pagerank_seed_weights_bias_personalization(self):
+        nodes = ["alpha", "beta"]
+        result = personalized_page_rank(
+            nodes,
+            [],
+            {"alpha": 3.0, "beta": 1.0},
+            max_iterations=50,
+            tolerance=1e-12,
+        )
+
+        self.assert_valid_pagerank(result, nodes)
+        self.assertTrue(result["converged"])
+        self.assertAlmostEqual(result["scores"]["alpha"], 0.75, places=12)
+        self.assertAlmostEqual(result["scores"]["beta"], 0.25, places=12)
+
+    def test_pagerank_combines_duplicates_and_ignores_malformed_edges(self):
+        nodes = ["a", "b", "c"]
+        noisy_edges = [
+            edge("a", "b", weight=1.0),
+            edge("b", "a", weight=2.0),
+            edge("a", "c", weight=1.0),
+            edge("a", "a", weight=100.0),  # self loop ignored
+            edge("a", "ghost", weight=100.0),  # unknown ignored
+            {"source": "a", "target": "b"},  # missing weight ignored
+            {"source": "a", "target": "b", "weight": "bad"},
+            {"source": "a", "target": "b", "weight": -5.0},
+            {"target": "b", "weight": 5.0},
+            "not-an-edge",
+        ]
+        clean_edges = [edge("a", "b", weight=3.0), edge("a", "c", weight=1.0)]
+
+        noisy = personalized_page_rank(
+            nodes, noisy_edges, {"a": 1.0}, max_iterations=200, tolerance=1e-12
+        )
+        clean = personalized_page_rank(
+            nodes, clean_edges, {"a": 1.0}, max_iterations=200, tolerance=1e-12
+        )
+
+        self.assertEqual(noisy, clean)
+        self.assert_valid_pagerank(noisy, nodes)
+        self.assertGreater(noisy["scores"]["b"], noisy["scores"]["c"])
+
+    def test_pagerank_dangling_mass_returns_to_personalization(self):
+        nodes = ["seed", "neighbor", "dangling", "disconnected"]
+        edges = [edge("seed", "neighbor", weight=1.0)]
+        result = personalized_page_rank(
+            nodes,
+            edges,
+            {"dangling": 1.0},
+            max_iterations=50,
+            tolerance=1e-12,
+        )
+
+        self.assert_valid_pagerank(result, nodes)
+        self.assertTrue(result["converged"])
+        self.assertAlmostEqual(result["scores"]["dangling"], 1.0, places=12)
+        self.assertEqual(result["scores"]["seed"], 0.0)
+        self.assertEqual(result["scores"]["neighbor"], 0.0)
+        self.assertEqual(result["scores"]["disconnected"], 0.0)
+
+    def test_pagerank_zero_seed_weights_are_uniform_over_known_seeds(self):
+        nodes = ["a", "b", "c"]
+        result = personalized_page_rank(
+            nodes, [], {"a": 0.0, "c": 0.0}, max_iterations=20, tolerance=1e-12
+        )
+
+        self.assert_valid_pagerank(result, nodes)
+        self.assertAlmostEqual(result["scores"]["a"], 0.5, places=12)
+        self.assertEqual(result["scores"]["b"], 0.0)
+        self.assertAlmostEqual(result["scores"]["c"], 0.5, places=12)
+        self.assertEqual(result["ranked"], ["a", "c", "b"])
+
+    def test_pagerank_invalid_parameters_raise(self):
+        nodes = ["a", "b"]
+        valid_edges = [edge("a", "b", weight=1.0)]
+        invalid_calls = [
+            lambda: personalized_page_rank(nodes, valid_edges, {"a": 1.0}, damping=-0.1),
+            lambda: personalized_page_rank(nodes, valid_edges, {"a": 1.0}, damping=1.0),
+            lambda: personalized_page_rank(
+                nodes, valid_edges, {"a": 1.0}, damping=float("inf")
+            ),
+            lambda: personalized_page_rank(
+                nodes, valid_edges, {"a": 1.0}, max_iterations=0
+            ),
+            lambda: personalized_page_rank(
+                nodes, valid_edges, {"a": 1.0}, max_iterations=True
+            ),
+            lambda: personalized_page_rank(
+                nodes, valid_edges, {"a": 1.0}, tolerance=-1e-9
+            ),
+            lambda: personalized_page_rank(nodes, valid_edges, {"a": -1.0}),
+            lambda: personalized_page_rank(nodes, valid_edges, {}),
+            lambda: personalized_page_rank(nodes, valid_edges, {"ghost": 1.0}),
+            lambda: personalized_page_rank(nodes, valid_edges, [("a", 1.0)]),
+        ]
+        for call in invalid_calls:
+            with self.assertRaises(ValueError):
+                call()
+
+    def test_pagerank_empty_nodes_return_empty_result(self):
+        result = personalized_page_rank([], [edge("a", "b")], {"a": 1.0})
+        self.assertEqual(
+            result, {"scores": {}, "ranked": [], "iterations": 0, "converged": True}
         )
 
 

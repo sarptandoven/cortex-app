@@ -40,6 +40,7 @@ edges between the same unordered pair are summed by weight.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Optional
 
 # Optional accelerator only — every code path below is correct without it. The
@@ -113,6 +114,216 @@ def analyze_entity_graph(nodes: list[dict], edges: list[dict]) -> dict:
         "ranked": ranked,
         "bridges": bridges,
     }
+
+
+def personalized_page_rank(
+    nodes: list[Any],
+    edges: list[dict],
+    seeds: Mapping[Any, Any],
+    *,
+    damping: float = 0.85,
+    max_iterations: int = 100,
+    tolerance: float = 1e-9,
+) -> dict:
+    """Weighted undirected personalized PageRank over a materialized graph.
+
+    The API is pure, deterministic, and stdlib-only. ``nodes`` may be either a
+    list of node ids or node dicts containing ``id``. ``edges`` are dicts with
+    ``source``, ``target``, and positive finite ``weight``. Edges that are
+    malformed, self loops, reference unknown nodes, or have non-positive/non-
+    finite weights are ignored. Duplicate undirected edges are combined by
+    summing their weights.
+
+    ``seeds`` maps seed ids to nonnegative weights. Unknown seed ids are ignored;
+    at least one known seed id must remain for non-empty graphs. If all known
+    seed weights are zero, the personalization vector is uniform over those
+    known seed ids. Dangling mass is redistributed to that personalization
+    vector on every iteration, not uniformly over all nodes.
+
+    Returns::
+
+        {
+          "scores": {node_id: probability},
+          "ranked": [node_id, ...],
+          "iterations": int,
+          "converged": bool,
+        }
+
+    Scores are finite, normalized probabilities in stable id-key order. Ranking
+    tie-breaks by ``(-score rounded to 12 decimals, node_id)``.
+    """
+    damping = _validate_probability_damping(damping)
+    max_iterations = _validate_max_iterations(max_iterations)
+    tolerance = _validate_tolerance(tolerance)
+
+    node_ids = _pagerank_node_ids(nodes)
+    if not node_ids:
+        return {"scores": {}, "ranked": [], "iterations": 0, "converged": True}
+
+    personalization = _personalization_vector(node_ids, seeds)
+    pair_weights = _dedup_pagerank_edges(edges, set(node_ids))
+    adjacency = _build_adjacency(node_ids, pair_weights)
+    weighted_degree = {nid: sum(adjacency[nid].values()) for nid in node_ids}
+
+    scores = dict(personalization)
+    converged = False
+    iterations = 0
+
+    for iteration in range(1, max_iterations + 1):
+        next_scores = {
+            nid: (1.0 - damping) * personalization[nid] for nid in node_ids
+        }
+
+        dangling_mass = sum(
+            scores[nid] for nid in node_ids if weighted_degree[nid] <= 0.0
+        )
+        if dangling_mass:
+            for nid in node_ids:
+                next_scores[nid] += damping * dangling_mass * personalization[nid]
+
+        for source in node_ids:
+            degree = weighted_degree[source]
+            if degree <= 0.0:
+                continue
+            distributable = damping * scores[source] / degree
+            for target in sorted(adjacency[source]):
+                next_scores[target] += distributable * adjacency[source][target]
+
+        next_scores = _normalize_probability_scores(node_ids, next_scores)
+        delta = sum(abs(next_scores[nid] - scores[nid]) for nid in node_ids)
+        scores = next_scores
+        iterations = iteration
+        if delta <= tolerance:
+            converged = True
+            break
+
+    scores = _normalize_probability_scores(node_ids, scores)
+    ranked = sorted(node_ids, key=lambda nid: (-round(scores[nid], 12), nid))
+    return {
+        "scores": scores,
+        "ranked": ranked,
+        "iterations": iterations,
+        "converged": converged,
+    }
+
+
+# --- Personalized PageRank helpers ------------------------------------------
+
+
+def _pagerank_node_ids(nodes: list[Any]) -> list[str]:
+    """Distinct PageRank node ids from node dicts or raw id values, sorted."""
+    seen: set[str] = set()
+    ids: list[str] = []
+    if not isinstance(nodes, list):
+        return ids
+    for node in nodes:
+        nid = _norm_id(node.get("id") if isinstance(node, dict) else node)
+        if not nid or nid in seen:
+            continue
+        seen.add(nid)
+        ids.append(nid)
+    ids.sort()
+    return ids
+
+
+def _personalization_vector(
+    node_ids: list[str], seeds: Mapping[Any, Any]
+) -> dict[str, float]:
+    """Normalize known nonnegative seed weights into a probability vector."""
+    if not isinstance(seeds, Mapping):
+        raise ValueError("seeds must be a mapping of node id to nonnegative weight")
+
+    id_set = set(node_ids)
+    known_seed_ids: set[str] = set()
+    positive_weights: dict[str, float] = {nid: 0.0 for nid in node_ids}
+
+    for raw_seed_id, raw_weight in seeds.items():
+        seed_id = _norm_id(raw_seed_id)
+        weight = _seed_weight(raw_weight)
+        if seed_id not in id_set:
+            continue
+        known_seed_ids.add(seed_id)
+        positive_weights[seed_id] += weight
+
+    if not known_seed_ids:
+        raise ValueError("seeds must include at least one known node id")
+
+    total_positive = sum(positive_weights.values())
+    if total_positive > 0.0:
+        return {nid: positive_weights[nid] / total_positive for nid in node_ids}
+
+    uniform = 1.0 / len(known_seed_ids)
+    return {nid: (uniform if nid in known_seed_ids else 0.0) for nid in node_ids}
+
+
+def _dedup_pagerank_edges(
+    edges: list[dict], id_set: set[str]
+) -> dict[frozenset, float]:
+    """Collapse valid positive-weight PageRank edges by unordered pair."""
+    pair_weights: dict[frozenset, float] = {}
+    if not isinstance(edges, list):
+        return pair_weights
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        a = _norm_id(edge.get("source"))
+        b = _norm_id(edge.get("target"))
+        if not a or not b or a == b:
+            continue
+        if a not in id_set or b not in id_set:
+            continue
+        if "weight" not in edge:
+            continue
+        weight = _as_float(edge.get("weight"), default=0.0)
+        if weight <= 0.0:
+            continue
+        key = frozenset((a, b))
+        pair_weights[key] = pair_weights.get(key, 0.0) + weight
+    return pair_weights
+
+
+def _normalize_probability_scores(
+    node_ids: list[str], scores: dict[str, float]
+) -> dict[str, float]:
+    """Return finite scores normalized to sum to one in stable node order."""
+    cleaned = {nid: _finite_nonnegative(scores.get(nid, 0.0)) for nid in node_ids}
+    total = sum(cleaned[nid] for nid in node_ids)
+    if total <= 0.0:
+        uniform = 1.0 / len(node_ids)
+        return {nid: uniform for nid in node_ids}
+    return {nid: cleaned[nid] / total for nid in node_ids}
+
+
+def _validate_probability_damping(value: Any) -> float:
+    damping = _as_float(value, default=float("nan"))
+    if damping != damping or damping < 0.0 or damping >= 1.0:
+        raise ValueError("damping must be finite and satisfy 0 <= damping < 1")
+    return damping
+
+
+def _validate_max_iterations(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError("max_iterations must be a positive integer")
+    return value
+
+
+def _validate_tolerance(value: Any) -> float:
+    tolerance = _as_float(value, default=float("nan"))
+    if tolerance != tolerance or tolerance < 0.0:
+        raise ValueError("tolerance must be finite and nonnegative")
+    return tolerance
+
+
+def _seed_weight(value: Any) -> float:
+    weight = _as_float(value, default=float("nan"))
+    if weight != weight or weight < 0.0:
+        raise ValueError("seed weights must be finite and nonnegative")
+    return weight
+
+
+def _finite_nonnegative(value: Any) -> float:
+    result = _as_float(value, default=0.0)
+    return result if result > 0.0 else 0.0
 
 
 # --- Input normalization ----------------------------------------------------

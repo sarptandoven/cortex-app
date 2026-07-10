@@ -156,6 +156,8 @@ class FakeStore:
         source_account_id: str | None = None,
         as_of: str | None = None,
         metadata_filters: dict | None = None,
+        include_related: bool = False,
+        association_mode: str | None = None,
     ) -> list[dict]:
         self.search_calls.append(
             {
@@ -169,6 +171,8 @@ class FakeStore:
                 "source_account_id": source_account_id,
                 "as_of": as_of,
                 "metadata_filters": metadata_filters or {},
+                "include_related": include_related,
+                "association_mode": association_mode,
             }
         )
         return [
@@ -2876,9 +2880,20 @@ class StandaloneServerTests(unittest.TestCase):
                     "source_account_id": None,
                     "as_of": None,
                     "metadata_filters": {"repository": None, "channel": None, "record_scope": None, "state": None, "project": None},
+                    "include_related": False,
+                    "association_mode": None,
                 }
             ],
         )
+
+    def test_search_forwards_associative_recall_options_to_store(self) -> None:
+        with self.get("/v1/search?query=voice&associative=true&association_mode=bounded&limit=5") as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertTrue(payload["results"])
+        self.assertEqual(self.fake_store.search_calls[-1]["include_related"], True)
+        self.assertEqual(self.fake_store.search_calls[-1]["association_mode"], "bounded")
 
     def test_search_forwards_sector_to_store(self) -> None:
         with self.get("/v1/search?query=release&sector=Project%20Atlas&limit=4") as response:

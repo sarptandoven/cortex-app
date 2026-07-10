@@ -2066,6 +2066,11 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                 source = (params.get("source") or [None])[0]
                 source_account_id = (params.get("source_account_id") or [None])[0]
                 as_of = (params.get("as_of") or [None])[0]
+                associative = str((params.get("associative") or [""])[0]).strip().lower() in {"1", "true", "yes", "on"}
+                association_mode = str((params.get("association_mode") or [""])[0]).strip().lower() or None
+                if association_mode not in {None, "one_hop", "bounded", "ppr"}:
+                    self._send_json({"detail": "association_mode must be one_hop, bounded, or ppr"}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                    return
                 metadata_filters = {
                     "repository": (params.get("repository") or [None])[0],
                     "channel": (params.get("channel") or [None])[0],
@@ -2085,6 +2090,8 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         source=source,
                         source_account_id=source_account_id,
                         as_of=as_of,
+                        associative=associative,
+                        association_mode=association_mode,
                         metadata_filters=metadata_filters,
                     )
                 elif hasattr(store, "public_search"):
@@ -2098,6 +2105,8 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         source=source,
                         source_account_id=source_account_id,
                         as_of=as_of,
+                        include_related=associative,
+                        association_mode=association_mode,
                         metadata_filters=metadata_filters,
                     )
                     payload = {"query": query, "sector": sector, "filters": {}, "results": results, "retrieval": {"diagnostics_unavailable": True}}
@@ -2112,6 +2121,8 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         source=source,
                         source_account_id=source_account_id,
                         as_of=as_of,
+                        include_related=associative,
+                        association_mode=association_mode,
                         metadata_filters=metadata_filters,
                     )
                     payload = {"query": query, "sector": sector, "filters": {}, "results": results, "retrieval": {"diagnostics_unavailable": True}}

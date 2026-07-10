@@ -63,7 +63,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 BENCH_NAME = "memorytruth-light"
-BENCH_VERSION = 5
+BENCH_VERSION = 6
 
 _METACOGNITION_THRESHOLD = 0.6
 _METACOGNITION_BIN_COUNT = 5
@@ -111,6 +111,7 @@ class Scenario:
     canvas_nodes: list[dict[str, Any]] = field(default_factory=list)   # {node_id, label, summary, raw_text, slug, predecessor_node_id}
     metacognition_cases: list[dict[str, Any]] = field(default_factory=list)  # {content?, question, slug, answerability, expected_verdict}
     shared_memory_cases: list[dict[str, Any]] = field(default_factory=list)
+    associative_cases: list[dict[str, Any]] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -121,6 +122,7 @@ class Scenario:
             "canvas_nodes": self.canvas_nodes,
             "metacognition_cases": self.metacognition_cases,
             "shared_memory_cases": self.shared_memory_cases,
+            "associative_cases": self.associative_cases,
         }
 
 
@@ -133,6 +135,7 @@ def generate_scenario(
     canvas_n: int = 5,
     metacognition_n: int = 4,
     shared_memory_n: int = 20,
+    associative_n: int = 4,
 ) -> Scenario:
     rng = random.Random(seed)
     scenario = Scenario(seed=seed)
@@ -250,6 +253,41 @@ def generate_scenario(
                 "legitimate_slugs": [_slug(shared_rng) for _ in range(shared_memory_n)],
             }
         )
+
+    # M7 uses an independent RNG namespace so adding associative cases cannot
+    # change any v5 scenario bytes. Each case is a true two-hop chain plus
+    # stronger one-hop distractors. Direct, one-hop, and bounded strongest-path
+    # retrieval should miss the hidden target under the two-slot related budget;
+    # personalized PageRank's verified deep-slot policy should recover it.
+    associative_rng = random.Random(f"{seed}:memorytruth-m7")
+    associative_combos = [(a, n) for a in _ADJECTIVES for n in _NOUNS]
+    associative_rng.shuffle(associative_combos)
+    for index in range(max(0, associative_n)):
+        person_adj, _ = associative_combos[index * 4]
+        project_adj, project_noun = associative_combos[index * 4 + 1]
+        program_adj, program_noun = associative_combos[index * 4 + 2]
+        isolated_adj, isolated_noun = associative_combos[index * 4 + 3]
+        person = f"Dana {person_adj.title()}"
+        project = f"{project_adj.title()} {project_noun.title()}"
+        program = f"{program_adj.title()} {program_noun.title()}"
+        isolated = f"{isolated_adj.title()} {isolated_noun.title()}"
+        slug = _slug(associative_rng)
+        reject_slug = _slug(associative_rng)
+        scenario.associative_cases.append(
+            {
+                "query": f"{person} accountable portfolio",
+                "slug": slug,
+                "reject_slug": reject_slug,
+                "seed_content": f"{person} is accountable for the portfolio named {project}.",
+                "bridge_content": f"The {project} portfolio maps to the internal program called {program}.",
+                "target_content": f"The {program} program uses calibrated release threshold {slug}.",
+                "distractor_contents": [
+                    f"The {project} portfolio review lane {lane} uses checklist marker {lane + 11}."
+                    for lane in range(3)
+                ],
+                "isolated_content": f"The unrelated {isolated} program uses isolation token {reject_slug}.",
+            }
+        )
     return scenario
 
 
@@ -261,7 +299,13 @@ class BenchClient(Protocol):
     def configure(self) -> None: ...
     def remember(self, content: str) -> list[str]: ...
     def ask(self, question: str) -> dict[str, Any]: ...
-    def search(self, query: str) -> Any: ...
+    def search(
+        self,
+        query: str,
+        *,
+        associative: bool = False,
+        association_mode: str | None = None,
+    ) -> Any: ...
     def resolve_conflict(self, stale_id: str, current_id: str) -> bool: ...
     def belief_timeline(self, topic: str) -> dict[str, Any]: ...
     def integrity_digest(self) -> dict[str, Any]: ...
@@ -329,8 +373,17 @@ class InProcessClient:
     def ask(self, question: str) -> dict[str, Any]:
         return self._tool("ask_memory", {"query": question})
 
-    def search(self, query: str) -> Any:
-        return self._tool("search_memory", {"query": query, "top_k": 8})
+    def search(
+        self,
+        query: str,
+        *,
+        associative: bool = False,
+        association_mode: str | None = None,
+    ) -> Any:
+        args: dict[str, Any] = {"query": query, "top_k": 8, "associative": associative}
+        if association_mode:
+            args["association_mode"] = association_mode
+        return self._tool("search_memory", args)
 
     def resolve_conflict(self, stale_id: str, current_id: str) -> bool:
         return bool(self.store.resolve_conflict(self.user_id, stale_id=stale_id, current_id=current_id))
@@ -508,8 +561,17 @@ class HTTPClient:
     def ask(self, question: str) -> dict[str, Any]:
         return self._tool("ask_memory", {"query": question})
 
-    def search(self, query: str) -> Any:
-        return self._tool("search_memory", {"query": query, "top_k": 8})
+    def search(
+        self,
+        query: str,
+        *,
+        associative: bool = False,
+        association_mode: str | None = None,
+    ) -> Any:
+        args: dict[str, Any] = {"query": query, "top_k": 8, "associative": associative}
+        if association_mode:
+            args["association_mode"] = association_mode
+        return self._tool("search_memory", args)
 
     def resolve_conflict(self, stale_id: str, current_id: str) -> bool:
         result = self._request(
@@ -1061,6 +1123,7 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
     belief_proof = CategoryScore()
     metacognition = CategoryScore()
     shared_memory = CategoryScore()
+    associative_recall = CategoryScore()
 
     # --- Seed simple facts -------------------------------------------------
     for fact in scenario.facts:
@@ -1071,6 +1134,17 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
     for case in scenario.metacognition_cases:
         if case.get("content"):
             client.remember(str(case["content"]))
+
+    # M7 associative recall chains are seeded before distractors so direct
+    # lexical retrieval sees the obvious first-hop fact, while the answer slug is
+    # only reachable by traversing seed -> bridge -> target.
+    for case in scenario.associative_cases:
+        client.remember(str(case["seed_content"]))
+        client.remember(str(case["bridge_content"]))
+        client.remember(str(case["target_content"]))
+        for distractor in case.get("distractor_contents") or []:
+            client.remember(str(distractor))
+        client.remember(str(case["isolated_content"]))
 
     # --- Seed revisions and supersede v1 -> v2 (belief revision) -----------
     revision_ids: list[dict[str, Any]] = []
@@ -1810,6 +1884,79 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
             f"all={all_verification.get('verified')} attacker={attacker_verification.get('verified')}",
         )
 
+    # --- M7 bounded associative recall ----------------------------------------
+    associative_metrics = {
+        "cases": len(scenario.associative_cases),
+        "direct_hits": 0,
+        "one_hop_hits": 0,
+        "bounded_hits": 0,
+        "ppr_hits": 0,
+        "ppr_reject_leaks": 0,
+        "verified_paths": 0,
+        "deep_paths": 0,
+    }
+    for case in scenario.associative_cases:
+        query = str(case["query"])
+        slug = str(case["slug"])
+        reject_slug = str(case["reject_slug"])
+
+        mode_payloads = {
+            "direct": client.search(query, associative=False),
+            "one_hop": client.search(query, associative=True, association_mode="one_hop"),
+            "bounded": client.search(query, associative=True, association_mode="bounded"),
+            "ppr": client.search(query, associative=True, association_mode="ppr"),
+        }
+        mode_text: dict[str, str] = {}
+        for name, payload in mode_payloads.items():
+            strings: list[str] = []
+            _collect_strings(payload, "content", strings)
+            _collect_strings(payload, "summary", strings)
+            mode_text[name] = "\n".join(strings)
+
+        direct_hit = slug in mode_text["direct"]
+        one_hop_hit = slug in mode_text["one_hop"]
+        bounded_hit = slug in mode_text["bounded"]
+        ppr_hit = slug in mode_text["ppr"]
+        reject_leaked = reject_slug in mode_text["ppr"]
+        associative_metrics["direct_hits"] += int(direct_hit)
+        associative_metrics["one_hop_hits"] += int(one_hop_hit)
+        associative_metrics["bounded_hits"] += int(bounded_hit)
+        associative_metrics["ppr_hits"] += int(ppr_hit)
+        associative_metrics["ppr_reject_leaks"] += int(reject_leaked)
+
+        ppr_items = mode_payloads["ppr"] if isinstance(mode_payloads["ppr"], list) else []
+        target_items = [
+            item
+            for item in ppr_items
+            if isinstance(item, dict) and slug in str(item.get("content") or item.get("summary") or "")
+        ]
+        relationship = (
+            target_items[0].get("relationship")
+            if target_items and isinstance(target_items[0].get("relationship"), dict)
+            else {}
+        )
+        verified_path = (
+            bool(relationship.get("path_verified"))
+            and relationship.get("kind") == "associative"
+            and str(relationship.get("algorithm") or "") == "personalized_pagerank"
+        )
+        deep_path = int(relationship.get("depth") or 0) >= 2
+        associative_metrics["verified_paths"] += int(verified_path)
+        associative_metrics["deep_paths"] += int(deep_path)
+
+        associative_recall.record(
+            (not direct_hit) and (not one_hop_hit) and (not bounded_hit) and ppr_hit and not reject_leaked,
+            "associative comparison: "
+            f"query={query!r} direct={direct_hit} one_hop={one_hop_hit} "
+            f"bounded={bounded_hit} ppr={ppr_hit} reject_leaked={reject_leaked}",
+        )
+        associative_recall.record(
+            ppr_hit and verified_path and deep_path,
+            "associative proof: "
+            f"query={query!r} path_verified={verified_path} depth={relationship.get('depth')} "
+            f"algorithm={relationship.get('algorithm')!r}",
+        )
+
     categories = {
         "recall": recall,
         "abstention": abstention,
@@ -1819,6 +1966,7 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
         "belief_proof": belief_proof,
         "metacognition": metacognition,
         "shared_memory": shared_memory,
+        "associative_recall": associative_recall,
     }
     total_passed = sum(c.passed for c in categories.values())
     total_probes = sum(c.total for c in categories.values())
@@ -1841,6 +1989,7 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
         },
     }
     category_payloads["shared_memory"]["metrics"] = shared_metrics
+    category_payloads["associative_recall"]["metrics"] = associative_metrics
     return {
         "bench": BENCH_NAME,
         "version": BENCH_VERSION,
@@ -1857,6 +2006,7 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
             "belief_proof grading recomputes fingerprints, chain folds, and snapshot hashes independently; it never trusts the store's verified flag.",
             "metacognition grading derives answerability from seeded-vs-absent gold, computes all metrics independently, then cross-checks Cortex's scorecard.",
             "shared_memory reports observed false-positive rate over a deterministic finite sample; it is not a statistical confidence bound.",
+            "associative_recall compares direct, one-hop, bounded strongest-path, and personalized PageRank retrieval over deterministic two-hop probes.",
         ],
     }
 

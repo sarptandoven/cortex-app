@@ -832,6 +832,7 @@ class JobRunResponse(BaseModel):
 class SearchResponse(BaseModel):
     query: str
     sector: str | None = None
+    associative: bool = False
     filters: dict[str, Any] | None = None
     results: list[dict[str, Any]]
     retrieval: dict[str, Any] | None = None

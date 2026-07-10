@@ -32,7 +32,7 @@ from .query_plan import (
 from .mirror import compute_mirror_insight
 from .profile import build_profile_sections
 from .condense import condense_section
-from .graph_analysis import analyze_entity_graph
+from .graph_analysis import analyze_entity_graph, personalized_page_rank
 from .extractor import content_is_machine_artifact, extract_context, now_iso, stable_id
 from .provenance import (
     base_trust_score,
@@ -80,7 +80,26 @@ BACKEND_FEATURES = (
     "notion-token-connector",
     "sync-device-manifests",
     "sync-receipts",
+    "associative-recall",
 )
+
+# M7 associative recall is deliberately bounded. It only fills slots that the
+# existing include_related path already reserved, so direct hybrid-search hits
+# keep their order and latency remains proportional to a small local subgraph.
+ASSOCIATIVE_RECALL_MAX_DEPTH = 3
+ASSOCIATIVE_RECALL_MAX_SEEDS = 6
+ASSOCIATIVE_RECALL_MAX_NODES = 240
+ASSOCIATIVE_RECALL_MAX_EDGES = 960
+ASSOCIATIVE_RECALL_DAMPING = 0.82
+ASSOCIATIVE_RECALL_MIN_PATH_STRENGTH = 0.12
+ASSOCIATIVE_RECALL_TRUST_FLOOR = 0.35
+ASSOCIATIVE_RELATION_FACTORS: dict[str, float] = {
+    "canvas_edge": 1.0,
+    "obsidian_link": 0.98,
+    "shared_entity": 0.9,
+    "same_capture": 0.82,
+    "shared_topic": 0.58,
+}
 SUPPORT_BUNDLE_SCHEMA = 1
 DEFAULT_BACKUP_RETENTION_COUNT = 20
 DEFAULT_BACKUP_RETENTION_DAYS = 0
@@ -10256,6 +10275,7 @@ class CortexStore:
         source_account_id: str | None = None,
         metadata_filters: dict[str, Any] | None = None,
         include_related: bool = False,
+        association_mode: str | None = None,
         as_of: str | None = None,
         _diagnostics: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
@@ -10289,8 +10309,10 @@ class CortexStore:
             "fallback_like": 0,
             "lexical_fallback": 0,
             "related": 0,
+            "associative": 0,
             "task": 0,
         }
+        associative_diagnostics: dict[str, Any] = {}
         vector_available = False
         vector_count = 0
         active_memory_count = 0
@@ -10438,38 +10460,63 @@ class CortexStore:
         if include_related and memory_results and limit > 1:
             related_slot_count = min(2, max(1, limit // 4), limit - 1)
             anchor_results = memory_results[: max(1, limit - related_slot_count)]
-            with connect(self.db_path) as conn:
-                user_settings = self._settings(conn, user_id)
-                related_rows = self._related_memory_rows(
-                    conn,
-                    user_id,
-                    anchor_results,
-                    related_slot_count,
-                    kind=kind,
-                    layer=layer,
-                    sector=sector,
-                    source=source,
-                    source_account_id=source_account_id,
-                    metadata_filters=metadata_filters,
-                    as_of=as_of,
-                    user_settings=user_settings,
-                )
-            mode_counts["related"] = len(related_rows)
             seen_memory_ids = {item["id"] for item in anchor_results}
             related_results: list[dict[str, Any]] = []
-            for row in related_rows:
-                item = self._memory_from_row(row)
-                item["relationship"] = {
-                    "kind": row["relation_kind"],
-                    "weight": row["relation_weight"],
-                    "related_to_id": row["related_to_id"],
-                }
+            normalized_association_mode = str(association_mode or "ppr").strip().lower().replace("-", "_")
+            if normalized_association_mode not in {"one_hop", "bounded", "ppr"}:
+                normalized_association_mode = "ppr"
+            with connect(self.db_path) as conn:
+                user_settings = self._settings(conn, user_id)
+                if normalized_association_mode != "one_hop":
+                    related_results, associative_diagnostics = self._associative_memory_results(
+                        conn,
+                        user_id,
+                        anchor_results,
+                        related_slot_count,
+                        mode=normalized_association_mode,
+                        kind=kind,
+                        layer=layer,
+                        sector=sector,
+                        source=source,
+                        source_account_id=source_account_id,
+                        metadata_filters=metadata_filters,
+                        as_of=as_of,
+                        user_settings=user_settings,
+                    )
+                    mode_counts["associative"] = len(related_results)
+                if not related_results:
+                    related_rows = self._related_memory_rows(
+                        conn,
+                        user_id,
+                        anchor_results,
+                        related_slot_count,
+                        kind=kind,
+                        layer=layer,
+                        sector=sector,
+                        source=source,
+                        source_account_id=source_account_id,
+                        metadata_filters=metadata_filters,
+                        as_of=as_of,
+                        user_settings=user_settings,
+                    )
+                    mode_counts["related"] = len(related_rows)
+                    for row in related_rows:
+                        item = self._memory_from_row(row)
+                        item["relationship"] = {
+                            "kind": row["relation_kind"],
+                            "weight": row["relation_weight"],
+                            "related_to_id": row["related_to_id"],
+                        }
+                        if item["id"] in seen_memory_ids:
+                            continue
+                        related_results.append(item)
+                        seen_memory_ids.add(item["id"])
+                        if len(related_results) >= related_slot_count:
+                            break
+            for item in related_results:
                 if item["id"] in seen_memory_ids:
                     continue
-                related_results.append(item)
                 seen_memory_ids.add(item["id"])
-                if len(related_results) >= related_slot_count:
-                    break
             if related_results:
                 combined_results = [*anchor_results, *related_results]
                 for item in memory_results:
@@ -10499,6 +10546,7 @@ class CortexStore:
                     vector_indexed_memories=vector_count,
                     active_memories=active_memory_count,
                     query_empty=False,
+                    associative=associative_diagnostics,
                 )
             )
         return final_results
@@ -10516,6 +10564,7 @@ class CortexStore:
         source_account_id: str | None = None,
         metadata_filters: dict[str, Any] | None = None,
         include_related: bool = False,
+        association_mode: str | None = None,
         as_of: str | None = None,
     ) -> list[dict[str, Any]]:
         results = self.search(
@@ -10529,6 +10578,7 @@ class CortexStore:
             source_account_id=source_account_id,
             metadata_filters=metadata_filters,
             include_related=include_related,
+            association_mode=association_mode,
             as_of=as_of,
         )
         return self._shared_payload(results, redact_sensitive=bool(self.settings(user_id)["redact_sensitive_context"]))
@@ -10546,6 +10596,8 @@ class CortexStore:
         source_account_id: str | None = None,
         metadata_filters: dict[str, Any] | None = None,
         include_related: bool = False,
+        associative: bool = False,
+        association_mode: str | None = None,
         as_of: str | None = None,
     ) -> dict[str, Any]:
         diagnostics: dict[str, Any] = {}
@@ -10559,13 +10611,15 @@ class CortexStore:
             source=source,
             source_account_id=source_account_id,
             metadata_filters=metadata_filters,
-            include_related=include_related,
+            include_related=include_related or associative,
+            association_mode=association_mode,
             as_of=as_of,
             _diagnostics=diagnostics,
         )
         return {
             "query": query,
             "sector": sector,
+            "associative": bool(include_related or associative),
             "filters": _retrieval_filter_payload(source=source, source_account_id=source_account_id, metadata_filters=metadata_filters, as_of=as_of),
             "results": self._shared_payload(results, redact_sensitive=bool(self.settings(user_id)["redact_sensitive_context"])),
             "retrieval": diagnostics,
@@ -10595,6 +10649,7 @@ class CortexStore:
         vector_indexed_memories: int,
         active_memories: int,
         query_empty: bool,
+        associative: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         embedding = embedding_status()
         degraded_reasons: list[str] = []
@@ -10609,7 +10664,7 @@ class CortexStore:
             for mode in ("fallback_like", "lexical_fallback", "recent")
             if int(mode_counts.get(mode) or 0) > 0
         ]
-        return {
+        payload = {
             "query_empty": query_empty,
             "limit": limit,
             "candidate_limit": candidate_limit,
@@ -10626,6 +10681,9 @@ class CortexStore:
             "embedding_model": embedding.get("model"),
             "embedding_dimensions": embedding.get("dimensions"),
         }
+        if associative:
+            payload["associative"] = associative
+        return payload
 
     def mirror_insight(self, user_id: str) -> dict[str, Any] | None:
         """The "Mirror Moment": ONE deterministic, cited thing Cortex has learned about the user
@@ -12565,6 +12623,29 @@ class CortexStore:
             return True
         if relation_kind == "obsidian_link":
             return True
+        if relation_kind == "associative":
+            try:
+                depth = int(relationship.get("depth") or 0)
+                path_strength = float(relationship.get("path_strength") or 0.0)
+            except (TypeError, ValueError):
+                return False
+            path = relationship.get("path") if isinstance(relationship.get("path"), list) else []
+            if (
+                relationship.get("path_verified") is not True
+                or depth < 1
+                or depth > ASSOCIATIVE_RECALL_MAX_DEPTH
+                or len(path) != depth
+                or path_strength < ASSOCIATIVE_RECALL_MIN_PATH_STRENGTH
+            ):
+                return False
+            cursor = related_to_id
+            for step in path:
+                if not isinstance(step, dict) or str(step.get("source_id") or "") != cursor:
+                    return False
+                cursor = str(step.get("target_id") or "")
+                if not cursor:
+                    return False
+            return cursor == str(item.get("id") or "")
 
         item_sector = str(item.get("sector") or "").strip().casefold()
         primary_sector = str(primary.get("sector") or "").strip().casefold()
@@ -25846,6 +25927,298 @@ class CortexStore:
                 if value:
                     buckets.append((key, value.casefold()))
         return buckets
+
+    def _associative_node_quality(self, item: dict[str, Any], *, reference_time: datetime) -> float:
+        """Bound graph influence without turning trust or recency into a hard recall veto."""
+        trust = normalize_trust_score(item.get("trust_score"), item.get("author_class"))
+        age_seconds = _age_seconds(str(item.get("captured_at") or ""), now=reference_time)
+        age_days = max(0.0, float(age_seconds or 0) / 86400.0)
+        temporal = 0.82 + (0.18 * math.exp(-math.log(2.0) * age_days / 730.0))
+        return max(0.05, min(1.0, (0.55 + (0.45 * trust)) * temporal))
+
+    def _associative_relation_weight(
+        self,
+        relation_kind: str,
+        relation_weight: Any,
+        left: dict[str, Any],
+        right: dict[str, Any],
+        *,
+        reference_time: datetime,
+    ) -> float:
+        try:
+            raw_weight = float(relation_weight)
+        except (TypeError, ValueError):
+            raw_weight = 0.0
+        raw_weight = max(0.0, min(1.0, raw_weight))
+        factor = ASSOCIATIVE_RELATION_FACTORS.get(str(relation_kind or "").strip().lower(), 0.7)
+        endpoint_quality = math.sqrt(
+            self._associative_node_quality(left, reference_time=reference_time)
+            * self._associative_node_quality(right, reference_time=reference_time)
+        )
+        return max(0.0, min(1.0, raw_weight * factor * endpoint_quality))
+
+    def _associative_memory_results(
+        self,
+        conn,
+        user_id: str,
+        primary_results: list[dict[str, Any]],
+        limit: int,
+        *,
+        mode: str,
+        kind: str | None,
+        layer: str | None,
+        sector: str | None,
+        source: str | None = None,
+        source_account_id: str | None = None,
+        metadata_filters: dict[str, Any] | None = None,
+        as_of: str | None = None,
+        user_settings: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Rank a small current-truth memory subgraph around hybrid-search seeds.
+
+        Every node is re-gated through ``_memory_filters`` before it enters the
+        graph. The traversal is bounded by depth, nodes and edges, and only fills
+        the existing related-result budget. ``bounded`` is the deterministic
+        strongest-path baseline used by MemoryTruth; ``ppr`` adds degree-normalized
+        personalized PageRank over the same graph.
+        """
+        diagnostics: dict[str, Any] = {
+            "algorithm": "personalized_pagerank" if mode == "ppr" else "bounded_strongest_path",
+            "max_depth": ASSOCIATIVE_RECALL_MAX_DEPTH,
+            "seed_count": 0,
+            "node_count": 0,
+            "edge_count": 0,
+            "candidate_count": 0,
+            "returned": 0,
+        }
+        if limit <= 0:
+            return [], diagnostics
+
+        seeds = [
+            item
+            for item in primary_results
+            if item.get("result_type", "memory") == "memory" and str(item.get("id") or "")
+        ][:ASSOCIATIVE_RECALL_MAX_SEEDS]
+        seeds = [
+            item
+            for item in seeds
+            if normalize_trust_score(item.get("trust_score"), item.get("author_class")) >= ASSOCIATIVE_RECALL_TRUST_FLOOR
+        ]
+        if not seeds:
+            return [], diagnostics
+
+        normalized_as_of = _normalize_as_of_filter(as_of)
+        reference_time = _parse_iso_timestamp(normalized_as_of) or datetime.now(timezone.utc)
+        node_items: dict[str, dict[str, Any]] = {str(item["id"]): item for item in seeds}
+        seed_ids = list(node_items)
+        diagnostics["seed_count"] = len(seed_ids)
+        depth_by_id: dict[str, int] = {memory_id: 0 for memory_id in seed_ids}
+        root_by_id: dict[str, str] = {memory_id: memory_id for memory_id in seed_ids}
+        strength_by_id: dict[str, float] = {memory_id: 1.0 for memory_id in seed_ids}
+        path_by_id: dict[str, list[dict[str, Any]]] = {memory_id: [] for memory_id in seed_ids}
+        graph_edges: dict[tuple[str, str, str], dict[str, Any]] = {}
+        frontier = seed_ids[:]
+
+        for depth in range(1, ASSOCIATIVE_RECALL_MAX_DEPTH + 1):
+            if not frontier or len(node_items) >= ASSOCIATIVE_RECALL_MAX_NODES or len(graph_edges) >= ASSOCIATIVE_RECALL_MAX_EDGES:
+                break
+            next_frontier: set[str] = set()
+            for batch_start in range(0, len(frontier), 80):
+                frontier_batch = sorted(frontier[batch_start : batch_start + 80])
+                if not frontier_batch:
+                    continue
+                placeholders = ",".join("?" for _ in frontier_batch)
+                filters, params = self._memory_filters(
+                    user_id,
+                    user_settings,
+                    alias="m",
+                    kind=kind,
+                    layer=layer,
+                    sector=sector,
+                    source=source,
+                    source_account_id=source_account_id,
+                    metadata_filters=metadata_filters,
+                    as_of=as_of,
+                )
+                filters.append("COALESCE(m.trust_score, 0.5) >= ?")
+                params.append(ASSOCIATIVE_RECALL_TRUST_FLOOR)
+                where = " AND ".join(filters)
+                remaining_edges = max(1, ASSOCIATIVE_RECALL_MAX_EDGES - len(graph_edges))
+                rows = conn.execute(
+                    f"""
+                    SELECT m.*,
+                           r.id AS association_relation_id,
+                           r.source_memory_id AS association_source_id,
+                           r.target_memory_id AS association_target_id,
+                           r.kind AS association_relation_kind,
+                           r.weight AS association_relation_weight
+                    FROM memory_relations r
+                    JOIN memories m
+                      ON m.user_id = r.user_id
+                     AND m.id = CASE
+                       WHEN r.source_memory_id IN ({placeholders}) THEN r.target_memory_id
+                       ELSE r.source_memory_id
+                     END
+                    WHERE r.user_id = ?
+                      AND (r.source_memory_id IN ({placeholders}) OR r.target_memory_id IN ({placeholders}))
+                      AND {where}
+                    ORDER BY r.weight DESC, r.kind, r.id, m.id
+                    LIMIT ?
+                    """,
+                    [
+                        *frontier_batch,
+                        user_id,
+                        *frontier_batch,
+                        *frontier_batch,
+                        *params,
+                        remaining_edges,
+                    ],
+                ).fetchall()
+                frontier_set = set(frontier_batch)
+                for row in rows:
+                    source_id = str(row["association_source_id"] or "")
+                    target_id = str(row["association_target_id"] or "")
+                    if not source_id or not target_id or source_id == target_id:
+                        continue
+                    relation_kind = str(row["association_relation_kind"] or "related")
+                    relation_id = str(row["association_relation_id"] or "")
+                    edge_key = (min(source_id, target_id), max(source_id, target_id), relation_id or relation_kind)
+
+                    if source_id in frontier_set and target_id not in frontier_set:
+                        parent_id, neighbor_id = source_id, target_id
+                    elif target_id in frontier_set and source_id not in frontier_set:
+                        parent_id, neighbor_id = target_id, source_id
+                    else:
+                        parent_id = source_id if source_id in frontier_set else target_id
+                        neighbor_id = target_id if parent_id == source_id else source_id
+                    if parent_id not in node_items:
+                        continue
+                    candidate = self._memory_from_row(row)
+                    if str(candidate.get("id") or "") != neighbor_id:
+                        continue
+                    effective_weight = self._associative_relation_weight(
+                        relation_kind,
+                        row["association_relation_weight"],
+                        node_items[parent_id],
+                        candidate,
+                        reference_time=reference_time,
+                    )
+                    if effective_weight <= 0.0:
+                        continue
+                    graph_edges[edge_key] = {
+                        "source": source_id,
+                        "target": target_id,
+                        "weight": effective_weight,
+                        "relation": relation_kind,
+                    }
+                    candidate_strength = strength_by_id.get(parent_id, 0.0) * effective_weight
+                    if candidate_strength < ASSOCIATIVE_RECALL_MIN_PATH_STRENGTH:
+                        continue
+                    previous_strength = strength_by_id.get(neighbor_id, -1.0)
+                    previous_depth = depth_by_id.get(neighbor_id, ASSOCIATIVE_RECALL_MAX_DEPTH + 1)
+                    better_path = candidate_strength > previous_strength + 1e-12
+                    equally_strong_shorter = abs(candidate_strength - previous_strength) <= 1e-12 and depth < previous_depth
+                    if neighbor_id not in node_items or better_path or equally_strong_shorter:
+                        node_items[neighbor_id] = candidate
+                        depth_by_id[neighbor_id] = depth
+                        root_by_id[neighbor_id] = root_by_id.get(parent_id, parent_id)
+                        strength_by_id[neighbor_id] = candidate_strength
+                        path_by_id[neighbor_id] = [
+                            *path_by_id.get(parent_id, []),
+                            {
+                                "source_id": parent_id,
+                                "target_id": neighbor_id,
+                                "kind": relation_kind,
+                                "weight": round(float(row["association_relation_weight"] or 0.0), 6),
+                                "effective_weight": round(effective_weight, 6),
+                            },
+                        ]
+                        if neighbor_id not in seed_ids and depth < ASSOCIATIVE_RECALL_MAX_DEPTH:
+                            next_frontier.add(neighbor_id)
+                    if len(node_items) >= ASSOCIATIVE_RECALL_MAX_NODES or len(graph_edges) >= ASSOCIATIVE_RECALL_MAX_EDGES:
+                        break
+                if len(node_items) >= ASSOCIATIVE_RECALL_MAX_NODES or len(graph_edges) >= ASSOCIATIVE_RECALL_MAX_EDGES:
+                    break
+            frontier = sorted(next_frontier)
+
+        candidates = [memory_id for memory_id in node_items if memory_id not in set(seed_ids)]
+        diagnostics["node_count"] = len(node_items)
+        diagnostics["edge_count"] = len(graph_edges)
+        diagnostics["candidate_count"] = len(candidates)
+        if not candidates:
+            return [], diagnostics
+
+        scores: dict[str, float]
+        if mode == "ppr":
+            personalization = {
+                memory_id: self._associative_node_quality(node_items[memory_id], reference_time=reference_time)
+                / math.log2(rank + 2.0)
+                for rank, memory_id in enumerate(seed_ids)
+            }
+            page_rank = personalized_page_rank(
+                sorted(node_items),
+                list(graph_edges.values()),
+                personalization,
+                damping=ASSOCIATIVE_RECALL_DAMPING,
+                max_iterations=120,
+                tolerance=1e-10,
+            )
+            scores = {str(key): float(value) for key, value in (page_rank.get("scores") or {}).items()}
+            diagnostics["iterations"] = int(page_rank.get("iterations") or 0)
+            diagnostics["converged"] = bool(page_rank.get("converged"))
+        else:
+            scores = {
+                memory_id: strength_by_id.get(memory_id, 0.0) / max(1, depth_by_id.get(memory_id, 1))
+                for memory_id in candidates
+            }
+
+        ranked_ids = sorted(
+            candidates,
+            key=lambda memory_id: (
+                -scores.get(memory_id, 0.0),
+                -strength_by_id.get(memory_id, 0.0),
+                depth_by_id.get(memory_id, ASSOCIATIVE_RECALL_MAX_DEPTH + 1),
+                memory_id,
+            ),
+        )
+        if mode == "ppr" and limit > 1:
+            # Pure PPR quite reasonably favors immediate neighbours. For a recall
+            # feature whose purpose is associative discovery, that can starve every
+            # genuine multi-hop result when the output budget is only two slots.
+            # Reserve at most one slot for the strongest verified depth>=2 node.
+            # The same trust/current-truth/path-strength gates still apply, and the
+            # remaining slots preserve the PPR ordering exactly.
+            deep_ids = [
+                memory_id
+                for memory_id in ranked_ids
+                if depth_by_id.get(memory_id, 0) >= 2 and scores.get(memory_id, 0.0) > 0.0
+            ]
+            selected = ranked_ids[:limit]
+            if deep_ids and not any(memory_id in deep_ids for memory_id in selected):
+                selected[-1] = deep_ids[0]
+            selected_set = set(selected)
+            ranked_ids = [*selected, *(memory_id for memory_id in ranked_ids if memory_id not in selected_set)]
+        results: list[dict[str, Any]] = []
+        for memory_id in ranked_ids:
+            item = dict(node_items[memory_id])
+            path = path_by_id.get(memory_id, [])
+            if not path:
+                continue
+            item["relationship"] = {
+                "kind": "associative",
+                "algorithm": diagnostics["algorithm"],
+                "weight": round(scores.get(memory_id, 0.0), 8),
+                "path_strength": round(strength_by_id.get(memory_id, 0.0), 8),
+                "depth": depth_by_id.get(memory_id, len(path)),
+                "related_to_id": root_by_id.get(memory_id, seed_ids[0]),
+                "path": path,
+                "path_verified": True,
+            }
+            results.append(item)
+            if len(results) >= limit:
+                break
+        diagnostics["returned"] = len(results)
+        return results, diagnostics
 
     def _related_memory_rows(
         self,

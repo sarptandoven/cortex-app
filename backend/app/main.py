@@ -1758,6 +1758,8 @@ def search(
     record_scope: str | None = Query(default=None, max_length=80),
     state: str | None = Query(default=None, max_length=80),
     project: str | None = Query(default=None, max_length=240),
+    associative: bool = Query(default=False),
+    association_mode: str | None = Query(default=None, pattern="^(one_hop|bounded|ppr)$"),
     user_id: str = Depends(auth),
 ) -> dict[str, Any]:
     return store.public_search_payload(
@@ -1770,6 +1772,8 @@ def search(
         source=source,
         source_account_id=source_account_id,
         as_of=as_of,
+        associative=associative,
+        association_mode=association_mode,
         metadata_filters={
             "repository": repository,
             "channel": channel,
