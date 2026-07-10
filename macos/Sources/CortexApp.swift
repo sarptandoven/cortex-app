@@ -1169,6 +1169,27 @@ struct CaptureItem: Codable, Identifiable, Hashable {
     let preview_tasks: [TaskItem]?
 }
 
+/// One section of the grouped review queue (GET /v1/review/sections): a project/folder's
+/// worth of pending captures the user can approve or archive in ONE decision. The backend
+/// caps the list at 15 sections, merging the tail into "Everything else".
+struct ReviewSection: Codable, Identifiable, Hashable {
+    var id: String { section_id }
+    let section_id: String
+    let label: String
+    let capture_count: Int
+    let memory_count: Int
+    let task_count: Int
+    let sample_titles: [String]
+    let latest_captured_at: String?
+    let sources: [String]
+}
+
+struct ReviewSectionsResponse: Codable {
+    let sections: [ReviewSection]
+    let pending_total: Int
+    let section_cap: Int
+}
+
 struct StatsResponse: Codable {
     let captures: Int
     let pending_captures: Int
@@ -3157,6 +3178,9 @@ final class AppState: ObservableObject {
     @Published var searchQuery: String = ""
     @Published var status: String = "Ready"
     @Published var inbox: [CaptureItem] = []
+    @Published var reviewSections: [ReviewSection] = []
+    @Published var reviewSectionsPendingTotal: Int = 0
+    @Published var inFlightSectionIds: Set<String> = []
     @Published var recent: [MemoryItem] = []
     @Published var searchResults: [MemoryItem] = []
     @Published var askAnswer: String = ""
@@ -3996,6 +4020,59 @@ final class AppState: ObservableObject {
             inbox = try JSONDecoder().decode(InboxResponse.self, from: data).results
         } catch {
             status = CortexRecoveryText.failureStatus("Review queue", error: error)
+        }
+        await loadReviewSections()
+    }
+
+    func loadReviewSections() async {
+        do {
+            let data = try await request(path: "/v1/review/sections", method: "GET")
+            let response = try JSONDecoder().decode(ReviewSectionsResponse.self, from: data)
+            reviewSections = response.sections
+            reviewSectionsPendingTotal = response.pending_total
+        } catch {
+            // Sections are an accelerator on top of the per-item queue; a load failure
+            // must never block per-item review, so it degrades silently to the item list.
+            reviewSections = []
+            reviewSectionsPendingTotal = 0
+        }
+    }
+
+    func approveReviewSection(_ section: ReviewSection) {
+        runReviewSectionAction(section, action: "approve", verb: "Approved")
+    }
+
+    func archiveReviewSection(_ section: ReviewSection) {
+        runReviewSectionAction(section, action: "archive", verb: "Archived")
+    }
+
+    private func runReviewSectionAction(_ section: ReviewSection, action: String, verb: String) {
+        guard !inFlightSectionIds.contains(section.section_id) else { return }
+        inFlightSectionIds.insert(section.section_id)
+        Task {
+            defer { inFlightSectionIds.remove(section.section_id) }
+            do {
+                let encoded = section.section_id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? section.section_id
+                let data = try await request(path: "/v1/review/sections/\(encoded)/\(action)", method: "POST")
+                struct SectionActionResponse: Codable {
+                    let approved: Int?
+                    let archived: Int?
+                    let requested: Int
+                }
+                let result = try JSONDecoder().decode(SectionActionResponse.self, from: data)
+                let count = result.approved ?? result.archived ?? 0
+                status = "\(verb) \(count) item\(count == 1 ? "" : "s") in \(section.label)"
+                if action == "approve" {
+                    await drainQueuedMemoryJobs(automatic: true)
+                }
+                await loadInbox()
+                await loadRecent()
+                await loadStats()
+                await loadReview()
+                await loadDiagnostics()
+            } catch {
+                status = CortexRecoveryText.failureStatus("\(verb) \(section.label)", error: error)
+            }
         }
     }
 

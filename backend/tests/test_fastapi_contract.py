@@ -5257,3 +5257,56 @@ END:VCALENDAR
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewSectionContractTests(unittest.TestCase):
+    """FastAPI parity for section-grouped review: a large backlog clears in <= 15 decisions."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.client = TestClient(app)
+
+    def _headers(self, user: str) -> dict[str, str]:
+        return {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+
+    def test_sections_group_and_approve_roundtrip(self) -> None:
+        user = "review-sections-contract"
+        headers = self._headers(user)
+        for run in ("972d89aa1cce4b53", "d77bc7d978ad403f"):
+            saved = self.client.post(
+                "/v1/captures",
+                json={
+                    "content": f"We decided the {run[:4]} render pipeline ships this week.",
+                    "source": "obsidian",
+                    "source_url": f"file:///Users/u/Documents/demo-project/outputs/{run}/DESIGN.md",
+                    "title": "DESIGN",
+                },
+                headers=headers,
+            )
+            self.assertEqual(saved.status_code, 200)
+
+        listing = self.client.get("/v1/review/sections", headers=headers)
+        self.assertEqual(listing.status_code, 200)
+        payload = listing.json()
+        self.assertLessEqual(len(payload["sections"]), payload["section_cap"])
+        section = next(s for s in payload["sections"] if s["label"] == "Demo Project")
+        self.assertEqual(section["capture_count"], 2)
+
+        approved = self.client.post(
+            f"/v1/review/sections/{section['section_id']}/approve", headers=headers
+        )
+        self.assertEqual(approved.status_code, 200)
+        self.assertEqual(approved.json()["approved"], 2)
+
+        # The section disappears once its captures are reviewed; re-approving 404s.
+        again = self.client.post(
+            f"/v1/review/sections/{section['section_id']}/approve", headers=headers
+        )
+        self.assertEqual(again.status_code, 404)
+
+    def test_unknown_section_404(self) -> None:
+        response = self.client.post(
+            "/v1/review/sections/folder:ghost/approve",
+            headers=self._headers("review-sections-contract-2"),
+        )
+        self.assertEqual(response.status_code, 404)

@@ -176,3 +176,90 @@ class SourceReadinessDisplayTests(unittest.TestCase):
         report = self.store.source_readiness_report("u")
         item = next(s for s in report["sources"] if s["source"] == "structured-export")
         self.assertEqual(item["name"], "Structured Export")
+
+
+class ReviewSectionTests(unittest.TestCase):
+    """A large backlog must clear in at most 15 decisions: pending captures group into
+    sections by project folder (hash-run dirs collapse), and section approve/archive
+    acts on exactly the section's captures."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        init_db(root / "t.db")
+        self.store = CortexStore(root / "t.db", root / "vault")
+        self.store._vector_ready = lambda conn: False
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _save(self, content: str, title: str, url: str, source: str = "obsidian") -> dict:
+        extracted = extract_context(content, source=source, extraction_mode="local")
+        return self.store.save_capture(
+            user_id="u", content=content, source=source,
+            source_url=url, title=title, extracted=extracted,
+        )
+
+    def test_hash_directories_collapse_into_one_project_section(self) -> None:
+        # Same project, two content-hash run dirs -> ONE section named for the project.
+        for run in ("972d89aa1cce4b53", "d77bc7d978ad403f"):
+            self._save(
+                f"We decided the {run[:4]} render pipeline ships this week.",
+                "DESIGN",
+                f"file:///Users/u/Documents/Codex/magic-agent-demo-codex-launch/outputs/{run}/DESIGN.md",
+            )
+        report = self.store.review_sections("u")
+        self.assertEqual(len(report["sections"]), 1)
+        section = report["sections"][0]
+        self.assertEqual(section["label"], "Magic Agent Demo Codex Launch")
+        self.assertEqual(section["capture_count"], 2)
+        self.assertNotIn("972d89aa", section["label"])
+
+    def test_section_count_never_exceeds_cap(self) -> None:
+        for i in range(20):
+            self._save(
+                f"Project {i} decided to ship module {i} on Tuesday.",
+                f"note-{i}",
+                f"file:///Users/u/notes/project-{i:02d}/note.md",
+            )
+        report = self.store.review_sections("u")
+        self.assertLessEqual(len(report["sections"]), self.store.REVIEW_SECTION_CAP)
+        self.assertEqual(report["pending_total"], 20)
+        self.assertEqual(report["sections"][-1]["label"], "Everything else")
+        # Nothing is lost in the merge: section counts sum to the full backlog.
+        self.assertEqual(sum(s["capture_count"] for s in report["sections"]), 20)
+
+    def test_section_approve_touches_only_its_captures(self) -> None:
+        keep = self._save(
+            "We agreed the Atlas migration lands Friday.",
+            "atlas", "file:///Users/u/notes/atlas/plan.md",
+        )
+        target = self._save(
+            "We decided the Beacon rollout starts Monday.",
+            "beacon", "file:///Users/u/notes/beacon/plan.md",
+        )
+        report = self.store.review_sections("u")
+        beacon = next(s for s in report["sections"] if s["label"] == "Beacon")
+        result = self.store.approve_review_section("u", beacon["section_id"])
+        self.assertEqual(result["approved"], 1)
+        with connect(self.store.db_path) as conn:
+            statuses = {
+                row["id"]: row["review_status"]
+                for row in conn.execute("SELECT id, review_status FROM captures WHERE user_id='u'")
+            }
+        self.assertEqual(statuses[target["capture_id"]], "approved")
+        self.assertEqual(statuses[keep["capture_id"]], "pending")
+
+    def test_section_archive_is_audited_and_idempotent(self) -> None:
+        self._save(
+            "We decided the Canary flag flips next sprint.",
+            "canary", "file:///Users/u/notes/canary/plan.md",
+        )
+        report = self.store.review_sections("u")
+        section_id = report["sections"][0]["section_id"]
+        result = self.store.archive_review_section("u", section_id)
+        self.assertEqual(result["archived"], 1)
+        # Re-running finds nothing pending: requested drops to 0.
+        again = self.store.archive_review_section("u", section_id)
+        self.assertEqual(again["requested"], 0)
+        self.assertEqual(self.store.review_sections("u")["pending_total"], 0)

@@ -2301,6 +2301,26 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/v1/review/today":
                 self._send_json(store.daily_review(user_id))
                 return
+            if method == "GET" and path == "/v1/review/sections":
+                # Section-grouped review: a large backlog becomes <= 15 one-shot decisions.
+                self._send_json(store.review_sections(user_id))
+                return
+            if method == "POST" and path.startswith("/v1/review/sections/") and path.endswith("/approve"):
+                section_id = unquote(path.removeprefix("/v1/review/sections/").removesuffix("/approve").strip("/"))
+                result = store.approve_review_section(user_id, section_id)
+                if result["requested"] == 0:
+                    self._send_json({"detail": "Section not found or already reviewed"}, status=HTTPStatus.NOT_FOUND)
+                else:
+                    self._send_json(result)
+                return
+            if method == "POST" and path.startswith("/v1/review/sections/") and path.endswith("/archive"):
+                section_id = unquote(path.removeprefix("/v1/review/sections/").removesuffix("/archive").strip("/"))
+                result = store.archive_review_section(user_id, section_id)
+                if result["requested"] == 0:
+                    self._send_json({"detail": "Section not found or already reviewed"}, status=HTTPStatus.NOT_FOUND)
+                else:
+                    self._send_json(result)
+                return
             if method == "GET" and path == "/v1/loop":
                 self._send_json(store.product_loop(user_id))
                 return

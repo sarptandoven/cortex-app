@@ -10036,6 +10036,153 @@ class CortexStore:
             ).fetchall()
             return [self._capture_from_row(row, conn=conn, include_review_preview=True, redact_source_urls=True) for row in rows]
 
+    # How many review sections a user should ever face at once. The whole point of
+    # sections is that a 1,400-item backlog becomes AT MOST this many decisions.
+    REVIEW_SECTION_CAP = 15
+
+    @staticmethod
+    def _review_section_key(source: str, source_url: str | None, title: str | None) -> tuple[str, str]:
+        """(section_id, label) for one pending capture.
+
+        Groups by the most meaningful folder in the capture's path: hex/UUID run
+        directories collapse into their parent, so `outputs/<hash1>/DESIGN.md` and
+        `outputs/<hash2>/DESIGN.md` land in ONE section instead of one per hash.
+        Non-file sources group by source. Labels are human words, never raw slugs.
+        """
+        raw_url = str(source_url or "").strip()
+        if raw_url.startswith("file://"):
+            path = unquote(urlsplit(raw_url).path)
+            parts = [part for part in path.split("/") if part]
+            if parts:
+                parts = parts[:-1]  # drop the filename
+            hexish = re.compile(r"^[0-9a-f]{8,}$", re.IGNORECASE)
+            noise = {"outputs", "output", "videos", "video", "assets", "files", "data", "tmp", "temp", "cache", "scene_mux"}
+            meaningful = [
+                part for part in parts
+                if not hexish.fullmatch(part.replace("-", "")) and part.lower() not in noise
+            ]
+            # The LAST meaningful folder is the project; e.g. ".../files-mentioned.../magic-agent-demo-codex-launch/outputs/<hash>/videos" -> "magic-agent-demo-codex-launch"
+            if meaningful:
+                project = meaningful[-1]
+                label = project.replace("-", " ").replace("_", " ").strip().title()
+                return (f"folder:{project.lower()}", label[:80] or "Notes")
+            return ("folder:notes", "Notes")
+        normalized = str(source or "unknown").strip().lower() or "unknown"
+        label = normalized.replace("-", " ").replace("_", " ").title()
+        return (f"source:{normalized}", label[:80])
+
+    def review_sections(self, user_id: str, *, sample_limit: int = 3) -> dict[str, Any]:
+        """Group ALL pending captures into at most REVIEW_SECTION_CAP sections.
+
+        Each section carries a human label, capture/memory counts, a few sample
+        titles, and the ids needed for one-shot section approve/archive. If the
+        natural grouping exceeds the cap, the smallest groups merge into one
+        honest "Everything else" section — the user never faces more than 15
+        decisions no matter how large the backlog.
+        """
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                  c.id, c.source, c.source_url, c.title, c.captured_at,
+                  COUNT(DISTINCT m.id) AS memory_count,
+                  COUNT(DISTINCT t.id) AS task_count
+                FROM captures c
+                LEFT JOIN memories m ON m.capture_id = c.id AND m.status = 'active'
+                LEFT JOIN tasks t ON t.capture_id = c.id AND t.status = 'open'
+                WHERE c.user_id = ? AND c.review_status = 'pending'
+                GROUP BY c.id
+                ORDER BY c.captured_at DESC
+                """,
+                (user_id,),
+            ).fetchall()
+
+        groups: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            section_id, label = self._review_section_key(row["source"], row["source_url"], row["title"])
+            group = groups.setdefault(section_id, {
+                "section_id": section_id,
+                "label": label,
+                "capture_ids": [],
+                "capture_count": 0,
+                "memory_count": 0,
+                "task_count": 0,
+                "sample_titles": [],
+                "latest_captured_at": None,
+                "sources": set(),
+            })
+            group["capture_ids"].append(row["id"])
+            group["capture_count"] += 1
+            group["memory_count"] += int(row["memory_count"] or 0)
+            group["task_count"] += int(row["task_count"] or 0)
+            group["sources"].add(str(row["source"] or ""))
+            title = str(row["title"] or "").strip()
+            if title and title not in group["sample_titles"] and len(group["sample_titles"]) < sample_limit:
+                group["sample_titles"].append(title[:80])
+            captured = str(row["captured_at"] or "")
+            if captured and (group["latest_captured_at"] is None or captured > group["latest_captured_at"]):
+                group["latest_captured_at"] = captured
+
+        ordered = sorted(groups.values(), key=lambda g: (-g["capture_count"], g["label"]))
+        if len(ordered) > self.REVIEW_SECTION_CAP:
+            keep = ordered[: self.REVIEW_SECTION_CAP - 1]
+            rest = ordered[self.REVIEW_SECTION_CAP - 1 :]
+            merged: dict[str, Any] = {
+                "section_id": "misc:everything-else",
+                "label": "Everything else",
+                "capture_ids": [],
+                "capture_count": 0,
+                "memory_count": 0,
+                "task_count": 0,
+                "sample_titles": [],
+                "latest_captured_at": None,
+                "sources": set(),
+            }
+            for group in rest:
+                merged["capture_ids"].extend(group["capture_ids"])
+                merged["capture_count"] += group["capture_count"]
+                merged["memory_count"] += group["memory_count"]
+                merged["task_count"] += group["task_count"]
+                merged["sources"].update(group["sources"])
+                for title in group["sample_titles"]:
+                    if len(merged["sample_titles"]) < sample_limit and title not in merged["sample_titles"]:
+                        merged["sample_titles"].append(title)
+                latest = group["latest_captured_at"]
+                if latest and (merged["latest_captured_at"] is None or latest > merged["latest_captured_at"]):
+                    merged["latest_captured_at"] = latest
+            ordered = [*keep, merged]
+
+        sections = []
+        for group in ordered:
+            group["sources"] = sorted(group["sources"])
+            sections.append(group)
+        return {
+            "sections": sections,
+            "pending_total": sum(section["capture_count"] for section in sections),
+            "section_cap": self.REVIEW_SECTION_CAP,
+        }
+
+    def _review_section_capture_ids(self, user_id: str, section_id: str) -> list[str]:
+        """Resolve a section id to its CURRENT pending capture ids (never trust a stale
+        client-side id list: captures may have been approved/archived since the read)."""
+        report = self.review_sections(user_id)
+        for section in report["sections"]:
+            if section["section_id"] == section_id:
+                return list(section["capture_ids"])
+        return []
+
+    def approve_review_section(self, user_id: str, section_id: str) -> dict[str, Any]:
+        capture_ids = self._review_section_capture_ids(user_id, section_id)
+        approved = sum(1 for capture_id in capture_ids if self.approve_capture(user_id, capture_id))
+        return {"section_id": section_id, "approved": approved, "requested": len(capture_ids)}
+
+    def archive_review_section(self, user_id: str, section_id: str) -> dict[str, Any]:
+        capture_ids = self._review_section_capture_ids(user_id, section_id)
+        archived = sum(
+            1 for capture_id in capture_ids if self.archive_capture(user_id, capture_id, reason="section_review")
+        )
+        return {"section_id": section_id, "archived": archived, "requested": len(capture_ids)}
+
     def recent(
         self,
         user_id: str,

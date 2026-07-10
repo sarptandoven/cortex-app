@@ -96,6 +96,33 @@ class FakeStore:
         self.verify_belief_proof_calls: list[dict] = []
         self.oauth_pending: dict[tuple[str, str], dict] = {}
 
+    def review_sections(self, user_id: str, *, sample_limit: int = 3) -> dict:
+        return {
+            "sections": [
+                {
+                    "section_id": "folder:magic-agent-demo-codex-launch",
+                    "label": "Magic Agent Demo Codex Launch",
+                    "capture_ids": ["cap_1", "cap_2"],
+                    "capture_count": 2,
+                    "memory_count": 11,
+                    "task_count": 0,
+                    "sample_titles": ["DESIGN", "Brief"],
+                    "latest_captured_at": "2026-06-22T00:00:00+00:00",
+                    "sources": ["obsidian"],
+                }
+            ],
+            "pending_total": 2,
+            "section_cap": 15,
+        }
+
+    def approve_review_section(self, user_id: str, section_id: str) -> dict:
+        known = section_id == "folder:magic-agent-demo-codex-launch"
+        return {"section_id": section_id, "approved": 2 if known else 0, "requested": 2 if known else 0}
+
+    def archive_review_section(self, user_id: str, section_id: str) -> dict:
+        known = section_id == "folder:magic-agent-demo-codex-launch"
+        return {"section_id": section_id, "archived": 2 if known else 0, "requested": 2 if known else 0}
+
     def remember_oauth_pending(self, *, state, user_id, flow, payload, ttl_seconds: int = 600) -> None:
         normalized_state = str(state or "").strip()
         normalized_flow = str(flow or "").strip()
@@ -5504,6 +5531,24 @@ class StandaloneServerTests(unittest.TestCase):
             self.assertEqual(json.loads(body), {"detail": "Cortex is busy handling other requests; retry shortly."})
             with self.get("/health") as response:
                 self.assertEqual(response.status, 200)
+
+    def test_review_sections_lists_groups(self) -> None:
+        with self.get("/v1/review/sections") as response:
+            payload = json.loads(response.read())
+        self.assertEqual(payload["pending_total"], 2)
+        self.assertLessEqual(len(payload["sections"]), payload["section_cap"])
+        self.assertEqual(payload["sections"][0]["label"], "Magic Agent Demo Codex Launch")
+
+    def test_review_section_approve_and_archive_roundtrip(self) -> None:
+        with self.post("/v1/review/sections/folder:magic-agent-demo-codex-launch/approve") as response:
+            self.assertEqual(json.loads(response.read())["approved"], 2)
+        with self.post("/v1/review/sections/folder:magic-agent-demo-codex-launch/archive") as response:
+            self.assertEqual(json.loads(response.read())["archived"], 2)
+
+    def test_review_section_unknown_returns_404(self) -> None:
+        with self.assertRaises(error.HTTPError) as ctx:
+            self.post("/v1/review/sections/folder:ghost/approve")
+        self.assertEqual(ctx.exception.code, 404)
 
 
 if __name__ == "__main__":

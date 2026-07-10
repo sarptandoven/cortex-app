@@ -2103,6 +2103,28 @@ def daily_review(user_id: str = Depends(auth)) -> dict[str, Any]:
     return store.daily_review(user_id)
 
 
+@app.get("/v1/review/sections")
+def review_sections(user_id: str = Depends(auth)) -> dict[str, Any]:
+    """Section-grouped review: a large pending backlog becomes at most 15 one-shot decisions."""
+    return store.review_sections(user_id)
+
+
+@app.post("/v1/review/sections/{section_id}/approve")
+def approve_review_section(section_id: str, user_id: str = Depends(auth)) -> dict[str, Any]:
+    result = store.approve_review_section(user_id, section_id)
+    if result["requested"] == 0:
+        raise HTTPException(status_code=404, detail="Section not found or already reviewed")
+    return result
+
+
+@app.post("/v1/review/sections/{section_id}/archive")
+def archive_review_section(section_id: str, user_id: str = Depends(auth)) -> dict[str, Any]:
+    result = store.archive_review_section(user_id, section_id)
+    if result["requested"] == 0:
+        raise HTTPException(status_code=404, detail="Section not found or already reviewed")
+    return result
+
+
 @app.get("/v1/loop", response_model=ProductLoopResponse)
 def product_loop(user_id: str = Depends(auth)) -> dict[str, Any]:
     return store.product_loop(user_id)

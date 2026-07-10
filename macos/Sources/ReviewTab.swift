@@ -257,6 +257,132 @@ struct ReviewSourceHealthChip: View {
     }
 }
 
+/// The section board: a large backlog rendered as at most 15 one-decision groups.
+/// Each card is a project/folder ("Magic Agent Demo Codex Launch · 1,238 notes") with
+/// sample titles for a sniff test, and Approve/Archive act on the WHOLE section server-side.
+struct ReviewSectionsBoard: View {
+    @ObservedObject var state: AppState
+    @State private var confirmArchiveSection: ReviewSection?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Review by section")
+                    .font(CortexDesign.Typography.title)
+                    .foregroundColor(CortexDesign.ink)
+                Text("\(state.reviewSectionsPendingTotal) items grouped into \(state.reviewSections.count) sections — approve or archive each in one decision.")
+                    .font(CortexDesign.Typography.body)
+                    .foregroundColor(CortexDesign.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            LazyVStack(alignment: .leading, spacing: 10) {
+                ForEach(state.reviewSections) { section in
+                    ReviewSectionCard(
+                        section: section,
+                        isInFlight: state.inFlightSectionIds.contains(section.section_id),
+                        approve: { state.approveReviewSection(section) },
+                        archive: { confirmArchiveSection = section }
+                    )
+                }
+            }
+        }
+        .confirmationDialog(
+            "Archive \(confirmArchiveSection?.capture_count ?? 0) items in “\(confirmArchiveSection?.label ?? "")”?",
+            isPresented: Binding(
+                get: { confirmArchiveSection != nil },
+                set: { if !$0 { confirmArchiveSection = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Archive section", role: .destructive) {
+                if let section = confirmArchiveSection {
+                    state.archiveReviewSection(section)
+                }
+                confirmArchiveSection = nil
+            }
+            Button("Cancel", role: .cancel) { confirmArchiveSection = nil }
+        } message: {
+            Text("Cortex won't remember archived items. Your original notes stay in your source.")
+        }
+    }
+}
+
+struct ReviewSectionCard: View {
+    let section: ReviewSection
+    let isInFlight: Bool
+    let approve: () -> Void
+    let archive: () -> Void
+    @State private var isHovered = false
+
+    private var countLine: String {
+        var parts = ["\(section.capture_count) note\(section.capture_count == 1 ? "" : "s")"]
+        if section.memory_count > 0 {
+            parts.append("\(section.memory_count) memories")
+        }
+        if section.task_count > 0 {
+            parts.append("\(section.task_count) tasks")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(section.label)
+                        .font(CortexDesign.Typography.title)
+                        .foregroundColor(CortexDesign.ink)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Text(countLine)
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(CortexDesign.inkSecondary)
+                        .lineLimit(1)
+                }
+                if !section.sample_titles.isEmpty {
+                    Text(section.sample_titles.joined(separator: "  ·  "))
+                        .font(CortexDesign.Typography.caption)
+                        .foregroundColor(CortexDesign.inkFaint)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .help(section.sample_titles.joined(separator: "\n"))
+                }
+            }
+            Spacer(minLength: 12)
+            if isInFlight {
+                ProgressView().controlSize(.small)
+            }
+            Button {
+                archive()
+            } label: {
+                Label("Archive", systemImage: "archivebox")
+                    .frame(minHeight: 34)
+            }
+            .buttonStyle(.bordered)
+            .disabled(isInFlight)
+            .help("Archives the \(section.capture_count) items in this section")
+            Button {
+                approve()
+            } label: {
+                Label("Approve", systemImage: "checkmark.seal")
+                    .frame(minHeight: 34)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isInFlight)
+            .help("Approves the \(section.capture_count) items in this section")
+        }
+        .padding(.horizontal, CortexDesign.Space.md)
+        .padding(.vertical, CortexDesign.Space.sm)
+        .background(CortexDesign.panelBackground)
+        .clipShape(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: CortexDesign.Radius.md, style: .continuous).stroke(CortexDesign.hairline))
+        .shadow(color: CortexDesign.ink.opacity(isHovered ? 0.06 : 0), radius: 8, y: 2)
+        .onHover { isHovered = $0 }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(section.label): \(countLine)")
+    }
+}
+
 struct ReviewInboxSection: View {
     @ObservedObject var state: AppState
     let captures: [CaptureItem]
@@ -264,9 +390,24 @@ struct ReviewInboxSection: View {
     private static let pageSize = 10
     @State private var visibleLimit = ReviewInboxSection.pageSize
 
+    // Sections earn their space only when they actually compress work: a backlog
+    // bigger than one page, grouped into more than one section.
+    private var showSections: Bool {
+        state.reviewSectionsPendingTotal > Self.pageSize && state.reviewSections.count > 1
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
+            if showSections {
+                ReviewSectionsBoard(state: state)
+            }
             HStack(alignment: .center, spacing: 14) {
+                if showSections {
+                    Text("Or review one at a time".uppercased())
+                        .font(CortexDesign.Typography.stamp)
+                        .kerning(0.8)
+                        .foregroundColor(CortexDesign.inkFaint)
+                }
                 Spacer()
                 if visibleCount > 3 {
                     Button {
