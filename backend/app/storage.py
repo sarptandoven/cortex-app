@@ -20480,9 +20480,19 @@ class CortexStore:
     BELIEF_MERKLE_EMPTY = hashlib.sha256(b"cortex:belief-proof:v1:empty").hexdigest()
     BELIEF_MERKLE_MAX_EVENTS = 2048
     PORTABLE_MEMORY_PROTOCOL = "cortex-portable-memory"
-    PORTABLE_MEMORY_VERSION = 1
+    PORTABLE_MEMORY_PRIVATE_VERSION = 1
+    PORTABLE_MEMORY_VERSION = 2
+    PORTABLE_MEMORY_OUTER_VERSION = "v3"
+    PORTABLE_MEMORY_SIGNATURE_DOMAIN = "cortex-portable-memory-signature-v2"
+    PORTABLE_MEMORY_PROOF_DOMAIN = "cortex-portable-memory-integrity-proof-v2"
+    PORTABLE_MEMORY_PAYLOAD_ENCODING = "base64url-json-utf8"
+    PORTABLE_MEMORY_CHAIN_ALGORITHM = "sha256-colon-fold-v1"
+    PORTABLE_MEMORY_PROOF_FORMAT = "cortex-integrity-fingerprint-chain-v2"
     PORTABLE_MEMORY_MAX_RECORDS = 100_000
     PORTABLE_MEMORY_MAX_CONTENT_BYTES = 100 * 1024 * 1024
+    PORTABLE_MEMORY_MAX_PAYLOAD_BYTES = 128 * 1024 * 1024
+    PORTABLE_MEMORY_MAX_JSON_NODES = 2_000_000
+    PORTABLE_MEMORY_MAX_JSON_DEPTH = 128
 
     @staticmethod
     def _integrity_event_fingerprint(event: dict[str, Any]) -> str:
@@ -21262,22 +21272,31 @@ class CortexStore:
         }
 
     def export_portable_bundle(self, user_id: str) -> dict[str, Any]:
-        """Export a signed, independently verifiable portable-memory v1 bundle.
+        """Export the published, language-neutral portable-memory v2 bundle.
 
-        The legacy payload and manifest remain in place for backward compatibility. M8 adds a
-        stable Ed25519 signer identity and an ordered fingerprint proof for the source integrity
-        chain. A recipient can pin ``signature.key_id`` to authenticate future exports.
+        ``payload_bytes`` is the signed source of truth. It carries the exact UTF-8 JSON bytes so
+        verifiers never need to reproduce Python's numeric or string serialization. ``payload`` is
+        retained only as a convenience view and must match the decoded authoritative bytes.
         """
         payload = self.export_json(user_id)
         canonical = self._canonical_export_bytes(payload)
         payload_sha256 = hashlib.sha256(canonical).hexdigest()
         integrity_proof = self._portable_integrity_proof(user_id)
+        proof_sha256 = hashlib.sha256(self._portable_v2_proof_bytes(integrity_proof)).hexdigest()
         private_seed, public_key, key_id = self.vault.portable_signing_keypair()
         bundle = {
-            "cortex_bundle_version": "v2",
+            "cortex_bundle_version": self.PORTABLE_MEMORY_OUTER_VERSION,
             "protocol": {
                 "name": self.PORTABLE_MEMORY_PROTOCOL,
                 "version": self.PORTABLE_MEMORY_VERSION,
+                "signature_format": self.PORTABLE_MEMORY_SIGNATURE_DOMAIN,
+                "signature_algorithm": "ed25519",
+                "key_id_algorithm": "sha256-raw-ed25519-public-key",
+                "payload_encoding": self.PORTABLE_MEMORY_PAYLOAD_ENCODING,
+                "payload_digest_algorithm": "sha256",
+                "proof_format": self.PORTABLE_MEMORY_PROOF_FORMAT,
+                "proof_digest_algorithm": "sha256",
+                "chain_algorithm": self.PORTABLE_MEMORY_CHAIN_ALGORITHM,
                 "capabilities": [
                     "signed-export",
                     "signer-pinning",
@@ -21293,6 +21312,7 @@ class CortexStore:
                 "event_count": integrity_proof["event_count"],
                 "payload_sha256": payload_sha256,
                 "payload_bytes": len(canonical),
+                "proof_sha256": proof_sha256,
                 "signing_key_id": key_id,
                 "record_counts": {
                     "captures": len(payload.get("captures") or []),
@@ -21304,12 +21324,13 @@ class CortexStore:
                 },
             },
             "payload": payload,
+            "payload_bytes": self._portable_b64encode(canonical),
             "integrity_proof": integrity_proof,
             "how_to_verify": (
-                "Verify payload_sha256 and record counts, fold integrity_proof.event_fingerprints "
-                "from its genesis to reproduce manifest.chain_head, then verify the Ed25519 "
-                "signature over the canonical protocol/manifest/payload/proof envelope. Pin "
-                "signature.key_id when the sender identity is already trusted."
+                "Decode payload_bytes as strict unpadded base64url, verify its SHA-256 and byte "
+                "count, parse those exact JSON bytes as the authoritative payload, recompute the "
+                "fingerprint chain and proof SHA-256, then verify Ed25519 over the fixed portable "
+                "memory v2 ASCII signature preimage. Pin signature.key_id for sender identity."
             ),
         }
         try:
@@ -21317,7 +21338,7 @@ class CortexStore:
         except ImportError as exc:  # pragma: no cover - packaged backend always includes it
             raise RuntimeError("Portable bundle signing requires the cryptography package.") from exc
         signature = Ed25519PrivateKey.from_private_bytes(private_seed).sign(
-            self._canonical_portable_bundle_bytes(bundle)
+            self._portable_v2_signature_bytes(bundle)
         )
         bundle["signature"] = {
             "algorithm": "ed25519",
@@ -21347,6 +21368,243 @@ class CortexStore:
         if len(decoded) != expected_bytes:
             raise ValueError(f"Portable bundle {label} is malformed.")
         return decoded
+
+    @classmethod
+    def _portable_b64decode_variable(cls, value: Any, *, max_bytes: int, label: str) -> bytes:
+        text = value if isinstance(value, str) else ""
+        max_encoded = ((max_bytes + 2) // 3) * 4
+        if (
+            not text
+            or len(text) > max_encoded
+            or "=" in text
+            or re.fullmatch(r"[A-Za-z0-9_-]+", text) is None
+        ):
+            raise ValueError(f"Portable bundle {label} is malformed.")
+        try:
+            decoded = base64.b64decode(
+                text + "=" * (-len(text) % 4),
+                altchars=b"-_",
+                validate=True,
+            )
+        except (binascii.Error, ValueError, TypeError) as exc:
+            raise ValueError(f"Portable bundle {label} is malformed.") from exc
+        if len(decoded) > max_bytes or cls._portable_b64encode(decoded) != text:
+            raise ValueError(f"Portable bundle {label} is malformed.")
+        return decoded
+
+    @staticmethod
+    def _portable_uint(value: Any, *, label: str, maximum: int = 2**53 - 1) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > maximum:
+            raise ValueError(f"Portable bundle {label} must be a bounded non-negative integer.")
+        return value
+
+    @classmethod
+    def _portable_validate_json_model(cls, value: Any) -> None:
+        stack: list[tuple[Any, int]] = [(value, 0)]
+        nodes = 0
+        while stack:
+            current, depth = stack.pop()
+            nodes += 1
+            if nodes > cls.PORTABLE_MEMORY_MAX_JSON_NODES:
+                raise ValueError("Portable bundle payload has too many JSON nodes.")
+            if depth > cls.PORTABLE_MEMORY_MAX_JSON_DEPTH:
+                raise ValueError("Portable bundle payload is nested too deeply.")
+            if current is None or isinstance(current, bool):
+                continue
+            if isinstance(current, str):
+                try:
+                    current.encode("utf-8", errors="strict")
+                except UnicodeEncodeError as exc:
+                    raise ValueError("Portable bundle strings must contain valid Unicode.") from exc
+                continue
+            if isinstance(current, int):
+                if abs(current) > 2**53 - 1:
+                    raise ValueError("Portable bundle integers must fit the interoperable JSON range.")
+                continue
+            if isinstance(current, float):
+                if not math.isfinite(current):
+                    raise ValueError("Portable bundle numbers must be finite.")
+                continue
+            if isinstance(current, list):
+                stack.extend((item, depth + 1) for item in current)
+                continue
+            if isinstance(current, dict):
+                if any(not isinstance(key, str) for key in current):
+                    raise ValueError("Portable bundle object keys must be strings.")
+                try:
+                    for key in current:
+                        key.encode("utf-8", errors="strict")
+                except UnicodeEncodeError as exc:
+                    raise ValueError("Portable bundle object keys must contain valid Unicode.") from exc
+                stack.extend((item, depth + 1) for item in current.values())
+                continue
+            raise ValueError("Portable bundle payload contains a non-JSON value.")
+
+    @classmethod
+    def _portable_v2_payload(cls, bundle: dict[str, Any]) -> tuple[dict[str, Any], bytes]:
+        raw = cls._portable_b64decode_variable(
+            bundle.get("payload_bytes"),
+            max_bytes=cls.PORTABLE_MEMORY_MAX_PAYLOAD_BYTES,
+            label="payload bytes",
+        )
+        if raw.startswith(b"\xef\xbb\xbf"):
+            raise ValueError("Portable bundle payload bytes must not contain a UTF-8 BOM.")
+
+        def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, item in pairs:
+                if key in result:
+                    raise ValueError("Portable bundle payload contains a duplicate JSON key.")
+                result[key] = item
+            return result
+
+        def reject_constant(value: str) -> None:
+            raise ValueError(f"Portable bundle payload contains invalid number {value}.")
+
+        try:
+            text = raw.decode("utf-8", errors="strict")
+            payload = json.loads(
+                text,
+                object_pairs_hook=reject_duplicate_keys,
+                parse_constant=reject_constant,
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+            raise ValueError("Portable bundle payload bytes must contain one valid UTF-8 JSON object.") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("Portable bundle payload bytes must contain a JSON object.")
+        cls._portable_validate_json_model(payload)
+        convenience = bundle.get("payload")
+        if convenience is not None:
+            if not isinstance(convenience, dict):
+                raise ValueError("Portable bundle convenience payload must be a JSON object.")
+            comparable = dict(convenience)
+            comparable.pop("exported_at", None)
+            if comparable != payload:
+                raise ValueError("Portable bundle convenience payload does not match signed payload bytes.")
+        return payload, raw
+
+    @classmethod
+    def _portable_v2_proof_bytes(cls, proof: dict[str, Any]) -> bytes:
+        if not isinstance(proof, dict):
+            raise ValueError("Portable bundle integrity proof is malformed.")
+        chain_version = proof.get("chain_version")
+        genesis = proof.get("genesis")
+        chain_head = proof.get("chain_head")
+        fingerprints = proof.get("event_fingerprints")
+        event_count = cls._portable_uint(proof.get("event_count"), label="proof event_count")
+        if chain_version != cls.INTEGRITY_CHAIN_VERSION or genesis != cls.INTEGRITY_CHAIN_GENESIS:
+            raise ValueError("Portable bundle integrity proof uses an unsupported chain.")
+        valid_chain_head = (
+            chain_head == cls.INTEGRITY_CHAIN_GENESIS
+            if event_count == 0
+            else isinstance(chain_head, str) and re.fullmatch(r"[0-9a-f]{64}", chain_head) is not None
+        )
+        if not valid_chain_head:
+            raise ValueError("Portable bundle integrity proof head is malformed.")
+        if not isinstance(fingerprints, list) or len(fingerprints) != event_count:
+            raise ValueError("Portable bundle integrity proof count does not match its fingerprints.")
+        if len(fingerprints) > cls.PORTABLE_MEMORY_MAX_RECORDS * 20:
+            raise ValueError("Portable bundle integrity proof contains too many fingerprints.")
+        lines = [
+            cls.PORTABLE_MEMORY_PROOF_DOMAIN,
+            f"chain_algorithm={cls.PORTABLE_MEMORY_CHAIN_ALGORITHM}",
+            f"chain_version={chain_version}",
+            f"genesis={genesis}",
+            f"event_count={event_count}",
+        ]
+        for fingerprint in fingerprints:
+            if not isinstance(fingerprint, str) or re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
+                raise ValueError("Portable bundle integrity proof fingerprint is malformed.")
+            lines.append(f"fingerprint={fingerprint}")
+        lines.append(f"chain_head={chain_head}")
+        return "\n".join(lines).encode("ascii")
+
+    @classmethod
+    def _portable_v2_signature_bytes(cls, bundle: dict[str, Any]) -> bytes:
+        protocol = bundle.get("protocol")
+        manifest = bundle.get("manifest")
+        signature = bundle.get("signature") if isinstance(bundle.get("signature"), dict) else {}
+        if not isinstance(protocol, dict) or not isinstance(manifest, dict):
+            raise ValueError("Portable bundle protocol or manifest is malformed.")
+        expected_protocol = {
+            "name": cls.PORTABLE_MEMORY_PROTOCOL,
+            "version": cls.PORTABLE_MEMORY_VERSION,
+            "signature_format": cls.PORTABLE_MEMORY_SIGNATURE_DOMAIN,
+            "signature_algorithm": "ed25519",
+            "key_id_algorithm": "sha256-raw-ed25519-public-key",
+            "payload_encoding": cls.PORTABLE_MEMORY_PAYLOAD_ENCODING,
+            "payload_digest_algorithm": "sha256",
+            "proof_format": cls.PORTABLE_MEMORY_PROOF_FORMAT,
+            "proof_digest_algorithm": "sha256",
+            "chain_algorithm": cls.PORTABLE_MEMORY_CHAIN_ALGORITHM,
+        }
+        if bundle.get("cortex_bundle_version") != cls.PORTABLE_MEMORY_OUTER_VERSION:
+            raise ValueError("Portable bundle outer version is unsupported.")
+        if any(protocol.get(key) != value for key, value in expected_protocol.items()):
+            raise ValueError("Portable bundle protocol algorithms are unsupported.")
+
+        def lower_hex(key: str) -> str:
+            value = manifest.get(key)
+            if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+                raise ValueError(f"Portable bundle manifest {key} is malformed.")
+            return value
+
+        user_id = manifest.get("user_id")
+        if not isinstance(user_id, str) or not user_id or len(user_id) > 500:
+            raise ValueError("Portable bundle source user id is malformed.")
+        chain_version = manifest.get("chain_version")
+        if chain_version != cls.INTEGRITY_CHAIN_VERSION:
+            raise ValueError("Portable bundle chain version is unsupported.")
+        event_count = cls._portable_uint(manifest.get("event_count"), label="manifest event_count")
+        chain_head = manifest.get("chain_head")
+        valid_chain_head = (
+            chain_head == cls.INTEGRITY_CHAIN_GENESIS
+            if event_count == 0
+            else isinstance(chain_head, str) and re.fullmatch(r"[0-9a-f]{64}", chain_head) is not None
+        )
+        if not valid_chain_head:
+            raise ValueError("Portable bundle manifest chain_head is malformed.")
+        payload_bytes = cls._portable_uint(
+            manifest.get("payload_bytes"),
+            label="manifest payload_bytes",
+            maximum=cls.PORTABLE_MEMORY_MAX_PAYLOAD_BYTES,
+        )
+        counts = manifest.get("record_counts")
+        if not isinstance(counts, dict):
+            raise ValueError("Portable bundle record counts are malformed.")
+        count_names = ("captures", "memories", "tasks", "entities", "edges", "imports")
+        normalized_counts = {
+            name: cls._portable_uint(counts.get(name), label=f"record count {name}")
+            for name in count_names
+        }
+        signing_key_id = signature.get("key_id") or manifest.get("signing_key_id")
+        if not isinstance(signing_key_id, str) or re.fullmatch(r"[0-9a-f]{64}", signing_key_id) is None:
+            raise ValueError("Portable bundle signing key id is malformed.")
+        if manifest.get("signing_key_id") != signing_key_id:
+            raise ValueError("Portable bundle signing key ids do not match.")
+        lines = [
+            cls.PORTABLE_MEMORY_SIGNATURE_DOMAIN,
+            f"outer_bundle_version={cls.PORTABLE_MEMORY_OUTER_VERSION}",
+            f"protocol_name={cls.PORTABLE_MEMORY_PROTOCOL}",
+            f"protocol_version={cls.PORTABLE_MEMORY_VERSION}",
+            "signature_algorithm=ed25519",
+            "key_id_algorithm=sha256-raw-ed25519-public-key",
+            f"payload_encoding={cls.PORTABLE_MEMORY_PAYLOAD_ENCODING}",
+            "payload_digest_algorithm=sha256",
+            f"proof_format={cls.PORTABLE_MEMORY_PROOF_FORMAT}",
+            "proof_digest_algorithm=sha256",
+            f"chain_algorithm={cls.PORTABLE_MEMORY_CHAIN_ALGORITHM}",
+            f"source_user_id_sha256={hashlib.sha256(user_id.encode('utf-8')).hexdigest()}",
+            f"chain_version={chain_version}",
+            f"chain_head={chain_head}",
+            f"event_count={event_count}",
+            f"payload_sha256={lower_hex('payload_sha256')}",
+            f"payload_bytes={payload_bytes}",
+            f"signing_key_id={signing_key_id}",
+        ]
+        lines.extend(f"record_count.{name}={normalized_counts[name]}" for name in count_names)
+        lines.append(f"proof_sha256={lower_hex('proof_sha256')}")
+        return "\n".join(lines).encode("ascii")
 
     def _portable_integrity_proof(self, user_id: str) -> dict[str, Any]:
         with connect(self.db_path) as conn:
@@ -21400,6 +21658,209 @@ class CortexStore:
             ensure_ascii=True,
         ).encode("utf-8")
 
+    def _verify_portable_bundle_v2(
+        self,
+        bundle: dict[str, Any],
+        *,
+        expected_signing_key_id: str | None = None,
+    ) -> dict[str, Any]:
+        manifest = bundle.get("manifest")
+        protocol = bundle.get("protocol")
+        proof = bundle.get("integrity_proof")
+        signature = bundle.get("signature")
+        if not all(isinstance(value, dict) for value in (manifest, protocol, proof, signature)):
+            raise ValueError("A portable v2 bundle needs protocol, manifest, proof, and signature objects.")
+        manifest = manifest if isinstance(manifest, dict) else {}
+        protocol = protocol if isinstance(protocol, dict) else {}
+        proof = proof if isinstance(proof, dict) else {}
+        signature = signature if isinstance(signature, dict) else {}
+        expected_key_id = str(expected_signing_key_id or "").strip().lower()
+
+        payload: dict[str, Any] = {}
+        payload_raw = b""
+        payload_structure_valid = False
+        payload_object_matches = False
+        payload_error: str | None = None
+        try:
+            payload, payload_raw = self._portable_v2_payload(bundle)
+            payload_structure_valid = True
+            payload_object_matches = True
+        except ValueError as exc:
+            payload_error = str(exc)
+
+        claimed_payload_sha = manifest.get("payload_sha256")
+        recomputed_payload_sha = hashlib.sha256(payload_raw).hexdigest() if payload_raw else ""
+        payload_matches = (
+            payload_structure_valid
+            and isinstance(claimed_payload_sha, str)
+            and re.fullmatch(r"[0-9a-f]{64}", claimed_payload_sha) is not None
+            and hmac.compare_digest(claimed_payload_sha, recomputed_payload_sha)
+            and manifest.get("payload_bytes") == len(payload_raw)
+        )
+
+        collection_names = ("captures", "memories", "tasks", "entities", "edges", "imports")
+        collections_valid = payload_structure_valid and all(
+            name in payload and isinstance(payload.get(name), list) for name in collection_names
+        )
+        actual_counts = {
+            name: len(payload.get(name) or []) if isinstance(payload.get(name), list) else 0
+            for name in collection_names
+        }
+        claimed_counts = manifest.get("record_counts")
+        counts_match = isinstance(claimed_counts, dict) and collections_valid
+        if counts_match:
+            try:
+                counts_match = all(
+                    self._portable_uint(claimed_counts.get(name), label=f"record count {name}")
+                    == actual_counts[name]
+                    for name in collection_names
+                )
+            except ValueError:
+                counts_match = False
+
+        source_memories = payload.get("memories") if isinstance(payload.get("memories"), list) else []
+        resource_limits_valid = collections_valid and len(source_memories) <= self.PORTABLE_MEMORY_MAX_RECORDS
+        if resource_limits_valid:
+            content_bytes = sum(
+                len(str(memory.get("content") or "").encode("utf-8"))
+                for memory in source_memories
+                if isinstance(memory, dict)
+            )
+            resource_limits_valid = content_bytes <= self.PORTABLE_MEMORY_MAX_CONTENT_BYTES
+
+        source_user_id = manifest.get("user_id")
+        tenant_consistent = (
+            isinstance(source_user_id, str)
+            and bool(source_user_id)
+            and payload.get("user_id") == source_user_id
+            and all(
+                isinstance(memory, dict)
+                and (not memory.get("user_id") or memory.get("user_id") == source_user_id)
+                for memory in (payload.get("memories") or [])
+            )
+        )
+
+        proof_structure_valid = False
+        integrity_matches = False
+        proof_matches = False
+        try:
+            proof_bytes = self._portable_v2_proof_bytes(proof)
+            proof_sha = hashlib.sha256(proof_bytes).hexdigest()
+            proof_matches = (
+                isinstance(manifest.get("proof_sha256"), str)
+                and hmac.compare_digest(str(manifest.get("proof_sha256")), proof_sha)
+            )
+            fingerprints = proof.get("event_fingerprints")
+            head = self.INTEGRITY_CHAIN_GENESIS
+            if isinstance(fingerprints, list):
+                for fingerprint in fingerprints:
+                    head = self._integrity_link(head, str(fingerprint))
+            proof_structure_valid = True
+            integrity_matches = (
+                proof.get("chain_head") == head
+                and manifest.get("chain_head") == head
+                and manifest.get("chain_version") == self.INTEGRITY_CHAIN_VERSION
+                and manifest.get("event_count") == proof.get("event_count")
+            )
+        except ValueError:
+            proof_structure_valid = False
+
+        protocol_matches = False
+        signature_preimage = b""
+        try:
+            signature_preimage = self._portable_v2_signature_bytes(bundle)
+            protocol_matches = True
+        except ValueError:
+            protocol_matches = False
+
+        signing_key_id = signature.get("key_id")
+        public_key_valid = False
+        signature_valid = False
+        try:
+            public_key_bytes = self._portable_b64decode_variable(
+                signature.get("public_key"), max_bytes=32, label="public key"
+            )
+            signature_bytes = self._portable_b64decode_variable(
+                signature.get("value"), max_bytes=64, label="signature"
+            )
+            if len(public_key_bytes) != 32 or len(signature_bytes) != 64:
+                raise ValueError("Portable bundle signature length is malformed.")
+            recomputed_key_id = hashlib.sha256(public_key_bytes).hexdigest()
+            public_key_valid = (
+                protocol.get("signature_algorithm") == "ed25519"
+                and signature.get("algorithm") == "ed25519"
+                and isinstance(signing_key_id, str)
+                and hmac.compare_digest(signing_key_id, recomputed_key_id)
+                and hmac.compare_digest(str(manifest.get("signing_key_id") or ""), recomputed_key_id)
+            )
+            if public_key_valid and signature_preimage:
+                from cryptography.exceptions import InvalidSignature
+                from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+                try:
+                    Ed25519PublicKey.from_public_bytes(public_key_bytes).verify(
+                        signature_bytes,
+                        signature_preimage,
+                    )
+                    signature_valid = True
+                except InvalidSignature:
+                    signature_valid = False
+        except (ImportError, ValueError):
+            signature_valid = False
+        signer_matches = not expected_key_id or (
+            isinstance(signing_key_id, str) and hmac.compare_digest(expected_key_id, signing_key_id)
+        )
+        verified = all(
+            (
+                payload_matches,
+                payload_object_matches,
+                collections_valid,
+                counts_match,
+                resource_limits_valid,
+                tenant_consistent,
+                proof_structure_valid,
+                proof_matches,
+                integrity_matches,
+                protocol_matches,
+                public_key_valid,
+                signature_valid,
+                signer_matches,
+            )
+        )
+        return {
+            "generated_at": now_iso(),
+            "payload_matches": payload_matches,
+            "payload_object_matches": payload_object_matches,
+            "payload_structure_valid": payload_structure_valid,
+            "payload_error": payload_error,
+            "counts_match": counts_match,
+            "collections_valid": collections_valid,
+            "resource_limits_valid": resource_limits_valid,
+            "protocol_matches": protocol_matches,
+            "tenant_consistent": tenant_consistent,
+            "integrity_matches": integrity_matches,
+            "proof_structure_valid": proof_structure_valid,
+            "proof_matches": proof_matches,
+            "public_key_valid": public_key_valid,
+            "signature_valid": signature_valid,
+            "signer_matches": signer_matches,
+            "signing_key_id": signing_key_id if isinstance(signing_key_id, str) else None,
+            "expected_signing_key_id": expected_key_id or None,
+            "legacy_bundle": False,
+            "published_protocol": True,
+            "protocol_version": self.PORTABLE_MEMORY_VERSION,
+            "importable": verified,
+            "verified": verified,
+            "claimed_payload_sha256": claimed_payload_sha if isinstance(claimed_payload_sha, str) else None,
+            "recomputed_payload_sha256": recomputed_payload_sha or None,
+            "record_counts": actual_counts,
+            "note": (
+                "Verified published portable-memory v2 payload, continuity commitment, and signer."
+                if verified
+                else "Do NOT import: one or more v2 payload, proof, version, signer, or signature checks failed."
+            ),
+        }
+
     def verify_portable_bundle(
         self,
         bundle: dict[str, Any],
@@ -21413,6 +21874,22 @@ class CortexStore:
         it can check a bundle from anywhere."""
         if not isinstance(bundle, dict):
             raise ValueError("A portable bundle must be a JSON object.")
+        outer_version = str(bundle.get("cortex_bundle_version") or "").strip().lower()
+        protocol_value = bundle.get("protocol")
+        protocol_version = (
+            protocol_value.get("version") if isinstance(protocol_value, dict) else None
+        )
+        if outer_version == self.PORTABLE_MEMORY_OUTER_VERSION and protocol_version == self.PORTABLE_MEMORY_VERSION:
+            return self._verify_portable_bundle_v2(
+                bundle,
+                expected_signing_key_id=expected_signing_key_id,
+            )
+        if outer_version not in {"v1", "v2"}:
+            raise ValueError("Portable bundle outer/protocol version pairing is unsupported.")
+        if outer_version == "v2" and protocol_version != self.PORTABLE_MEMORY_PRIVATE_VERSION:
+            raise ValueError("Portable bundle outer/protocol version pairing is unsupported.")
+        if outer_version == "v1" and protocol_value:
+            raise ValueError("Legacy portable bundles must not declare a protocol object.")
         manifest = bundle.get("manifest")
         payload = bundle.get("payload")
         if not isinstance(manifest, dict) or not isinstance(payload, dict):
@@ -21479,7 +21956,8 @@ class CortexStore:
         protocol = bundle.get("protocol") if isinstance(bundle.get("protocol"), dict) else {}
         protocol_matches = (
             protocol.get("name") == self.PORTABLE_MEMORY_PROTOCOL
-            and portable_int(protocol.get("version"), 0) == self.PORTABLE_MEMORY_VERSION
+            and portable_int(protocol.get("version"), 0) == self.PORTABLE_MEMORY_PRIVATE_VERSION
+            and outer_version == "v2"
         )
         source_user_id = str(manifest.get("user_id") or "").strip()
         payload_user_id = str(payload.get("user_id") or "").strip()
@@ -21577,6 +22055,8 @@ class CortexStore:
             "signing_key_id": signing_key_id or None,
             "expected_signing_key_id": expected_key_id or None,
             "legacy_bundle": False,
+            "published_protocol": False,
+            "protocol_version": self.PORTABLE_MEMORY_PRIVATE_VERSION,
             "importable": verified,
             "verified": verified,
             "claimed_payload_sha256": claimed or None,
@@ -21610,7 +22090,11 @@ class CortexStore:
         if not verdict.get("importable"):
             raise ValueError(verdict["note"])
         manifest = bundle["manifest"]
-        payload = bundle["payload"]
+        protocol_version = int(verdict.get("protocol_version") or self.PORTABLE_MEMORY_PRIVATE_VERSION)
+        if verdict.get("published_protocol"):
+            payload, _ = self._portable_v2_payload(bundle)
+        else:
+            payload = bundle["payload"]
         source_memories = payload.get("memories") if isinstance(payload.get("memories"), list) else []
         if len(source_memories) > self.PORTABLE_MEMORY_MAX_RECORDS:
             raise ValueError("Portable bundle contains too many memory records.")
@@ -21663,7 +22147,7 @@ class CortexStore:
             lineage.append(
                 {
                     "protocol": self.PORTABLE_MEMORY_PROTOCOL,
-                    "version": self.PORTABLE_MEMORY_VERSION,
+                    "version": protocol_version,
                     "signing_key_id": signing_key_id,
                     "source_user_id": source_user_id,
                     "source_memory_id": source_id,
@@ -21896,6 +22380,7 @@ class CortexStore:
             "imported_at": imported_at,
             "verified": True,
             "protocol": bundle["protocol"],
+            "published_protocol": bool(verdict.get("published_protocol")),
             "signing_key_id": signing_key_id,
             "signer_pinned": signer_pinned,
             "source_user_id": source_user_id,

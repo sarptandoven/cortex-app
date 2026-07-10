@@ -1,0 +1,107 @@
+{
+  "cortex_bundle_version": "v3",
+  "integrity_proof": {
+    "chain_head": "cortex:integrity:v1:genesis",
+    "chain_version": "v1",
+    "event_count": 0,
+    "event_fingerprints": [],
+    "genesis": "cortex:integrity:v1:genesis"
+  },
+  "manifest": {
+    "chain_head": "cortex:integrity:v1:genesis",
+    "chain_version": "v1",
+    "event_count": 0,
+    "generated_at": "2026-07-10T00:00:00+00:00",
+    "payload_bytes": 1015,
+    "payload_sha256": "56238c2f1f01c229454952596a36eaa0ef5b05ef03e7e4e408bec058f8bd9a3a",
+    "proof_sha256": "c7bb7b6772bee281a0a2355a713f66704c00afe78cfd46dc2051659b240e1a3b",
+    "record_counts": {
+      "captures": 0,
+      "edges": 0,
+      "entities": 0,
+      "imports": 0,
+      "memories": 1,
+      "tasks": 0
+    },
+    "signing_key_id": "56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c",
+    "user_id": "portable-vector-user"
+  },
+  "payload": {
+    "captures": [],
+    "edges": [],
+    "entities": [],
+    "exported_at": "2026-07-10T00:00:00+00:00",
+    "imports": [],
+    "memories": [
+      {
+        "author_class": "user",
+        "author_principal_id": "portable-vector-user",
+        "captured_at": "2026-07-10T00:00:00+00:00",
+        "confidence": "confirmed",
+        "content": "Café launch decision: use PostgreSQL 🚀.",
+        "entity_ids": [],
+        "id": "mem_portable_vector_1",
+        "importance": 5,
+        "kind": "decision",
+        "layer": "decision",
+        "occurred_at": null,
+        "occurrences": 1,
+        "provenance": {
+          "escaped": "line one\nline two",
+          "fixture": true
+        },
+        "raw_excerpt": "Café launch decision",
+        "recorded_at": "2026-07-10T00:00:00+00:00",
+        "sector": "work",
+        "source": "note",
+        "source_type": "note",
+        "source_url": "note://portable-vector/1",
+        "status": "active",
+        "summary": "Use PostgreSQL for the Café launch.",
+        "superseded_at": null,
+        "superseded_by": null,
+        "topics": [
+          "Café",
+          "launch",
+          "PostgreSQL"
+        ],
+        "trust_score": 1.0,
+        "updated_at": "2026-07-10T00:00:00+00:00",
+        "user_id": "portable-vector-user",
+        "valid_from": null,
+        "valid_to": null
+      }
+    ],
+    "stats": {
+      "memory_count": 1,
+      "quality_score": 1.0
+    },
+    "tasks": [],
+    "user_id": "portable-vector-user"
+  },
+  "payload_bytes": "eyJjYXB0dXJlcyI6W10sImVkZ2VzIjpbXSwiZW50aXRpZXMiOltdLCJpbXBvcnRzIjpbXSwibWVtb3JpZXMiOlt7ImF1dGhvcl9jbGFzcyI6InVzZXIiLCJhdXRob3JfcHJpbmNpcGFsX2lkIjoicG9ydGFibGUtdmVjdG9yLXVzZXIiLCJjYXB0dXJlZF9hdCI6IjIwMjYtMDctMTBUMDA6MDA6MDArMDA6MDAiLCJjb25maWRlbmNlIjoiY29uZmlybWVkIiwiY29udGVudCI6IkNhZlx1MDBlOSBsYXVuY2ggZGVjaXNpb246IHVzZSBQb3N0Z3JlU1FMIFx1ZDgzZFx1ZGU4MC4iLCJlbnRpdHlfaWRzIjpbXSwiaWQiOiJtZW1fcG9ydGFibGVfdmVjdG9yXzEiLCJpbXBvcnRhbmNlIjo1LCJraW5kIjoiZGVjaXNpb24iLCJsYXllciI6ImRlY2lzaW9uIiwib2NjdXJyZWRfYXQiOm51bGwsIm9jY3VycmVuY2VzIjoxLCJwcm92ZW5hbmNlIjp7ImVzY2FwZWQiOiJsaW5lIG9uZVxubGluZSB0d28iLCJmaXh0dXJlIjp0cnVlfSwicmF3X2V4Y2VycHQiOiJDYWZcdTAwZTkgbGF1bmNoIGRlY2lzaW9uIiwicmVjb3JkZWRfYXQiOiIyMDI2LTA3LTEwVDAwOjAwOjAwKzAwOjAwIiwic2VjdG9yIjoid29yayIsInNvdXJjZSI6Im5vdGUiLCJzb3VyY2VfdHlwZSI6Im5vdGUiLCJzb3VyY2VfdXJsIjoibm90ZTovL3BvcnRhYmxlLXZlY3Rvci8xIiwic3RhdHVzIjoiYWN0aXZlIiwic3VtbWFyeSI6IlVzZSBQb3N0Z3JlU1FMIGZvciB0aGUgQ2FmXHUwMGU5IGxhdW5jaC4iLCJzdXBlcnNlZGVkX2F0IjpudWxsLCJzdXBlcnNlZGVkX2J5IjpudWxsLCJ0b3BpY3MiOlsiQ2FmXHUwMGU5IiwibGF1bmNoIiwiUG9zdGdyZVNRTCJdLCJ0cnVzdF9zY29yZSI6MS4wLCJ1cGRhdGVkX2F0IjoiMjAyNi0wNy0xMFQwMDowMDowMCswMDowMCIsInVzZXJfaWQiOiJwb3J0YWJsZS12ZWN0b3ItdXNlciIsInZhbGlkX2Zyb20iOm51bGwsInZhbGlkX3RvIjpudWxsfV0sInN0YXRzIjp7Im1lbW9yeV9jb3VudCI6MSwicXVhbGl0eV9zY29yZSI6MS4wfSwidGFza3MiOltdLCJ1c2VyX2lkIjoicG9ydGFibGUtdmVjdG9yLXVzZXIifQ",
+  "protocol": {
+    "capabilities": [
+      "signed-export",
+      "signer-pinning",
+      "tenant-rebound-import",
+      "belief-timeline-preservation"
+    ],
+    "chain_algorithm": "sha256-colon-fold-v1",
+    "key_id_algorithm": "sha256-raw-ed25519-public-key",
+    "name": "cortex-portable-memory",
+    "payload_digest_algorithm": "sha256",
+    "payload_encoding": "base64url-json-utf8",
+    "proof_digest_algorithm": "sha256",
+    "proof_format": "cortex-integrity-fingerprint-chain-v2",
+    "signature_algorithm": "ed25519",
+    "signature_format": "cortex-portable-memory-signature-v2",
+    "version": 2
+  },
+  "signature": {
+    "algorithm": "ed25519",
+    "key_id": "56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c",
+    "public_key": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+    "value": "B63ZeDR1P6_DwNTNrXm99lBGTNKEACk1fax4A6nS4cE5KpqZ1Mz5osspNBt_T77b_76Jg_OCucwWy0kZVxz1Bg"
+  }
+}

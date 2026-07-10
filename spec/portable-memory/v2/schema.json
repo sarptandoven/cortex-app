@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trydoppl.com/spec/portable-memory/v2/schema.json",
+  "title": "Cortex Portable Memory Protocol v2 Bundle",
+  "type": "object",
+  "required": [
+    "cortex_bundle_version",
+    "protocol",
+    "manifest",
+    "payload_bytes",
+    "integrity_proof",
+    "signature"
+  ],
+  "properties": {
+    "cortex_bundle_version": { "const": "v3" },
+    "protocol": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "signature_format",
+        "signature_algorithm",
+        "key_id_algorithm",
+        "payload_encoding",
+        "payload_digest_algorithm",
+        "proof_format",
+        "proof_digest_algorithm",
+        "chain_algorithm"
+      ],
+      "properties": {
+        "name": { "const": "cortex-portable-memory" },
+        "version": { "const": 2 },
+        "signature_format": { "const": "cortex-portable-memory-signature-v2" },
+        "signature_algorithm": { "const": "ed25519" },
+        "key_id_algorithm": { "const": "sha256-raw-ed25519-public-key" },
+        "payload_encoding": { "const": "base64url-json-utf8" },
+        "payload_digest_algorithm": { "const": "sha256" },
+        "proof_format": { "const": "cortex-integrity-fingerprint-chain-v2" },
+        "proof_digest_algorithm": { "const": "sha256" },
+        "chain_algorithm": { "const": "sha256-colon-fold-v1" },
+        "capabilities": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "manifest": {
+      "type": "object",
+      "required": [
+        "user_id",
+        "chain_version",
+        "chain_head",
+        "event_count",
+        "payload_sha256",
+        "payload_bytes",
+        "proof_sha256",
+        "signing_key_id",
+        "record_counts"
+      ],
+      "properties": {
+        "generated_at": { "type": "string" },
+        "user_id": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "chain_version": { "const": "v1" },
+        "chain_head": {
+          "oneOf": [
+            { "const": "cortex:integrity:v1:genesis" },
+            { "$ref": "#/$defs/lowerHex64" }
+          ]
+        },
+        "event_count": { "$ref": "#/$defs/uint53" },
+        "payload_sha256": { "$ref": "#/$defs/lowerHex64" },
+        "payload_bytes": { "$ref": "#/$defs/uint53" },
+        "proof_sha256": { "$ref": "#/$defs/lowerHex64" },
+        "signing_key_id": { "$ref": "#/$defs/lowerHex64" },
+        "record_counts": { "$ref": "#/$defs/recordCounts" }
+      },
+      "additionalProperties": false
+    },
+    "payload_bytes": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "payload": {
+      "type": "object",
+      "required": ["user_id", "captures", "memories", "tasks", "entities", "edges", "imports"],
+      "properties": {
+        "exported_at": { "type": "string" },
+        "user_id": { "type": "string", "minLength": 1 },
+        "captures": { "type": "array" },
+        "memories": { "type": "array", "maxItems": 100000 },
+        "tasks": { "type": "array" },
+        "entities": { "type": "array" },
+        "edges": { "type": "array" },
+        "imports": { "type": "array" }
+      },
+      "additionalProperties": true
+    },
+    "integrity_proof": {
+      "type": "object",
+      "required": ["chain_version", "genesis", "event_count", "event_fingerprints", "chain_head"],
+      "properties": {
+        "chain_version": { "const": "v1" },
+        "genesis": { "const": "cortex:integrity:v1:genesis" },
+        "event_count": { "$ref": "#/$defs/uint53" },
+        "event_fingerprints": {
+          "type": "array",
+          "maxItems": 2000000,
+          "items": { "$ref": "#/$defs/lowerHex64" }
+        },
+        "chain_head": {
+          "oneOf": [
+            { "const": "cortex:integrity:v1:genesis" },
+            { "$ref": "#/$defs/lowerHex64" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "signature": {
+      "type": "object",
+      "required": ["algorithm", "key_id", "public_key", "value"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "key_id": { "$ref": "#/$defs/lowerHex64" },
+        "public_key": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+        "value": { "type": "string", "pattern": "^[A-Za-z0-9_-]{86}$" }
+      },
+      "additionalProperties": false
+    },
+    "how_to_verify": { "type": "string" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "lowerHex64": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "uint53": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "recordCounts": {
+      "type": "object",
+      "required": ["captures", "memories", "tasks", "entities", "edges", "imports"],
+      "properties": {
+        "captures": { "$ref": "#/$defs/uint53" },
+        "memories": { "$ref": "#/$defs/uint53" },
+        "tasks": { "$ref": "#/$defs/uint53" },
+        "entities": { "$ref": "#/$defs/uint53" },
+        "edges": { "$ref": "#/$defs/uint53" },
+        "imports": { "$ref": "#/$defs/uint53" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

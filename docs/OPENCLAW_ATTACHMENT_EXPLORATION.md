@@ -1,9 +1,10 @@
 # Exploration: Cortex + OpenClaw — memory that has hands
 
-Status: **exploration only** (no code in this pass). This document explores the user's ask:
-after Phases A-D, look at how the TencentDB / OpenClaw setup could sit as an *attachment* on
-top of Cortex "for more functionality... if users want raw workhorse power done on their
-computer." It ends with a recommendation and a phased path, not a commitment to build.
+Status: **exploration completed; reference adapter implemented in July 2026.** This document
+records the investigation that led to the `@cortex/openclaw-context` package. The shipped thin
+adapter follows the recommended attachment model: live cited Cortex recall or independently
+verified signed-bundle recall through OpenClaw's `contextEngine` lifecycle. Broader desktop action
+integration remains optional and outside Cortex's trust boundary.
 
 ---
 

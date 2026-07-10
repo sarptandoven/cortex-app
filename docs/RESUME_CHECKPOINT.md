@@ -1,11 +1,39 @@
-# RESUME HERE - Cortex M6 checkpoint (2026-07-10)
+# RESUME HERE - Cortex M8 portable memory checkpoint (2026-07-10)
 
 ## Exact state
 
 Repo: `~/repos/cortex-app`
 Branch: `mass-scale-app-redesign`
 
-Shipped milestones: **M1 -> M3 -> M2 -> M6**.
+Shipped milestones: **M1 -> M3 -> M2 -> M6 -> M5 -> M7 -> M4 -> M8 stage 1**.
+
+## Latest state: M8 signed portable memory protocol v2
+
+HEAD before this work: `21f3d26 Add signed portable memory import`.
+
+The active uncommitted M8 stage publishes a language-neutral portable-memory protocol v2 and an OpenClaw adapter package:
+
+- `backend/app/storage.py` now exports outer bundle `v3` / protocol `2` with authoritative signed `payload_bytes`, strict unpadded base64url decoding, bounded JSON validation, duplicate-key rejection for payload bytes, proof SHA-256, fixed ASCII signature/proof preimages, Ed25519 signer id validation, empty-chain support, and strict outer/protocol version dispatch.
+- Private signed `v2` / protocol `1` bundles remain verifiable/importable for compatibility. Legacy unsigned `v1` bundles remain payload-verifiable but are not importable.
+- `import_portable_bundle` imports v2 from decoded authoritative payload bytes only, records protocol version in portable lineage, preserves idempotent replay/conflict behavior, and reports `published_protocol`.
+- `docs/PORTABLE_MEMORY_PROTOCOL_V2.md` is the published protocol specification.
+- `spec/portable-memory/v2/schema.json` plus `spec/portable-memory/v2/test-vectors/cortex-python.json` provide cross-language fixtures.
+- `scripts/generate_portable_memory_vectors.py` regenerates the committed Python vector.
+- `packages/openclaw-cortex-context/` is a TypeScript OpenClaw `contextEngine` adapter that supports live Cortex context and offline signed bundle verification with signer pinning.
+
+Validation on this tree:
+
+```text
+python3 -m pytest backend/tests/test_m8_portable_memory.py -q
+# 13 passed, 7 subtests passed
+
+cd packages/openclaw-cortex-context && npm test
+# 5 passed
+
+python3 scripts/generate_portable_memory_vectors.py
+git diff --check
+# clean
+```
 
 Recent commits:
 
@@ -133,3 +161,7 @@ Per `docs/MEMORY_MOONSHOTS.md`, the next recommended higher-ceiling bet after M6
 ## Start the next session with
 
 "Continue cortex-app on branch `mass-scale-app-redesign`. Read `docs/RESUME_CHECKPOINT.md` and `docs/MEMORY_MOONSHOTS.md`. M1, M3, M2, and M6 are shipped. M6 separates answerability from correctness, exposes exact-cohort ECE/Brier/abstention metrics across MCP and both HTTP servers, and MemoryTruth v4 independently grades seven categories with all reference seeds at 1.0. Start M5 poison-proof shared memory next, using adversarial attacks as the spec and keeping all v4 floors green."
+
+Updated M8 resume prompt:
+
+"Continue cortex-app on branch `mass-scale-app-redesign`. Read `docs/RESUME_CHECKPOINT.md`, `docs/PORTABLE_MEMORY_PROTOCOL_V2.md`, and `docs/MEMORY_MOONSHOTS.md`. Current active work is M8 stage 1: published portable-memory protocol v2, authoritative signed payload bytes, Python verifier/import compatibility, cross-language schema/vector generation, and the `@cortex/openclaw-context` TypeScript verifier/contextEngine adapter. Re-run `python3 -m pytest backend/tests/test_m8_portable_memory.py -q`, `cd packages/openclaw-cortex-context && npm test`, and `python3 scripts/generate_portable_memory_vectors.py && git diff --check` before shipping further changes."

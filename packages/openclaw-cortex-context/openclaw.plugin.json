@@ -1,0 +1,108 @@
+{
+  "id": "cortex-context",
+  "name": "Cortex Context",
+  "description": "Injects cited Cortex memory into OpenClaw from a live local server or a signed portable-memory bundle.",
+  "kind": "context-engine",
+  "activation": {
+    "onStartup": true
+  },
+  "uiHints": {
+    "mode": {
+      "label": "Memory Mode",
+      "help": "live calls the local Cortex server. bundle verifies and searches a signed portable-memory file offline."
+    },
+    "baseUrl": {
+      "label": "Cortex Base URL",
+      "placeholder": "http://127.0.0.1:8766"
+    },
+    "token": {
+      "label": "Cortex API Token",
+      "help": "Use a read token for recall. Add write scope only when captureMode=user.",
+      "sensitive": true
+    },
+    "captureMode": {
+      "label": "Capture OpenClaw User Turns",
+      "help": "Off by default. user queues user turns into Cortex through its normal review pipeline."
+    },
+    "bundlePath": {
+      "label": "Portable Bundle Path",
+      "help": "Required in bundle mode. The adapter verifies this file before every changed-file reload."
+    },
+    "expectedSigningKeyId": {
+      "label": "Pinned Bundle Signer",
+      "help": "Required in bundle mode by default. SHA-256 id of the trusted Ed25519 public key."
+    },
+    "allowRemote": {
+      "label": "Allow Remote Cortex Server",
+      "help": "Off by default to prevent bearer-token egress away from loopback."
+    },
+    "failOpen": {
+      "label": "Fail Open",
+      "help": "When enabled, Cortex outages do not block the OpenClaw turn."
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "mode": {
+        "type": "string",
+        "enum": ["live", "bundle"]
+      },
+      "baseUrl": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2048
+      },
+      "token": {
+        "type": "string",
+        "maxLength": 4096
+      },
+      "user": {
+        "type": "string",
+        "maxLength": 160
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 250,
+        "maximum": 120000
+      },
+      "tokenBudget": {
+        "type": "integer",
+        "minimum": 128,
+        "maximum": 100000
+      },
+      "maxContextChars": {
+        "type": "integer",
+        "minimum": 500,
+        "maximum": 200000
+      },
+      "maxMemories": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50
+      },
+      "failOpen": {
+        "type": "boolean"
+      },
+      "allowRemote": {
+        "type": "boolean"
+      },
+      "captureMode": {
+        "type": "string",
+        "enum": ["off", "user"]
+      },
+      "bundlePath": {
+        "type": "string",
+        "maxLength": 4096
+      },
+      "expectedSigningKeyId": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "allowUnpinnedBundle": {
+        "type": "boolean"
+      }
+    }
+  }
+}

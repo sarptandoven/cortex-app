@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import tempfile
 import unittest
@@ -56,13 +57,56 @@ class PortableMemoryProtocolTests(unittest.TestCase):
                 ).fetchall()
             ]
 
+    def _private_v1_bundle(self) -> dict:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        payload = self.source.export_json(self.source_user)
+        canonical = self.source._canonical_export_bytes(payload)
+        proof = self.source._portable_integrity_proof(self.source_user)
+        private_seed, public_key, key_id = self.source.vault.portable_signing_keypair()
+        bundle = {
+            "cortex_bundle_version": "v2",
+            "protocol": {
+                "name": self.source.PORTABLE_MEMORY_PROTOCOL,
+                "version": self.source.PORTABLE_MEMORY_PRIVATE_VERSION,
+                "capabilities": ["signed-export", "signer-pinning"],
+            },
+            "manifest": {
+                "generated_at": "2026-07-10T00:00:00+00:00",
+                "user_id": self.source_user,
+                "chain_version": self.source.INTEGRITY_CHAIN_VERSION,
+                "chain_head": proof["chain_head"],
+                "event_count": proof["event_count"],
+                "payload_sha256": hashlib.sha256(canonical).hexdigest(),
+                "payload_bytes": len(canonical),
+                "signing_key_id": key_id,
+                "record_counts": {
+                    name: len(payload.get(name) or [])
+                    for name in ("captures", "memories", "tasks", "entities", "edges", "imports")
+                },
+            },
+            "payload": payload,
+            "integrity_proof": proof,
+        }
+        signature = Ed25519PrivateKey.from_private_bytes(private_seed).sign(
+            self.source._canonical_portable_bundle_bytes(bundle)
+        )
+        bundle["signature"] = {
+            "algorithm": "ed25519",
+            "key_id": key_id,
+            "public_key": self.source._portable_b64encode(public_key),
+            "value": self.source._portable_b64encode(signature),
+        }
+        return bundle
+
     def test_signed_export_has_stable_identity_and_supports_signer_pinning(self) -> None:
         self._seed(1)
         first = self.source.export_portable_bundle(self.source_user)
         second = self.source.export_portable_bundle(self.source_user)
 
-        self.assertEqual(first["cortex_bundle_version"], "v2")
+        self.assertEqual(first["cortex_bundle_version"], "v3")
         self.assertEqual(first["protocol"]["name"], "cortex-portable-memory")
+        self.assertEqual(first["protocol"]["version"], 2)
         self.assertEqual(first["signature"]["algorithm"], "ed25519")
         self.assertEqual(first["signature"]["key_id"], second["signature"]["key_id"])
         key_id = first["signature"]["key_id"]
@@ -73,6 +117,86 @@ class PortableMemoryProtocolTests(unittest.TestCase):
         self.assertFalse(wrong["verified"])
         self.assertFalse(wrong["signer_matches"])
 
+    def test_empty_source_chain_exports_and_verifies(self) -> None:
+        bundle = self.source.export_portable_bundle("empty-portable-source")
+        verdict = self.target.verify_portable_bundle(bundle)
+        self.assertTrue(verdict["verified"])
+        self.assertEqual(bundle["integrity_proof"]["event_count"], 0)
+        self.assertEqual(bundle["integrity_proof"]["chain_head"], self.source.INTEGRITY_CHAIN_GENESIS)
+
+    def test_committed_cross_language_vector_verifies_in_python(self) -> None:
+        vector_path = (
+            Path(__file__).resolve().parents[2]
+            / "spec"
+            / "portable-memory"
+            / "v2"
+            / "test-vectors"
+            / "cortex-python.json"
+        )
+        bundle = json.loads(vector_path.read_text(encoding="utf-8"))
+        verdict = self.target.verify_portable_bundle(
+            bundle,
+            expected_signing_key_id=bundle["signature"]["key_id"],
+        )
+        self.assertTrue(verdict["verified"])
+        self.assertTrue(verdict["published_protocol"])
+
+        without_convenience = copy.deepcopy(bundle)
+        without_convenience.pop("payload")
+        self.assertTrue(
+            self.target.verify_portable_bundle(
+                without_convenience,
+                expected_signing_key_id=bundle["signature"]["key_id"],
+            )["verified"]
+        )
+
+    def test_published_verifier_rejects_invalid_unicode_and_excessive_records(self) -> None:
+        self._seed(1)
+        bundle = self.source.export_portable_bundle(self.source_user)
+
+        invalid_unicode = copy.deepcopy(bundle)
+        payload = json.loads(
+            self.source._portable_b64decode_variable(
+                invalid_unicode["payload_bytes"],
+                max_bytes=self.source.PORTABLE_MEMORY_MAX_PAYLOAD_BYTES,
+                label="test payload",
+            ).decode("utf-8")
+        )
+        payload["memories"][0]["content"] = "\ud800"
+        invalid_unicode["payload_bytes"] = self.source._portable_b64encode(
+            json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        )
+        unicode_verdict = self.target.verify_portable_bundle(invalid_unicode)
+        self.assertFalse(unicode_verdict["verified"])
+        self.assertIn("valid Unicode", unicode_verdict["payload_error"])
+
+        excessive = copy.deepcopy(bundle)
+        payload = json.loads(
+            self.source._portable_b64decode_variable(
+                excessive["payload_bytes"],
+                max_bytes=self.source.PORTABLE_MEMORY_MAX_PAYLOAD_BYTES,
+                label="test payload",
+            ).decode("utf-8")
+        )
+        payload["memories"] = [None] * (self.source.PORTABLE_MEMORY_MAX_RECORDS + 1)
+        payload_raw = self.source._canonical_export_bytes(payload)
+        excessive["payload"]["memories"] = payload["memories"]
+        excessive["payload_bytes"] = self.source._portable_b64encode(payload_raw)
+        excessive["manifest"]["payload_sha256"] = hashlib.sha256(payload_raw).hexdigest()
+        excessive["manifest"]["payload_bytes"] = len(payload_raw)
+        excessive["manifest"]["record_counts"]["memories"] = len(payload["memories"])
+        private_seed, _, _ = self.source.vault.portable_signing_keypair()
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        excessive["signature"]["value"] = self.source._portable_b64encode(
+            Ed25519PrivateKey.from_private_bytes(private_seed).sign(
+                self.source._portable_v2_signature_bytes(excessive)
+            )
+        )
+        excessive_verdict = self.target.verify_portable_bundle(excessive)
+        self.assertFalse(excessive_verdict["verified"])
+        self.assertFalse(excessive_verdict["resource_limits_valid"])
+
     def test_legacy_unsigned_bundle_still_verifies_but_cannot_be_imported(self) -> None:
         self._seed(1)
         signed = self.source.export_portable_bundle(self.source_user)
@@ -81,6 +205,7 @@ class PortableMemoryProtocolTests(unittest.TestCase):
         legacy.pop("protocol")
         legacy.pop("integrity_proof")
         legacy.pop("signature")
+        legacy.pop("payload_bytes")
         legacy["manifest"].pop("signing_key_id", None)
 
         verdict = self.target.verify_portable_bundle(legacy)
@@ -89,6 +214,25 @@ class PortableMemoryProtocolTests(unittest.TestCase):
         self.assertFalse(verdict["importable"])
         with self.assertRaises(ValueError):
             self.target.import_portable_bundle(self.target_user, legacy)
+
+    def test_private_signed_v1_remains_verifiable_and_importable(self) -> None:
+        self._seed(1)
+        bundle = self._private_v1_bundle()
+        verdict = self.target.verify_portable_bundle(bundle)
+        self.assertTrue(verdict["verified"])
+        self.assertFalse(verdict["published_protocol"])
+        self.assertEqual(verdict["protocol_version"], 1)
+        imported = self.target.import_portable_bundle(self.target_user, bundle)
+        self.assertEqual(imported["memories_inserted"], 1)
+        self.assertFalse(imported["published_protocol"])
+
+    def test_outer_protocol_version_hybrids_are_rejected(self) -> None:
+        self._seed(1)
+        bundle = self.source.export_portable_bundle(self.source_user)
+        hybrid = copy.deepcopy(bundle)
+        hybrid["cortex_bundle_version"] = "v2"
+        with self.assertRaisesRegex(ValueError, "version pairing"):
+            self.target.verify_portable_bundle(hybrid)
 
     def test_tampering_payload_manifest_proof_or_signature_is_rejected(self) -> None:
         self._seed(2)
@@ -125,6 +269,11 @@ class PortableMemoryProtocolTests(unittest.TestCase):
         wrong_collection_type = copy.deepcopy(bundle)
         wrong_collection_type["payload"]["memories"] = "not-a-memory-list"
         variants.append(wrong_collection_type)
+
+        payload_bytes = copy.deepcopy(bundle)
+        first = payload_bytes["payload_bytes"][0]
+        payload_bytes["payload_bytes"] = ("A" if first != "A" else "B") + payload_bytes["payload_bytes"][1:]
+        variants.append(payload_bytes)
 
         for tampered in variants:
             with self.subTest(tamper=list(tampered.keys())):
