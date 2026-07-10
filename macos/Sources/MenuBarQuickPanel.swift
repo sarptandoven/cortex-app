@@ -314,7 +314,7 @@ struct MenuBarQuickPanel: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             if let summary = capture.summary, !summary.isEmpty {
-                Text(summary)
+                Text(MemoryText.displayProse(summary, maxLength: 180))
                     .font(.caption)
                     .foregroundColor(CortexDesign.inkSecondary)
                     .lineLimit(2)
@@ -542,9 +542,9 @@ private struct QuickFooterButton: View {
         Button(action: action) {
             VStack(spacing: 3) {
                 Image(systemName: icon).font(.system(size: 14, weight: .medium))
-                Text(title).font(.system(size: 9.5, weight: .medium))
+                Text(title).font(CortexDesign.Typography.hint)
             }
-            .frame(width: 58, height: 40)
+            .frame(width: 72, height: 40)
             .foregroundColor(hovering && !disabled ? CortexDesign.accent : .secondary)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -575,7 +575,7 @@ private struct QuickFooterBadgeButton: View {
                     Image(systemName: icon).font(.system(size: 14, weight: .medium))
                     if badge > 0 {
                         Text(badge > 99 ? "99+" : String(badge))
-                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
                             .foregroundColor(CortexDesign.ink)
                             .padding(.horizontal, 4).padding(.vertical, 1)
                             .background(
@@ -586,9 +586,9 @@ private struct QuickFooterBadgeButton: View {
                             .transition(.scale.combined(with: .opacity))
                     }
                 }
-                Text(title).font(.system(size: 9.5, weight: .medium))
+                Text(title).font(CortexDesign.Typography.hint)
             }
-            .frame(width: 58, height: 40)
+            .frame(width: 72, height: 40)
             .foregroundColor(badge > 0 || hovering ? CortexDesign.accent : CortexDesign.inkSecondary)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)

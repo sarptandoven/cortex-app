@@ -631,7 +631,7 @@ struct ReviewQueueCaptureCard: View {
               !summary.isEmpty else {
             return nil
         }
-        return summary
+        return MemoryText.displayProse(summary, maxLength: 360)
     }
 
     private var reviewSizeLabel: String {
@@ -691,10 +691,12 @@ struct ReviewQueuePlainPreviewRow: View {
             Image(systemName: "circle.fill")
                 .font(.system(size: 6))
                 .foregroundColor(CortexDesign.accent)
-            Text(text)
+            Text(MemoryText.displayProse(text, maxLength: 280))
                 .font(CortexDesign.Typography.prose(13.5))
                 .foregroundColor(CortexDesign.ink)
                 .lineSpacing(3)
+                .lineLimit(5)
+                .help(MemoryText.normalizedProse(text))
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
@@ -769,7 +771,7 @@ struct ReviewCaptureCard: View {
             }
 
             if let summary = capture.summary, !summary.isEmpty {
-                Text(summary)
+                Text(MemoryText.displayProse(summary, maxLength: 360))
                     .font(CortexDesign.Typography.prose(14))
                     .foregroundColor(CortexDesign.ink)
                     .lineSpacing(3)
@@ -777,7 +779,7 @@ struct ReviewCaptureCard: View {
                     .truncationMode(.tail)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
-                    .help(summary)
+                    .help(MemoryText.normalizedProse(summary))
             } else {
                 Text("No summary yet.")
                     .font(CortexDesign.Typography.body)

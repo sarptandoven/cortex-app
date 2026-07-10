@@ -18,7 +18,7 @@ struct ConnectionsPrivacySheet: View {
 
             ConnectionsPrivacyOverview(state: state)
         }
-        .frame(minWidth: 760, minHeight: 680)
+        .frame(minWidth: 560, minHeight: 560)
         .background(connectionsSheetBackground)
     }
 

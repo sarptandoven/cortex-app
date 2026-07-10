@@ -4965,7 +4965,11 @@ final class AppState: ObservableObject {
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.allowedFileTypes = ["zip", "json", "jsonl"]
+        panel.allowedContentTypes = [
+            .zip,
+            .json,
+            UTType(filenameExtension: "jsonl") ?? .data,
+        ]
         if panel.runModal() == .OK, let url = panel.url {
             Task { await importFromPath(url.standardizedFileURL.path, sourceHint: sourceHint) }
         }
@@ -6807,13 +6811,8 @@ final class AppState: ObservableObject {
     }
 
     private func onboardingAskSuggestion(from content: String) -> String? {
-        let words = content
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { $0.count > 2 }
-        guard words.count >= 4 else { return nil }
-        let phrase = words.prefix(10).joined(separator: " ")
-        return "What should I remember about \(phrase)?"
+        guard let subject = MemoryText.suggestionSubject(content) else { return nil }
+        return "What should I remember about \(subject)?"
     }
 
     func markBackupDecision(_ decision: String) {
@@ -7622,7 +7621,7 @@ struct CortexTabBar: View {
     }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: CortexDesign.Space.xl) {
+        HStack(alignment: .bottom, spacing: CortexDesign.Space.md) {
             ForEach(Array(AppTab.allCases.enumerated()), id: \.element) { index, tab in
                 let selected = state.selectedTab == tab
                 Button {
@@ -7647,11 +7646,11 @@ struct CortexTabBar: View {
                             }
                         }
                         ZStack {
-                            Color.clear.frame(height: 2.5)
+                            Color.clear.frame(width: 72, height: 2.5)
                             if selected {
                                 Capsule()
                                     .fill(CortexDesign.accent)
-                                    .frame(height: 2.5)
+                                    .frame(width: 72, height: 2.5)
                                     .matchedGeometryEffect(id: "inkTick", in: inkTick)
                             }
                         }
@@ -7663,9 +7662,11 @@ struct CortexTabBar: View {
                 .help("\(tab.label) (⌘\(index + 1))")
                 .accessibilityLabel(tab.label)
                 .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+                .frame(maxWidth: .infinity)
             }
-            Spacer(minLength: 0)
         }
+        .frame(maxWidth: 720)
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, CortexDesign.Space.lg)
         .padding(.top, CortexDesign.Space.md)
         .background(CortexDesign.appBackground)
@@ -7724,13 +7725,27 @@ struct CortexView: View {
             OnboardingView(state: state)
                 .preferredColorScheme(.light)
                 .accentColor(CortexDesign.accent)
-                .frame(width: 820, height: 720)
+                .frame(
+                    minWidth: 540,
+                    idealWidth: 760,
+                    maxWidth: 820,
+                    minHeight: 540,
+                    idealHeight: 660,
+                    maxHeight: 720
+                )
         }
         .sheet(isPresented: $state.showConnectionsPrivacy, onDismiss: { state.connectionsSheetDismissed() }) {
             ConnectionsPrivacySheet(state: state)
                 .preferredColorScheme(.light)
                 .accentColor(CortexDesign.accent)
-                .frame(width: 840, height: 720)
+                .frame(
+                    minWidth: 560,
+                    idealWidth: 780,
+                    maxWidth: 840,
+                    minHeight: 560,
+                    idealHeight: 680,
+                    maxHeight: 720
+                )
         }
         // App-menu "Settings…" (⌘,) requests the settings surface by flipping presentSettings; the
         // window content owns the actual presentation. Reuse the Connections & Privacy sheet — that
@@ -7760,6 +7775,8 @@ struct CortexView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
             }
+            .frame(maxWidth: 760)
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, CortexDesign.Space.lg)
             .padding(.vertical, CortexDesign.Space.md)
         }
@@ -10966,7 +10983,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         window.level = .normal
         window.delegate = self
-        window.contentViewController = NSHostingController(rootView: CortexView(state: state))
+        let hosting = NSHostingController(rootView: CortexView(state: state))
+        // CRITICAL: SwiftUI must never drive the window's size. With the default sizing
+        // options, NSHostingController resizes the window to the content's IDEAL height —
+        // a tall ScrollView (e.g. the Review list) reports thousands of points, so the
+        // window ballooned to ~3400pt on an 1169pt screen and hung mostly off-screen
+        // (log: "frame={{222, -2279}, {1578, 3404}}" right after showWindow). An empty
+        // option set means window geometry belongs to the user + frame autosave only.
+        hosting.sizingOptions = []
+        window.contentViewController = hosting
         // Bumped autosave name so the new larger default replaces any previously-saved small
         // frame once; subsequent user resizes persist under this name.
         window.setFrameAutosaveName("CortexMainWindowV3")

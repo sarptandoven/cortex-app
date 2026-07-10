@@ -5,48 +5,51 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Cortex Memory</title>
     <style>
-      :root { color-scheme: light dark; }
+      :root { color-scheme: light; }
       body {
-        width: 300px;
+        width: 340px;
         margin: 0;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        background: #ffffff;
-        color: #1f2328;
+        background: #f7f4ed;
+        color: #2b2620;
       }
       header {
         display: flex;
         align-items: center;
-        gap: 8px;
-        padding: 14px 16px;
-        background: linear-gradient(135deg, #6d5efc 0%, #8b5cf6 100%);
-        color: #fff;
+        gap: 9px;
+        padding: 16px 18px 13px;
+        background: #f7f4ed;
+        border-bottom: 1px solid rgba(43, 38, 32, 0.12);
       }
-      header .mark { font-size: 16px; }
-      header h1 { margin: 0; font-size: 15px; font-weight: 700; }
-      .body { padding: 14px 16px 16px; }
+      header .mark { color: #8c3a2b; font-size: 17px; }
+      header h1 { margin: 0; font: 600 18px/1.1 Georgia, "Times New Roman", serif; }
+      .body { padding: 16px 18px 18px; }
       .status-line { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 6px; }
       .dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: #c0c4cc; }
-      .dot.ok { background: #1f9d55; }
-      .dot.warn { background: #d4a017; }
-      .dot.err { background: #cf222e; }
-      .meta { font-size: 12px; color: #57606a; margin: 2px 0 14px; word-break: break-all; }
+      .dot.ok { background: #4f6b45; }
+      .dot.warn { background: #b58121; }
+      .dot.err { background: #8c3a2b; }
+      .meta { min-height: 34px; font-size: 12px; line-height: 1.4; color: #5c554b; margin: 2px 0 14px; overflow-wrap: anywhere; }
       button {
         width: 100%;
         font: inherit;
-        font-weight: 700;
-        padding: 10px 12px;
-        border-radius: 10px;
-        border: 0;
+        min-height: 42px;
+        font-weight: 650;
+        padding: 10px 13px;
+        border-radius: 8px;
+        border: 1px solid rgba(43, 38, 32, 0.14);
         cursor: pointer;
         margin-bottom: 8px;
       }
-      button.primary { background: #6d5efc; color: #fff; }
+      button.primary { background: #8c3a2b; border-color: #8c3a2b; color: #fffdfa; }
       button.primary:disabled { opacity: 0.55; cursor: default; }
-      button.secondary { background: #eef0f4; color: #1f2328; font-weight: 600; }
+      button.secondary { background: #fefdfa; color: #2b2620; font-weight: 600; }
+      button:hover:not(:disabled) { filter: brightness(0.97); }
+      button:focus-visible { outline: 3px solid rgba(140, 58, 43, 0.25); outline-offset: 2px; }
       #msg { font-size: 12.5px; margin-top: 6px; min-height: 16px; }
-      #msg.ok { color: #116329; }
-      #msg.err { color: #cf222e; }
-      #msg.info { color: #0969da; }
+      #msg.ok { color: #4f6b45; }
+      #msg.err { color: #8c3a2b; }
+      #msg.info { color: #5c554b; }
     </style>
   </head>
   <body>

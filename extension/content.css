@@ -10,14 +10,14 @@
   align-items: center;
   gap: 6px;
   padding: 8px 14px;
-  border: 1px solid rgba(120, 90, 255, 0.35);
-  border-radius: 999px;
-  background: linear-gradient(135deg, #6d5efc 0%, #8b5cf6 100%);
-  color: #ffffff;
+  border: 1px solid rgba(140, 58, 43, 0.45);
+  border-radius: 8px;
+  background: #8c3a2b;
+  color: #fffdfa;
   font: 600 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   letter-spacing: 0.2px;
   cursor: pointer;
-  box-shadow: 0 6px 22px rgba(90, 60, 220, 0.35);
+  box-shadow: 0 7px 22px rgba(43, 38, 32, 0.24);
   transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
   -webkit-appearance: none;
   appearance: none;
@@ -25,7 +25,7 @@
 
 .cortex-inject-button:hover {
   transform: translateY(-1px);
-  box-shadow: 0 8px 26px rgba(90, 60, 220, 0.45);
+  box-shadow: 0 9px 28px rgba(43, 38, 32, 0.3);
 }
 
 .cortex-inject-button:active {
@@ -39,6 +39,11 @@
 
 .cortex-inject-button:disabled {
   cursor: default;
+}
+
+.cortex-inject-button:focus-visible {
+  outline: 3px solid rgba(140, 58, 43, 0.28);
+  outline-offset: 3px;
 }
 
 #cortex-toast-host {
@@ -56,10 +61,11 @@
 .cortex-toast {
   pointer-events: auto;
   padding: 10px 14px;
-  border-radius: 10px;
+  border: 1px solid rgba(232, 227, 217, 0.14);
+  border-radius: 8px;
   font: 500 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: #ffffff;
-  background: #2b2b33;
+  background: #2b2620;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
   opacity: 0;
   transform: translateY(10px);
@@ -72,17 +78,17 @@
 }
 
 .cortex-toast-success {
-  background: #12683f;
+  background: #4f6b45;
 }
 
 .cortex-toast-warn {
-  background: #8a5a12;
+  background: #8a641f;
 }
 
 .cortex-toast-error {
-  background: #99231f;
+  background: #8c3a2b;
 }
 
 .cortex-toast-info {
-  background: #2b2b33;
+  background: #2b2620;
 }

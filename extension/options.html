@@ -5,50 +5,52 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Cortex Memory - Options</title>
     <style>
-      :root { color-scheme: light dark; }
+      :root { color-scheme: light; }
       body {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         margin: 0;
-        background: #faf9f6;
-        color: #1f2328;
+        background: #f7f4ed;
+        color: #2b2620;
         line-height: 1.5;
       }
       main {
         max-width: 620px;
-        margin: 48px auto;
+        margin: clamp(20px, 6vh, 56px) auto;
         padding: 32px;
-        background: #ffffff;
-        border: 1px solid rgba(30, 41, 59, 0.12);
-        border-radius: 16px;
-        box-shadow: 0 20px 70px rgba(15, 23, 42, 0.06);
+        background: #fefdfa;
+        border: 1px solid rgba(43, 38, 32, 0.12);
+        border-radius: 12px;
+        box-shadow: 0 18px 55px rgba(43, 38, 32, 0.08);
       }
-      h1 { margin: 0 0 4px; font-size: 22px; }
-      .brand { color: #6d5efc; }
-      p.sub { margin: 0 0 24px; color: #57606a; font-size: 14px; }
+      h1 { margin: 0 0 6px; font: 600 28px/1.1 Georgia, "Times New Roman", serif; }
+      .brand { color: #8c3a2b; }
+      p.sub { margin: 0 0 24px; color: #5c554b; font-size: 14px; }
       label { display: block; font-weight: 600; margin-top: 18px; margin-bottom: 6px; }
       input {
         width: 100%;
         box-sizing: border-box;
         font: inherit;
         padding: 10px 12px;
-        border: 1px solid #d0d7de;
-        border-radius: 10px;
+        border: 1px solid rgba(43, 38, 32, 0.2);
+        border-radius: 8px;
         background: #fff;
-        color: #1f2328;
+        color: #2b2620;
       }
-      input:focus { outline: 2px solid #8b5cf6; border-color: #8b5cf6; }
-      .hint { color: #57606a; font-size: 12.5px; margin-top: 6px; }
+      input:focus { outline: 3px solid rgba(140, 58, 43, 0.18); border-color: #8c3a2b; }
+      .hint { color: #5c554b; font-size: 12.5px; margin-top: 6px; }
       .row { display: flex; gap: 10px; margin-top: 22px; flex-wrap: wrap; }
       button {
         font: inherit;
         font-weight: 700;
         padding: 10px 16px;
-        border-radius: 10px;
-        border: 0;
+        min-height: 42px;
+        border-radius: 8px;
+        border: 1px solid rgba(43, 38, 32, 0.14);
         cursor: pointer;
       }
-      button.primary { background: #6d5efc; color: #fff; }
-      button.secondary { background: #eef0f4; color: #1f2328; }
+      button.primary { background: #8c3a2b; border-color: #8c3a2b; color: #fffdfa; }
+      button.secondary { background: #f7f4ed; color: #2b2620; }
+      button:focus-visible { outline: 3px solid rgba(140, 58, 43, 0.22); outline-offset: 2px; }
       button:disabled { opacity: 0.6; cursor: default; }
       #status {
         margin-top: 20px;
@@ -59,11 +61,14 @@
         white-space: pre-wrap;
       }
       #status.show { display: block; }
-      #status.ok { background: #dafbe1; color: #116329; }
-      #status.err { background: #ffebe9; color: #cf222e; }
-      #status.info { background: #ddf4ff; color: #0969da; }
-      .foot { margin-top: 28px; font-size: 12.5px; color: #57606a; }
-      code { background: #f3f3f3; padding: 2px 5px; border-radius: 4px; font-size: 12px; }
+      #status.ok { background: #edf2e9; color: #4f6b45; }
+      #status.err { background: #f4e8e4; color: #8c3a2b; }
+      #status.info { background: #f1ede3; color: #5c554b; }
+      .foot { margin-top: 28px; font-size: 12.5px; color: #5c554b; }
+      code { background: #f1ede3; padding: 2px 5px; border-radius: 4px; font-size: 12px; }
+      @media (max-width: 720px) {
+        main { margin: 0; min-height: 100vh; padding: 24px 20px; border: 0; border-radius: 0; }
+      }
     </style>
   </head>
   <body>

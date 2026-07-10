@@ -205,7 +205,7 @@ struct MirrorMomentCard: View {
                     .foregroundColor(CortexDesign.accent)
                     .accessibilityHidden(true)
 
-                Text(insight.headline)
+                Text(MemoryText.displayProse(insight.headline, maxLength: 220))
                     .font(CortexDesign.Typography.display(22))
                     .foregroundColor(CortexDesign.ink)
                     .fixedSize(horizontal: false, vertical: true)
@@ -245,7 +245,7 @@ struct MirrorMomentCard: View {
             .cortexCard(background: CortexDesign.accentSoft)
             .frame(maxWidth: 620, alignment: .leading)
             .accessibilityElement(children: .contain)
-            .accessibilityLabel("Cortex noticed: \(insight.headline)")
+            .accessibilityLabel("Cortex noticed: \(MemoryText.displayProse(insight.headline, maxLength: 220))")
         }
     }
 }
@@ -295,7 +295,7 @@ struct ProfileCard: View {
             }
 
             if let statement = section.statement, !statement.isEmpty {
-                Text(statement)
+                Text(MemoryText.displayProse(statement, maxLength: 360))
                     .font(CortexDesign.Typography.prose(15))
                     .lineSpacing(3)
                     .foregroundColor(CortexDesign.ink)
@@ -349,7 +349,7 @@ struct ProfileCard: View {
             prefix = "\(section.title), Emerging"
         }
         if let statement = section.statement, !statement.isEmpty {
-            return "\(prefix): \(statement)"
+            return "\(prefix): \(MemoryText.displayProse(statement, maxLength: 360))"
         }
         return prefix
     }
@@ -397,7 +397,7 @@ private struct ProfileElementRow: View {
     private var rowContent: some View {
         VStack(alignment: .leading, spacing: CortexDesign.Space.xs) {
             if let text = element.text, !text.isEmpty {
-                Text("\u{201C}\(text)\u{201D}")
+                Text("\u{201C}\(MemoryText.displayProse(text, maxLength: 260))\u{201D}")
                     .font(.callout)
                     .foregroundColor(CortexDesign.ink)
                     .fixedSize(horizontal: false, vertical: true)
@@ -421,7 +421,9 @@ private struct ProfileElementRow: View {
 
     private var accessibilityLabel: String {
         var parts: [String] = []
-        if let text = element.text, !text.isEmpty { parts.append(text) }
+        if let text = element.text, !text.isEmpty {
+            parts.append(MemoryText.displayProse(text, maxLength: 260))
+        }
         if let sourceCaption { parts.append(sourceCaption) }
         return parts.isEmpty ? "Profile detail" : parts.joined(separator: ". ")
     }

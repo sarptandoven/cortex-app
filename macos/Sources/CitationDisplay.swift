@@ -162,9 +162,72 @@ enum CitationDisplay {
 /// path (e.g. `file '/Users/.../scene_2.mp4'`); showing the filename as the headline and the path as
 /// a quiet secondary line is far more legible than dumping the whole string.
 enum MemoryText {
+    private static let uuidPattern = #"(?i)\b[0-9a-f]{8}(?:[-\s]+[0-9a-f]{4}){3}[-\s]+[0-9a-f]{12}\b"#
+
+    /// Normalize backend/import text before it reaches a user-facing view. Some source exports
+    /// contain escaped control sequences (the two visible characters `\n`) instead of actual
+    /// whitespace. Rendering those verbatim made otherwise polished cards look corrupted.
+    static func normalizedProse(_ raw: String) -> String {
+        raw
+            .replacingOccurrences(of: "\\r\\n", with: " ")
+            .replacingOccurrences(of: "\\n", with: " ")
+            .replacingOccurrences(of: "\\r", with: " ")
+            .replacingOccurrences(of: "\\t", with: " ")
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// A compact preview for imported content. Repeated quoted file paths are summarized by
+    /// filename so Review never turns into a wall of private absolute paths. Ordinary prose is
+    /// whitespace-normalized and capped for preview surfaces; the original remains available to
+    /// detailed/citation views and accessibility help text.
+    static func displayProse(_ raw: String, maxLength: Int = 320) -> String {
+        let normalized = normalizedProse(raw)
+        let names = quotedFileNames(in: normalized)
+        if !names.isEmpty {
+            let visible = names.prefix(3).joined(separator: ", ")
+            let remainder = names.count > 3 ? " +\(names.count - 3) more" : ""
+            return names.count == 1 ? "File: \(visible)" : "Files: \(visible)\(remainder)"
+        }
+        guard normalized.count > maxLength else { return normalized }
+        return String(normalized.prefix(max(1, maxLength - 1))).trimmingCharacters(in: .whitespaces) + "…"
+    }
+
+    /// Build a useful Ask subject without leaking UUIDs, absolute paths, or import field names.
+    /// Returning nil lets the caller fall back to a clean source-level suggestion.
+    static func suggestionSubject(_ raw: String) -> String? {
+        let normalized = normalizedProse(raw)
+        guard !normalized.isEmpty,
+              !isPathLike(normalized),
+              !normalized.contains("/Users/"),
+              !normalized.contains("\\Users\\") else {
+            return nil
+        }
+
+        let withoutUUID = normalized.replacingOccurrences(
+            of: uuidPattern,
+            with: " ",
+            options: .regularExpression
+        )
+        let ignored = Set([
+            "uuid", "id", "name", "title", "content", "record", "item",
+            "summary", "conversation", "metadata",
+        ])
+        let words = withoutUUID
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { word in
+                word.count > 2 && !ignored.contains(word.lowercased())
+            }
+        guard words.count >= 3 else { return nil }
+        return words.prefix(9).joined(separator: " ")
+    }
+
     /// Strip a leading `file '…'` wrapper and surrounding quotes to get the inner path/string.
     static func unwrap(_ raw: String) -> String {
-        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        var s = normalizedProse(raw)
         if s.lowercased().hasPrefix("file ") {
             s = String(s.dropFirst(5)).trimmingCharacters(in: .whitespaces)
         }
@@ -202,15 +265,31 @@ enum MemoryText {
     /// A clean (headline, secondaryPath?) for display: for a path-like value the filename is the
     /// headline and the middle-truncated path is secondary; otherwise the raw text is the headline.
     static func displayContent(_ raw: String) -> (headline: String, path: String?) {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = normalizedProse(raw)
         if isPathLike(trimmed), let name = filename(trimmed) {
             return (name, middleTruncated(unwrap(trimmed)))
         }
-        return (trimmed, nil)
+        return (displayProse(trimmed), nil)
     }
 
     /// A normalized key for collapsing near-identical previews.
     static func dedupeKey(_ raw: String) -> String {
         unwrap(raw).lowercased()
+    }
+
+    private static func quotedFileNames(in raw: String) -> [String] {
+        guard raw.contains("/") || raw.contains("\\") else { return [] }
+        var names: [String] = []
+        let pattern = #"['\"]([^'\"]*(?:/|\\)[^'\"]+)['\"]"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(raw.startIndex..<raw.endIndex, in: raw)
+        for match in regex.matches(in: raw, range: range) {
+            guard match.numberOfRanges > 1,
+                  let captureRange = Range(match.range(at: 1), in: raw) else { continue }
+            let candidate = String(raw[captureRange])
+            guard let name = filename(candidate), name.contains(".") else { continue }
+            if !names.contains(name) { names.append(name) }
+        }
+        return names
     }
 }
