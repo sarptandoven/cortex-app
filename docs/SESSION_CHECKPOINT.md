@@ -8,6 +8,8 @@
 - OpenClaw offline recall exposes all three memory ids/source references plus verified bundle signer id, source-tenant SHA-256 binding, continuity head, and payload SHA-256. The raw tenant remains verifier API data and is not inserted into the prompt.
 - A defined 11-case TypeScript tamper corpus is rejected 11/11; strict bundle mode fails closed on modified memory.
 - Focused validation: backend portable-memory module `14 passed + 13 subtests`; OpenClaw adapter `8 passed`.
+- M8 stage 4 real-runtime gate: packed npm archive install -> uninstall -> reinstall through OpenClaw 2026.6.11; exclusive `contextEngine` activation and schema confirmed; direct installed-artifact lifecycle probes pass live recall, review-endpoint capture, N=3 bundle recall, and strict tamper rejection; separate isolated Gateway health reports `cortex-context` loaded with zero plugin errors. No provider-backed model turn is claimed.
+- Repeat with `python3 scripts/check_openclaw_context_release.py` or `cd packages/openclaw-cortex-context && npm run release:gate`. The script uses a temporary `HOME` and does not touch the user's real OpenClaw profile.
 
 ## M6 calibrated metacognition and MemoryTruth v4
 

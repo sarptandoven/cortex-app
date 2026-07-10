@@ -25,7 +25,8 @@
     "build": "tsc",
     "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test test/*.test.mjs"
+    "test": "npm run build && node --test test/*.test.mjs",
+    "release:gate": "python3 ../../scripts/check_openclaw_context_release.py"
   },
   "keywords": [
     "openclaw",

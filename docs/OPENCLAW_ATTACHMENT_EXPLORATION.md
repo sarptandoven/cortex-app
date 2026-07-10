@@ -1,10 +1,12 @@
 # Exploration: Cortex + OpenClaw — memory that has hands
 
-Status: **exploration completed; reference adapter implemented in July 2026.** This document
+Status: **exploration completed; reference adapter and real-runtime release gate implemented in July 2026.** This document
 records the investigation that led to the `@cortex/openclaw-context` package. The shipped thin
 adapter follows the recommended attachment model: live cited Cortex recall or independently
 verified signed-bundle recall through OpenClaw's `contextEngine` lifecycle. Broader desktop action
 integration remains optional and outside Cortex's trust boundary.
+
+The packaged adapter now has a repeatable isolated release gate (`python3 scripts/check_openclaw_context_release.py`). It installs, uninstalls, and reinstalls the `.tgz` through OpenClaw 2026.6.11, confirms activation in the exclusive `contextEngine` slot, directly probes live recall/review-queued capture and signed-bundle recall/tamper rejection from the installed artifact, and separately boots a healthy loopback Gateway with zero plugin errors. The Gateway leg proves real plugin loading and health, not a provider-backed model turn.
 
 ---
 

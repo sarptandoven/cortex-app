@@ -5,7 +5,7 @@
 Repo: `~/repos/cortex-app`
 Branch: `mass-scale-app-redesign`
 
-Shipped milestones: **M1 -> M3 -> M2 -> M6 -> M5 -> M7 -> M4 -> M8 stages 1-3**.
+Shipped milestones: **M1 -> M3 -> M2 -> M6 -> M5 -> M7 -> M4 -> M8 stages 1-4**.
 
 ## Latest state: M8 signed portable memory protocol v2
 
@@ -22,6 +22,7 @@ The latest M8 stages publish a language-neutral portable-memory protocol v2, an 
 - `packages/openclaw-cortex-context/` is a TypeScript OpenClaw `contextEngine` adapter that supports live Cortex context and offline signed bundle verification with signer pinning.
 - M8 stage 3 adds `cortex-python-n3.json`: three Python-signed memories cross Python import/MCP recall and OpenClaw offline recall with record and bundle provenance intact. The receiving prompt carries signer id, source-tenant SHA-256 binding, continuity head, payload SHA-256, memory ids, and source references. The raw tenant is verifier API data, not prompt text.
 - The TypeScript verifier rejects a defined 11-case signed-field tamper corpus 11/11, and strict bundle mode stops assembly on tampering.
+- M8 stage 4 adds `scripts/check_openclaw_context_release.py`: the packed archive installs, uninstalls, and reinstalls through real OpenClaw 2026.6.11 in a state-isolated profile; runtime inspection confirms the `contextEngine` slot and schema; direct installed-artifact lifecycle probes pass live, capture, bundle, and tamper checks; and a separate isolated Gateway boots healthy with zero plugin errors. The Gateway leg proves plugin loading/health, not a provider-backed model turn.
 
 Validation on this tree:
 
@@ -35,6 +36,10 @@ cd packages/openclaw-cortex-context && npm test
 python3 scripts/generate_portable_memory_vectors.py
 git diff --check
 # clean
+
+python3 scripts/check_openclaw_context_release.py
+# OpenClaw 2026.6.11, Node 22.19.0, archive install/reinstall, installed-artifact probes,
+# and isolated Gateway health all pass
 ```
 
 Recent commits:

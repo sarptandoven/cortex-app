@@ -25,6 +25,16 @@ openclaw plugins install -l "$PWD"
 
 Then select the registered engine id `cortex-context` in `~/.openclaw/openclaw.json` and restart the OpenClaw gateway.
 
+## Real OpenClaw release gate
+
+Run the packaged-artifact and Gateway gate before publishing:
+
+```bash
+npm run release:gate
+```
+
+The gate uses a temporary `HOME`, XDG directories, and profile; it scrubs inherited OpenClaw state/config overrides and asserts both the active config and plugin install remain inside that profile. It packs the npm archive, installs it through OpenClaw 2026.6.11, uninstalls and reinstalls it, and validates the exclusive `contextEngine` registration and plugin schema. Direct lifecycle probes against the installed artifact cover live and bundle modes plus strict tamper rejection. A separate isolated loopback Gateway boot proves real runtime loading and health; it does not run a provider-backed model turn. If the active Node is older than 22.19, the script uses an isolated `npx node@22.19.0` runtime; set `OPENCLAW_NODE` or pass `--node` to pin an existing runtime. The harness currently supports macOS and Linux.
+
 ## Live Cortex mode
 
 ```json5
