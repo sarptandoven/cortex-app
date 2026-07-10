@@ -7501,7 +7501,9 @@ final class AppState: ObservableObject {
 
     func request(path: String, method: String, body: [String: Any]? = nil) async throws -> Data {
         do {
-            return try await performRequest(path: path, method: method, body: body)
+            let data = try await performRequest(path: path, method: method, body: body)
+            clearStaleErrorStatus()
+            return data
         } catch {
             // Cortex Cloud ONLY: a 401 means the short-lived cxs_ access token expired.
             // Refresh it exactly once and retry exactly once. This whole branch is
@@ -7509,7 +7511,9 @@ final class AppState: ObservableObject {
             if isCloudMode, isUnauthorizedError(error) {
                 if await refreshCloudAccessToken() {
                     // One retry with the freshly minted access token.
-                    return try await performRequest(path: path, method: method, body: body)
+                    let data = try await performRequest(path: path, method: method, body: body)
+                    clearStaleErrorStatus()
+                    return data
                 }
                 // Refresh failed -> the session is gone. Sign out and surface it.
                 handleCloudSessionExpired()
@@ -7522,7 +7526,25 @@ final class AppState: ObservableObject {
                 throw error
             }
             await ensureBackend()
-            return try await performRequest(path: path, method: method, body: body)
+            let data = try await performRequest(path: path, method: method, body: body)
+            clearStaleErrorStatus()
+            return data
+        }
+    }
+
+    /// A transient failure ("The request timed out...") used to stick in the footer for the rest
+    /// of the session even though the very next request succeeded — a permanent false alarm.
+    /// After any successful request, clear the status if (and only if) it reads as a stale
+    /// connection-shaped error; real, actionable states (sign-in prompts, source attention)
+    /// don't match the connection wording and stay put.
+    private func clearStaleErrorStatus() {
+        let lowered = status.lowercased()
+        let staleConnectionShapes = [
+            "timed out", "timeout", "unreachable", "connection dropped",
+            "network is offline", "could not connect",
+        ]
+        if staleConnectionShapes.contains(where: { lowered.contains($0) }) {
+            status = "Ready"
         }
     }
 

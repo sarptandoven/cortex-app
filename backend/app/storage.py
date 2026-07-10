@@ -33,7 +33,7 @@ from .mirror import compute_mirror_insight
 from .profile import build_profile_sections
 from .condense import condense_section
 from .graph_analysis import analyze_entity_graph
-from .extractor import extract_context, now_iso, stable_id
+from .extractor import content_is_machine_artifact, extract_context, now_iso, stable_id
 from .provenance import (
     base_trust_score,
     classify_author,
@@ -9649,6 +9649,21 @@ class CortexStore:
                 # back to pending, and preserves connector idempotency for stable source records.
                 review_status = existing_capture["review_status"]
                 approved_at = existing_capture["approved_at"]
+            # Machine artifacts (ffmpeg concat lists, path dumps, JSON debris) that yielded
+            # zero memories and zero tasks have nothing for a human to review — parking them
+            # in Review buried real notes under hundreds of unreviewable path-dump cards.
+            # Auto-archive them instead: the capture stays stored and auditable (an event
+            # records why), and a user-made decision is never overridden because this only
+            # applies while the capture is still pending.
+            auto_archived = False
+            if (
+                review_status == "pending"
+                and not extracted.get("records")
+                and not extracted.get("tasks")
+                and content_is_machine_artifact(content)
+            ):
+                review_status = "archived"
+                auto_archived = True
             conn.execute(
                 """
                 INSERT INTO captures
@@ -9687,6 +9702,19 @@ class CortexStore:
                 ),
             )
             self._event(conn, user_id, capture_id, "capture", "created", {"source": source, "title": title})
+            if auto_archived:
+                conn.execute(
+                    "UPDATE captures SET archived_at = ? WHERE user_id = ? AND id = ?",
+                    (captured_at, user_id, capture_id),
+                )
+                self._event(
+                    conn,
+                    user_id,
+                    capture_id,
+                    "capture",
+                    "auto_archived",
+                    {"reason": "machine_artifact", "source": source},
+                )
 
             for record in extracted.get("records", []):
                 memory = self._save_memory(
@@ -17288,6 +17316,8 @@ class CortexStore:
 
         rebuild = self.rebuild_search_index(user_id)
         actions.append({"name": "rebuild_search_index", "rows": rebuild["indexed_memories"]})
+        swept = self.archive_machine_artifact_captures(user_id)
+        actions.append({"name": "archive_machine_artifact_captures", "rows": swept["archived"]})
         after = self.diagnostics(user_id)
         return {
             "repaired_at": now_iso(),
@@ -17296,6 +17326,55 @@ class CortexStore:
             "after": after,
             "actions": actions,
         }
+
+    def archive_machine_artifact_captures(self, user_id: str, *, limit: int = 5000) -> dict[str, Any]:
+        """Retroactive sweep of the new-ingest machine-artifact gate.
+
+        Vaults populated before the gate existed hold pending review captures that are pure
+        machine output (ffmpeg concat lists, path dumps): unreviewable walls of absolute paths
+        that bury real notes. Archive them, and archive their derived path-dump memories, the
+        exact same treatment a fresh import gets. Only pending captures are touched, so a
+        capture the user explicitly approved is never reclassified.
+        """
+        archived = 0
+        archived_memories = 0
+        scanned = 0
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, raw_text FROM captures
+                WHERE user_id = ? AND review_status = 'pending'
+                ORDER BY captured_at DESC
+                LIMIT ?
+                """,
+                (user_id, max(1, int(limit))),
+            ).fetchall()
+            timestamp = now_iso()
+            for row in rows:
+                scanned += 1
+                if not content_is_machine_artifact(row["raw_text"]):
+                    continue
+                conn.execute(
+                    "UPDATE captures SET review_status = 'archived', archived_at = ? WHERE user_id = ? AND id = ?",
+                    (timestamp, user_id, row["id"]),
+                )
+                cursor = conn.execute(
+                    "UPDATE memories SET status = 'archived', updated_at = ? WHERE user_id = ? AND capture_id = ? AND status = 'active'",
+                    (timestamp, user_id, row["id"]),
+                )
+                archived_memories += cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+                self._event(
+                    conn,
+                    user_id,
+                    row["id"],
+                    "capture",
+                    "auto_archived",
+                    {"reason": "machine_artifact_sweep"},
+                )
+                archived += 1
+        if archived_memories:
+            self.rebuild_search_index(user_id)
+        return {"scanned": scanned, "archived": archived, "archived_memories": archived_memories}
 
     def create_backup(self, user_id: str) -> dict[str, Any]:
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S-%fZ")

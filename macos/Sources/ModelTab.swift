@@ -550,6 +550,13 @@ struct HomeHeroSection: View {
             return "This usually takes a moment."
         }
         if needsAttentionSources > 0 {
+            if let failing = state.sourceReadinessReport?.sources.first(where: { $0.needsAttention }) {
+                let action = failing.next_action.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !action.isEmpty {
+                    return "\(failing.name): \(action)"
+                }
+                return "\(failing.name) needs attention before fresh items arrive. Already synced memory stays available."
+            }
             return "Cortex keeps already synced memory local, but one or more sources need attention before fresh items arrive."
         }
         if pendingCount > 0 {
@@ -637,7 +644,7 @@ struct HomeHeroSection: View {
                 .frame(maxWidth: 620, alignment: .leading)
             } else {
                 HomeStatusRow(
-                    title: "Source",
+                    title: sourceRowTitle,
                     detail: sourceStatus.detail,
                     dotColor: sourceStatus.color,
                     action: { state.openConnectionsPrivacy(statusMessage: "Source status") }
@@ -653,8 +660,28 @@ struct HomeHeroSection: View {
 
     // Ledger-row states are a small ink dot, not a colored icon: moss = healthy,
     // gold = pending/due, wax = needs attention, secondary ink = neutral.
+    private var sourceRowTitle: String {
+        // Name the connected source when there is exactly one, so the row reads
+        // "Obsidian · 3 pending" instead of the anonymous "Source".
+        let named = state.sourceReadinessReport?.sources.filter { $0.accounts > 0 || $0.active_memories > 0 || $0.pending > 0 } ?? []
+        if named.count == 1, let only = named.first, !only.name.isEmpty {
+            return only.name
+        }
+        return named.count > 1 ? "Sources" : "Source"
+    }
+
     private var sourceStatus: (detail: String, color: Color) {
         if needsAttentionSources > 0 {
+            // Name the failing source (and its fix, when the backend supplied one) instead of
+            // the useless generic "Source needs attention".
+            let failing = state.sourceReadinessReport?.sources.filter { $0.needsAttention } ?? []
+            if let first = failing.first {
+                let action = first.next_action.trimmingCharacters(in: .whitespacesAndNewlines)
+                let lead = failing.count == 1
+                    ? "\(first.name) needs attention"
+                    : "\(first.name) and \(failing.count - 1) more need attention"
+                return (action.isEmpty ? lead : "\(lead) · \(action)", CortexDesign.accent)
+            }
             return (needsAttentionSources == 1 ? "Source needs attention" : "\(needsAttentionSources) sources need attention", CortexDesign.accent)
         }
         if dueSyncSources > 0 {

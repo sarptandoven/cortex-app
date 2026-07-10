@@ -508,6 +508,10 @@ def _sentence_candidates(text: str, source: str = "unknown", author_aliases: Ite
     in_frontmatter = False
     in_fenced_block = False
     in_callout_block = False
+    # Some exports carry ESCAPED control sequences (a literal backslash-n) instead of real
+    # whitespace. Treat them as the line/tab breaks they encode so sentence splitting works
+    # and the two-character junk never lands inside a stored memory.
+    text = text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", " ")
     for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         raw_stripped = raw_line.strip()
         if in_frontmatter:
@@ -861,6 +865,8 @@ def _is_boilerplate_line(line: str) -> bool:
     if not stripped:
         return True
     lowered = stripped.lower()
+    if _is_machine_artifact_line(stripped):
+        return True
     if re.fullmatch(r"-{2,}\s*[^-]*\s*-{2,}", stripped):
         return True
     if re.match(r"^#{1,6}\s+\S", stripped):
@@ -883,6 +889,59 @@ def _is_boilerplate_line(line: str) -> bool:
     if lowered.startswith("[truncated by cortex importer"):
         return True
     return False
+
+
+# Matches one absolute/home/UNC path or file: URL, optionally quoted. Used to decide
+# whether a "sentence" is really a machine-generated path listing.
+_PATH_TOKEN_RE = re.compile(
+    r"""['"]?(?:file://)?(?:/|~/|[A-Za-z]:\\)[^\s'"]+['"]?""",
+)
+_HEX_ID_RE = re.compile(r"\b[0-9a-f]{12,}\b", re.IGNORECASE)
+
+
+def _is_machine_artifact_line(line: str) -> bool:
+    """True for lines that are machine output, not human prose: ffmpeg concat entries
+    (`file '/path/to/scene.mp4'`), bare path/URL dumps, JSON/log fragments, and
+    hash-dominated strings. These must never become memories, summaries, or review
+    previews — a review card full of absolute paths gives the user nothing to review.
+
+    Deliberately conservative: a line qualifies only when path/JSON/hex tokens dominate
+    it, so prose that merely MENTIONS one path ("the config lives in ~/.config/app")
+    still reads as prose.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return False
+    # ffmpeg concat-list entries and similar `<keyword> '<path>'` forms.
+    if re.fullmatch(r"(?:file|dir|directory|path)\s+['\"][^'\"]+['\"]\s*;?", stripped, re.IGNORECASE):
+        return True
+    # Strip path tokens; whatever remains is the human part of the line.
+    without_paths = _PATH_TOKEN_RE.sub(" ", stripped)
+    residue = re.sub(r"\s+", " ", without_paths).strip(" '\";,")
+    if len(residue) <= 8 and residue.lower() in {"", "file", "files", "dir", "path", "url", "src", "source"}:
+        return True
+    # JSON/dict fragments: mostly structural punctuation with quoted keys.
+    if re.match(r"^[\[{]", stripped) or re.match(r"^\"[A-Za-z0-9_ .-]{1,60}\"\s*:", stripped):
+        structural = sum(stripped.count(ch) for ch in "{}[]\":,")
+        if structural >= max(6, len(stripped) // 8):
+            return True
+    # Hash/UUID-dominated lines (content-addressed ids, digests).
+    hex_chars = sum(len(match) for match in _HEX_ID_RE.findall(stripped))
+    if hex_chars >= max(12, len(stripped) // 2):
+        return True
+    return False
+
+
+def content_is_machine_artifact(text: str) -> bool:
+    """Whole-capture verdict: True when a capture's non-empty lines are dominated by
+    machine artifacts (ffmpeg concat lists, path dumps, JSON fragments). Used by
+    imports to auto-archive such captures instead of parking them in Review, where
+    they would be an unreviewable wall of paths."""
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    if not lines:
+        return False
+    artifact = sum(1 for line in lines if _is_machine_artifact_line(line))
+    return artifact >= max(1, int(len(lines) * 0.8))
 
 
 def _allows_user_authored_memory(
@@ -920,8 +979,15 @@ def _sentences(text: str) -> list[str]:
 def _summarize(sentences: list[str], text: str) -> str:
     if not text:
         return ""
-    selected = sentences[:2] if sentences else [text[:240]]
-    return " ".join(selected)[:500]
+    if sentences:
+        return " ".join(sentences[:2])[:500]
+    # No prose sentences survived filtering. Never fall back to raw machine output
+    # (path dumps, JSON fragments): an empty summary is honest, a path dump is not.
+    for line in text.splitlines():
+        cleaned = line.strip()
+        if cleaned and not _is_boilerplate_line(cleaned):
+            return cleaned[:240]
+    return ""
 
 
 def _looks_like_decision(lower: str) -> bool:
@@ -1283,6 +1349,11 @@ def _entities(text: str) -> list[dict[str, Any]]:
         elif re.search(r"[a-z][A-Z]", name) and not re.match(r"^(Mc|Mac)[A-Z]", name):
             # Internal capitals (PostgreSQL, MongoDB, JavaScript) are products/tools, never people.
             kind = "org"
+        elif _looks_like_acronym_phrase(name):
+            # "AI API", "API Pricing", "AI Coding Costs": acronym-anchored noun phrases are
+            # topics, never people. Classifying them as persons flooded the graph with
+            # hundreds of fake "person" hubs from a single technical export.
+            kind = "topic"
         else:
             kind = "person"
         slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
@@ -1295,6 +1366,33 @@ def _entities(text: str) -> list[dict[str, Any]]:
             "context": f"Mentioned in context captured from {text[:40].strip()}...",
         })
     return entities[:12]
+
+
+def _looks_like_acronym_phrase(name: str) -> bool:
+    """True when a capitalized phrase is anchored by acronyms/tech nouns rather than a
+    human name: any all-caps word ("AI API", "API Pricing"), or a generic tech noun in
+    a multi-word phrase ("AI Coding Costs", "Api Gateway"). Single capitalized words
+    like "Marcus" are untouched."""
+    words = name.split()
+    if any(len(word) >= 2 and word.isupper() for word in words):
+        return True
+    if len(words) >= 2:
+        generic = {
+            "access", "account", "accounts", "agent", "agents", "analysis", "api", "apis",
+            "app", "apps", "architecture", "billing", "budget", "cache", "client", "clients",
+            "cloud", "cluster", "code", "coding", "config", "configuration", "cost", "costs",
+            "dashboard", "data", "database", "databases", "deploy", "deployment", "endpoint",
+            "endpoints", "engine", "engineering", "framework", "gateway", "infra",
+            "infrastructure", "integration", "integrations", "interface", "latency", "limit",
+            "limits", "management", "metrics", "model", "models", "monitoring", "payment",
+            "payments", "performance", "pipeline", "pipelines", "platform", "pricing",
+            "protocol", "quota", "quotas", "rate", "rates", "sdk", "server", "servers",
+            "service", "services", "software", "stack", "storage", "system", "systems",
+            "token", "tokens", "tool", "tooling", "tools", "usage", "workflow", "workflows",
+        }
+        if any(word.lower() in generic for word in words):
+            return True
+    return False
 
 
 def _topics(text: str) -> list[str]:

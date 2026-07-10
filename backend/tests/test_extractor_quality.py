@@ -631,5 +631,65 @@ class ClaudeWindowedExtractionTests(unittest.TestCase):
         self.assertEqual(calls[0], small)
 
 
+class MachineArtifactGateTests(unittest.TestCase):
+    """Machine output (ffmpeg concat lists, path dumps, JSON debris) must never become
+    memories, summaries, or entities. This is the gate behind the Review-tab quality bar:
+    a card whose entire body is absolute paths gives the user nothing to review."""
+
+    CONCAT = (
+        "file '/Users/u/Documents/Codex/2026-05-17/outputs/972d89aa1cce4b53ae34cb42d83d318c/videos/scene_mux/0001_scene_1.mp4'\n"
+        "file '/Users/u/Documents/Codex/2026-05-17/outputs/972d89aa1cce4b53ae34cb42d83d318c/videos/scene_mux/0002_scene_2.mp4'\n"
+        "file '/Users/u/Documents/Codex/2026-05-17/outputs/972d89aa1cce4b53ae34cb42d83d318c/videos/scene_mux/0004_scene_4.mp4'"
+    )
+
+    def test_ffmpeg_concat_list_extracts_nothing(self) -> None:
+        result = extract_context(self.CONCAT, source="obsidian", extraction_mode="local")
+        self.assertEqual(result["records"], [])
+        self.assertEqual(result["tasks"], [])
+        self.assertEqual(result["summary"], "")
+
+    def test_whole_capture_verdict(self) -> None:
+        self.assertTrue(extractor.content_is_machine_artifact(self.CONCAT))
+        self.assertFalse(extractor.content_is_machine_artifact(
+            "We decided to use PostgreSQL for Atlas because of jsonb support."
+        ))
+        # Prose that merely mentions one path stays prose.
+        self.assertFalse(extractor.content_is_machine_artifact(
+            "The deploy config lives in /etc/cortex/deploy.yaml and we decided to keep it there.\n"
+            "We agreed the migration ships Tuesday."
+        ))
+
+    def test_prose_mentioning_a_path_still_extracts(self) -> None:
+        text = "The deploy config lives in /etc/cortex/deploy.yaml and we decided to keep it there."
+        result = extract_context(text, source="obsidian", extraction_mode="local")
+        self.assertEqual(len(result["records"]), 1)
+
+    def test_escaped_newlines_are_treated_as_line_breaks(self) -> None:
+        text = r"I decided to use PostgreSQL for Atlas.\n We agreed the migration ships Tuesday."
+        result = extract_context(text, source="structured-export", extraction_mode="local")
+        contents = [r["content"] for r in result["records"]]
+        self.assertEqual(len(contents), 2)
+        for content in contents:
+            self.assertNotIn("\\n", content)
+
+    def test_json_fragment_lines_are_rejected(self) -> None:
+        text = (
+            '{"is_private": false, "is_starter_project": true, "prompt_template": "", '
+            '"created_at": "2026-06-10T06:01:50.038271+00:00"}'
+        )
+        result = extract_context(text, source="structured-export", extraction_mode="local")
+        self.assertEqual(result["records"], [])
+
+    def test_acronym_phrases_are_topics_not_people(self) -> None:
+        text = (
+            "The AI API pricing changed today. AI Coding Costs went up. "
+            "API Pricing is under review. Marcus Chen approved the budget."
+        )
+        entities = {e["name"]: e["kind"] for e in extractor._entities(text)}
+        self.assertEqual(entities.get("AI API"), "topic")
+        self.assertEqual(entities.get("AI Coding Costs"), "topic")
+        self.assertEqual(entities.get("Marcus Chen"), "person")
+
+
 if __name__ == "__main__":
     unittest.main()

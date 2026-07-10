@@ -414,20 +414,50 @@ def _pick_example(members: Iterable[dict]) -> str:
 
     Prefer the highest-importance member; tie-break on shortest-then-id so the
     quote is punchy and stable. Uses summary when present (it is already a tight
-    paraphrase), else content.
+    paraphrase), else content. Snippets that read as machine artifacts or as
+    instructions addressed to an assistant ("please answer these questions")
+    are skipped: quoting them tells the user nothing about themselves.
     """
     best = None
     best_key: tuple = ()
     for m in members:
         text = m["summary"] or m["content"]
         text = _shorten(text)
-        if not text:
+        if not text or _is_junk_example(text):
             continue
         key = (-m["importance"], len(text), m["id"])
         if best is None or key < best_key:
             best = text
             best_key = key
     return best or ""
+
+
+_JUNK_EXAMPLE_PATTERNS = (
+    "please answer",
+    "answer these questions",
+    "answer the following",
+    "please provide",
+    "please respond",
+    "your task is",
+    "you are a",  # system-prompt fragments
+    "as an ai",
+)
+
+
+def _is_junk_example(text: str) -> bool:
+    """A quote is junk when it is prompt/instruction scaffolding or path/JSON debris
+    rather than something observed about the user."""
+    lowered = text.lower()
+    if any(pattern in lowered for pattern in _JUNK_EXAMPLE_PATTERNS):
+        return True
+    # Path/hash/JSON-dominated content (mirrors the extractor's artifact gate cheaply).
+    if lowered.count("/") >= 4 or lowered.count("{") + lowered.count("}") >= 4:
+        return True
+    stripped = text.strip()
+    # A fragment that ENDS mid-list ("...questions: 1") reads as truncated scaffolding.
+    if re.search(r"[:;]\s*\d{1,2}\s*[.\u2014-]?\s*$", stripped):
+        return True
+    return False
 
 
 def _dominant_layer(members: list[dict]) -> str:
@@ -507,7 +537,10 @@ def _first_sentence(text: str) -> str:
 
 
 def _shorten(text: str, limit: int = 140) -> str:
-    text = " ".join((text or "").split())
+    # Escaped control sequences (a literal backslash-n from JSON-ish exports) must render
+    # as the whitespace they encode, never as two visible characters in a headline.
+    text = (text or "").replace("\\r\\n", " ").replace("\\n", " ").replace("\\t", " ")
+    text = " ".join(text.split())
     if len(text) <= limit:
         return text
     cut = text[: limit - 1].rstrip()
