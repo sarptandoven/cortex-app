@@ -26,6 +26,14 @@ Categories (each maps to a moonshot-doc probe class):
                compares bytes, it does NOT trust the verified flag), the compact
                canvas must never leak raw evidence and must be >=40% smaller than
                the raw it replaced, and every node must carry a receipt event id
+- belief_proof: M2 Proof-of-Belief - bi-temporal reconstruction with cryptographic
+               receipts. Current state shows v2 (never v1); a retro known_at just
+               before v2 was recorded shows v1 (never v2); every proof is checked
+               by the BENCH'S OWN verifier (chain-segment fold, event fingerprints,
+               snapshot hashes - an independent reimplementation, so a store that
+               lies about `verified` is caught); a doctored proof must be rejected;
+               a prefix head pinned early must reproduce byte-identically at the
+               end of the run (external-pin detection of coherent history rewrites)
 
 Run: python3 -m backend.bench.memorytruth --seed 7
      python3 -m backend.bench.memorytruth --url http://127.0.0.1:8766 --token <api-key>
@@ -34,15 +42,18 @@ Run: python3 -m backend.bench.memorytruth --seed 7
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
 import json
 import random
 import string
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 BENCH_NAME = "memorytruth-light"
-BENCH_VERSION = 2
+BENCH_VERSION = 3
 
 _ADJECTIVES = (
     "amber", "basalt", "cedar", "delta", "ember", "flint", "garnet", "harbor",
@@ -125,6 +136,7 @@ def generate_scenario(seed: int, *, recall_n: int = 8, abstain_n: int = 6, tempo
             Probe(
                 category="abstention",
                 question=f"What is the {artifact} for the {project} project?",
+                topic=f"{project} {artifact}",
             )
         )
 
@@ -181,6 +193,15 @@ class BenchClient(Protocol):
     def record_canvas_node(self, session_id: str, node: dict[str, Any]) -> dict[str, Any]: ...
     def get_canvas(self, session_id: str) -> dict[str, Any]: ...
     def get_canvas_node(self, session_id: str, node_id: str) -> dict[str, Any]: ...
+    def belief_proof(
+        self,
+        topic: str,
+        *,
+        valid_at: str | None = None,
+        known_at: str | None = None,
+        expected_head: str | None = None,
+    ) -> dict[str, Any]: ...
+    def verify_belief_proof(self, proof: dict[str, Any]) -> dict[str, Any]: ...
 
 
 class InProcessClient:
@@ -237,6 +258,26 @@ class InProcessClient:
 
     def get_canvas_node(self, session_id: str, node_id: str) -> dict[str, Any]:
         return self._tool("get_working_canvas_node", {"session_id": session_id, "node_id": node_id})
+
+    def belief_proof(
+        self,
+        topic: str,
+        *,
+        valid_at: str | None = None,
+        known_at: str | None = None,
+        expected_head: str | None = None,
+    ) -> dict[str, Any]:
+        args: dict[str, Any] = {"topic": topic}
+        if valid_at:
+            args["valid_at"] = valid_at
+        if known_at:
+            args["known_at"] = known_at
+        if expected_head:
+            args["expected_head"] = expected_head
+        return self._tool("get_belief_proof", args)
+
+    def verify_belief_proof(self, proof: dict[str, Any]) -> dict[str, Any]:
+        return self._tool("verify_belief_proof", {"proof": proof})
 
 
 class HTTPClient:
@@ -317,6 +358,26 @@ class HTTPClient:
     def get_canvas_node(self, session_id: str, node_id: str) -> dict[str, Any]:
         return self._tool("get_working_canvas_node", {"session_id": session_id, "node_id": node_id})
 
+    def belief_proof(
+        self,
+        topic: str,
+        *,
+        valid_at: str | None = None,
+        known_at: str | None = None,
+        expected_head: str | None = None,
+    ) -> dict[str, Any]:
+        args: dict[str, Any] = {"topic": topic}
+        if valid_at:
+            args["valid_at"] = valid_at
+        if known_at:
+            args["known_at"] = known_at
+        if expected_head:
+            args["expected_head"] = expected_head
+        return self._tool("get_belief_proof", args)
+
+    def verify_belief_proof(self, proof: dict[str, Any]) -> dict[str, Any]:
+        return self._tool("verify_belief_proof", {"proof": proof})
+
 
 # --------------------------------------------------------------------------
 # Scoring helpers: defensive, exact, and judge-free.
@@ -360,6 +421,165 @@ def _cited_contents(answer: dict[str, Any]) -> str:
     return "\n".join(chunks)
 
 
+# --------------------------------------------------------------------------
+# M2 independent proof verifier. Deliberately REIMPLEMENTS the crypto contract
+# (canonical event fingerprint, chain fold, canonical snapshot hash) instead of
+# importing storage helpers: the bench must be able to catch a store whose own
+# verify_belief_proof lies, so grading never calls store code for this check.
+# The constants mirror the documented v1 contract in integrity_digest().
+# --------------------------------------------------------------------------
+
+_CHAIN_GENESIS = "cortex:integrity:v1:genesis"
+
+
+def _independent_event_fingerprint(event: dict[str, Any]) -> str:
+    body = {
+        "id": event.get("id"),
+        "object_id": event.get("object_id"),
+        "object_type": event.get("object_type"),
+        "event_type": event.get("event_type"),
+        "metadata": event.get("metadata") if isinstance(event.get("metadata"), dict) else {},
+        "created_at": event.get("created_at"),
+    }
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _independent_chain_link(prev_hash: str, fingerprint: str) -> str:
+    return hashlib.sha256(f"{prev_hash}:{fingerprint}".encode("utf-8")).hexdigest()
+
+
+def _independent_snapshot_sha(snapshot: dict[str, Any]) -> str:
+    canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _independent_belief_snapshot(belief: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild the canonical snapshot from a returned belief (mirror of _belief_snapshot)."""
+    return {
+        "memory_id": str(belief.get("memory_id") or ""),
+        "capture_id": belief.get("capture_id"),
+        "kind": str(belief.get("kind") or "observation"),
+        "layer": str(belief.get("layer") or "semantic"),
+        "content": str(belief.get("content") or ""),
+        "summary": str(belief.get("summary") or ""),
+        "source": str(belief.get("source") or ""),
+        "source_url": belief.get("source_url"),
+        "confidence": str(belief.get("confidence") or "confirmed"),
+        "importance": int(belief.get("importance") or 3),
+        "author_class": str(belief.get("author_class") or "unknown"),
+        "occurred_at": belief.get("occurred_at"),
+        "valid_from": belief.get("valid_from"),
+        "valid_to": belief.get("valid_to"),
+        "captured_at": belief.get("captured_at"),
+        "topics": [str(value) for value in (belief.get("topics") or [])],
+        "entity_ids": [str(value) for value in (belief.get("entity_ids") or [])],
+        "provenance": belief.get("provenance") if isinstance(belief.get("provenance"), dict) else {},
+    }
+
+
+def _independent_verify_belief_proof(result: dict[str, Any]) -> tuple[bool, list[str]]:
+    """Independently verify a get_belief_proof result. Returns (ok, reasons).
+
+    Checks, without trusting any store-computed verdict flag:
+    1. every receipt event's fingerprint recomputes from its returned bytes;
+    2. the chain segment folds from chain_head_before_segment to the claimed
+       known-at prefix head, and each receipt is bound into that segment at its
+       claimed index;
+    3. every sealed belief's returned fields re-hash to the snapshot_sha256 its
+       chain-sealed receipt attests (so the belief text cannot be doctored).
+    """
+    reasons: list[str] = []
+    envelope = result.get("proof") if isinstance(result.get("proof"), dict) else {}
+    beliefs = result.get("beliefs") if isinstance(result.get("beliefs"), list) else []
+
+    claimed_head = str(envelope.get("chain_head_at_known_at") or "")
+    if not claimed_head:
+        reasons.append("missing chain_head_at_known_at")
+
+    # -- chain segment fold ------------------------------------------------
+    segment = envelope.get("chain_segment") if isinstance(envelope.get("chain_segment"), list) else None
+    segment_entries: dict[int, tuple[str, str]] = {}
+    try:
+        segment_start = int(envelope.get("chain_segment_start_index"))
+    except (TypeError, ValueError):
+        segment_start = -1
+        reasons.append("invalid chain_segment_start_index")
+    try:
+        event_count = int(envelope.get("event_count_at_known_at"))
+    except (TypeError, ValueError):
+        event_count = -1
+        reasons.append("invalid event_count_at_known_at")
+    if segment is None:
+        reasons.append("missing chain_segment")
+    elif segment_start >= 0 and event_count >= 0:
+        if segment_start + len(segment) != event_count:
+            reasons.append("chain segment does not reach the known-at head")
+        fold = str(envelope.get("chain_head_before_segment") or "")
+        if segment_start == 0 and fold != _CHAIN_GENESIS:
+            reasons.append("segment starting at index 0 must fold from genesis")
+        for offset, item in enumerate(segment):
+            if not (isinstance(item, (list, tuple)) and len(item) == 2):
+                reasons.append("malformed chain segment entry")
+                continue
+            entry_id, fingerprint = str(item[0] or ""), str(item[1] or "")
+            if len(fingerprint) != 64:
+                reasons.append("malformed segment fingerprint")
+                continue
+            segment_entries[segment_start + offset] = (entry_id, fingerprint)
+            fold = _independent_chain_link(fold, fingerprint)
+        if claimed_head and fold != claimed_head:
+            reasons.append("chain segment fold does not reproduce the claimed head")
+
+    # -- receipts: fingerprints recompute and bind into the segment ---------
+    receipts_by_id: dict[str, dict[str, Any]] = {}
+    for receipt in envelope.get("receipts") or []:
+        if not isinstance(receipt, dict) or not isinstance(receipt.get("event"), dict):
+            reasons.append("malformed receipt")
+            continue
+        event = receipt["event"]
+        event_id = str(event.get("id") or "")
+        recomputed = _independent_event_fingerprint(event)
+        if recomputed != str(receipt.get("fingerprint") or ""):
+            reasons.append(f"receipt {event_id or '?'} fingerprint does not recompute")
+            continue
+        try:
+            index = int(receipt.get("event_index"))
+        except (TypeError, ValueError):
+            reasons.append(f"receipt {event_id or '?'} has no valid event_index")
+            continue
+        if segment_entries and segment_entries.get(index) != (event_id, recomputed):
+            reasons.append(f"receipt {event_id or '?'} is not bound to the chain segment")
+            continue
+        receipts_by_id[event_id] = event
+
+    # -- beliefs: returned fields must re-hash to the chain-sealed snapshot --
+    for belief in beliefs:
+        if not isinstance(belief, dict):
+            reasons.append("malformed belief")
+            continue
+        memory_id = str(belief.get("memory_id") or "?")
+        if not belief.get("sealed"):
+            reasons.append(f"belief {memory_id} is unsealed")
+            continue
+        receipt_id = str(belief.get("record_receipt_event_id") or "")
+        event = receipts_by_id.get(receipt_id)
+        if event is None:
+            reasons.append(f"belief {memory_id} has no verified receipt in the envelope")
+            continue
+        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        sealed_snapshot = metadata.get("snapshot") if isinstance(metadata.get("snapshot"), dict) else {}
+        sealed_sha = str(metadata.get("snapshot_sha256") or "")
+        if _independent_snapshot_sha(sealed_snapshot) != sealed_sha:
+            reasons.append(f"belief {memory_id} receipt metadata does not hash to its own seal")
+            continue
+        returned_sha = _independent_snapshot_sha(_independent_belief_snapshot(belief))
+        if returned_sha != sealed_sha:
+            reasons.append(f"belief {memory_id} returned fields do not re-hash to the sealed snapshot")
+    return (not reasons, reasons)
+
+
+
 @dataclass
 class CategoryScore:
     passed: int = 0
@@ -396,6 +616,7 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
     temporal = CategoryScore()
     provenance = CategoryScore()
     canvas = CategoryScore()
+    belief_proof = CategoryScore()
 
     # --- Seed simple facts -------------------------------------------------
     for fact in scenario.facts:
@@ -412,6 +633,39 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
             # a secondary extracted record.
             resolved = all(client.resolve_conflict(v1, v2_ids[0]) for v1 in v1_ids)
         revision_ids.append({"v1": v1_ids, "v2": v2_ids, "resolved": resolved})
+
+    # --- M2 pin: freeze a transaction-time anchor now; re-derive it at the END
+    # of the run. Append-only history means the event prefix at a past instant
+    # never changes, so the prefix head must reproduce byte-identically after
+    # all the probe traffic below has appended dozens of new events.
+    #
+    # Anchor discipline: pin at the last microsecond of the CURRENT server
+    # second (server generated_at, so no client clock skew), then wait until
+    # the server clock leaves that second. After that instant the prefix is
+    # closed: every seeded event is inside it, and no future event - even a
+    # second-precision audit row, which truncates DOWN to :SS.000000 - can
+    # sort into it retroactively.
+    pin_probe: dict[str, Any] | None = None
+    if scenario.revisions:
+        pin_topic = scenario.revisions[0]["topic"]
+        baseline = client.belief_proof(pin_topic)
+        server_now = str(baseline.get("generated_at") or "")
+        anchor = datetime.fromisoformat(server_now) if server_now else datetime.now(timezone.utc)
+        pin_dt = anchor.replace(microsecond=0) + timedelta(seconds=1) - timedelta(microseconds=1)
+        pin_time = pin_dt.isoformat()
+        for _ in range(60):
+            check = client.belief_proof(pin_topic)
+            check_raw = str(check.get("generated_at") or "")
+            check_now = datetime.fromisoformat(check_raw) if check_raw else datetime.now(timezone.utc)
+            if check_now > pin_dt:
+                break
+            time.sleep(0.05)
+        pinned = client.belief_proof(pin_topic, known_at=pin_time)
+        pin_probe = {
+            "known_at": pin_time,
+            "head": str((pinned.get("proof") or {}).get("chain_head_at_known_at") or ""),
+            "event_count": (pinned.get("proof") or {}).get("event_count_at_known_at"),
+        }
 
     # --- Recall probes ------------------------------------------------------
     for fact in scenario.facts:
@@ -549,15 +803,145 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
                 f"canvas drill-down: node={node['node_id']} exact_bytes={exact} receipt_stable={receipt_stable}",
             )
 
+    # --- Belief-proof probes (M2 bi-temporal reconstruction) ----------------
+    # Grading never trusts store-computed verdicts: every proof below is checked
+    # by _independent_verify_belief_proof, a from-scratch reimplementation of the
+    # fingerprint/chain/snapshot contract.
+    proof_latencies_ms: list[float] = []
+    for revision in scenario.revisions:
+        topic = revision["topic"]
+
+        # P1: current proof shows v2, never v1, and passes independent crypto.
+        t0 = time.perf_counter()
+        current = client.belief_proof(topic)
+        proof_latencies_ms.append((time.perf_counter() - t0) * 1000.0)
+        crypto_ok, crypto_reasons = _independent_verify_belief_proof(current)
+        text = json.dumps([b.get("content") for b in current.get("beliefs") or []])
+        current_ok = revision["v2_slug"] in text and revision["v1_slug"] not in text
+        belief_proof.record(
+            crypto_ok and current_ok and not current.get("abstained"),
+            f"belief_proof current: topic={topic!r} v2={revision['v2_slug'] in text} "
+            f"v1_leaked={revision['v1_slug'] in text} crypto={crypto_reasons[:2]}",
+        )
+
+        # Locate v2's recorded_at so we can ask about the instant just before it.
+        v2_recorded_at = ""
+        for belief in current.get("beliefs") or []:
+            recorded = str((belief.get("transaction_time") or {}).get("recorded_at") or "")
+            if revision["v2_slug"] in str(belief.get("content") or ""):
+                v2_recorded_at = recorded
+        # P2: retro known_at = 1 microsecond before v2 was recorded -> the store
+        # must reproduce v1 (never v2) and the proof must still verify.
+        retro_ok = False
+        retro_reasons: list[str] = ["no v2 recorded_at found"]
+        retro_text = ""
+        if v2_recorded_at:
+            v2_dt = datetime.fromisoformat(v2_recorded_at)
+            retro_known = (v2_dt - timedelta(microseconds=1)).isoformat()
+            t0 = time.perf_counter()
+            retro = client.belief_proof(topic, known_at=retro_known)
+            proof_latencies_ms.append((time.perf_counter() - t0) * 1000.0)
+            crypto_ok, retro_reasons = _independent_verify_belief_proof(retro)
+            retro_text = json.dumps([b.get("content") for b in retro.get("beliefs") or []])
+            retro_ok = (
+                crypto_ok
+                and revision["v1_slug"] in retro_text
+                and revision["v2_slug"] not in retro_text
+            )
+        belief_proof.record(
+            retro_ok,
+            f"belief_proof retro: topic={topic!r} v1={revision['v1_slug'] in retro_text} "
+            f"v2_leaked={revision['v2_slug'] in retro_text} crypto={retro_reasons[:2]}",
+        )
+
+        # P3: doctored belief content must be caught by the independent verifier
+        # (and by the store's own pure verifier, which we cross-check for parity).
+        doctored = copy.deepcopy(current)
+        doctored_checked = False
+        for belief in doctored.get("beliefs") or []:
+            if revision["v2_slug"] in str(belief.get("content") or ""):
+                belief["content"] = str(belief["content"]).replace(
+                    revision["v2_slug"], "forged-" + revision["v1_slug"]
+                )
+                doctored_checked = True
+        doctored_flagged, _ = _independent_verify_belief_proof(doctored)
+        store_verdict = client.verify_belief_proof(
+            {"beliefs": doctored.get("beliefs") or [], "proof": doctored.get("proof") or {}}
+        )
+        belief_proof.record(
+            doctored_checked and not doctored_flagged and store_verdict.get("verified") is False,
+            f"belief_proof tamper: topic={topic!r} doctored={doctored_checked} "
+            f"independent_caught={not doctored_flagged} store_caught={store_verdict.get('verified') is False}",
+        )
+
+    # P4: unknown topic must not fabricate history. Returning a fuzzy neighbor
+    # (same artifact vocabulary, different project) with honest sealed receipts
+    # is legitimate retrieval; CLAIMING the never-seeded project compound is
+    # fabrication. So: everything returned must pass independent crypto, and
+    # the unknown compound must not appear in any belief content/topics.
+    for probe in scenario.abstention_probes[:2]:
+        ghost = client.belief_proof(probe.topic)
+        crypto_ok, ghost_reasons = _independent_verify_belief_proof(ghost)
+        ghost_beliefs = ghost.get("beliefs") or []
+        ghost_text = json.dumps(
+            [[b.get("content"), b.get("topics")] for b in ghost_beliefs if isinstance(b, dict)]
+        )
+        unknown_compound = probe.topic.split(" ")[0]
+        fabricated = unknown_compound in ghost_text
+        belief_proof.record(
+            crypto_ok and not fabricated,
+            f"belief_proof abstention: topic={probe.topic!r} abstained={ghost.get('abstained')} "
+            f"fabricated={fabricated} beliefs={len(ghost_beliefs)} crypto={ghost_reasons[:2]}",
+        )
+
+    # P5: external pin. The head pinned before all probe traffic must reproduce
+    # byte-identically now, from a fresh proof over the same known_at prefix.
+    # A store that rewrote history coherently (rebuilding the whole chain) fails
+    # here, because the pinned prefix head no longer folds to the same bytes.
+    if pin_probe is not None:
+        replay = client.belief_proof(
+            scenario.revisions[0]["topic"],
+            known_at=pin_probe["known_at"],
+            expected_head=pin_probe["head"] or "pin-was-empty",
+        )
+        envelope = replay.get("proof") or {}
+        crypto_ok, pin_reasons = _independent_verify_belief_proof(replay)
+        head_now = str(envelope.get("chain_head_at_known_at") or "")
+        count_now = envelope.get("event_count_at_known_at")
+        pin_ok = (
+            crypto_ok
+            and bool(pin_probe["head"])
+            and head_now == pin_probe["head"]
+            and count_now == pin_probe["event_count"]
+            and envelope.get("anchor_matches") is True
+        )
+        belief_proof.record(
+            pin_ok,
+            f"belief_proof pin: head_stable={head_now == pin_probe['head']} "
+            f"count_stable={count_now == pin_probe['event_count']} "
+            f"anchor_matches={envelope.get('anchor_matches')} crypto={pin_reasons[:2]}",
+        )
+
     categories = {
         "recall": recall,
         "abstention": abstention,
         "temporal": temporal,
         "provenance": provenance,
         "canvas": canvas,
+        "belief_proof": belief_proof,
     }
     total_passed = sum(c.passed for c in categories.values())
     total_probes = sum(c.total for c in categories.values())
+    proof_latencies_ms.sort()
+    latency_summary = (
+        {
+            "count": len(proof_latencies_ms),
+            "p50_ms": round(proof_latencies_ms[len(proof_latencies_ms) // 2], 2),
+            "max_ms": round(proof_latencies_ms[-1], 2),
+        }
+        if proof_latencies_ms
+        else None
+    )
     return {
         "bench": BENCH_NAME,
         "version": BENCH_VERSION,
@@ -567,9 +951,11 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
         "categories": {name: score.to_json() for name, score in categories.items()},
         "overall": round(total_passed / total_probes, 4) if total_probes else 0.0,
         "probes": total_probes,
+        "belief_proof_latency": latency_summary,
         "caveats": [
             "Slug-based exact grading: no LLM judge; the answer key is verifiable by construction.",
             "Scores reflect the retrieval + citation + supersession + integrity pipeline, not language fluency.",
+            "belief_proof grading recomputes fingerprints, chain folds, and snapshot hashes independently; it never trusts the store's verified flag.",
         ],
     }
 

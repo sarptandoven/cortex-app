@@ -71,6 +71,7 @@ class ScenarioDeterminismTests(unittest.TestCase):
                 client = InProcessClient(store, "bench-user")
                 report = run_bench(client, generate_scenario(11), mode="inprocess")
                 report.pop("duration_seconds")
+                report.pop("belief_proof_latency")  # wall-clock, informational only
                 reports.append(report)
         self.assertEqual(reports[0], reports[1])
 
@@ -242,6 +243,118 @@ class NonTautologyTests(unittest.TestCase):
             1.0,
             msg="bench failed to detect raw evidence leaking into the compact canvas",
         )
+
+    def test_retconning_store_tanks_belief_proof(self) -> None:
+        # Sabotage: the store ignores known_at and always reports its CURRENT
+        # belief - the canonical retcon ("we have always been at war with
+        # Eastasia"). The retro probe must see v2 leak into the past, and the
+        # end-of-run pin must fail because the "pinned" head silently tracked
+        # the advancing current head.
+        with tempfile.TemporaryDirectory() as tmp:
+            store = _fresh_store(Path(tmp))
+            original = store.get_belief_proof
+
+            def retcon(user_id, topic, **kwargs):
+                kwargs.pop("known_at", None)
+                kwargs.pop("valid_at", None)
+                return original(user_id, topic, **kwargs)
+
+            store.get_belief_proof = retcon
+            client = InProcessClient(store, "bench-user")
+            report = run_bench(client, generate_scenario(7), mode="inprocess")
+        self.assertLess(
+            report["categories"]["belief_proof"]["score"],
+            1.0,
+            msg="bench failed to detect a store that retcons known_at to current state",
+        )
+
+    def test_doctored_belief_content_tanks_belief_proof(self) -> None:
+        # Sabotage: the store rewrites belief content in its RESPONSES while
+        # keeping the sealed receipts intact (content-level retcon). Only the
+        # bench's independent snapshot re-hash can catch this; the envelope's
+        # chain is untouched and self-consistent.
+        with tempfile.TemporaryDirectory() as tmp:
+            store = _fresh_store(Path(tmp))
+            original = store.get_belief_proof
+
+            def doctor(user_id, topic, **kwargs):
+                result = original(user_id, topic, **kwargs)
+                for belief in result.get("beliefs") or []:
+                    belief["content"] = "the archives have always said so"
+                return result
+
+            store.get_belief_proof = doctor
+            client = InProcessClient(store, "bench-user")
+            report = run_bench(client, generate_scenario(7), mode="inprocess")
+        self.assertLess(
+            report["categories"]["belief_proof"]["score"],
+            1.0,
+            msg="bench failed to detect doctored belief content with intact receipts",
+        )
+
+    def test_lying_verifier_tanks_belief_proof(self) -> None:
+        # Sabotage: the store's own verify_belief_proof always says verified.
+        # The tamper probe cross-checks the store verdict against a proof the
+        # bench doctored itself, so a yes-man verifier must fail that probe.
+        # (The bench's own crypto grading never trusted this verdict anyway.)
+        with tempfile.TemporaryDirectory() as tmp:
+            store = _fresh_store(Path(tmp))
+            store.verify_belief_proof = lambda proof, **kwargs: {
+                "verified": True,
+                "errors": [],
+                "completeness_verified": False,
+            }
+            client = InProcessClient(store, "bench-user")
+            report = run_bench(client, generate_scenario(7), mode="inprocess")
+        self.assertLess(
+            report["categories"]["belief_proof"]["score"],
+            1.0,
+            msg="bench failed to detect a verifier that rubber-stamps doctored proofs",
+        )
+
+    def test_coherent_history_rewrite_tanks_belief_proof(self) -> None:
+        # Sabotage: AFTER the bench pins the chain head, rewrite a historical
+        # event in the DB. The UPDATE trigger clears the cached fingerprint, so
+        # the store coherently REBUILDS its chain from the forged bytes - its
+        # own verification stays green, every returned proof is internally
+        # consistent, and only the externally pinned head can expose that the
+        # past changed. This is M2's core threat model.
+        with tempfile.TemporaryDirectory() as tmp:
+            store = _fresh_store(Path(tmp))
+            client = InProcessClient(store, "bench-user")
+            original_answer = store.answer_query
+            state = {"tampered": False}
+
+            def tamper_once_then_answer(user_id, query, *args, **kwargs):
+                # answer_query first runs AFTER the belief-proof pin was taken,
+                # so this rewrite lands between pin and the end-of-run replay.
+                if not state["tampered"]:
+                    with connect(store.db_path) as conn:
+                        conn.execute(
+                            "UPDATE memory_events SET metadata_json = '{\"forged\": true}' "
+                            "WHERE rowid = (SELECT rowid FROM memory_events WHERE user_id = ? "
+                            "ORDER BY created_at ASC, rowid ASC LIMIT 1)",
+                            (user_id,),
+                        )
+                    state["tampered"] = True
+                return original_answer(user_id, query, *args, **kwargs)
+
+            store.answer_query = tamper_once_then_answer
+            report = run_bench(client, generate_scenario(7), mode="inprocess")
+        self.assertTrue(state["tampered"], "sabotage never fired; test is vacuous")
+        self.assertLess(
+            report["categories"]["belief_proof"]["score"],
+            1.0,
+            msg="bench failed to detect a coherent history rewrite against the pinned head",
+        )
+        # The rewrite must be caught by the external pin, not by per-proof
+        # crypto: a coherent rebuild is self-consistent by construction.
+        pin_failures = [
+            failure
+            for failure in report["categories"]["belief_proof"]["failures"]
+            if failure.startswith("belief_proof pin:")
+        ]
+        self.assertTrue(pin_failures, "expected the PIN probe to be the one that caught the rewrite")
 
 
 if __name__ == "__main__":
