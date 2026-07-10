@@ -81,6 +81,11 @@ class FakeStore:
         self.source_reputation_calls: list[tuple] = []
         self.twin_calibration_calls: list[tuple[str, int, list[str] | None]] = []
         self.twin_grade_calls: list[dict] = []
+        self.shared_principal_create_calls: list[dict] = []
+        self.shared_principal_revoke_calls: list[tuple[str, str]] = []
+        self.shared_write_calls: list[dict] = []
+        self.shared_verify_calls: list[tuple[str, str | None]] = []
+        self.poisoning_attempt_calls: list[dict] = []
         self.integrity_digest_calls: list[str] = []
         self.verify_integrity_calls: list[tuple] = []
         self.export_manifest_calls: list[str] = []
@@ -380,6 +385,41 @@ class FakeStore:
         }
         self.twin_grade_calls.append(call)
         return call
+
+    def create_shared_principal(self, user_id: str, *, label: str, kind: str = "agent", trust_score=None) -> dict:
+        call = {"user_id": user_id, "label": label, "kind": kind, "trust_score": trust_score}
+        self.shared_principal_create_calls.append(call)
+        return {
+            "principal": {"id": "prn_fixture", "label": label, "kind": kind, "trust_score": trust_score},
+            "secret": "fixture-secret",
+        }
+
+    def list_shared_principals(self, user_id: str, *, include_revoked: bool = False) -> list[dict]:
+        return [{"id": "prn_fixture", "status": "revoked" if include_revoked else "active"}]
+
+    def revoke_shared_principal(self, user_id: str, principal_id: str) -> dict:
+        self.shared_principal_revoke_calls.append((user_id, principal_id))
+        return {"principal_id": principal_id, "revoked": True}
+
+    def record_shared_memory(self, user_id: str, **kwargs) -> dict:
+        call = {"user_id": user_id, **kwargs}
+        self.shared_write_calls.append(call)
+        return {"disposition": "accepted", "principal_id": kwargs.get("principal_id"), "memories": []}
+
+    def verify_shared_memory(self, user_id: str, *, principal_id: str | None = None) -> dict:
+        self.shared_verify_calls.append((user_id, principal_id))
+        return {"verified": True, "principal_id": principal_id, "errors": []}
+
+    def get_poisoning_attempts(
+        self,
+        user_id: str,
+        *,
+        principal_id: str | None = None,
+        limit: int = 100,
+    ) -> dict:
+        call = {"user_id": user_id, "principal_id": principal_id, "limit": limit}
+        self.poisoning_attempt_calls.append(call)
+        return {"count": 0, "detected": 0, "attempts": []}
 
     def integrity_digest(self, user_id: str) -> dict:
         self.integrity_digest_calls.append(user_id)
@@ -2885,6 +2925,50 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(payload["outcome"], "incorrect")
         self.assertEqual(payload["answerability"], "answerable")
         self.assertEqual(self.fake_store.twin_grade_calls[-1]["answerability"], "answerable")
+
+    def test_shared_memory_routes_forward_to_store(self) -> None:
+        with self.post_json(
+            "/v1/shared-memory/principals",
+            {"label": "Standalone agent", "kind": "agent", "trust_score": 0.9},
+        ) as response:
+            created = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(response.status, 200)
+        self.assertEqual(created["principal"]["id"], "prn_fixture")
+        self.assertEqual(self.fake_store.shared_principal_create_calls[-1]["trust_score"], 0.9)
+
+        with self.post_json(
+            "/v1/shared-memory/writes",
+            {
+                "principal_id": "prn_fixture",
+                "nonce": "standalone-1",
+                "content": "Signed standalone content",
+                "signature": "a" * 64,
+                "source_url": "agent-report://standalone",
+                "title": "Standalone write",
+            },
+        ) as response:
+            written = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(response.status, 200)
+        self.assertEqual(written["disposition"], "accepted")
+        self.assertEqual(self.fake_store.shared_write_calls[-1]["nonce"], "standalone-1")
+
+        with self.get("/v1/shared-memory/verify?principal_id=prn_fixture") as response:
+            verified = json.loads(response.read().decode("utf-8"))
+        self.assertTrue(verified["verified"])
+        self.assertEqual(self.fake_store.shared_verify_calls[-1], ("local", "prn_fixture"))
+
+        with self.get("/v1/shared-memory/poisoning-attempts?principal_id=prn_fixture&limit=7") as response:
+            attempts = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(attempts["count"], 0)
+        self.assertEqual(
+            self.fake_store.poisoning_attempt_calls[-1],
+            {"user_id": "local", "principal_id": "prn_fixture", "limit": 7},
+        )
+
+        with self.post_json("/v1/shared-memory/principals/prn_fixture/revoke", {}) as response:
+            revoked = json.loads(response.read().decode("utf-8"))
+        self.assertTrue(revoked["revoked"])
+        self.assertEqual(self.fake_store.shared_principal_revoke_calls[-1], ("local", "prn_fixture"))
 
     def test_ask_route_forwards_as_of_validity_filter_to_store(self) -> None:
         with self.get("/v1/ask?query=voice&as_of=2019-12-31&limit=2") as response:

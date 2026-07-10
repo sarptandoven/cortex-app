@@ -153,6 +153,14 @@ def _required_api_scope(method: str, path: str) -> str:
         "/v1/export/verify",
     }:
         return "read"
+    if normalized_method == "POST" and (
+        normalized_path == "/v1/shared-memory/principals"
+        or (
+            normalized_path.startswith("/v1/shared-memory/principals/")
+            and normalized_path.endswith("/revoke")
+        )
+    ):
+        return "maintenance"
     # Obsidian write-back persists distilled memory into user-owned vault files (egress out of
     # Cortex custody) — export-scoped like the bulk exports, parity with the MCP tool.
     if normalized_path == "/v1/connectors/obsidian/write-back":
@@ -1034,6 +1042,50 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                             answerability=str(body.get("answerability") or "")[:20] or None,
                         )
                     )
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path == "/v1/shared-memory/principals":
+                body = self._json_body()
+                try:
+                    trust_raw = body.get("trust_score")
+                    self._send_json(
+                        store.create_shared_principal(
+                            user_id,
+                            label=str(body.get("label") or "")[:120],
+                            kind=str(body.get("kind") or "agent")[:20],
+                            trust_score=None if trust_raw is None else float(trust_raw),
+                        )
+                    )
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path.startswith("/v1/shared-memory/principals/") and path.endswith("/revoke"):
+                principal_id = unquote(
+                    path.removeprefix("/v1/shared-memory/principals/").removesuffix("/revoke").strip("/")
+                )
+                try:
+                    self._send_json(store.revoke_shared_principal(user_id, principal_id[:120]))
+                except (TypeError, ValueError) as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                return
+            if method == "POST" and path == "/v1/shared-memory/writes":
+                body = self._json_body()
+                try:
+                    self._send_json(
+                        store.record_shared_memory(
+                            user_id,
+                            principal_id=str(body.get("principal_id") or "")[:120],
+                            nonce=str(body.get("nonce") or "")[:120],
+                            content=str(body.get("content") or "")[:200000],
+                            signature=str(body.get("signature") or "")[:256],
+                            source_url=str(body.get("source_url") or "")[:500],
+                            title=str(body.get("title") or "")[:200],
+                            supersedes_memory_id=str(body.get("supersedes_memory_id") or "")[:120],
+                        )
+                    )
+                except PermissionError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.FORBIDDEN)
                 except (TypeError, ValueError) as exc:
                     self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
                 return
@@ -2166,6 +2218,33 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                         prediction_ids=(params.get("prediction_ids") or [])[:100]
                         if "prediction_ids" in params
                         else None,
+                    )
+                )
+                return
+            if method == "GET" and path == "/v1/shared-memory/principals":
+                include_revoked = (params.get("include_revoked") or ["false"])[0].strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                }
+                self._send_json(
+                    {"principals": store.list_shared_principals(user_id, include_revoked=include_revoked)}
+                )
+                return
+            if method == "GET" and path == "/v1/shared-memory/verify":
+                self._send_json(
+                    store.verify_shared_memory(
+                        user_id,
+                        principal_id=(params.get("principal_id") or [None])[0],
+                    )
+                )
+                return
+            if method == "GET" and path == "/v1/shared-memory/poisoning-attempts":
+                self._send_json(
+                    store.get_poisoning_attempts(
+                        user_id,
+                        principal_id=(params.get("principal_id") or [None])[0],
+                        limit=_int_param(params, "limit", 100, 1, 500),
                     )
                 )
                 return

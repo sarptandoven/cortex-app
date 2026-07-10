@@ -1128,6 +1128,70 @@ TOOLS = [
         },
     },
     {
+        "name": "create_shared_principal",
+        "description": (
+            "Create a separately identified shared-memory writer with its own signing secret. "
+            "Maintenance-scoped. The secret is returned once and is never stored in plaintext."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string", "maxLength": 120},
+                "kind": {"type": "string", "enum": ["user", "connector", "agent"], "default": "agent"},
+                "trust_score": {"type": "number", "minimum": 0, "maximum": 1},
+            },
+            "required": ["label"],
+        },
+    },
+    {
+        "name": "revoke_shared_principal",
+        "description": "Revoke one shared-memory principal so its signing key can no longer add memory. Maintenance-scoped.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"principal_id": {"type": "string", "maxLength": 120}},
+            "required": ["principal_id"],
+        },
+    },
+    {
+        "name": "record_shared_memory",
+        "description": (
+            "Record a canonically signed write from a registered principal. Replays, invalid "
+            "signatures, revoked identities, and lower-authority supersession attempts are rejected or quarantined."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "principal_id": {"type": "string", "maxLength": 120},
+                "nonce": {"type": "string", "maxLength": 120},
+                "content": {"type": "string", "maxLength": 200000},
+                "signature": {"type": "string", "maxLength": 256},
+                "source_url": {"type": "string", "maxLength": 500},
+                "title": {"type": "string", "maxLength": 200},
+                "supersedes_memory_id": {"type": "string", "maxLength": 120},
+            },
+            "required": ["principal_id", "nonce", "content", "signature"],
+        },
+    },
+    {
+        "name": "verify_shared_memory",
+        "description": "Verify per-principal signed-write chains and principal-bound memory authorship. Read-only.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"principal_id": {"type": "string", "maxLength": 120}},
+        },
+    },
+    {
+        "name": "get_poisoning_attempts",
+        "description": "Read the audit trail of detected shared-memory replay, signature, revocation, and authority violations.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "principal_id": {"type": "string", "maxLength": 120},
+                "limit": {"type": "integer", "default": 100, "minimum": 1, "maximum": 500},
+            },
+        },
+    },
+    {
         "name": "get_proactive_alerts",
         "description": "Return proactive alerts Cortex raised (e.g. a new capture contradicting a high-trust memory). Budget-capped per day and always dismissible. Read-only.",
         "inputSchema": {
@@ -1257,6 +1321,8 @@ READ_TOOLS = {
     "draft_as_me",
     "get_twin_scorecard",
     "get_twin_calibration",
+    "verify_shared_memory",
+    "get_poisoning_attempts",
     "get_proactive_alerts",
     "get_open_questions",
     "list_memory_topics",
@@ -1284,6 +1350,7 @@ REVIEW_TOOLS = {
 }
 WRITE_TOOLS = {
     "remember_this",
+    "record_shared_memory",
     "record_working_canvas_node",
     # Grading writes an answer_graded audit event (roadmap: submit_answer_for_grading is write scope).
     "submit_answer_for_grading",
@@ -1337,6 +1404,8 @@ MAINTENANCE_TOOLS = {
     # Phase 2b: recompute-verify is a diagnostic (reads the corpus, emits an audit event) —
     # deliberately maintenance-scoped like the other diagnostics, not part of the core surface.
     "verify_context_pack",
+    "create_shared_principal",
+    "revoke_shared_principal",
 }
 SCOPED_MCP_MAINTENANCE_REVIEW_TOOLS = {"approve_memory_capture", "archive_memory_capture"}
 DESTRUCTIVE_TOOLS = {"forget_memory", "delete_memory_capture", "delete_memory_backups", "restore_latest_memory_backup", "delete_all_user_data"}
@@ -1420,6 +1489,11 @@ _TOOL_TITLE_OVERRIDES: dict[str, str] = {
     "grade_twin_prediction": "Grade Twin Prediction",
     "get_twin_scorecard": "Twin Accuracy Scorecard",
     "get_twin_calibration": "Twin Calibration Scorecard",
+    "create_shared_principal": "Create Shared-Memory Principal",
+    "revoke_shared_principal": "Revoke Shared-Memory Principal",
+    "record_shared_memory": "Record Signed Shared Memory",
+    "verify_shared_memory": "Verify Shared Memory",
+    "get_poisoning_attempts": "Shared-Memory Poisoning Audit",
     "get_proactive_alerts": "Proactive Alerts",
     "resolve_proactive_alert": "Resolve Proactive Alert",
     "write_obsidian_pages": "Write Obsidian Pages",
@@ -3055,6 +3129,45 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
             user_id,
             days=_bounded_int_arg(args, "days", 90, maximum=365),
             prediction_ids=_text_list_arg(args, "prediction_ids"),
+        )
+        return store.agent_payload(user_id, result)
+    if name == "create_shared_principal":
+        trust_arg = args.get("trust_score")
+        return store.create_shared_principal(
+            user_id,
+            label=_text_arg(args, "label", "", max_chars=120),
+            kind=_text_arg(args, "kind", "agent", max_chars=20) or "agent",
+            trust_score=None if trust_arg is None else float(trust_arg),
+        )
+    if name == "revoke_shared_principal":
+        result = store.revoke_shared_principal(
+            user_id,
+            _text_arg(args, "principal_id", "", max_chars=120),
+        )
+        return store.agent_payload(user_id, result)
+    if name == "record_shared_memory":
+        result = store.record_shared_memory(
+            user_id,
+            principal_id=_text_arg(args, "principal_id", "", max_chars=120),
+            nonce=_text_arg(args, "nonce", "", max_chars=120),
+            content=_text_arg(args, "content", "", max_chars=200000),
+            signature=_text_arg(args, "signature", "", max_chars=256),
+            source_url=_text_arg(args, "source_url", "", max_chars=500),
+            title=_text_arg(args, "title", "", max_chars=200),
+            supersedes_memory_id=_text_arg(args, "supersedes_memory_id", "", max_chars=120),
+        )
+        return store.agent_payload(user_id, result)
+    if name == "verify_shared_memory":
+        result = store.verify_shared_memory(
+            user_id,
+            principal_id=_text_arg(args, "principal_id", "", max_chars=120) or None,
+        )
+        return store.agent_payload(user_id, result)
+    if name == "get_poisoning_attempts":
+        result = store.get_poisoning_attempts(
+            user_id,
+            principal_id=_text_arg(args, "principal_id", "", max_chars=120) or None,
+            limit=_bounded_int_arg(args, "limit", 100, maximum=500),
         )
         return store.agent_payload(user_id, result)
     if name == "get_proactive_alerts":

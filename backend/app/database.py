@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS captures (
   source TEXT NOT NULL,
   source_url TEXT,
   source_account_id TEXT,
+  author_principal_id TEXT NOT NULL DEFAULT '',
   external_id TEXT,
   title TEXT,
   raw_text TEXT NOT NULL,
@@ -106,6 +107,7 @@ CREATE TABLE IF NOT EXISTS memories (
   raw_excerpt TEXT,
   occurrences INTEGER NOT NULL DEFAULT 1,
   author_class TEXT NOT NULL DEFAULT 'unknown',
+  author_principal_id TEXT NOT NULL DEFAULT '',
   trust_score REAL NOT NULL DEFAULT 0.5,
   FOREIGN KEY(capture_id) REFERENCES captures(id) ON DELETE CASCADE
 );
@@ -400,6 +402,49 @@ CREATE VIRTUAL TABLE IF NOT EXISTS belief_snapshot_fts USING fts5(
   recorded_at UNINDEXED
 );
 
+CREATE TABLE IF NOT EXISTS shared_memory_principals (
+  id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  label TEXT NOT NULL,
+  trust_score REAL NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  key_version INTEGER NOT NULL DEFAULT 1,
+  key_fingerprint TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  revoked_at TEXT,
+  PRIMARY KEY(user_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS shared_memory_nonces (
+  user_id TEXT NOT NULL,
+  principal_id TEXT NOT NULL,
+  nonce TEXT NOT NULL,
+  payload_sha256 TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(user_id, principal_id, nonce)
+);
+
+CREATE TABLE IF NOT EXISTS shared_memory_writes (
+  id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  principal_id TEXT NOT NULL,
+  nonce TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  payload_sha256 TEXT NOT NULL,
+  signature TEXT NOT NULL,
+  previous_hash TEXT NOT NULL,
+  fingerprint_sha256 TEXT NOT NULL,
+  chain_hash TEXT NOT NULL,
+  capture_id TEXT,
+  memory_ids_json TEXT NOT NULL DEFAULT '[]',
+  disposition TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(user_id, id),
+  UNIQUE(user_id, principal_id, nonce)
+);
+
 CREATE INDEX IF NOT EXISTS idx_memories_user_time ON memories(user_id, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(user_id, kind);
 CREATE INDEX IF NOT EXISTS idx_tasks_open ON tasks(user_id, status);
@@ -408,6 +453,8 @@ CREATE INDEX IF NOT EXISTS idx_edges_user_source ON graph_edges(user_id, source_
 CREATE INDEX IF NOT EXISTS idx_memory_entities_entity ON memory_entities(user_id, entity_id);
 CREATE INDEX IF NOT EXISTS idx_memory_topics_topic ON memory_topics(user_id, topic);
 CREATE INDEX IF NOT EXISTS idx_memory_events_object ON memory_events(user_id, object_type, object_id);
+CREATE INDEX IF NOT EXISTS idx_shared_principals_status ON shared_memory_principals(user_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_shared_writes_principal ON shared_memory_writes(user_id, principal_id, created_at, id);
 """
 
 VECTOR_SCHEMA = f"""
@@ -443,6 +490,7 @@ MIGRATIONS = [
     "ALTER TABLE captures ADD COLUMN archived_at TEXT",
     "ALTER TABLE captures ADD COLUMN import_id TEXT",
     "ALTER TABLE captures ADD COLUMN source_account_id TEXT",
+    "ALTER TABLE captures ADD COLUMN author_principal_id TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE captures ADD COLUMN external_id TEXT",
     "ALTER TABLE memories ADD COLUMN updated_at TEXT",
     "ALTER TABLE memories ADD COLUMN layer TEXT NOT NULL DEFAULT 'semantic'",
@@ -456,6 +504,7 @@ MIGRATIONS = [
     "ALTER TABLE memories ADD COLUMN recorded_at TEXT",
     "ALTER TABLE memories ADD COLUMN occurrences INTEGER NOT NULL DEFAULT 1",
     "ALTER TABLE memories ADD COLUMN author_class TEXT NOT NULL DEFAULT 'unknown'",
+    "ALTER TABLE memories ADD COLUMN author_principal_id TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE memories ADD COLUMN trust_score REAL NOT NULL DEFAULT 0.5",
     "ALTER TABLE memory_events ADD COLUMN fingerprint_sha256 TEXT",
     "ALTER TABLE import_sessions ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0",
@@ -476,6 +525,8 @@ CREATE INDEX IF NOT EXISTS idx_captures_import ON captures(user_id, import_id, c
 CREATE INDEX IF NOT EXISTS idx_captures_review ON captures(user_id, review_status, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_captures_hash ON captures(user_id, raw_hash);
 CREATE INDEX IF NOT EXISTS idx_captures_source_record ON captures(user_id, source_account_id, external_id);
+CREATE INDEX IF NOT EXISTS idx_captures_author_principal ON captures(user_id, author_principal_id, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memories_author_principal ON memories(user_id, author_principal_id, status, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_import_sessions_user_created ON import_sessions(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_import_sessions_user_status ON import_sessions(user_id, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_import_records_import ON import_records(user_id, import_id, ordinal);

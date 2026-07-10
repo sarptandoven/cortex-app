@@ -10,12 +10,12 @@ import logging
 import os
 import secrets
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlencode
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from .accounts import iso_utc, utc_now
@@ -36,6 +36,7 @@ from .models import AgentSessionsSyncRequest, AgentSessionsSyncResponse, APIToke
 from .models import UserListResponse, UserProvisionRequest, UserProvisionResponse, UserStatusResponse
 from .models import CaptureChangePage, SyncIngestRequest, SyncIngestResponse
 from .models import GradeAnswerRequest, WouldIRequest, DraftAsMeRequest, GradeTwinPredictionRequest
+from .models import SharedMemoryWriteRequest, SharedPrincipalCreateRequest
 from .models import VerifyBeliefProofRequest, VerifyIntegrityRequest, VerifyBundleRequest
 from .models import WorkingCanvasNodeRequest, WorkingCanvasNodeResponse, WorkingCanvasResponse
 from .oauth_broker import register_oauth_broker_routes
@@ -49,6 +50,9 @@ from .webauth import (
     register_web_account_routes,
     render_public_page,
 )
+
+if TYPE_CHECKING:
+    from .billing import BillingWebhookVerifier
 
 
 settings = load_settings()
@@ -255,6 +259,14 @@ def _required_api_scope(method: str, path: str) -> str:
         "/v1/export/verify",
     }:
         return "read"
+    if normalized_method == "POST" and (
+        normalized_path == "/v1/shared-memory/principals"
+        or (
+            normalized_path.startswith("/v1/shared-memory/principals/")
+            and normalized_path.endswith("/revoke")
+        )
+    ):
+        return "maintenance"
     # Obsidian write-back persists distilled memory into user-owned vault files (egress out of
     # Cortex custody) — export-scoped like the bulk exports, parity with the MCP tool.
     if normalized_path == "/v1/connectors/obsidian/write-back":
@@ -778,7 +790,8 @@ def capture_page(
 async def capture_form(request: Request) -> HTMLResponse:
     raw = (await request.body()).decode("utf-8")
     params = parse_qs(raw, keep_blank_values=True)
-    value = lambda name: (params.get(name) or [""])[0]
+    def value(name: str) -> str:
+        return (params.get(name) or [""])[0]
     token = value("token")
     content = value("content") or value("text")
     title = value("title")
@@ -1940,6 +1953,77 @@ def twin_calibration(
         days=days,
         prediction_ids=prediction_ids[:100] if prediction_ids is not None else None,
     )
+
+
+@app.post("/v1/shared-memory/principals")
+def create_shared_principal(
+    payload: SharedPrincipalCreateRequest,
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    try:
+        return store.create_shared_principal(
+            user_id,
+            label=payload.label,
+            kind=payload.kind,
+            trust_score=payload.trust_score,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/v1/shared-memory/principals")
+def shared_principals(
+    include_revoked: bool = Query(default=False),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return {"principals": store.list_shared_principals(user_id, include_revoked=include_revoked)}
+
+
+@app.post("/v1/shared-memory/principals/{principal_id}/revoke")
+def revoke_shared_principal(principal_id: str, user_id: str = Depends(auth)) -> dict[str, Any]:
+    try:
+        return store.revoke_shared_principal(user_id, principal_id[:120])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/v1/shared-memory/writes")
+def record_shared_memory(
+    payload: SharedMemoryWriteRequest,
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    try:
+        return store.record_shared_memory(
+            user_id,
+            principal_id=payload.principal_id,
+            nonce=payload.nonce,
+            content=payload.content,
+            signature=payload.signature,
+            source_url=payload.source_url,
+            title=payload.title,
+            supersedes_memory_id=payload.supersedes_memory_id,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/v1/shared-memory/verify")
+def verify_shared_memory(
+    principal_id: str | None = Query(default=None, max_length=120),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return store.verify_shared_memory(user_id, principal_id=principal_id)
+
+
+@app.get("/v1/shared-memory/poisoning-attempts")
+def poisoning_attempts(
+    principal_id: str | None = Query(default=None, max_length=120),
+    limit: int = Query(default=100, ge=1, le=500),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return store.get_poisoning_attempts(user_id, principal_id=principal_id, limit=limit)
 
 
 @app.get("/v1/alerts")

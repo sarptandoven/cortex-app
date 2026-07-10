@@ -962,6 +962,22 @@ class GradeTwinPredictionRequest(BaseModel):
     answerability: Literal["answerable", "unknown", "unclear"] | None = None
 
 
+class SharedPrincipalCreateRequest(BaseModel):
+    label: str = Field(..., min_length=1, max_length=120)
+    kind: Literal["user", "connector", "agent"] = "agent"
+    trust_score: float | None = Field(default=None, ge=0, le=1)
+
+
+class SharedMemoryWriteRequest(BaseModel):
+    principal_id: str = Field(..., min_length=1, max_length=120)
+    nonce: str = Field(..., min_length=1, max_length=120)
+    content: str = Field(..., min_length=1, max_length=200_000)
+    signature: str = Field(..., min_length=1, max_length=256)
+    source_url: str = Field(default="", max_length=500)
+    title: str = Field(default="", max_length=200)
+    supersedes_memory_id: str = Field(default="", max_length=120)
+
+
 class ContextReuseRequest(BaseModel):
     surface: str = Field(default="macos", max_length=80)
     query: str = Field(default="", max_length=500)

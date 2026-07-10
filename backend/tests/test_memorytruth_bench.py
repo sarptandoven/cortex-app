@@ -58,6 +58,16 @@ class ScenarioDeterminismTests(unittest.TestCase):
         slugs += [rev["v2_slug"] for rev in scenario.revisions]
         slugs += [node["slug"] for node in scenario.canvas_nodes]
         slugs += [case["slug"] for case in scenario.metacognition_cases]
+        for case in scenario.shared_memory_cases:
+            slugs += [
+                case["accepted_slug"],
+                case["trusted_slug"],
+                case["poison_slug"],
+                case["invalid_slug"],
+                case["replay_slug"],
+                case["revoked_slug"],
+                *case["legitimate_slugs"],
+            ]
         self.assertEqual(len(slugs), len(set(slugs)))
 
     def test_v4_metacognition_generation_does_not_change_v3_scenario_bytes(self) -> None:
@@ -67,6 +77,15 @@ class ScenarioDeterminismTests(unittest.TestCase):
         self.assertEqual(without_m6.revisions, with_m6.revisions)
         self.assertEqual(without_m6.abstention_probes, with_m6.abstention_probes)
         self.assertEqual(without_m6.canvas_nodes, with_m6.canvas_nodes)
+
+    def test_v5_shared_memory_generation_does_not_change_v4_scenario_bytes(self) -> None:
+        without_m5 = generate_scenario(7, shared_memory_n=0)
+        with_m5 = generate_scenario(7)
+        self.assertEqual(without_m5.facts, with_m5.facts)
+        self.assertEqual(without_m5.revisions, with_m5.revisions)
+        self.assertEqual(without_m5.abstention_probes, with_m5.abstention_probes)
+        self.assertEqual(without_m5.canvas_nodes, with_m5.canvas_nodes)
+        self.assertEqual(without_m5.metacognition_cases, with_m5.metacognition_cases)
 
     def test_metacognition_gold_is_balanced_and_unknowns_are_never_seeded(self) -> None:
         scenario = generate_scenario(7)
@@ -196,6 +215,14 @@ class HonestyFloorTests(unittest.TestCase):
             client = InProcessClient(store, "bench-user")
             return run_bench(client, generate_scenario(seed), mode="inprocess")
 
+    def _assert_shared_memory_floors(self, report: dict) -> None:
+        metrics = report["categories"]["shared_memory"]["metrics"]
+        self.assertEqual(metrics["attacks"]["attack_success_rate"], 0.0)
+        self.assertEqual(metrics["detection"]["detection_rate"], 1.0)
+        self.assertLess(metrics["legitimate_writes"]["false_positive_rate"], 0.01)
+        self.assertEqual(metrics["verification"]["rate"], 1.0)
+        self.assertEqual(metrics["trusted_conflicts"]["survival_rate"], 1.0)
+
     def test_reference_seed_holds_all_floors(self) -> None:
         report = self._run(7)
         for category, payload in report["categories"].items():
@@ -204,6 +231,7 @@ class HonestyFloorTests(unittest.TestCase):
                 1.0,
                 msg=f"{category} broke its floor: {payload['failures']}",
             )
+        self._assert_shared_memory_floors(report)
         self.assertEqual(report["overall"], 1.0)
 
     def test_second_seed_holds_all_floors(self) -> None:
@@ -214,6 +242,7 @@ class HonestyFloorTests(unittest.TestCase):
                 1.0,
                 msg=f"{category} broke its floor: {payload['failures']}",
             )
+        self._assert_shared_memory_floors(report)
 
 
 class NonTautologyTests(unittest.TestCase):
@@ -520,6 +549,74 @@ class NonTautologyTests(unittest.TestCase):
                 for failure in report["categories"]["metacognition"]["failures"]
             ),
             "expected scorecard parity to name the lie",
+        )
+
+    def test_suppressed_poisoning_audit_tanks_shared_memory(self) -> None:
+        # Sabotage: the write path still rejects every attack, but the reporting
+        # surface hides the audit evidence. Independent expected nonces/reasons
+        # must make detection fail rather than crediting prevention alone.
+        with tempfile.TemporaryDirectory() as tmp:
+            store = _fresh_store(Path(tmp))
+            state = {"suppressed": 0}
+
+            def empty_attempts(user_id, *, limit=100, principal_id=None):
+                state["suppressed"] += 1
+                return {
+                    "count": 0,
+                    "detected": 0,
+                    "by_reason": {},
+                    "attempts": [],
+                }
+
+            store.get_poisoning_attempts = empty_attempts
+            report = run_bench(
+                InProcessClient(store, "bench-user"),
+                generate_scenario(7),
+                mode="inprocess",
+            )
+        self.assertGreater(state["suppressed"], 0, "sabotage never fired; test is vacuous")
+        shared = report["categories"]["shared_memory"]
+        self.assertLess(shared["score"], 1.0)
+        self.assertEqual(shared["metrics"]["detection"]["detection_rate"], 0.0)
+        self.assertTrue(
+            any(failure.startswith("shared_memory detection:") for failure in shared["failures"]),
+            "expected independent detection grading to name the missing audit evidence",
+        )
+
+    def test_tampered_shared_write_chain_tanks_shared_memory(self) -> None:
+        # Sabotage immediately before the first verification read. Rewriting the
+        # stored payload digest leaves the operational outcomes untouched, so the
+        # category can only stay green if its verifier is genuinely exercised.
+        with tempfile.TemporaryDirectory() as tmp:
+            store = _fresh_store(Path(tmp))
+            original_verify = store.verify_shared_memory
+            state = {"tampered": False}
+
+            def tampered_verify(user_id, *, principal_id=None):
+                if not state["tampered"]:
+                    with connect(store.db_path) as conn:
+                        conn.execute(
+                            "UPDATE shared_memory_writes SET payload_sha256 = ? "
+                            "WHERE rowid = (SELECT rowid FROM shared_memory_writes "
+                            "WHERE user_id = ? ORDER BY created_at, rowid LIMIT 1)",
+                            ("0" * 64, user_id),
+                        )
+                    state["tampered"] = True
+                return original_verify(user_id, principal_id=principal_id)
+
+            store.verify_shared_memory = tampered_verify
+            report = run_bench(
+                InProcessClient(store, "bench-user"),
+                generate_scenario(7),
+                mode="inprocess",
+            )
+        self.assertTrue(state["tampered"], "sabotage never fired; test is vacuous")
+        shared = report["categories"]["shared_memory"]
+        self.assertLess(shared["score"], 1.0)
+        self.assertLess(shared["metrics"]["verification"]["rate"], 1.0)
+        self.assertTrue(
+            any(failure.startswith("shared_memory verification:") for failure in shared["failures"]),
+            "expected shared-memory chain verification to catch the rewrite",
         )
 
 

@@ -36,12 +36,17 @@ from .graph_analysis import analyze_entity_graph
 from .extractor import content_is_machine_artifact, extract_context, now_iso, stable_id
 from .provenance import (
     base_trust_score,
+    canonical_shared_write,
     classify_author,
     compute_trust_score,
+    derive_shared_principal_secret,
     normalize_author_class,
     normalize_trust_score,
+    shared_write_payload_sha256,
     sign_authorship,
     verify_authorship,
+    verify_shared_write,
+    verify_shared_write_canonical,
 )
 from .sqlite_runtime import SQLITE_RUNTIME, sqlite3
 from .source_ingest import SourceRecord, analyze_sources, import_source_records_page, supported_sources
@@ -3074,6 +3079,8 @@ class CortexStore:
             for statement in (
                 "ALTER TABLE memories ADD COLUMN author_class TEXT NOT NULL DEFAULT 'unknown'",
                 "ALTER TABLE memories ADD COLUMN trust_score REAL NOT NULL DEFAULT 0.5",
+                "ALTER TABLE memories ADD COLUMN author_principal_id TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE captures ADD COLUMN author_principal_id TEXT NOT NULL DEFAULT ''",
             ):
                 try:
                     conn.execute(statement)
@@ -3148,11 +3155,86 @@ class CortexStore:
                   memory_id TEXT NOT NULL,
                   user_id TEXT NOT NULL,
                   author_class TEXT NOT NULL,
+                  principal_id TEXT NOT NULL DEFAULT '',
+                  signature_version INTEGER NOT NULL DEFAULT 1,
                   signature TEXT NOT NULL,
                   updated_at TEXT NOT NULL,
                   PRIMARY KEY(user_id, memory_id)
                 )
                 """
+            )
+            for statement in (
+                "ALTER TABLE authorship_signatures ADD COLUMN principal_id TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE authorship_signatures ADD COLUMN signature_version INTEGER NOT NULL DEFAULT 1",
+            ):
+                try:
+                    conn.execute(statement)
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS shared_memory_principals (
+                  id TEXT NOT NULL,
+                  user_id TEXT NOT NULL,
+                  kind TEXT NOT NULL,
+                  label TEXT NOT NULL,
+                  trust_score REAL NOT NULL,
+                  status TEXT NOT NULL DEFAULT 'active',
+                  key_version INTEGER NOT NULL DEFAULT 1,
+                  key_fingerprint TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  revoked_at TEXT,
+                  PRIMARY KEY(user_id, id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS shared_memory_nonces (
+                  user_id TEXT NOT NULL,
+                  principal_id TEXT NOT NULL,
+                  nonce TEXT NOT NULL,
+                  payload_sha256 TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  PRIMARY KEY(user_id, principal_id, nonce)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS shared_memory_writes (
+                  id TEXT NOT NULL,
+                  user_id TEXT NOT NULL,
+                  principal_id TEXT NOT NULL,
+                  nonce TEXT NOT NULL,
+                  payload_json TEXT NOT NULL,
+                  payload_sha256 TEXT NOT NULL,
+                  signature TEXT NOT NULL,
+                  previous_hash TEXT NOT NULL,
+                  fingerprint_sha256 TEXT NOT NULL,
+                  chain_hash TEXT NOT NULL,
+                  capture_id TEXT,
+                  memory_ids_json TEXT NOT NULL DEFAULT '[]',
+                  disposition TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  PRIMARY KEY(user_id, id),
+                  UNIQUE(user_id, principal_id, nonce)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_captures_author_principal ON captures(user_id, author_principal_id, captured_at DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memories_author_principal ON memories(user_id, author_principal_id, status, captured_at DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_shared_principals_status ON shared_memory_principals(user_id, status, updated_at DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_shared_writes_principal ON shared_memory_writes(user_id, principal_id, created_at, id)"
             )
             self._backfill_author_class(conn)
 
@@ -3266,6 +3348,9 @@ class CortexStore:
                         "occurred_at": row["occurred_at"],
                         "occurrences": _memory_occurrences(row["occurrences"] if "occurrences" in row.keys() else 1),
                         "author_class": normalize_author_class(row["author_class"] if "author_class" in row.keys() else "unknown"),
+                        "author_principal_id": str(row["author_principal_id"] or "")
+                        if "author_principal_id" in row.keys()
+                        else "",
                         "captured_at": row["captured_at"],
                         "updated_at": row["updated_at"],
                         "raw_excerpt": row["raw_excerpt"],
@@ -5075,7 +5160,6 @@ class CortexStore:
             else {str(record.get("external_id") or "").strip()[:240] for record in records if str(record.get("external_id") or "").strip()}
         )
         base_identity_aliases = self.settings(user_id).get("identity_aliases")
-        source_accounts = self.list_source_accounts(user_id)
 
         for ordinal, raw_record in enumerate(records):
             content = str(raw_record.get("content") or "").strip()
@@ -9555,10 +9639,14 @@ class CortexStore:
         capture_id_override: str | None = None,
         cite_capture_provenance: bool = False,
         auto_approve: bool = False,
+        author_principal: dict[str, Any] | None = None,
+        force_review: bool = False,
     ) -> dict[str, Any]:
         captured_at = extracted.get("_timestamp") or now_iso()
         normalized_source_account_id = (source_account_id or "").strip() or None
         normalized_external_id = (external_id or "").strip()[:240] or None
+        principal = author_principal if isinstance(author_principal, dict) else None
+        author_principal_id = str((principal or {}).get("id") or "").strip()[:120]
         override_id = str(capture_id_override or "").strip()
         override_ok = False
         if override_id.startswith("cap_"):
@@ -9599,6 +9687,8 @@ class CortexStore:
             # The source-account policy below can still force review back on for connected
             # sources, so auto_approve only fast-tracks manual/first-party captures.
             review_status = "approved" if (auto_approve or not user_settings["review_new_captures"]) else "pending"
+            if force_review:
+                review_status = "pending"
             approved_at = None if review_status == "pending" else captured_at
             source_account_snapshot = None
             if normalized_source_account_id:
@@ -9667,14 +9757,15 @@ class CortexStore:
             conn.execute(
                 """
                 INSERT INTO captures
-                (id, user_id, import_id, source, source_url, source_account_id, external_id, title, raw_text, raw_hash, summary, review_status, approved_at, captured_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, user_id, import_id, source, source_url, source_account_id, author_principal_id, external_id, title, raw_text, raw_hash, summary, review_status, approved_at, captured_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                   user_id = captures.user_id,
                   import_id = COALESCE(captures.import_id, excluded.import_id),
                   source = excluded.source,
                   source_url = excluded.source_url,
                   source_account_id = excluded.source_account_id,
+                  author_principal_id = excluded.author_principal_id,
                   external_id = excluded.external_id,
                   title = excluded.title,
                   raw_text = excluded.raw_text,
@@ -9691,6 +9782,7 @@ class CortexStore:
                     source,
                     source_url,
                     normalized_source_account_id,
+                    author_principal_id,
                     normalized_external_id,
                     title,
                     content,
@@ -9701,7 +9793,14 @@ class CortexStore:
                     captured_at,
                 ),
             )
-            self._event(conn, user_id, capture_id, "capture", "created", {"source": source, "title": title})
+            self._event(
+                conn,
+                user_id,
+                capture_id,
+                "capture",
+                "created",
+                {"source": source, "title": title, "author_principal_id": author_principal_id or None},
+            )
             if auto_archived:
                 conn.execute(
                     "UPDATE captures SET archived_at = ? WHERE user_id = ? AND id = ?",
@@ -9729,6 +9828,7 @@ class CortexStore:
                     granular_source_url=import_id is not None or source_account_snapshot is not None,
                     source_account=source_account_snapshot,
                     external_id=normalized_external_id,
+                    author_principal=principal,
                 )
                 memories.append(memory)
                 edges.append(self._edge(conn, user_id, capture_id, memory["id"], "contains", memory["id"], captured_at))
@@ -9858,6 +9958,7 @@ class CortexStore:
                     "source": source,
                     "source_url": source_url,
                     "source_account_id": normalized_source_account_id,
+                    "author_principal_id": author_principal_id,
                     "external_id": normalized_external_id,
                     "title": title,
                     "raw_text": content,
@@ -11529,17 +11630,18 @@ class CortexStore:
             # Supersession lowers derived trust (Phase 3); rescore the stale row now so packs
             # and the ledger agree without waiting for the nightly job.
             stale_row = conn.execute(
-                "SELECT author_class, source_url, occurrences FROM memories WHERE user_id = ? AND id = ?",
+                "SELECT * FROM memories WHERE user_id = ? AND id = ?",
                 (user_id, stale_id),
             ).fetchone()
             if stale_row:
+                stale_memory = self._memory_from_row(stale_row)
                 conn.execute(
                     "UPDATE memories SET trust_score = ? WHERE user_id = ? AND id = ?",
                     (
-                        compute_trust_score(
-                            author_class=stale_row["author_class"],
-                            has_citation=bool(str(stale_row["source_url"] or "").strip()),
-                            occurrences=_memory_occurrences(stale_row["occurrences"]),
+                        self._derived_memory_trust_in_conn(
+                            conn,
+                            user_id,
+                            stale_memory,
                             superseded=True,
                         ),
                         user_id,
@@ -11599,7 +11701,7 @@ class CortexStore:
         what Cortex believed and why, not the current retrieval score. Full content is included so
         history is reconstructible even if the live memory row is later edited or deleted.
         """
-        return {
+        snapshot = {
             "memory_id": str(memory.get("id") or ""),
             "capture_id": memory.get("capture_id"),
             "kind": str(memory.get("kind") or "observation"),
@@ -11619,6 +11721,10 @@ class CortexStore:
             "entity_ids": [str(value) for value in (memory.get("entity_ids") or [])],
             "provenance": memory.get("provenance") if isinstance(memory.get("provenance"), dict) else {},
         }
+        principal_id = str(memory.get("author_principal_id") or "").strip()
+        if principal_id:
+            snapshot["author_principal_id"] = principal_id
+        return snapshot
 
     @classmethod
     def _belief_snapshot_sha(cls, snapshot: dict[str, Any]) -> str:
@@ -17469,6 +17575,12 @@ class CortexStore:
                 "memory_jobs": conn.execute("SELECT COUNT(*) FROM memory_jobs WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "capture_processing_state": conn.execute("SELECT COUNT(*) FROM capture_processing_state WHERE user_id = ?", (user_id,)).fetchone()[0],
                 "working_canvas_nodes": conn.execute("SELECT COUNT(*) FROM working_canvas_nodes WHERE user_id = ?", (user_id,)).fetchone()[0],
+                "shared_memory_principals": conn.execute(
+                    "SELECT COUNT(*) FROM shared_memory_principals WHERE user_id = ?", (user_id,)
+                ).fetchone()[0],
+                "shared_memory_writes": conn.execute(
+                    "SELECT COUNT(*) FROM shared_memory_writes WHERE user_id = ?", (user_id,)
+                ).fetchone()[0],
             }
             # M3: raw canvas evidence is user data and must not survive "delete my data". The
             # vault files are content-addressed (not user-scoped), so only delete blobs no OTHER
@@ -17511,6 +17623,9 @@ class CortexStore:
             conn.execute("DELETE FROM import_sessions WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM capture_processing_state WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM working_canvas_nodes WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM shared_memory_nonces WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM shared_memory_writes WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM shared_memory_principals WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM authorship_signatures WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM captures WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM memory_events WHERE user_id = ?", (user_id,))
@@ -18145,14 +18260,19 @@ class CortexStore:
                 authorship_key = self.vault.authorship_key()
             except Exception:
                 authorship_key = None
-            signature_index: dict[str, tuple[str, str]] = {}
+            signature_index: dict[str, tuple[str, str, int, str]] = {}
             if authorship_key is not None:
                 for sig_row in conn.execute(
-                    "SELECT memory_id, author_class, signature FROM authorship_signatures WHERE user_id = ?",
+                    """
+                    SELECT memory_id, author_class, principal_id, signature_version, signature
+                    FROM authorship_signatures WHERE user_id = ?
+                    """,
                     (user_id,),
                 ).fetchall():
                     signature_index[sig_row["memory_id"]] = (
                         normalize_author_class(sig_row["author_class"]),
+                        str(sig_row["principal_id"] or ""),
+                        int(sig_row["signature_version"] or 1),
                         sig_row["signature"],
                     )
 
@@ -18165,6 +18285,7 @@ class CortexStore:
                 # same durable fields the live save path uses, so a rebuild converges instead of
                 # resetting authorship to 'unknown'.
                 rebuilt_author_class = normalize_author_class(memory.get("author_class"))
+                rebuilt_principal_id = str(memory.get("author_principal_id") or "").strip()[:120]
                 if rebuilt_author_class == "unknown":
                     rebuilt_author_class = classify_author(
                         source=memory.get("source", "vault"),
@@ -18178,24 +18299,58 @@ class CortexStore:
                 # restored to the signed class and audited — content edits remain fully honored.
                 signed = signature_index.get(memory.get("id"))
                 if signed is not None:
-                    signed_class, signature = signed
-                    if rebuilt_author_class != signed_class and verify_authorship(
-                        authorship_key, signature, memory_id=str(memory.get("id") or ""), author_class=signed_class
-                    ):
+                    signed_class, signed_principal_id, signature_version, signature = signed
+                    signature_valid = verify_authorship(
+                        authorship_key,
+                        signature,
+                        memory_id=str(memory.get("id") or ""),
+                        author_class=signed_class,
+                        principal_id=signed_principal_id if signature_version >= 2 else "",
+                    )
+                    if (
+                        rebuilt_author_class != signed_class
+                        or rebuilt_principal_id != signed_principal_id
+                    ) and signature_valid:
                         self._event(
                             conn,
                             user_id,
                             str(memory.get("id") or ""),
                             "memory",
                             "authorship_tamper_detected",
-                            {"claimed": rebuilt_author_class, "signed": signed_class},
+                            {
+                                "claimed": rebuilt_author_class,
+                                "signed": signed_class,
+                                "claimed_principal_id": rebuilt_principal_id or None,
+                                "signed_principal_id": signed_principal_id or None,
+                            },
                         )
                         rebuilt_author_class = signed_class
+                        rebuilt_principal_id = signed_principal_id
+                principal_row = (
+                    conn.execute(
+                        "SELECT trust_score FROM shared_memory_principals WHERE user_id = ? AND id = ?",
+                        (user_id, rebuilt_principal_id),
+                    ).fetchone()
+                    if rebuilt_principal_id
+                    else None
+                )
+                rebuilt_trust = (
+                    normalize_trust_score(principal_row["trust_score"], rebuilt_author_class)
+                    if principal_row is not None
+                    else compute_trust_score(
+                        author_class=rebuilt_author_class,
+                        has_citation=bool(str(memory.get("source_url") or "").strip()),
+                        occurrences=_memory_occurrences(memory.get("occurrences")),
+                        superseded=bool(str(memory.get("superseded_by") or "").strip()),
+                    )
+                )
+                if principal_row is not None and str(memory.get("superseded_by") or "").strip():
+                    rebuilt_trust = round(rebuilt_trust * 0.5, 4)
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO memories
-                    (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, superseded_at, occurrences, captured_at, recorded_at, updated_at, raw_excerpt, author_class, trust_score)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, superseded_at, occurrences, captured_at, recorded_at, updated_at, raw_excerpt, author_class, author_principal_id, trust_score)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         memory["id"],
@@ -18229,16 +18384,8 @@ class CortexStore:
                         memory.get("updated_at") or captured_at,
                         memory.get("raw_excerpt"),
                         rebuilt_author_class,
-                        # trust_score is derived, never restored from user-editable frontmatter:
-                        # a hand-edited score in the vault must not inflate ranking trust. Phase 3
-                        # recomputes from durable fields so rebuilds converge with the write path
-                        # and the rescore job.
-                        compute_trust_score(
-                            author_class=rebuilt_author_class,
-                            has_citation=bool(str(memory.get("source_url") or "").strip()),
-                            occurrences=_memory_occurrences(memory.get("occurrences")),
-                            superseded=bool(str(memory.get("superseded_by") or "").strip()),
-                        ),
+                        rebuilt_principal_id,
+                        rebuilt_trust,
                     ),
                 )
                 if memory.get("status", "active") == "active":
@@ -21201,6 +21348,963 @@ class CortexStore:
         }
 
     # ------------------------------------------------------------------
+    # M5: Poison-proof shared memory
+    # ------------------------------------------------------------------
+
+    _SHARED_AUTO_APPROVE_TRUST = 0.8
+    _SHARED_REPUTATION_MIN_DECISIONS = 3
+    _SHARED_AUTHORITY_MARGIN = 0.05
+
+    @staticmethod
+    def _shared_chain_genesis(user_id: str, principal_id: str) -> str:
+        return hashlib.sha256(
+            f"cortex:shared-memory:v1:{user_id}:{principal_id}".encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
+    def _shared_write_fingerprint(write: dict[str, Any]) -> str:
+        body = {
+            "id": write.get("id"),
+            "user_id": write.get("user_id"),
+            "principal_id": write.get("principal_id"),
+            "nonce": write.get("nonce"),
+            "payload_json": write.get("payload_json"),
+            "payload_sha256": write.get("payload_sha256"),
+            "signature": write.get("signature"),
+            "capture_id": write.get("capture_id"),
+            "memory_ids": write.get("memory_ids") or [],
+            "disposition": write.get("disposition"),
+            "created_at": write.get("created_at"),
+        }
+        canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _shared_principal_reputation_in_conn(
+        self,
+        conn,
+        user_id: str,
+        principal_id: str,
+        kind: str,
+    ) -> dict[str, Any]:
+        rows = conn.execute(
+            """
+            SELECT e.object_id, e.event_type, e.metadata_json
+            FROM memory_events e
+            JOIN captures c ON c.id = e.object_id AND c.user_id = e.user_id
+            WHERE e.user_id = ? AND c.author_principal_id = ?
+              AND e.object_type = 'capture'
+              AND e.event_type IN ('approved', 'archived')
+            ORDER BY e.created_at, e.rowid
+            """,
+            (user_id, principal_id),
+        ).fetchall()
+        decisions: dict[str, str] = {}
+        for row in rows:
+            if row["event_type"] == "approved":
+                decisions[str(row["object_id"])] = "approved"
+                continue
+            metadata = self._json_or_empty(row["metadata_json"])
+            if str(metadata.get("reason") or "user_review") == "user_review":
+                decisions[str(row["object_id"])] = "rejected"
+        approved = sum(1 for value in decisions.values() if value == "approved")
+        rejected = sum(1 for value in decisions.values() if value == "rejected")
+        decided = approved + rejected
+        default_reputation = {"user": 1.0, "connector": 0.8, "agent": 0.5}.get(
+            normalize_author_class(kind),
+            0.5,
+        )
+        score = (
+            round(approved / decided, 4)
+            if decided >= self._SHARED_REPUTATION_MIN_DECISIONS
+            else default_reputation
+        )
+        return {
+            "approved": approved,
+            "rejected": rejected,
+            "decided": decided,
+            "score": score,
+            "evidence_sufficient": decided >= self._SHARED_REPUTATION_MIN_DECISIONS,
+        }
+
+    def _shared_principal_from_row(self, row, *, reputation: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = {
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "kind": normalize_author_class(row["kind"]),
+            "label": row["label"],
+            "trust_score": normalize_trust_score(row["trust_score"], row["kind"]),
+            "status": row["status"],
+            "key_version": int(row["key_version"] or 1),
+            "key_fingerprint": row["key_fingerprint"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "revoked_at": row["revoked_at"],
+        }
+        if reputation is not None:
+            payload["reputation"] = reputation
+            payload["effective_authority"] = round(payload["trust_score"] * reputation["score"], 4)
+        return payload
+
+    def create_shared_principal(
+        self,
+        user_id: str,
+        *,
+        label: str,
+        kind: str = "agent",
+        trust_score: float | None = None,
+    ) -> dict[str, Any]:
+        clean_label = str(label or "").strip()[:120]
+        if not clean_label:
+            raise ValueError("label is required")
+        clean_kind = normalize_author_class(kind)
+        if clean_kind not in {"user", "connector", "agent"}:
+            raise ValueError("kind must be one of: user, connector, agent")
+        default_trust = {"user": 1.0, "connector": 0.8, "agent": 0.5}[clean_kind]
+        resolved_trust = normalize_trust_score(
+            default_trust if trust_score is None else trust_score,
+            clean_kind,
+        )
+        principal_id = stable_id(
+            "prn_",
+            f"{user_id}:{clean_kind}:{clean_label}:{uuid.uuid4().hex}",
+        )
+        key_version = 1
+        secret = derive_shared_principal_secret(
+            self.vault.authorship_key(),
+            user_id=user_id,
+            principal_id=principal_id,
+            key_version=key_version,
+        )
+        key_fingerprint = hashlib.sha256(secret.encode("ascii")).hexdigest()
+        timestamp = now_iso()
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO shared_memory_principals
+                (id, user_id, kind, label, trust_score, status, key_version,
+                 key_fingerprint, created_at, updated_at, revoked_at)
+                VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, NULL)
+                """,
+                (
+                    principal_id,
+                    user_id,
+                    clean_kind,
+                    clean_label,
+                    resolved_trust,
+                    key_version,
+                    key_fingerprint,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            self._event(
+                conn,
+                user_id,
+                principal_id,
+                "shared_principal",
+                "shared_principal_created",
+                {
+                    "kind": clean_kind,
+                    "label": clean_label,
+                    "trust_score": resolved_trust,
+                    "key_fingerprint": key_fingerprint,
+                },
+            )
+            row = conn.execute(
+                "SELECT * FROM shared_memory_principals WHERE user_id = ? AND id = ?",
+                (user_id, principal_id),
+            ).fetchone()
+        return {
+            "principal": self._shared_principal_from_row(row),
+            "secret": secret,
+            "signing": {
+                "algorithm": "hmac-sha256",
+                "canonicalization": "sorted compact JSON over principal_id, nonce, content_sha256, source_url, title, supersedes_memory_id",
+                "warning": "The secret is shown only in this creation response. Store it securely.",
+            },
+        }
+
+    def list_shared_principals(self, user_id: str, *, include_revoked: bool = False) -> list[dict[str, Any]]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM shared_memory_principals
+                WHERE user_id = ? AND (? OR status = 'active')
+                ORDER BY created_at, id
+                """,
+                (user_id, 1 if include_revoked else 0),
+            ).fetchall()
+            return [
+                self._shared_principal_from_row(
+                    row,
+                    reputation=self._shared_principal_reputation_in_conn(
+                        conn,
+                        user_id,
+                        str(row["id"]),
+                        str(row["kind"]),
+                    ),
+                )
+                for row in rows
+            ]
+
+    def revoke_shared_principal(self, user_id: str, principal_id: str) -> dict[str, Any]:
+        pid = str(principal_id or "").strip()
+        if not pid:
+            raise ValueError("principal_id is required")
+        timestamp = now_iso()
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM shared_memory_principals WHERE user_id = ? AND id = ?",
+                (user_id, pid),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Unknown shared principal")
+            conn.execute(
+                """
+                UPDATE shared_memory_principals
+                SET status = 'revoked', revoked_at = COALESCE(revoked_at, ?), updated_at = ?
+                WHERE user_id = ? AND id = ?
+                """,
+                (timestamp, timestamp, user_id, pid),
+            )
+            self._event(
+                conn,
+                user_id,
+                pid,
+                "shared_principal",
+                "shared_principal_revoked",
+                {},
+            )
+        return {"principal_id": pid, "revoked": True, "revoked_at": timestamp}
+
+    def _audit_poisoning_attempt(
+        self,
+        user_id: str,
+        principal_id: str,
+        *,
+        reason: str,
+        nonce: str = "",
+        target_memory_id: str = "",
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        metadata = {
+            "reason": str(reason or "unknown")[:80],
+            "principal_id": str(principal_id or "")[:120],
+            "nonce": str(nonce or "")[:120] or None,
+            "target_memory_id": str(target_memory_id or "")[:120] or None,
+            **(detail if isinstance(detail, dict) else {}),
+        }
+        with connect(self.db_path) as conn:
+            self._event(
+                conn,
+                user_id,
+                str(principal_id or "shared-memory")[:120],
+                "shared_principal",
+                "shared_poisoning_detected",
+                metadata,
+            )
+
+    def get_poisoning_attempts(
+        self,
+        user_id: str,
+        *,
+        limit: int = 100,
+        principal_id: str | None = None,
+    ) -> dict[str, Any]:
+        bounded = max(1, min(int(limit or 100), 500))
+        pid = str(principal_id or "").strip()
+        with connect(self.db_path) as conn:
+            params: list[Any] = [user_id]
+            principal_filter = ""
+            if pid:
+                principal_filter = "AND object_id = ?"
+                params.append(pid)
+            params.append(bounded)
+            rows = conn.execute(
+                f"""
+                SELECT id, object_id, event_type, metadata_json, created_at
+                FROM memory_events
+                WHERE user_id = ? AND event_type = 'shared_poisoning_detected'
+                {principal_filter}
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        attempts = []
+        by_reason: dict[str, int] = {}
+        for row in rows:
+            metadata = self._json_or_empty(row["metadata_json"])
+            reason = str(metadata.get("reason") or "unknown")
+            by_reason[reason] = by_reason.get(reason, 0) + 1
+            attempts.append(
+                {
+                    "event_id": row["id"],
+                    "principal_id": metadata.get("principal_id") or row["object_id"],
+                    "reason": reason,
+                    "nonce": metadata.get("nonce"),
+                    "target_memory_id": metadata.get("target_memory_id"),
+                    "detail": {
+                        key: value
+                        for key, value in metadata.items()
+                        if key not in {"reason", "principal_id", "nonce", "target_memory_id"}
+                    },
+                    "detected_at": row["created_at"],
+                }
+            )
+        return {
+            "count": len(attempts),
+            "detected": len(attempts),
+            "by_reason": by_reason,
+            "attempts": attempts,
+            "caveat": "Semantic falsehoods without contrary trusted evidence remain review-gated; this detector reports cryptographic, replay, and authority violations.",
+        }
+
+    def _shared_memory_authority_in_conn(self, conn, user_id: str, memory: dict[str, Any]) -> float:
+        principal_id = str(memory.get("author_principal_id") or "").strip()
+        trust = normalize_trust_score(memory.get("trust_score"), memory.get("author_class"))
+        if not principal_id:
+            return trust
+        row = conn.execute(
+            "SELECT * FROM shared_memory_principals WHERE user_id = ? AND id = ?",
+            (user_id, principal_id),
+        ).fetchone()
+        if row is None or row["status"] != "active":
+            return 0.0
+        reputation = self._shared_principal_reputation_in_conn(
+            conn,
+            user_id,
+            principal_id,
+            str(row["kind"]),
+        )
+        return round(trust * reputation["score"], 4)
+
+    def _derived_memory_trust_in_conn(
+        self,
+        conn,
+        user_id: str,
+        memory: dict[str, Any],
+        *,
+        occurrences: int | None = None,
+        superseded: bool | None = None,
+    ) -> float:
+        """Recompute stored trust without collapsing principal trust to its author class.
+
+        Reputation remains a live conflict-resolution factor. The durable retrieval score is the
+        principal's configured trust, discounted only after supersession. Non-shared memories keep
+        the Phase-3 deterministic formula.
+        """
+        principal_id = str(memory.get("author_principal_id") or "").strip()
+        is_superseded = (
+            bool(str(memory.get("superseded_by") or "").strip())
+            if superseded is None
+            else bool(superseded)
+        )
+        if principal_id:
+            principal = conn.execute(
+                "SELECT trust_score, kind FROM shared_memory_principals WHERE user_id = ? AND id = ?",
+                (user_id, principal_id),
+            ).fetchone()
+            if principal is None:
+                return 0.0
+            score = normalize_trust_score(principal["trust_score"], principal["kind"])
+            return round(score * (0.5 if is_superseded else 1.0), 4)
+        return compute_trust_score(
+            author_class=memory.get("author_class"),
+            has_citation=bool(str(memory.get("source_url") or "").strip()),
+            occurrences=(
+                _memory_occurrences(memory.get("occurrences"))
+                if occurrences is None
+                else _memory_occurrences(occurrences)
+            ),
+            superseded=is_superseded,
+        )
+
+    def _quarantine_shared_memories(
+        self,
+        user_id: str,
+        capture_id: str,
+        memories: list[dict[str, Any]],
+    ) -> None:
+        memory_ids = [str(memory.get("id") or "") for memory in memories if memory.get("id")]
+        if not memory_ids:
+            return
+        placeholders = ",".join("?" for _ in memory_ids)
+        with connect(self.db_path) as conn:
+            conn.execute(
+                f"UPDATE memories SET status = 'quarantined', updated_at = ? WHERE user_id = ? AND id IN ({placeholders})",
+                (now_iso(), user_id, *memory_ids),
+            )
+            conn.execute(
+                f"DELETE FROM memory_fts WHERE memory_id IN ({placeholders})",
+                tuple(memory_ids),
+            )
+            conn.execute(
+                "UPDATE captures SET review_status = 'pending', approved_at = NULL WHERE user_id = ? AND id = ?",
+                (user_id, capture_id),
+            )
+        for memory in memories:
+            memory["status"] = "quarantined"
+            try:
+                self.vault.write_memory(memory)
+            except Exception:
+                pass
+
+    def _append_shared_write(
+        self,
+        user_id: str,
+        *,
+        principal_id: str,
+        nonce: str,
+        payload_json: str,
+        payload_sha256: str,
+        signature: str,
+        capture_id: str,
+        memory_ids: list[str],
+        disposition: str,
+    ) -> dict[str, Any]:
+        write_id = stable_id(
+            "sw_",
+            f"{user_id}:{principal_id}:{nonce}:{payload_sha256}:{uuid.uuid4().hex}",
+        )
+        with connect(self.db_path) as conn:
+            # A shared principal may have several agents writing concurrently. Take
+            # the SQLite write reservation before reading the tail so two writers
+            # cannot both extend the same predecessor and fork the principal chain.
+            conn.execute("BEGIN IMMEDIATE")
+            created_at = _transaction_now_iso()
+            previous = conn.execute(
+                """
+                SELECT chain_hash FROM shared_memory_writes
+                WHERE user_id = ? AND principal_id = ?
+                ORDER BY rowid DESC LIMIT 1
+                """,
+                (user_id, principal_id),
+            ).fetchone()
+            previous_hash = (
+                str(previous["chain_hash"])
+                if previous is not None
+                else self._shared_chain_genesis(user_id, principal_id)
+            )
+            write = {
+                "id": write_id,
+                "user_id": user_id,
+                "principal_id": principal_id,
+                "nonce": nonce,
+                "payload_json": payload_json,
+                "payload_sha256": payload_sha256,
+                "signature": signature,
+                "capture_id": capture_id,
+                "memory_ids": sorted(memory_ids),
+                "disposition": disposition,
+                "created_at": created_at,
+            }
+            fingerprint = self._shared_write_fingerprint(write)
+            chain_hash = hashlib.sha256(f"{previous_hash}:{fingerprint}".encode("utf-8")).hexdigest()
+            conn.execute(
+                """
+                INSERT INTO shared_memory_writes
+                (id, user_id, principal_id, nonce, payload_json, payload_sha256, signature,
+                 previous_hash, fingerprint_sha256, chain_hash, capture_id, memory_ids_json,
+                 disposition, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    write_id,
+                    user_id,
+                    principal_id,
+                    nonce,
+                    payload_json,
+                    payload_sha256,
+                    signature,
+                    previous_hash,
+                    fingerprint,
+                    chain_hash,
+                    capture_id,
+                    json.dumps(sorted(memory_ids)),
+                    disposition,
+                    created_at,
+                ),
+            )
+            self._event(
+                conn,
+                user_id,
+                write_id,
+                "shared_write",
+                "shared_memory_written",
+                {
+                    "principal_id": principal_id,
+                    "capture_id": capture_id,
+                    "memory_ids": sorted(memory_ids),
+                    "disposition": disposition,
+                    "chain_hash": chain_hash,
+                },
+            )
+        return {**write, "previous_hash": previous_hash, "fingerprint_sha256": fingerprint, "chain_hash": chain_hash}
+
+    def record_shared_memory(
+        self,
+        user_id: str,
+        *,
+        principal_id: str,
+        nonce: str,
+        content: str,
+        signature: str,
+        source_url: str = "",
+        title: str = "",
+        supersedes_memory_id: str = "",
+    ) -> dict[str, Any]:
+        pid = str(principal_id or "").strip()[:120]
+        clean_nonce = str(nonce or "").strip()[:120]
+        text = str(content or "").strip()
+        clean_source_url = str(source_url or "").strip()[:500]
+        clean_title = str(title or "").strip()[:200]
+        supersedes_id = str(supersedes_memory_id or "").strip()[:120]
+        if not pid or not clean_nonce or not text:
+            raise ValueError("principal_id, nonce, and content are required")
+        if len(text) > 200_000:
+            raise ValueError("content is too large")
+        with connect(self.db_path) as conn:
+            principal_row = conn.execute(
+                "SELECT * FROM shared_memory_principals WHERE user_id = ? AND id = ?",
+                (user_id, pid),
+            ).fetchone()
+        if principal_row is None:
+            self._audit_poisoning_attempt(user_id, pid, reason="unknown_principal", nonce=clean_nonce)
+            raise PermissionError("Unknown shared principal")
+        principal = self._shared_principal_from_row(principal_row)
+        if principal["status"] != "active":
+            self._audit_poisoning_attempt(user_id, pid, reason="revoked_principal", nonce=clean_nonce)
+            raise PermissionError("Shared principal is revoked")
+        secret = derive_shared_principal_secret(
+            self.vault.authorship_key(),
+            user_id=user_id,
+            principal_id=pid,
+            key_version=principal["key_version"],
+        )
+        signature_kwargs = {
+            "principal_id": pid,
+            "nonce": clean_nonce,
+            "content": text,
+            "source_url": clean_source_url,
+            "title": clean_title,
+            "supersedes_memory_id": supersedes_id,
+        }
+        if not verify_shared_write(secret, signature, **signature_kwargs):
+            self._audit_poisoning_attempt(user_id, pid, reason="invalid_signature", nonce=clean_nonce)
+            raise ValueError("Invalid shared-memory signature")
+        payload_json = canonical_shared_write(**signature_kwargs)
+        payload_sha256 = shared_write_payload_sha256(**signature_kwargs)
+        nonce_replayed = False
+        with connect(self.db_path) as conn:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO shared_memory_nonces
+                    (user_id, principal_id, nonce, payload_sha256, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (user_id, pid, clean_nonce, payload_sha256, now_iso()),
+                )
+            except sqlite3.IntegrityError as exc:
+                if "shared_memory_nonces.user_id" not in str(exc):
+                    raise
+                nonce_replayed = True
+        if nonce_replayed:
+            self._audit_poisoning_attempt(
+                user_id,
+                pid,
+                reason="replay",
+                nonce=clean_nonce,
+                target_memory_id=supersedes_id or None,
+            )
+            raise ValueError("Shared-memory nonce was already used")
+
+        extracted = extract_context(text)
+        if not extracted.get("records"):
+            extracted = {
+                **extracted,
+                "records": [
+                    {
+                        "id": stable_id("mem_", text),
+                        "kind": "observation",
+                        "layer": "semantic",
+                        "content": text,
+                        "summary": str(extracted.get("summary") or text[:160]),
+                        "confidence": "stated",
+                        "importance": 3,
+                        "occurred_at": None,
+                        "topics": [],
+                        "entity_ids": [],
+                    }
+                ],
+                "tasks": extracted.get("tasks") or [],
+                "entities": extracted.get("entities") or [],
+            }
+        resolved_source_url = clean_source_url or f"shared-principal://{pid}"
+        force_review = principal["trust_score"] < self._SHARED_AUTO_APPROVE_TRUST
+        saved = self.save_capture(
+            user_id=user_id,
+            content=text,
+            source=f"shared-{principal['kind']}",
+            source_url=resolved_source_url,
+            title=clean_title or principal["label"],
+            extracted=extracted,
+            capture_id_override=stable_id("cap_", f"{user_id}:{pid}:{clean_nonce}"),
+            author_principal=principal,
+            force_review=force_review,
+        )
+        memories = saved.get("memories") or []
+        disposition = "review_required" if force_review else "accepted"
+        conflicts: list[dict[str, Any]] = []
+
+        target_memory = None
+        if supersedes_id:
+            with connect(self.db_path) as conn:
+                target_row = conn.execute(
+                    "SELECT * FROM memories WHERE user_id = ? AND id = ?",
+                    (user_id, supersedes_id),
+                ).fetchone()
+                target_memory = self._memory_from_row(target_row) if target_row is not None else None
+                for memory in memories:
+                    new_authority = self._shared_memory_authority_in_conn(conn, user_id, memory)
+                    target_authority = (
+                        self._shared_memory_authority_in_conn(conn, user_id, target_memory)
+                        if target_memory is not None
+                        else 1.0
+                    )
+                    conflicts.append(
+                        {
+                            "new_memory_id": memory.get("id"),
+                            "target_memory_id": supersedes_id,
+                            "new_authority": new_authority,
+                            "target_authority": target_authority,
+                        }
+                    )
+            same_principal = bool(
+                target_memory
+                and str(target_memory.get("author_principal_id") or "") == pid
+            )
+            agent_over_user = bool(
+                target_memory
+                and normalize_author_class(target_memory.get("author_class")) == "user"
+                and principal["kind"] == "agent"
+            )
+            strongest_new = max((item["new_authority"] for item in conflicts), default=0.0)
+            target_authority = conflicts[0]["target_authority"] if conflicts else 1.0
+            allowed = same_principal or (
+                target_memory is not None
+                and not agent_over_user
+                and strongest_new > target_authority + self._SHARED_AUTHORITY_MARGIN
+            )
+            if allowed and target_memory is not None and memories:
+                self.resolve_conflict(
+                    user_id,
+                    stale_id=supersedes_id,
+                    current_id=str(memories[0]["id"]),
+                )
+                disposition = "accepted"
+            else:
+                self._quarantine_shared_memories(user_id, saved["capture_id"], memories)
+                disposition = "quarantined"
+                self._audit_poisoning_attempt(
+                    user_id,
+                    pid,
+                    reason="lower_authority_supersession",
+                    nonce=clean_nonce,
+                    target_memory_id=supersedes_id,
+                    detail={
+                        "new_authority": strongest_new,
+                        "target_authority": target_authority,
+                        "agent_over_user": agent_over_user,
+                    },
+                )
+        else:
+            # Detect low-authority contradictions against a different trusted principal.
+            for memory in memories:
+                claims = self._answer_field_claims(memory)
+                if not claims:
+                    continue
+                with connect(self.db_path) as conn:
+                    rows = conn.execute(
+                        """
+                        SELECT * FROM memories
+                        WHERE user_id = ? AND id != ? AND capture_id != ?
+                          AND status = 'active'
+                          AND COALESCE(superseded_by, '') = ''
+                        ORDER BY captured_at DESC LIMIT 400
+                        """,
+                        (user_id, memory["id"], saved["capture_id"]),
+                    ).fetchall()
+                    new_authority = self._shared_memory_authority_in_conn(conn, user_id, memory)
+                    for row in rows:
+                        existing = self._memory_from_row(row)
+                        if str(existing.get("author_principal_id") or "") == pid:
+                            continue
+                        existing_claims = self._answer_field_claims(existing)
+                        shared_fields = [
+                            field
+                            for field, value in claims.items()
+                            if field in existing_claims and existing_claims[field] != value
+                        ]
+                        if not shared_fields:
+                            continue
+                        existing_authority = self._shared_memory_authority_in_conn(conn, user_id, existing)
+                        conflicts.append(
+                            {
+                                "new_memory_id": memory["id"],
+                                "target_memory_id": existing["id"],
+                                "fields": shared_fields,
+                                "new_authority": new_authority,
+                                "target_authority": existing_authority,
+                            }
+                        )
+                        if existing_authority > new_authority + self._SHARED_AUTHORITY_MARGIN:
+                            self._quarantine_shared_memories(user_id, saved["capture_id"], memories)
+                            disposition = "quarantined"
+                            self._audit_poisoning_attempt(
+                                user_id,
+                                pid,
+                                reason="lower_authority_conflict",
+                                nonce=clean_nonce,
+                                target_memory_id=str(existing["id"]),
+                                detail={
+                                    "fields": shared_fields,
+                                    "new_authority": new_authority,
+                                    "target_authority": existing_authority,
+                                },
+                            )
+                            break
+                    if disposition == "quarantined":
+                        break
+
+        write = self._append_shared_write(
+            user_id,
+            principal_id=pid,
+            nonce=clean_nonce,
+            payload_json=payload_json,
+            payload_sha256=payload_sha256,
+            signature=str(signature or "").strip().lower(),
+            capture_id=saved["capture_id"],
+            memory_ids=[str(memory.get("id")) for memory in memories if memory.get("id")],
+            disposition=disposition,
+        )
+        return {
+            "write_id": write["id"],
+            "principal_id": pid,
+            "capture_id": saved["capture_id"],
+            "memory_ids": write["memory_ids"],
+            "memories": memories,
+            "disposition": disposition,
+            "conflicts": conflicts,
+            "chain_hash": write["chain_hash"],
+            "created_at": write["created_at"],
+        }
+
+    def verify_shared_memory(
+        self,
+        user_id: str,
+        *,
+        principal_id: str | None = None,
+    ) -> dict[str, Any]:
+        pid_filter = str(principal_id or "").strip()
+        with connect(self.db_path) as conn:
+            all_principal_rows = conn.execute(
+                "SELECT * FROM shared_memory_principals WHERE user_id = ? ORDER BY created_at, id",
+                (user_id,),
+            ).fetchall()
+            principal_rows = [
+                row for row in all_principal_rows if not pid_filter or str(row["id"]) == pid_filter
+            ]
+            shared_memory_rows = conn.execute(
+                "SELECT * FROM memories WHERE user_id = ? AND COALESCE(author_principal_id, '') != '' ORDER BY id",
+                (user_id,),
+            ).fetchall()
+            all_write_rows = conn.execute(
+                """
+                SELECT rowid AS write_rowid, *
+                FROM shared_memory_writes
+                WHERE user_id = ?
+                ORDER BY write_rowid
+                """,
+                (user_id,),
+            ).fetchall()
+            audit_rows = conn.execute(
+                """
+                SELECT object_id, metadata_json
+                FROM memory_events
+                WHERE user_id = ? AND object_type = 'shared_write'
+                  AND event_type = 'shared_memory_written'
+                ORDER BY created_at, rowid
+                """,
+                (user_id,),
+            ).fetchall()
+            signature_rows = {
+                str(row["memory_id"]): row
+                for row in conn.execute(
+                    "SELECT * FROM authorship_signatures WHERE user_id = ?",
+                    (user_id,),
+                ).fetchall()
+            }
+
+            errors: list[str] = []
+            principal_reports: list[dict[str, Any]] = []
+            known_principals = {str(row["id"]): row for row in all_principal_rows}
+            memory_by_id = {
+                str(row["id"]): self._memory_from_row(row) for row in shared_memory_rows
+            }
+            audit_by_principal: dict[str, dict[str, dict[str, Any]]] = {}
+            for audit_row in audit_rows:
+                metadata = self._json_or_empty(audit_row["metadata_json"])
+                audit_pid = str(metadata.get("principal_id") or "")
+                audit_by_principal.setdefault(audit_pid, {})[str(audit_row["object_id"])] = metadata
+                if audit_pid not in known_principals and (not pid_filter or audit_pid == pid_filter):
+                    errors.append(
+                        f"shared-write audit {audit_row['object_id']} references unknown principal {audit_pid}"
+                    )
+            for write_row in all_write_rows:
+                write_pid = str(write_row["principal_id"] or "")
+                if write_pid not in known_principals and (not pid_filter or write_pid == pid_filter):
+                    errors.append(
+                        f"shared-write {write_row['id']} references unknown principal {write_pid}"
+                    )
+            if pid_filter and not principal_rows:
+                errors.append(f"principal {pid_filter} is unknown")
+
+            for principal_row in principal_rows:
+                pid = str(principal_row["id"])
+                secret = derive_shared_principal_secret(
+                    self.vault.authorship_key(),
+                    user_id=user_id,
+                    principal_id=pid,
+                    key_version=int(principal_row["key_version"] or 1),
+                )
+                write_rows = [row for row in all_write_rows if str(row["principal_id"]) == pid]
+                principal_audits = audit_by_principal.get(pid, {})
+                previous_hash = self._shared_chain_genesis(user_id, pid)
+                principal_errors: list[str] = []
+                write_ids = {str(row["id"]) for row in write_rows}
+                audit_ids = set(principal_audits)
+                for missing_id in sorted(write_ids - audit_ids):
+                    principal_errors.append(f"write {missing_id} is missing its audit receipt")
+                for missing_id in sorted(audit_ids - write_ids):
+                    principal_errors.append(f"audit receipt {missing_id} has no shared-write row")
+                linked_memory_ids: set[str] = set()
+                for row in write_rows:
+                    payload_json = str(row["payload_json"] or "")
+                    payload_sha = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+                    memory_ids = self._json_list(row["memory_ids_json"])
+                    write = {
+                        "id": row["id"],
+                        "user_id": row["user_id"],
+                        "principal_id": row["principal_id"],
+                        "nonce": row["nonce"],
+                        "payload_json": payload_json,
+                        "payload_sha256": row["payload_sha256"],
+                        "signature": row["signature"],
+                        "capture_id": row["capture_id"],
+                        "memory_ids": memory_ids,
+                        "disposition": row["disposition"],
+                        "created_at": row["created_at"],
+                    }
+                    fingerprint = self._shared_write_fingerprint(write)
+                    chain_hash = hashlib.sha256(f"{previous_hash}:{fingerprint}".encode("utf-8")).hexdigest()
+                    if payload_sha != str(row["payload_sha256"]):
+                        principal_errors.append(f"write {row['id']} payload hash mismatch")
+                    if not verify_shared_write_canonical(secret, row["signature"], payload_json):
+                        principal_errors.append(f"write {row['id']} signature mismatch")
+                    if str(row["previous_hash"]) != previous_hash:
+                        principal_errors.append(f"write {row['id']} chain previous hash mismatch")
+                    if str(row["fingerprint_sha256"]) != fingerprint:
+                        principal_errors.append(f"write {row['id']} chain fingerprint mismatch")
+                    if str(row["chain_hash"]) != chain_hash:
+                        principal_errors.append(f"write {row['id']} chain hash mismatch")
+                    audit = principal_audits.get(str(row["id"]))
+                    if audit is not None:
+                        if str(audit.get("chain_hash") or "") != str(row["chain_hash"]):
+                            principal_errors.append(f"write {row['id']} audit chain hash mismatch")
+                        if str(audit.get("capture_id") or "") != str(row["capture_id"] or ""):
+                            principal_errors.append(f"write {row['id']} audit capture mismatch")
+                        audit_memory_ids = sorted(
+                            str(value) for value in (audit.get("memory_ids") or [])
+                        )
+                        if audit_memory_ids != sorted(memory_ids):
+                            principal_errors.append(f"write {row['id']} audit memory linkage mismatch")
+                        if str(audit.get("disposition") or "") != str(row["disposition"] or ""):
+                            principal_errors.append(f"write {row['id']} audit disposition mismatch")
+                    linked_memory_ids.update(memory_ids)
+                    previous_hash = str(row["chain_hash"])
+                for memory_id, memory in memory_by_id.items():
+                    if (
+                        str(memory.get("author_principal_id") or "") == pid
+                        and memory_id not in linked_memory_ids
+                    ):
+                        principal_errors.append(
+                            f"authorship memory {memory_id} is not linked to a signed write"
+                        )
+                principal_reports.append(
+                    {
+                        "principal_id": pid,
+                        "write_count": len(write_rows),
+                        "chain_head": previous_hash,
+                        "chain_verified": not principal_errors,
+                        "errors": principal_errors,
+                    }
+                )
+                errors.extend(f"principal {pid}: {error}" for error in principal_errors)
+
+            authorship_key = self.vault.authorship_key()
+            for memory_row in shared_memory_rows:
+                memory = self._memory_from_row(memory_row)
+                pid = str(memory.get("author_principal_id") or "")
+                if pid_filter and pid != pid_filter:
+                    continue
+                if pid not in known_principals:
+                    errors.append(
+                        f"authorship memory {memory['id']} references unknown principal {pid}"
+                    )
+                    continue
+                signature_row = signature_rows.get(str(memory["id"]))
+                if signature_row is None:
+                    errors.append(f"authorship memory {memory['id']} is unsigned")
+                    continue
+                signed_class = normalize_author_class(signature_row["author_class"])
+                signed_principal = str(signature_row["principal_id"] or "")
+                valid = (
+                    int(signature_row["signature_version"] or 1) >= 2
+                    and signed_class == normalize_author_class(memory.get("author_class"))
+                    and signed_principal == pid
+                    and verify_authorship(
+                        authorship_key,
+                        signature_row["signature"],
+                        memory_id=memory["id"],
+                        author_class=signed_class,
+                        principal_id=signed_principal,
+                    )
+                )
+                if not valid:
+                    errors.append(f"authorship memory {memory['id']} signature mismatch")
+
+        return {
+            "verified": not errors,
+            "principal_count": len(principal_rows),
+            "write_count": sum(report["write_count"] for report in principal_reports),
+            "memory_count": sum(
+                1
+                for row in shared_memory_rows
+                if not pid_filter or str(row["author_principal_id"] or "") == pid_filter
+            ),
+            "principals": principal_reports,
+            "errors": errors,
+            "generated_at": now_iso(),
+            "caveats": [
+                "Per-principal chains prove signed write history and principal attribution; they do not prove a novel semantic claim is true.",
+                "Novel low-trust claims remain review-gated until a human approves them or principal trust is explicitly raised.",
+            ],
+        }
+
+
+    # ------------------------------------------------------------------
     # Phase 6: Anticipatory context — contradiction interrupts, prefetch, annoyance budget
     # ------------------------------------------------------------------
 
@@ -22126,17 +23230,14 @@ class CortexStore:
         updated = 0
         scanned = 0
         with connect(self.db_path) as conn:
-            rows = conn.execute(
-                "SELECT id, author_class, source_url, occurrences, superseded_by, trust_score FROM memories WHERE user_id = ?",
-                (user_id,),
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM memories WHERE user_id = ?", (user_id,)).fetchall()
             for row in rows:
                 scanned += 1
-                score = compute_trust_score(
-                    author_class=row["author_class"],
-                    has_citation=bool(str(row["source_url"] or "").strip()),
-                    occurrences=_memory_occurrences(row["occurrences"]),
-                    superseded=bool(str(row["superseded_by"] or "").strip()),
+                memory = self._memory_from_row(row)
+                score = self._derived_memory_trust_in_conn(
+                    conn,
+                    user_id,
+                    memory,
                 )
                 if abs(float(row["trust_score"] or 0.0) - score) > 1e-9:
                     conn.execute(
@@ -22635,9 +23736,14 @@ class CortexStore:
         granular_source_url: bool = False,
         source_account: dict[str, Any] | None = None,
         external_id: str | None = None,
+        author_principal: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         base_memory_id = str(record["id"])
         memory_id = base_memory_id
+        principal = author_principal if isinstance(author_principal, dict) else None
+        author_principal_id = str((principal or {}).get("id") or "").strip()[:120]
+        if author_principal_id:
+            memory_id = stable_id("mem_", f"{user_id}:{author_principal_id}:{base_memory_id}")
         if source_account and external_id:
             memory_id = stable_id("mem_", f"{user_id}:{capture_id}:{base_memory_id}")
         kind = record.get("kind", "observation")
@@ -22666,18 +23772,29 @@ class CortexStore:
             source_account=source_account,
             external_id=external_id,
         )
+        if author_principal_id:
+            provenance = {
+                **provenance,
+                "author_principal_id": author_principal_id,
+                "author_principal_label": str((principal or {}).get("label") or "")[:120],
+                "author_principal_kind": normalize_author_class((principal or {}).get("kind")),
+            }
         occurred_at = record.get("occurred_at")
         valid_from = _normalize_validity_bound(record.get("valid_from"), end_of_day=False)
         valid_to = _normalize_validity_bound(record.get("valid_to"), end_of_day=True)
         superseded_by = str(record.get("superseded_by") or "").strip()[:80] or None
         # Phase 0 authorship: classify from durable fields only (source label, self-citation
         # URL, personal layer, connector account) so a vault rebuild reproduces the same answer.
-        author_class = classify_author(
-            source=source,
-            source_url=memory_source_url,
-            layer=layer,
-            provenance=provenance,
-            source_account_id=(source_account or {}).get("id"),
+        author_class = (
+            normalize_author_class((principal or {}).get("kind"))
+            if author_principal_id
+            else classify_author(
+                source=source,
+                source_url=memory_source_url,
+                layer=layer,
+                provenance=provenance,
+                source_account_id=(source_account or {}).get("id"),
+            )
         )
         if author_class == "agent":
             # Phase 3 echo suppression (the anti-slop core): an agent restating a fact the
@@ -22716,6 +23833,7 @@ class CortexStore:
             layer,
             record.get("content", ""),
             same_capture_only=bool(source_account and external_id),
+            author_principal_id=author_principal_id or None,
         )
         if duplicate:
             if source_account and external_id:
@@ -22762,18 +23880,30 @@ class CortexStore:
                 occurrences += 1
         # Phase 3 trust: deterministic function of durable fields (authorship, citation,
         # corroboration, supersession) so write path, rescore job, and rebuild converge.
-        trust_score = compute_trust_score(
-            author_class=author_class,
-            has_citation=bool(str(memory_source_url or "").strip()),
-            occurrences=occurrences,
-            superseded=bool(superseded_by),
+        trust_score = (
+            normalize_trust_score((principal or {}).get("trust_score"), author_class)
+            if author_principal_id
+            else compute_trust_score(
+                author_class=author_class,
+                has_citation=bool(str(memory_source_url or "").strip()),
+                occurrences=occurrences,
+                superseded=bool(superseded_by),
+            )
         )
-        self._record_authorship_signature(conn, user_id, memory_id, author_class)
+        if superseded_by and author_principal_id:
+            trust_score = round(trust_score * 0.5, 4)
+        self._record_authorship_signature(
+            conn,
+            user_id,
+            memory_id,
+            author_class,
+            principal_id=author_principal_id,
+        )
         conn.execute(
             """
             INSERT OR REPLACE INTO memories
-            (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, superseded_at, occurrences, captured_at, recorded_at, updated_at, raw_excerpt, author_class, trust_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, capture_id, user_id, kind, layer, content, summary, source, source_url, confidence, importance, status, sector, source_type, provenance_json, topics_json, entity_ids_json, occurred_at, valid_from, valid_to, superseded_by, superseded_at, occurrences, captured_at, recorded_at, updated_at, raw_excerpt, author_class, author_principal_id, trust_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 memory_id,
@@ -22803,6 +23933,7 @@ class CortexStore:
                 captured_at,
                 raw_excerpt,
                 author_class,
+                author_principal_id,
                 trust_score,
             ),
         )
@@ -22864,6 +23995,7 @@ class CortexStore:
             "updated_at": captured_at,
             "raw_excerpt": raw_excerpt,
             "author_class": author_class,
+            "author_principal_id": author_principal_id,
             # Derived ranking signal, recomputable from author_class (+ Phase 3 adjustments);
             # included on the payload for API consumers but never treated as user-editable.
             "trust_score": trust_score,
@@ -22937,11 +24069,11 @@ class CortexStore:
         callers treat it exactly like a duplicate hit."""
         memory = self._memory_from_row(original)
         occurrences = _memory_occurrences(memory.get("occurrences")) + 1
-        trust_score = compute_trust_score(
-            author_class=memory.get("author_class"),
-            has_citation=bool(str(memory.get("source_url") or "").strip()),
+        trust_score = self._derived_memory_trust_in_conn(
+            conn,
+            user_id,
+            memory,
             occurrences=occurrences,
-            superseded=bool(str(memory.get("superseded_by") or "").strip()),
         )
         conn.execute(
             "UPDATE memories SET occurrences = ?, trust_score = ?, updated_at = ? WHERE user_id = ? AND id = ?",
@@ -22960,17 +24092,42 @@ class CortexStore:
         memory["updated_at"] = captured_at
         return memory
 
-    def _record_authorship_signature(self, conn, user_id: str, memory_id: str, author_class: str) -> None:
+    def _record_authorship_signature(
+        self,
+        conn,
+        user_id: str,
+        memory_id: str,
+        author_class: str,
+        *,
+        principal_id: str = "",
+    ) -> None:
         """Write/refresh the Phase 3 authorship HMAC for a memory. Best-effort: a keyring
         failure must never block a save — an unsigned record simply verifies as 'unsigned'
         (not tampered) during reconcile."""
         try:
-            signature = sign_authorship(self.vault.authorship_key(), memory_id=memory_id, author_class=author_class)
+            signature = sign_authorship(
+                self.vault.authorship_key(),
+                memory_id=memory_id,
+                author_class=author_class,
+                principal_id=principal_id,
+            )
         except Exception:
             return
         conn.execute(
-            "INSERT OR REPLACE INTO authorship_signatures (memory_id, user_id, author_class, signature, updated_at) VALUES (?, ?, ?, ?, ?)",
-            (memory_id, user_id, normalize_author_class(author_class), signature, now_iso()),
+            """
+            INSERT OR REPLACE INTO authorship_signatures
+            (memory_id, user_id, author_class, principal_id, signature_version, signature, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                memory_id,
+                user_id,
+                normalize_author_class(author_class),
+                str(principal_id or "").strip(),
+                2 if str(principal_id or "").strip() else 1,
+                signature,
+                now_iso(),
+            ),
         )
 
     def _bump_duplicate_memory_occurrences(
@@ -22992,11 +24149,11 @@ class CortexStore:
         occurrences = _memory_occurrences(memory.get("occurrences")) + 1
         # Phase 3: corroboration feeds derived trust, so rescore on the bump (never lowers —
         # compute_trust_score's corroboration term is monotone non-decreasing).
-        trust_score = compute_trust_score(
-            author_class=memory.get("author_class"),
-            has_citation=bool(str(memory.get("source_url") or "").strip()),
+        trust_score = self._derived_memory_trust_in_conn(
+            conn,
+            user_id,
+            memory,
             occurrences=occurrences,
-            superseded=bool(str(memory.get("superseded_by") or "").strip()),
         )
         conn.execute(
             "UPDATE memories SET occurrences = ?, trust_score = ?, captured_at = ?, updated_at = ? WHERE user_id = ? AND id = ?",
@@ -26093,6 +27250,9 @@ class CortexStore:
             "superseded_at": row["superseded_at"] if "superseded_at" in keys else None,
             "occurrences": _memory_occurrences(row["occurrences"]) if "occurrences" in keys else 1,
             "author_class": normalize_author_class(row["author_class"] if "author_class" in keys else "unknown"),
+            "author_principal_id": str(row["author_principal_id"] or "")
+            if "author_principal_id" in keys
+            else "",
             "trust_score": normalize_trust_score(
                 row["trust_score"] if "trust_score" in keys else None,
                 row["author_class"] if "author_class" in keys else "unknown",
@@ -26114,6 +27274,7 @@ class CortexStore:
         content: str,
         *,
         same_capture_only: bool = False,
+        author_principal_id: str | None = None,
     ):
         key = _memory_duplicate_key(content)
         if len(key) < 48:
@@ -26129,6 +27290,12 @@ class CortexStore:
               )
             """
         )
+        principal_scope = (
+            "AND COALESCE(m.author_principal_id, '') = ?" if author_principal_id is not None else ""
+        )
+        query_params: list[Any] = [user_id, kind, layer, memory_id, capture_id]
+        if author_principal_id is not None:
+            query_params.append(author_principal_id)
         rows = conn.execute(
             f"""
             SELECT m.*
@@ -26140,10 +27307,11 @@ class CortexStore:
               AND m.layer = ?
               AND m.id != ?
               AND {capture_scope}
+              {principal_scope}
             ORDER BY m.captured_at DESC
             LIMIT 250
             """,
-            (user_id, kind, layer, memory_id, capture_id),
+            tuple(query_params),
         ).fetchall()
         for row in rows:
             if _memory_duplicate_key(row["content"]) == key:

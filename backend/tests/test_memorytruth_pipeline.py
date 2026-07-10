@@ -123,6 +123,10 @@ class MemoryTruthLivePipelineTests(unittest.TestCase):
         http_scores = {name: payload["score"] for name, payload in http_report["categories"].items()}
         local_scores = {name: payload["score"] for name, payload in local_report["categories"].items()}
         self.assertEqual(http_scores, local_scores)
+        self.assertEqual(
+            http_report["categories"]["shared_memory"]["metrics"],
+            local_report["categories"]["shared_memory"]["metrics"],
+        )
 
     def test_two_consecutive_live_runs_are_cohort_isolated_and_retry_safe(self) -> None:
         """A real token may already have history and may exhaust its initial burst.
@@ -140,6 +144,19 @@ class MemoryTruthLivePipelineTests(unittest.TestCase):
                 independent = report["categories"]["metacognition"]["metrics"]["independent"]
                 reported = report["categories"]["metacognition"]["metrics"]["reported"]
                 self.assertEqual(reported, independent)
+                shared = report["categories"]["shared_memory"]
+                self.assertEqual(shared["score"], 1.0)
+                self.assertEqual(shared["metrics"]["attacks"]["attack_success_rate"], 0.0)
+                self.assertEqual(shared["metrics"]["detection"]["detection_rate"], 1.0)
+                self.assertEqual(
+                    shared["metrics"]["legitimate_writes"]["false_positive_rate"],
+                    0.0,
+                )
+                self.assertEqual(shared["metrics"]["verification"]["rate"], 1.0)
+                self.assertEqual(
+                    shared["metrics"]["trusted_conflicts"]["survival_rate"],
+                    1.0,
+                )
 
 
 if __name__ == "__main__":

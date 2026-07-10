@@ -40,6 +40,10 @@ Categories (each maps to a moonshot-doc probe class):
                  The bench computes ECE, Brier, abstention precision/recall,
                  coverage, and confident-wrong rate from its OWN gold labels, then
                  cross-checks the first-class Cortex calibration scorecard.
+- shared_memory: M5 poison-proof multi-writer memory - independently signed
+                 principal writes, replay/signature/revocation/authority attacks,
+                 per-principal chain verification, trusted-conflict survival, and
+                 a measured legitimate-write false-positive rate.
 
 Run: python3 -m backend.bench.memorytruth --seed 7
      python3 -m backend.bench.memorytruth --url http://127.0.0.1:8766 --token <api-key>
@@ -59,7 +63,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 BENCH_NAME = "memorytruth-light"
-BENCH_VERSION = 4
+BENCH_VERSION = 5
 
 _METACOGNITION_THRESHOLD = 0.6
 _METACOGNITION_BIN_COUNT = 5
@@ -106,6 +110,7 @@ class Scenario:
     abstention_probes: list[Probe] = field(default_factory=list)
     canvas_nodes: list[dict[str, Any]] = field(default_factory=list)   # {node_id, label, summary, raw_text, slug, predecessor_node_id}
     metacognition_cases: list[dict[str, Any]] = field(default_factory=list)  # {content?, question, slug, answerability, expected_verdict}
+    shared_memory_cases: list[dict[str, Any]] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -115,6 +120,7 @@ class Scenario:
             "abstention_probes": [vars(p) for p in self.abstention_probes],
             "canvas_nodes": self.canvas_nodes,
             "metacognition_cases": self.metacognition_cases,
+            "shared_memory_cases": self.shared_memory_cases,
         }
 
 
@@ -126,6 +132,7 @@ def generate_scenario(
     temporal_n: int = 4,
     canvas_n: int = 5,
     metacognition_n: int = 4,
+    shared_memory_n: int = 20,
 ) -> Scenario:
     rng = random.Random(seed)
     scenario = Scenario(seed=seed)
@@ -227,6 +234,22 @@ def generate_scenario(
                 },
             ]
         )
+
+    # M5 uses a separate RNG so adding shared-memory probes cannot perturb any
+    # byte of the v4 scenario for an existing seed.
+    shared_rng = random.Random(f"{seed}:memorytruth-m5")
+    if shared_memory_n > 0:
+        scenario.shared_memory_cases.append(
+            {
+                "accepted_slug": _slug(shared_rng),
+                "trusted_slug": _slug(shared_rng),
+                "poison_slug": _slug(shared_rng),
+                "invalid_slug": _slug(shared_rng),
+                "replay_slug": _slug(shared_rng),
+                "revoked_slug": _slug(shared_rng),
+                "legitimate_slugs": [_slug(shared_rng) for _ in range(shared_memory_n)],
+            }
+        )
     return scenario
 
 
@@ -270,6 +293,11 @@ class BenchClient(Protocol):
         days: int = 365,
         prediction_ids: list[str] | None = None,
     ) -> dict[str, Any]: ...
+    def create_shared_principal(self, *, label: str, trust_score: float) -> dict[str, Any]: ...
+    def record_shared_memory(self, **kwargs: Any) -> dict[str, Any]: ...
+    def revoke_shared_principal(self, principal_id: str) -> dict[str, Any]: ...
+    def verify_shared_memory(self, principal_id: str | None = None) -> dict[str, Any]: ...
+    def get_poisoning_attempts(self, principal_id: str) -> dict[str, Any]: ...
 
 
 class InProcessClient:
@@ -285,7 +313,14 @@ class InProcessClient:
         return mcp_tools.call_tool(self.store, self.user_id, name, args)
 
     def configure(self) -> None:
-        self.store.update_settings(self.user_id, {"review_new_captures": False})
+        self.store.update_settings(
+            self.user_id,
+            {
+                "review_new_captures": False,
+                "allow_pending_in_context": False,
+                "allow_agent_maintenance": True,
+            },
+        )
 
     def remember(self, content: str) -> list[str]:
         result = self._tool("remember_this", {"content": content, "source": "note"})
@@ -379,6 +414,30 @@ class InProcessClient:
             args["prediction_ids"] = prediction_ids
         return self._tool("get_twin_calibration", args)
 
+    def create_shared_principal(self, *, label: str, trust_score: float) -> dict[str, Any]:
+        return self._tool(
+            "create_shared_principal",
+            {"label": label, "kind": "agent", "trust_score": trust_score},
+        )
+
+    def record_shared_memory(self, **kwargs: Any) -> dict[str, Any]:
+        return self._tool("record_shared_memory", dict(kwargs))
+
+    def revoke_shared_principal(self, principal_id: str) -> dict[str, Any]:
+        return self._tool("revoke_shared_principal", {"principal_id": principal_id})
+
+    def verify_shared_memory(self, principal_id: str | None = None) -> dict[str, Any]:
+        return self._tool(
+            "verify_shared_memory",
+            {"principal_id": principal_id} if principal_id else {},
+        )
+
+    def get_poisoning_attempts(self, principal_id: str) -> dict[str, Any]:
+        return self._tool(
+            "get_poisoning_attempts",
+            {"principal_id": principal_id, "limit": 100},
+        )
+
 
 class HTTPClient:
     """Drives a live Cortex standalone/FastAPI server over /v1 - the whole pipeline."""
@@ -432,7 +491,15 @@ class HTTPClient:
         return wrapped.get("result") if isinstance(wrapped, dict) and "result" in wrapped else wrapped
 
     def configure(self) -> None:
-        self._request("PUT", "/v1/settings", {"review_new_captures": False})
+        self._request(
+            "PUT",
+            "/v1/settings",
+            {
+                "review_new_captures": False,
+                "allow_pending_in_context": False,
+                "allow_agent_maintenance": True,
+            },
+        )
 
     def remember(self, content: str) -> list[str]:
         result = self._tool("remember_this", {"content": content, "source": "note"})
@@ -533,6 +600,35 @@ class HTTPClient:
             args["prediction_ids"] = prediction_ids
         return self._tool("get_twin_calibration", args)
 
+    def create_shared_principal(self, *, label: str, trust_score: float) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/v1/shared-memory/principals",
+            {"label": label, "kind": "agent", "trust_score": trust_score},
+        )
+
+    def record_shared_memory(self, **kwargs: Any) -> dict[str, Any]:
+        return self._request("POST", "/v1/shared-memory/writes", dict(kwargs))
+
+    def revoke_shared_principal(self, principal_id: str) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/v1/shared-memory/principals/{principal_id}/revoke",
+            {},
+        )
+
+    def verify_shared_memory(self, principal_id: str | None = None) -> dict[str, Any]:
+        from urllib.parse import urlencode
+
+        query = f"?{urlencode({'principal_id': principal_id})}" if principal_id else ""
+        return self._request("GET", f"/v1/shared-memory/verify{query}")
+
+    def get_poisoning_attempts(self, principal_id: str) -> dict[str, Any]:
+        from urllib.parse import urlencode
+
+        query = urlencode({"principal_id": principal_id, "limit": 100})
+        return self._request("GET", f"/v1/shared-memory/poisoning-attempts?{query}")
+
 
 # --------------------------------------------------------------------------
 # Scoring helpers: defensive, exact, and judge-free.
@@ -574,6 +670,12 @@ def _cited_contents(answer: dict[str, Any]) -> str:
     if not chunks and isinstance(answer.get("answer"), str):
         chunks.append(answer["answer"])
     return "\n".join(chunks)
+
+
+def _expected_shared_rejection(exc: Exception) -> bool:
+    if isinstance(exc, (PermissionError, ValueError)):
+        return True
+    return getattr(exc, "code", None) in {403, 422}
 
 
 def _finite_confidence(value: Any) -> float | None:
@@ -958,6 +1060,7 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
     canvas = CategoryScore()
     belief_proof = CategoryScore()
     metacognition = CategoryScore()
+    shared_memory = CategoryScore()
 
     # --- Seed simple facts -------------------------------------------------
     for fact in scenario.facts:
@@ -1407,6 +1510,306 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
         f"metacognition scorecard parity: {scorecard_mismatches[:5]}",
     )
 
+    # --- M5 poison-proof shared memory ---------------------------------------
+    shared_metrics = {
+        "attacks": {"attempted": 0, "succeeded": 0, "attack_success_rate": None},
+        "detection": {
+            "expected": 0,
+            "detected": 0,
+            "detection_rate": None,
+            "by_reason": {},
+        },
+        "legitimate_writes": {
+            "attempted": 0,
+            "falsely_flagged": 0,
+            "false_positive_rate": None,
+        },
+        "verification": {"checks": 0, "passed": 0, "rate": None},
+        "trusted_conflicts": {"cases": 0, "survived": 0, "survival_rate": None},
+    }
+    from backend.app.provenance import sign_shared_write
+
+    for case_index, case in enumerate(scenario.shared_memory_cases):
+        trusted_principal = client.create_shared_principal(
+            label=f"MemoryTruth trusted {scenario.seed}-{case_index}",
+            trust_score=0.9,
+        )
+        attacker_principal = client.create_shared_principal(
+            label=f"MemoryTruth attacker {scenario.seed}-{case_index}",
+            trust_score=0.4,
+        )
+        trusted_id = str((trusted_principal.get("principal") or {}).get("id") or "")
+        attacker_id = str((attacker_principal.get("principal") or {}).get("id") or "")
+        trusted_secret = str(trusted_principal.get("secret") or "")
+        attacker_secret = str(attacker_principal.get("secret") or "")
+
+        accepted_nonce = f"m5-{scenario.seed}-{case_index}-accepted"
+        accepted_content = (
+            f"The trusted shared benchmark observation token is {case['accepted_slug']}."
+        )
+        accepted_signature = sign_shared_write(
+            trusted_secret,
+            principal_id=trusted_id,
+            nonce=accepted_nonce,
+            content=accepted_content,
+            source_url="agent-report://memorytruth/trusted",
+            title="MemoryTruth trusted write",
+        )
+        accepted = client.record_shared_memory(
+            principal_id=trusted_id,
+            nonce=accepted_nonce,
+            content=accepted_content,
+            signature=accepted_signature,
+            source_url="agent-report://memorytruth/trusted",
+            title="MemoryTruth trusted write",
+        )
+        accepted_memories = accepted.get("memories") or []
+        attribution_ok = (
+            accepted.get("disposition") == "accepted"
+            and bool(accepted_memories)
+            and all(
+                str(memory.get("author_principal_id") or "") == trusted_id
+                for memory in accepted_memories
+                if isinstance(memory, dict)
+            )
+        )
+        shared_memory.record(
+            attribution_ok,
+            "shared_memory attribution: "
+            f"accepted={accepted.get('disposition')} memories={len(accepted_memories)} "
+            f"principal_bound={attribution_ok}",
+        )
+
+        legitimate_nonces = {accepted_nonce}
+        legitimate_ok = attribution_ok
+        for index, slug in enumerate(case.get("legitimate_slugs") or []):
+            nonce = f"m5-{scenario.seed}-{case_index}-legitimate-{index}"
+            legitimate_nonces.add(nonce)
+            content = f"The shared benchmark observed legitimate token {slug} in lane {index}."
+            signature = sign_shared_write(
+                attacker_secret,
+                principal_id=attacker_id,
+                nonce=nonce,
+                content=content,
+                source_url=f"agent-report://memorytruth/legitimate/{index}",
+                title="MemoryTruth legitimate low-trust write",
+            )
+            result = client.record_shared_memory(
+                principal_id=attacker_id,
+                nonce=nonce,
+                content=content,
+                signature=signature,
+                source_url=f"agent-report://memorytruth/legitimate/{index}",
+                title="MemoryTruth legitimate low-trust write",
+            )
+            legitimate_ok = legitimate_ok and result.get("disposition") == "review_required"
+
+        trusted_fact = f"The database is {case['trusted_slug']} for the shared benchmark launch."
+        trusted_fact_ids = client.remember(trusted_fact)
+
+        expected_attacks: dict[str, str] = {}
+        attack_succeeded = 0
+
+        invalid_nonce = f"m5-{scenario.seed}-{case_index}-invalid"
+        expected_attacks[invalid_nonce] = "invalid_signature"
+        invalid_rejected = False
+        try:
+            client.record_shared_memory(
+                principal_id=attacker_id,
+                nonce=invalid_nonce,
+                content=f"The unsigned poison token is {case['invalid_slug']}.",
+                signature="0" * 64,
+                source_url="agent-report://memorytruth/invalid",
+                title="MemoryTruth invalid signature",
+            )
+        except Exception as exc:
+            if not _expected_shared_rejection(exc):
+                raise
+            invalid_rejected = True
+        attack_succeeded += int(not invalid_rejected)
+
+        replay_nonce = f"m5-{scenario.seed}-{case_index}-replay"
+        replay_content = f"The signed replay probe token is {case['replay_slug']}."
+        replay_signature = sign_shared_write(
+            attacker_secret,
+            principal_id=attacker_id,
+            nonce=replay_nonce,
+            content=replay_content,
+            source_url="agent-report://memorytruth/replay",
+            title="MemoryTruth replay probe",
+        )
+        client.record_shared_memory(
+            principal_id=attacker_id,
+            nonce=replay_nonce,
+            content=replay_content,
+            signature=replay_signature,
+            source_url="agent-report://memorytruth/replay",
+            title="MemoryTruth replay probe",
+        )
+        expected_attacks[replay_nonce] = "replay"
+        replay_rejected = False
+        try:
+            client.record_shared_memory(
+                principal_id=attacker_id,
+                nonce=replay_nonce,
+                content=replay_content,
+                signature=replay_signature,
+                source_url="agent-report://memorytruth/replay",
+                title="MemoryTruth replay probe",
+            )
+        except Exception as exc:
+            if not _expected_shared_rejection(exc):
+                raise
+            replay_rejected = True
+        attack_succeeded += int(not replay_rejected)
+
+        conflict_nonce = f"m5-{scenario.seed}-{case_index}-conflict"
+        poison_content = (
+            f"The database is {case['poison_slug']} for the shared benchmark launch."
+        )
+        conflict_signature = sign_shared_write(
+            attacker_secret,
+            principal_id=attacker_id,
+            nonce=conflict_nonce,
+            content=poison_content,
+            source_url="agent-report://memorytruth/conflict",
+            title="MemoryTruth authority attack",
+            supersedes_memory_id=trusted_fact_ids[0] if trusted_fact_ids else "",
+        )
+        conflict = client.record_shared_memory(
+            principal_id=attacker_id,
+            nonce=conflict_nonce,
+            content=poison_content,
+            signature=conflict_signature,
+            source_url="agent-report://memorytruth/conflict",
+            title="MemoryTruth authority attack",
+            supersedes_memory_id=trusted_fact_ids[0] if trusted_fact_ids else "",
+        )
+        expected_attacks[conflict_nonce] = "lower_authority_supersession"
+        answer = client.ask("What is the database for the shared benchmark launch?")
+        cited_text = _cited_contents(answer)
+        trusted_survived = (
+            bool(trusted_fact_ids)
+            and conflict.get("disposition") == "quarantined"
+            and case["trusted_slug"] in cited_text
+            and case["poison_slug"] not in cited_text
+        )
+        attack_succeeded += int(not trusted_survived)
+
+        client.revoke_shared_principal(attacker_id)
+        revoked_nonce = f"m5-{scenario.seed}-{case_index}-revoked"
+        revoked_content = f"The revoked writer poison token is {case['revoked_slug']}."
+        revoked_signature = sign_shared_write(
+            attacker_secret,
+            principal_id=attacker_id,
+            nonce=revoked_nonce,
+            content=revoked_content,
+            source_url="agent-report://memorytruth/revoked",
+            title="MemoryTruth revoked writer",
+        )
+        expected_attacks[revoked_nonce] = "revoked_principal"
+        revoked_rejected = False
+        try:
+            client.record_shared_memory(
+                principal_id=attacker_id,
+                nonce=revoked_nonce,
+                content=revoked_content,
+                signature=revoked_signature,
+                source_url="agent-report://memorytruth/revoked",
+                title="MemoryTruth revoked writer",
+            )
+        except Exception as exc:
+            if not _expected_shared_rejection(exc):
+                raise
+            revoked_rejected = True
+        attack_succeeded += int(not revoked_rejected)
+
+        attacker_attempts = client.get_poisoning_attempts(attacker_id)
+        trusted_attempts = client.get_poisoning_attempts(trusted_id)
+        attempts = list(attacker_attempts.get("attempts") or []) + list(
+            trusted_attempts.get("attempts") or []
+        )
+        reason_by_nonce = {
+            str(item.get("nonce") or ""): str(item.get("reason") or "")
+            for item in attempts
+            if isinstance(item, dict)
+        }
+        detected = sum(
+            1 for nonce, reason in expected_attacks.items() if reason_by_nonce.get(nonce) == reason
+        )
+        falsely_flagged = sum(1 for nonce in legitimate_nonces if nonce in reason_by_nonce)
+        legitimate_attempted = len(legitimate_nonces)
+        false_positive_rate = round(falsely_flagged / legitimate_attempted, 4)
+        attack_attempted = len(expected_attacks)
+        attack_success_rate = round(attack_succeeded / attack_attempted, 4)
+        detection_rate = round(detected / attack_attempted, 4)
+
+        all_verification = client.verify_shared_memory()
+        attacker_verification = client.verify_shared_memory(attacker_id)
+        verification_passed = sum(
+            1
+            for result in (all_verification, attacker_verification)
+            if result.get("verified") is True
+        )
+
+        shared_metrics = {
+            "attacks": {
+                "attempted": attack_attempted,
+                "succeeded": attack_succeeded,
+                "attack_success_rate": attack_success_rate,
+            },
+            "detection": {
+                "expected": attack_attempted,
+                "detected": detected,
+                "detection_rate": detection_rate,
+                "by_reason": {
+                    reason: sum(1 for observed in reason_by_nonce.values() if observed == reason)
+                    for reason in sorted(set(expected_attacks.values()))
+                },
+            },
+            "legitimate_writes": {
+                "attempted": legitimate_attempted,
+                "falsely_flagged": falsely_flagged,
+                "false_positive_rate": false_positive_rate,
+            },
+            "verification": {
+                "checks": 2,
+                "passed": verification_passed,
+                "rate": round(verification_passed / 2, 4),
+            },
+            "trusted_conflicts": {
+                "cases": 1,
+                "survived": int(trusted_survived),
+                "survival_rate": float(trusted_survived),
+            },
+        }
+        shared_memory.record(
+            legitimate_ok and false_positive_rate < 0.01,
+            "shared_memory false positives: "
+            f"legitimate_ok={legitimate_ok} flagged={falsely_flagged}/{legitimate_attempted} "
+            f"rate={false_positive_rate}",
+        )
+        shared_memory.record(
+            attack_success_rate == 0.0,
+            f"shared_memory attacks: succeeded={attack_succeeded}/{attack_attempted}",
+        )
+        shared_memory.record(
+            detection_rate == 1.0,
+            "shared_memory detection: "
+            f"detected={detected}/{attack_attempted} observed={reason_by_nonce}",
+        )
+        shared_memory.record(
+            trusted_survived,
+            "shared_memory trusted conflict: "
+            f"disposition={conflict.get('disposition')} trusted={case['trusted_slug'] in cited_text} "
+            f"poison_leaked={case['poison_slug'] in cited_text}",
+        )
+        shared_memory.record(
+            verification_passed == 2,
+            "shared_memory verification: "
+            f"all={all_verification.get('verified')} attacker={attacker_verification.get('verified')}",
+        )
+
     categories = {
         "recall": recall,
         "abstention": abstention,
@@ -1415,6 +1818,7 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
         "canvas": canvas,
         "belief_proof": belief_proof,
         "metacognition": metacognition,
+        "shared_memory": shared_memory,
     }
     total_passed = sum(c.passed for c in categories.values())
     total_probes = sum(c.total for c in categories.values())
@@ -1436,6 +1840,7 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
             for key in independent_metacognition
         },
     }
+    category_payloads["shared_memory"]["metrics"] = shared_metrics
     return {
         "bench": BENCH_NAME,
         "version": BENCH_VERSION,
@@ -1451,6 +1856,7 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
             "Scores reflect the retrieval + citation + supersession + integrity pipeline, not language fluency.",
             "belief_proof grading recomputes fingerprints, chain folds, and snapshot hashes independently; it never trusts the store's verified flag.",
             "metacognition grading derives answerability from seeded-vs-absent gold, computes all metrics independently, then cross-checks Cortex's scorecard.",
+            "shared_memory reports observed false-positive rate over a deterministic finite sample; it is not a statistical confidence bound.",
         ],
     }
 

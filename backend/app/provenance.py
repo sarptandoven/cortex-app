@@ -24,6 +24,10 @@ layers corroboration/citation adjustments on top via a rescore job.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
 from typing import Any
 
 AUTHOR_CLASSES = ("user", "connector", "agent", "unknown")
@@ -172,21 +176,138 @@ def compute_trust_score(
     return min(1.0, max(0.0, round(score, 4)))
 
 
-def sign_authorship(key: bytes, *, memory_id: Any, author_class: Any) -> str:
+def sign_authorship(
+    key: bytes,
+    *,
+    memory_id: Any,
+    author_class: Any,
+    principal_id: Any = None,
+) -> str:
     """HMAC-SHA256 over the identity-bearing authorship fields. Content is NOT
     covered (users may edit their note text freely — two-way editing is a
     feature) and neither is captured_at (the occurrence-bump path legitimately
     refreshes it). What must never silently flip out-of-band is WHO asserted
     a given memory id."""
-    import hashlib
-    import hmac as _hmac
+    fields = [str(memory_id or ""), normalize_author_class(author_class)]
+    normalized_principal = str(principal_id or "").strip()
+    if normalized_principal:
+        fields = ["cortex:authorship:v2", *fields, normalized_principal]
+    message = "\x1f".join(fields).encode("utf-8")
+    return hmac.new(key, message, hashlib.sha256).hexdigest()
 
-    message = "\x1f".join([str(memory_id or ""), normalize_author_class(author_class)]).encode("utf-8")
-    return _hmac.new(key, message, hashlib.sha256).hexdigest()
+
+def verify_authorship(
+    key: bytes,
+    signature: Any,
+    *,
+    memory_id: Any,
+    author_class: Any,
+    principal_id: Any = None,
+) -> bool:
+    expected = sign_authorship(
+        key,
+        memory_id=memory_id,
+        author_class=author_class,
+        principal_id=principal_id,
+    )
+    return hmac.compare_digest(expected, str(signature or ""))
 
 
-def verify_authorship(key: bytes, signature: Any, *, memory_id: Any, author_class: Any) -> bool:
-    import hmac as _hmac
+# ---------------------------------------------------------------------------
+# M5: per-principal shared-memory signing.
+# ---------------------------------------------------------------------------
 
-    expected = sign_authorship(key, memory_id=memory_id, author_class=author_class)
-    return _hmac.compare_digest(expected, str(signature or ""))
+_SHARED_PRINCIPAL_KEY_DOMAIN = b"cortex:shared-principal-key:v1"
+
+
+def derive_shared_principal_secret(
+    root_key: bytes,
+    *,
+    user_id: Any,
+    principal_id: Any,
+    key_version: int = 1,
+) -> str:
+    """Derive a separate HMAC secret for one tenant principal.
+
+    The vault root key never leaves Cortex. The derived secret is returned only
+    when an owner creates the principal; Cortex can re-derive it for verification
+    without storing plaintext credentials in SQLite.
+    """
+    message = "\x1f".join(
+        [str(user_id or ""), str(principal_id or ""), str(max(1, int(key_version)))]
+    ).encode("utf-8")
+    raw = hmac.new(root_key, _SHARED_PRINCIPAL_KEY_DOMAIN + b"\x1f" + message, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _shared_secret_bytes(secret: Any) -> bytes:
+    text = str(secret or "").strip()
+    if not text:
+        raise ValueError("shared principal secret is required")
+    try:
+        return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+    except (ValueError, TypeError) as exc:
+        raise ValueError("shared principal secret is malformed") from exc
+
+
+def canonical_shared_write(
+    *,
+    principal_id: Any,
+    nonce: Any,
+    content: Any,
+    source_url: Any = "",
+    title: Any = "",
+    supersedes_memory_id: Any = "",
+) -> str:
+    body = {
+        "content_sha256": hashlib.sha256(str(content or "").encode("utf-8")).hexdigest(),
+        "nonce": str(nonce or "").strip(),
+        "principal_id": str(principal_id or "").strip(),
+        "source_url": str(source_url or "").strip(),
+        "supersedes_memory_id": str(supersedes_memory_id or "").strip(),
+        "title": str(title or "").strip(),
+    }
+    return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def shared_write_payload_sha256(**kwargs: Any) -> str:
+    return hashlib.sha256(canonical_shared_write(**kwargs).encode("utf-8")).hexdigest()
+
+
+def sign_shared_write(
+    secret: Any,
+    *,
+    principal_id: Any,
+    nonce: Any,
+    content: Any,
+    source_url: Any = "",
+    title: Any = "",
+    supersedes_memory_id: Any = "",
+) -> str:
+    canonical = canonical_shared_write(
+        principal_id=principal_id,
+        nonce=nonce,
+        content=content,
+        source_url=source_url,
+        title=title,
+        supersedes_memory_id=supersedes_memory_id,
+    )
+    return sign_shared_write_canonical(secret, canonical)
+
+
+def sign_shared_write_canonical(secret: Any, canonical_payload: Any) -> str:
+    return hmac.new(
+        _shared_secret_bytes(secret),
+        str(canonical_payload or "").encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def verify_shared_write(secret: Any, signature: Any, **kwargs: Any) -> bool:
+    expected = sign_shared_write(secret, **kwargs)
+    return hmac.compare_digest(expected, str(signature or "").strip().lower())
+
+
+def verify_shared_write_canonical(secret: Any, signature: Any, canonical_payload: Any) -> bool:
+    expected = sign_shared_write_canonical(secret, canonical_payload)
+    return hmac.compare_digest(expected, str(signature or "").strip().lower())

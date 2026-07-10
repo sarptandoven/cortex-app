@@ -17,6 +17,7 @@ os.environ["CORTEX_API_KEY"] = "test-token"
 from fastapi.testclient import TestClient
 
 from backend.app import main as main_module
+from backend.app.provenance import sign_shared_write
 from backend.tests.test_decision_history import CURRENT_DECISION_ID, CURRENT_SOURCE_URL, seed_decision_history_fixture
 
 app = main_module.app
@@ -548,6 +549,123 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertIsNone(payload["expected_calibration_error"])
         self.assertIsNone(payload["abstention"]["precision"])
         self.assertIsNone(payload["confident_wrong"]["rate"])
+
+    def test_shared_memory_signed_write_verify_and_poison_audit_contract(self) -> None:
+        user = "m5-shared-fastapi"
+        headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+        enabled = self.client.put(
+            "/v1/settings",
+            json={"allow_agent_maintenance": True},
+            headers=headers,
+        )
+        self.assertEqual(enabled.status_code, 200)
+
+        created = self.client.post(
+            "/v1/shared-memory/principals",
+            json={"label": "FastAPI agent", "kind": "agent", "trust_score": 0.9},
+            headers=headers,
+        )
+        self.assertEqual(created.status_code, 200)
+        principal = created.json()
+        principal_id = principal["principal"]["id"]
+        listed = self.client.get("/v1/shared-memory/principals", headers=headers)
+        self.assertEqual(listed.status_code, 200)
+        listed_principal = next(
+            item for item in listed.json()["principals"] if item["id"] == principal_id
+        )
+        self.assertNotIn("secret", listed_principal)
+        self.assertNotIn(principal["secret"], listed.text)
+        content = "The signed FastAPI agent says the rollout token is silver-orchid."
+        signature = sign_shared_write(
+            principal["secret"],
+            principal_id=principal_id,
+            nonce="fastapi-signed-1",
+            content=content,
+            source_url="agent-report://fastapi",
+            title="FastAPI shared write",
+        )
+        written = self.client.post(
+            "/v1/shared-memory/writes",
+            json={
+                "principal_id": principal_id,
+                "nonce": "fastapi-signed-1",
+                "content": content,
+                "signature": signature,
+                "source_url": "agent-report://fastapi",
+                "title": "FastAPI shared write",
+            },
+            headers=headers,
+        )
+        self.assertEqual(written.status_code, 200)
+        self.assertEqual(written.json()["disposition"], "accepted")
+
+        verified = self.client.get(
+            "/v1/shared-memory/verify",
+            params={"principal_id": principal_id},
+            headers=headers,
+        )
+        self.assertEqual(verified.status_code, 200)
+        self.assertTrue(verified.json()["verified"])
+
+        rejected = self.client.post(
+            "/v1/shared-memory/writes",
+            json={
+                "principal_id": principal_id,
+                "nonce": "fastapi-invalid-1",
+                "content": "This payload was not signed by the registered principal.",
+                "signature": "0" * 64,
+            },
+            headers=headers,
+        )
+        self.assertEqual(rejected.status_code, 422)
+        attempts = self.client.get(
+            "/v1/shared-memory/poisoning-attempts",
+            params={"principal_id": principal_id},
+            headers=headers,
+        )
+        self.assertEqual(attempts.status_code, 200)
+        self.assertEqual(attempts.json()["count"], 1)
+        self.assertEqual(attempts.json()["attempts"][0]["reason"], "invalid_signature")
+
+    def test_shared_memory_api_scopes_match_mcp_capabilities(self) -> None:
+        user = "m5-shared-scopes"
+        admin_headers = {"Authorization": "Bearer test-token", "X-Cortex-User": user}
+        enabled = self.client.put(
+            "/v1/settings",
+            json={"allow_agent_maintenance": True},
+            headers=admin_headers,
+        )
+        self.assertEqual(enabled.status_code, 200)
+        read_token = "cxa-m5-shared-read-token"
+        write_token = "cxa-m5-shared-write-token"
+        for token, scopes in ((read_token, ["read"]), (write_token, ["write"])):
+            registered = self.client.post(
+                "/v1/integrations/api-token",
+                json={"token": token, "label": f"M5 {scopes[0]}", "scopes": scopes},
+                headers=admin_headers,
+            )
+            self.assertEqual(registered.status_code, 200)
+
+        read_headers = {"Authorization": f"Bearer {read_token}", "X-Cortex-User": user}
+        self.assertEqual(self.client.get("/v1/shared-memory/verify", headers=read_headers).status_code, 200)
+        self.assertEqual(
+            self.client.get("/v1/shared-memory/poisoning-attempts", headers=read_headers).status_code,
+            200,
+        )
+        blocked_write = self.client.post(
+            "/v1/shared-memory/writes",
+            json={"principal_id": "prn_x", "nonce": "n", "content": "x", "signature": "x"},
+            headers=read_headers,
+        )
+        self.assertEqual(blocked_write.status_code, 403)
+
+        write_headers = {"Authorization": f"Bearer {write_token}", "X-Cortex-User": user}
+        blocked_create = self.client.post(
+            "/v1/shared-memory/principals",
+            json={"label": "Unprivileged principal", "kind": "agent"},
+            headers=write_headers,
+        )
+        self.assertEqual(blocked_create.status_code, 403)
 
     def test_twin_grade_keeps_correctness_and_answerability_separate(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "m6-grade-contract"}
