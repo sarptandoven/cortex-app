@@ -68,6 +68,8 @@ class ScenarioDeterminismTests(unittest.TestCase):
                 case["revoked_slug"],
                 *case["legitimate_slugs"],
             ]
+        for case in scenario.consolidation_cases:
+            slugs += [case["stale_slug"], case["current_slug"]]
         self.assertEqual(len(slugs), len(set(slugs)))
 
     def test_v4_metacognition_generation_does_not_change_v3_scenario_bytes(self) -> None:
@@ -86,6 +88,17 @@ class ScenarioDeterminismTests(unittest.TestCase):
         self.assertEqual(without_m5.abstention_probes, with_m5.abstention_probes)
         self.assertEqual(without_m5.canvas_nodes, with_m5.canvas_nodes)
         self.assertEqual(without_m5.metacognition_cases, with_m5.metacognition_cases)
+
+    def test_v7_consolidation_generation_does_not_change_v6_scenario_bytes(self) -> None:
+        without_m4 = generate_scenario(7, consolidation_n=0)
+        with_m4 = generate_scenario(7)
+        self.assertEqual(without_m4.facts, with_m4.facts)
+        self.assertEqual(without_m4.revisions, with_m4.revisions)
+        self.assertEqual(without_m4.abstention_probes, with_m4.abstention_probes)
+        self.assertEqual(without_m4.canvas_nodes, with_m4.canvas_nodes)
+        self.assertEqual(without_m4.metacognition_cases, with_m4.metacognition_cases)
+        self.assertEqual(without_m4.shared_memory_cases, with_m4.shared_memory_cases)
+        self.assertEqual(without_m4.associative_cases, with_m4.associative_cases)
 
     def test_metacognition_gold_is_balanced_and_unknowns_are_never_seeded(self) -> None:
         scenario = generate_scenario(7)
@@ -123,6 +136,7 @@ class ScenarioDeterminismTests(unittest.TestCase):
                 report = run_bench(client, generate_scenario(11), mode="inprocess")
                 report.pop("duration_seconds")
                 report.pop("belief_proof_latency")  # wall-clock, informational only
+                report.pop("consolidation_latency")  # wall-clock, informational only
                 reports.append(report)
         self.assertEqual(reports[0], reports[1])
 
@@ -223,6 +237,21 @@ class HonestyFloorTests(unittest.TestCase):
         self.assertEqual(metrics["verification"]["rate"], 1.0)
         self.assertEqual(metrics["trusted_conflicts"]["survival_rate"], 1.0)
 
+    def _assert_consolidation_floors(self, report: dict) -> None:
+        metrics = report["categories"]["consolidation"]["metrics"]
+        self.assertEqual(metrics["contradictions"]["reduction_rate"], 1.0)
+        self.assertEqual(metrics["cache"]["verification_rate"], 1.0)
+        self.assertEqual(metrics["cache"]["semantic_matches"], metrics["cache"]["requested"])
+        self.assertEqual(metrics["cache"]["unverified_outputs"], 0)
+        self.assertEqual(metrics["cache"]["invalidation_misses"], metrics["cache"]["requested"])
+        self.assertTrue(metrics["hot_pack_gate_passed"])
+        self.assertEqual(
+            metrics["local_adapter_stage"],
+            "deferred_pending_stronger_verifier_and_multi_size_evidence",
+        )
+        self.assertGreater(report["consolidation_latency"]["cold_samples"], 0)
+        self.assertGreater(report["consolidation_latency"]["hot_samples"], 0)
+
     def test_reference_seed_holds_all_floors(self) -> None:
         report = self._run(7)
         for category, payload in report["categories"].items():
@@ -232,6 +261,7 @@ class HonestyFloorTests(unittest.TestCase):
                 msg=f"{category} broke its floor: {payload['failures']}",
             )
         self._assert_shared_memory_floors(report)
+        self._assert_consolidation_floors(report)
         self.assertEqual(report["overall"], 1.0)
 
     def test_second_seed_holds_all_floors(self) -> None:
@@ -243,6 +273,7 @@ class HonestyFloorTests(unittest.TestCase):
                 msg=f"{category} broke its floor: {payload['failures']}",
             )
         self._assert_shared_memory_floors(report)
+        self._assert_consolidation_floors(report)
 
 
 class NonTautologyTests(unittest.TestCase):
@@ -617,6 +648,73 @@ class NonTautologyTests(unittest.TestCase):
         self.assertTrue(
             any(failure.startswith("shared_memory verification:") for failure in shared["failures"]),
             "expected shared-memory chain verification to catch the rewrite",
+        )
+
+    def test_forged_hot_pack_tanks_consolidation(self) -> None:
+        # Sabotage the cache response after the real immutable pack verifies.
+        # Cortex's own cache flag remains true, so only the bench's independent
+        # cold-vs-hot semantic comparison can catch the forged output.
+        with tempfile.TemporaryDirectory() as tmp:
+            store = _fresh_store(Path(tmp))
+            original = store._load_hot_context_pack
+            state = {"forged": 0}
+
+            def forged(user_id, request, **kwargs):
+                result = original(user_id, request, **kwargs)
+                if isinstance(result, dict) and isinstance(result.get("cache"), dict):
+                    result["task"] = "forged task that was never in the sealed pack"
+                    state["forged"] += 1
+                return result
+
+            store._load_hot_context_pack = forged
+            report = run_bench(
+                InProcessClient(store, "bench-user"),
+                generate_scenario(7),
+                mode="inprocess",
+            )
+        self.assertGreater(state["forged"], 0, "sabotage never fired; test is vacuous")
+        category = report["categories"]["consolidation"]
+        self.assertLess(category["score"], 1.0)
+        self.assertGreater(category["metrics"]["cache"]["unverified_outputs"], 0)
+        self.assertTrue(
+            any(failure.startswith("consolidation cache:") for failure in category["failures"]),
+            "expected independent pack parity to name the forged cache output",
+        )
+
+    def test_revision_freeze_tanks_consolidation_invalidation(self) -> None:
+        # Sabotage the coarse revision clock. The immutable pack is still valid,
+        # but it is stale after a public corpus write and therefore must not serve.
+        with tempfile.TemporaryDirectory() as tmp:
+            store = _fresh_store(Path(tmp))
+            real_revision = store._context_corpus_revision
+            state: dict[str, int | None] = {"frozen": None}
+
+            def freeze_after_first_warm(user_id: str) -> int:
+                actual = real_revision(user_id)
+                with connect(store.db_path) as conn:
+                    warmed = conn.execute(
+                        "SELECT COUNT(*) AS count FROM hot_context_packs WHERE user_id = ?",
+                        (user_id,),
+                    ).fetchone()
+                if int(warmed["count"] or 0) > 0 and state["frozen"] is None:
+                    state["frozen"] = actual
+                return state["frozen"] if state["frozen"] is not None else actual
+
+            store._context_corpus_revision = freeze_after_first_warm
+            report = run_bench(
+                InProcessClient(store, "bench-user"),
+                generate_scenario(7),
+                mode="inprocess",
+            )
+        category = report["categories"]["consolidation"]
+        self.assertLess(category["score"], 1.0)
+        self.assertLess(
+            category["metrics"]["cache"]["invalidation_misses"],
+            category["metrics"]["cache"]["requested"],
+        )
+        self.assertTrue(
+            any(failure.startswith("consolidation invalidation:") for failure in category["failures"]),
+            "expected the public-write invalidation probe to catch a frozen revision clock",
         )
 
 

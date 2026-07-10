@@ -37,7 +37,7 @@ from .models import UserListResponse, UserProvisionRequest, UserProvisionRespons
 from .models import CaptureChangePage, SyncIngestRequest, SyncIngestResponse
 from .models import GradeAnswerRequest, WouldIRequest, DraftAsMeRequest, GradeTwinPredictionRequest
 from .models import SharedMemoryWriteRequest, SharedPrincipalCreateRequest
-from .models import VerifyBeliefProofRequest, VerifyIntegrityRequest, VerifyBundleRequest
+from .models import MemoryConsolidationRequest, VerifyBeliefProofRequest, VerifyIntegrityRequest, VerifyBundleRequest
 from .models import WorkingCanvasNodeRequest, WorkingCanvasNodeResponse, WorkingCanvasResponse
 from .oauth_broker import register_oauth_broker_routes
 from .oidc_registry import OidcError, OidcProviderRegistry
@@ -276,6 +276,10 @@ def _required_api_scope(method: str, path: str) -> str:
     if normalized_path.startswith("/v1/working-canvas/") and normalized_method == "GET":
         return "read"
     if normalized_path == "/v1/settings" and normalized_method in {"PUT", "PATCH"}:
+        return "maintenance"
+    if normalized_path == "/v1/memory/consolidation" and normalized_method == "GET":
+        return "read"
+    if normalized_path == "/v1/memory/consolidate" and normalized_method == "POST":
         return "maintenance"
     if normalized_path in {"/v1/diagnostics", "/v1/reliability/report", "/v1/jobs/health"}:
         return "maintenance"
@@ -2378,6 +2382,25 @@ def resolve_memory_conflict(payload: dict[str, Any], user_id: str = Depends(auth
     if not resolved:
         raise HTTPException(status_code=404, detail="Both memories must exist and differ")
     return {"resolved": True, "stale_id": stale_id, "current_id": current_id}
+
+
+@app.post("/v1/memory/consolidate", response_model=None)
+def consolidate_memory(request: MemoryConsolidationRequest, user_id: str = Depends(auth)) -> dict[str, Any]:
+    return store.run_memory_consolidation(
+        user_id,
+        hot_requests=request.hot_requests,
+        auto_resolve_safe=request.auto_resolve_safe,
+        max_conflicts=request.max_conflicts,
+        max_hot_packs=request.max_hot_packs,
+    )
+
+
+@app.get("/v1/memory/consolidation", response_model=None)
+def memory_consolidation_status(
+    limit: int = Query(default=10, ge=1, le=100),
+    user_id: str = Depends(auth),
+) -> dict[str, Any]:
+    return store.get_memory_consolidation(user_id, limit=limit)
 
 
 @app.get("/v1/settings", response_model=SettingsResponse)

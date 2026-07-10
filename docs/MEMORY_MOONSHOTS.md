@@ -158,6 +158,8 @@ not arbitrary search completeness; an authenticated search index remains a futur
 
 **Measurable objective.** Cold-recall (no retrieval) accuracy of the adapter vs the vault ground truth; parametric-answer *verification pass-rate* (must stay >= 99% or the cache is off); end-to-end recall latency (target: sub-100ms for cached hot memories vs retrieval baseline). Start by proving step 1 with a contradiction-rate-before/after metric.
 
+**Implemented prove-first gate (MemoryTruth v7).** Stage 1 is now the production M4 boundary: a nightly, tenant-scoped consolidation job auto-resolves only high-trust conflicts with matching explicit claim scope, records every decision and proof in the same atomic SQLite transaction as supersession, and materializes hot context as immutable `pack_sha` references. Every cache read re-verifies the stored sha256, corpus revision, tenant ownership, and current citation ids; any mismatch is a cache miss. MemoryTruth v7 independently recomputes pack sha256, requires exact cold-vs-hot semantic parity, measures contradiction reduction, reports latency as a non-scoring diagnostic, and sabotages forged output plus frozen invalidation. Local adapter training remains deliberately deferred until a stronger proposal verifier and repeatable multi-size evidence show benefit beyond these verified hot packs. This avoids adding model/GPU dependencies merely because a single local latency sample improved.
+
 **Effort:** high (this is the moonshot-iest moonshot). **Moat:** maximal. **Risk:** real - stage it, kill it early if step 1 doesn't pay.
 
 ---

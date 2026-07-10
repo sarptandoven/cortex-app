@@ -841,6 +841,39 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "default": 30}}},
     },
     {
+        "name": "consolidate_memory",
+        "description": (
+            "Run a bounded, auditable sleep-time consolidation pass: resolve only conflicts that "
+            "meet Cortex's deterministic safety rules and precompute verified hot context packs. "
+            "Source memories remain authoritative; all decisions and cache artifacts are recorded."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "hot_requests": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "maxItems": 50,
+                    "description": "Optional get_context-style requests to precompute as verified hot packs.",
+                },
+                "auto_resolve_safe": {"type": "boolean", "default": True},
+                "max_conflicts": {"type": "integer", "default": 2000, "minimum": 1, "maximum": 10000},
+                "max_hot_packs": {"type": "integer", "default": 12, "minimum": 0, "maximum": 50},
+            },
+        },
+    },
+    {
+        "name": "get_memory_consolidation",
+        "description": (
+            "Return recent consolidation runs, their conflict decisions, and the status of verified "
+            "hot context packs. Read-only and tenant-scoped."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 100}},
+        },
+    },
+    {
         "name": "get_context",
         "description": (
             "Build the working context pack for a task: a token-budgeted, cited selection of the "
@@ -1344,6 +1377,7 @@ READ_TOOLS = {
     "get_support_bundle",
     "get_trust_summary",
     "get_audit_log",
+    "get_memory_consolidation",
     # Reading your own DISTILLED profile is a read, not a bulk export — these are the tools an
     # external agent (Claude/ChatGPT) uses to pull a holistic, cited picture of the user. Only the
     # raw bulk dump (export_memory) stays gated behind the export scope + trust toggle.
@@ -1414,6 +1448,7 @@ MAINTENANCE_TOOLS = {
     # Phase 2b: recompute-verify is a diagnostic (reads the corpus, emits an audit event) —
     # deliberately maintenance-scoped like the other diagnostics, not part of the core surface.
     "verify_context_pack",
+    "consolidate_memory",
     "create_shared_principal",
     "revoke_shared_principal",
 }
@@ -1510,6 +1545,8 @@ _TOOL_TITLE_OVERRIDES: dict[str, str] = {
     "record_working_canvas_node": "Record Working Canvas Node",
     "get_working_canvas": "Get Working Canvas",
     "get_working_canvas_node": "Get Working Canvas Node",
+    "consolidate_memory": "Consolidate Memory",
+    "get_memory_consolidation": "Get Memory Consolidation Status",
 }
 
 
@@ -2478,6 +2515,27 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
         # run unchanged (all targets are read-only, so a read token suffices).
         result = call_tool(store, user_id, target, target_args, token_scopes)
         return {"routed_to": target, "task": task, "alternatives": alternatives, "result": result}
+    if name == "consolidate_memory":
+        raw_requests = args.get("hot_requests")
+        hot_requests = [item for item in raw_requests if isinstance(item, dict)][:50] if isinstance(raw_requests, list) else []
+        return store.agent_payload(
+            user_id,
+            store.run_memory_consolidation(
+                user_id,
+                hot_requests=hot_requests,
+                auto_resolve_safe=_bool_arg(args, "auto_resolve_safe", True),
+                max_conflicts=_bounded_int_arg(args, "max_conflicts", 2000, minimum=1, maximum=10000),
+                max_hot_packs=_bounded_int_arg(args, "max_hot_packs", 12, minimum=0, maximum=50),
+            ),
+        )
+    if name == "get_memory_consolidation":
+        return store.agent_payload(
+            user_id,
+            store.get_memory_consolidation(
+                user_id,
+                limit=_bounded_int_arg(args, "limit", 10, minimum=1, maximum=100),
+            ),
+        )
     if name == "get_context":
         # The identity/persona layer is distilled, cited context about the user — a read, like the
         # rest of the picture. Any read-scoped agent gets it; a token with neither read nor export
@@ -2565,6 +2623,8 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
     if name == "search_memory":
         query = _text_arg(args, "query")
         limit = _bounded_int_arg(args, "top_k", 8)
+        associative = _bool_arg(args, "associative")
+        association_mode = args.get("association_mode") or ("ppr" if associative else None)
         metadata_filters = {
             "repository": args.get("repository"),
             "channel": args.get("channel"),
@@ -2583,8 +2643,8 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
                 source=args.get("source"),
                 source_account_id=args.get("source_account_id"),
                 as_of=args.get("as_of"),
-                associative=_bool_arg(args, "associative"),
-                association_mode=args.get("association_mode"),
+                associative=associative,
+                association_mode=association_mode,
                 metadata_filters=metadata_filters,
             )
         return {
@@ -2603,8 +2663,8 @@ def call_tool(store: CortexStore, user_id: str, name: str, args: dict[str, Any],
                     source=args.get("source"),
                     source_account_id=args.get("source_account_id"),
                     as_of=args.get("as_of"),
-                    include_related=_bool_arg(args, "associative"),
-                    association_mode=args.get("association_mode"),
+                    include_related=associative,
+                    association_mode=association_mode,
                     metadata_filters=metadata_filters,
                 ),
             ),

@@ -94,6 +94,8 @@ class FakeStore:
         self.belief_timeline_calls: list[dict] = []
         self.belief_proof_calls: list[dict] = []
         self.verify_belief_proof_calls: list[dict] = []
+        self.memory_consolidation_calls: list[dict] = []
+        self.memory_consolidation_status_calls: list[tuple[str, int]] = []
         self.oauth_pending: dict[tuple[str, str], dict] = {}
 
     def review_sections(self, user_id: str, *, sample_limit: int = 3) -> dict:
@@ -659,6 +661,22 @@ class FakeStore:
             "warnings": ["Some active memories are missing source citations."],
             "recommendations": ["Prefer connected-source sync and cited captures so retrieved memory has citations."],
         }
+
+    def run_memory_consolidation(self, user_id: str, **kwargs) -> dict:
+        self.memory_consolidation_calls.append({"user_id": user_id, **kwargs})
+        return {
+            "run_id": "cons_test",
+            "status": "succeeded",
+            "conflicts_detected": 0,
+            "conflicts_auto_resolved": 0,
+            "conflicts_review_required": 0,
+            "packs_warmed": [],
+            "metrics": {"contradiction_reduction": 0, "cache_verification_rate": None},
+        }
+
+    def get_memory_consolidation(self, user_id: str, *, limit: int = 10) -> dict:
+        self.memory_consolidation_status_calls.append((user_id, limit))
+        return {"runs": [{"run_id": "cons_test", "status": "succeeded"}], "hot_cache": {"entries": []}}
 
     def sync_change_feed(
         self,
@@ -3119,6 +3137,48 @@ class StandaloneServerTests(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(payload["score"], 72)
         self.assertEqual(payload["source_health"][0]["source"], "unit-test")
+
+    def test_memory_consolidation_routes_forward_bounded_contract(self) -> None:
+        self.assertEqual(standalone_server._required_api_scope("POST", "/v1/memory/consolidate"), "maintenance")
+        self.assertEqual(standalone_server._required_api_scope("GET", "/v1/memory/consolidation"), "read")
+        request_payload = {
+            "hot_requests": [{"task": "What is hot?"}, "discard-me"],
+            "auto_resolve_safe": False,
+            "max_conflicts": 25,
+            "max_hot_packs": 0,
+        }
+        with self.post_json("/v1/memory/consolidate", request_payload) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["run_id"], "cons_test")
+        self.assertEqual(
+            self.fake_store.memory_consolidation_calls[-1],
+            {
+                "user_id": "local",
+                "hot_requests": [{"task": "What is hot?"}],
+                "auto_resolve_safe": False,
+                "max_conflicts": 25,
+                "max_hot_packs": 0,
+            },
+        )
+
+        with self.post_json(
+            "/v1/memory/consolidate",
+            {"auto_resolve_safe": "false", "max_conflicts": 1, "max_hot_packs": 0},
+        ) as response:
+            self.assertEqual(response.status, 200)
+        self.assertFalse(self.fake_store.memory_consolidation_calls[-1]["auto_resolve_safe"])
+
+        with self.assertRaises(error.HTTPError) as context:
+            self.post_json("/v1/memory/consolidate", {"max_hot_packs": "not-an-integer"})
+        self.assertEqual(context.exception.code, 422)
+
+        with self.get("/v1/memory/consolidation?limit=3") as response:
+            status = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(response.status, 200)
+        self.assertEqual(status["runs"][0]["run_id"], "cons_test")
+        self.assertEqual(self.fake_store.memory_consolidation_status_calls[-1], ("local", 3))
 
     def test_sync_changes_route_forwards_to_store(self) -> None:
         with self.get("/v1/sync/changes?limit=1&device_id=sdev_test") as response:

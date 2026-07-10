@@ -370,6 +370,56 @@ CREATE TABLE IF NOT EXISTS context_packs (
   PRIMARY KEY(user_id, pack_sha)
 );
 
+CREATE TABLE IF NOT EXISTS memory_corpus_revisions (
+  user_id TEXT PRIMARY KEY,
+  revision INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS memory_consolidation_runs (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  source_revision_before INTEGER NOT NULL,
+  source_revision_after INTEGER,
+  conflicts_detected INTEGER NOT NULL DEFAULT 0,
+  conflicts_auto_resolved INTEGER NOT NULL DEFAULT 0,
+  conflicts_review_required INTEGER NOT NULL DEFAULT 0,
+  packs_warmed INTEGER NOT NULL DEFAULT 0,
+  metrics_json TEXT NOT NULL DEFAULT '{}',
+  started_at TEXT NOT NULL,
+  completed_at TEXT,
+  last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS memory_consolidation_decisions (
+  run_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  field TEXT NOT NULL,
+  current_memory_id TEXT NOT NULL,
+  stale_memory_id TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  proof_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(run_id, field, current_memory_id, stale_memory_id)
+);
+
+CREATE TABLE IF NOT EXISTS hot_context_packs (
+  user_id TEXT NOT NULL,
+  cache_key TEXT NOT NULL,
+  source_revision INTEGER NOT NULL,
+  pack_sha TEXT NOT NULL,
+  request_json TEXT NOT NULL,
+  engine_version INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  hit_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_hit_at TEXT,
+  PRIMARY KEY(user_id, cache_key)
+);
+
 CREATE TABLE IF NOT EXISTS working_canvas_nodes (
   user_id TEXT NOT NULL,
   session_id TEXT NOT NULL,
@@ -578,7 +628,75 @@ CREATE INDEX IF NOT EXISTS idx_memories_author_class ON memories(user_id, author
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_user_status ON agent_sessions(user_id, status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_context_packs_user_created ON context_packs(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_context_packs_session ON context_packs(user_id, session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_consolidation_runs_user_created ON memory_consolidation_runs(user_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_consolidation_decisions_user_run ON memory_consolidation_decisions(user_id, run_id);
+CREATE INDEX IF NOT EXISTS idx_hot_context_packs_user_status ON hot_context_packs(user_id, status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_working_canvas_session ON working_canvas_nodes(user_id, session_id, updated_at DESC);
+
+CREATE TRIGGER IF NOT EXISTS revise_context_corpus_memory_insert
+AFTER INSERT ON memories
+BEGIN
+  INSERT INTO memory_corpus_revisions(user_id, revision, updated_at) VALUES (NEW.user_id, 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP;
+END;
+CREATE TRIGGER IF NOT EXISTS revise_context_corpus_memory_delete
+AFTER DELETE ON memories
+BEGIN
+  INSERT INTO memory_corpus_revisions(user_id, revision, updated_at) VALUES (OLD.user_id, 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP;
+END;
+CREATE TRIGGER IF NOT EXISTS revise_context_corpus_memory_update
+AFTER UPDATE ON memories
+BEGIN
+  INSERT INTO memory_corpus_revisions(user_id, revision, updated_at) VALUES (OLD.user_id, 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP;
+  INSERT INTO memory_corpus_revisions(user_id, revision, updated_at) VALUES (NEW.user_id, 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP;
+END;
+CREATE TRIGGER IF NOT EXISTS revise_context_corpus_task_insert
+AFTER INSERT ON tasks
+BEGIN
+  INSERT INTO memory_corpus_revisions(user_id, revision, updated_at) VALUES (NEW.user_id, 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP;
+END;
+CREATE TRIGGER IF NOT EXISTS revise_context_corpus_task_delete
+AFTER DELETE ON tasks
+BEGIN
+  INSERT INTO memory_corpus_revisions(user_id, revision, updated_at) VALUES (OLD.user_id, 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP;
+END;
+CREATE TRIGGER IF NOT EXISTS revise_context_corpus_task_update
+AFTER UPDATE ON tasks
+BEGIN
+  INSERT INTO memory_corpus_revisions(user_id, revision, updated_at) VALUES (OLD.user_id, 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP;
+  INSERT INTO memory_corpus_revisions(user_id, revision, updated_at) VALUES (NEW.user_id, 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP;
+END;
+CREATE TRIGGER IF NOT EXISTS revise_context_corpus_capture_update
+AFTER UPDATE OF review_status, approved_at, archived_at ON captures
+BEGIN
+  INSERT INTO memory_corpus_revisions(user_id, revision, updated_at) VALUES (NEW.user_id, 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP;
+END;
+CREATE TRIGGER IF NOT EXISTS revise_context_corpus_settings_insert
+AFTER INSERT ON user_settings
+BEGIN
+  INSERT INTO memory_corpus_revisions(user_id, revision, updated_at) VALUES (NEW.user_id, 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP;
+END;
+CREATE TRIGGER IF NOT EXISTS revise_context_corpus_settings_update
+AFTER UPDATE ON user_settings
+BEGIN
+  INSERT INTO memory_corpus_revisions(user_id, revision, updated_at) VALUES (NEW.user_id, 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP;
+END;
+CREATE TRIGGER IF NOT EXISTS revise_context_corpus_settings_delete
+AFTER DELETE ON user_settings
+BEGIN
+  INSERT INTO memory_corpus_revisions(user_id, revision, updated_at) VALUES (OLD.user_id, 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP;
+END;
 
 CREATE TABLE IF NOT EXISTS oauth_pending (
   state TEXT PRIMARY KEY,

@@ -265,6 +265,15 @@ class VerifyBundleRequest(BaseModel):
     bundle: dict[str, Any]
 
 
+class MemoryConsolidationRequest(BaseModel):
+    """M4 sleep pass: safe contradiction consolidation plus verified hot-pack warming."""
+
+    hot_requests: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    auto_resolve_safe: bool = True
+    max_conflicts: int = Field(default=2000, ge=1, le=10_000)
+    max_hot_packs: int = Field(default=12, ge=0, le=50)
+
+
 class WorkingCanvasNodeRequest(BaseModel):
     session_id: str = Field(..., min_length=1, max_length=120)
     node_id: str = Field(..., min_length=1, max_length=120)

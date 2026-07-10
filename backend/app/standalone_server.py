@@ -177,6 +177,10 @@ def _required_api_scope(method: str, path: str) -> str:
         return "read"
     if normalized_path == "/v1/settings" and normalized_method in {"PUT", "PATCH"}:
         return "maintenance"
+    if normalized_path == "/v1/memory/consolidation" and normalized_method == "GET":
+        return "read"
+    if normalized_path == "/v1/memory/consolidate" and normalized_method == "POST":
+        return "maintenance"
     if normalized_path in {"/v1/diagnostics", "/v1/reliability/report", "/v1/jobs/health"}:
         return "maintenance"
     # Recompute-verify is a maintenance diagnostic (same scope as the MCP tool): it re-runs
@@ -388,6 +392,34 @@ def _bool_value(value, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _body_bool(body: dict[str, Any], name: str, default: bool) -> bool:
+    value = body.get(name, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise ValueError(f"{name} must be a boolean")
+
+
+def _body_int(body: dict[str, Any], name: str, default: int, low: int, high: int) -> int:
+    value = body.get(name, default)
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer between {low} and {high}")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer between {low} and {high}") from exc
+    if parsed < low or parsed > high:
+        raise ValueError(f"{name} must be an integer between {low} and {high}")
+    return parsed
 
 
 # Cap request bodies so a single oversized/hostile upload can't buffer unbounded memory (the
@@ -2589,6 +2621,31 @@ class CortexRequestHandler(BaseHTTPRequestHandler):
                     self._send_json({"resolved": True, "stale_id": stale_id, "current_id": current_id})
                 else:
                     self._send_json({"detail": "Both memories must exist and differ"}, status=HTTPStatus.NOT_FOUND)
+                return
+            if method == "POST" and path == "/v1/memory/consolidate":
+                body = self._json_body()
+                raw_requests = body.get("hot_requests")
+                hot_requests = [item for item in raw_requests if isinstance(item, dict)][:50] if isinstance(raw_requests, list) else []
+                try:
+                    auto_resolve_safe = _body_bool(body, "auto_resolve_safe", True)
+                    max_conflicts = _body_int(body, "max_conflicts", 2000, 1, 10000)
+                    max_hot_packs = _body_int(body, "max_hot_packs", 12, 0, 50)
+                except ValueError as exc:
+                    self._send_json({"detail": str(exc)}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+                    return
+                self._send_json(store.run_memory_consolidation(
+                    user_id,
+                    hot_requests=hot_requests,
+                    auto_resolve_safe=auto_resolve_safe,
+                    max_conflicts=max_conflicts,
+                    max_hot_packs=max_hot_packs,
+                ))
+                return
+            if method == "GET" and path == "/v1/memory/consolidation":
+                self._send_json(store.get_memory_consolidation(
+                    user_id,
+                    limit=_int_param(params, "limit", 10, 1, 100),
+                ))
                 return
             if method == "GET" and path == "/v1/settings":
                 self._send_json(store.settings(user_id))

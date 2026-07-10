@@ -504,6 +504,41 @@ class FastAPIContractTests(unittest.TestCase):
         self.assertIn("source_health", payload)
         self.assertTrue(any(source["source"] == "quality-test" for source in payload["source_health"]))
 
+    def test_memory_consolidation_endpoints_expose_run_and_status_contract(self) -> None:
+        self.assertEqual(main_module._required_api_scope("POST", "/v1/memory/consolidate"), "maintenance")
+        self.assertEqual(main_module._required_api_scope("GET", "/v1/memory/consolidation"), "read")
+        headers = {
+            "Authorization": "Bearer test-token",
+            "X-Cortex-User": "m4-fastapi-contract",
+        }
+        settings = self.client.put(
+            "/v1/settings",
+            json={"allow_agent_maintenance": True},
+            headers=headers,
+        )
+        self.assertEqual(settings.status_code, 200)
+
+        response = self.client.post(
+            "/v1/memory/consolidate",
+            json={"hot_requests": [], "max_hot_packs": 0},
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        run = response.json()
+        self.assertEqual(run["status"], "succeeded")
+        self.assertEqual(run["packs_warmed"], [])
+        self.assertEqual(run["metrics"]["contradiction_reduction"], 0)
+
+        status = self.client.get(
+            "/v1/memory/consolidation",
+            params={"limit": 1},
+            headers=headers,
+        )
+        self.assertEqual(status.status_code, 200)
+        payload = status.json()
+        self.assertEqual(payload["runs"][0]["run_id"], run["run_id"])
+        self.assertIn("hot_cache", payload)
+
     def test_ask_endpoint_returns_cited_answer_contract(self) -> None:
         headers = {"Authorization": "Bearer test-token", "X-Cortex-User": "ask-contract"}
         phrase = "FastAPI Ask citation contract should quote source-backed memory."

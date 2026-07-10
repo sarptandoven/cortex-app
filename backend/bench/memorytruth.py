@@ -44,6 +44,10 @@ Categories (each maps to a moonshot-doc probe class):
                  principal writes, replay/signature/revocation/authority attacks,
                  per-principal chain verification, trusted-conflict survival, and
                  a measured legitimate-write false-positive rate.
+- consolidation: M4 prove-first CLS - deterministic safe contradiction resolution,
+                 content-addressed hot-pack verification by the BENCH'S OWN sha256,
+                 exact cold-vs-hot pack parity, public-write invalidation, zero
+                 unverified cache outputs, and measured sub-100ms hot recall.
 
 Run: python3 -m backend.bench.memorytruth --seed 7
      python3 -m backend.bench.memorytruth --url http://127.0.0.1:8766 --token <api-key>
@@ -63,12 +67,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 BENCH_NAME = "memorytruth-light"
-BENCH_VERSION = 6
+BENCH_VERSION = 7
 
 _METACOGNITION_THRESHOLD = 0.6
 _METACOGNITION_BIN_COUNT = 5
 _METACOGNITION_ECE_MAX = 0.05
 _METACOGNITION_BRIER_MAX = 0.01
+_M4_HOT_LATENCY_MAX_MS = 100.0
 
 _ADJECTIVES = (
     "amber", "basalt", "cedar", "delta", "ember", "flint", "garnet", "harbor",
@@ -112,6 +117,7 @@ class Scenario:
     metacognition_cases: list[dict[str, Any]] = field(default_factory=list)  # {content?, question, slug, answerability, expected_verdict}
     shared_memory_cases: list[dict[str, Any]] = field(default_factory=list)
     associative_cases: list[dict[str, Any]] = field(default_factory=list)
+    consolidation_cases: list[dict[str, Any]] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -123,6 +129,7 @@ class Scenario:
             "metacognition_cases": self.metacognition_cases,
             "shared_memory_cases": self.shared_memory_cases,
             "associative_cases": self.associative_cases,
+            "consolidation_cases": self.consolidation_cases,
         }
 
 
@@ -136,6 +143,7 @@ def generate_scenario(
     metacognition_n: int = 4,
     shared_memory_n: int = 20,
     associative_n: int = 4,
+    consolidation_n: int = 2,
 ) -> Scenario:
     rng = random.Random(seed)
     scenario = Scenario(seed=seed)
@@ -292,6 +300,26 @@ def generate_scenario(
                 "isolated_content": f"The unrelated {isolated} program uses isolation token {reject_slug}.",
             }
         )
+
+    # M4 has its own RNG namespace so v7 does not perturb any v6 scenario byte.
+    # Distinct claim fields avoid cross-case ambiguity in the deterministic
+    # contradiction detector. The "is now" form makes the intended winner
+    # explicit without wall-clock ordering or an LLM judge.
+    consolidation_rng = random.Random(f"{seed}:memorytruth-m4")
+    consolidation_fields = ("retrieval engine", "default connector", "backup owner", "release channel")
+    for field_name in consolidation_fields[: max(0, consolidation_n)]:
+        stale_slug = _slug(consolidation_rng)
+        current_slug = _slug(consolidation_rng)
+        scenario.consolidation_cases.append(
+            {
+                "field": field_name,
+                "stale_slug": stale_slug,
+                "current_slug": current_slug,
+                "stale_content": f"The {field_name} is {stale_slug} for the MemoryTruth sleep pass.",
+                "current_content": f"The {field_name} is now {current_slug} for the MemoryTruth sleep pass.",
+                "question": f"What is the {field_name} for the MemoryTruth sleep pass?",
+            }
+        )
     return scenario
 
 
@@ -346,6 +374,15 @@ class BenchClient(Protocol):
     def revoke_shared_principal(self, principal_id: str) -> dict[str, Any]: ...
     def verify_shared_memory(self, principal_id: str | None = None) -> dict[str, Any]: ...
     def get_poisoning_attempts(self, principal_id: str) -> dict[str, Any]: ...
+    def get_context(self, request: dict[str, Any]) -> dict[str, Any]: ...
+    def consolidate_memory(
+        self,
+        hot_requests: list[dict[str, Any]],
+        *,
+        max_hot_packs: int,
+    ) -> dict[str, Any]: ...
+    def get_memory_consolidation(self) -> dict[str, Any]: ...
+    def get_context_pack(self, pack_sha: str) -> dict[str, Any]: ...
 
 
 class InProcessClient:
@@ -494,6 +531,27 @@ class InProcessClient:
             "get_poisoning_attempts",
             {"principal_id": principal_id, "limit": 100},
         )
+
+    def get_context(self, request: dict[str, Any]) -> dict[str, Any]:
+        result = self._tool("get_context", dict(request))
+        return result if isinstance(result, dict) else {}
+
+    def consolidate_memory(
+        self,
+        hot_requests: list[dict[str, Any]],
+        *,
+        max_hot_packs: int,
+    ) -> dict[str, Any]:
+        return self._tool(
+            "consolidate_memory",
+            {"hot_requests": hot_requests, "max_hot_packs": max_hot_packs},
+        )
+
+    def get_memory_consolidation(self) -> dict[str, Any]:
+        return self._tool("get_memory_consolidation", {"limit": 10})
+
+    def get_context_pack(self, pack_sha: str) -> dict[str, Any]:
+        return self._tool("get_context_pack", {"pack_sha": pack_sha})
 
 
 class HTTPClient:
@@ -695,6 +753,28 @@ class HTTPClient:
         query = urlencode({"principal_id": principal_id, "limit": 100})
         return self._request("GET", f"/v1/shared-memory/poisoning-attempts?{query}")
 
+    def get_context(self, request: dict[str, Any]) -> dict[str, Any]:
+        result = self._tool("get_context", dict(request))
+        return result if isinstance(result, dict) else {}
+
+    def consolidate_memory(
+        self,
+        hot_requests: list[dict[str, Any]],
+        *,
+        max_hot_packs: int,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/v1/memory/consolidate",
+            {"hot_requests": hot_requests, "max_hot_packs": max_hot_packs},
+        )
+
+    def get_memory_consolidation(self) -> dict[str, Any]:
+        return self._request("GET", "/v1/memory/consolidation?limit=10")
+
+    def get_context_pack(self, pack_sha: str) -> dict[str, Any]:
+        return self._tool("get_context_pack", {"pack_sha": pack_sha})
+
 
 # --------------------------------------------------------------------------
 # Scoring helpers: defensive, exact, and judge-free.
@@ -718,6 +798,33 @@ def _citation_ids(answer: dict[str, Any]) -> list[str]:
         if isinstance(citation, dict) and citation.get("id"):
             ids.append(str(citation["id"]))
     return ids
+
+
+_M4_PACK_ENVELOPE_KEYS = frozenset({"generated_at", "receipt", "pin", "cache"})
+
+
+def _independent_context_pack_body(pack: Any) -> dict[str, Any]:
+    """Reproduce the content-addressed pack body without trusting Cortex helpers."""
+    if not isinstance(pack, dict):
+        return {}
+    return {key: value for key, value in pack.items() if key not in _M4_PACK_ENVELOPE_KEYS}
+
+
+def _independent_context_pack_sha(pack: Any) -> str:
+    canonical = json.dumps(
+        _independent_context_pack_body(pack),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _latency_p50(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    return round(ordered[len(ordered) // 2], 3)
 
 
 def _cited_contents(answer: dict[str, Any]) -> str:
@@ -1128,6 +1235,7 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
     metacognition = CategoryScore()
     shared_memory = CategoryScore()
     associative_recall = CategoryScore()
+    consolidation = CategoryScore()
 
     # --- Seed simple facts -------------------------------------------------
     for fact in scenario.facts:
@@ -1969,6 +2077,222 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
             f"algorithm={relationship.get('algorithm')!r}",
         )
 
+    # --- M4 prove-first consolidation and verified hot packs ------------------
+    # This category never trusts Cortex's reported contradiction/cache metrics.
+    # The scenario itself supplies the stale/current gold, pack bytes are hashed
+    # independently, cold and hot semantic bodies must match exactly, and a
+    # public memory write must invalidate every warmed pointer before it can serve.
+    consolidation_metrics: dict[str, Any] = {
+        "cases": len(scenario.consolidation_cases),
+        "contradictions": {"before": 0, "after": 0, "reduction": 0, "reduction_rate": None},
+        "cache": {
+            "requested": 0,
+            "warmed": 0,
+            "hits": 0,
+            "semantic_matches": 0,
+            "independent_sha_verified": 0,
+            "unverified_outputs": 0,
+            "verification_rate": None,
+            "invalidation_misses": 0,
+        },
+        "hot_pack_gate_passed": False,
+        "local_adapter_stage": "deferred_pending_stronger_verifier_and_multi_size_evidence",
+    }
+    consolidation_latency: dict[str, Any] | None = None
+    if scenario.consolidation_cases:
+        seeded_conflicts: list[dict[str, Any]] = []
+        for case in scenario.consolidation_cases:
+            stale_ids = client.remember(str(case["stale_content"]))
+            current_ids = client.remember(str(case["current_content"]))
+            before = client.ask(str(case["question"]))
+            before_text = _cited_contents(before)
+            visible_before = case["stale_slug"] in before_text and case["current_slug"] in before_text
+            consolidation_metrics["contradictions"]["before"] += int(visible_before)
+            seeded_conflicts.append(
+                {
+                    "case": case,
+                    "stale_ids": set(stale_ids),
+                    "current_ids": set(current_ids),
+                    "visible_before": visible_before,
+                }
+            )
+
+        resolved_run = client.consolidate_memory([], max_hot_packs=0)
+        decisions = [item for item in (resolved_run.get("decisions") or []) if isinstance(item, dict)]
+        for seeded in seeded_conflicts:
+            case = seeded["case"]
+            after = client.ask(str(case["question"]))
+            after_text = _cited_contents(after)
+            visible_after = case["stale_slug"] in after_text and case["current_slug"] in after_text
+            current_only = case["current_slug"] in after_text and case["stale_slug"] not in after_text
+            consolidation_metrics["contradictions"]["after"] += int(visible_after)
+            decision_match = any(
+                item.get("decision") == "auto_resolved"
+                and str(item.get("stale_memory_id") or "") in seeded["stale_ids"]
+                and str(item.get("current_memory_id") or "") in seeded["current_ids"]
+                and bool((item.get("proof") or {}).get("safe"))
+                for item in decisions
+            )
+            consolidation.record(
+                seeded["visible_before"] and current_only and decision_match,
+                "consolidation resolution: "
+                f"field={case['field']!r} visible_before={seeded['visible_before']} "
+                f"current_only={current_only} decision_match={decision_match}",
+            )
+
+        persisted_status = client.get_memory_consolidation()
+        persisted_run = next(
+            (
+                item
+                for item in (persisted_status.get("runs") or [])
+                if isinstance(item, dict) and item.get("run_id") == resolved_run.get("run_id")
+            ),
+            {},
+        )
+        persisted_decisions = [
+            item for item in (persisted_run.get("decisions") or []) if isinstance(item, dict)
+        ]
+        persisted_pairs = {
+            (str(item.get("stale_memory_id") or ""), str(item.get("current_memory_id") or ""))
+            for item in persisted_decisions
+            if item.get("decision") == "auto_resolved" and bool((item.get("proof") or {}).get("safe"))
+        }
+        returned_pairs = {
+            (str(item.get("stale_memory_id") or ""), str(item.get("current_memory_id") or ""))
+            for item in decisions
+            if item.get("decision") == "auto_resolved" and bool((item.get("proof") or {}).get("safe"))
+        }
+        expected_pairs = {
+            (stale_id, current_id)
+            for seeded in seeded_conflicts
+            for stale_id in seeded["stale_ids"]
+            for current_id in seeded["current_ids"]
+        }
+        consolidation.record(
+            persisted_run.get("status") == "succeeded"
+            and expected_pairs <= persisted_pairs
+            and persisted_pairs == returned_pairs,
+            "consolidation audit persistence: "
+            f"status={persisted_run.get('status')!r} expected={sorted(expected_pairs)} "
+            f"returned={sorted(returned_pairs)} persisted={sorted(persisted_pairs)}",
+        )
+
+        contradictions = consolidation_metrics["contradictions"]
+        contradictions["reduction"] = contradictions["before"] - contradictions["after"]
+        contradictions["reduction_rate"] = round(
+            contradictions["reduction"] / contradictions["before"], 4
+        ) if contradictions["before"] else None
+        consolidation.record(
+            contradictions["before"] == len(scenario.consolidation_cases)
+            and contradictions["after"] == 0
+            and contradictions["reduction_rate"] == 1.0,
+            "consolidation reduction: "
+            f"before={contradictions['before']} after={contradictions['after']} "
+            f"rate={contradictions['reduction_rate']}",
+        )
+
+        hot_requests = [
+            {
+                "task": str(case["question"]),
+                "surface": "agent",
+                "token_budget": 2000,
+                "intent": "answer",
+            }
+            for case in scenario.consolidation_cases
+        ]
+        cold_bodies: dict[str, dict[str, Any]] = {}
+        cold_latencies_ms: list[float] = []
+        for request in hot_requests:
+            for sample in range(3):
+                t0 = time.perf_counter()
+                cold = client.get_context(request)
+                cold_latencies_ms.append((time.perf_counter() - t0) * 1000.0)
+                if sample == 0:
+                    cold_bodies[str(request["task"])] = _independent_context_pack_body(cold)
+
+        warmed_run = client.consolidate_memory(hot_requests, max_hot_packs=len(hot_requests))
+        warmed = [item for item in (warmed_run.get("packs_warmed") or []) if isinstance(item, dict)]
+        consolidation_metrics["cache"]["requested"] = len(hot_requests)
+        consolidation_metrics["cache"]["warmed"] = len(warmed)
+        hot_latencies_ms: list[float] = []
+        for request in hot_requests:
+            cached_samples: list[dict[str, Any]] = []
+            for _ in range(3):
+                t0 = time.perf_counter()
+                cached_samples.append(client.get_context(request))
+                hot_latencies_ms.append((time.perf_counter() - t0) * 1000.0)
+            cached = cached_samples[0]
+            cache = cached.get("cache") if isinstance(cached.get("cache"), dict) else {}
+            pack_sha = str(cache.get("pack_sha") or "")
+            cache_hit = cache.get("hit") is True
+            claimed_verified = cache.get("verified") is True
+            replay = client.get_context_pack(pack_sha) if len(pack_sha) == 64 else {}
+            stored_pack = replay.get("pack") if isinstance(replay.get("pack"), dict) else {}
+            sha_ok = bool(pack_sha) and _independent_context_pack_sha(stored_pack) == pack_sha
+            expected_body = cold_bodies.get(str(request["task"])) or {}
+            semantic_match = (
+                bool(expected_body)
+                and expected_body == _independent_context_pack_body(cached)
+                and expected_body == _independent_context_pack_body(stored_pack)
+            )
+            consolidation_metrics["cache"]["hits"] += int(cache_hit)
+            consolidation_metrics["cache"]["semantic_matches"] += int(semantic_match)
+            consolidation_metrics["cache"]["independent_sha_verified"] += int(sha_ok)
+            unverified = cache_hit and (not claimed_verified or not sha_ok or not semantic_match)
+            consolidation_metrics["cache"]["unverified_outputs"] += int(unverified)
+            consolidation.record(
+                cache_hit and claimed_verified and sha_ok and semantic_match and not unverified,
+                "consolidation cache: "
+                f"task={request['task']!r} hit={cache_hit} claimed_verified={claimed_verified} "
+                f"sha_ok={sha_ok} semantic_match={semantic_match}",
+            )
+
+        cache_metrics = consolidation_metrics["cache"]
+        cache_metrics["verification_rate"] = round(
+            cache_metrics["independent_sha_verified"] / cache_metrics["requested"], 4
+        ) if cache_metrics["requested"] else None
+        cold_p50 = _latency_p50(cold_latencies_ms)
+        hot_p50 = _latency_p50(hot_latencies_ms)
+        latency_improved = bool(cold_p50 is not None and hot_p50 is not None and hot_p50 < cold_p50)
+        hot_under_floor = bool(hot_p50 is not None and hot_p50 < _M4_HOT_LATENCY_MAX_MS)
+        consolidation_latency = {
+            "cold_samples": len(cold_latencies_ms),
+            "hot_samples": len(hot_latencies_ms),
+            "cold_p50_ms": cold_p50,
+            "hot_p50_ms": hot_p50,
+            "hot_max_ms": round(max(hot_latencies_ms), 3) if hot_latencies_ms else None,
+            "improved": latency_improved,
+            "hot_under_100ms": hot_under_floor,
+        }
+        # Wall-clock timings are diagnostics, not correctness probes. CI contention, HTTP
+        # scheduling, and filesystem cache state must not change a seeded MemoryTruth score.
+
+        # A normal public write must advance the corpus revision. An old derived
+        # pack may remain as an immutable audit artifact, but it must not be served.
+        invalidation_slug = hashlib.sha256(
+            f"memorytruth-m4-invalidate:{scenario.seed}".encode("utf-8")
+        ).hexdigest()[:12]
+        client.remember(f"The MemoryTruth consolidation invalidation marker is {invalidation_slug}.")
+        invalidation_ok = True
+        for request in hot_requests:
+            recomputed = client.get_context(request)
+            missed = not isinstance(recomputed.get("cache"), dict)
+            cache_metrics["invalidation_misses"] += int(missed)
+            invalidation_ok = invalidation_ok and missed
+        consolidation.record(
+            invalidation_ok and cache_metrics["invalidation_misses"] == len(hot_requests),
+            "consolidation invalidation: "
+            f"misses={cache_metrics['invalidation_misses']}/{len(hot_requests)}",
+        )
+
+        consolidation_metrics["hot_pack_gate_passed"] = bool(
+            contradictions["reduction_rate"] == 1.0
+            and cache_metrics["verification_rate"] == 1.0
+            and cache_metrics["semantic_matches"] == cache_metrics["requested"]
+            and cache_metrics["unverified_outputs"] == 0
+            and invalidation_ok
+        )
+
     categories = {
         "recall": recall,
         "abstention": abstention,
@@ -1979,6 +2303,7 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
         "metacognition": metacognition,
         "shared_memory": shared_memory,
         "associative_recall": associative_recall,
+        "consolidation": consolidation,
     }
     total_passed = sum(c.passed for c in categories.values())
     total_probes = sum(c.total for c in categories.values())
@@ -2002,6 +2327,7 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
     }
     category_payloads["shared_memory"]["metrics"] = shared_metrics
     category_payloads["associative_recall"]["metrics"] = associative_metrics
+    category_payloads["consolidation"]["metrics"] = consolidation_metrics
     return {
         "bench": BENCH_NAME,
         "version": BENCH_VERSION,
@@ -2012,6 +2338,7 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
         "overall": round(total_passed / total_probes, 4) if total_probes else 0.0,
         "probes": total_probes,
         "belief_proof_latency": latency_summary,
+        "consolidation_latency": consolidation_latency,
         "caveats": [
             "Slug-based exact grading: no LLM judge; the answer key is verifiable by construction.",
             "Scores reflect the retrieval + citation + supersession + integrity pipeline, not language fluency.",
@@ -2019,6 +2346,8 @@ def run_bench(client: BenchClient, scenario: Scenario, *, mode: str = "inprocess
             "metacognition grading derives answerability from seeded-vs-absent gold, computes all metrics independently, then cross-checks Cortex's scorecard.",
             "shared_memory reports observed false-positive rate over a deterministic finite sample; it is not a statistical confidence bound.",
             "associative_recall compares direct, one-hop, bounded strongest-path, and personalized PageRank retrieval over deterministic two-hop probes.",
+            "consolidation verifies hot-pack sha256 and cold-vs-hot semantic parity independently; exact latency values are informational and excluded from deterministic report equality.",
+            "local adapter training remains deferred until a stronger proposal verifier and repeatable multi-size evidence justify adding model dependencies.",
         ],
     }
 

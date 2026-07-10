@@ -10,6 +10,7 @@ import platform
 import re
 import secrets
 import sys
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -81,6 +82,8 @@ BACKEND_FEATURES = (
     "sync-device-manifests",
     "sync-receipts",
     "associative-recall",
+    "sleep-consolidation",
+    "verified-hot-context",
 )
 
 # M7 associative recall is deliberately bounded. It only fills slots that the
@@ -122,7 +125,10 @@ CONTEXT_MAX_TOKEN_BUDGET = 6000
 # must land on the SAME sha, so the "most recent pack" prefetch predictor and the
 # re-pin-is-idempotent guarantee both hold. One constant keeps the identity hash and the diff
 # from ever drifting apart.
-CONTEXT_PACK_ENVELOPE_KEYS = frozenset({"generated_at", "receipt", "pin"})
+CONTEXT_PACK_ENVELOPE_KEYS = frozenset({"generated_at", "receipt", "pin", "cache"})
+M4_CONSOLIDATION_MAX_CONFLICTS = 2000
+M4_CONSOLIDATION_MAX_HOT_PACKS = 12
+M4_HOT_QUERY_MIN_USES = 2
 CONTEXT_LAYER_ORDER = ("constraints", "decisions", "facts", "entity", "procedures", "identity", "open_loops", "recency")
 # Per-intent budget weights (percent-like; normalized at pack time). The intent shapes WHICH
 # layers dominate: drafting leans on identity/constraints, acting on procedures, planning on
@@ -9548,6 +9554,10 @@ class CortexStore:
                 self.enqueue_trust_rescore(user_id)
             except Exception:
                 pass
+            try:
+                self.enqueue_memory_consolidation(user_id)
+            except Exception:
+                pass
         processed: list[dict[str, Any]] = []
         for _ in range(max(0, min(limit, 100))):
             job = self._claim_next_job(user_id, worker_id)
@@ -10462,7 +10472,11 @@ class CortexStore:
             anchor_results = memory_results[: max(1, limit - related_slot_count)]
             seen_memory_ids = {item["id"] for item in anchor_results}
             related_results: list[dict[str, Any]] = []
-            normalized_association_mode = str(association_mode or "ppr").strip().lower().replace("-", "_")
+            # `include_related=True` predates M7 and promises the direct stored
+            # relationship (shared_entity, same_capture, ...). Only an explicit
+            # associative request should default to PPR; public_search_payload
+            # resolves that distinction before calling this lower-level method.
+            normalized_association_mode = str(association_mode or "one_hop").strip().lower().replace("-", "_")
             if normalized_association_mode not in {"one_hop", "bounded", "ppr"}:
                 normalized_association_mode = "ppr"
             with connect(self.db_path) as conn:
@@ -10601,6 +10615,7 @@ class CortexStore:
         as_of: str | None = None,
     ) -> dict[str, Any]:
         diagnostics: dict[str, Any] = {}
+        resolved_association_mode = association_mode or ("ppr" if associative else None)
         results = self.search(
             user_id,
             query,
@@ -10612,7 +10627,7 @@ class CortexStore:
             source_account_id=source_account_id,
             metadata_filters=metadata_filters,
             include_related=include_related or associative,
-            association_mode=association_mode,
+            association_mode=resolved_association_mode,
             as_of=as_of,
             _diagnostics=diagnostics,
         )
@@ -11772,138 +11787,161 @@ class CortexStore:
         conflicts.sort(key=lambda c: (c["field"], c["current"]["memory_id"], c["stale"]["memory_id"]))
         return conflicts
 
-    def resolve_conflict(self, user_id: str, *, stale_id: str, current_id: str) -> bool:
-        """Human/agent-vouched resolution of a detected contradiction: mark the stale memory as
-        superseded_by the current one. After this, _memory_filters excludes the stale memory from
-        ALL retrieval, so agents only ever see the current fact. Never auto-called; never rewrites
-        content — it only records which memory won."""
+    def _resolve_conflict_in_conn(
+        self,
+        conn: sqlite3.Connection,
+        user_id: str,
+        *,
+        stale_id: str,
+        current_id: str,
+    ) -> tuple[bool, dict[str, Any] | None]:
+        """Apply one supersession inside the caller's transaction.
+
+        The returned vault patch is deliberately deferred until after the SQLite transaction
+        commits. This lets consolidation commit all authoritative row changes and audit decisions
+        atomically, while still keeping the rebuildable vault mirror synchronized afterward.
+        """
         stale_id = str(stale_id or "").strip()
         current_id = str(current_id or "").strip()
         if not stale_id or not current_id or stale_id == current_id:
-            return False
+            return False, None
         timestamp = _transaction_now_iso()
-        with connect(self.db_path) as conn:
-            valid = {
-                row["id"]
-                for row in conn.execute(
-                    "SELECT id FROM memories WHERE user_id = ? AND id IN (?, ?)",
-                    (user_id, stale_id, current_id),
-                ).fetchall()
-            }
-            if stale_id not in valid or current_id not in valid:
-                return False
-            stale_before = self._memory_from_row(
-                conn.execute(
-                    "SELECT * FROM memories WHERE user_id = ? AND id = ?",
-                    (user_id, stale_id),
-                ).fetchone()
-            )
-            current_memory = self._memory_from_row(
-                conn.execute(
-                    "SELECT * FROM memories WHERE user_id = ? AND id = ?",
-                    (user_id, current_id),
-                ).fetchone()
-            )
-            # Phase 3 invariant: an agent-authored memory may not supersede a user-authored
-            # one through the agent-facing tool path. Humans resolve that direction in the
-            # review UI (which edits/deletes directly), so here it is refused and audited.
-            classes = {
-                row["id"]: normalize_author_class(row["author_class"])
-                for row in conn.execute(
-                    "SELECT id, author_class FROM memories WHERE user_id = ? AND id IN (?, ?)",
-                    (user_id, stale_id, current_id),
-                ).fetchall()
-            }
-            if classes.get(stale_id) == "user" and classes.get(current_id) == "agent":
-                self._event(
-                    conn,
-                    user_id,
-                    stale_id,
-                    "memory",
-                    "supersede_blocked",
-                    {"target_id": stale_id, "current_id": current_id, "reason": "agent_over_user"},
-                )
-                return False
-            effective_at = str(
-                current_memory.get("valid_from")
-                or current_memory.get("occurred_at")
-                or timestamp
-            )
+        valid = {
+            row["id"]
+            for row in conn.execute(
+                "SELECT id FROM memories WHERE user_id = ? AND id IN (?, ?)",
+                (user_id, stale_id, current_id),
+            ).fetchall()
+        }
+        if stale_id not in valid or current_id not in valid:
+            return False, None
+        stale_before = self._memory_from_row(
             conn.execute(
-                """
-                UPDATE memories
-                SET superseded_by = ?, superseded_at = ?,
-                    valid_to = CASE WHEN valid_to IS NULL OR valid_to = '' THEN ? ELSE valid_to END,
-                    updated_at = ?
-                WHERE user_id = ? AND id = ?
-                """,
-                (current_id, timestamp, effective_at, timestamp, user_id, stale_id),
-            )
-            # Supersession lowers derived trust (Phase 3); rescore the stale row now so packs
-            # and the ledger agree without waiting for the nightly job.
-            stale_row = conn.execute(
                 "SELECT * FROM memories WHERE user_id = ? AND id = ?",
                 (user_id, stale_id),
             ).fetchone()
-            if stale_row:
-                stale_memory = self._memory_from_row(stale_row)
-                conn.execute(
-                    "UPDATE memories SET trust_score = ? WHERE user_id = ? AND id = ?",
-                    (
-                        self._derived_memory_trust_in_conn(
-                            conn,
-                            user_id,
-                            stale_memory,
-                            superseded=True,
-                        ),
-                        user_id,
-                        stale_id,
-                    ),
-                )
-            stale_after = self._memory_from_row(
-                conn.execute(
-                    "SELECT * FROM memories WHERE user_id = ? AND id = ?",
-                    (user_id, stale_id),
-                ).fetchone()
-            )
-            # Supersession changes our current knowledge of the stale belief's valid-time interval.
-            # Seal that corrected interval as a new transaction-time version before recording the
-            # relationship receipt. Historical valid-time queries can then still return the old fact
-            # for dates before effective_at without reviving it for dates after the replacement.
-            self._record_belief_snapshot_event(
-                conn,
-                user_id,
-                stale_after,
-                created_at=timestamp,
-                reason="conflict_resolved",
-            )
+        )
+        current_memory = self._memory_from_row(
+            conn.execute(
+                "SELECT * FROM memories WHERE user_id = ? AND id = ?",
+                (user_id, current_id),
+            ).fetchone()
+        )
+        # Phase 3 invariant: an agent-authored memory may not supersede a user-authored
+        # one through the agent-facing tool path. Humans resolve that direction in the
+        # review UI (which edits/deletes directly), so here it is refused and audited.
+        classes = {
+            row["id"]: normalize_author_class(row["author_class"])
+            for row in conn.execute(
+                "SELECT id, author_class FROM memories WHERE user_id = ? AND id IN (?, ?)",
+                (user_id, stale_id, current_id),
+            ).fetchall()
+        }
+        if classes.get(stale_id) == "user" and classes.get(current_id) == "agent":
             self._event(
                 conn,
                 user_id,
+                stale_id,
                 "memory",
-                "memory",
-                "conflict_resolved",
-                {"stale_id": stale_id, "current_id": current_id},
+                "supersede_blocked",
+                {"target_id": stale_id, "current_id": current_id, "reason": "agent_over_user"},
             )
-            self._record_belief_supersession_event(
-                conn,
-                user_id,
-                stale=stale_before,
-                current=current_memory,
-                effective_at=effective_at,
-                created_at=timestamp,
-                reason="conflict_resolved",
+            return False, None
+        effective_at = str(
+            current_memory.get("valid_from")
+            or current_memory.get("occurred_at")
+            or timestamp
+        )
+        conn.execute(
+            """
+            UPDATE memories
+            SET superseded_by = ?, superseded_at = ?,
+                valid_to = CASE WHEN valid_to IS NULL OR valid_to = '' THEN ? ELSE valid_to END,
+                updated_at = ?
+            WHERE user_id = ? AND id = ?
+            """,
+            (current_id, timestamp, effective_at, timestamp, user_id, stale_id),
+        )
+        # Supersession lowers derived trust (Phase 3); rescore the stale row now so packs
+        # and the ledger agree without waiting for the nightly job.
+        stale_row = conn.execute(
+            "SELECT * FROM memories WHERE user_id = ? AND id = ?",
+            (user_id, stale_id),
+        ).fetchone()
+        if stale_row:
+            stale_memory = self._memory_from_row(stale_row)
+            conn.execute(
+                "UPDATE memories SET trust_score = ? WHERE user_id = ? AND id = ?",
+                (
+                    self._derived_memory_trust_in_conn(
+                        conn,
+                        user_id,
+                        stale_memory,
+                        superseded=True,
+                    ),
+                    user_id,
+                    stale_id,
+                ),
             )
-        self.vault.patch_memory(
-            stale_id,
-            {
+        stale_after = self._memory_from_row(
+            conn.execute(
+                "SELECT * FROM memories WHERE user_id = ? AND id = ?",
+                (user_id, stale_id),
+            ).fetchone()
+        )
+        # Supersession changes our current knowledge of the stale belief's valid-time interval.
+        # Seal that corrected interval as a new transaction-time version before recording the
+        # relationship receipt. Historical valid-time queries can then still return the old fact
+        # for dates before effective_at without reviving it for dates after the replacement.
+        self._record_belief_snapshot_event(
+            conn,
+            user_id,
+            stale_after,
+            created_at=timestamp,
+            reason="conflict_resolved",
+        )
+        self._event(
+            conn,
+            user_id,
+            "memory",
+            "memory",
+            "conflict_resolved",
+            {"stale_id": stale_id, "current_id": current_id},
+        )
+        self._record_belief_supersession_event(
+            conn,
+            user_id,
+            stale=stale_before,
+            current=current_memory,
+            effective_at=effective_at,
+            created_at=timestamp,
+            reason="conflict_resolved",
+        )
+        return True, {
+            "memory_id": stale_id,
+            "updates": {
                 "superseded_by": current_id,
                 "superseded_at": timestamp,
                 "valid_to": stale_before.get("valid_to") or effective_at,
                 "updated_at": timestamp,
             },
-        )
-        return True
+        }
+
+    def resolve_conflict(self, user_id: str, *, stale_id: str, current_id: str) -> bool:
+        """Human/agent-vouched resolution of a detected contradiction: mark the stale memory as
+        superseded_by the current one. After this, _memory_filters excludes the stale memory from
+        ALL retrieval, so agents only ever see the current fact. Never rewrites content; it only
+        records which memory won."""
+        with connect(self.db_path) as conn:
+            applied, vault_patch = self._resolve_conflict_in_conn(
+                conn,
+                user_id,
+                stale_id=stale_id,
+                current_id=current_id,
+            )
+        if applied and vault_patch:
+            self.vault.patch_memory(vault_patch["memory_id"], vault_patch["updates"])
+        return applied
 
     @staticmethod
     def _belief_snapshot(memory: dict[str, Any]) -> dict[str, Any]:
@@ -15646,6 +15684,744 @@ class CortexStore:
             "product_loop": self.product_loop(user_id),
         }
 
+    # ------------------------------------------------------------------
+    # M4: Complementary Learning Systems, prove-first consolidation layer
+    # ------------------------------------------------------------------
+
+    def _context_corpus_revision(self, user_id: str) -> int:
+        """Cheap, trigger-maintained invalidation token for derived context artifacts.
+
+        The revision advances on memory/task/settings changes, including direct SQL writes.
+        Immutable context-pack bytes remain the audit artifact; this token only decides whether
+        a derived hot-cache pointer is still allowed to serve them as current context.
+        """
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT revision FROM memory_corpus_revisions WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        return int(row["revision"] or 0) if row is not None else 0
+
+    @staticmethod
+    def _hot_context_request(
+        *,
+        task: str,
+        surface: str,
+        token_budget: int,
+        sector: str | None,
+        project: str | None,
+        intent: str,
+        include_identity: bool,
+    ) -> dict[str, Any]:
+        return {
+            "task": str(task or "").strip()[:500],
+            "surface": str(surface or "agent").strip().lower()[:40] or "agent",
+            "token_budget": int(token_budget),
+            "sector": _normalize_sector_filter(sector) or None,
+            "project": str(project or "").strip()[:240] or None,
+            "intent": str(intent or "answer").strip().lower()[:40] or "answer",
+            "include_identity": bool(include_identity),
+        }
+
+    @staticmethod
+    def _hot_context_cache_key(request: dict[str, Any]) -> str:
+        canonical = json.dumps(request, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _cached_pack_object_ids(pack: dict[str, Any]) -> tuple[set[str], set[str]]:
+        memory_ids: set[str] = set()
+        task_ids: set[str] = set()
+        for layer in pack.get("layers") or []:
+            if not isinstance(layer, dict):
+                continue
+            for item in layer.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                memory_id = str(item.get("memory_id") or "").strip()
+                task_id = str(item.get("task_id") or "").strip()
+                if memory_id:
+                    memory_ids.add(memory_id)
+                if task_id:
+                    task_ids.add(task_id)
+        return memory_ids, task_ids
+
+    def _cached_pack_is_current(self, user_id: str, pack: dict[str, Any]) -> bool:
+        """Re-check currentness independently of the coarse revision token.
+
+        This is intentionally cheap and strict: every cached citation must still resolve to an
+        active, non-superseded memory or an open task owned by the same user. A cache failure is a
+        miss, never a degraded or partially served pack.
+        """
+        memory_ids, task_ids = self._cached_pack_object_ids(pack)
+        with connect(self.db_path) as conn:
+            if memory_ids:
+                placeholders = ",".join("?" for _ in memory_ids)
+                active = conn.execute(
+                    f"""
+                    SELECT COUNT(*) FROM memories
+                    WHERE user_id = ? AND id IN ({placeholders})
+                      AND status = 'active'
+                      AND (superseded_by IS NULL OR superseded_by = '')
+                    """,
+                    [user_id, *sorted(memory_ids)],
+                ).fetchone()[0]
+                if int(active or 0) != len(memory_ids):
+                    return False
+            if task_ids:
+                placeholders = ",".join("?" for _ in task_ids)
+                active = conn.execute(
+                    f"""
+                    SELECT COUNT(*) FROM tasks
+                    WHERE user_id = ? AND id IN ({placeholders}) AND status = 'open'
+                    """,
+                    [user_id, *sorted(task_ids)],
+                ).fetchone()[0]
+                if int(active or 0) != len(task_ids):
+                    return False
+        return True
+
+    def _load_hot_context_pack(
+        self,
+        user_id: str,
+        request: dict[str, Any],
+        *,
+        record_hit: bool = True,
+    ) -> dict[str, Any] | None:
+        cache_key = self._hot_context_cache_key(request)
+        revision = self._context_corpus_revision(user_id)
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM hot_context_packs WHERE user_id = ? AND cache_key = ?",
+                (user_id, cache_key),
+            ).fetchone()
+            if row is None or row["status"] != "active":
+                return None
+            stored_revision = int(row["source_revision"]) if row["source_revision"] is not None else -1
+            if stored_revision != revision or int(row["engine_version"] or 0) != CONTEXT_ENGINE_VERSION:
+                conn.execute(
+                    "UPDATE hot_context_packs SET status = 'stale', updated_at = ? WHERE user_id = ? AND cache_key = ?",
+                    (now_iso(), user_id, cache_key),
+                )
+                return None
+        try:
+            stored = self.get_context_pack(user_id, str(row["pack_sha"] or ""))
+        except (ValueError, OSError, json.JSONDecodeError):
+            with connect(self.db_path) as conn:
+                conn.execute(
+                    "UPDATE hot_context_packs SET status = 'invalid', updated_at = ? WHERE user_id = ? AND cache_key = ?",
+                    (now_iso(), user_id, cache_key),
+                )
+            return None
+        pack = stored.get("pack") if isinstance(stored.get("pack"), dict) else None
+        if pack is None or not self._cached_pack_is_current(user_id, pack):
+            with connect(self.db_path) as conn:
+                conn.execute(
+                    "UPDATE hot_context_packs SET status = 'stale', updated_at = ? WHERE user_id = ? AND cache_key = ?",
+                    (now_iso(), user_id, cache_key),
+                )
+            return None
+        result = dict(pack)
+        result["generated_at"] = now_iso()
+        result["receipt"] = {"tool": "get_context", "audited": True, "event_kind": "context_pack"}
+        result["cache"] = {
+            "hit": True,
+            "cache_key": cache_key,
+            "pack_sha": stored["pack_sha"],
+            "source_revision": revision,
+            "verified": bool(stored.get("verified")),
+            "model": "verified_hot_pack_v1",
+        }
+        if record_hit:
+            timestamp = now_iso()
+            with connect(self.db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE hot_context_packs
+                    SET hit_count = hit_count + 1, last_hit_at = ?, updated_at = ?
+                    WHERE user_id = ? AND cache_key = ?
+                    """,
+                    (timestamp, timestamp, user_id, cache_key),
+                )
+                self._event(
+                    conn,
+                    user_id,
+                    stored["pack_sha"],
+                    "context_cache",
+                    "cache_hit",
+                    {"cache_key": cache_key, "source_revision": revision},
+                )
+        return result
+
+    def _store_hot_context_pack(
+        self,
+        user_id: str,
+        request: dict[str, Any],
+        pack: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not pack.get("citations"):
+            raise ValueError("Hot context packs require at least one cited item.")
+        pinned = self.pin_context_pack(user_id, pack)
+        cache_key = self._hot_context_cache_key(request)
+        revision = self._context_corpus_revision(user_id)
+        timestamp = now_iso()
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO hot_context_packs
+                (user_id, cache_key, source_revision, pack_sha, request_json, engine_version,
+                 status, hit_count, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'active', 0, ?, ?)
+                ON CONFLICT(user_id, cache_key) DO UPDATE SET
+                  source_revision = excluded.source_revision,
+                  pack_sha = excluded.pack_sha,
+                  request_json = excluded.request_json,
+                  engine_version = excluded.engine_version,
+                  status = 'active',
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    cache_key,
+                    revision,
+                    pinned["pack_sha"],
+                    json.dumps(request, sort_keys=True),
+                    CONTEXT_ENGINE_VERSION,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            self._event(
+                conn,
+                user_id,
+                pinned["pack_sha"],
+                "context_cache",
+                "cache_warmed",
+                {"cache_key": cache_key, "source_revision": revision},
+            )
+        return {
+            "cache_key": cache_key,
+            "pack_sha": pinned["pack_sha"],
+            "source_revision": revision,
+            "verified": bool(self.get_context_pack(user_id, pinned["pack_sha"]).get("verified")),
+        }
+
+    def hot_context_cache_status(self, user_id: str, *, limit: int = 20) -> dict[str, Any]:
+        bounded = max(1, min(int(limit or 20), 100))
+        revision = self._context_corpus_revision(user_id)
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM hot_context_packs
+                WHERE user_id = ? ORDER BY updated_at DESC LIMIT ?
+                """,
+                (user_id, bounded),
+            ).fetchall()
+        entries = []
+        for row in rows:
+            request = self._json_or_empty(row["request_json"])
+            entries.append(
+                {
+                    "cache_key": row["cache_key"],
+                    "pack_sha": row["pack_sha"],
+                    "request": request,
+                    "status": row["status"],
+                    "source_revision": int(row["source_revision"] or 0),
+                    "current_revision": revision,
+                    "current": row["status"] == "active"
+                    and (int(row["source_revision"]) if row["source_revision"] is not None else -1) == revision,
+                    "hit_count": int(row["hit_count"] or 0),
+                    "last_hit_at": row["last_hit_at"],
+                    "updated_at": row["updated_at"],
+                }
+            )
+        return {
+            "generated_at": now_iso(),
+            "source_revision": revision,
+            "entries": entries,
+            "active": sum(1 for entry in entries if entry["current"]),
+        }
+
+    def _recent_hot_context_requests(self, user_id: str, *, limit: int) -> list[dict[str, Any]]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT metadata_json FROM memory_events
+                WHERE user_id = ? AND object_type = 'loop' AND event_type = 'context_reused'
+                  AND created_at >= datetime('now', '-30 days')
+                ORDER BY created_at DESC, rowid DESC LIMIT 1000
+                """,
+                (user_id,),
+            ).fetchall()
+        counts: dict[tuple[str, str], int] = {}
+        for row in rows:
+            metadata = self._json_or_empty(row["metadata_json"])
+            task = str(metadata.get("query") or "").strip()
+            if not task:
+                continue
+            surface = str(metadata.get("surface") or "agent").strip().lower() or "agent"
+            key = (task[:500], surface[:40])
+            counts[key] = counts.get(key, 0) + 1
+        ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        requests: list[dict[str, Any]] = []
+        for (task, surface), uses in ranked:
+            if uses < M4_HOT_QUERY_MIN_USES:
+                continue
+            requests.append(
+                self._hot_context_request(
+                    task=task,
+                    surface=surface,
+                    token_budget=2000,
+                    sector=None,
+                    project=None,
+                    intent=_derive_context_intent(task, None),
+                    include_identity=True,
+                )
+            )
+            if len(requests) >= limit:
+                break
+        return requests
+
+    @staticmethod
+    def _consolidation_claim_scope(memory: dict[str, Any], field: str) -> str:
+        """Extract an explicit subject scope from a deterministic field claim.
+
+        The legacy conflict detector groups by claim field. That is useful for surfacing review
+        candidates, but a field like "owner" or "database" can legitimately differ across
+        projects. Sleep-time auto-resolution therefore requires both claims to name the same
+        explicit `for/in/on the ...` scope. Missing or different scopes fail closed to review.
+        """
+        text = " ".join(str(memory.get(key) or "") for key in ("content", "summary", "raw_excerpt"))
+        normalized_field = re.sub(r"\s+", " ", str(field or "").casefold()).strip()
+        for match in ANSWER_CLAIM_RE.finditer(text):
+            matched_field = re.sub(r"\s+", " ", match.group("field").casefold()).strip()
+            if matched_field != normalized_field:
+                continue
+            scope_match = re.search(
+                r"\b(?:for|in|on)\s+(?:the\s+)?(?P<scope>[^,.;\n]+)$",
+                match.group("value"),
+                re.IGNORECASE,
+            )
+            if scope_match is None:
+                return ""
+            return re.sub(r"\s+", " ", scope_match.group("scope").casefold()).strip()[:160]
+        return ""
+
+    def _consolidation_resolution_is_safe(self, user_id: str, conflict: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+        current_id = str((conflict.get("current") or {}).get("memory_id") or "")
+        stale_id = str((conflict.get("stale") or {}).get("memory_id") or "")
+        if not current_id or not stale_id:
+            return False, {"reason": "missing_memory_id"}
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM memories WHERE user_id = ? AND id IN (?, ?)",
+                (user_id, current_id, stale_id),
+            ).fetchall()
+        by_id = {str(row["id"]): self._memory_from_row(row) for row in rows}
+        current = by_id.get(current_id)
+        stale = by_id.get(stale_id)
+        if current is None or stale is None:
+            return False, {"reason": "memory_missing"}
+        current_author = normalize_author_class(current.get("author_class"))
+        stale_author = normalize_author_class(stale.get("author_class"))
+        current_principal = str(current.get("author_principal_id") or "")
+        stale_principal = str(stale.get("author_principal_id") or "")
+        current_trust = normalize_trust_score(current.get("trust_score"), current_author)
+        stale_trust = normalize_trust_score(stale.get("trust_score"), stale_author)
+        reason = str(conflict.get("reason") or "")
+        field = str(conflict.get("field") or "")
+        current_scope = self._consolidation_claim_scope(current, field)
+        stale_scope = self._consolidation_claim_scope(stale, field)
+        same_claim_scope = bool(current_scope and stale_scope and current_scope == stale_scope)
+        same_authority = current_author == stale_author and current_principal == stale_principal
+        user_over_machine = current_author == "user" and stale_author in {"agent", "connector", "unknown"}
+        # A machine-authored claim never becomes authoritative over a user's claim merely because
+        # its derived trust score is higher. Automatic resolution is limited to the same explicit
+        # principal, or a user replacing machine-authored content. Everything else remains review.
+        safe = current_trust >= 0.6 and same_claim_scope and (
+            (same_authority and reason in {"newer_timestamp", "current_language", "authority"})
+            or user_over_machine
+        )
+        proof = {
+            "current_author_class": current_author,
+            "stale_author_class": stale_author,
+            "same_principal": current_principal == stale_principal,
+            "current_trust": round(current_trust, 4),
+            "stale_trust": round(stale_trust, 4),
+            "selection_reason": reason,
+            "current_scope": current_scope or None,
+            "stale_scope": stale_scope or None,
+            "same_claim_scope": same_claim_scope,
+            "safe": bool(safe),
+        }
+        return bool(safe), proof
+
+    @staticmethod
+    def _latency_percentile(values: list[float], percentile: float) -> float | None:
+        if not values:
+            return None
+        ordered = sorted(values)
+        index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * percentile))))
+        return round(float(ordered[index]), 3)
+
+    def run_memory_consolidation(
+        self,
+        user_id: str,
+        *,
+        hot_requests: list[dict[str, Any]] | None = None,
+        auto_resolve_safe: bool = True,
+        max_conflicts: int = M4_CONSOLIDATION_MAX_CONFLICTS,
+        max_hot_packs: int = M4_CONSOLIDATION_MAX_HOT_PACKS,
+        _internal: bool = False,
+    ) -> dict[str, Any]:
+        """Run the M4 sleep pass without making derived artifacts authoritative.
+
+        The pass resolves only deterministic same-authority/high-trust contradictions, records
+        every decision, then precomputes immutable cited packs for repeated tasks. Cached packs are
+        served only while their trigger-maintained corpus revision and citation currentness match.
+        """
+        if not _internal:
+            self.require_agent_access(user_id, "maintenance")
+        bounded_conflicts = max(1, min(int(max_conflicts or M4_CONSOLIDATION_MAX_CONFLICTS), 10000))
+        bounded_packs = max(0, min(int(max_hot_packs), 50))
+        started_at = now_iso()
+        run_id = stable_id("cons_", f"{user_id}:{started_at}:{uuid.uuid4().hex}")
+        revision_before = self._context_corpus_revision(user_id)
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO memory_consolidation_runs
+                (id, user_id, status, source_revision_before, started_at)
+                VALUES (?, ?, 'running', ?, ?)
+                """,
+                (run_id, user_id, revision_before, started_at),
+            )
+        mutation_phase_committed = False
+        resolved = 0
+        review_required = 0
+        decisions: list[dict[str, Any]] = []
+        vault_warnings: list[dict[str, str]] = []
+        try:
+            conflicts = self.detect_conflicts(user_id, limit=bounded_conflicts)
+            planned: list[dict[str, Any]] = []
+            for conflict in conflicts:
+                current_id = str((conflict.get("current") or {}).get("memory_id") or "")
+                stale_id = str((conflict.get("stale") or {}).get("memory_id") or "")
+                safe, proof = self._consolidation_resolution_is_safe(user_id, conflict)
+                planned.append({
+                    "field": str(conflict.get("field") or ""),
+                    "current_memory_id": current_id,
+                    "stale_memory_id": stale_id,
+                    "reason": str(conflict.get("reason") or ""),
+                    "proof": proof,
+                    "safe": bool(safe),
+                })
+
+            # All authoritative row mutations and their audit decisions share one SQLite
+            # transaction. If any decision or supersession fails, the entire phase rolls back.
+            # The corpus-revision comparison prevents applying a plan to concurrently changed data.
+            vault_patches: list[dict[str, Any]] = []
+            with connect(self.db_path) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                revision_row = conn.execute(
+                    "SELECT revision FROM memory_corpus_revisions WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
+                revision_at_apply = int(revision_row["revision"] or 0) if revision_row is not None else 0
+                if revision_at_apply != revision_before:
+                    raise RuntimeError(
+                        "Memory corpus changed while consolidation was planning; retry the run."
+                    )
+                for plan in planned:
+                    applied = False
+                    vault_patch = None
+                    if auto_resolve_safe and plan["safe"]:
+                        applied, vault_patch = self._resolve_conflict_in_conn(
+                            conn,
+                            user_id,
+                            stale_id=plan["stale_memory_id"],
+                            current_id=plan["current_memory_id"],
+                        )
+                    decision = "auto_resolved" if applied else "review_required"
+                    resolved += int(applied)
+                    review_required += int(not applied)
+                    record = {
+                        key: plan[key]
+                        for key in (
+                            "field",
+                            "current_memory_id",
+                            "stale_memory_id",
+                            "reason",
+                            "proof",
+                        )
+                    }
+                    record["decision"] = decision
+                    decisions.append(record)
+                    if vault_patch is not None:
+                        vault_patches.append(vault_patch)
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO memory_consolidation_decisions
+                        (run_id, user_id, field, current_memory_id, stale_memory_id,
+                         decision, reason, proof_json, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            run_id,
+                            user_id,
+                            record["field"],
+                            record["current_memory_id"],
+                            record["stale_memory_id"],
+                            decision,
+                            record["reason"],
+                            json.dumps(record["proof"], sort_keys=True),
+                            now_iso(),
+                        ),
+                    )
+                conn.execute(
+                    """
+                    UPDATE memory_consolidation_runs
+                    SET status = 'mutations_committed', conflicts_detected = ?,
+                        conflicts_auto_resolved = ?, conflicts_review_required = ?
+                    WHERE id = ? AND user_id = ?
+                    """,
+                    (len(conflicts), resolved, review_required, run_id, user_id),
+                )
+            mutation_phase_committed = True
+
+            # The vault is a rebuild source, not part of SQLite's transaction domain. Patch it only
+            # after the atomic mutation phase and surface any mirror failure as an explicit warning
+            # instead of falsely reporting that the authoritative transaction rolled back.
+            for vault_patch in vault_patches:
+                try:
+                    patched = self.vault.patch_memory(vault_patch["memory_id"], vault_patch["updates"])
+                    if not patched:
+                        vault_warnings.append({
+                            "memory_id": str(vault_patch["memory_id"]),
+                            "error": "vault memory mirror was not found",
+                        })
+                except Exception as exc:
+                    vault_warnings.append({
+                        "memory_id": str(vault_patch["memory_id"]),
+                        "error": str(exc)[:500],
+                    })
+
+            remaining_conflicts = self.detect_conflicts(user_id, limit=bounded_conflicts)
+            requests = []
+            for raw in (hot_requests or []):
+                if not isinstance(raw, dict):
+                    continue
+                task = str(raw.get("task") or raw.get("query") or "").strip()
+                if not task:
+                    continue
+                token_budget = _bounded_int(
+                    raw.get("token_budget"),
+                    minimum=CONTEXT_MIN_TOKEN_BUDGET,
+                    maximum=CONTEXT_MAX_TOKEN_BUDGET,
+                ) or 2000
+                raw_include_identity = raw.get("include_identity", True)
+                include_identity = raw_include_identity if isinstance(raw_include_identity, bool) else True
+                requests.append(
+                    self._hot_context_request(
+                        task=task,
+                        surface=str(raw.get("surface") or "agent"),
+                        token_budget=token_budget,
+                        sector=raw.get("sector"),
+                        project=raw.get("project"),
+                        intent=_derive_context_intent(task, raw.get("intent")),
+                        include_identity=include_identity,
+                    )
+                )
+            if not requests:
+                requests = self._recent_hot_context_requests(user_id, limit=bounded_packs)
+            requests = requests[:bounded_packs]
+
+            cold_latencies_ms: list[float] = []
+            hot_latencies_ms: list[float] = []
+            warmed: list[dict[str, Any]] = []
+            verified = 0
+            cache_warnings: list[dict[str, str]] = []
+            for request in requests:
+                try:
+                    t0 = time.perf_counter()
+                    pack = self.assemble_context(
+                        user_id,
+                        request["task"],
+                        surface=request["surface"],
+                        token_budget=request["token_budget"],
+                        sector=request.get("sector"),
+                        project=request.get("project"),
+                        intent=request["intent"],
+                        include_identity=bool(request["include_identity"]),
+                        format="json",
+                        pin=False,
+                        record_reuse=False,
+                        use_hot_cache=False,
+                    )
+                    cold_latencies_ms.append((time.perf_counter() - t0) * 1000.0)
+                    if not isinstance(pack, dict) or not pack.get("citations"):
+                        continue
+                    cache_entry = self._store_hot_context_pack(user_id, request, pack)
+                    warmed.append(cache_entry)
+                    t0 = time.perf_counter()
+                    cached = self._load_hot_context_pack(user_id, request, record_hit=False)
+                    hot_latencies_ms.append((time.perf_counter() - t0) * 1000.0)
+                    if cached is None:
+                        warmed[-1]["verified"] = False
+                    else:
+                        independently_served = bool((cached.get("cache") or {}).get("verified"))
+                        warmed[-1]["verified"] = independently_served
+                        verified += int(independently_served)
+                except Exception as exc:
+                    cache_warnings.append({
+                        "task": str(request.get("task") or "")[:200],
+                        "error": str(exc)[:500],
+                    })
+
+            revision_after = self._context_corpus_revision(user_id)
+            verification_rate = round(verified / len(warmed), 4) if warmed else None
+            cold_p50 = self._latency_percentile(cold_latencies_ms, 0.5)
+            hot_p50 = self._latency_percentile(hot_latencies_ms, 0.5)
+            latency_improved = bool(cold_p50 is not None and hot_p50 is not None and hot_p50 < cold_p50)
+            metrics = {
+                "contradictions_before": len(conflicts),
+                "contradictions_after": len(remaining_conflicts),
+                "contradiction_reduction": len(conflicts) - len(remaining_conflicts),
+                "cache_verification_rate": verification_rate,
+                "cold_latency_p50_ms": cold_p50,
+                "hot_latency_p50_ms": hot_p50,
+                "hot_latency_p95_ms": self._latency_percentile(hot_latencies_ms, 0.95),
+                "latency_improved": latency_improved,
+                "adapter_stage_eligible": bool(warmed and verification_rate == 1.0 and latency_improved),
+                "adapter_stage": "defer_until_verified_cache_has_repeatable_gain",
+                "vault_warnings": vault_warnings,
+                "cache_warnings": cache_warnings,
+            }
+            final_status = "succeeded_with_warnings" if vault_warnings or cache_warnings else "succeeded"
+            completed_at = now_iso()
+            with connect(self.db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE memory_consolidation_runs
+                    SET status = ?, source_revision_after = ?, conflicts_detected = ?,
+                        conflicts_auto_resolved = ?, conflicts_review_required = ?, packs_warmed = ?,
+                        metrics_json = ?, completed_at = ?
+                    WHERE id = ? AND user_id = ?
+                    """,
+                    (
+                        final_status,
+                        revision_after,
+                        len(conflicts),
+                        resolved,
+                        review_required,
+                        len(warmed),
+                        json.dumps(metrics, sort_keys=True),
+                        completed_at,
+                        run_id,
+                        user_id,
+                    ),
+                )
+                self._event(
+                    conn,
+                    user_id,
+                    run_id,
+                    "memory_consolidation",
+                    "consolidation_completed",
+                    {**metrics, "auto_resolved": resolved, "review_required": review_required, "packs_warmed": len(warmed)},
+                )
+            return {
+                "run_id": run_id,
+                "status": final_status,
+                "started_at": started_at,
+                "completed_at": completed_at,
+                "source_revision_before": revision_before,
+                "source_revision_after": revision_after,
+                "conflicts_detected": len(conflicts),
+                "conflicts_auto_resolved": resolved,
+                "conflicts_review_required": review_required,
+                "decisions": decisions,
+                "packs_warmed": warmed,
+                "metrics": metrics,
+                "invariants": [
+                    "The vault and current memory rows remain authoritative; cached packs are derived artifacts only.",
+                    "Every served hot pack is content-hash verified, revision-current, tenant-scoped, and citation-current.",
+                    "Unresolved or unsafe contradictions remain visible for review and are never silently rewritten.",
+                ],
+            }
+        except Exception as exc:
+            completed_at = now_iso()
+            failure_status = "failed_after_mutations" if mutation_phase_committed else "failed"
+            with connect(self.db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE memory_consolidation_runs
+                    SET status = ?, completed_at = ?, last_error = ?
+                    WHERE id = ? AND user_id = ?
+                    """,
+                    (failure_status, completed_at, str(exc)[:1000], run_id, user_id),
+                )
+            raise
+
+    def get_memory_consolidation(self, user_id: str, *, limit: int = 10) -> dict[str, Any]:
+        bounded = max(1, min(int(limit or 10), 100))
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM memory_consolidation_runs
+                WHERE user_id = ? ORDER BY started_at DESC LIMIT ?
+                """,
+                (user_id, bounded),
+            ).fetchall()
+            run_ids = [str(row["id"]) for row in rows]
+            decision_rows = []
+            if run_ids:
+                placeholders = ",".join("?" for _ in run_ids)
+                decision_rows = conn.execute(
+                    f"""
+                    SELECT * FROM memory_consolidation_decisions
+                    WHERE user_id = ? AND run_id IN ({placeholders})
+                    ORDER BY created_at ASC, field ASC, current_memory_id ASC, stale_memory_id ASC
+                    """,
+                    [user_id, *run_ids],
+                ).fetchall()
+        decisions_by_run: dict[str, list[dict[str, Any]]] = {run_id: [] for run_id in run_ids}
+        for row in decision_rows:
+            decisions_by_run.setdefault(str(row["run_id"]), []).append(
+                {
+                    "field": row["field"],
+                    "current_memory_id": row["current_memory_id"],
+                    "stale_memory_id": row["stale_memory_id"],
+                    "decision": row["decision"],
+                    "reason": row["reason"],
+                    "proof": self._json_or_empty(row["proof_json"]),
+                    "created_at": row["created_at"],
+                }
+            )
+        runs = []
+        for row in rows:
+            run_id = str(row["id"])
+            runs.append({
+                "run_id": run_id,
+                "status": row["status"],
+                "source_revision_before": int(row["source_revision_before"] or 0),
+                "source_revision_after": int(row["source_revision_after"] or 0) if row["source_revision_after"] is not None else None,
+                "conflicts_detected": int(row["conflicts_detected"] or 0),
+                "conflicts_auto_resolved": int(row["conflicts_auto_resolved"] or 0),
+                "conflicts_review_required": int(row["conflicts_review_required"] or 0),
+                "packs_warmed": int(row["packs_warmed"] or 0),
+                "metrics": self._json_or_empty(row["metrics_json"]),
+                "started_at": row["started_at"],
+                "completed_at": row["completed_at"],
+                "last_error": row["last_error"],
+                "decisions": decisions_by_run.get(run_id, []),
+            })
+        return {
+            "generated_at": now_iso(),
+            "source_revision": self._context_corpus_revision(user_id),
+            "runs": runs,
+            "hot_cache": self.hot_context_cache_status(user_id, limit=limit),
+        }
+
     def assemble_context(
         self,
         user_id: str,
@@ -15662,6 +16438,7 @@ class CortexStore:
         pin: bool = False,
         session_id: str | None = None,
         record_reuse: bool = True,
+        use_hot_cache: bool = True,
     ) -> dict[str, Any] | str:
         """The context assembly engine: given a task (+ surface + budget), build a
         token-budgeted, permissioned, cited context pack for an external agent.
@@ -15697,6 +16474,26 @@ class CortexStore:
         else:
             resolved_intent = _derive_context_intent(task, intent)
         output_format = str(format or "json").strip().lower()
+        hot_request = self._hot_context_request(
+            task=task,
+            surface=surface,
+            token_budget=token_budget,
+            sector=sector,
+            project=project,
+            intent=resolved_intent,
+            include_identity=include_identity,
+        )
+        if use_hot_cache and not pin and not session_id and not as_of:
+            cached = self._load_hot_context_pack(user_id, hot_request)
+            if cached is not None:
+                if record_reuse:
+                    try:
+                        self.record_context_reuse(user_id, surface=surface, query=task, target="context-cache")
+                    except Exception:
+                        pass
+                if output_format == "markdown":
+                    return self._render_context_markdown(cached)
+                return cached
         user_settings = self.settings(user_id)
         redact_sensitive = bool(user_settings["redact_sensitive_context"])
 
@@ -22994,6 +23791,8 @@ class CortexStore:
                 result = self._process_source_account_sync_job(job)
             elif job["job_type"] == "rescore_trust":
                 result = self._process_rescore_trust_job(job)
+            elif job["job_type"] == "sleep_consolidation":
+                result = self._process_sleep_consolidation_job(job)
             else:
                 raise ValueError(f"Unsupported memory job type: {job['job_type']}")
             completed = self._complete_job(job["id"], result)
@@ -23006,6 +23805,30 @@ class CortexStore:
             return completed
         except Exception as exc:
             return self._fail_job(job, str(exc))
+
+    def _process_sleep_consolidation_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+        result = self.run_memory_consolidation(
+            job["user_id"],
+            hot_requests=payload.get("hot_requests") if isinstance(payload.get("hot_requests"), list) else None,
+            auto_resolve_safe=bool(payload.get("auto_resolve_safe", True)),
+            max_conflicts=int(payload.get("max_conflicts") or M4_CONSOLIDATION_MAX_CONFLICTS),
+            max_hot_packs=int(
+                payload["max_hot_packs"]
+                if payload.get("max_hot_packs") is not None
+                else M4_CONSOLIDATION_MAX_HOT_PACKS
+            ),
+            _internal=True,
+        )
+        return {
+            "run_id": result["run_id"],
+            "status": result["status"],
+            "conflicts_auto_resolved": result["conflicts_auto_resolved"],
+            "conflicts_review_required": result["conflicts_review_required"],
+            "packs_warmed": len(result.get("packs_warmed") or []),
+            "metrics": result.get("metrics") or {},
+            "completed_at": result["completed_at"],
+        }
 
     def _process_source_account_sync_job(self, job: dict[str, Any]) -> dict[str, Any]:
         payload = job.get("payload") or {}
@@ -23511,6 +24334,89 @@ class CortexStore:
                 run_at=run_at,
                 max_attempts=2,
             )
+
+    def enqueue_memory_consolidation(
+        self,
+        user_id: str,
+        *,
+        run_at: str | None = None,
+        hot_requests: list[dict[str, Any]] | None = None,
+        auto_resolve_safe: bool = True,
+    ) -> dict[str, Any]:
+        """Queue one off-peak M4 consolidation pass per UTC day."""
+        if run_at is None:
+            now = datetime.now(timezone.utc)
+            due = now.replace(hour=3, minute=30, second=0, microsecond=0)
+            if due <= now:
+                due += timedelta(days=1)
+            run_at = due.strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        target_day = str(run_at)[:10] or now_iso()[:10]
+        payload = {
+            "hot_requests": hot_requests or [],
+            "auto_resolve_safe": bool(auto_resolve_safe),
+            "max_conflicts": M4_CONSOLIDATION_MAX_CONFLICTS,
+            "max_hot_packs": M4_CONSOLIDATION_MAX_HOT_PACKS,
+        }
+        with connect(self.db_path) as conn:
+            job = self._enqueue_job(
+                conn,
+                user_id=user_id,
+                job_type="sleep_consolidation",
+                object_type="user",
+                object_id=user_id,
+                unique_key=f"sleep_consolidation:{user_id}:{target_day}",
+                payload=payload,
+                priority=160,
+                run_at=run_at,
+                max_attempts=2,
+            )
+            if job["status"] != "queued":
+                return job
+
+            # A repeated same-day enqueue must not silently discard a later caller's work or
+            # safety preference. Merge distinct requests, fail closed if either caller disabled
+            # auto-resolution, and keep the earliest due time so coalescing never delays a job.
+            existing_payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+            merged_requests: list[dict[str, Any]] = []
+            seen_requests: set[str] = set()
+            for request in [*(existing_payload.get("hot_requests") or []), *(hot_requests or [])]:
+                if not isinstance(request, dict):
+                    continue
+                fingerprint = json.dumps(request, sort_keys=True, separators=(",", ":"), default=str)
+                if fingerprint in seen_requests:
+                    continue
+                seen_requests.add(fingerprint)
+                merged_requests.append(request)
+                if len(merged_requests) >= 50:
+                    break
+            merged_payload = {
+                "hot_requests": merged_requests,
+                "auto_resolve_safe": bool(existing_payload.get("auto_resolve_safe", True))
+                and bool(auto_resolve_safe),
+                "max_conflicts": max(
+                    int(existing_payload.get("max_conflicts") or 0),
+                    M4_CONSOLIDATION_MAX_CONFLICTS,
+                ),
+                "max_hot_packs": max(
+                    int(existing_payload.get("max_hot_packs") or 0),
+                    M4_CONSOLIDATION_MAX_HOT_PACKS,
+                ),
+            }
+            merged_run_at = min(str(job.get("run_at") or run_at), str(run_at))
+            timestamp = now_iso()
+            conn.execute(
+                """
+                UPDATE memory_jobs
+                SET payload_json = ?, run_at = ?, updated_at = ?
+                WHERE id = ? AND user_id = ? AND status = 'queued'
+                """,
+                (json.dumps(merged_payload), merged_run_at, timestamp, job["id"], user_id),
+            )
+            row = conn.execute(
+                "SELECT * FROM memory_jobs WHERE id = ? AND user_id = ?",
+                (job["id"], user_id),
+            ).fetchone()
+            return self._job_from_row(row)
 
     def _process_extract_capture_job(self, job: dict[str, Any]) -> dict[str, Any]:
         payload = job.get("payload") or {}
