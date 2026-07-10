@@ -131,3 +131,48 @@ class MirrorJunkGateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SourceReadinessDisplayTests(unittest.TestCase):
+    """The source chips/rows must show counts and names a user can trust."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        init_db(root / "t.db")
+        self.store = CortexStore(root / "t.db", root / "vault")
+        self.store._vector_ready = lambda conn: False
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_pending_counts_captures_not_join_rows(self) -> None:
+        # One pending capture with several extracted memories must count as ONE
+        # pending item. The old SUM over the memories JOIN multiplied it (a
+        # 1,470-capture queue displayed as "13,249 pending").
+        text = "\n".join(
+            f"We decided module {i} ships on Tuesday, agreed by the team." for i in range(6)
+        )
+        extracted = extract_context(text, source="obsidian", extraction_mode="local")
+        result = self.store.save_capture(
+            user_id="u", content=text, source="obsidian",
+            source_url="file:///n.md", title="n", extracted=extracted,
+        )
+        self.assertGreater(len(result.get("memories") or []), 1, "test needs a multi-memory capture")
+        report = self.store.source_readiness_report("u")
+        obsidian = next(s for s in report["sources"] if s["source"] == "obsidian")
+        self.assertEqual(obsidian["pending"], 1)
+        self.assertEqual(obsidian["captures"], 1)
+
+    def test_off_catalog_source_names_are_humanized(self) -> None:
+        extracted = extract_context(
+            "A decision was made to keep the export simple.",
+            source="structured-export", extraction_mode="local",
+        )
+        self.store.save_capture(
+            user_id="u", content="A decision was made to keep the export simple.",
+            source="structured-export", source_url=None, title=None, extracted=extracted,
+        )
+        report = self.store.source_readiness_report("u")
+        item = next(s for s in report["sources"] if s["source"] == "structured-export")
+        self.assertEqual(item["name"], "Structured Export")

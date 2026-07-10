@@ -3921,11 +3921,11 @@ class CortexStore:
                 """
                 SELECT
                   c.source,
-                  COUNT(*) AS captures,
-                  SUM(CASE WHEN c.review_status = 'pending' THEN 1 ELSE 0 END) AS pending,
-                  SUM(CASE WHEN c.review_status = 'approved' THEN 1 ELSE 0 END) AS approved,
-                  SUM(CASE WHEN c.review_status = 'archived' THEN 1 ELSE 0 END) AS archived,
-                  SUM(CASE WHEN c.review_status != 'archived' THEN 1 ELSE 0 END) AS current_captures,
+                  COUNT(DISTINCT c.id) AS captures,
+                  COUNT(DISTINCT CASE WHEN c.review_status = 'pending' THEN c.id END) AS pending,
+                  COUNT(DISTINCT CASE WHEN c.review_status = 'approved' THEN c.id END) AS approved,
+                  COUNT(DISTINCT CASE WHEN c.review_status = 'archived' THEN c.id END) AS archived,
+                  COUNT(DISTINCT CASE WHEN c.review_status != 'archived' THEN c.id END) AS current_captures,
                   COUNT(DISTINCT CASE WHEN m.status = 'active' THEN m.id END) AS active_memories,
                   COUNT(DISTINCT CASE WHEN m.status = 'active' AND COALESCE(m.source_url, '') != '' THEN m.id END) AS cited_memories,
                   COUNT(DISTINCT CASE WHEN cps.extraction_status IN ('queued', 'running') THEN c.id END) AS processing,
@@ -3950,7 +3950,9 @@ class CortexStore:
         rows: list[dict[str, Any]] = []
         catalog_ids = {item["id"] for item in catalog}
         extra_sources = sorted(set(captures_by_source) - catalog_ids)
-        for item in [*catalog, *({"id": source, "name": source, "category": "Connected source", "auth": "direct", "live_status": "imported", "scopes": [], "notes": "", "readiness_status": "import-ready", "primary_beta": False, "beta_status": "advanced-fallback", "primary_beta_path": "advanced-fallback-only", "show_in_primary_ui": False, "import_status": "native", "export_status": "imported", "source_ids": [source], "source_aliases": [], "import_label": "Connected source data", "supports_import": True, "formats": []} for source in extra_sources)]:
+        # Off-catalog sources surface in user-facing chips/rows, so their display name is the
+        # humanized id ("structured-export" -> "Structured Export"), never the raw slug.
+        for item in [*catalog, *({"id": source, "name": source.replace("-", " ").replace("_", " ").title(), "category": "Connected source", "auth": "direct", "live_status": "imported", "scopes": [], "notes": "", "readiness_status": "import-ready", "primary_beta": False, "beta_status": "advanced-fallback", "primary_beta_path": "advanced-fallback-only", "show_in_primary_ui": False, "import_status": "native", "export_status": "imported", "source_ids": [source], "source_aliases": [], "import_label": "Connected source data", "supports_import": True, "formats": []} for source in extra_sources)]:
             source = item["id"]
             source_accounts = accounts_by_source.get(source, [])
             active_accounts = [account for account in source_accounts if not account.get("disconnected_at")]
@@ -4035,7 +4037,14 @@ class CortexStore:
             if has_attention:
                 status = "needs_attention"
                 attention_messages = account_errors + cursor_errors + processing_errors
-                next_action = attention_messages[0] if attention_messages else "Resume sync or review this source account."
+                # The fallback must tell the user what to DO, in product words. "Resume sync or
+                # review this source account" named no actor and no surface; the fix lives behind
+                # Connections, so point there.
+                next_action = (
+                    attention_messages[0]
+                    if attention_messages
+                    else "Reconnect this source in Connections to resume syncing."
+                )
             elif processing:
                 status = "syncing"
                 next_action = f"Processing {processing} source record{'s' if processing != 1 else ''} before Review and Ask use them."

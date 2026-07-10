@@ -1645,7 +1645,7 @@ class CortexStorageLifecycleTests(unittest.TestCase):
             item for item in self.store.source_readiness_report(self.user_id)["sources"] if item["source"] == "github"
         )
         self.assertEqual(github_readiness["status"], "needs_attention")
-        self.assertEqual(github_readiness["next_action"], "Resume sync or review this source account.")
+        self.assertEqual(github_readiness["next_action"], "Reconnect this source in Connections to resume syncing.")
 
         with self.assertRaisesRegex(ValueError, "resume before reconnecting"):
             call_tool(

@@ -951,7 +951,15 @@ private struct AIChatsImportCard: View {
         .overlay(RoundedRectangle(cornerRadius: CortexDesign.Radius.md).stroke(CortexDesign.hairline, lineWidth: 1))
         .onAppear {
             Task {
-                await state.detectAvailableExports()
+                // The detector scans Downloads/Desktop/~/CortexImports, and on first run macOS
+                // fires one TCC permission prompt PER folder — opening Connections used to greet
+                // the user with a cascade of "Cortex would like to access…" dialogs before they
+                // asked for anything. Only scan silently once the user has already granted the
+                // folders (a prior import) — otherwise wait for an explicit import action, whose
+                // prompt is then expected and in context.
+                if hasCompletedImport {
+                    await state.detectAvailableExports()
+                }
                 // Collapse the walkthrough only once an export exists or chats have landed;
                 // otherwise it stays open so the path in is visible without a click.
                 if state.detectedExportSummary != nil || hasCompletedImport {

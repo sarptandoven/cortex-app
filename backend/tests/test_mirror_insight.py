@@ -135,10 +135,13 @@ class MirrorInsightTests(unittest.TestCase):
         self.assertEqual(insight["layer"], "preference")
         self.assertEqual(insight["confidence"], "high")  # >= 5 supporting -> high
 
-        # Headline is a real, user-framed sentence citing the source.
+        # Headline is a real, user-framed sentence. Provenance is carried by the
+        # evidence fields (asserted above) and rendered by the UI as one quiet
+        # "From your calendar · seen 6 times" line — the headline must NOT repeat
+        # it (the old "— from your calendar (6 times)" + evidence line double-read).
         headline = insight["headline"]
         self.assertTrue(headline)
-        self.assertIn("calendar", headline.lower())
+        self.assertNotIn("times)", headline)
         # Non-empty verbatim example drawn from the user's content.
         self.assertTrue(evidence["example"])
 

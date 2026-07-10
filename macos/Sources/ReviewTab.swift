@@ -124,7 +124,17 @@ struct ReviewSourceHealthStrip: View {
 
     private var detail: String {
         if needsAttentionCount > 0 {
-            return "\(needsAttentionCount) source\(needsAttentionCount == 1 ? "" : "s") need attention. Already synced local memory stays available."
+            // Name the source and its fix; "1 source need attention" was both broken
+            // grammar and useless (which source? what do I do?).
+            let failing = sources.filter(\.needsAttention)
+            if let first = failing.first {
+                let action = first.next_action.trimmingCharacters(in: .whitespacesAndNewlines)
+                let lead = failing.count == 1
+                    ? "\(first.name) needs attention."
+                    : "\(first.name) and \(failing.count - 1) more need attention."
+                return action.isEmpty ? "\(lead) Already synced memory stays available." : "\(lead) \(action)"
+            }
+            return "A source needs attention. Already synced memory stays available."
         }
         if pendingCount > 0 {
             return "Approve useful items, archive noise, and Cortex will use approved memory in Ask and connected AI tools."
@@ -234,7 +244,7 @@ struct ReviewSourceHealthChip: View {
             return "\(source.name) · \(source.pending) pending"
         }
         if let lastSeen = source.sync_plan?.last_completed_at ?? source.last_seen_at {
-            return "\(source.name) · \(reviewShortDate(lastSeen))"
+            return "\(source.name) · synced \(reviewShortDate(lastSeen))"
         }
         return source.name
     }

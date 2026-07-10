@@ -312,7 +312,10 @@ def _build_headline(c: "_Candidate") -> str:
 
     We derive the sentence from the user's real content (summary/content of the
     strongest example) rather than templating a generic claim, so the headline
-    reads as something Cortex actually observed.
+    reads as something Cortex actually observed. The headline stays a single
+    clean sentence; provenance ("from your notes, seen N times") is rendered by
+    the UI from the evidence fields, so we never repeat it inside the headline —
+    the doubled "— from X (N times)" + "seen N times" line read like a glitch.
     """
     source_label = _SOURCE_DISPLAY.get(c.source, _titleize(c.source))
     example = _first_sentence(c.example) if c.example else ""
@@ -321,17 +324,16 @@ def _build_headline(c: "_Candidate") -> str:
         topic = c.topic
         lead = f"You keep coming back to {topic}"
         if example:
-            return f"{lead} — from {source_label}, e.g. “{example}”."
-        return f"{lead} — from {source_label} ({c.count} times)."
+            return f"{lead} — e.g. “{example}”."
+        return f"{lead}."
 
     # Layer candidates: lead with a layer-appropriate framing, grounded in the
     # user's own words when we have them.
     if example:
-        body = _to_second_person(example)
-        return f"{body} — from {source_label} ({c.count} times)."
+        return f"{_to_second_person(example)}."
 
     lead = _LAYER_LEAD.get(c.layer, "You have a consistent pattern")
-    return f"{lead} — from {source_label} ({c.count} times)."
+    return f"{lead} in {source_label}."
 
 
 _LAYER_LEAD: dict[str, str] = {

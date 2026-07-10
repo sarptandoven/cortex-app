@@ -197,32 +197,46 @@ enum MemoryText {
 
     /// Build a useful Ask subject without leaking UUIDs, absolute paths, or import field names.
     /// Returning nil lets the caller fall back to a clean source-level suggestion.
+    ///
+    /// The subject is the first CLAUSE of the first sentence, kept intact — never a bag of
+    /// stripped words. The old word-mash produced suggestions like "What should I remember
+    /// about Cost analyzing 100k lines code with Sonnet Overview The?", which read as broken.
     static func suggestionSubject(_ raw: String) -> String? {
         let normalized = normalizedProse(raw)
         guard !normalized.isEmpty,
               !isPathLike(normalized),
               !normalized.contains("/Users/"),
-              !normalized.contains("\\Users\\") else {
+              !normalized.contains("\\Users\\"),
+              !normalized.contains("{"),
+              normalized.range(of: uuidPattern, options: .regularExpression) == nil else {
             return nil
         }
 
-        let withoutUUID = normalized.replacingOccurrences(
-            of: uuidPattern,
-            with: " ",
-            options: .regularExpression
-        )
-        let ignored = Set([
-            "uuid", "id", "name", "title", "content", "record", "item",
-            "summary", "conversation", "metadata",
-        ])
-        let words = withoutUUID
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { word in
-                word.count > 2 && !ignored.contains(word.lowercased())
-            }
-        guard words.count >= 3 else { return nil }
-        return words.prefix(9).joined(separator: " ")
+        // First sentence, then first clause of it (commas/semicolons/dashes end a clause).
+        var subject = normalized
+        if let sentenceEnd = subject.rangeOfCharacter(from: CharacterSet(charactersIn: ".!?\n")) {
+            subject = String(subject[..<sentenceEnd.lowerBound])
+        }
+        if let clauseEnd = subject.rangeOfCharacter(from: CharacterSet(charactersIn: ",;:—(")) {
+            subject = String(subject[..<clauseEnd.lowerBound])
+        }
+        subject = subject.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Cut long clauses at a word boundary, never mid-word.
+        if subject.count > 64 {
+            let head = String(subject.prefix(64))
+            subject = head.contains(" ") ? String(head[..<head.range(of: " ", options: .backwards)!.lowerBound]) : head
+        }
+        // A clause that ENDS in a dangling function word ("...with", "...the") reads broken.
+        let dangling = Set(["the", "a", "an", "and", "or", "but", "with", "for", "of", "to", "in", "on", "at", "by", "is", "are", "was"])
+        var words = subject.split(separator: " ").map(String.init)
+        while let last = words.last, dangling.contains(last.lowercased()) {
+            words.removeLast()
+        }
+        // Meaningful subjects have a few real words; metadata fragments do not.
+        let meaningful = words.filter { $0.count > 2 }
+        guard words.count >= 3, meaningful.count >= 3 else { return nil }
+        return words.joined(separator: " ")
     }
 
     /// Strip a leading `file '…'` wrapper and surrounding quotes to get the inner path/string.

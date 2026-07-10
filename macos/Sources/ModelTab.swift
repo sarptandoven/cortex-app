@@ -511,6 +511,13 @@ struct HomeHeroSection: View {
 
     private var title: String {
         if !state.isLocalServiceReady {
+            // While a sync is visibly running (the progress beam is on screen), the
+            // engine IS working — "Cortex is starting" next to a live 16,032/16,049
+            // progress bar reads as a contradiction and invites a pointless click on
+            // "Start Cortex". Say what is actually happening instead.
+            if state.syncProgress?.active == true {
+                return "Getting your memory ready"
+            }
             return "Cortex is starting"
         }
         if needsAttentionSources > 0 {
@@ -546,6 +553,9 @@ struct HomeHeroSection: View {
         if !state.isLocalServiceReady {
             if CortexRecoveryText.needsAttention(state.displayStatus) {
                 return state.displayStatus
+            }
+            if let progress = state.syncProgress, progress.active {
+                return "Syncing your notes — you can start reviewing as items arrive."
             }
             return "This usually takes a moment."
         }
@@ -584,7 +594,9 @@ struct HomeHeroSection: View {
     }
 
     private var actionTitle: String {
-        if !state.isLocalServiceReady { return "Start Cortex" }
+        if !state.isLocalServiceReady {
+            return state.syncProgress?.active == true ? "Review memory" : "Start Cortex"
+        }
         if needsAttentionSources > 0 { return "Open Connections" }
         if dueSyncSources > 0 { return "Sync now" }
         if activeSources == 0 { return hasEmptySource ? "Choose notes" : "Connect notes" }
@@ -594,7 +606,9 @@ struct HomeHeroSection: View {
     }
 
     private var actionIcon: String {
-        if !state.isLocalServiceReady { return "power" }
+        if !state.isLocalServiceReady {
+            return state.syncProgress?.active == true ? "checklist" : "power"
+        }
         if needsAttentionSources > 0 { return "exclamationmark.circle" }
         if dueSyncSources > 0 { return "arrow.triangle.2.circlepath" }
         if activeSources == 0 { return hasEmptySource ? "folder.badge.questionmark" : "folder.badge.plus" }
@@ -701,6 +715,10 @@ struct HomeHeroSection: View {
 
     private func runNextAction() {
         if !state.isLocalServiceReady {
+            if state.syncProgress?.active == true {
+                state.selectedTab = .review
+                return
+            }
             Task {
                 await state.ensureBackend()
                 await state.loadDiagnostics()

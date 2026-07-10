@@ -149,7 +149,7 @@ struct SourceConnectorStatusCard: View {
                 : "This source is managed from Connections & Privacy."
         }
         if needsAttention {
-            return attentionDetail ?? "Cortex needs attention before these notes can keep syncing."
+            return attentionDetail ?? "Cortex lost permission to read this folder — usually after it moved or macOS revoked access. Choose the folder again to resume syncing."
         }
         if needsContent {
             return "Cortex could not find usable notes there. Choose a notes library with real content."
